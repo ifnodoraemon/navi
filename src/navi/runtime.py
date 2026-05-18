@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .memory import MemoryStore
+from .prompting import PromptContext, build_system_prompt
 from .provider import ChatMessage, ChatProvider
 from .skills import SkillStore
 
@@ -21,28 +22,41 @@ class AgentRuntime:
         self.memory = MemoryStore(home)
         self.skills = SkillStore(home)
 
-    async def chat(self, user_text: str, session_id: str | None = None) -> AssistantReply:
+    async def chat(
+        self,
+        user_text: str,
+        session_id: str | None = None,
+        *,
+        prompt_context: PromptContext | None = None,
+    ) -> AssistantReply:
         session_id = session_id or self.memory.new_session_id()
         self.memory.add_message(session_id, "user", user_text)
 
-        messages = self._build_messages(session_id)
+        messages = self._build_messages(session_id, prompt_context=prompt_context)
         answer = await self.provider.complete(messages)
         self.memory.add_message(session_id, "assistant", answer)
         return AssistantReply(session_id=session_id, content=answer)
 
-    def _build_messages(self, session_id: str) -> list[ChatMessage]:
-        system_parts = [
-            "You are Navi, a local-first personal AI assistant.",
-            "Be concise, practical, and preserve user privacy.",
-        ]
+    def _build_messages(
+        self,
+        session_id: str,
+        *,
+        prompt_context: PromptContext | None = None,
+    ) -> list[ChatMessage]:
         memory_context = self.memory.read_memory()
-        if memory_context:
-            system_parts.append(f"Persistent memory:\n{memory_context}")
         skills_context = self.skills.render_prompt()
-        if skills_context:
-            system_parts.append(f"Installed skills:\n{skills_context}")
 
-        messages = [ChatMessage("system", "\n\n".join(system_parts))]
+        messages = [
+            ChatMessage(
+                "system",
+                build_system_prompt(
+                    home=self.home,
+                    memory_context=memory_context,
+                    skills_context=skills_context,
+                    prompt_context=prompt_context,
+                ),
+            )
+        ]
         for item in self.memory.get_messages(session_id):
             messages.append(ChatMessage(item.role, item.content))
         return messages

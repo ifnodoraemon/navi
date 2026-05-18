@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 from navi.assistant import ActiveAssistant
 from navi.config import WeixinConfig
+from navi.prompting import PromptContext
 from navi.runtime import AgentRuntime
 
 from .client import MockWeixinClient, WeixinClient
@@ -104,7 +105,11 @@ class WeixinService:
                 context_token=self.context_tokens.get(account.account_id, update.peer_id),
             )
             return True
-        reply = await self.runtime.chat(update.text, session_id=f"weixin:{update.peer_id}")
+        reply = await self.runtime.chat(
+            update.text,
+            session_id=f"weixin:{update.peer_id}",
+            prompt_context=self._prompt_context(),
+        )
         context_token = self.context_tokens.get(account.account_id, update.peer_id)
         await self.client.send_message(
             account_id=account.account_id,
@@ -179,3 +184,14 @@ class WeixinService:
         if policy == "allowlist":
             return identity in allowed
         return policy in {"open", "pairing"}
+
+    @staticmethod
+    def _prompt_context() -> PromptContext:
+        return PromptContext(
+            surface="Weixin connector",
+            affordances=(
+                "Use /task <natural-language request> to submit local actions into Navi's tracked task path.",
+                "Use /approve <code> or /reject <code> when Navi returns an approval code.",
+                "Use /status or /jobs to inspect tracked work.",
+            ),
+        )
