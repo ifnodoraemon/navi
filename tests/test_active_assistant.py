@@ -54,6 +54,22 @@ def test_watch_command_creates_cron_watch(tmp_path):
     assert watches[0].prompt == "check the navi project"
 
 
+def test_watch_cron_tool_creates_watch(tmp_path):
+    assistant = ActiveAssistant(tmp_path)
+
+    result = assistant.create_watch_cron(
+        "0 8 * * *",
+        "进行毛选晨读",
+        peer_id="peer",
+        sender_id="sender",
+    )
+
+    assert "Watch" in result.text
+    watches = assistant.tasks.list_watches()
+    assert watches[0].cron == "0 8 * * *"
+    assert watches[0].prompt == "进行毛选晨读"
+
+
 def test_auth_inspector_shape():
     statuses = AuthInspector().status()
 

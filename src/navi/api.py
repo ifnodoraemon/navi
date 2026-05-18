@@ -27,6 +27,10 @@ class MemoryRequest(BaseModel):
     text: str
 
 
+class SessionRequest(BaseModel):
+    alias: str | None = None
+
+
 class TaskRequest(BaseModel):
     title: str
     prompt: str | None = None
@@ -80,6 +84,15 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.get("/v1/sessions")
     def sessions() -> dict:
         return {"sessions": runtime.memory.list_sessions()}
+
+    @app.post("/v1/sessions")
+    def create_session(request: SessionRequest) -> dict:
+        session_id = runtime.memory.create_session(alias=request.alias)
+        return {"session_id": session_id, "alias": request.alias}
+
+    @app.get("/v1/session-aliases")
+    def session_aliases() -> dict:
+        return {"aliases": [alias.__dict__ for alias in runtime.memory.list_session_aliases()]}
 
     @app.get("/v1/sessions/{session_id}")
     def session(session_id: str) -> dict:

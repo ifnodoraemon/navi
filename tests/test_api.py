@@ -28,6 +28,13 @@ def test_local_console_api_flow(tmp_path):
     assert sessions.status_code == 200
     assert chat_data["session_id"] in sessions.json()["sessions"]
 
+    new_session = client.post("/v1/sessions", json={"alias": "web:test"})
+    assert new_session.status_code == 200
+    assert new_session.json()["session_id"]
+    aliases = client.get("/v1/session-aliases")
+    assert aliases.status_code == 200
+    assert aliases.json()["aliases"][0]["alias"] == "web:test"
+
     session = client.get(f"/v1/sessions/{chat_data['session_id']}")
     assert session.status_code == 200
     assert [message["role"] for message in session.json()["messages"]] == ["user", "assistant"]

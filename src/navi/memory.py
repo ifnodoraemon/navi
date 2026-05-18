@@ -17,6 +17,14 @@ class StoredMessage:
 
 
 @dataclass(frozen=True)
+class SessionAlias:
+    alias: str
+    session_id: str
+    created_at: float
+    updated_at: float
+
+
+@dataclass(frozen=True)
 class MemoryItem:
     id: str
     type: str
@@ -82,6 +90,16 @@ class MemoryStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_aliases (
+                    alias TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memory_items (
@@ -256,6 +274,58 @@ class MemoryStore:
 
     def new_session_id(self) -> str:
         return time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
+
+    def create_session(self, *, alias: str | None = None) -> str:
+        session_id = self.new_session_id()
+        if alias:
+            self.set_session_alias(alias, session_id)
+        return session_id
+
+    def set_session_alias(self, alias: str, session_id: str) -> SessionAlias:
+        now = time.time()
+        existing = self.get_session_alias(alias)
+        created_at = existing.created_at if existing else now
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO session_aliases(alias, session_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(alias) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at
+                """,
+                (alias, session_id, created_at, now),
+            )
+        return self.get_session_alias(alias) or SessionAlias(alias, session_id, created_at, now)
+
+    def get_session_alias(self, alias: str) -> SessionAlias | None:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT alias, session_id, created_at, updated_at
+                FROM session_aliases WHERE alias = ?
+                """,
+                (alias,),
+            ).fetchone()
+        return SessionAlias(*row) if row else None
+
+    def current_session_id(self, alias: str) -> str:
+        current = self.get_session_alias(alias)
+        if current:
+            return current.session_id
+        return self.create_session(alias=alias)
+
+    def rotate_session(self, alias: str) -> SessionAlias:
+        return self.set_session_alias(alias, self.new_session_id())
+
+    def list_session_aliases(self, *, limit: int = 50) -> list[SessionAlias]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT alias, session_id, created_at, updated_at
+                FROM session_aliases ORDER BY updated_at DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [SessionAlias(*row) for row in rows]
 
     def add_message(self, session_id: str, role: str, content: str) -> None:
         with sqlite3.connect(self.db_path) as conn:

@@ -69,6 +69,20 @@ def test_memory_recall_prioritizes_constraints_and_relevance(tmp_path):
     assert "cooking notebook" not in rendered
 
 
+def test_session_alias_rotation_preserves_old_messages(tmp_path):
+    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    first = runtime.memory.current_session_id("connector:test:peer")
+    runtime.memory.add_message(first, "user", "old topic")
+
+    second = runtime.memory.rotate_session("connector:test:peer").session_id
+    runtime.memory.add_message(second, "user", "new topic")
+
+    assert first != second
+    assert runtime.memory.current_session_id("connector:test:peer") == second
+    assert runtime.memory.get_messages(first)[0].content == "old topic"
+    assert runtime.memory.get_messages(second)[0].content == "new topic"
+
+
 @pytest.mark.asyncio
 async def test_runtime_system_prompt_includes_local_deployment_contract(tmp_path):
     provider = RecordingProvider()

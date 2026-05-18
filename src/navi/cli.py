@@ -26,6 +26,7 @@ trust_app = typer.Typer(help="Trust contract")
 evolution_app = typer.Typer(help="Evolution ledger")
 service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
+session_app = typer.Typer(help="Conversation session control")
 app.add_typer(weixin_app, name="weixin")
 app.add_typer(auth_app, name="auth")
 app.add_typer(graph_app, name="graph")
@@ -33,6 +34,7 @@ app.add_typer(trust_app, name="trust")
 app.add_typer(evolution_app, name="evolution")
 app.add_typer(service_app, name="service")
 app.add_typer(memory_app, name="memory")
+app.add_typer(session_app, name="session")
 
 
 @app.command()
@@ -139,6 +141,37 @@ def memory_revoke(item_id: str) -> None:
     if item is None:
         raise typer.BadParameter("memory item not found")
     typer.echo(f"{item.id} {item.status}")
+
+
+@session_app.command("new")
+def session_new(alias: str | None = typer.Argument(None)) -> None:
+    """Create a new conversation session, optionally bound to an alias."""
+    session_id = MemoryStore(ensure_home()).create_session(alias=alias)
+    typer.echo(session_id)
+
+
+@session_app.command("list")
+def session_list(limit: int = 50) -> None:
+    """List conversation sessions and aliases as facts."""
+    store = MemoryStore(ensure_home())
+    aliases = {item.session_id: item.alias for item in store.list_session_aliases(limit=limit)}
+    for session_id in store.list_sessions()[:limit]:
+        alias = aliases.get(session_id, "-")
+        typer.echo(f"{session_id} alias={alias}")
+
+
+@session_app.command("aliases")
+def session_aliases(limit: int = 50) -> None:
+    """List active session aliases."""
+    for item in MemoryStore(ensure_home()).list_session_aliases(limit=limit):
+        typer.echo(f"{item.alias} -> {item.session_id}")
+
+
+@session_app.command("show")
+def session_show(session_id: str, limit: int = 50) -> None:
+    """Show messages for one session."""
+    for message in MemoryStore(ensure_home()).get_messages(session_id, limit=limit):
+        typer.echo(f"{message.role}: {message.content}")
 
 
 @auth_app.command("status")

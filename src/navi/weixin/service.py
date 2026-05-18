@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from collections.abc import Callable
 
+from navi.action_router import ActionRouter
 from navi.assistant import ActiveAssistant
 from navi.config import WeixinConfig
 from navi.prompting import PromptContext
@@ -26,6 +27,7 @@ class WeixinService:
         self.dedup = MessageDeduplicator()
         self.client = self._build_client()
         self.active = ActiveAssistant(home)
+        self.router = ActionRouter()
 
     def _build_client(self):
         if os.environ.get("NAVI_WEIXIN_MOCK", "").lower() in {"1", "true", "yes"}:
@@ -86,13 +88,24 @@ class WeixinService:
     async def handle_update(self, account: WeixinAccount, update: WeixinUpdate) -> bool:
         if self.dedup.seen(update.message_id):
             return False
-        content_key = f"content:{update.sender_id}:{hashlib.md5(update.text.encode()).hexdigest()}"
-        if self.dedup.seen(content_key):
-            return False
+        is_command = update.text.strip().startswith("/")
+        if not is_command:
+            content_key = f"content:{update.sender_id}:{hashlib.md5(update.text.encode()).hexdigest()}"
+            if self.dedup.seen(content_key):
+                return False
         if not self._allowed(update):
             return False
         self.context_tokens.put(account.account_id, update.peer_id, update.context_token)
-        if update.text.strip().startswith("/"):
+        if is_command:
+            connector_result = self._handle_connector_command(update.text, peer_id=update.peer_id)
+            if connector_result:
+                await self.client.send_message(
+                    account_id=account.account_id,
+                    peer_id=update.peer_id,
+                    text=connector_result,
+                    context_token=self.context_tokens.get(account.account_id, update.peer_id),
+                )
+                return True
             result = await self.active.handle_weixin_command(
                 update.text,
                 peer_id=update.peer_id,
@@ -105,9 +118,39 @@ class WeixinService:
                 context_token=self.context_tokens.get(account.account_id, update.peer_id),
             )
             return True
+        routed = self.router.route(update.text)
+        if routed.kind == "watch":
+            result = self.active.create_watch_cron(
+                routed.cron,
+                routed.prompt,
+                peer_id=update.peer_id,
+                sender_id=update.sender_id,
+            )
+            await self.client.send_message(
+                account_id=account.account_id,
+                peer_id=update.peer_id,
+                text=result.text,
+                context_token=self.context_tokens.get(account.account_id, update.peer_id),
+            )
+            return True
+        if routed.kind == "task":
+            result = await self.active.create_task(
+                routed.prompt,
+                peer_id=update.peer_id,
+                sender_id=update.sender_id,
+                source="weixin",
+            )
+            await self.client.send_message(
+                account_id=account.account_id,
+                peer_id=update.peer_id,
+                text=result.text,
+                context_token=self.context_tokens.get(account.account_id, update.peer_id),
+            )
+            return True
+        session_id = self.runtime.memory.current_session_id(self._session_alias(update.peer_id))
         reply = await self.runtime.chat(
             update.text,
-            session_id=f"weixin:{update.peer_id}",
+            session_id=session_id,
             prompt_context=self._prompt_context(),
         )
         context_token = self.context_tokens.get(account.account_id, update.peer_id)
@@ -193,5 +236,17 @@ class WeixinService:
                 "Use /task <natural-language request> to submit local actions into Navi's tracked task path.",
                 "Use /approve <code> or /reject <code> when Navi returns an approval code.",
                 "Use /status or /jobs to inspect tracked work.",
+                "Use /new to start a fresh conversation session for this peer.",
             ),
         )
+
+    def _handle_connector_command(self, text: str, *, peer_id: str) -> str:
+        command = text.strip().split(maxsplit=1)[0].lower()
+        if command not in {"/new", "/reset"}:
+            return ""
+        session = self.runtime.memory.rotate_session(self._session_alias(peer_id))
+        return f"Started a new conversation session: {session.session_id}"
+
+    @staticmethod
+    def _session_alias(peer_id: str) -> str:
+        return f"connector:weixin:{peer_id}"

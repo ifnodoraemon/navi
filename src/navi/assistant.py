@@ -151,6 +151,9 @@ class ActiveAssistant:
             return AssistantCommandResult("Usage: /watch <minute> <hour> <day> <month> <weekday> <description>")
         cron = " ".join(parts[:5])
         prompt = parts[5]
+        return self.create_watch_cron(cron, prompt, peer_id=peer_id, sender_id=sender_id)
+
+    def create_watch_cron(self, cron: str, prompt: str, *, peer_id: str, sender_id: str) -> AssistantCommandResult:
         try:
             validate_cron(cron)
             next_run = next_cron_time(cron)
