@@ -6,6 +6,8 @@ This document captures the current product and implementation decisions so the n
 
 Navi is a local-first personal AI assistant, inspired by Hermes and OpenClaw, but it is not a clone of either project.
 
+Non-negotiable engineering principles are captured in [principles.md](principles.md). Requirements and implementation choices must not violate those principles.
+
 Core positioning:
 
 - Personal assistant first, not an enterprise RAG product.
