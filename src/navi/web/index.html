@@ -1,0 +1,738 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Navi</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f5f6f7;
+        color: #17212b;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+      }
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+      button {
+        border: 0;
+        border-radius: 7px;
+        background: #146c5c;
+        color: #fff;
+        cursor: pointer;
+        min-height: 38px;
+        padding: 0 14px;
+      }
+      button.secondary {
+        background: #e8edf0;
+        color: #1e2b35;
+      }
+      button.ghost {
+        background: transparent;
+        color: #1f5f88;
+        min-height: 30px;
+        padding: 0 8px;
+      }
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid #cbd5dc;
+        border-radius: 7px;
+        background: #fff;
+        color: #17212b;
+      }
+      input,
+      select {
+        min-height: 38px;
+        padding: 8px 10px;
+      }
+      textarea {
+        min-height: 130px;
+        resize: vertical;
+        padding: 10px;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+      aside {
+        display: grid;
+        grid-template-rows: auto auto 1fr;
+        gap: 18px;
+        border-right: 1px solid #dce3e8;
+        background: #ffffff;
+        padding: 18px;
+      }
+      h1 {
+        font-size: 23px;
+        line-height: 1.1;
+        margin: 0;
+      }
+      h2 {
+        font-size: 15px;
+        margin: 0 0 10px;
+      }
+      h3 {
+        font-size: 14px;
+        margin: 0;
+      }
+      .muted {
+        color: #5c6872;
+      }
+      .small {
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .stack {
+        display: grid;
+        gap: 10px;
+      }
+      .status-grid {
+        display: grid;
+        gap: 8px;
+      }
+      .status-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid #edf1f4;
+        padding-bottom: 7px;
+      }
+      .status-row strong {
+        font-weight: 650;
+        text-align: right;
+        overflow-wrap: anywhere;
+      }
+      .sessions-header,
+      .panel-header,
+      .task-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .session-list {
+        display: grid;
+        gap: 6px;
+        overflow: auto;
+      }
+      .session-item {
+        width: 100%;
+        border: 1px solid #d8e0e6;
+        background: #fff;
+        color: #1b2a34;
+        text-align: left;
+        min-height: 42px;
+        padding: 8px 10px;
+      }
+      .session-item.active {
+        border-color: #146c5c;
+        background: #eef8f5;
+      }
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 360px;
+        min-height: 100vh;
+      }
+      .chat {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        min-height: 100vh;
+      }
+      .chat-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        border-bottom: 1px solid #dce3e8;
+        background: #fff;
+        padding: 16px 20px;
+      }
+      .chat-title {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+      }
+      .chat-title strong {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .messages {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        overflow: auto;
+        padding: 20px;
+      }
+      .empty {
+        margin: auto;
+        max-width: 460px;
+        color: #5c6872;
+        text-align: center;
+      }
+      .message {
+        max-width: 850px;
+        border: 1px solid #d7dee4;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 11px 13px;
+        white-space: pre-wrap;
+      }
+      .message.user {
+        align-self: flex-end;
+        border-color: #8db9af;
+        background: #f0faf6;
+      }
+      .message.assistant {
+        align-self: flex-start;
+      }
+      .composer {
+        display: flex;
+        gap: 10px;
+        border-top: 1px solid #dce3e8;
+        background: #ffffff;
+        padding: 14px;
+      }
+      .composer input {
+        flex: 1;
+        min-width: 0;
+      }
+      .inspector {
+        display: grid;
+        align-content: start;
+        gap: 0;
+        border-left: 1px solid #dce3e8;
+        background: #fbfcfd;
+        overflow: auto;
+      }
+      .panel {
+        display: grid;
+        gap: 10px;
+        border-bottom: 1px solid #dce3e8;
+        padding: 16px;
+      }
+      .panel form {
+        display: grid;
+        gap: 8px;
+      }
+      .task-list,
+      .skill-list {
+        display: grid;
+        gap: 8px;
+      }
+      .task-row {
+        border: 1px solid #d8e0e6;
+        border-radius: 8px;
+        background: #fff;
+        padding: 9px;
+      }
+      .task-row select {
+        width: 120px;
+        min-height: 32px;
+      }
+      .task-title {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .skill-item {
+        border-left: 3px solid #d85f3f;
+        background: #fff;
+        padding: 8px 10px;
+      }
+      .notice {
+        border: 1px solid #d6dde3;
+        border-radius: 8px;
+        background: #fff;
+        padding: 10px;
+        overflow-wrap: anywhere;
+      }
+      .error {
+        border-color: #d98b83;
+        background: #fff4f2;
+        color: #7a261f;
+      }
+      @media (max-width: 1100px) {
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+        .inspector {
+          border-left: 0;
+          border-top: 1px solid #dce3e8;
+        }
+      }
+      @media (max-width: 760px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+        aside {
+          border-right: 0;
+          border-bottom: 1px solid #dce3e8;
+        }
+        .chat,
+        .workspace {
+          min-height: auto;
+        }
+        .messages {
+          min-height: 48vh;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <aside>
+        <div class="stack">
+          <h1>Navi</h1>
+          <div class="small muted">Local-first assistant console</div>
+        </div>
+        <div class="stack">
+          <h2>Status</h2>
+          <div class="status-grid" id="status">Loading status...</div>
+        </div>
+        <div class="stack">
+          <div class="sessions-header">
+            <h2>Sessions</h2>
+            <button class="ghost" type="button" id="new-session">New</button>
+          </div>
+          <div class="session-list" id="sessions"></div>
+        </div>
+      </aside>
+      <div class="workspace">
+        <section class="chat">
+          <header class="chat-header">
+            <div class="chat-title">
+              <strong id="session-title">New chat</strong>
+              <span class="small muted" id="session-subtitle">Messages stay in local SQLite state.</span>
+            </div>
+            <button class="secondary" type="button" id="refresh">Refresh</button>
+          </header>
+          <div class="messages" id="messages">
+            <div class="empty">Start a chat or pick a previous session.</div>
+          </div>
+          <form class="composer" id="chat-form">
+            <input id="chat-input" autocomplete="off" placeholder="Message Navi" />
+            <button type="submit">Send</button>
+          </form>
+        </section>
+        <section class="inspector" aria-label="Navi details">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Memory</h2>
+              <button class="ghost" type="button" id="refresh-memory">Reload</button>
+            </div>
+            <textarea id="memory" readonly placeholder="No memory yet"></textarea>
+            <form id="memory-form">
+              <input id="memory-input" placeholder="Add a memory note" />
+              <button type="submit">Add Memory</button>
+            </form>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Tasks</h2>
+              <button class="ghost" type="button" id="refresh-tasks">Reload</button>
+            </div>
+            <form id="task-form">
+              <input id="task-title" placeholder="New task title" />
+              <button type="submit">Create Task</button>
+            </form>
+            <div class="task-list" id="tasks"></div>
+          </div>
+          <div class="panel">
+            <h2>Weixin</h2>
+            <div class="notice small" id="weixin">Loading Weixin status...</div>
+          </div>
+          <div class="panel">
+            <h2>Skills</h2>
+            <div class="skill-list" id="skills"></div>
+          </div>
+          <div class="panel">
+            <h2>Auth</h2>
+            <div class="skill-list" id="auth"></div>
+          </div>
+          <div class="panel">
+            <h2>Trust</h2>
+            <div class="skill-list" id="trust"></div>
+          </div>
+          <div class="panel">
+            <h2>Graph</h2>
+            <div class="skill-list" id="graph"></div>
+          </div>
+          <div class="panel">
+            <h2>Evolution</h2>
+            <div class="skill-list" id="evolution"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+    <script>
+      const state = {
+        sessionId: null,
+        sessions: [],
+      };
+
+      const nodes = {
+        status: document.querySelector("#status"),
+        sessions: document.querySelector("#sessions"),
+        messages: document.querySelector("#messages"),
+        sessionTitle: document.querySelector("#session-title"),
+        sessionSubtitle: document.querySelector("#session-subtitle"),
+        chatForm: document.querySelector("#chat-form"),
+        chatInput: document.querySelector("#chat-input"),
+        memory: document.querySelector("#memory"),
+        memoryForm: document.querySelector("#memory-form"),
+        memoryInput: document.querySelector("#memory-input"),
+        taskForm: document.querySelector("#task-form"),
+        taskTitle: document.querySelector("#task-title"),
+        tasks: document.querySelector("#tasks"),
+        weixin: document.querySelector("#weixin"),
+        skills: document.querySelector("#skills"),
+        auth: document.querySelector("#auth"),
+        trust: document.querySelector("#trust"),
+        graph: document.querySelector("#graph"),
+        evolution: document.querySelector("#evolution"),
+      };
+
+      async function request(path, options = {}) {
+        const response = await fetch(path, options);
+        if (!response.ok) {
+          const detail = await response.text();
+          throw new Error(`${response.status} ${response.statusText}: ${detail}`);
+        }
+        return response.json();
+      }
+
+      function setNotice(node, text, isError = false) {
+        node.textContent = text;
+        node.classList.toggle("error", isError);
+      }
+
+      function formatTime(value) {
+        if (!value) return "";
+        return new Date(value * 1000).toLocaleString();
+      }
+
+      function setSession(sessionId) {
+        state.sessionId = sessionId;
+        nodes.sessionTitle.textContent = sessionId || "New chat";
+        nodes.sessionSubtitle.textContent = sessionId
+          ? "Loaded from local session history."
+          : "Messages stay in local SQLite state.";
+        renderSessions();
+      }
+
+      function clearMessages() {
+        nodes.messages.replaceChildren();
+      }
+
+      function renderEmpty(text) {
+        clearMessages();
+        const node = document.createElement("div");
+        node.className = "empty";
+        node.textContent = text;
+        nodes.messages.appendChild(node);
+      }
+
+      function addMessage(role, text) {
+        const empty = nodes.messages.querySelector(".empty");
+        if (empty) empty.remove();
+        const node = document.createElement("div");
+        node.className = `message ${role}`;
+        node.textContent = text;
+        nodes.messages.appendChild(node);
+        nodes.messages.scrollTop = nodes.messages.scrollHeight;
+      }
+
+      function renderSessions() {
+        nodes.sessions.replaceChildren();
+        if (state.sessions.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "small muted";
+          empty.textContent = "No saved sessions yet.";
+          nodes.sessions.appendChild(empty);
+          return;
+        }
+        for (const sessionId of state.sessions) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "session-item";
+          if (sessionId === state.sessionId) button.classList.add("active");
+          button.textContent = sessionId;
+          button.addEventListener("click", () => loadSession(sessionId));
+          nodes.sessions.appendChild(button);
+        }
+      }
+
+      async function refreshStatus() {
+        const [healthData, wxData] = await Promise.all([
+          request("/health"),
+          request("/v1/weixin/status"),
+        ]);
+        nodes.status.replaceChildren();
+        const rows = [
+          ["Home", healthData.home],
+          ["Model", healthData.model_provider],
+          ["Weixin", wxData.configured ? "configured" : "not configured"],
+          ["DM policy", wxData.dm_policy],
+        ];
+        for (const [label, value] of rows) {
+          const row = document.createElement("div");
+          row.className = "status-row small";
+          const name = document.createElement("span");
+          name.textContent = label;
+          const strong = document.createElement("strong");
+          strong.textContent = String(value || "-");
+          row.append(name, strong);
+          nodes.status.appendChild(row);
+        }
+        setNotice(
+          nodes.weixin,
+          `configured=${wxData.configured}\naccount_id=${wxData.account_id || "-"}\nsaved_accounts=${(wxData.saved_accounts || []).join(", ") || "-"}\ndm_policy=${wxData.dm_policy}\ngroup_policy=${wxData.group_policy}`
+        );
+      }
+
+      async function refreshSessions() {
+        const data = await request("/v1/sessions");
+        state.sessions = data.sessions || [];
+        renderSessions();
+      }
+
+      async function loadSession(sessionId) {
+        const data = await request(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+        setSession(sessionId);
+        clearMessages();
+        for (const message of data.messages || []) {
+          addMessage(message.role, message.content);
+        }
+        if (!data.messages || data.messages.length === 0) {
+          renderEmpty("No messages in this session.");
+        }
+      }
+
+      async function refreshMemory() {
+        const data = await request("/v1/memory");
+        nodes.memory.value = data.memory || "";
+      }
+
+      async function refreshTasks() {
+        const data = await request("/v1/tasks");
+        nodes.tasks.replaceChildren();
+        const tasks = data.tasks || [];
+        if (tasks.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "small muted";
+          empty.textContent = "No tasks yet.";
+          nodes.tasks.appendChild(empty);
+          return;
+        }
+        for (const task of tasks) {
+          const row = document.createElement("div");
+          row.className = "task-row";
+          const title = document.createElement("div");
+          title.className = "task-title";
+          const heading = document.createElement("h3");
+          heading.textContent = task.title;
+          const meta = document.createElement("div");
+          meta.className = "small muted";
+          meta.textContent = `${task.status} ${task.autonomy_level || ""} ${formatTime(task.updated_at)}`;
+          if (task.plan_summary) {
+            const plan = document.createElement("div");
+            plan.className = "small muted";
+            plan.textContent = task.plan_summary.slice(0, 220);
+            title.append(heading, meta, plan);
+          } else {
+            title.append(heading, meta);
+          }
+          const actions = document.createElement("div");
+          actions.className = "stack";
+          if (task.status === "awaiting_approval") {
+            const approve = document.createElement("button");
+            approve.type = "button";
+            approve.className = "secondary";
+            approve.textContent = "Approve";
+            approve.addEventListener("click", async () => {
+              await request(`/v1/tasks/${encodeURIComponent(task.id)}/approve`, { method: "POST" });
+              await refreshAll();
+            });
+            actions.appendChild(approve);
+          }
+          if (task.status === "queued") {
+            const run = document.createElement("button");
+            run.type = "button";
+            run.textContent = "Run";
+            run.addEventListener("click", async () => {
+              await request("/v1/tasks/process", { method: "POST" });
+              await refreshAll();
+            });
+            actions.appendChild(run);
+          }
+          if (!actions.children.length) {
+            const status = document.createElement("div");
+            status.className = "small muted";
+            status.textContent = task.status;
+            actions.appendChild(status);
+          }
+          row.append(title, actions);
+          nodes.tasks.appendChild(row);
+        }
+      }
+
+      async function refreshSkills() {
+        const data = await request("/v1/skills");
+        nodes.skills.replaceChildren();
+        const skills = data.skills || [];
+        if (skills.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "small muted";
+          empty.textContent = "No local skills installed.";
+          nodes.skills.appendChild(empty);
+          return;
+        }
+        for (const skill of skills) {
+          const node = document.createElement("div");
+          node.className = "skill-item small";
+          node.textContent = `${skill.name}: ${skill.description || "No description"}`;
+          nodes.skills.appendChild(node);
+        }
+      }
+
+      function renderList(node, items, emptyText, render) {
+        node.replaceChildren();
+        if (items.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "small muted";
+          empty.textContent = emptyText;
+          node.appendChild(empty);
+          return;
+        }
+        for (const item of items) {
+          const entry = document.createElement("div");
+          entry.className = "skill-item small";
+          entry.textContent = render(item);
+          node.appendChild(entry);
+        }
+      }
+
+      async function refreshAuth() {
+        const data = await request("/v1/auth/status");
+        renderList(nodes.auth, data.providers || [], "No providers found.", (item) => {
+          return `${item.name}: ${item.installed && item.authenticated ? "ok" : "missing"} ${item.version || ""}`;
+        });
+      }
+
+      async function refreshTrust() {
+        const data = await request("/v1/trust-rules");
+        renderList(nodes.trust, data.trust_rules || [], "No trust rules yet.", (rule) => {
+          return `${rule.autonomy_level} ${rule.name} success=${rule.success_count} failure=${rule.failure_count}`;
+        });
+      }
+
+      async function refreshGraph() {
+        const data = await request("/v1/graph");
+        renderList(nodes.graph, data.nodes || [], "No graph nodes yet.", (node) => {
+          return `${node.type}: ${node.name}`;
+        });
+      }
+
+      async function refreshEvolution() {
+        const data = await request("/v1/evolution-events");
+        renderList(nodes.evolution, data.events || [], "No evolution events yet.", (event) => {
+          return `${event.target_type}: ${event.reason}`;
+        });
+      }
+
+      async function refreshAll() {
+        await Promise.all([
+          refreshStatus(),
+          refreshSessions(),
+          refreshMemory(),
+          refreshTasks(),
+          refreshSkills(),
+          refreshAuth(),
+          refreshTrust(),
+          refreshGraph(),
+          refreshEvolution(),
+        ]);
+      }
+
+      nodes.chatForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = nodes.chatInput.value.trim();
+        if (!message) return;
+        nodes.chatInput.value = "";
+        addMessage("user", message);
+        try {
+          const data = await request("/v1/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message, session_id: state.sessionId }),
+          });
+          setSession(data.session_id);
+          addMessage("assistant", data.message);
+          await refreshSessions();
+        } catch (error) {
+          addMessage("assistant", `Error: ${error.message}`);
+        }
+      });
+
+      nodes.memoryForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const text = nodes.memoryInput.value.trim();
+        if (!text) return;
+        nodes.memoryInput.value = "";
+        await request("/v1/memory", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        await refreshMemory();
+      });
+
+      nodes.taskForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const title = nodes.taskTitle.value.trim();
+        if (!title) return;
+        nodes.taskTitle.value = "";
+        const data = await request("/v1/active/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: title, peer_id: "web", sender_id: "web" }),
+        });
+        if (data.message) addMessage("assistant", data.message);
+        await refreshAll();
+      });
+
+      document.querySelector("#new-session").addEventListener("click", () => {
+        setSession(null);
+        renderEmpty("Start a fresh local chat.");
+      });
+      document.querySelector("#refresh").addEventListener("click", () => {
+        refreshAll().catch((error) => setNotice(nodes.weixin, error.message, true));
+      });
+      document.querySelector("#refresh-memory").addEventListener("click", () => {
+        refreshMemory().catch((error) => {
+          nodes.memory.value = error.message;
+        });
+      });
+      document.querySelector("#refresh-tasks").addEventListener("click", () => {
+        refreshTasks().catch((error) => setNotice(nodes.weixin, error.message, true));
+      });
+
+      refreshAll().catch((error) => {
+        nodes.status.textContent = error.message;
+        setNotice(nodes.weixin, error.message, true);
+      });
+    </script>
+  </body>
+</html>

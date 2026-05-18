@@ -1,0 +1,213 @@
+# Navi Requirements
+
+This document captures the current product and implementation decisions so the next development session can continue without re-litigating the basics.
+
+## Product Direction
+
+Navi is a local-first personal AI assistant, inspired by Hermes and OpenClaw, but it is not a clone of either project.
+
+Core positioning:
+
+- Personal assistant first, not an enterprise RAG product.
+- Local-first runtime and state.
+- CLI and local Web are the developer/control surfaces.
+- Personal Weixin/WeChat is the first remote channel.
+- Do not build a general multi-channel gateway in v1.
+
+The project name is `Navi`.
+
+- Repository/package directory: `navi`
+- CLI command: `navi`
+- Python package: `navi`
+- Distribution name: `navi-assistant`
+
+## Explicit Scope
+
+v1 should include:
+
+- CLI chat: `navi chat`
+- Local Web/API: `navi web`
+- Model provider abstraction, with mock and OpenAI-compatible providers.
+- Persistent local state under `.navi/` or `NAVI_HOME`.
+- Markdown memory files plus SQLite session history.
+- Skill discovery from `.navi/skills/*/SKILL.md`.
+- Minimal task store for future scheduled/async work.
+- Personal Weixin setup and long-poll gateway shape.
+
+v1 should not include:
+
+- Telegram, Slack, WhatsApp, Discord, or other remote channels.
+- Enterprise WeChat / WeCom as the primary channel.
+- Official Account / 公众号 callback flow.
+- Team/multi-tenant permission model.
+- Full RAG workbench integration.
+- Complex autonomous tool execution before permissions and tracing are tightened.
+
+## Weixin Requirements
+
+The initial Weixin integration targets personal WeChat via QR login and long polling, following the Hermes Weixin/iLink design.
+
+Required behavior:
+
+- Provide `navi weixin setup` for QR-login setup.
+- Provide `navi weixin run` for long-poll message processing.
+- Store account credentials under `.navi/weixin/accounts/`.
+- Store per-peer context tokens under `.navi/weixin/context-tokens.json`.
+- Route inbound DM text messages into the agent runtime.
+- Send the agent response back to the same peer.
+- Deduplicate inbound messages with a short TTL window.
+- Support DM access policy:
+  - `open`
+  - `allowlist`
+  - `disabled`
+  - `pairing` as a setup-oriented mode
+- Keep group policy config, but default it to `disabled`.
+
+Important limitation:
+
+- v1 only promises DM behavior. Ordinary WeChat group delivery may not work because iLink bot identities often do not receive normal group events. If the upstream does not deliver group events, Navi should diagnose/log that situation rather than pretending group chat is supported.
+
+v1 media policy:
+
+- Text is required.
+- Images, files, voice, video, CDN encryption/decryption, typing indicators, and advanced markdown chunking are later work.
+- The current code should remain structured so those can be added without rewriting the service boundary.
+
+## Architecture Requirements
+
+Keep the code small and explicit:
+
+- `navi.config`: load `.navi/config.yaml`, `.navi/env`, and environment overrides.
+- `navi.provider`: model provider protocol plus mock/OpenAI-compatible implementations.
+- `navi.memory`: Markdown memory and SQLite session store.
+- `navi.skills`: progressive skill discovery from `SKILL.md`.
+- `navi.runtime`: agent turn orchestration.
+- `navi.api`: FastAPI local API and Web entry.
+- `navi.cli`: Typer CLI entrypoint.
+- `navi.weixin`: Weixin client, store, models, and service.
+
+Runtime rules:
+
+- Missing real model credentials should fail clearly for real providers.
+- Mock provider is allowed for local development and tests.
+- The browser/local Web should not hold secrets.
+- Weixin credentials should be persisted with restrictive file permissions when the OS allows it.
+- Any future dangerous tools, especially shell/file write tools, must require an approval policy before being available to remote Weixin messages.
+
+## Public Interfaces
+
+Current CLI surface:
+
+```bash
+navi chat
+navi web
+navi model
+navi memory [TEXT]
+navi skills
+navi weixin setup
+navi weixin run
+navi weixin status
+```
+
+Current API surface:
+
+```text
+GET  /health
+POST /v1/chat
+GET  /v1/sessions
+GET  /v1/sessions/{session_id}
+GET  /v1/memory
+POST /v1/memory
+GET  /v1/skills
+GET  /v1/tasks
+POST /v1/tasks
+PATCH /v1/tasks/{task_id}
+GET  /v1/weixin/status
+GET  /
+```
+
+Current config shape:
+
+```yaml
+model:
+  provider: mock
+  model: mock
+  api_base_url: https://api.openai.com/v1
+  api_key: ""
+weixin:
+  enabled: false
+  account_id: ""
+  token: ""
+  base_url: https://ilinkai.weixin.qq.com
+  dm_policy: open
+  allowed_users: []
+  group_policy: disabled
+  group_allowed_users: []
+  home_channel: ""
+```
+
+Environment overrides:
+
+```text
+NAVI_HOME
+NAVI_MODEL_PROVIDER
+NAVI_MODEL
+NAVI_MODEL_API_BASE_URL
+NAVI_MODEL_API_KEY
+NAVI_WEIXIN_ENABLED
+WEIXIN_ACCOUNT_ID
+WEIXIN_TOKEN
+WEIXIN_BASE_URL
+WEIXIN_DM_POLICY
+WEIXIN_ALLOWED_USERS
+WEIXIN_GROUP_POLICY
+WEIXIN_GROUP_ALLOWED_USERS
+WEIXIN_HOME_CHANNEL
+NAVI_WEIXIN_MOCK
+NAVI_WEIXIN_MOCK_MESSAGE
+```
+
+## Current Implementation Status
+
+Implemented:
+
+- Python package scaffold and CLI.
+- FastAPI app and simple local Web console.
+- Mock and OpenAI-compatible provider shape.
+- Local memory/session/task stores.
+- Skill discovery.
+- Weixin account store, context-token store, deduplication, policy checks, mock client, HTTP client skeleton, and inbound-to-agent service flow.
+- Tests for config, runtime, memory, Weixin policy, deduplication, and context persistence.
+
+Known gaps:
+
+- Real iLink payloads/endpoints need calibration during a live QR-login test.
+- `navi weixin setup` currently polls QR status once; a production setup should loop with timeout and clearer scan/confirm states.
+- Weixin media support is not implemented.
+- Weixin typing indicators are not implemented.
+- No remote-message tool approval policy exists yet.
+- Web UI is intentionally minimal.
+
+## Next Implementation Steps
+
+Recommended next order:
+
+1. Run a live `navi weixin setup` against iLink and adjust QR/status response parsing.
+2. Run `navi weixin run` with a test DM and adjust `getupdates`/`sendmessage` payload parsing.
+3. Add structured logging and visible diagnostics for Weixin connection states.
+4. Add a remote-safe tool policy before enabling shell/file-write tools from Weixin.
+5. Improve local Web to show sessions, Weixin status, memory, and task list.
+6. Add text chunking for long Weixin responses.
+7. Add optional media handling after text DM is reliable.
+
+## Verification Baseline
+
+Before handoff, run:
+
+```bash
+cd navi
+pytest -q
+PYTHONPATH=src python -m compileall src tests
+NAVI_HOME=/tmp/navi-smoke PYTHONPATH=src python -c "from navi.api import create_app; app=create_app(); print(app.title, len(app.routes))"
+NAVI_HOME=/tmp/navi-smoke-weixin NAVI_WEIXIN_MOCK=true PYTHONPATH=src python -c "import asyncio; from navi.paths import ensure_home; from navi.config import load_config; from navi.app_factory import build_runtime; from navi.weixin.service import WeixinService; home=ensure_home(); svc=WeixinService(home=home, config=load_config(home).weixin, runtime=build_runtime(home)); print(asyncio.run(svc.setup()).splitlines()[0])"
+```

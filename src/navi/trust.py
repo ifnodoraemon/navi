@@ -1,0 +1,389 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .tasks import Task
+
+
+LEVELS = ["L0", "L1", "L2", "L3", "L4"]
+LEVEL_LABELS = {
+    "L0": "observe",
+    "L1": "suggest",
+    "L2": "approve_execute",
+    "L3": "trusted_auto",
+    "L4": "broad_delegate",
+}
+
+
+@dataclass(frozen=True)
+class TrustRule:
+    id: str
+    name: str
+    pattern: str
+    project_path: str
+    sender_id: str
+    autonomy_level: str
+    success_count: int
+    failure_count: int
+    data: dict[str, Any]
+    created_at: float
+    updated_at: float
+
+
+@dataclass(frozen=True)
+class TrustDecision:
+    level: str
+    action: str
+    rule_id: str
+    why: str
+    trusted_project: bool
+
+
+class TrustStore:
+    def __init__(self, home: Path):
+        self.home = home
+        self.home.mkdir(parents=True, exist_ok=True)
+        self.db_path = home / "trust.db"
+        self._init_db()
+
+    def _init_db(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trust_rules (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    pattern TEXT NOT NULL,
+                    project_path TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    autonomy_level TEXT NOT NULL,
+                    success_count INTEGER NOT NULL,
+                    failure_count INTEGER NOT NULL,
+                    data TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(pattern, project_path, sender_id)
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trust_sender ON trust_rules(sender_id)")
+
+    def decide(self, *, prompt: str, sender_id: str, workspace: str) -> TrustDecision:
+        rule = self.match(prompt=prompt, sender_id=sender_id, workspace=workspace)
+        if rule is None:
+            return TrustDecision(
+                level="L2",
+                action="approval",
+                rule_id="",
+                why="No matching trust rule yet; Navi will plan first and ask for approval.",
+                trusted_project=False,
+            )
+        action = "auto_execute" if rule.autonomy_level == "L3" and rule.project_path else "approval"
+        if rule.autonomy_level in {"L0", "L1"}:
+            action = "suggest"
+        if rule.autonomy_level == "L4":
+            action = "approval"
+        return TrustDecision(
+            level=rule.autonomy_level,
+            action=action,
+            rule_id=rule.id,
+            why=f"Matched trust rule {rule.name} at {rule.autonomy_level}.",
+            trusted_project=bool(rule.project_path),
+        )
+
+    def match(self, *, prompt: str, sender_id: str, workspace: str) -> TrustRule | None:
+        prompt_lower = prompt.lower()
+        candidates = [rule for rule in self.list(sender_id=sender_id) if rule.pattern.lower() in prompt_lower]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda rule: (LEVELS.index(rule.autonomy_level), rule.updated_at), reverse=True)
+        return candidates[0]
+
+    def record_success(self, task: Task) -> TrustRule:
+        rule = self.get(task.trust_rule_id) if task.trust_rule_id else None
+        if rule is None:
+            rule = self.upsert(
+                name=self._rule_name(task),
+                pattern=self._pattern(task.prompt),
+                project_path=task.workspace if task.autonomy_level == "L3" else "",
+                sender_id=task.sender_id,
+                autonomy_level=task.autonomy_level or "L2",
+                data={"last_task_id": task.id, "auto_created": True},
+            )
+        new_success = rule.success_count + 1
+        new_level = rule.autonomy_level
+        if new_success >= 3 and LEVELS.index(new_level) < LEVELS.index("L3"):
+            new_level = LEVELS[LEVELS.index(new_level) + 1]
+        project_path = rule.project_path or (task.workspace if new_level == "L3" else "")
+        return self._update_counts(
+            rule.id,
+            success_count=new_success,
+            failure_count=rule.failure_count,
+            autonomy_level=new_level,
+            project_path=project_path,
+            reason=f"Successful task {task.id}",
+        )
+
+    def record_failure(self, task: Task) -> TrustRule | None:
+        rule = self.get(task.trust_rule_id) if task.trust_rule_id else self.match(
+            prompt=task.prompt,
+            sender_id=task.sender_id,
+            workspace=task.workspace,
+        )
+        if rule is None:
+            return None
+        current_index = LEVELS.index(rule.autonomy_level)
+        new_level = LEVELS[max(0, current_index - 1)]
+        return self._update_counts(
+            rule.id,
+            success_count=rule.success_count,
+            failure_count=rule.failure_count + 1,
+            autonomy_level=new_level,
+            project_path=rule.project_path,
+            reason=f"Failed task {task.id}",
+        )
+
+    def upsert(
+        self,
+        *,
+        name: str,
+        pattern: str,
+        project_path: str,
+        sender_id: str,
+        autonomy_level: str,
+        data: dict[str, Any] | None = None,
+    ) -> TrustRule:
+        now = time.time()
+        existing = self._get_unique(pattern, project_path, sender_id)
+        payload = data or {}
+        if existing:
+            merged = {**existing.data, **payload}
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE trust_rules
+                    SET name = ?, autonomy_level = ?, data = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (name, autonomy_level, json.dumps(merged, sort_keys=True), now, existing.id),
+                )
+            return self.get(existing.id) or existing
+        rule = TrustRule(
+            id=uuid.uuid4().hex,
+            name=name,
+            pattern=pattern,
+            project_path=project_path,
+            sender_id=sender_id,
+            autonomy_level=autonomy_level,
+            success_count=0,
+            failure_count=0,
+            data=payload,
+            created_at=now,
+            updated_at=now,
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO trust_rules(
+                    id, name, pattern, project_path, sender_id, autonomy_level,
+                    success_count, failure_count, data, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rule.id,
+                    rule.name,
+                    rule.pattern,
+                    rule.project_path,
+                    rule.sender_id,
+                    rule.autonomy_level,
+                    rule.success_count,
+                    rule.failure_count,
+                    json.dumps(rule.data, sort_keys=True),
+                    rule.created_at,
+                    rule.updated_at,
+                ),
+            )
+        return rule
+
+    def get(self, rule_id: str) -> TrustRule | None:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT id, name, pattern, project_path, sender_id, autonomy_level,
+                       success_count, failure_count, data, created_at, updated_at
+                FROM trust_rules WHERE id = ?
+                """,
+                (rule_id,),
+            ).fetchone()
+        return self._rule_from_row(row) if row else None
+
+    def list(self, *, sender_id: str | None = None, limit: int = 100) -> list[TrustRule]:
+        with sqlite3.connect(self.db_path) as conn:
+            if sender_id:
+                rows = conn.execute(
+                    """
+                    SELECT id, name, pattern, project_path, sender_id, autonomy_level,
+                           success_count, failure_count, data, created_at, updated_at
+                    FROM trust_rules WHERE sender_id = ? ORDER BY updated_at DESC LIMIT ?
+                    """,
+                    (sender_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, name, pattern, project_path, sender_id, autonomy_level,
+                           success_count, failure_count, data, created_at, updated_at
+                    FROM trust_rules ORDER BY updated_at DESC LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        return [self._rule_from_row(row) for row in rows]
+
+    def set_level(self, rule_id: str, level: str) -> TrustRule | None:
+        if level not in LEVELS:
+            raise ValueError(f"Unsupported autonomy level: {level}")
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE trust_rules SET autonomy_level = ?, updated_at = ? WHERE id = ?",
+                (level, time.time(), rule_id),
+            )
+        return self.get(rule_id)
+
+    def restore(self, payload: dict[str, Any]) -> TrustRule:
+        rule_id = str(payload["id"])
+        now = time.time()
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        existing = self.get(rule_id)
+        with sqlite3.connect(self.db_path) as conn:
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE trust_rules
+                    SET name = ?, pattern = ?, project_path = ?, sender_id = ?,
+                        autonomy_level = ?, success_count = ?, failure_count = ?,
+                        data = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        payload.get("name", ""),
+                        payload.get("pattern", ""),
+                        payload.get("project_path", ""),
+                        payload.get("sender_id", ""),
+                        payload.get("autonomy_level", "L2"),
+                        int(payload.get("success_count", 0)),
+                        int(payload.get("failure_count", 0)),
+                        json.dumps(data, sort_keys=True),
+                        now,
+                        rule_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO trust_rules(
+                        id, name, pattern, project_path, sender_id, autonomy_level,
+                        success_count, failure_count, data, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        rule_id,
+                        payload.get("name", ""),
+                        payload.get("pattern", ""),
+                        payload.get("project_path", ""),
+                        payload.get("sender_id", ""),
+                        payload.get("autonomy_level", "L2"),
+                        int(payload.get("success_count", 0)),
+                        int(payload.get("failure_count", 0)),
+                        json.dumps(data, sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+        restored = self.get(rule_id)
+        if restored is None:
+            raise RuntimeError(f"Failed to restore trust rule: {rule_id}")
+        return restored
+
+    def delete(self, rule_id: str) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM trust_rules WHERE id = ?", (rule_id,))
+
+    def _get_unique(self, pattern: str, project_path: str, sender_id: str) -> TrustRule | None:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT id, name, pattern, project_path, sender_id, autonomy_level,
+                       success_count, failure_count, data, created_at, updated_at
+                FROM trust_rules
+                WHERE pattern = ? AND project_path = ? AND sender_id = ?
+                """,
+                (pattern, project_path, sender_id),
+            ).fetchone()
+        return self._rule_from_row(row) if row else None
+
+    def _update_counts(
+        self,
+        rule_id: str,
+        *,
+        success_count: int,
+        failure_count: int,
+        autonomy_level: str,
+        project_path: str,
+        reason: str,
+    ) -> TrustRule:
+        rule = self.get(rule_id)
+        if rule is None:
+            raise ValueError(f"Unknown trust rule: {rule_id}")
+        data = {**rule.data, "last_reason": reason}
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE trust_rules
+                SET success_count = ?, failure_count = ?, autonomy_level = ?,
+                    project_path = ?, data = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    success_count,
+                    failure_count,
+                    autonomy_level,
+                    project_path,
+                    json.dumps(data, sort_keys=True),
+                    time.time(),
+                    rule_id,
+                ),
+            )
+        return self.get(rule_id) or rule
+
+    @staticmethod
+    def _rule_from_row(row: tuple) -> TrustRule:
+        return TrustRule(
+            id=row[0],
+            name=row[1],
+            pattern=row[2],
+            project_path=row[3],
+            sender_id=row[4],
+            autonomy_level=row[5],
+            success_count=row[6],
+            failure_count=row[7],
+            data=json.loads(row[8] or "{}"),
+            created_at=row[9],
+            updated_at=row[10],
+        )
+
+    @staticmethod
+    def _pattern(prompt: str) -> str:
+        words = [word.strip(".,:;!?").lower() for word in prompt.split() if len(word.strip(".,:;!?")) > 3]
+        return " ".join(words[:3]) or prompt[:24].lower() or "task"
+
+    @staticmethod
+    def _rule_name(task: Task) -> str:
+        return f"{task.sender_id or 'local'}:{TrustStore._pattern(task.prompt)}"
