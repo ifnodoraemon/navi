@@ -95,6 +95,9 @@ Runtime rules:
 - The browser/local Web should not hold secrets.
 - Weixin credentials should be persisted with restrictive file permissions when the OS allows it.
 - Any future dangerous tools, especially shell/file write tools, must require an approval policy before being available to remote Weixin messages.
+- Long-context operation must reload durable constraints, trust state, approvals, and relevant memory from stores before execution; it must not rely only on the current prompt window or a lossy summary.
+- Memory implementation should evolve toward typed, scoped, provenance-bearing stores: working, constraint, episodic, semantic, procedural, preference, negative, and skill memory.
+- Memory retrieval must be goal-directed and explainable; semantic similarity alone is not a sufficient recall policy.
 
 ## Public Interfaces
 

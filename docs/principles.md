@@ -87,6 +87,8 @@ Memory is not a text dump. Uncontrolled memory creates drift, stale recalls, and
 
 Navi's memory should be more innovative than markdown files or generic vector recall.
 
+The design should combine human memory principles with LLM constraints. Human memory is layered, cue-driven, capacity-limited, imperfect, and shaped by repeated use. LLM context is long but brittle: it overweights recent text, drops negations during summarization, confuses similar recalls, and treats stale statements as current facts unless forced to verify them. Navi should compensate for both sets of weaknesses.
+
 - Treat memory as typed state: identity, preference, project, environment, procedure, constraint, decision, artifact, relationship, and observation.
 - Every memory item needs provenance: source event, author, confidence, scope, created time, last verified time, and expiry policy.
 - Recall should be goal-directed. Retrieve what helps the current task, not whatever is semantically nearby.
@@ -95,6 +97,8 @@ Navi's memory should be more innovative than markdown files or generic vector re
 - Memory must support negative knowledge: things the user rejected, things that failed, and constraints that must not be repeated.
 - Memory writes must be reviewable and reversible.
 - Memory is not the policy engine. Trust, approval, and safety constraints must live in explicit stores.
+- The memory system must preserve user constraints and relevant long-term memory even when the conversation is long or summarized.
+- Retrieval must prefer current task relevance, recency, verified durability, and constraint priority over raw semantic similarity.
 
 ### 10. Self-Evolution Must Be Governed
 
@@ -189,6 +193,30 @@ Memory promotion should follow a pipeline:
 7. Retire: mark stale, contradicted, or revoked memories inactive.
 
 The key innovation is not vector search. It is memory governance plus agentic use: the assistant should know what it knows, why it knows it, when it last verified it, and whether it is allowed to act on it.
+
+## Memory Control System
+
+Navi should implement memory as a control system rather than a passive store:
+
+- `working memory`: current goal, active constraints, plan, unresolved questions, and approval state.
+- `constraint memory`: durable must/must-not rules, safety boundaries, user instructions, and project principles.
+- `episodic memory`: append-only conversations, tasks, tool results, and execution traces.
+- `semantic memory`: verified facts about users, projects, providers, connectors, services, and environments.
+- `procedural memory`: reusable ways to do work, promoted only after evidence and scoped by context.
+- `preference memory`: user style and workflow preferences, scoped and revocable.
+- `negative memory`: rejected ideas, failed approaches, hazards, and "do not repeat" lessons.
+- `skill memory`: versioned playbooks or capabilities that can be inspected, tested, and rolled back.
+
+Long-context handling must follow these rules:
+
+- Constraint memory has priority over transcript completeness.
+- Before execution, reload constraint, trust, and approval state from durable stores instead of trusting the prompt window.
+- Summaries must preserve negations, denials, pending approvals, "do not" instructions, and unresolved questions.
+- Similar memories are candidates, not facts.
+- Stale environment facts must be reverified before action.
+- User corrections should create negative memory or contradiction markers.
+- A memory may influence an answer only if its scope and confidence match the current task.
+- The agent should be able to show which memories influenced an answer or action.
 
 ## References
 
