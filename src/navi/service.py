@@ -15,7 +15,7 @@ class ServiceUnit:
 def build_systemd_user_unit(*, project_dir: Path, navi_home: Path | None = None) -> str:
     project_dir = project_dir.resolve()
     src_dir = project_dir / "src"
-    python = Path(sys.executable).resolve()
+    python = Path(sys.executable)
     env_lines = []
     if src_dir.exists():
         env_lines.append(f"Environment=PYTHONPATH={src_dir}")
