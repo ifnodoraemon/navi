@@ -12,6 +12,7 @@ from .app_factory import build_runtime
 from .config import load_config, write_default_config
 from .evolution import EvolutionEngine, EvolutionLedger
 from .graph import GraphStore
+from .memory import MemoryStore
 from .paths import ensure_home
 from .service import build_systemd_user_unit, install_systemd_user_unit
 from .trust import TrustStore
@@ -24,12 +25,14 @@ graph_app = typer.Typer(help="Personal graph")
 trust_app = typer.Typer(help="Trust contract")
 evolution_app = typer.Typer(help="Evolution ledger")
 service_app = typer.Typer(help="System service helpers")
+memory_app = typer.Typer(help="Typed memory control system")
 app.add_typer(weixin_app, name="weixin")
 app.add_typer(auth_app, name="auth")
 app.add_typer(graph_app, name="graph")
 app.add_typer(trust_app, name="trust")
 app.add_typer(evolution_app, name="evolution")
 app.add_typer(service_app, name="service")
+app.add_typer(memory_app, name="memory")
 
 
 @app.command()
@@ -75,17 +78,6 @@ def model() -> None:
 
 
 @app.command()
-def memory(text: str | None = None) -> None:
-    """Read or append persistent memory."""
-    runtime = build_runtime(ensure_home())
-    if text:
-        runtime.memory.append_memory(text)
-        typer.echo("memory appended")
-    else:
-        typer.echo(runtime.memory.read_memory() or "(empty)")
-
-
-@app.command()
 def skills() -> None:
     """List installed skills."""
     runtime = build_runtime(ensure_home())
@@ -95,6 +87,58 @@ def skills() -> None:
         return
     for skill in found:
         typer.echo(f"{skill.name}: {skill.description}")
+
+
+@memory_app.command("add")
+def memory_add(
+    memory_type: str,
+    content: str,
+    scope: str = "global",
+    source: str = "manual",
+    status: str = "proposed",
+    confidence: float = 0.5,
+) -> None:
+    """Add a typed memory item."""
+    item = MemoryStore(ensure_home()).add_item(
+        memory_type,
+        content,
+        scope=scope,
+        source=source,
+        status=status,
+        confidence=confidence,
+    )
+    typer.echo(item.id)
+
+
+@memory_app.command("list")
+def memory_list(
+    memory_type: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> None:
+    """List typed memory items as facts."""
+    items = MemoryStore(ensure_home()).list_items(memory_type=memory_type, status=status, limit=limit)
+    for item in items:
+        typer.echo(
+            f"{item.id} {item.type} {item.status} scope={item.scope} "
+            f"confidence={item.confidence:.2f} source={item.source} {item.content}"
+        )
+
+
+@memory_app.command("recall")
+def memory_recall(query: str, limit: int = 8) -> None:
+    """Recall goal-relevant memory facts."""
+    text = MemoryStore(ensure_home()).render_context(query, limit=limit)
+    typer.echo(text or "(empty)")
+
+
+@memory_app.command("revoke")
+def memory_revoke(item_id: str) -> None:
+    """Mark a memory item revoked."""
+    item = MemoryStore(ensure_home()).set_status(item_id, "revoked")
+    if item is None:
+        raise typer.BadParameter("memory item not found")
+    typer.echo(f"{item.id} {item.status}")
 
 
 @auth_app.command("status")

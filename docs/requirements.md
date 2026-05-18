@@ -31,7 +31,7 @@ v1 should include:
 - Local Web/API: `navi web`
 - Model provider abstraction, with mock and OpenAI-compatible providers.
 - Persistent local state under `.navi/` or `NAVI_HOME`.
-- Markdown memory files plus SQLite session history.
+- Typed memory control system plus SQLite session history.
 - Skill discovery from `.navi/skills/*/SKILL.md`.
 - Minimal task store for future scheduled/async work.
 - Personal Weixin setup and long-poll gateway shape.
@@ -98,6 +98,9 @@ Runtime rules:
 - Long-context operation must reload durable constraints, trust state, approvals, and relevant memory from stores before execution; it must not rely only on the current prompt window or a lossy summary.
 - Memory implementation should evolve toward typed, scoped, provenance-bearing stores: working, constraint, episodic, semantic, procedural, preference, negative, and skill memory.
 - Memory retrieval must be goal-directed and explainable; semantic similarity alone is not a sufficient recall policy.
+- Extension boundaries must be explicit: skills provide promptable procedures, plugins provide installed capabilities/integrations, and hooks observe or gate lifecycle events.
+- Anything with credentials, network calls, filesystem mutation, daemon behavior, providers, or connector surfaces must be a plugin rather than a skill.
+- Anything that runs at task/message/tool/approval/memory lifecycle boundaries must be a hook rather than hidden inline logic.
 
 ## Public Interfaces
 
@@ -107,7 +110,10 @@ Current CLI surface:
 navi chat
 navi web
 navi model
-navi memory [TEXT]
+navi memory add TYPE CONTENT
+navi memory list
+navi memory recall QUERY
+navi memory revoke ITEM_ID
 navi skills
 navi weixin setup
 navi weixin run

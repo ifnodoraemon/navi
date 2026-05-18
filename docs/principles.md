@@ -45,7 +45,23 @@ The core runtime must not know Weixin, Feishu, WeCom, Telegram, Slack, or any fu
 - A connector exposes facts and affordances; the agent decides how to use them.
 - Adding a connector must not require rewriting the core prompt.
 
-### 5. Runtime Facts Over Hardcoding
+### 5. Skills, Plugins, and Hooks Have Separate Jobs
+
+Navi must keep extension boundaries explicit.
+
+- `skill`: teaches the agent how to do something. It is promptable knowledge, a playbook, or a reusable procedure. A skill should not own long-running processes, credentials, or hidden side effects.
+- `plugin`: adds capabilities or integrations. It may provide tools, connectors, providers, schemas, commands, storage adapters, or UI surfaces. A plugin owns code and must declare permissions.
+- `hook`: observes or gates lifecycle events. It can validate, enrich, block, log, or trigger follow-up work around events such as before-task, after-tool, before-approval, after-message, or before-memory-write.
+- Skills are for behavior guidance.
+- Plugins are for capability installation.
+- Hooks are for event policy and orchestration.
+- A feature that needs credentials, network access, filesystem mutation, or a daemon is a plugin, not a skill.
+- A feature that only changes how the agent reasons or performs a workflow is a skill, unless it needs new code execution.
+- A feature that must run at a lifecycle boundary is a hook, not inline agent logic.
+- Hooks must return facts or decisions, not general advice.
+- Plugins and hooks must be inspectable from CLI before being exposed to connectors.
+
+### 6. Runtime Facts Over Hardcoding
 
 Navi should discover and inject current facts instead of assuming them.
 
@@ -54,7 +70,7 @@ Navi should discover and inject current facts instead of assuming them.
 - If a fact is unknown, say it is unknown narrowly.
 - Never convert one local deployment observation into a global product rule.
 
-### 6. Audit First
+### 7. Audit First
 
 Any action that can affect the user's machine, accounts, remote services, repository, files, credentials, or money must be traceable.
 
@@ -64,7 +80,7 @@ Any action that can affect the user's machine, accounts, remote services, reposi
 - Store results separately from plans.
 - Preserve enough context to answer: who asked, what was decided, what ran, what changed, and why.
 
-### 7. Approval Is State, Not Vibes
+### 8. Approval Is State, Not Vibes
 
 User intent in chat is not the same as an executable permission grant.
 
@@ -73,7 +89,7 @@ User intent in chat is not the same as an executable permission grant.
 - Approval source of truth must be inspectable and repairable.
 - Approval failures must say which state is missing, not pretend the agent has no local capability.
 
-### 8. Memory Must Be Governed
+### 9. Memory Must Be Governed
 
 Memory is not a text dump. Uncontrolled memory creates drift, stale recalls, and unsafe behavior.
 
@@ -83,7 +99,7 @@ Memory is not a text dump. Uncontrolled memory creates drift, stale recalls, and
 - Old or conflicting memories must be surfaced as conflicts, not silently merged.
 - Background learning should be separate from foreground task execution.
 
-### 9. Memory Should Be an Operating System, Not a Notebook
+### 10. Memory Should Be an Operating System, Not a Notebook
 
 Navi's memory should be more innovative than markdown files or generic vector recall.
 
@@ -100,7 +116,7 @@ The design should combine human memory principles with LLM constraints. Human me
 - The memory system must preserve user constraints and relevant long-term memory even when the conversation is long or summarized.
 - Retrieval must prefer current task relevance, recency, verified durability, and constraint priority over raw semantic similarity.
 
-### 10. Self-Evolution Must Be Governed
+### 11. Self-Evolution Must Be Governed
 
 Navi should evolve, but never mutate itself silently.
 
@@ -113,7 +129,7 @@ Navi should evolve, but never mutate itself silently.
 - The agent must distinguish between user preference, environmental fact, one-off workaround, and reusable skill before evolving.
 - Evolution must never create broader permissions as a side effect.
 
-### 11. Context Compression Must Preserve Constraints
+### 12. Context Compression Must Preserve Constraints
 
 Long-running agents fail when compression drops safety instructions or user constraints.
 
@@ -122,7 +138,7 @@ Long-running agents fail when compression drops safety instructions or user cons
 - Before destructive execution, reload durable constraints from stores.
 - If constraints conflict or are missing, stop and ask.
 
-### 12. Least Capability by Default
+### 13. Least Capability by Default
 
 Agentic does not mean broad access by default.
 
@@ -131,7 +147,7 @@ Agentic does not mean broad access by default.
 - Prefer allowlists over denylists for dangerous tools.
 - Secrets must be redacted in prompts, logs, Web views, and connector replies.
 
-### 13. Tool Calling Must Be Deterministic
+### 14. Tool Calling Must Be Deterministic
 
 LLM tool calling is fragile across providers, templates, streaming modes, and parsers.
 
@@ -141,7 +157,7 @@ LLM tool calling is fragile across providers, templates, streaming modes, and pa
 - A tool call that cannot be parsed is a failed tool call, not a chat answer.
 - Streaming must not be enabled for tool paths unless parser behavior is verified.
 
-### 14. Environment Truth Is Local
+### 15. Environment Truth Is Local
 
 The agent must not hallucinate the user's environment.
 
@@ -165,6 +181,9 @@ Navi's architecture should keep these boundaries:
 - `tools/`: fact-only probes and controlled actions.
 - `capabilities/`: stable CLI contracts.
 - `connectors/`: per-channel affordance injection.
+- `skills/`: promptable procedures and behavior guidance.
+- `plugins/`: installed code capabilities, integrations, providers, and connector surfaces.
+- `hooks/`: lifecycle gates and observers.
 - `agent/`: intent, planning, policy, approval, and reflection.
 - `memory/graph/trust/evolution`: typed, auditable learning and constraint stores.
 - `runtime prompt`: composed from current facts, not hand-written assumptions.

@@ -36,6 +36,39 @@ def test_memory_append_and_read(tmp_path):
     assert "Prefers concise replies" in runtime.memory.read_memory()
 
 
+def test_memory_recall_prioritizes_constraints_and_relevance(tmp_path):
+    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    runtime.memory.add_item(
+        "constraint",
+        "Never run destructive git commands without explicit approval.",
+        source="test",
+        status="active",
+        confidence=1.0,
+    )
+    runtime.memory.add_item(
+        "fact",
+        "The Navi project lives under /home/ifnodoraemon/myagent/navi.",
+        source="test",
+        status="active",
+        confidence=0.9,
+        scope="project:navi",
+    )
+    runtime.memory.add_item(
+        "fact",
+        "The unrelated cooking notebook uses grams.",
+        source="test",
+        status="active",
+        confidence=0.9,
+        scope="project:cooking",
+    )
+
+    rendered = runtime.memory.render_context("inspect navi project git status")
+
+    assert "Never run destructive git commands" in rendered
+    assert "Navi project lives" in rendered
+    assert "cooking notebook" not in rendered
+
+
 @pytest.mark.asyncio
 async def test_runtime_system_prompt_includes_local_deployment_contract(tmp_path):
     provider = RecordingProvider()
@@ -93,3 +126,38 @@ async def test_runtime_system_prompt_accepts_connector_context(tmp_path):
     assert "Surface: Test connector" in system
     assert "Fact: test connector is active" in system
     assert "Available action: Use /do <request> to submit tracked local actions." in system
+
+
+@pytest.mark.asyncio
+async def test_runtime_system_prompt_uses_goal_directed_memory(tmp_path):
+    provider = RecordingProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    runtime.memory.add_item(
+        "constraint",
+        "Do not forget approval state during long context.",
+        source="test",
+        status="active",
+        confidence=1.0,
+    )
+    runtime.memory.add_item(
+        "fact",
+        "The Navi deployment uses systemd user service.",
+        source="test",
+        status="active",
+        confidence=0.9,
+    )
+    runtime.memory.add_item(
+        "fact",
+        "The unrelated archive is stored on cold media.",
+        source="test",
+        status="active",
+        confidence=0.9,
+    )
+
+    await runtime.chat("检查 navi deployment service 状态")
+
+    system = provider.messages[0].content
+    assert "Memory recall:" in system
+    assert "approval state" in system
+    assert "systemd user service" in system
+    assert "cold media" not in system

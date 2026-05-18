@@ -32,7 +32,7 @@ class AgentRuntime:
         session_id = session_id or self.memory.new_session_id()
         self.memory.add_message(session_id, "user", user_text)
 
-        messages = self._build_messages(session_id, prompt_context=prompt_context)
+        messages = self._build_messages(session_id, user_text=user_text, prompt_context=prompt_context)
         answer = await self.provider.complete(messages)
         self.memory.add_message(session_id, "assistant", answer)
         return AssistantReply(session_id=session_id, content=answer)
@@ -41,9 +41,10 @@ class AgentRuntime:
         self,
         session_id: str,
         *,
+        user_text: str = "",
         prompt_context: PromptContext | None = None,
     ) -> list[ChatMessage]:
-        memory_context = self.memory.read_memory()
+        memory_context = self.memory.render_context(user_text)
         skills_context = self.skills.render_prompt()
 
         messages = [
