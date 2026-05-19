@@ -98,6 +98,25 @@ async def test_weixin_plain_schedule_message_creates_watch(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_weixin_plain_schedule_with_period_creates_watch(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
+    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    service = WeixinService(home=tmp_path, config=WeixinConfig(), runtime=runtime)
+    account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
+
+    handled = await service.handle_update(
+        account,
+        WeixinUpdate(message_id="msg-watch-period", peer_id="peer", sender_id="sender", text="每天晚上上一个通识课给我"),
+    )
+
+    assert handled is True
+    watches = service.active.tasks.list_watches()
+    assert watches[0].cron == "0 21 * * *"
+    assert watches[0].prompt == "上一个通识课给我"
+    assert "Watch" in service.client.sent[-1]["text"]
+
+
+@pytest.mark.asyncio
 async def test_weixin_plain_local_action_creates_task(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     monkeypatch.setenv("NAVI_CODEX_MOCK", "true")

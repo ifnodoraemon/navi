@@ -32,6 +32,14 @@ LOCAL_ACTION_VERBS = (
     "更新",
 )
 QUESTION_MARKERS = ("吗", "么", "什么", "为什么", "怎么", "如何", "?", "？")
+PERIOD_DEFAULT_HOURS = {
+    "凌晨": 0,
+    "早上": 8,
+    "上午": 9,
+    "中午": 12,
+    "下午": 15,
+    "晚上": 21,
+}
 
 
 class ActionRouter:
@@ -62,11 +70,17 @@ class ActionRouter:
             r"(?:每天|每日|天天).{0,8}?(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{1,2})(?:\s*[点:：]\s*(\d{1,2})?)?",
             text,
         )
-        if not match:
-            return None
-        period = match.group(1) or ""
-        hour = int(match.group(2))
-        minute = int(match.group(3) or 0)
+        if match:
+            period = match.group(1) or ""
+            hour = int(match.group(2))
+            minute = int(match.group(3) or 0)
+        else:
+            match = re.search(r"(?:每天|每日|天天)\s*(凌晨|早上|上午|中午|下午|晚上)", text)
+            if not match:
+                return None
+            period = match.group(1)
+            hour = PERIOD_DEFAULT_HOURS[period]
+            minute = 0
         if hour > 23 or minute > 59:
             return None
         if period in {"下午", "晚上"} and 1 <= hour <= 11:
