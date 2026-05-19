@@ -13,6 +13,10 @@ from .models import WeixinAccount
 
 
 class WeixinStore:
+    @staticmethod
+    def connector_name() -> str:
+        return Path(__file__).parent.name
+
     def __init__(self, home: Path):
         self.dir = home / "weixin" / "accounts"
         self.dir.mkdir(parents=True, exist_ok=True)

@@ -350,8 +350,8 @@
             <div class="task-list" id="tasks"></div>
           </div>
           <div class="panel">
-            <h2>Weixin</h2>
-            <div class="notice small" id="weixin">Loading Weixin status...</div>
+            <h2>Connectors</h2>
+            <div class="notice small" id="connector">Loading connector status...</div>
           </div>
           <div class="panel">
             <h2>Skills</h2>
@@ -377,10 +377,16 @@
       </div>
     </main>
     <script>
+      window.NAVI_BOOTSTRAP = __NAVI_BOOTSTRAP__;
+
       const state = {
         sessionId: null,
         sessions: [],
       };
+      const bootstrap = window.NAVI_BOOTSTRAP || {};
+      const apiPaths = bootstrap.apiPaths || {};
+      const connectors = bootstrap.connectors || [];
+      const localSurface = bootstrap.localSurface || "";
 
       const nodes = {
         status: document.querySelector("#status"),
@@ -396,7 +402,7 @@
         taskForm: document.querySelector("#task-form"),
         taskTitle: document.querySelector("#task-title"),
         tasks: document.querySelector("#tasks"),
-        weixin: document.querySelector("#weixin"),
+        connector: document.querySelector("#connector"),
         skills: document.querySelector("#skills"),
         auth: document.querySelector("#auth"),
         trust: document.querySelector("#trust"),
@@ -411,6 +417,30 @@
           throw new Error(`${response.status} ${response.statusText}: ${detail}`);
         }
         return response.json();
+      }
+
+      function apiPath(name, params = {}) {
+        const template = apiPaths[name];
+        if (!template) throw new Error(`missing api path: ${name}`);
+        return template.replace(/\{([^}]+)\}/g, (_, key) => {
+          if (!(key in params)) throw new Error(`missing api path parameter: ${key}`);
+          return encodeURIComponent(params[key]);
+        });
+      }
+
+      function callApi(name, options = {}, params = {}) {
+        return request(apiPath(name, params), options);
+      }
+
+      function currentConnector() {
+        return connectors[0] || null;
+      }
+
+      function formatFactValue(value) {
+        if (Array.isArray(value)) return value.join(", ") || "-";
+        if (value === null || value === undefined || value === "") return "-";
+        if (typeof value === "object") return JSON.stringify(value);
+        return String(value);
       }
 
       function setNotice(node, text, isError = false) {
@@ -475,16 +505,19 @@
       }
 
       async function refreshStatus() {
-        const [healthData, wxData] = await Promise.all([
-          request("/health"),
-          request("/v1/weixin/status"),
+        const connector = currentConnector();
+        const [healthData, connectorData] = await Promise.all([
+          callApi("health"),
+          connector
+            ? callApi("connector_status", {}, { connector_name: connector.name })
+            : Promise.resolve(null),
         ]);
         nodes.status.replaceChildren();
         const rows = [
           ["Home", healthData.home],
           ["Model", healthData.model_provider],
-          ["Weixin", wxData.configured ? "configured" : "not configured"],
-          ["DM policy", wxData.dm_policy],
+          ["Connector", connector ? connector.name : "none"],
+          ["Connector status", connectorData && connectorData.configured ? "configured" : "not configured"],
         ];
         for (const [label, value] of rows) {
           const row = document.createElement("div");
@@ -497,19 +530,23 @@
           nodes.status.appendChild(row);
         }
         setNotice(
-          nodes.weixin,
-          `configured=${wxData.configured}\naccount_id=${wxData.account_id || "-"}\nsaved_accounts=${(wxData.saved_accounts || []).join(", ") || "-"}\ndm_policy=${wxData.dm_policy}\ngroup_policy=${wxData.group_policy}`
+          nodes.connector,
+          connectorData
+            ? Object.entries(connectorData)
+                .map(([key, value]) => `${key}=${formatFactValue(value)}`)
+                .join("\n")
+            : "No connector specs loaded."
         );
       }
 
       async function refreshSessions() {
-        const data = await request("/v1/sessions");
+        const data = await callApi("sessions");
         state.sessions = data.sessions || [];
         renderSessions();
       }
 
       async function loadSession(sessionId) {
-        const data = await request(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+        const data = await callApi("session", {}, { session_id: sessionId });
         setSession(sessionId);
         clearMessages();
         for (const message of data.messages || []) {
@@ -521,12 +558,12 @@
       }
 
       async function refreshMemory() {
-        const data = await request("/v1/memory");
+        const data = await callApi("memory");
         nodes.memory.value = data.memory || "";
       }
 
       async function refreshTasks() {
-        const data = await request("/v1/tasks");
+        const data = await callApi("tasks");
         nodes.tasks.replaceChildren();
         const tasks = data.tasks || [];
         if (tasks.length === 0) {
@@ -562,7 +599,7 @@
             approve.className = "secondary";
             approve.textContent = "Approve";
             approve.addEventListener("click", async () => {
-              await request(`/v1/tasks/${encodeURIComponent(task.id)}/approve`, { method: "POST" });
+              await callApi("task_approve", { method: "POST" }, { task_id: task.id });
               await refreshAll();
             });
             actions.appendChild(approve);
@@ -572,7 +609,7 @@
             run.type = "button";
             run.textContent = "Run";
             run.addEventListener("click", async () => {
-              await request("/v1/tasks/process", { method: "POST" });
+              await callApi("tasks_process", { method: "POST" });
               await refreshAll();
             });
             actions.appendChild(run);
@@ -589,7 +626,7 @@
       }
 
       async function refreshSkills() {
-        const data = await request("/v1/skills");
+        const data = await callApi("skills");
         nodes.skills.replaceChildren();
         const skills = data.skills || [];
         if (skills.length === 0) {
@@ -625,28 +662,28 @@
       }
 
       async function refreshAuth() {
-        const data = await request("/v1/auth/status");
+        const data = await callApi("auth_status");
         renderList(nodes.auth, data.providers || [], "No providers found.", (item) => {
           return `${item.name}: ${item.installed && item.authenticated ? "ok" : "missing"} ${item.version || ""}`;
         });
       }
 
       async function refreshTrust() {
-        const data = await request("/v1/trust-rules");
+        const data = await callApi("trust_rules");
         renderList(nodes.trust, data.trust_rules || [], "No trust rules yet.", (rule) => {
           return `${rule.autonomy_level} ${rule.name} success=${rule.success_count} failure=${rule.failure_count}`;
         });
       }
 
       async function refreshGraph() {
-        const data = await request("/v1/graph");
+        const data = await callApi("graph");
         renderList(nodes.graph, data.nodes || [], "No graph nodes yet.", (node) => {
           return `${node.type}: ${node.name}`;
         });
       }
 
       async function refreshEvolution() {
-        const data = await request("/v1/evolution-events");
+        const data = await callApi("evolution_events");
         renderList(nodes.evolution, data.events || [], "No evolution events yet.", (event) => {
           return `${event.target_type}: ${event.reason}`;
         });
@@ -673,7 +710,7 @@
         nodes.chatInput.value = "";
         addMessage("user", message);
         try {
-          const data = await request("/v1/chat", {
+          const data = await callApi("chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ message, session_id: state.sessionId }),
@@ -691,7 +728,7 @@
         const text = nodes.memoryInput.value.trim();
         if (!text) return;
         nodes.memoryInput.value = "";
-        await request("/v1/memory", {
+        await callApi("memory", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text }),
@@ -704,10 +741,10 @@
         const title = nodes.taskTitle.value.trim();
         if (!title) return;
         nodes.taskTitle.value = "";
-        const data = await request("/v1/active/tasks", {
+        const data = await callApi("active_tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: title, peer_id: "web", sender_id: "web" }),
+          body: JSON.stringify({ prompt: title, peer_id: localSurface, sender_id: localSurface }),
         });
         if (data.message) addMessage("assistant", data.message);
         await refreshAll();
@@ -718,7 +755,7 @@
         renderEmpty("Start a fresh local chat.");
       });
       document.querySelector("#refresh").addEventListener("click", () => {
-        refreshAll().catch((error) => setNotice(nodes.weixin, error.message, true));
+        refreshAll().catch((error) => setNotice(nodes.connector, error.message, true));
       });
       document.querySelector("#refresh-memory").addEventListener("click", () => {
         refreshMemory().catch((error) => {
@@ -726,12 +763,12 @@
         });
       });
       document.querySelector("#refresh-tasks").addEventListener("click", () => {
-        refreshTasks().catch((error) => setNotice(nodes.weixin, error.message, true));
+        refreshTasks().catch((error) => setNotice(nodes.connector, error.message, true));
       });
 
       refreshAll().catch((error) => {
         nodes.status.textContent = error.message;
-        setNotice(nodes.weixin, error.message, true);
+        setNotice(nodes.connector, error.message, true);
       });
     </script>
   </body>

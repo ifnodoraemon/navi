@@ -46,3 +46,31 @@ def test_source_does_not_define_behavior_with_natural_language_keywords():
                 offenders.append(f"{path.relative_to(root)}: {keyword}")
 
     assert offenders == []
+
+
+def test_runtime_source_does_not_embed_declarative_defaults():
+    root = Path(__file__).resolve().parents[1] / "src" / "navi"
+    banned = (
+        "/v1/",
+        "/health",
+        "127.0.0.1",
+        "8765",
+        "https://ilinkai.weixin.qq.com",
+        "deepseek-v4-pro",
+        "navi.service",
+        "connector.weixin",
+    )
+    offenders: list[str] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if "__pycache__" in path.parts or "specs" in path.parts:
+            continue
+        if path.suffix not in {".py", ".html"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for value in banned:
+            if value in text:
+                offenders.append(f"{path.relative_to(root)}: {value}")
+
+    assert offenders == []

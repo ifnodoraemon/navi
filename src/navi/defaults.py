@@ -1,8 +1,20 @@
 from __future__ import annotations
 
-DEFAULT_SERVICE_NAME = "navi.service"
-DEFAULT_WEIXIN_BASE_URL = "https://ilinkai.weixin.qq.com"
-DEFAULT_EXECUTION_PROVIDER = "codex"
-DEFAULT_EXECUTION_TIMEOUT_SECONDS = 120.0
-DEFAULT_WEB_HOST = "127.0.0.1"
-DEFAULT_WEB_PORT = 8765
+from .spec_loader import load_spec
+
+_DEFAULTS = load_spec("defaults.yaml")
+
+DEFAULT_SERVICE_NAME = str(_DEFAULTS["service_name"])
+DEFAULT_WEIXIN_BASE_URL = str(_DEFAULTS["weixin_base_url"])
+DEFAULT_EXECUTION_PROVIDER = str(_DEFAULTS["execution_provider"])
+DEFAULT_EXECUTION_TIMEOUT_SECONDS = float(_DEFAULTS["execution_timeout_seconds"])
+DEFAULT_EXECUTION_MOCK = bool(_DEFAULTS["execution_mock"])
+DEFAULT_MODEL_PROVIDER = str(_DEFAULTS["model_provider"])
+DEFAULT_MODEL_MODEL = str(_DEFAULTS["model_model"])
+DEFAULT_WEIXIN_ENABLED = bool(_DEFAULTS["weixin_enabled"])
+DEFAULT_WEIXIN_DM_POLICY = str(_DEFAULTS["weixin_dm_policy"])
+DEFAULT_WEIXIN_GROUP_POLICY = str(_DEFAULTS["weixin_group_policy"])
+DEFAULT_RUNTIME_WEB_URL = str(_DEFAULTS["runtime_web_url"])
+DEFAULT_LOCAL_SURFACE = str(_DEFAULTS["local_surface"])
+DEFAULT_WEB_HOST = str(_DEFAULTS["web_host"])
+DEFAULT_WEB_PORT = int(_DEFAULTS["web_port"])

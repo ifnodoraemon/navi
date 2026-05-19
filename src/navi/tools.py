@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_config
+from .connector_specs import get_connector_spec
 from .fact_tools import service_facts, task_facts
 from .weixin.store import WeixinStore
 
@@ -114,6 +115,7 @@ class ToolRegistry:
 def build_core_tool_registry(home: Path, *, project_dir: Path | None = None) -> ToolRegistry:
     registry = ToolRegistry(home=home, project_dir=project_dir)
     config = load_config(home)
+    weixin_spec = get_connector_spec(WeixinStore.connector_name())
     registry.register(
         ToolSpec(
             name="service.status",
@@ -149,12 +151,12 @@ def build_core_tool_registry(home: Path, *, project_dir: Path | None = None) -> 
     )
     registry.register(
         ToolSpec(
-            name="connector.weixin.status",
-            description="Return Weixin connector configuration facts without secrets.",
+            name=weixin_spec.status_tool,
+            description=weixin_spec.status_description,
             input_schema={"type": "object", "properties": {}},
             output_schema={"type": "object"},
         ),
-        lambda args: _weixin_status(home),
+        lambda args: _weixin_status(home, tool_name=weixin_spec.status_tool),
     )
     registry.register(
         ToolSpec(
@@ -221,7 +223,7 @@ def _provider_config(home: Path) -> ToolResult:
     )
 
 
-def _weixin_status(home: Path) -> ToolResult:
+def _weixin_status(home: Path, *, tool_name: str) -> ToolResult:
     config = load_config(home)
     store = WeixinStore(home)
     status = {
@@ -231,7 +233,7 @@ def _weixin_status(home: Path) -> ToolResult:
         "dm_policy": config.weixin.dm_policy,
         "group_policy": config.weixin.group_policy,
     }
-    return ToolResult(tool="connector.weixin.status", ok=True, facts=status)
+    return ToolResult(tool=tool_name, ok=True, facts=status)
 
 
 def _filesystem_list(args: dict[str, Any]) -> ToolResult:

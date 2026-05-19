@@ -1,0 +1,24 @@
+- name: mock
+  aliases:
+    - local-mock
+  kind: mock
+  default_model: mock
+  default_base_url: ""
+  api_key_env: []
+- name: openai-compatible
+  aliases:
+    - openai
+  kind: openai-compatible
+  default_model: gpt-4o-mini
+  default_base_url: https://api.openai.com/v1
+  api_key_env:
+    - NAVI_MODEL_API_KEY
+    - OPENAI_API_KEY
+- name: deepseek
+  aliases: []
+  kind: openai-compatible
+  default_model: deepseek-v4-pro
+  default_base_url: https://api.deepseek.com
+  api_key_env:
+    - DEEPSEEK_API_KEY
+    - NAVI_MODEL_API_KEY

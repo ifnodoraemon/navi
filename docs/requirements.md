@@ -173,7 +173,7 @@ GET  /v1/graph
 GET  /v1/trust-rules
 GET  /v1/evolution-events
 POST /v1/evolution-events/{event_id}/rollback
-GET  /v1/weixin/status
+GET  /v1/connectors/weixin/status
 GET  /
 ```
 

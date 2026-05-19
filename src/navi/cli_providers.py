@@ -2,31 +2,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .spec_loader import load_spec
+
 
 @dataclass(frozen=True)
 class CliProviderSpec:
     name: str
     binary: str
-    version_args: tuple[str, ...] = ("--version",)
+    version_args: tuple[str, ...] = ()
     auth_status_args: tuple[str, ...] = ()
     auth_negative_markers: tuple[str, ...] = ()
     auth_detail: str = ""
     supports_execution: bool = False
 
 
-CLI_PROVIDER_SPECS: tuple[CliProviderSpec, ...] = (
+CLI_PROVIDER_SPECS: tuple[CliProviderSpec, ...] = tuple(
     CliProviderSpec(
-        name="codex",
-        binary="codex",
-        auth_status_args=("login", "status"),
-        auth_negative_markers=("not logged in", "error"),
-        supports_execution=True,
-    ),
-    CliProviderSpec(
-        name="gemini",
-        binary="gemini",
-        auth_detail="installed; auth is verified when a headless prompt runs",
-    ),
+        name=str(item["name"]),
+        binary=str(item["binary"]),
+        version_args=tuple(item.get("version_args") or ()),
+        auth_status_args=tuple(item.get("auth_status_args") or ()),
+        auth_negative_markers=tuple(item.get("auth_negative_markers") or ()),
+        auth_detail=str(item.get("auth_detail") or ""),
+        supports_execution=bool(item.get("supports_execution", False)),
+    )
+    for item in load_spec("cli_providers.yaml")
 )
 
 

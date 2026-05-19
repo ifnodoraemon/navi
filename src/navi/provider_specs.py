@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .spec_loader import load_spec
+
 
 @dataclass(frozen=True)
 class ProviderSpec:
@@ -17,30 +19,16 @@ class ProviderSpec:
         return provider == self.name or provider in self.aliases
 
 
-PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
+PROVIDER_SPECS: tuple[ProviderSpec, ...] = tuple(
     ProviderSpec(
-        name="mock",
-        aliases=("local-mock",),
-        kind="mock",
-        default_model="mock",
-        default_base_url="",
-    ),
-    ProviderSpec(
-        name="openai-compatible",
-        aliases=("openai",),
-        kind="openai-compatible",
-        default_model="gpt-4o-mini",
-        default_base_url="https://api.openai.com/v1",
-        api_key_env=("NAVI_MODEL_API_KEY", "OPENAI_API_KEY"),
-    ),
-    ProviderSpec(
-        name="deepseek",
-        aliases=(),
-        kind="openai-compatible",
-        default_model="deepseek-v4-pro",
-        default_base_url="https://api.deepseek.com",
-        api_key_env=("DEEPSEEK_API_KEY", "NAVI_MODEL_API_KEY"),
-    ),
+        name=str(item["name"]),
+        aliases=tuple(item.get("aliases") or ()),
+        kind=str(item["kind"]),
+        default_model=str(item["default_model"]),
+        default_base_url=str(item["default_base_url"]),
+        api_key_env=tuple(item.get("api_key_env") or ()),
+    )
+    for item in load_spec("model_providers.yaml")
 )
 
 

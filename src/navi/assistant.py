@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .command_specs import load_command_catalog
 from .config import load_config
 from .cron import next_cron_time, validate_cron
 from .evolution import EvolutionEngine
@@ -20,6 +21,8 @@ class AssistantCommandResult:
 
 
 class ActiveAssistant:
+    command_catalog = load_command_catalog()
+
     def __init__(self, home: Path):
         self.home = home
         self.config = load_config(home)
@@ -45,35 +48,38 @@ class ActiveAssistant:
         action, _, payload = rest.strip().partition(" ")
         action = action.lower()
         payload = payload.strip()
-        if command in {"/help", "/?"}:
+        if command in self.command_catalog.help_aliases:
             return AssistantCommandResult(self.command_help())
-        if command == "/task":
+        command_spec = self.command_catalog.object_by_command(command)
+        if command_spec is None:
+            return AssistantCommandResult("Unknown Navi command.\n" + self.command_help())
+        if command_spec.name == "task":
             if action == "create":
                 return await self.create_task(payload, peer_id=peer_id, sender_id=sender_id, source=source)
             if action == "show":
                 return self.status(payload)
             if action == "list":
                 return self.task_list()
-            return AssistantCommandResult("Usage: /task create <request> | /task show [task-id] | /task list")
-        if command == "/watch":
+            return AssistantCommandResult(f"Usage: {self.command_catalog.usage(command_spec.name)}")
+        if command_spec.name == "watch":
             if action == "create":
                 return self.create_watch(payload, peer_id=peer_id, sender_id=sender_id)
             if action == "list":
                 return self.watch_list()
-            return AssistantCommandResult("Usage: /watch create <cron> <request> | /watch list")
-        if command == "/approval":
+            return AssistantCommandResult(f"Usage: {self.command_catalog.usage(command_spec.name)}")
+        if command_spec.name == "approval":
             if action == "approve":
                 return self.approve(payload, sender_id=sender_id)
             if action == "reject":
                 return self.reject(payload, sender_id=sender_id)
             if action == "list":
                 return self.approval_list(sender_id=sender_id)
-            return AssistantCommandResult("Usage: /approval approve <code> | /approval reject <code> | /approval list")
+            return AssistantCommandResult(f"Usage: {self.command_catalog.usage(command_spec.name)}")
         return AssistantCommandResult("Unknown Navi command.\n" + self.command_help())
 
     async def create_task(self, prompt: str, *, peer_id: str = "", sender_id: str = "", source: str = "local") -> AssistantCommandResult:
         if not prompt:
-            return AssistantCommandResult("Usage: /task create <request>")
+            return AssistantCommandResult(f"Usage: {self.command_catalog.usage('task', 'create')}")
         workspace = str(Path.home())
         decision = self.trust.decide(prompt=prompt, sender_id=sender_id, workspace=workspace)
         why_now = self.why_now(
@@ -112,8 +118,8 @@ class ActiveAssistant:
                 f"{why_now}\n\n"
                 f"Task `{planned.id}` prepared for approval.\n"
                 f"Preparation:\n{planned.plan_summary or '(no preparation output)'}\n\n"
-                f"Approve within 15 minutes with `/approval approve {approval.code}` "
-                f"or reject with `/approval reject {approval.code}`."
+                f"Approve within 15 minutes with `{self.command_catalog.objects['approval'].command} approve {approval.code}` "
+                f"or reject with `{self.command_catalog.objects['approval'].command} reject {approval.code}`."
             ),
             task_id=planned.id,
         )
@@ -121,7 +127,7 @@ class ActiveAssistant:
     def approve(self, text: str, *, sender_id: str) -> AssistantCommandResult:
         code = text.split()[0] if text else ""
         if not code:
-            return AssistantCommandResult("Usage: /approval approve <code>")
+            return AssistantCommandResult(f"Usage: {self.command_catalog.usage('approval', 'approve')}")
         approval = self.tasks.resolve_approval(code, sender_id, "approved")
         if approval is None:
             return AssistantCommandResult("Approval not found for this sender.")
@@ -135,7 +141,7 @@ class ActiveAssistant:
     def reject(self, text: str, *, sender_id: str) -> AssistantCommandResult:
         code = text.split()[0] if text else ""
         if not code:
-            return AssistantCommandResult("Usage: /approval reject <code>")
+            return AssistantCommandResult(f"Usage: {self.command_catalog.usage('approval', 'reject')}")
         approval = self.tasks.resolve_approval(code, sender_id, "rejected")
         if approval is None:
             return AssistantCommandResult("Approval not found for this sender.")
@@ -190,7 +196,7 @@ class ActiveAssistant:
     def create_watch(self, text: str, *, peer_id: str, sender_id: str) -> AssistantCommandResult:
         parts = text.split(maxsplit=5)
         if len(parts) < 6:
-            return AssistantCommandResult("Usage: /watch create <minute> <hour> <day> <month> <weekday> <request>")
+            return AssistantCommandResult(f"Usage: {self.command_catalog.usage('watch', 'create')}")
         cron = " ".join(parts[:5])
         prompt = parts[5]
         return self.create_watch_cron(cron, prompt, peer_id=peer_id, sender_id=sender_id)
@@ -252,26 +258,8 @@ class ActiveAssistant:
 
     @staticmethod
     def command_affordances() -> tuple[str, ...]:
-        return (
-            "Use /task create <natural-language request> to submit local actions into Navi's tracked task path.",
-            "Use /task show [task-id] and /task list to inspect tracked tasks.",
-            "Use /watch create <cron> <natural-language request> and /watch list for recurring checks.",
-            "Use /approval approve <code>, /approval reject <code>, and /approval list for approvals.",
-        )
+        return ActiveAssistant.command_catalog.affordances()
 
     @staticmethod
     def command_help() -> str:
-        return "\n".join(
-            (
-                "Navi commands:",
-                "/task create <request>",
-                "/task show [task-id]",
-                "/task list",
-                "/watch create <minute> <hour> <day> <month> <weekday> <request>",
-                "/watch list",
-                "/approval approve <code>",
-                "/approval reject <code>",
-                "/approval list",
-                "/help",
-            )
-        )
+        return ActiveAssistant.command_catalog.help_text()

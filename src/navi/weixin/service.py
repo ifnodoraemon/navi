@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 from navi.assistant import ActiveAssistant
 from navi.config import WeixinConfig, load_config
+from navi.connector_specs import ConnectorSpec, get_connector_spec
 from navi.fact_tools import ServiceFacts, TaskFacts, render_service_facts, render_task_facts
 from navi.intent import ActionDecision, AgenticActionSelector
 from navi.prompting import PromptContext
@@ -21,6 +22,8 @@ from .store import ContextTokenStore, MessageDeduplicator, WeixinStore
 
 
 class WeixinService:
+    connector: ConnectorSpec = get_connector_spec(Path(__file__).parent.name)
+
     def __init__(self, *, home: Path, config: WeixinConfig, runtime: AgentRuntime):
         self.home = home
         self.config = config
@@ -115,7 +118,7 @@ class WeixinService:
                 update.text,
                 peer_id=update.peer_id,
                 sender_id=update.sender_id,
-                source="weixin",
+                source=self.connector.local_source,
             )
             await self.client.send_message(
                 account_id=account.account_id,
@@ -211,25 +214,26 @@ class WeixinService:
     @staticmethod
     def _prompt_context() -> PromptContext:
         affordances = ActiveAssistant.command_affordances() + (
-            "Use /session new or /session current for this connector conversation.",
+            WeixinService.connector.session_command.affordance,
         )
         return PromptContext(
-            surface="connector.weixin",
+            surface=WeixinService.connector.surface,
             affordances=affordances,
         )
 
     def _handle_connector_command(self, text: str, *, peer_id: str) -> str:
         command, _, rest = text.strip().partition(" ")
-        if command.lower() != "/session":
+        if command.lower() != self.connector.session_command.command:
             return ""
         action = rest.strip().split(maxsplit=1)[0].lower()
-        if action == "new":
+        operation = self.connector.session_command.actions.get(action)
+        if operation == "rotate":
             session = self.runtime.memory.rotate_session(self._session_alias(peer_id))
             return f"Started a new conversation session: {session.session_id}"
-        if action == "current":
+        if operation == "current":
             session_id = self.runtime.memory.current_session_id(self._session_alias(peer_id))
             return f"Current conversation session: {session_id}"
-        return "Usage: /session new | /session current"
+        return f"Usage: {self.connector.session_command.usage}"
 
     async def _handle_selected_action(
         self,
@@ -265,7 +269,7 @@ class WeixinService:
                 decision.prompt,
                 peer_id=update.peer_id,
                 sender_id=update.sender_id,
-                source="weixin",
+                source=self.connector.local_source,
             )
             await self.client.send_message(
                 account_id=account.account_id,
@@ -310,4 +314,4 @@ class WeixinService:
 
     @staticmethod
     def _session_alias(peer_id: str) -> str:
-        return f"connector:weixin:{peer_id}"
+        return f"{WeixinService.connector.session_alias_prefix}:{peer_id}"
