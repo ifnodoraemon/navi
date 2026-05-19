@@ -11,10 +11,11 @@ async def test_task_approval_execution_and_evolution(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_CODEX_MOCK", "true")
     assistant = ActiveAssistant(tmp_path)
 
-    planned = await assistant.handle_weixin_command(
-        "/task improve the navi project",
+    planned = await assistant.handle_command(
+        "/task create improve the navi project",
         peer_id="peer",
         sender_id="sender",
+        source="weixin",
     )
 
     assert "Why now:" in planned.text
@@ -23,10 +24,11 @@ async def test_task_approval_execution_and_evolution(tmp_path, monkeypatch):
     assert task.status == "awaiting_approval"
     approval = assistant.tasks.list_approvals()[0]
 
-    approved = await assistant.handle_weixin_command(
-        f"/approve {approval.code}",
+    approved = await assistant.handle_command(
+        f"/approval approve {approval.code}",
         peer_id="peer",
         sender_id="sender",
+        source="weixin",
     )
     assert "queued" in approved.text
 
@@ -52,6 +54,36 @@ def test_watch_command_creates_cron_watch(tmp_path):
     watches = assistant.tasks.list_watches()
     assert watches[0].cron == "*/5 * * * *"
     assert watches[0].prompt == "check the navi project"
+
+
+@pytest.mark.asyncio
+async def test_orthogonal_command_surface_lists_tasks_approvals_and_watches(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_CODEX_MOCK", "true")
+    assistant = ActiveAssistant(tmp_path)
+
+    planned = await assistant.handle_command(
+        "/task create run a command surface check",
+        peer_id="peer",
+        sender_id="sender",
+        source="weixin",
+    )
+    watch = await assistant.handle_command(
+        "/watch create 0 8 * * * check command health",
+        peer_id="peer",
+        sender_id="sender",
+        source="weixin",
+    )
+
+    task_list = await assistant.handle_command("/task list", sender_id="sender")
+    approval_list = await assistant.handle_command("/approval list", sender_id="sender")
+    watch_list = await assistant.handle_command("/watch list", sender_id="sender")
+    shown = await assistant.handle_command(f"/task show {planned.task_id}", sender_id="sender")
+
+    assert "run a command surface check" in task_list.text
+    assert assistant.tasks.list_approvals()[0].code in approval_list.text
+    assert "check command health" in watch.text
+    assert "check command health" in watch_list.text
+    assert planned.task_id in shown.text
 
 
 def test_watch_cron_tool_creates_watch(tmp_path):
@@ -99,10 +131,11 @@ async def test_codex_plan_timeout_marks_task_failed(tmp_path, monkeypatch):
 async def test_evolution_rollback_restores_memory_skill_graph_and_trust(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_CODEX_MOCK", "true")
     assistant = ActiveAssistant(tmp_path)
-    planned = await assistant.handle_weixin_command(
-        "/task evolve rollback coverage",
+    planned = await assistant.handle_command(
+        "/task create evolve rollback coverage",
         peer_id="peer",
         sender_id="sender",
+        source="weixin",
     )
     approval = assistant.tasks.list_approvals()[0]
     assistant.approve(approval.code, sender_id="sender")

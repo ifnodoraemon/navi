@@ -39,7 +39,7 @@ async def test_weixin_handle_update_replies_and_saves_context(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_weixin_new_command_rotates_peer_session(tmp_path, monkeypatch):
+async def test_weixin_session_new_command_rotates_peer_session(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
     service = WeixinService(home=tmp_path, config=WeixinConfig(), runtime=runtime)
@@ -53,13 +53,29 @@ async def test_weixin_new_command_rotates_peer_session(tmp_path, monkeypatch):
 
     handled = await service.handle_update(
         account,
-        WeixinUpdate(message_id="msg-2", peer_id="peer", sender_id="sender", text="/new"),
+        WeixinUpdate(message_id="msg-2", peer_id="peer", sender_id="sender", text="/session new"),
     )
     second_session = runtime.memory.current_session_id("connector:weixin:peer")
 
     assert handled is True
     assert first_session != second_session
     assert "Started a new conversation session" in service.client.sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_weixin_session_current_command_reports_peer_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
+    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    service = WeixinService(home=tmp_path, config=WeixinConfig(), runtime=runtime)
+    account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
+
+    handled = await service.handle_update(
+        account,
+        WeixinUpdate(message_id="msg-session-current", peer_id="peer", sender_id="sender", text="/session current"),
+    )
+
+    assert handled is True
+    assert "Current conversation session:" in service.client.sent[-1]["text"]
 
 
 @pytest.mark.asyncio

@@ -27,31 +27,51 @@ class ActiveAssistant:
         self.execution = ExecutionService(home)
         self.evolution = EvolutionEngine(home)
 
-    async def handle_weixin_command(self, text: str, *, peer_id: str, sender_id: str) -> AssistantCommandResult:
+    async def handle_command(
+        self,
+        text: str,
+        *,
+        peer_id: str = "",
+        sender_id: str = "",
+        source: str = "local",
+    ) -> AssistantCommandResult:
         stripped = text.strip()
         if not stripped.startswith("/"):
             return AssistantCommandResult("")
         command, _, rest = stripped.partition(" ")
-        rest = rest.strip()
+        command = command.lower()
+        action, _, payload = rest.strip().partition(" ")
+        action = action.lower()
+        payload = payload.strip()
+        if command in {"/help", "/?"}:
+            return AssistantCommandResult(self.command_help())
         if command == "/task":
-            return await self.create_task(rest, peer_id=peer_id, sender_id=sender_id, source="weixin")
-        if command == "/approve":
-            return self.approve(rest, sender_id=sender_id)
-        if command == "/reject":
-            return self.reject(rest, sender_id=sender_id)
-        if command == "/status":
-            return self.status(rest)
-        if command == "/jobs":
-            return self.jobs()
+            if action == "create":
+                return await self.create_task(payload, peer_id=peer_id, sender_id=sender_id, source=source)
+            if action == "show":
+                return self.status(payload)
+            if action == "list":
+                return self.task_list()
+            return AssistantCommandResult("Usage: /task create <request> | /task show [task-id] | /task list")
         if command == "/watch":
-            return self.create_watch(rest, peer_id=peer_id, sender_id=sender_id)
-        return AssistantCommandResult(
-            "Unknown Navi command. Supported: /task, /approve, /reject, /status, /jobs, /watch"
-        )
+            if action == "create":
+                return self.create_watch(payload, peer_id=peer_id, sender_id=sender_id)
+            if action == "list":
+                return self.watch_list()
+            return AssistantCommandResult("Usage: /watch create <cron> <request> | /watch list")
+        if command == "/approval":
+            if action == "approve":
+                return self.approve(payload, sender_id=sender_id)
+            if action == "reject":
+                return self.reject(payload, sender_id=sender_id)
+            if action == "list":
+                return self.approval_list(sender_id=sender_id)
+            return AssistantCommandResult("Usage: /approval approve <code> | /approval reject <code> | /approval list")
+        return AssistantCommandResult("Unknown Navi command.\n" + self.command_help())
 
     async def create_task(self, prompt: str, *, peer_id: str = "", sender_id: str = "", source: str = "local") -> AssistantCommandResult:
         if not prompt:
-            return AssistantCommandResult("Usage: /task <description>")
+            return AssistantCommandResult("Usage: /task create <request>")
         workspace = str(Path.home())
         decision = self.trust.decide(prompt=prompt, sender_id=sender_id, workspace=workspace)
         why_now = self.why_now(
@@ -89,7 +109,8 @@ class ActiveAssistant:
                 f"{why_now}\n\n"
                 f"Task `{planned.id}` prepared for approval.\n"
                 f"Preparation:\n{planned.plan_summary or '(no preparation output)'}\n\n"
-                f"Approve within 15 minutes with `/approve {approval.code}` or reject with `/reject {approval.code}`."
+                f"Approve within 15 minutes with `/approval approve {approval.code}` "
+                f"or reject with `/approval reject {approval.code}`."
             ),
             task_id=planned.id,
         )
@@ -97,7 +118,7 @@ class ActiveAssistant:
     def approve(self, text: str, *, sender_id: str) -> AssistantCommandResult:
         code = text.split()[0] if text else ""
         if not code:
-            return AssistantCommandResult("Usage: /approve <code>")
+            return AssistantCommandResult("Usage: /approval approve <code>")
         approval = self.tasks.resolve_approval(code, sender_id, "approved")
         if approval is None:
             return AssistantCommandResult("Approval not found for this sender.")
@@ -111,7 +132,7 @@ class ActiveAssistant:
     def reject(self, text: str, *, sender_id: str) -> AssistantCommandResult:
         code = text.split()[0] if text else ""
         if not code:
-            return AssistantCommandResult("Usage: /reject <code>")
+            return AssistantCommandResult("Usage: /approval reject <code>")
         approval = self.tasks.resolve_approval(code, sender_id, "rejected")
         if approval is None:
             return AssistantCommandResult("Approval not found for this sender.")
@@ -138,17 +159,35 @@ class ActiveAssistant:
             task_id=task.id,
         )
 
-    def jobs(self) -> AssistantCommandResult:
-        running = [task for task in self.tasks.list(limit=20) if task.status in {"preparing", "running", "queued", "awaiting_approval"}]
+    def task_list(self) -> AssistantCommandResult:
+        tasks = self.tasks.list(limit=10)
+        lines = [f"- `{task.id}` {task.status}: {task.title}" for task in tasks] or ["- no tasks"]
+        return AssistantCommandResult("Tasks:\n" + "\n".join(lines))
+
+    def approval_list(self, *, sender_id: str = "") -> AssistantCommandResult:
+        approvals = [
+            approval
+            for approval in self.tasks.list_approvals(limit=20)
+            if not sender_id or approval.sender_id == sender_id
+        ]
+        lines = [
+            f"- `{approval.code}` {approval.status}: task `{approval.task_id}` action={approval.action}"
+            for approval in approvals
+        ] or ["- no approvals"]
+        return AssistantCommandResult("Approvals:\n" + "\n".join(lines))
+
+    def watch_list(self) -> AssistantCommandResult:
         watches = self.tasks.list_watches(limit=20)
-        task_lines = [f"- `{task.id}` {task.status}: {task.title}" for task in running] or ["- no active tasks"]
-        watch_lines = [f"- `{watch.id}` {watch.cron}: {watch.prompt}" for watch in watches] or ["- no watches"]
-        return AssistantCommandResult("Active tasks:\n" + "\n".join(task_lines) + "\n\nWatches:\n" + "\n".join(watch_lines))
+        lines = [
+            f"- `{watch.id}` {'enabled' if watch.enabled else 'disabled'} {watch.cron}: {watch.prompt}"
+            for watch in watches
+        ] or ["- no watches"]
+        return AssistantCommandResult("Watches:\n" + "\n".join(lines))
 
     def create_watch(self, text: str, *, peer_id: str, sender_id: str) -> AssistantCommandResult:
         parts = text.split(maxsplit=5)
         if len(parts) < 6:
-            return AssistantCommandResult("Usage: /watch <minute> <hour> <day> <month> <weekday> <description>")
+            return AssistantCommandResult("Usage: /watch create <minute> <hour> <day> <month> <weekday> <request>")
         cron = " ".join(parts[:5])
         prompt = parts[5]
         return self.create_watch_cron(cron, prompt, peer_id=peer_id, sender_id=sender_id)
@@ -161,7 +200,12 @@ class ActiveAssistant:
             return AssistantCommandResult(f"Invalid cron: {exc}")
         watch = self.tasks.create_watch(cron=cron, prompt=prompt, peer_id=peer_id, sender_id=sender_id, next_run_at=next_run)
         self.graph.upsert("Watch", watch.id, {"cron": cron, "prompt": prompt, "sender_id": sender_id})
-        return AssistantCommandResult(f"Watch `{watch.id}` created. Next run at {time.ctime(watch.next_run_at)}.")
+        return AssistantCommandResult(
+            f"Watch `{watch.id}` created.\n"
+            f"Cron: {watch.cron}\n"
+            f"Request: {watch.prompt}\n"
+            f"Next run at {time.ctime(watch.next_run_at)}."
+        )
 
     async def process_queue_once(self) -> list[Task]:
         completed = await self.execution.process_pending_once()
@@ -201,4 +245,21 @@ class ActiveAssistant:
             f"- Reason: {reason}\n"
             f"- Suggested action: {action}\n"
             f"- Autonomy: {decision.level} {LEVEL_LABELS.get(decision.level, '')}"
+        )
+
+    @staticmethod
+    def command_help() -> str:
+        return "\n".join(
+            (
+                "Navi commands:",
+                "/task create <request>",
+                "/task show [task-id]",
+                "/task list",
+                "/watch create <minute> <hour> <day> <month> <weekday> <request>",
+                "/watch list",
+                "/approval approve <code>",
+                "/approval reject <code>",
+                "/approval list",
+                "/help",
+            )
         )

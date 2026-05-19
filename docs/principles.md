@@ -54,6 +54,8 @@ The core runtime must not know Weixin, Feishu, WeCom, Telegram, Slack, or any fu
 - The base prompt must not mention connector commands unless a connector injects them.
 - A connector exposes facts and affordances; the agent decides how to use them.
 - Adding a connector must not require rewriting the core prompt.
+- Connector command surfaces should be orthogonal: prefer `/object action ...` over scattered top-level verbs.
+- Core commands should be reusable across connectors; connector-local commands may only manage connector-local state such as the current session.
 
 ### 5. Skills, Plugins, and Hooks Have Separate Jobs
 

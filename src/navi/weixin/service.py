@@ -107,10 +107,11 @@ class WeixinService:
                     context_token=self.context_tokens.get(account.account_id, update.peer_id),
                 )
                 return True
-            result = await self.active.handle_weixin_command(
+            result = await self.active.handle_command(
                 update.text,
                 peer_id=update.peer_id,
                 sender_id=update.sender_id,
+                source="weixin",
             )
             await self.client.send_message(
                 account_id=account.account_id,
@@ -250,19 +251,26 @@ class WeixinService:
         return PromptContext(
             surface="Weixin connector",
             affordances=(
-                "Use /task <natural-language request> to submit local actions into Navi's tracked task path.",
-                "Use /approve <code> or /reject <code> when Navi returns an approval code.",
-                "Use /status or /jobs to inspect tracked work.",
-                "Use /new to start a fresh conversation session for this peer.",
+                "Use /task create <natural-language request> to submit local actions into Navi's tracked task path.",
+                "Use /task show [task-id] and /task list to inspect tracked tasks.",
+                "Use /watch create <cron> <natural-language request> and /watch list for recurring checks.",
+                "Use /approval approve <code>, /approval reject <code>, and /approval list for approvals.",
+                "Use /session new or /session current for this connector conversation.",
             ),
         )
 
     def _handle_connector_command(self, text: str, *, peer_id: str) -> str:
-        command = text.strip().split(maxsplit=1)[0].lower()
-        if command not in {"/new", "/reset"}:
+        command, _, rest = text.strip().partition(" ")
+        if command.lower() != "/session":
             return ""
-        session = self.runtime.memory.rotate_session(self._session_alias(peer_id))
-        return f"Started a new conversation session: {session.session_id}"
+        action = rest.strip().split(maxsplit=1)[0].lower()
+        if action == "new":
+            session = self.runtime.memory.rotate_session(self._session_alias(peer_id))
+            return f"Started a new conversation session: {session.session_id}"
+        if action == "current":
+            session_id = self.runtime.memory.current_session_id(self._session_alias(peer_id))
+            return f"Current conversation session: {session_id}"
+        return "Usage: /session new | /session current"
 
     @staticmethod
     def _session_alias(peer_id: str) -> str:
