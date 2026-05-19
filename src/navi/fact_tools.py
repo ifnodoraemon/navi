@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,12 @@ class TaskFacts:
     logs: list[ExecutionLog]
 
 
-def service_facts(name: str = "navi.service") -> ServiceFacts:
+def default_service_name() -> str:
+    return os.environ.get("NAVI_SERVICE_NAME", "navi.service")
+
+
+def service_facts(name: str | None = None) -> ServiceFacts:
+    name = name or default_service_name()
     command = [
         "systemctl",
         "--user",

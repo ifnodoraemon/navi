@@ -134,7 +134,12 @@ async def test_weixin_plain_schedule_with_vague_period_asks_clarification(tmp_pa
 async def test_weixin_plain_local_action_creates_task(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     monkeypatch.setenv("NAVI_CODEX_MOCK", "true")
-    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    runtime = AgentRuntime(
+        home=tmp_path,
+        provider=ScriptedProvider(
+            '{"kind":"task","prompt":"列一下我本机的目录","confidence":0.9,"reason":"local filesystem request"}'
+        ),
+    )
     service = WeixinService(home=tmp_path, config=WeixinConfig(), runtime=runtime)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
@@ -176,7 +181,12 @@ async def test_weixin_plain_task_status_uses_fact_tool(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_weixin_plain_service_status_uses_fact_tool(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
-    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    runtime = AgentRuntime(
+        home=tmp_path,
+        provider=ScriptedProvider(
+            '{"kind":"service_status","target_id":"navi.service","confidence":0.9,"reason":"service status request"}'
+        ),
+    )
     service = WeixinService(home=tmp_path, config=WeixinConfig(), runtime=runtime)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 

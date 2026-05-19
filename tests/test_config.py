@@ -11,6 +11,7 @@ def test_default_config_round_trip(tmp_path):
     assert path.exists()
     assert config.model.provider == "mock"
     assert config.weixin.group_policy == "disabled"
+    assert config.runtime.service_name == "navi.service"
 
 
 def test_env_file_overrides_weixin(tmp_path):
@@ -33,6 +34,24 @@ def test_env_file_overrides_weixin(tmp_path):
     assert config.weixin.token == "token"
     assert config.weixin.dm_policy == "allowlist"
     assert config.weixin.allowed_users == ["user_a", "user_b"]
+
+
+def test_env_file_overrides_runtime_facts(tmp_path):
+    write_default_config(tmp_path)
+    (tmp_path / "env").write_text(
+        "\n".join(
+            [
+                "NAVI_SERVICE_NAME=custom.service",
+                "NAVI_WEB_URL=http://navi.example",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.runtime.service_name == "custom.service"
+    assert config.runtime.web_url == "http://navi.example"
 
 
 def test_deepseek_env_defaults(tmp_path):

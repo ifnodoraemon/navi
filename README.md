@@ -48,6 +48,9 @@ weixin:
   base_url: https://ilinkai.weixin.qq.com
   dm_policy: open
   group_policy: disabled
+runtime:
+  service_name: navi.service
+  web_url: ""
 ```
 
 Set `NAVI_HOME` to move the state directory.

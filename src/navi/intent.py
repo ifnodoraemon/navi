@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from .provider import ChatMessage, ChatProvider
 from .tools import ToolSpec
@@ -55,7 +55,7 @@ class AgenticActionSelector:
                         (
                             f"User message: {text}",
                             "Available fact tools:",
-                            json.dumps([tool.name for tool in tools], ensure_ascii=False),
+                            json.dumps([asdict(tool) for tool in tools], ensure_ascii=False),
                         )
                     ),
                 ),

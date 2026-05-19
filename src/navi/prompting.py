@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,12 +24,11 @@ def build_system_prompt(
 ) -> str:
     config = load_config(home)
     workspace = (workspace or Path.cwd()).resolve()
-    unit_path = systemd_user_unit_path()
+    unit_path = systemd_user_unit_path(config.runtime.service_name)
     unit_state = "installed" if unit_path.exists() else "not installed"
-    web_url = os.environ.get("NAVI_WEB_URL", "").strip()
     web_console_fact = (
-        f"- Web console URL: {web_url}"
-        if web_url
+        f"- Web console URL: {config.runtime.web_url}"
+        if config.runtime.web_url
         else "- Web console URL: not configured in runtime context; do not assume a host or port."
     )
     prompt_context = prompt_context or PromptContext()
@@ -51,7 +49,7 @@ def build_system_prompt(
                 f"- Model provider: {config.model.provider}",
                 f"- Model name: {config.model.model}",
                 "- Remote connectors: managed by connector-specific adapters; do not assume a connector or channel unless provided in runtime context.",
-                f"- User systemd service navi.service: {unit_state} at {unit_path}",
+                f"- User systemd service {config.runtime.service_name}: {unit_state} at {unit_path}",
                 web_console_fact,
                 "- Local execution bridge: Navi can create controlled tasks through configured execution providers.",
                 "- Task and approval entrypoints are supplied by the active connector or host surface when available.",

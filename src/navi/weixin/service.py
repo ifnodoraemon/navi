@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 from navi.action_router import ActionRouter
 from navi.assistant import ActiveAssistant
-from navi.config import WeixinConfig
+from navi.config import WeixinConfig, load_config
 from navi.fact_tools import ServiceFacts, TaskFacts, render_service_facts, render_task_facts
 from navi.intent import ActionDecision, AgenticActionSelector
 from navi.prompting import PromptContext
@@ -34,6 +34,7 @@ class WeixinService:
         self.router = ActionRouter()
         self.tools = build_core_tool_registry(home, project_dir=Path.cwd())
         self.action_selector = AgenticActionSelector(runtime.provider)
+        self.runtime_config = load_config(home).runtime
 
     def _build_client(self):
         if os.environ.get("NAVI_WEIXIN_MOCK", "").lower() in {"1", "true", "yes"}:
@@ -127,7 +128,7 @@ class WeixinService:
             return True
         routed = self.router.route(update.text)
         if routed.kind == "service_status":
-            tool_result = self.tools.call("service.status", {"name": routed.target_id or "navi.service"})
+            tool_result = self.tools.call("service.status", {"name": routed.target_id or self.runtime_config.service_name})
             await self.client.send_message(
                 account_id=account.account_id,
                 peer_id=update.peer_id,
@@ -262,15 +263,12 @@ class WeixinService:
 
     @staticmethod
     def _prompt_context() -> PromptContext:
+        affordances = ActiveAssistant.command_affordances() + (
+            "Use /session new or /session current for this connector conversation.",
+        )
         return PromptContext(
-            surface="Weixin connector",
-            affordances=(
-                "Use /task create <natural-language request> to submit local actions into Navi's tracked task path.",
-                "Use /task show [task-id] and /task list to inspect tracked tasks.",
-                "Use /watch create <cron> <natural-language request> and /watch list for recurring checks.",
-                "Use /approval approve <code>, /approval reject <code>, and /approval list for approvals.",
-                "Use /session new or /session current for this connector conversation.",
-            ),
+            surface="connector.weixin",
+            affordances=affordances,
         )
 
     def _handle_connector_command(self, text: str, *, peer_id: str) -> str:
@@ -330,7 +328,10 @@ class WeixinService:
             )
             return True
         if decision.kind == "service_status":
-            tool_result = self.tools.call("service.status", {"name": decision.target_id or "navi.service"})
+            tool_result = self.tools.call(
+                "service.status",
+                {"name": decision.target_id or self.runtime_config.service_name},
+            )
             await self.client.send_message(
                 account_id=account.account_id,
                 peer_id=update.peer_id,

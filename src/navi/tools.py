@@ -113,17 +113,18 @@ class ToolRegistry:
 
 def build_core_tool_registry(home: Path, *, project_dir: Path | None = None) -> ToolRegistry:
     registry = ToolRegistry(home=home, project_dir=project_dir)
+    config = load_config(home)
     registry.register(
         ToolSpec(
             name="service.status",
             description="Return systemd user service facts.",
             input_schema={
                 "type": "object",
-                "properties": {"name": {"type": "string", "default": "navi.service"}},
+                "properties": {"name": {"type": "string", "default": config.runtime.service_name}},
             },
             output_schema={"type": "object"},
         ),
-        lambda args: _service_status(args),
+        lambda args: _service_status(args, default_name=config.runtime.service_name),
     )
     registry.register(
         ToolSpec(
@@ -185,8 +186,8 @@ def build_core_tool_registry(home: Path, *, project_dir: Path | None = None) -> 
     return registry
 
 
-def _service_status(args: dict[str, Any]) -> ToolResult:
-    name = str(args.get("name") or "navi.service")
+def _service_status(args: dict[str, Any], *, default_name: str) -> ToolResult:
+    name = str(args.get("name") or default_name)
     facts = service_facts(name)
     return ToolResult(tool="service.status", ok=facts.exit_code == 0, facts=asdict(facts), error=facts.stderr)
 

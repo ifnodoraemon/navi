@@ -277,9 +277,11 @@ def service_unit() -> None:
 @service_app.command("install")
 def service_install() -> None:
     """Install a systemd user unit for the active assistant."""
-    unit = install_systemd_user_unit(project_dir=Path.cwd(), navi_home=ensure_home())
+    home = ensure_home()
+    config = load_config(home)
+    unit = install_systemd_user_unit(project_dir=Path.cwd(), navi_home=home, name=config.runtime.service_name)
     typer.echo(f"installed {unit.path}")
-    typer.echo("Run: systemctl --user daemon-reload && systemctl --user enable --now navi.service")
+    typer.echo(f"Run: systemctl --user daemon-reload && systemctl --user enable --now {unit.name}")
 
 
 @weixin_app.command("setup")

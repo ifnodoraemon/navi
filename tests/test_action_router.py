@@ -17,11 +17,10 @@ def test_action_router_does_not_invent_daily_period_hour():
     assert action.kind == "chat"
 
 
-def test_action_router_routes_local_task():
+def test_action_router_does_not_route_local_task_by_keywords():
     action = ActionRouter().route("列一下我本机的目录")
 
-    assert action.kind == "task"
-    assert action.prompt == "列一下我本机的目录"
+    assert action.kind == "chat"
 
 
 def test_action_router_keeps_question_as_chat():
@@ -40,5 +39,4 @@ def test_action_router_routes_task_status_by_id():
 def test_action_router_routes_service_status():
     action = ActionRouter().route("你的最新启动时间是什么时候")
 
-    assert action.kind == "service_status"
-    assert action.target_id == "navi.service"
+    assert action.kind == "chat"

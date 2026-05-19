@@ -248,6 +248,15 @@ class ActiveAssistant:
         )
 
     @staticmethod
+    def command_affordances() -> tuple[str, ...]:
+        return (
+            "Use /task create <natural-language request> to submit local actions into Navi's tracked task path.",
+            "Use /task show [task-id] and /task list to inspect tracked tasks.",
+            "Use /watch create <cron> <natural-language request> and /watch list for recurring checks.",
+            "Use /approval approve <code>, /approval reject <code>, and /approval list for approvals.",
+        )
+
+    @staticmethod
     def command_help() -> str:
         return "\n".join(
             (

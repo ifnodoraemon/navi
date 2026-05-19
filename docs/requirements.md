@@ -194,6 +194,9 @@ weixin:
   group_policy: disabled
   group_allowed_users: []
   home_channel: ""
+runtime:
+  service_name: navi.service
+  web_url: ""
 ```
 
 Environment overrides:
@@ -213,6 +216,8 @@ WEIXIN_ALLOWED_USERS
 WEIXIN_GROUP_POLICY
 WEIXIN_GROUP_ALLOWED_USERS
 WEIXIN_HOME_CHANNEL
+NAVI_SERVICE_NAME
+NAVI_WEB_URL
 NAVI_WEIXIN_MOCK
 NAVI_WEIXIN_MOCK_MESSAGE
 ```

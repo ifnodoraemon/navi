@@ -33,9 +33,16 @@ class WeixinConfig:
 
 
 @dataclass
+class RuntimeConfig:
+    service_name: str = "navi.service"
+    web_url: str = ""
+
+
+@dataclass
 class NaviConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     weixin: WeixinConfig = field(default_factory=WeixinConfig)
+    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
 
 
 def _split_csv(value: str | None) -> list[str]:
@@ -82,6 +89,7 @@ def load_config(home: Path | None = None) -> NaviConfig:
 
     model_raw = raw.get("model") or {}
     weixin_raw = raw.get("weixin") or {}
+    runtime_raw = raw.get("runtime") or {}
     provider = str(env.get("NAVI_MODEL_PROVIDER", model_raw.get("provider", "mock")))
     provider_spec = get_provider_spec(provider)
     raw_model = model_raw.get("model", provider_spec.default_model)
@@ -114,7 +122,11 @@ def load_config(home: Path | None = None) -> NaviConfig:
         or list(weixin_raw.get("group_allowed_users", []) or []),
         home_channel=str(env.get("WEIXIN_HOME_CHANNEL", weixin_raw.get("home_channel", ""))),
     )
-    return NaviConfig(model=model, weixin=weixin)
+    runtime = RuntimeConfig(
+        service_name=str(env.get("NAVI_SERVICE_NAME", runtime_raw.get("service_name", "navi.service"))),
+        web_url=str(env.get("NAVI_WEB_URL", runtime_raw.get("web_url", ""))).strip(),
+    )
+    return NaviConfig(model=model, weixin=weixin, runtime=runtime)
 
 
 def write_default_config(home: Path | None = None) -> Path:
@@ -131,6 +143,10 @@ def write_default_config(home: Path | None = None) -> Path:
                     "base_url": "https://ilinkai.weixin.qq.com",
                     "dm_policy": "open",
                     "group_policy": "disabled",
+                },
+                "runtime": {
+                    "service_name": "navi.service",
+                    "web_url": "",
                 },
             },
             sort_keys=False,
