@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .config import load_config
 from .cron import next_cron_time, validate_cron
 from .evolution import EvolutionEngine
 from .execution import ExecutionService
@@ -21,6 +22,7 @@ class AssistantCommandResult:
 class ActiveAssistant:
     def __init__(self, home: Path):
         self.home = home
+        self.config = load_config(home)
         self.tasks = TaskStore(home)
         self.trust = TrustStore(home)
         self.graph = GraphStore(home)
@@ -88,6 +90,7 @@ class ActiveAssistant:
             source=source,
             peer_id=peer_id,
             sender_id=sender_id,
+            provider=self.config.execution.provider,
             workspace=workspace,
             autonomy_level=decision.level,
             trust_rule_id=decision.rule_id,

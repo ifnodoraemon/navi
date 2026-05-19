@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 from collections.abc import Callable
 
-from navi.action_router import ActionRouter
 from navi.assistant import ActiveAssistant
 from navi.config import WeixinConfig, load_config
 from navi.fact_tools import ServiceFacts, TaskFacts, render_service_facts, render_task_facts
@@ -31,7 +30,6 @@ class WeixinService:
         self.dedup = MessageDeduplicator()
         self.client = self._build_client()
         self.active = ActiveAssistant(home)
-        self.router = ActionRouter()
         self.tools = build_core_tool_registry(home, project_dir=Path.cwd())
         self.action_selector = AgenticActionSelector(runtime.provider)
         self.runtime_config = load_config(home).runtime
@@ -115,57 +113,6 @@ class WeixinService:
                 return True
             result = await self.active.handle_command(
                 update.text,
-                peer_id=update.peer_id,
-                sender_id=update.sender_id,
-                source="weixin",
-            )
-            await self.client.send_message(
-                account_id=account.account_id,
-                peer_id=update.peer_id,
-                text=result.text,
-                context_token=self.context_tokens.get(account.account_id, update.peer_id),
-            )
-            return True
-        routed = self.router.route(update.text)
-        if routed.kind == "service_status":
-            tool_result = self.tools.call("service.status", {"name": routed.target_id or self.runtime_config.service_name})
-            await self.client.send_message(
-                account_id=account.account_id,
-                peer_id=update.peer_id,
-                text=render_service_facts(ServiceFacts(**tool_result.facts))
-                if tool_result.ok
-                else tool_result.error,
-                context_token=self.context_tokens.get(account.account_id, update.peer_id),
-            )
-            return True
-        if routed.kind == "task_status":
-            tool_result = self.tools.call("task.status", {"task_id": routed.target_id or ""})
-            await self.client.send_message(
-                account_id=account.account_id,
-                peer_id=update.peer_id,
-                text=render_task_facts(self._task_facts_from_tool(tool_result.facts))
-                if tool_result.ok
-                else tool_result.error,
-                context_token=self.context_tokens.get(account.account_id, update.peer_id),
-            )
-            return True
-        if routed.kind == "watch":
-            result = self.active.create_watch_cron(
-                routed.cron,
-                routed.prompt,
-                peer_id=update.peer_id,
-                sender_id=update.sender_id,
-            )
-            await self.client.send_message(
-                account_id=account.account_id,
-                peer_id=update.peer_id,
-                text=result.text,
-                context_token=self.context_tokens.get(account.account_id, update.peer_id),
-            )
-            return True
-        if routed.kind == "task":
-            result = await self.active.create_task(
-                routed.prompt,
                 peer_id=update.peer_id,
                 sender_id=update.sender_id,
                 source="weixin",

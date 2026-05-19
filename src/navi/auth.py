@@ -4,6 +4,8 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
+from .cli_providers import CliProviderSpec, list_cli_provider_specs
+
 
 @dataclass(frozen=True)
 class CliAuthStatus:
@@ -17,34 +19,19 @@ class CliAuthStatus:
 
 class AuthInspector:
     def status(self) -> list[CliAuthStatus]:
-        return [
-            self._codex_status(),
-            self._gemini_status(),
-        ]
+        return [self._status_for(spec) for spec in list_cli_provider_specs()]
 
-    def _codex_status(self) -> CliAuthStatus:
-        path = shutil.which("codex") or ""
+    def _status_for(self, spec: CliProviderSpec) -> CliAuthStatus:
+        path = shutil.which(spec.binary) or ""
         if not path:
-            return CliAuthStatus("codex", "", False, "", False, "codex not found on PATH")
-        version = self._run([path, "--version"])
-        login = self._run([path, "login", "status"])
-        authenticated = "not logged in" not in login.lower() and "error" not in login.lower()
-        return CliAuthStatus("codex", path, True, version.strip(), authenticated, login.strip())
-
-    def _gemini_status(self) -> CliAuthStatus:
-        path = shutil.which("gemini") or ""
-        if not path:
-            return CliAuthStatus("gemini", "", False, "", False, "gemini not found on PATH")
-        version = self._run([path, "--version"])
-        # Gemini CLI does not expose a stable non-interactive auth status command in this install.
-        return CliAuthStatus(
-            "gemini",
-            path,
-            True,
-            version.strip(),
-            True,
-            "installed; auth is verified when a headless prompt runs",
-        )
+            return CliAuthStatus(spec.name, "", False, "", False, f"{spec.binary} not found on PATH")
+        version = self._run([path, *spec.version_args])
+        if not spec.auth_status_args:
+            return CliAuthStatus(spec.name, path, True, version.strip(), True, spec.auth_detail)
+        auth = self._run([path, *spec.auth_status_args])
+        lowered = auth.lower()
+        authenticated = not any(marker in lowered for marker in spec.auth_negative_markers)
+        return CliAuthStatus(spec.name, path, True, version.strip(), authenticated, auth.strip())
 
     @staticmethod
     def _run(command: list[str]) -> str:

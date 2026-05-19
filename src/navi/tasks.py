@@ -20,7 +20,7 @@ class Task:
     source: str = "local"
     peer_id: str = ""
     sender_id: str = ""
-    provider: str = "codex"
+    provider: str = ""
     workspace: str = ""
     autonomy_level: str = "L2"
     trust_rule_id: str = ""
@@ -78,7 +78,7 @@ TASK_COLUMNS = {
     "source": "TEXT NOT NULL DEFAULT 'local'",
     "peer_id": "TEXT NOT NULL DEFAULT ''",
     "sender_id": "TEXT NOT NULL DEFAULT ''",
-    "provider": "TEXT NOT NULL DEFAULT 'codex'",
+    "provider": "TEXT NOT NULL DEFAULT ''",
     "workspace": "TEXT NOT NULL DEFAULT ''",
     "autonomy_level": "TEXT NOT NULL DEFAULT 'L2'",
     "trust_rule_id": "TEXT NOT NULL DEFAULT ''",
@@ -174,7 +174,7 @@ class TaskStore:
         source: str = "local",
         peer_id: str = "",
         sender_id: str = "",
-        provider: str = "codex",
+        provider: str = "",
         workspace: str | None = None,
         autonomy_level: str = "L2",
         trust_rule_id: str = "",

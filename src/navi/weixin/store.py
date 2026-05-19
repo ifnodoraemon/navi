@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from navi.defaults import DEFAULT_WEIXIN_BASE_URL
+
 from .models import WeixinAccount
 
 
@@ -41,7 +43,7 @@ class WeixinStore:
         return WeixinAccount(
             account_id=str(data["account_id"]),
             token=str(data["token"]),
-            base_url=str(data.get("base_url") or "https://ilinkai.weixin.qq.com"),
+            base_url=str(data.get("base_url") or DEFAULT_WEIXIN_BASE_URL),
             user_id=str(data.get("user_id") or ""),
         )
 

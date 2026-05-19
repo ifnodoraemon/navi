@@ -4,6 +4,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .defaults import DEFAULT_SERVICE_NAME
+
 
 @dataclass(frozen=True)
 class ServiceUnit:
@@ -38,11 +40,11 @@ def build_systemd_user_unit(*, project_dir: Path, navi_home: Path | None = None)
     )
 
 
-def systemd_user_unit_path(name: str = "navi.service") -> Path:
+def systemd_user_unit_path(name: str = DEFAULT_SERVICE_NAME) -> Path:
     return Path.home() / ".config" / "systemd" / "user" / name
 
 
-def install_systemd_user_unit(*, project_dir: Path, navi_home: Path | None = None, name: str = "navi.service") -> ServiceUnit:
+def install_systemd_user_unit(*, project_dir: Path, navi_home: Path | None = None, name: str = DEFAULT_SERVICE_NAME) -> ServiceUnit:
     path = systemd_user_unit_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     content = build_systemd_user_unit(project_dir=project_dir, navi_home=navi_home)

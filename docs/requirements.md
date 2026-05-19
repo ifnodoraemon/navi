@@ -101,6 +101,7 @@ Runtime rules:
 - Conversation sessions must be explicit state. Long-running connectors need a way to start a fresh session without deleting old transcripts, otherwise topic drift and stale local context will pollute future answers.
 - Connector plain messages must pass through intent/tool selection before general chat. High-confidence local action or schedule intents should call the relevant task/watch/fact tool directly instead of asking the user to rephrase as a command.
 - Intent selection must be capability-driven, not keyword-driven as product behavior. Deterministic parsers are acceptable only for narrow structured facts such as ids, times, and explicit command syntax.
+- Source code must not define ordinary natural-language behavior with keyword lists such as question markers, action verbs, time-of-day words, or channel-specific phrasing. Natural language interpretation belongs to the agentic selector with declared capabilities.
 - Deterministic routing must not invent missing facts such as default times, paths, service names, task ids, or permissions. If a capability can be used but required slots are missing, the agent should ask a concise clarification.
 - Slash commands are explicit structured syntax, not the primary agent behavior. Their grammar must stay orthogonal: `/task create|show|list`, `/watch create|list`, `/approval approve|reject|list`, and connector-local `/session new|current`.
 - Extension boundaries must be explicit: skills provide promptable procedures, plugins provide installed capabilities/integrations, and hooks observe or gate lifecycle events.
@@ -197,6 +198,10 @@ weixin:
 runtime:
   service_name: navi.service
   web_url: ""
+execution:
+  provider: codex
+  timeout_seconds: 120.0
+  mock: false
 ```
 
 Environment overrides:
@@ -218,6 +223,9 @@ WEIXIN_GROUP_ALLOWED_USERS
 WEIXIN_HOME_CHANNEL
 NAVI_SERVICE_NAME
 NAVI_WEB_URL
+NAVI_EXECUTION_PROVIDER
+NAVI_EXECUTION_TIMEOUT_SECONDS
+NAVI_EXECUTION_MOCK
 NAVI_WEIXIN_MOCK
 NAVI_WEIXIN_MOCK_MESSAGE
 ```

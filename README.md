@@ -51,6 +51,10 @@ weixin:
 runtime:
   service_name: navi.service
   web_url: ""
+execution:
+  provider: codex
+  timeout_seconds: 120.0
+  mock: false
 ```
 
 Set `NAVI_HOME` to move the state directory.

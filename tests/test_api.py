@@ -71,7 +71,7 @@ def test_local_console_api_flow(tmp_path):
 
 
 def test_active_api_flow(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAVI_CODEX_MOCK", "true")
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     client = TestClient(create_app(tmp_path))
 
     created = client.post(

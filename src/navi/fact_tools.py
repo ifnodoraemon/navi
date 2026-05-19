@@ -5,6 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .defaults import DEFAULT_SERVICE_NAME
 from .tasks import Approval, ExecutionLog, Task, TaskStore
 
 
@@ -24,7 +25,7 @@ class TaskFacts:
 
 
 def default_service_name() -> str:
-    return os.environ.get("NAVI_SERVICE_NAME", "navi.service")
+    return os.environ.get("NAVI_SERVICE_NAME", DEFAULT_SERVICE_NAME)
 
 
 def service_facts(name: str | None = None) -> ServiceFacts:

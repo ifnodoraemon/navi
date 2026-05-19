@@ -8,7 +8,7 @@ from navi.auth import AuthInspector
 
 @pytest.mark.asyncio
 async def test_task_approval_execution_and_evolution(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAVI_CODEX_MOCK", "true")
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     assistant = ActiveAssistant(tmp_path)
 
     planned = await assistant.handle_command(
@@ -58,7 +58,7 @@ def test_watch_command_creates_cron_watch(tmp_path):
 
 @pytest.mark.asyncio
 async def test_orthogonal_command_surface_lists_tasks_approvals_and_watches(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAVI_CODEX_MOCK", "true")
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     assistant = ActiveAssistant(tmp_path)
 
     planned = await assistant.handle_command(
@@ -110,8 +110,8 @@ def test_auth_inspector_shape():
 
 @pytest.mark.asyncio
 async def test_codex_plan_timeout_marks_task_failed(tmp_path, monkeypatch):
-    monkeypatch.delenv("NAVI_CODEX_MOCK", raising=False)
-    monkeypatch.setenv("NAVI_CODEX_TIMEOUT_SECONDS", "1")
+    monkeypatch.delenv("NAVI_EXECUTION_MOCK", raising=False)
+    monkeypatch.setenv("NAVI_EXECUTION_TIMEOUT_SECONDS", "1")
     assistant = ActiveAssistant(tmp_path)
     task = assistant.tasks.create("timeout", status="pending")
 
@@ -120,7 +120,7 @@ async def test_codex_plan_timeout_marks_task_failed(tmp_path, monkeypatch):
 
         await asyncio.sleep(2)
 
-    monkeypatch.setattr(assistant.execution.codex, "plan", slow_plan)
+    monkeypatch.setattr(assistant.execution.providers["codex"], "plan", slow_plan)
     planned = await assistant.execution.plan_task(task)
 
     assert planned.status == "failed"
@@ -129,7 +129,7 @@ async def test_codex_plan_timeout_marks_task_failed(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_evolution_rollback_restores_memory_skill_graph_and_trust(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAVI_CODEX_MOCK", "true")
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     assistant = ActiveAssistant(tmp_path)
     planned = await assistant.handle_command(
         "/task create evolve rollback coverage",

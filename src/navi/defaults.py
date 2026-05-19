@@ -1,0 +1,8 @@
+from __future__ import annotations
+
+DEFAULT_SERVICE_NAME = "navi.service"
+DEFAULT_WEIXIN_BASE_URL = "https://ilinkai.weixin.qq.com"
+DEFAULT_EXECUTION_PROVIDER = "codex"
+DEFAULT_EXECUTION_TIMEOUT_SECONDS = 120.0
+DEFAULT_WEB_HOST = "127.0.0.1"
+DEFAULT_WEB_PORT = 8765

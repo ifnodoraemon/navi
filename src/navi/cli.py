@@ -12,6 +12,7 @@ from .auth import AuthInspector
 from .api import create_app
 from .app_factory import build_runtime
 from .config import load_config, write_default_config
+from .defaults import DEFAULT_WEB_HOST, DEFAULT_WEB_PORT
 from .evolution import EvolutionEngine, EvolutionLedger
 from .graph import GraphStore
 from .memory import MemoryStore
@@ -60,7 +61,7 @@ def chat() -> None:
 
 
 @app.command()
-def web(host: str = "127.0.0.1", port: int = 8765) -> None:
+def web(host: str = DEFAULT_WEB_HOST, port: int = DEFAULT_WEB_PORT) -> None:
     """Run the local API and Web console."""
     home = ensure_home()
     write_default_config(home)

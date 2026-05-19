@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .cli_providers import list_cli_provider_specs
+from .config import ExecutionConfig, load_config
 from .tasks import Task, TaskStore
 
 
@@ -26,8 +28,11 @@ class ExecutionResult:
         return text[:1600] if text else f"{self.phase} exited with {self.exit_code}"
 
 
-class CodexCliProvider:
-    name = "codex"
+class CliExecutionProvider:
+    def __init__(self, *, name: str, binary: str, config: ExecutionConfig):
+        self.name = name
+        self.binary = binary
+        self.config = config
 
     async def plan(self, task: Task) -> ExecutionResult:
         if self._mock_enabled():
@@ -42,7 +47,7 @@ class CodexCliProvider:
     async def _run(self, task: Task, *, phase: str, sandbox: str) -> ExecutionResult:
         prompt = self._prompt(task, phase=phase)
         command = [
-            "codex",
+            self.binary,
             "exec",
             "-C",
             task.workspace or str(Path.home()),
@@ -68,7 +73,7 @@ class CodexCliProvider:
                 phase=phase,
                 command=command,
                 stdout=stdout_raw.decode(errors="replace"),
-                stderr=f"codex {phase} timed out after {self._timeout_seconds()} seconds",
+                stderr=f"{self.name} {phase} timed out after {self._timeout_seconds()} seconds",
                 exit_code=124,
                 started_at=started,
                 ended_at=ended,
@@ -87,7 +92,7 @@ class CodexCliProvider:
 
     def _mock(self, task: Task, phase: str, text: str) -> ExecutionResult:
         now = time.time()
-        command = ["codex", "exec", "--mock", phase, task.id]
+        command = [self.binary, "exec", "--mock", phase, task.id]
         return ExecutionResult(
             provider=self.name,
             phase=phase,
@@ -114,23 +119,26 @@ class CodexCliProvider:
             f"Task: {task.prompt}"
         )
 
-    @staticmethod
-    def _mock_enabled() -> bool:
-        return os.environ.get("NAVI_CODEX_MOCK", "").lower() in {"1", "true", "yes"}
+    def _mock_enabled(self) -> bool:
+        return self.config.mock
 
-    @staticmethod
-    def _timeout_seconds() -> float:
-        raw = os.environ.get("NAVI_CODEX_TIMEOUT_SECONDS", "120")
+    def _timeout_seconds(self) -> float:
+        raw = os.environ.get("NAVI_EXECUTION_TIMEOUT_SECONDS", str(self.config.timeout_seconds))
         try:
             return max(1.0, float(raw))
         except ValueError:
-            return 120.0
+            return self.config.timeout_seconds
 
 
 class ExecutionService:
     def __init__(self, home: Path):
+        self.config = load_config(home).execution
         self.tasks = TaskStore(home)
-        self.codex = CodexCliProvider()
+        self.providers = {
+            spec.name: CliExecutionProvider(name=spec.name, binary=spec.binary, config=self.config)
+            for spec in list_cli_provider_specs()
+            if spec.supports_execution
+        }
 
     async def plan_task(self, task: Task) -> Task:
         self.tasks.update_task(task.id, status="preparing")
@@ -177,18 +185,20 @@ class ExecutionService:
 
     async def _provider_call_with_timeout(self, task: Task, phase: str) -> ExecutionResult:
         started = time.time()
+        provider = self.providers.get(task.provider or self.config.provider) or next(iter(self.providers.values()))
+        timeout = provider._timeout_seconds()
         try:
             if phase == "prepare":
-                return await asyncio.wait_for(self.codex.plan(task), timeout=CodexCliProvider._timeout_seconds() + 1)
-            return await asyncio.wait_for(self.codex.execute(task), timeout=CodexCliProvider._timeout_seconds() + 1)
+                return await asyncio.wait_for(provider.plan(task), timeout=timeout + 1)
+            return await asyncio.wait_for(provider.execute(task), timeout=timeout + 1)
         except asyncio.TimeoutError:
             ended = time.time()
             return ExecutionResult(
-                provider=self.codex.name,
+                provider=provider.name,
                 phase=phase,
-                command=["codex", "exec", "--timeout", phase, task.id],
+                command=[provider.binary, "exec", "--timeout", phase, task.id],
                 stdout="",
-                stderr=f"codex {phase} timed out after {CodexCliProvider._timeout_seconds()} seconds",
+                stderr=f"{provider.name} {phase} timed out after {timeout} seconds",
                 exit_code=124,
                 started_at=started,
                 ended_at=ended,
