@@ -58,7 +58,7 @@ class ActiveAssistant:
             trigger="user request",
             observation=f"{sender_id or 'local'} requested: {prompt}",
             reason=decision.why,
-            action="Codex will plan first; execution depends on trust level.",
+            action="Navi will prepare the task for approval; execution depends on trust level.",
             decision=decision,
         )
         task = self.tasks.create(
@@ -87,8 +87,8 @@ class ActiveAssistant:
         return AssistantCommandResult(
             (
                 f"{why_now}\n\n"
-                f"Task `{planned.id}` planned by Codex.\n"
-                f"Plan:\n{planned.plan_summary or '(no plan output)'}\n\n"
+                f"Task `{planned.id}` prepared for approval.\n"
+                f"Preparation:\n{planned.plan_summary or '(no preparation output)'}\n\n"
                 f"Approve within 15 minutes with `/approve {approval.code}` or reject with `/reject {approval.code}`."
             ),
             task_id=planned.id,
@@ -131,7 +131,7 @@ class ActiveAssistant:
                 f"Status: {task.status}\n"
                 f"Autonomy: {task.autonomy_level} {LEVEL_LABELS.get(task.autonomy_level, '')}\n"
                 f"Title: {task.title}\n"
-                f"Plan: {task.plan_summary or '-'}\n"
+                f"Preparation: {task.plan_summary or '-'}\n"
                 f"Result: {task.result_summary or '-'}\n"
                 f"Error: {task.error or '-'}"
             ),
@@ -139,7 +139,7 @@ class ActiveAssistant:
         )
 
     def jobs(self) -> AssistantCommandResult:
-        running = [task for task in self.tasks.list(limit=20) if task.status in {"planning", "running", "queued", "awaiting_approval"}]
+        running = [task for task in self.tasks.list(limit=20) if task.status in {"preparing", "running", "queued", "awaiting_approval"}]
         watches = self.tasks.list_watches(limit=20)
         task_lines = [f"- `{task.id}` {task.status}: {task.title}" for task in running] or ["- no active tasks"]
         watch_lines = [f"- `{watch.id}` {watch.cron}: {watch.prompt}" for watch in watches] or ["- no watches"]

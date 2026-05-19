@@ -99,7 +99,8 @@ Runtime rules:
 - Memory implementation should evolve toward typed, scoped, provenance-bearing stores: working, constraint, episodic, semantic, procedural, preference, negative, and skill memory.
 - Memory retrieval must be goal-directed and explainable; semantic similarity alone is not a sufficient recall policy.
 - Conversation sessions must be explicit state. Long-running connectors need a way to start a fresh session without deleting old transcripts, otherwise topic drift and stale local context will pollute future answers.
-- Connector plain messages must pass through an action router before general chat. High-confidence local action or schedule intents should call the relevant task/watch tool directly instead of asking the user to rephrase as a command.
+- Connector plain messages must pass through intent/tool selection before general chat. High-confidence local action or schedule intents should call the relevant task/watch/fact tool directly instead of asking the user to rephrase as a command.
+- Intent selection must be capability-driven, not keyword-driven as product behavior. Deterministic parsers are acceptable only for narrow structured facts such as ids, times, and explicit command syntax.
 - Extension boundaries must be explicit: skills provide promptable procedures, plugins provide installed capabilities/integrations, and hooks observe or gate lifecycle events.
 - Anything with credentials, network calls, filesystem mutation, daemon behavior, providers, or connector surfaces must be a plugin rather than a skill.
 - Anything that runs at task/message/tool/approval/memory lifecycle boundaries must be a hook rather than hidden inline logic.

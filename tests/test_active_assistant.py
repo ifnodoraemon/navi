@@ -77,6 +77,25 @@ def test_auth_inspector_shape():
 
 
 @pytest.mark.asyncio
+async def test_codex_plan_timeout_marks_task_failed(tmp_path, monkeypatch):
+    monkeypatch.delenv("NAVI_CODEX_MOCK", raising=False)
+    monkeypatch.setenv("NAVI_CODEX_TIMEOUT_SECONDS", "1")
+    assistant = ActiveAssistant(tmp_path)
+    task = assistant.tasks.create("timeout", status="pending")
+
+    async def slow_plan(task):
+        import asyncio
+
+        await asyncio.sleep(2)
+
+    monkeypatch.setattr(assistant.execution.codex, "plan", slow_plan)
+    planned = await assistant.execution.plan_task(task)
+
+    assert planned.status == "failed"
+    assert "timed out" in planned.error
+
+
+@pytest.mark.asyncio
 async def test_evolution_rollback_restores_memory_skill_graph_and_trust(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_CODEX_MOCK", "true")
     assistant = ActiveAssistant(tmp_path)

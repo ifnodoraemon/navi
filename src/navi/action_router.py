@@ -9,6 +9,7 @@ class RoutedAction:
     kind: str
     prompt: str = ""
     cron: str = ""
+    target_id: str = ""
     reason: str = ""
 
 
@@ -38,6 +39,13 @@ class ActionRouter:
         normalized = " ".join(text.strip().split())
         if not normalized:
             return RoutedAction("chat", reason="empty message")
+        task_id = self._task_id(normalized)
+        if task_id and any(marker in normalized for marker in ("为什么", "状态", "执行", "没执行", "没有执行", "task", "任务")):
+            return RoutedAction("task_status", target_id=task_id, reason="task status question")
+        if any(marker in normalized for marker in ("为什么没有执行", "为什么没执行", "任务状态", "最新任务")):
+            return RoutedAction("task_status", reason="latest task status question")
+        if any(marker in normalized for marker in ("启动时间", "启动状态", "运行状态", "navi.service", "服务状态")):
+            return RoutedAction("service_status", target_id="navi.service", reason="service status question")
         scheduled = self._daily_watch(normalized)
         if scheduled:
             return scheduled
@@ -85,3 +93,8 @@ class ActionRouter:
         if stripped.startswith(("请", "帮我", "麻烦", "给我", "把")):
             return True
         return any(stripped.startswith(verb) for verb in LOCAL_ACTION_VERBS)
+
+    @staticmethod
+    def _task_id(text: str) -> str:
+        match = re.search(r"\b[0-9a-f]{32}\b", text)
+        return match.group(0) if match else ""

@@ -22,3 +22,17 @@ def test_action_router_keeps_question_as_chat():
     action = ActionRouter().route("需要支持开启新对话吗")
 
     assert action.kind == "chat"
+
+
+def test_action_router_routes_task_status_by_id():
+    action = ActionRouter().route("8f59a0dcc92948c49f88de2df055dabf 为什么没有执行")
+
+    assert action.kind == "task_status"
+    assert action.target_id == "8f59a0dcc92948c49f88de2df055dabf"
+
+
+def test_action_router_routes_service_status():
+    action = ActionRouter().route("你的最新启动时间是什么时候")
+
+    assert action.kind == "service_status"
+    assert action.target_id == "navi.service"

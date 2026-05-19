@@ -9,6 +9,7 @@ from collections.abc import Callable
 from navi.action_router import ActionRouter
 from navi.assistant import ActiveAssistant
 from navi.config import WeixinConfig
+from navi.fact_tools import render_service_facts, render_task_facts, service_facts, task_facts
 from navi.prompting import PromptContext
 from navi.runtime import AgentRuntime
 
@@ -119,6 +120,22 @@ class WeixinService:
             )
             return True
         routed = self.router.route(update.text)
+        if routed.kind == "service_status":
+            await self.client.send_message(
+                account_id=account.account_id,
+                peer_id=update.peer_id,
+                text=render_service_facts(service_facts(routed.target_id or "navi.service")),
+                context_token=self.context_tokens.get(account.account_id, update.peer_id),
+            )
+            return True
+        if routed.kind == "task_status":
+            await self.client.send_message(
+                account_id=account.account_id,
+                peer_id=update.peer_id,
+                text=render_task_facts(task_facts(self.home, routed.target_id or None)),
+                context_token=self.context_tokens.get(account.account_id, update.peer_id),
+            )
+            return True
         if routed.kind == "watch":
             result = self.active.create_watch_cron(
                 routed.cron,

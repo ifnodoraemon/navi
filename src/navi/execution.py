@@ -31,8 +31,8 @@ class CodexCliProvider:
 
     async def plan(self, task: Task) -> ExecutionResult:
         if self._mock_enabled():
-            return self._mock(task, "plan", "Plan: inspect the request, estimate risk, then request approval.")
-        return await self._run(task, phase="plan", sandbox="read-only")
+            return self._mock(task, "prepare", "Preparation: inspect the request, estimate risk, then request approval.")
+        return await self._run(task, phase="prepare", sandbox="read-only")
 
     async def execute(self, task: Task) -> ExecutionResult:
         if self._mock_enabled():
@@ -57,7 +57,22 @@ class CodexCliProvider:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_raw, stderr_raw = await proc.communicate()
+        try:
+            stdout_raw, stderr_raw = await asyncio.wait_for(proc.communicate(), timeout=self._timeout_seconds())
+        except asyncio.TimeoutError:
+            proc.kill()
+            stdout_raw, stderr_raw = await proc.communicate()
+            ended = time.time()
+            return ExecutionResult(
+                provider=self.name,
+                phase=phase,
+                command=command,
+                stdout=stdout_raw.decode(errors="replace"),
+                stderr=f"codex {phase} timed out after {self._timeout_seconds()} seconds",
+                exit_code=124,
+                started_at=started,
+                ended_at=ended,
+            )
         ended = time.time()
         return ExecutionResult(
             provider=self.name,
@@ -86,10 +101,10 @@ class CodexCliProvider:
 
     @staticmethod
     def _prompt(task: Task, *, phase: str) -> str:
-        if phase == "plan":
+        if phase == "prepare":
             return (
                 "You are an execution specialist called by Navi. "
-                "Do not modify files. Produce a concise plan, risks, expected files, and whether approval is needed.\n\n"
+                "Do not modify files. Produce concise preparation facts: risk, expected actions, touched areas, and whether approval is needed.\n\n"
                 f"Task: {task.prompt}"
             )
         return (
@@ -103,6 +118,14 @@ class CodexCliProvider:
     def _mock_enabled() -> bool:
         return os.environ.get("NAVI_CODEX_MOCK", "").lower() in {"1", "true", "yes"}
 
+    @staticmethod
+    def _timeout_seconds() -> float:
+        raw = os.environ.get("NAVI_CODEX_TIMEOUT_SECONDS", "120")
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            return 120.0
+
 
 class ExecutionService:
     def __init__(self, home: Path):
@@ -110,10 +133,10 @@ class ExecutionService:
         self.codex = CodexCliProvider()
 
     async def plan_task(self, task: Task) -> Task:
-        self.tasks.update_task(task.id, status="planning")
-        result = await self.codex.plan(task)
+        self.tasks.update_task(task.id, status="preparing")
+        result = await self._provider_call_with_timeout(task, "prepare")
         self._log(task, result)
-        status = "planned" if result.exit_code == 0 else "failed"
+        status = "prepared" if result.exit_code == 0 else "failed"
         return self.tasks.update_task(
             task.id,
             status=status,
@@ -123,7 +146,7 @@ class ExecutionService:
 
     async def execute_task(self, task: Task) -> Task:
         self.tasks.update_task(task.id, status="running")
-        result = await self.codex.execute(task)
+        result = await self._provider_call_with_timeout(task, "execute")
         self._log(task, result)
         status = "completed" if result.exit_code == 0 else "failed"
         return self.tasks.update_task(
@@ -151,3 +174,22 @@ class ExecutionService:
             started_at=result.started_at,
             ended_at=result.ended_at,
         )
+
+    async def _provider_call_with_timeout(self, task: Task, phase: str) -> ExecutionResult:
+        started = time.time()
+        try:
+            if phase == "prepare":
+                return await asyncio.wait_for(self.codex.plan(task), timeout=CodexCliProvider._timeout_seconds() + 1)
+            return await asyncio.wait_for(self.codex.execute(task), timeout=CodexCliProvider._timeout_seconds() + 1)
+        except asyncio.TimeoutError:
+            ended = time.time()
+            return ExecutionResult(
+                provider=self.codex.name,
+                phase=phase,
+                command=["codex", "exec", "--timeout", phase, task.id],
+                stdout="",
+                stderr=f"codex {phase} timed out after {CodexCliProvider._timeout_seconds()} seconds",
+                exit_code=124,
+                started_at=started,
+                ended_at=ended,
+            )

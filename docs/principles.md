@@ -15,6 +15,7 @@ Navi must be agentic in the system shape, not just in wording.
 - Connectors, providers, tools, and deployment surfaces must describe what they can do at runtime.
 - The agent should choose among answer, ask, plan, task, approve, execute, observe, or remember.
 - Learning must happen through explicit memory, graph, trust, and evolution records, not hidden prompt drift.
+- Intent selection must be capability-driven rather than keyword-driven. Keywords can parse narrow structured facts, but they must not define product behavior.
 
 ### 2. Tools Return Facts Only
 
@@ -35,6 +36,15 @@ Every durable capability should have a headless CLI contract before it becomes a
 - Web is an operator console.
 - Agent reasoning is the decision layer.
 - Anything that cannot be run, tested, logged, or replayed from CLI is not a stable capability yet.
+
+### 3.1 Natural Mode Switching
+
+Navi should not expose rigid internal modes as the main user experience.
+
+- Users should not need to say "plan mode" or "tool mode" for ordinary work.
+- The agent should naturally choose answering, asking, fact lookup, proposal, approval, execution, or memory update.
+- Planning is a reasoning or tool-preparation step, not the product's default interaction mode.
+- Coding-oriented execution providers are just providers. Navi is a personal assistant and must not frame all tasks as coding tasks.
 
 ### 4. Connector Agnostic Core
 
@@ -142,7 +152,7 @@ Long-running agents fail when compression drops safety instructions or user cons
 
 Agentic does not mean broad access by default.
 
-- Default to read-only or planning modes for new connectors and providers.
+- Default to read-only or preparation modes for new connectors and providers.
 - Enable write, shell, network, account, and production capabilities explicitly.
 - Prefer allowlists over denylists for dangerous tools.
 - Secrets must be redacted in prompts, logs, Web views, and connector replies.
@@ -184,7 +194,7 @@ Navi's architecture should keep these boundaries:
 - `skills/`: promptable procedures and behavior guidance.
 - `plugins/`: installed code capabilities, integrations, providers, and connector surfaces.
 - `hooks/`: lifecycle gates and observers.
-- `agent/`: intent, planning, policy, approval, and reflection.
+- `agent/`: intent, preparation, policy, approval, and reflection.
 - `memory/graph/trust/evolution`: typed, auditable learning and constraint stores.
 - `runtime prompt`: composed from current facts, not hand-written assumptions.
 

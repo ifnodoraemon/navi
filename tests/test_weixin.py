@@ -102,6 +102,64 @@ async def test_weixin_plain_local_action_creates_task(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_weixin_plain_task_status_uses_fact_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
+    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    service = WeixinService(home=tmp_path, config=WeixinConfig(), runtime=runtime)
+    account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
+    task = service.active.tasks.create("check startup", status="preparing")
+
+    handled = await service.handle_update(
+        account,
+        WeixinUpdate(
+            message_id="msg-task-status",
+            peer_id="peer",
+            sender_id="sender",
+            text=f"{task.id} 为什么没有执行",
+        ),
+    )
+
+    assert handled is True
+    assert f"Task `{task.id}` facts:" in service.client.sent[-1]["text"]
+    assert "- status: preparing" in service.client.sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_weixin_plain_service_status_uses_fact_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
+    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    service = WeixinService(home=tmp_path, config=WeixinConfig(), runtime=runtime)
+    account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
+
+    import navi.weixin.service as service_module
+    from navi.fact_tools import ServiceFacts
+
+    monkeypatch.setattr(
+        service_module,
+        "service_facts",
+        lambda name: ServiceFacts(
+            name=name,
+            properties={
+                "ActiveState": "active",
+                "SubState": "running",
+                "MainPID": "123",
+                "ActiveEnterTimestamp": "Tue 2026-05-19 08:00:00 CST",
+            },
+            exit_code=0,
+            stderr="",
+        ),
+    )
+
+    handled = await service.handle_update(
+        account,
+        WeixinUpdate(message_id="msg-service", peer_id="peer", sender_id="sender", text="你的最新启动时间是什么时候"),
+    )
+
+    assert handled is True
+    assert "ActiveEnterTimestamp: Tue 2026-05-19 08:00:00 CST" in service.client.sent[-1]["text"]
+
+
+@pytest.mark.asyncio
 async def test_weixin_dm_allowlist_blocks_untrusted_sender(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
