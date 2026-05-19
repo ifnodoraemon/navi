@@ -101,6 +101,7 @@ Runtime rules:
 - Conversation sessions must be explicit state. Long-running connectors need a way to start a fresh session without deleting old transcripts, otherwise topic drift and stale local context will pollute future answers.
 - Connector plain messages must pass through intent/tool selection before general chat. High-confidence local action or schedule intents should call the relevant task/watch/fact tool directly instead of asking the user to rephrase as a command.
 - Intent selection must be capability-driven, not keyword-driven as product behavior. Deterministic parsers are acceptable only for narrow structured facts such as ids, times, and explicit command syntax.
+- Deterministic routing must not invent missing facts such as default times, paths, service names, task ids, or permissions. If a capability can be used but required slots are missing, the agent should ask a concise clarification.
 - Slash commands are explicit structured syntax, not the primary agent behavior. Their grammar must stay orthogonal: `/task create|show|list`, `/watch create|list`, `/approval approve|reject|list`, and connector-local `/session new|current`.
 - Extension boundaries must be explicit: skills provide promptable procedures, plugins provide installed capabilities/integrations, and hooks observe or gate lifecycle events.
 - Anything with credentials, network calls, filesystem mutation, daemon behavior, providers, or connector surfaces must be a plugin rather than a skill.

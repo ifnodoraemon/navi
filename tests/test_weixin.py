@@ -5,12 +5,22 @@ import os
 import pytest
 
 from navi.config import WeixinConfig
-from navi.provider import MockProvider
+from navi.provider import ChatMessage, MockProvider
 from navi.runtime import AgentRuntime
 from navi.weixin.client import WeixinClient
 from navi.weixin.models import WeixinAccount, WeixinUpdate
 from navi.weixin.service import WeixinService
 from navi.weixin.store import ContextTokenStore, MessageDeduplicator, WeixinStore, extract_text, split_text_for_weixin
+
+
+class ScriptedProvider(MockProvider):
+    def __init__(self, response: str):
+        self.response = response
+        self.messages: list[ChatMessage] = []
+
+    async def complete(self, messages: list[ChatMessage]) -> str:
+        self.messages = messages
+        return self.response
 
 
 @pytest.mark.asyncio
@@ -98,9 +108,14 @@ async def test_weixin_plain_schedule_message_creates_watch(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_weixin_plain_schedule_with_period_creates_watch(tmp_path, monkeypatch):
+async def test_weixin_plain_schedule_with_vague_period_asks_clarification(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
-    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    runtime = AgentRuntime(
+        home=tmp_path,
+        provider=ScriptedProvider(
+            '{"kind":"ask","message":"你希望每天晚上几点上通识课？","confidence":0.91,"reason":"vague time"}'
+        ),
+    )
     service = WeixinService(home=tmp_path, config=WeixinConfig(), runtime=runtime)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
@@ -110,10 +125,9 @@ async def test_weixin_plain_schedule_with_period_creates_watch(tmp_path, monkeyp
     )
 
     assert handled is True
-    watches = service.active.tasks.list_watches()
-    assert watches[0].cron == "0 21 * * *"
-    assert watches[0].prompt == "上一个通识课给我"
-    assert "Watch" in service.client.sent[-1]["text"]
+    assert service.active.tasks.list_watches() == []
+    assert service.client.sent[-1]["text"] == "你希望每天晚上几点上通识课？"
+    assert "/watch" not in service.client.sent[-1]["text"]
 
 
 @pytest.mark.asyncio

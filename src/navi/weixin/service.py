@@ -10,6 +10,7 @@ from navi.action_router import ActionRouter
 from navi.assistant import ActiveAssistant
 from navi.config import WeixinConfig
 from navi.fact_tools import ServiceFacts, TaskFacts, render_service_facts, render_task_facts
+from navi.intent import ActionDecision, AgenticActionSelector
 from navi.prompting import PromptContext
 from navi.runtime import AgentRuntime
 from navi.tasks import Approval, ExecutionLog, Task
@@ -32,6 +33,7 @@ class WeixinService:
         self.active = ActiveAssistant(home)
         self.router = ActionRouter()
         self.tools = build_core_tool_registry(home, project_dir=Path.cwd())
+        self.action_selector = AgenticActionSelector(runtime.provider)
 
     def _build_client(self):
         if os.environ.get("NAVI_WEIXIN_MOCK", "").lower() in {"1", "true", "yes"}:
@@ -174,6 +176,9 @@ class WeixinService:
                 context_token=self.context_tokens.get(account.account_id, update.peer_id),
             )
             return True
+        selected = await self.action_selector.select(update.text, tools=self.tools.list_specs())
+        if await self._handle_selected_action(account, update, selected):
+            return True
         session_id = self.runtime.memory.current_session_id(self._session_alias(update.peer_id))
         reply = await self.runtime.chat(
             update.text,
@@ -280,6 +285,73 @@ class WeixinService:
             session_id = self.runtime.memory.current_session_id(self._session_alias(peer_id))
             return f"Current conversation session: {session_id}"
         return "Usage: /session new | /session current"
+
+    async def _handle_selected_action(
+        self,
+        account: WeixinAccount,
+        update: WeixinUpdate,
+        decision: ActionDecision,
+    ) -> bool:
+        context_token = self.context_tokens.get(account.account_id, update.peer_id)
+        if decision.kind == "ask" and decision.message:
+            await self.client.send_message(
+                account_id=account.account_id,
+                peer_id=update.peer_id,
+                text=decision.message,
+                context_token=context_token,
+            )
+            return True
+        if decision.kind == "watch" and decision.cron and decision.prompt:
+            result = self.active.create_watch_cron(
+                decision.cron,
+                decision.prompt,
+                peer_id=update.peer_id,
+                sender_id=update.sender_id,
+            )
+            await self.client.send_message(
+                account_id=account.account_id,
+                peer_id=update.peer_id,
+                text=result.text,
+                context_token=context_token,
+            )
+            return True
+        if decision.kind == "task" and decision.prompt:
+            result = await self.active.create_task(
+                decision.prompt,
+                peer_id=update.peer_id,
+                sender_id=update.sender_id,
+                source="weixin",
+            )
+            await self.client.send_message(
+                account_id=account.account_id,
+                peer_id=update.peer_id,
+                text=result.text,
+                context_token=context_token,
+            )
+            return True
+        if decision.kind == "service_status":
+            tool_result = self.tools.call("service.status", {"name": decision.target_id or "navi.service"})
+            await self.client.send_message(
+                account_id=account.account_id,
+                peer_id=update.peer_id,
+                text=render_service_facts(ServiceFacts(**tool_result.facts))
+                if tool_result.ok
+                else tool_result.error,
+                context_token=context_token,
+            )
+            return True
+        if decision.kind == "task_status":
+            tool_result = self.tools.call("task.status", {"task_id": decision.target_id})
+            await self.client.send_message(
+                account_id=account.account_id,
+                peer_id=update.peer_id,
+                text=render_task_facts(self._task_facts_from_tool(tool_result.facts))
+                if tool_result.ok
+                else tool_result.error,
+                context_token=context_token,
+            )
+            return True
+        return False
 
     @staticmethod
     def _task_facts_from_tool(facts: dict) -> TaskFacts:

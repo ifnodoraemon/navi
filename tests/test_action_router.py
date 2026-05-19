@@ -11,12 +11,10 @@ def test_action_router_routes_daily_watch():
     assert action.prompt == "进行毛选晨读"
 
 
-def test_action_router_routes_daily_period_watch_with_default_hour():
+def test_action_router_does_not_invent_daily_period_hour():
     action = ActionRouter().route("每天晚上上一个通识课给我")
 
-    assert action.kind == "watch"
-    assert action.cron == "0 21 * * *"
-    assert action.prompt == "上一个通识课给我"
+    assert action.kind == "chat"
 
 
 def test_action_router_routes_local_task():
