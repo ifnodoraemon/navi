@@ -147,11 +147,11 @@ async def test_weixin_plain_service_status_uses_fact_tool(tmp_path, monkeypatch)
     service = WeixinService(home=tmp_path, config=WeixinConfig(), runtime=runtime)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
-    import navi.weixin.service as service_module
+    import navi.tools as tools_module
     from navi.fact_tools import ServiceFacts
 
     monkeypatch.setattr(
-        service_module,
+        tools_module,
         "service_facts",
         lambda name: ServiceFacts(
             name=name,

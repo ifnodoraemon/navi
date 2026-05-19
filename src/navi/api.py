@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .assistant import ActiveAssistant
 from .auth import AuthInspector
@@ -14,6 +16,7 @@ from .evolution import EvolutionEngine, EvolutionLedger
 from .graph import GraphStore
 from .paths import ensure_home
 from .tasks import TaskStore
+from .tools import build_core_tool_registry
 from .trust import TrustStore
 from .weixin.service import WeixinService
 
@@ -58,12 +61,17 @@ class WatchRequest(BaseModel):
     sender_id: str = "web"
 
 
+class ToolCallRequest(BaseModel):
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
 def create_app(home: Path | None = None) -> FastAPI:
     home = home or ensure_home()
     write_default_config(home)
     runtime = build_runtime(home)
     task_store = TaskStore(home)
     active = ActiveAssistant(home)
+    tools = build_core_tool_registry(home, project_dir=Path.cwd())
     app = FastAPI(title="Navi", version="0.1.0")
 
     @app.get("/health")
@@ -183,6 +191,17 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.get("/v1/auth/status")
     def auth_status() -> dict:
         return {"providers": [item.__dict__ for item in AuthInspector().status()]}
+
+    @app.get("/v1/tools")
+    def list_tools() -> dict:
+        return {"tools": [asdict(spec) for spec in tools.list_specs()]}
+
+    @app.post("/v1/tools/{tool_name}/call")
+    def call_tool(tool_name: str, request: ToolCallRequest) -> dict:
+        result = tools.call(tool_name, request.args)
+        if not result.ok and not tools.get(tool_name):
+            raise HTTPException(status_code=404, detail=result.error)
+        return result.to_dict()
 
     @app.get("/v1/graph")
     def graph() -> dict:

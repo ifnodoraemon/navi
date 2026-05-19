@@ -113,7 +113,10 @@ Current CLI surface:
 ```bash
 navi chat
 navi web
+navi run
 navi model
+navi tools list
+navi tools call TOOL_NAME --args-json JSON_ARGS
 navi memory add TYPE CONTENT
 navi memory list
 navi memory recall QUERY
@@ -123,6 +126,15 @@ navi session list
 navi session aliases
 navi session show SESSION_ID
 navi skills
+navi auth status
+navi graph list
+navi trust list
+navi trust set RULE_ID LEVEL
+navi evolution list
+navi evolution show EVENT_ID
+navi evolution rollback EVENT_ID
+navi service unit
+navi service install
 navi weixin setup
 navi weixin run
 navi weixin status
@@ -143,6 +155,22 @@ GET  /v1/skills
 GET  /v1/tasks
 POST /v1/tasks
 PATCH /v1/tasks/{task_id}
+GET  /v1/approvals
+GET  /v1/watches
+POST /v1/tasks/{task_id}/approve
+POST /v1/tasks/process
+POST /v1/active/tasks
+POST /v1/active/approve
+POST /v1/active/reject
+POST /v1/active/watches
+POST /v1/active/watches/process
+GET  /v1/auth/status
+GET  /v1/tools
+POST /v1/tools/{tool_name}/call
+GET  /v1/graph
+GET  /v1/trust-rules
+GET  /v1/evolution-events
+POST /v1/evolution-events/{event_id}/rollback
 GET  /v1/weixin/status
 GET  /
 ```

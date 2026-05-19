@@ -21,6 +21,8 @@ Navi must be agentic in the system shape, not just in wording.
 
 Tools are fact sensors and actuators. They must not smuggle policy or advice into results.
 
+- Every tool must have an inspectable spec: name, description, input schema, output schema, mutation flag, permission class, and source.
+- Tools must be callable from CLI before connectors rely on them.
 - A status tool returns status, not a recommendation.
 - A filesystem tool returns entries and metadata, not cleanup advice.
 - A provider tool returns configured models and health, not model preference.

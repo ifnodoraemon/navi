@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import asdict
 from pathlib import Path
 
 import typer
@@ -15,6 +17,7 @@ from .graph import GraphStore
 from .memory import MemoryStore
 from .paths import ensure_home
 from .service import build_systemd_user_unit, install_systemd_user_unit
+from .tools import build_core_tool_registry
 from .trust import TrustStore
 from .weixin.service import WeixinService
 
@@ -27,6 +30,7 @@ evolution_app = typer.Typer(help="Evolution ledger")
 service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
+tools_app = typer.Typer(help="Unified fact tool registry")
 app.add_typer(weixin_app, name="weixin")
 app.add_typer(auth_app, name="auth")
 app.add_typer(graph_app, name="graph")
@@ -35,6 +39,7 @@ app.add_typer(evolution_app, name="evolution")
 app.add_typer(service_app, name="service")
 app.add_typer(memory_app, name="memory")
 app.add_typer(session_app, name="session")
+app.add_typer(tools_app, name="tools")
 
 
 @app.command()
@@ -180,6 +185,36 @@ def auth_status() -> None:
     for item in AuthInspector().status():
         marker = "ok" if item.installed and item.authenticated else "missing"
         typer.echo(f"{item.name}: {marker} path={item.path or '-'} version={item.version or '-'}")
+
+
+@tools_app.command("list")
+def tools_list(json_output: bool = False) -> None:
+    """List registered tools as facts."""
+    registry = build_core_tool_registry(ensure_home(), project_dir=Path.cwd())
+    specs = [asdict(spec) for spec in registry.list_specs()]
+    if json_output:
+        typer.echo(json.dumps(specs, ensure_ascii=False, indent=2))
+        return
+    for spec in specs:
+        typer.echo(
+            f"{spec['name']} facts_only={spec['facts_only']} mutates={spec['mutates']} "
+            f"permission={spec['permission']} source={spec['source']}"
+        )
+
+
+@tools_app.command("call")
+def tools_call(name: str, args_json: str = "{}") -> None:
+    """Call a registered tool with a JSON object argument."""
+    try:
+        args = json.loads(args_json)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(f"invalid JSON: {exc}") from exc
+    if not isinstance(args, dict):
+        raise typer.BadParameter("args must be a JSON object")
+    result = build_core_tool_registry(ensure_home(), project_dir=Path.cwd()).call(name, args)
+    typer.echo(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    if not result.ok:
+        raise typer.Exit(code=1)
 
 
 @graph_app.command("list")

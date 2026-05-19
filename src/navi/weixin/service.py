@@ -9,9 +9,11 @@ from collections.abc import Callable
 from navi.action_router import ActionRouter
 from navi.assistant import ActiveAssistant
 from navi.config import WeixinConfig
-from navi.fact_tools import render_service_facts, render_task_facts, service_facts, task_facts
+from navi.fact_tools import ServiceFacts, TaskFacts, render_service_facts, render_task_facts
 from navi.prompting import PromptContext
 from navi.runtime import AgentRuntime
+from navi.tasks import Approval, ExecutionLog, Task
+from navi.tools import build_core_tool_registry
 
 from .client import MockWeixinClient, WeixinClient
 from .models import WeixinAccount, WeixinUpdate
@@ -29,6 +31,7 @@ class WeixinService:
         self.client = self._build_client()
         self.active = ActiveAssistant(home)
         self.router = ActionRouter()
+        self.tools = build_core_tool_registry(home, project_dir=Path.cwd())
 
     def _build_client(self):
         if os.environ.get("NAVI_WEIXIN_MOCK", "").lower() in {"1", "true", "yes"}:
@@ -122,18 +125,24 @@ class WeixinService:
             return True
         routed = self.router.route(update.text)
         if routed.kind == "service_status":
+            tool_result = self.tools.call("service.status", {"name": routed.target_id or "navi.service"})
             await self.client.send_message(
                 account_id=account.account_id,
                 peer_id=update.peer_id,
-                text=render_service_facts(service_facts(routed.target_id or "navi.service")),
+                text=render_service_facts(ServiceFacts(**tool_result.facts))
+                if tool_result.ok
+                else tool_result.error,
                 context_token=self.context_tokens.get(account.account_id, update.peer_id),
             )
             return True
         if routed.kind == "task_status":
+            tool_result = self.tools.call("task.status", {"task_id": routed.target_id or ""})
             await self.client.send_message(
                 account_id=account.account_id,
                 peer_id=update.peer_id,
-                text=render_task_facts(task_facts(self.home, routed.target_id or None)),
+                text=render_task_facts(self._task_facts_from_tool(tool_result.facts))
+                if tool_result.ok
+                else tool_result.error,
                 context_token=self.context_tokens.get(account.account_id, update.peer_id),
             )
             return True
@@ -271,6 +280,13 @@ class WeixinService:
             session_id = self.runtime.memory.current_session_id(self._session_alias(peer_id))
             return f"Current conversation session: {session_id}"
         return "Usage: /session new | /session current"
+
+    @staticmethod
+    def _task_facts_from_tool(facts: dict) -> TaskFacts:
+        task = Task(**facts["task"]) if facts.get("task") else None
+        approvals = [Approval(**approval) for approval in facts.get("approvals", [])]
+        logs = [ExecutionLog(**log) for log in facts.get("logs", [])]
+        return TaskFacts(task=task, approvals=approvals, logs=logs)
 
     @staticmethod
     def _session_alias(peer_id: str) -> str:

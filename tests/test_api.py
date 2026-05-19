@@ -57,6 +57,18 @@ def test_local_console_api_flow(tmp_path):
     assert wx_status.status_code == 200
     assert wx_status.json()["configured"] is False
 
+    tools = client.get("/v1/tools")
+    assert tools.status_code == 200
+    assert "task.status" in {tool["name"] for tool in tools.json()["tools"]}
+
+    provider = client.post("/v1/tools/provider.config/call", json={"args": {}})
+    assert provider.status_code == 200
+    assert provider.json()["ok"] is True
+    assert provider.json()["facts"]["provider"] == "mock"
+
+    missing_tool = client.post("/v1/tools/missing.tool/call", json={"args": {}})
+    assert missing_tool.status_code == 404
+
 
 def test_active_api_flow(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_CODEX_MOCK", "true")
