@@ -8,7 +8,6 @@ from navi.evals import (
     match_task_eval_case,
     task_eval_tools,
     validate_task_eval_dataset,
-    validate_task_eval_cases,
 )
 from navi.syscalls import ModelSyscall
 

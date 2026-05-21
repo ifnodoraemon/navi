@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import navi
-from navi.api import create_app
-
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility path.
     import tomli as tomllib
+
+import navi
+from navi.api import create_app
 
 
 def test_package_version_matches_project_metadata():
