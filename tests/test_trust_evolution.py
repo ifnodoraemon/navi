@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import pytest
 import time
@@ -292,3 +293,147 @@ def test_read_only_skills_store(tmp_path):
     store.builtin_skills_dir = tmp_path / "nonexistent_builtins"
     skills = store.list_skills()
     assert isinstance(skills, list)
+
+
+@pytest.mark.asyncio
+async def test_session_locks_memory_cleanup(tmp_path):
+    from navi.memory import MemoryStore
+    from navi.provider import ModelPool
+    
+    store = MemoryStore(tmp_path)
+    assert len(store._session_locks) == 0
+    
+    # Trigger consolidator with no messages, should exit and clean up lock
+    res = await store.extract_and_consolidate_memories("session-1", ModelPool(default=None))
+    assert res == []
+    assert len(store._session_locks) == 0
+
+
+@pytest.mark.asyncio
+async def test_engine_strong_task_references(tmp_path):
+    from navi.engine import HernessEngine, AgentTurnResult
+    from navi.provider import ModelPool
+    
+    # Mock runtime and memory
+    class DummyRuntime:
+        def __init__(self):
+            self.provider = ModelPool(default=None)
+            self.memory = None
+            
+    class DummyMemory:
+        async def extract_and_consolidate_memories(self, session_id, provider, task_id):
+            await asyncio.sleep(0.01)
+            
+    runtime = DummyRuntime()
+    runtime.memory = DummyMemory()
+    
+    engine = HernessEngine(home=tmp_path, runtime=runtime)
+    assert len(engine._background_tasks) == 0
+    
+    # Trigger background memory
+    engine._trigger_background_memory(AgentTurnResult(text="hello", session_id="sess-1"))
+    assert len(engine._background_tasks) == 1
+    
+    # Wait for completion and verify it was discarded
+    await asyncio.sleep(0.05)
+    assert len(engine._background_tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_daemon_active_task_suppression(tmp_path):
+    from navi.daemon import SystemDaemon
+    from navi.graph import GraphStore
+    from navi.tasks import TaskStore
+    from navi.capabilities import CapabilityResult
+    
+    daemon = SystemDaemon(tmp_path)
+    graph = GraphStore(tmp_path)
+    tasks = TaskStore(tmp_path)
+    
+    project_path = tmp_path / "active_project"
+    project_path.mkdir(parents=True, exist_ok=True)
+    
+    graph.upsert("Project", str(project_path), {"last_git_status_hash": ""})
+    
+    # Write mock exception logs
+    log_dir = project_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "dev.log"
+    log_file.write_text("Exception: crashes in main\nTraceback (most recent call last):\n  File 'main.py'")
+    
+    # Mock capability invoke
+    mock_invokes = []
+    async def mock_invoke(name, args, permission=None, context=None):
+        mock_invokes.append(args)
+        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", task_id="t-1")
+    daemon.capabilities.invoke = mock_invoke
+    
+    # Case 1: No active tasks, process_events_once should trigger a proactive alert
+    events = await daemon.process_events_once()
+    assert len(events) == 1
+    assert len(mock_invokes) == 1
+    
+    # Reset offsets
+    graph.upsert("Project", str(project_path), {"log_size_dev.log": 0, "last_err_fp_dev.log": ""})
+    mock_invokes.clear()
+    
+    # Case 2: Active task in progress for this workspace, should suppress proactive alert!
+    tasks.create(title="Active task", prompt="Fix something", kind="task", workspace=str(project_path), status="running")
+    
+    events_suppressed = await daemon.process_events_once()
+    assert len(events_suppressed) == 0
+    assert len(mock_invokes) == 0
+
+
+@pytest.mark.asyncio
+async def test_daemon_fingerprint_spam_protection(tmp_path):
+    from navi.daemon import SystemDaemon
+    from navi.graph import GraphStore
+    from navi.capabilities import CapabilityResult
+    
+    daemon = SystemDaemon(tmp_path)
+    graph = GraphStore(tmp_path)
+    
+    project_path = tmp_path / "fingerprint_project"
+    project_path.mkdir(parents=True, exist_ok=True)
+    graph.upsert("Project", str(project_path), {"log_size_dev.log": 0})
+    
+    log_dir = project_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "dev.log"
+    
+    # Mock capability invoke
+    mock_invokes = []
+    async def mock_invoke(name, args, permission=None, context=None):
+        mock_invokes.append(args)
+        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", task_id="t-1")
+    daemon.capabilities.invoke = mock_invoke
+    
+    # Write first exception
+    log_file.write_text("Exception: syntax error in compiler.py\nTraceback (most recent call last):\n  File 'compiler.py'")
+    events1 = await daemon.process_events_once()
+    assert len(events1) == 1
+    assert len(mock_invokes) == 1
+    
+    # Reset log_size but keep same exception contents
+    project = graph.get_by_name("Project", str(project_path))
+    project.data["log_size_dev.log"] = 0
+    graph.upsert("Project", str(project_path), project.data)
+    mock_invokes.clear()
+    
+    # Write same exception again, should be ignored by fingerprint!
+    events2 = await daemon.process_events_once()
+    assert len(events2) == 0
+    assert len(mock_invokes) == 0
+    
+    # Write different exception, should trigger new proactive alert
+    log_file.write_text("FATAL: Out of memory in database connections\n")
+    # Reset log size so it parses
+    project = graph.get_by_name("Project", str(project_path))
+    project.data["log_size_dev.log"] = 0
+    graph.upsert("Project", str(project_path), project.data)
+    
+    events3 = await daemon.process_events_once()
+    assert len(events3) == 1
+    assert len(mock_invokes) == 1
+

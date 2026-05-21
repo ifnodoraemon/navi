@@ -434,133 +434,145 @@ class MemoryStore:
         from .provider import ChatMessage
         from .evolution import EvolutionLedger
 
-        lock = self._session_locks.setdefault(session_id, asyncio.Lock())
-        async with lock:
-            # 1. Fetch recent messages in this session
-            messages = self.get_messages(session_id, limit=6)
-            if not messages:
-                return []
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = [asyncio.Lock(), 0]
+        
+        lock_info = self._session_locks[session_id]
+        lock_info[1] += 1
+        lock = lock_info[0]
 
-            # 2. Fetch existing active memory items
-            active_items = []
-            for item_type in ["preference", "constraint", "negative", "fact", "semantic"]:
-                active_items.extend(self.list_items(memory_type=item_type, status="active", limit=100))
+        try:
+            async with lock:
+                # 1. Fetch recent messages in this session
+                messages = self.get_messages(session_id, limit=6)
+                if not messages:
+                    return []
 
-            # 3. Format context
-            conversation_text = "\n".join(f"{msg.role}: {msg.content}" for msg in messages)
-            memories_data = [
-                {
-                    "id": item.id,
-                    "type": item.type,
-                    "content": item.content,
-                    "confidence": item.confidence,
-                    "source": item.source,
-                }
-                for item in active_items
-            ]
-            memories_text = json.dumps(memories_data, ensure_ascii=False, indent=2)
+                # 2. Fetch existing active memory items
+                active_items = []
+                for item_type in ["preference", "constraint", "negative", "fact", "semantic"]:
+                    active_items.extend(self.list_items(memory_type=item_type, status="active", limit=100))
 
-            # 4. Prompts
-            system_prompt = (
-                "You are Navi's memory consolidator and learning agent.\n"
-                "Your job is to analyze the recent conversation turn and existing active memories, and decide:\n"
-                "1. If any new durable facts, user preferences, negative lessons (avoiding repetitive failures), or constraints should be learned.\n"
-                "2. If any existing active memories are now updated, contradicted, or should be revoked.\n\n"
-                "Rules:\n"
-                "- Only extract genuinely durable, useful information. Do NOT extract standard conversational greetings, temporary commands, or trivial details.\n"
-                "- Avoid adding duplicate memories that already exist in the list.\n"
-                "- If a new preference or fact contradicts an existing active memory, revoke the old one and add the new one.\n"
-                "- Output ONLY a valid JSON object matching the schema below. No prose, no markdown fences.\n\n"
-                "JSON Schema:\n"
-                "{\n"
-                "  \"learnings\": [\n"
-                "    {\n"
-                "      \"action\": \"add\",\n"
-                "      \"type\": \"preference|constraint|negative|fact\",\n"
-                "      \"content\": \"durable fact, preference, negative lesson, or constraint (in the user's language)\",\n"
-                "      \"confidence\": 0.8\n"
-                "    },\n"
-                "    {\n"
-                "      \"action\": \"revoke\",\n"
-                "      \"id\": \"existing_memory_id\",\n"
-                "      \"reason\": \"explanation of why it is revoked/contradicted\"\n"
-                "    }\n"
-                "  ]\n"
-                "}"
-            )
-            user_prompt = (
-                f"Existing Active Memories:\n{memories_text}\n\n"
-                f"Recent Conversation Turn:\n{conversation_text}\n\n"
-                "Analyze and output the JSON learnings:"
-            )
+                # 3. Format context
+                conversation_text = "\n".join(f"{msg.role}: {msg.content}" for msg in messages)
+                memories_data = [
+                    {
+                        "id": item.id,
+                        "type": item.type,
+                        "content": item.content,
+                        "confidence": item.confidence,
+                        "source": item.source,
+                    }
+                    for item in active_items
+                ]
+                memories_text = json.dumps(memories_data, ensure_ascii=False, indent=2)
 
-            chat_messages = [
-                ChatMessage("system", system_prompt),
-                ChatMessage("user", user_prompt),
-            ]
+                # 4. Prompts
+                system_prompt = (
+                    "You are Navi's memory consolidator and learning agent.\n"
+                    "Your job is to analyze the recent conversation turn and existing active memories, and decide:\n"
+                    "1. If any new durable facts, user preferences, negative lessons (avoiding repetitive failures), or constraints should be learned.\n"
+                    "2. If any existing active memories are now updated, contradicted, or should be revoked.\n\n"
+                    "Rules:\n"
+                    "- Only extract genuinely durable, useful information. Do NOT extract standard conversational greetings, temporary commands, or trivial details.\n"
+                    "- Avoid adding duplicate memories that already exist in the list.\n"
+                    "- If a new preference or fact contradicts an existing active memory, revoke the old one and add the new one.\n"
+                    "- Output ONLY a valid JSON object matching the schema below. No prose, no markdown fences.\n\n"
+                    "JSON Schema:\n"
+                    "{\n"
+                    "  \"learnings\": [\n"
+                    "    {\n"
+                    "      \"action\": \"add\",\n"
+                    "      \"type\": \"preference|constraint|negative|fact\",\n"
+                    "      \"content\": \"durable fact, preference, negative lesson, or constraint (in the user's language)\",\n"
+                    "      \"confidence\": 0.8\n"
+                    "    },\n"
+                    "    {\n"
+                    "      \"action\": \"revoke\",\n"
+                    "      \"id\": \"existing_memory_id\",\n"
+                    "      \"reason\": \"explanation of why it is revoked/contradicted\"\n"
+                    "    }\n"
+                    "  ]\n"
+                    "}"
+                )
+                user_prompt = (
+                    f"Existing Active Memories:\n{memories_text}\n\n"
+                    f"Recent Conversation Turn:\n{conversation_text}\n\n"
+                    "Analyze and output the JSON learnings:"
+                )
 
-            try:
-                response_raw = await provider.complete_for("planner", chat_messages)
-            except Exception:
-                return []
+                chat_messages = [
+                    ChatMessage("system", system_prompt),
+                    ChatMessage("user", user_prompt),
+                ]
 
-            # 5. Extract JSON object
-            learnings = self._parse_json_learnings(response_raw)
+                try:
+                    response_raw = await provider.complete_for("planner", chat_messages)
+                except Exception:
+                    return []
 
-            ledger = EvolutionLedger(self.home)
-            affected_items = []
-            for learning in learnings:
-                if not isinstance(learning, dict):
-                    continue
-                action = str(learning.get("action", "")).strip().lower()
-                if action == "add":
-                    m_type = str(learning.get("type", "")).strip().lower()
-                    content = str(learning.get("content", "")).strip()
-                    if not content or m_type not in ["preference", "constraint", "negative", "fact", "semantic"]:
+                # 5. Extract JSON object
+                learnings = self._parse_json_learnings(response_raw)
+
+                ledger = EvolutionLedger(self.home)
+                affected_items = []
+                for learning in learnings:
+                    if not isinstance(learning, dict):
                         continue
-                    # Double check to prevent duplicate add if content already exactly exists
-                    if any(item.content.lower() == content.lower() and item.type == m_type for item in active_items):
-                        continue
+                    action = str(learning.get("action", "")).strip().lower()
+                    if action == "add":
+                        m_type = str(learning.get("type", "")).strip().lower()
+                        content = str(learning.get("content", "")).strip()
+                        if not content or m_type not in ["preference", "constraint", "negative", "fact", "semantic"]:
+                            continue
+                        # Double check to prevent duplicate add if content already exactly exists
+                        if any(item.content.lower() == content.lower() and item.type == m_type for item in active_items):
+                            continue
 
-                    try:
-                        conf_val = float(learning.get("confidence", 0.7))
-                    except (ValueError, TypeError):
-                        conf_val = 0.7
+                        try:
+                            conf_val = float(learning.get("confidence", 0.7))
+                        except (ValueError, TypeError):
+                            conf_val = 0.7
 
-                    new_item = self.add_item(
-                        memory_type=m_type,
-                        content=content,
-                        source="evolution",
-                        status="active",
-                        confidence=conf_val,
-                    )
-                    affected_items.append(new_item)
-                    ledger.record(
-                        task_id=task_id or f"session:{session_id}",
-                        target_type="memory_item",
-                        target_id=new_item.id,
-                        reason=f"Extracted learning: {new_item.content[:60]}",
-                        before="",
-                        after=json.dumps(new_item.__dict__, default=str),
-                    )
-                elif action == "revoke":
-                    item_id = str(learning.get("id", "")).strip()
-                    if not item_id:
-                        continue
-                    old_item = self.get_item(item_id)
-                    if old_item and old_item.status in ["active", "accepted"]:
-                        updated_item = self.set_status(item_id, "revoked")
-                        if updated_item:
-                            affected_items.append(updated_item)
+                        new_item = self.add_item(
+                            memory_type=m_type,
+                            content=content,
+                            source="evolution",
+                            status="active",
+                            confidence=conf_val,
+                        )
+                        affected_items.append(new_item)
                         ledger.record(
                             task_id=task_id or f"session:{session_id}",
                             target_type="memory_item",
-                            target_id=item_id,
-                            reason=str(learning.get("reason", "Revoked by consolidation")),
-                            before=json.dumps(old_item.__dict__, default=str),
-                            after="revoked",
+                            target_id=new_item.id,
+                            reason=f"Extracted learning: {new_item.content[:60]}",
+                            before="",
+                            after=json.dumps(new_item.__dict__, default=str),
                         )
-            return affected_items
+                    elif action == "revoke":
+                        item_id = str(learning.get("id", "")).strip()
+                        if not item_id:
+                            continue
+                        old_item = self.get_item(item_id)
+                        if old_item and old_item.status in ["active", "accepted"]:
+                            updated_item = self.set_status(item_id, "revoked")
+                            if updated_item:
+                                affected_items.append(updated_item)
+                            ledger.record(
+                                task_id=task_id or f"session:{session_id}",
+                                target_type="memory_item",
+                                target_id=item_id,
+                                reason=str(learning.get("reason", "Revoked by consolidation")),
+                                before=json.dumps(old_item.__dict__, default=str),
+                                after="revoked",
+                            )
+                return affected_items
+        finally:
+            if session_id in self._session_locks:
+                self._session_locks[session_id][1] -= 1
+                if self._session_locks[session_id][1] <= 0:
+                    self._session_locks.pop(session_id, None)
 
     async def extract_memories_from_task(
         self,

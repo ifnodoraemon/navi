@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -124,11 +125,11 @@ class TrustStore:
         if not provider:
             return None
             
-        import asyncio
-        sem = asyncio.Semaphore(2)
+        if not hasattr(self, "_semantic_sem") or self._semantic_sem is None:
+            self._semantic_sem = asyncio.Semaphore(2)
         
         async def sem_semantic_match(rule: TrustRule) -> tuple[TrustRule, bool]:
-            async with sem:
+            async with self._semantic_sem:
                 res = await self._semantic_match(rule.pattern, prompt, provider)
                 return rule, res
                 

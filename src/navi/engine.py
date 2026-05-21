@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +51,7 @@ class HernessEngine:
         )
         self.planner = ModelSyscallPlanner(runtime.provider)
         self._memory_sem = None
+        self._background_tasks = set()
 
     async def handle(
         self,
@@ -142,8 +145,6 @@ class HernessEngine:
         return turn_res
 
     def _trigger_background_memory(self, result: AgentTurnResult) -> None:
-        import asyncio
-        import logging
         if result.session_id:
             logger = logging.getLogger("navi.engine")
             if self._memory_sem is None:
@@ -158,7 +159,9 @@ class HernessEngine:
                     )
 
             task = asyncio.create_task(run_with_semaphore())
+            self._background_tasks.add(task)
             def handle_done(t: asyncio.Task) -> None:
+                self._background_tasks.discard(t)
                 try:
                     t.result()
                 except Exception as e:
