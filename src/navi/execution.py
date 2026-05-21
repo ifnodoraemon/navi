@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from dataclasses import dataclass, replace
@@ -10,6 +11,19 @@ from .cli_providers import list_cli_provider_specs
 from .config import ExecutionConfig, load_config
 from .governance import GovernanceEngine
 from .tasks import Task, TaskStore
+
+
+def _truncate_output(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    head_limit = max(1, limit // 2)
+    tail_limit = max(1, limit - head_limit)
+    omitted = len(text) - head_limit - tail_limit
+    return (
+        f"{text[:head_limit]}\n"
+        f"... [truncated {omitted} chars from the middle] ...\n"
+        f"{text[-tail_limit:]}"
+    )
 
 
 @dataclass(frozen=True)
@@ -158,7 +172,6 @@ class ExecutionService:
     async def execute_task(self, task: Task) -> Task:
         # Record before state for rollback support
         task_before = self.tasks.get(task.id)
-        import json
         before_state = json.dumps(
             {
                 "status": task_before.status if task_before else "queued",
@@ -180,12 +193,14 @@ class ExecutionService:
         while result.exit_code != 0 and retries < max_retries:
             retries += 1
             
+            stdout_truncated = _truncate_output(result.stdout, 2000)
+            stderr_truncated = _truncate_output(result.stderr, 2000)
             attempt_log = (
                 f"=== SELF-HEALING ATTEMPT {retries} ===\n"
                 f"Your previous attempt to execute the task failed with exit code {result.exit_code}.\n"
                 f"Command: {' '.join(result.command)}\n"
-                f"Stdout:\n{result.stdout[:2000]}\n"
-                f"Stderr:\n{result.stderr[:2000]}\n\n"
+                f"Stdout:\n{stdout_truncated}\n"
+                f"Stderr:\n{stderr_truncated}\n\n"
             )
             accumulated_history += attempt_log
             

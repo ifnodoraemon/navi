@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -259,7 +261,6 @@ class MemoryStore:
             conn.execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
 
     def restore_item(self, item_dict: dict) -> None:
-        import json
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -286,8 +287,6 @@ class MemoryStore:
             )
 
     def _parse_json_learnings(self, response_raw: str) -> list[dict]:
-        import re
-        import json
         stripped = response_raw.strip()
         raw_json = ""
         if stripped.startswith("{") and stripped.endswith("}"):
@@ -316,45 +315,42 @@ class MemoryStore:
     @staticmethod
     def _extract_outermost_json(text: str) -> str:
         """Extract the outermost JSON object from text using brace-depth scanning."""
-        start = text.find("{")
-        if start < 0:
-            return ""
-        depth = 0
-        in_string = False
-        escape_next = False
-        for i in range(start, len(text)):
-            ch = text[i]
-            if escape_next:
-                escape_next = False
-                continue
-            if ch == "\\":
+        search_from = 0
+        while True:
+            start = text.find("{", search_from)
+            if start < 0:
+                return ""
+            depth = 0
+            in_string = False
+            escape_next = False
+            for i in range(start, len(text)):
+                ch = text[i]
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == "\\":
+                    if in_string:
+                        escape_next = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
                 if in_string:
-                    escape_next = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    import json
-                    candidate = text[start : i + 1]
-                    try:
-                        json.loads(candidate)
-                        return candidate
-                    except json.JSONDecodeError:
-                        # Continue scanning for the next potential JSON object
-                        next_start = text.find("{", i + 1)
-                        if next_start >= 0:
-                            start = next_start
-                            depth = 0
-                            # Reset and let the loop continue
-                            continue
-                        return ""
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start : i + 1]
+                        try:
+                            json.loads(candidate)
+                            return candidate
+                        except json.JSONDecodeError:
+                            search_from = start + 1
+                            break
+            else:
+                return ""
         return ""
 
 
@@ -472,7 +468,6 @@ class MemoryStore:
         provider: ModelPool,
         task_id: str = "",
     ) -> list[MemoryItem]:
-        import asyncio
         from .provider import ChatMessage
         from .evolution import EvolutionLedger
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -14,6 +16,8 @@ from .tasks import Task
 
 if TYPE_CHECKING:
     from .provider import ModelPool
+
+logger = logging.getLogger("navi.trust")
 
 
 LEVELS = ["L0", "L1", "L2", "L3", "L4"]
@@ -170,13 +174,12 @@ class TrustStore:
         ]
         try:
             response_text = await provider.complete_for(role="planner", messages=messages)
-            import re
             json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group(0))
                 return bool(data.get("matches", False))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Semantic trust match failed: %s", e, exc_info=True)
         return False
 
 
