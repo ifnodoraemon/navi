@@ -76,25 +76,32 @@ class SystemDaemon:
         queued_tasks = self.tasks.list_by_status("queued")
         pending_tasks = self.tasks.list_by_status("pending")
         active_tasks = running_tasks + queued_tasks + pending_tasks
-        
+
+        # Pre-build a set of resolved workspaces for O(1) active task lookup
+        active_workspaces: set[str] = set()
+        for t in active_tasks:
+            if t.workspace:
+                try:
+                    active_workspaces.add(str(Path(t.workspace).resolve()))
+                except Exception:
+                    active_workspaces.add(t.workspace)
+
         for project in projects:
             project_path = project.name
             if not project_path or not Path(project_path).exists():
                 continue
-                
-            # Resolve canonical path of project to check for active tasks
-            project_canonical = Path(project_path).resolve()
-            has_active_task = False
-            for active_task in active_tasks:
-                try:
-                    if active_task.workspace and Path(active_task.workspace).resolve() == project_canonical:
-                        has_active_task = True
-                        break
-                except Exception:
-                    if active_task.workspace == project_path:
-                        has_active_task = True
-                        break
-                
+
+            # Use a local mutable copy of project data to avoid cross-section overwrites
+            project_data = dict(project.data)
+            data_changed = False
+
+            # Check if there's an active task in progress for this project
+            try:
+                project_canonical_str = str(Path(project_path).resolve())
+            except Exception:
+                project_canonical_str = project_path
+            has_active_task = project_canonical_str in active_workspaces
+
             # A. Check Git status mutations
             git_dir = Path(project_path) / ".git"
             if git_dir.exists():
@@ -105,19 +112,24 @@ class SystemDaemon:
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                     )
-                    stdout, _ = await proc.communicate()
+                    try:
+                        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        await proc.wait()
+                        logger.warning(f"Git status timed out for {project_path}")
+                        stdout = b""
                     status_text = stdout.decode(errors="replace").strip()
                     if status_text:
                         current_hash = hashlib.sha256(status_text.encode()).hexdigest()
-                        last_hash = project.data.get("last_git_status_hash", "")
+                        last_hash = project_data.get("last_git_status_hash", "")
                         
                         if current_hash != last_hash:
-                            # Update git status hash in project node data
-                            updated_data = {**project.data, "last_git_status_hash": current_hash}
-                            self.graph.upsert("Project", project_path, updated_data)
-                            
-                            # Only trigger task if there's no active task in progress for this project
+                            # Only update state and trigger task if there's no active task
                             if not has_active_task:
+                                project_data["last_git_status_hash"] = current_hash
+                                data_changed = True
+
                                 prompt = (
                                     f"A filesystem modification was detected in the project {project_path}.\n"
                                     f"Modified files:\n{status_text}\n"
@@ -140,6 +152,7 @@ class SystemDaemon:
                                     "action": result.action,
                                     "observation": result.observation,
                                 })
+                            # If has_active_task, do NOT update hash so we re-detect next tick
                 except (OSError, asyncio.SubprocessError) as e:
                     logger.warning(f"Error checking git status for {project_path}: {e}")
 
@@ -153,27 +166,35 @@ class SystemDaemon:
                         file_stat = file_path.stat()
                         current_size = file_stat.st_size
                         log_key = f"log_size_{file_path.name}"
-                        last_size = project.data.get(log_key, 0)
+                        last_size = project_data.get(log_key, 0)
 
                         if current_size < last_size:
                             last_size = 0
-                            project.data[log_key] = 0
-                            self.graph.upsert("Project", project_path, project.data)
+                            project_data[log_key] = 0
+                            data_changed = True
 
                         if current_size > last_size:
+                            # Cap maximum bytes read per tick to prevent OOM on huge log deltas
+                            max_read_bytes = 512_000
+                            read_end = min(last_size + max_read_bytes, current_size)
+
                             def read_log_diff():
                                 error_lines = []
                                 full_content_accumulator = []
                                 total_chars = 0
                                 with open(file_path, "rb") as f:
                                     f.seek(last_size)
+                                    bytes_remaining = read_end - last_size
                                     for line_bytes in f:
+                                        bytes_remaining -= len(line_bytes)
                                         line = line_bytes.decode("utf-8", errors="replace")
                                         if total_chars < 100000:
                                             full_content_accumulator.append(line)
                                             total_chars += len(line)
                                         if any(word in line for word in ["Exception", "FATAL", "Traceback (most recent call last):"]):
                                             error_lines.append(line.strip())
+                                        if bytes_remaining <= 0:
+                                            break
                                     new_offset = f.tell()
                                 return "".join(full_content_accumulator), error_lines, new_offset
 
@@ -181,52 +202,51 @@ class SystemDaemon:
                                 
                             if error_lines:
                                 error_fingerprint = hashlib.sha256("\n".join(error_lines).encode()).hexdigest()
-                                last_fingerprint = project.data.get(f"last_err_fp_{file_path.name}", "")
+                                last_fingerprint = project_data.get(f"last_err_fp_{file_path.name}", "")
                                 
-                                if error_fingerprint != last_fingerprint and not has_active_task:
-                                    prompt = (
-                                        f"Proactive Alert: I detected an exception/error in local service log file: {file_path.name}\n"
-                                        f"New log entries:\n{new_content}\n"
-                                        f"Analyze the error, find the root cause, and propose a fix."
-                                    )
-                                    result = await self.capabilities.invoke(
-                                        "task.create",
-                                        {"prompt": prompt},
-                                        permission="prepare",
-                                        context=CapabilityContext(
-                                            home=self.home,
-                                            peer_id="daemon",
-                                            sender_id="daemon",
-                                            source="event_log",
-                                        ),
-                                    )
-                                    created.append({
-                                        "message": f"Exception detected in log {file_path.name}.",
-                                        "task_id": result.task_id,
-                                        "action": result.action,
-                                        "observation": result.observation,
-                                    })
-                                    
-                                    updated_data = {
-                                        **project.data,
-                                        log_key: new_last_size,
-                                        f"last_err_fp_{file_path.name}": error_fingerprint
-                                    }
-                                    self.graph.upsert("Project", project_path, updated_data)
+                                if error_fingerprint != last_fingerprint:
+                                    if not has_active_task:
+                                        prompt = (
+                                            f"Proactive Alert: I detected an exception/error in local service log file: {file_path.name}\n"
+                                            f"New log entries:\n{new_content}\n"
+                                            f"Analyze the error, find the root cause, and propose a fix."
+                                        )
+                                        result = await self.capabilities.invoke(
+                                            "task.create",
+                                            {"prompt": prompt},
+                                            permission="prepare",
+                                            context=CapabilityContext(
+                                                home=self.home,
+                                                peer_id="daemon",
+                                                sender_id="daemon",
+                                                source="event_log",
+                                            ),
+                                        )
+                                        created.append({
+                                            "message": f"Exception detected in log {file_path.name}.",
+                                            "task_id": result.task_id,
+                                            "action": result.action,
+                                            "observation": result.observation,
+                                        })
+                                        
+                                        project_data[log_key] = new_last_size
+                                        project_data[f"last_err_fp_{file_path.name}"] = error_fingerprint
+                                        data_changed = True
+                                    # If has_active_task, do NOT advance log pointer so we re-read next tick
                                 else:
-                                    # Fingerprint matched or active task is in progress, just update log pointer size
-                                    updated_data = {**project.data, log_key: new_last_size}
-                                    self.graph.upsert("Project", project_path, updated_data)
+                                    # Fingerprint matched (same error), just advance the log pointer
+                                    project_data[log_key] = new_last_size
+                                    data_changed = True
                             else:
-                                # No errors found, update log pointer size
-                                updated_data = {**project.data, log_key: new_last_size}
-                                self.graph.upsert("Project", project_path, updated_data)
+                                # No errors found, safely advance the log pointer
+                                project_data[log_key] = new_last_size
+                                data_changed = True
                     except OSError as e:
                         logger.warning(f"Error reading log file {file_path}: {e}")
                           
             # C. Check socket exceptions / connection status for active development ports
             # Probing default ports only for the first/primary project, or if explicitly declared in `dev_ports`
-            dev_ports = project.data.get("dev_ports", [])
+            dev_ports = project_data.get("dev_ports", [])
             if not dev_ports and project == projects[0]:
                 dev_ports = [3000, 5000, 8000, 8080]
             
@@ -246,7 +266,7 @@ class SystemDaemon:
                 probe_results = await asyncio.gather(*(probe_port(p) for p in dev_ports))
                 for port, is_active in probe_results:
                     port_key = f"port_active_{port}"
-                    was_active = project.data.get(port_key, False)
+                    was_active = project_data.get(port_key, False)
                     
                     if was_active and not is_active:
                         if not has_active_task:
@@ -273,7 +293,12 @@ class SystemDaemon:
                             })
                         
                     if is_active != was_active:
-                        updated_data = {**project.data, port_key: is_active}
-                        self.graph.upsert("Project", project_path, updated_data)
+                        project_data[port_key] = is_active
+                        data_changed = True
+
+            # Single upsert at the end of the project loop to avoid cross-section overwrites
+            if data_changed:
+                self.graph.upsert("Project", project_path, project_data)
                         
         return created
+

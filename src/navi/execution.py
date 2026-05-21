@@ -184,8 +184,8 @@ class ExecutionService:
                 f"=== SELF-HEALING ATTEMPT {retries} ===\n"
                 f"Your previous attempt to execute the task failed with exit code {result.exit_code}.\n"
                 f"Command: {' '.join(result.command)}\n"
-                f"Stdout:\n{result.stdout}\n"
-                f"Stderr:\n{result.stderr}\n\n"
+                f"Stdout:\n{result.stdout[:2000]}\n"
+                f"Stderr:\n{result.stderr[:2000]}\n\n"
             )
             accumulated_history += attempt_log
             

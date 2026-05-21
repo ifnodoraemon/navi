@@ -297,10 +297,8 @@ class MemoryStore:
             if fenced:
                 raw_json = fenced.group(1)
             else:
-                start = response_raw.find("{")
-                end = response_raw.rfind("}")
-                if start >= 0 and end > start:
-                    raw_json = response_raw[start : end + 1]
+                # Iterative brace-depth scanning to find the outermost JSON object
+                raw_json = self._extract_outermost_json(response_raw)
 
         if not raw_json:
             return []
@@ -314,6 +312,50 @@ class MemoryStore:
         if not isinstance(learnings, list):
             return []
         return learnings
+
+    @staticmethod
+    def _extract_outermost_json(text: str) -> str:
+        """Extract the outermost JSON object from text using brace-depth scanning."""
+        start = text.find("{")
+        if start < 0:
+            return ""
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\":
+                if in_string:
+                    escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    import json
+                    candidate = text[start : i + 1]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except json.JSONDecodeError:
+                        # Continue scanning for the next potential JSON object
+                        next_start = text.find("{", i + 1)
+                        if next_start >= 0:
+                            start = next_start
+                            depth = 0
+                            # Reset and let the loop continue
+                            continue
+                        return ""
+        return ""
 
 
     def recall(self, query: str, *, limit: int = 8) -> list[MemoryItem]:
