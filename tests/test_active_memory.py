@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import json
 import pytest
-from pathlib import Path
 
 from navi.provider import ChatMessage, MockProvider, ModelPool
-from navi.memory import MemoryStore, MemoryItem
+from navi.memory import MemoryStore
 from navi.evolution import EvolutionEngine, EvolutionLedger
-from navi.tasks import Task, TaskStore, ExecutionLog
+from navi.tasks import Task, ExecutionLog
 
 
 class ScriptedProvider(MockProvider):

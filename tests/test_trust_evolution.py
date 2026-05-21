@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import json
 import pytest
-from pathlib import Path
 import time
 
 from navi.provider import ChatMessage, MockProvider, ModelPool
-from navi.trust import TrustStore, TrustRule, TrustDecision
-from navi.governance import GovernanceEngine
+from navi.trust import TrustStore
 from navi.execution import ExecutionService, ExecutionResult
 from navi.evolution import EvolutionEngine, EvolutionLedger
-from navi.tasks import Task, TaskStore, Watch
+from navi.tasks import TaskStore
 from navi.daemon import SystemDaemon
 from navi.graph import GraphStore
 
@@ -31,7 +29,7 @@ async def test_semantic_trust_matching(tmp_path):
     store = TrustStore(tmp_path)
     
     # Create a rule with pattern "compile code"
-    rule = store.upsert(
+    store.upsert(
         name="test-rule",
         pattern="compile code",
         project_path=str(tmp_path),
@@ -152,7 +150,7 @@ async def test_proactive_event_watchers(tmp_path):
     project_path = tmp_path / "my_project"
     project_path.mkdir(parents=True, exist_ok=True)
     
-    project_node = graph.upsert(
+    graph.upsert(
         "Project",
         str(project_path),
         {"last_git_status_hash": "", "log_size_dev.log": 0},

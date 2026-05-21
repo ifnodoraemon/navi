@@ -5,8 +5,13 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .db import connect
+
+if TYPE_CHECKING:
+    from .provider import ModelPool
+    from .tasks import Task, ExecutionLog
 
 
 @dataclass(frozen=True)
@@ -425,7 +430,6 @@ class MemoryStore:
         provider: ModelPool,
         task_id: str = "",
     ) -> list[MemoryItem]:
-        import re
         import asyncio
         from .provider import ChatMessage
         from .evolution import EvolutionLedger
@@ -564,7 +568,6 @@ class MemoryStore:
         logs: list[ExecutionLog],
         provider: ModelPool,
     ) -> list[MemoryItem]:
-        import re
         from .provider import ChatMessage
         from .evolution import EvolutionLedger
 
