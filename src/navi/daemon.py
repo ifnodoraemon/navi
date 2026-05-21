@@ -157,6 +157,8 @@ class SystemDaemon:
 
                         if current_size < last_size:
                             last_size = 0
+                            project.data[log_key] = 0
+                            self.graph.upsert("Project", project_path, project.data)
 
                         if current_size > last_size:
                             def read_log_diff():
