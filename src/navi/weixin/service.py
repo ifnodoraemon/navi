@@ -168,7 +168,7 @@ class WeixinService:
 
     async def _compose_background_message(self, facts: dict, *, fallback: str) -> str:
         try:
-            text = await self.runtime.provider.complete(
+            text = await self.runtime.complete(
                 [
                     ChatMessage(
                         "system",
@@ -182,7 +182,8 @@ class WeixinService:
                         ),
                     ),
                     ChatMessage("user", json.dumps(facts, ensure_ascii=False, sort_keys=True)),
-                ]
+                ],
+                role="notification",
             )
         except Exception:
             return fallback

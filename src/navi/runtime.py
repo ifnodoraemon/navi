@@ -6,7 +6,7 @@ from pathlib import Path
 from .memory import MemoryStore
 from .operating_context import OperatingContext
 from .prompting import build_system_prompt
-from .provider import ChatMessage, ChatProvider
+from .provider import ChatMessage, ChatProvider, complete_with_role
 from .skills import SkillStore
 
 
@@ -33,9 +33,12 @@ class AgentRuntime:
         self.memory.add_message(session_id, "user", user_text)
 
         messages = self._build_messages(session_id, user_text=user_text, operating_context=operating_context)
-        answer = await self.provider.complete(messages)
+        answer = await self.complete(messages, role="responder")
         self.memory.add_message(session_id, "assistant", answer)
         return AssistantReply(session_id=session_id, content=answer)
+
+    async def complete(self, messages: list[ChatMessage], *, role: str = "default") -> str:
+        return await complete_with_role(self.provider, role, messages)
 
     def _build_messages(
         self,

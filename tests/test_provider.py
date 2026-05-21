@@ -13,6 +13,8 @@ from navi.provider import (
     list_provider_specs,
     resolve_model_config,
 )
+from navi.runtime import AgentRuntime
+from navi.agent_kernel import AgentKernel
 
 
 def test_provider_registry_exposes_deepseek_defaults():
@@ -84,6 +86,56 @@ def test_build_provider_accepts_custom_openai_compatible_provider():
     )
 
     assert provider.__class__.__name__ == "OpenAICompatibleProvider"
+
+
+@pytest.mark.asyncio
+async def test_model_pool_routes_by_role_with_fallback():
+    provider = build_provider(
+        ModelConfig(
+            provider="mock",
+            model="mock",
+            routes={
+                "planner": ModelConfig(
+                    provider="private-planner",
+                    kind="openai-compatible",
+                    model="planner-model",
+                    api_base_url="http://planner.local/v1",
+                    fallbacks=[ModelConfig(provider="mock", model="mock")],
+                )
+            },
+        )
+    )
+
+    result = await provider.complete_for("planner", [ChatMessage("user", "route me")])
+
+    assert provider.__class__.__name__ == "ModelPool"
+    assert result == "Navi received: route me"
+
+
+@pytest.mark.asyncio
+async def test_agent_kernel_uses_planner_route(tmp_path):
+    provider = build_provider(
+        ModelConfig(
+            provider="mock",
+            model="mock",
+            routes={
+                "planner": ModelConfig(
+                    provider="private-planner",
+                    kind="openai-compatible",
+                    model="planner-model",
+                    api_base_url="http://planner.local/v1",
+                    fallbacks=[ModelConfig(provider="mock", model="mock")],
+                )
+            },
+        )
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    agent = AgentKernel(home=tmp_path, runtime=runtime, project_dir=tmp_path)
+
+    result = await agent.handle("hello", peer_id="peer", sender_id="sender", source="test")
+
+    assert result.text == "Navi received: hello"
+    assert provider.__class__.__name__ == "ModelPool"
 
 
 @pytest.mark.asyncio

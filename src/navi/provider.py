@@ -133,6 +133,18 @@ class FallbackProvider:
         raise RuntimeError("all model providers failed: " + "; ".join(errors))
 
 
+class ModelPool:
+    def __init__(self, *, default: ChatProvider, routes: dict[str, ChatProvider] | None = None):
+        self.default = default
+        self.routes = routes or {}
+
+    async def complete(self, messages: list[ChatMessage]) -> str:
+        return await self.complete_for("default", messages)
+
+    async def complete_for(self, role: str, messages: list[ChatMessage]) -> str:
+        return await self.routes.get(role, self.default).complete(messages)
+
+
 PROVIDER_ADAPTERS: tuple[ProviderAdapter, ...] = (
     ProviderAdapter("mock", lambda config, spec: MockProvider()),
     ProviderAdapter("openai-compatible", lambda config, spec: OpenAICompatibleProvider(config, spec)),
@@ -141,6 +153,23 @@ PROVIDER_ADAPTERS: tuple[ProviderAdapter, ...] = (
 
 
 def build_provider(config: ModelConfig) -> ChatProvider:
+    default = _build_fallback_chain(config)
+    if not config.routes:
+        return default
+    return ModelPool(
+        default=default,
+        routes={role: _build_fallback_chain(route_config) for role, route_config in config.routes.items()},
+    )
+
+
+async def complete_with_role(provider: ChatProvider, role: str, messages: list[ChatMessage]) -> str:
+    complete_for = getattr(provider, "complete_for", None)
+    if callable(complete_for):
+        return await complete_for(role, messages)
+    return await provider.complete(messages)
+
+
+def _build_fallback_chain(config: ModelConfig) -> ChatProvider:
     providers = [_build_single_provider(config), *[_build_single_provider(item) for item in config.fallbacks]]
     if len(providers) == 1:
         return providers[0]

@@ -200,7 +200,7 @@ class HernessEngine:
                 ),
             )
         )
-        answer = await self.runtime.provider.complete(messages)
+        answer = await self.runtime.complete(messages, role="responder")
         self.runtime.memory.add_message(session_id, "assistant", answer)
         return AgentTurnResult(
             text=answer,

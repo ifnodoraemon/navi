@@ -170,3 +170,31 @@ def test_model_fallbacks_are_loaded_from_config(tmp_path):
 
     assert config.model.provider == "private-primary"
     assert config.model.fallbacks[0].provider == "mock"
+
+
+def test_model_routes_are_loaded_from_config(tmp_path):
+    write_default_config(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "\n".join(
+            [
+                "model:",
+                "  provider: mock",
+                "  model: mock",
+                "  routes:",
+                "    planner:",
+                "      provider: private-planner",
+                "      kind: openai-compatible",
+                "      model: planner-model",
+                "      api_base_url: http://planner.local/v1",
+                "      fallbacks:",
+                "        - provider: mock",
+                "          model: mock",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.model.routes["planner"].provider == "private-planner"
+    assert config.model.routes["planner"].fallbacks[0].provider == "mock"

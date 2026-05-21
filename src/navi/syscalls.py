@@ -5,7 +5,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .provider import ChatMessage, ChatProvider
+from .provider import ChatMessage, ChatProvider, complete_with_role
 from .tools import ToolSpec
 
 
@@ -45,7 +45,9 @@ class ModelSyscallPlanner:
                 json.dumps([asdict(tool) for tool in tools], ensure_ascii=False),
             )
         )
-        response = await self.provider.complete(
+        response = await complete_with_role(
+            self.provider,
+            "planner",
             [
                 ChatMessage(
                     "system",
@@ -64,7 +66,7 @@ class ModelSyscallPlanner:
                     ),
                 ),
                 ChatMessage("user", "\n".join(user_parts)),
-            ]
+            ],
         )
         return self._parse_syscall(response)
 

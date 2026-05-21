@@ -30,6 +30,7 @@ class ModelConfig:
     api_key: str = ""
     kind: str = ""
     fallbacks: list["ModelConfig"] = field(default_factory=list)
+    routes: dict[str, "ModelConfig"] = field(default_factory=dict)
 
 
 @dataclass
@@ -188,6 +189,11 @@ def _model_config(model_raw: dict, *, env: dict[str, str], allow_env_override: b
         for item in model_raw.get("fallbacks") or []
         if isinstance(item, dict)
     ]
+    routes = {
+        str(name): _model_config(item, env=env, allow_env_override=False)
+        for name, item in (model_raw.get("routes") or {}).items()
+        if isinstance(item, dict)
+    }
     return ModelConfig(
         provider=provider,
         model=model,
@@ -195,4 +201,5 @@ def _model_config(model_raw: dict, *, env: dict[str, str], allow_env_override: b
         api_key=str(model_raw.get("api_key") or _first_env(env, provider_spec.api_key_env)),
         kind=kind,
         fallbacks=fallbacks,
+        routes=routes,
     )

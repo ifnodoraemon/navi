@@ -99,6 +99,10 @@ def test_provider_config_tool_reports_model_fallbacks(tmp_path):
                 "  fallbacks:",
                 "    - provider: mock",
                 "      model: mock",
+                "  routes:",
+                "    responder:",
+                "      provider: mock",
+                "      model: mock",
             ]
         ),
         encoding="utf-8",
@@ -110,3 +114,4 @@ def test_provider_config_tool_reports_model_fallbacks(tmp_path):
     assert result.ok is True
     assert result.facts["provider"] == "private-primary"
     assert result.facts["fallbacks"][0]["provider"] == "mock"
+    assert result.facts["routes"]["responder"]["provider"] == "mock"
