@@ -176,13 +176,21 @@ class ExecutionService:
         # Self-healing retry loop
         retries = 0
         max_retries = 2
+        accumulated_history = ""
         while result.exit_code != 0 and retries < max_retries:
             retries += 1
-            healing_prompt = (
+            
+            attempt_log = (
+                f"=== SELF-HEALING ATTEMPT {retries} ===\n"
                 f"Your previous attempt to execute the task failed with exit code {result.exit_code}.\n"
                 f"Command: {' '.join(result.command)}\n"
                 f"Stdout:\n{result.stdout}\n"
                 f"Stderr:\n{result.stderr}\n\n"
+            )
+            accumulated_history += attempt_log
+            
+            healing_prompt = (
+                f"{accumulated_history}"
                 f"Please analyze the errors, stack traces, and failures. "
                 f"Formulate a fix (e.g. editing files, fixing imports, or adjusting configurations), apply it, and verify that the task runs successfully."
             )
@@ -190,7 +198,7 @@ class ExecutionService:
             healing_task = Task(
                 id=task.id,
                 title=task.title,
-                prompt=f"{task.prompt}\n\n=== SELF-HEALING ATTEMPT {retries} ===\n{healing_prompt}",
+                prompt=f"{task.prompt}\n\n{healing_prompt}",
                 kind=task.kind,
                 source=task.source,
                 peer_id=task.peer_id,

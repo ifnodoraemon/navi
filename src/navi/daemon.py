@@ -131,15 +131,18 @@ class SystemDaemon:
                         current_size = file_stat.st_size
                         log_key = f"log_size_{file_path.name}"
                         last_size = project.data.get(log_key, 0)
-                        
+
+                        if current_size < last_size:
+                            last_size = 0
+
                         if current_size > last_size:
                             def read_log_diff():
-                                with open(file_path, "r", errors="replace") as f:
-                                    f.seek(last_size)
-                                    return f.readlines()
-                            new_lines = await asyncio.to_thread(read_log_diff)
+                                with open(file_path, "rb") as f:
+                                    start_seek = max(last_size, current_size - 10000)
+                                    f.seek(start_seek)
+                                    return f.read().decode("utf-8", errors="replace")
+                            new_content = await asyncio.to_thread(read_log_diff)
                                 
-                            new_content = "".join(new_lines)
                             if any(word in new_content for word in ["Exception", "FATAL", "Traceback (most recent call first)"]):
                                 prompt = (
                                     f"Proactive Alert: I detected an exception/error in local service log file: {file_path.name}\n"

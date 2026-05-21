@@ -112,10 +112,11 @@ class TrustStore:
         if not candidates:
             return None
         
-        matching_rules = []
-        for rule in candidates:
-            if await self._semantic_match(rule.pattern, prompt, provider):
-                matching_rules.append(rule)
+        import asyncio
+        matches = await asyncio.gather(
+            *(self._semantic_match(rule.pattern, prompt, provider) for rule in candidates)
+        )
+        matching_rules = [rule for rule, m in zip(candidates, matches) if m]
                 
         if not matching_rules:
             return None

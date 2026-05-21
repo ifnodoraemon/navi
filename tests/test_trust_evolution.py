@@ -184,3 +184,113 @@ async def test_proactive_event_watchers(tmp_path):
     assert mock_invoke_calls[0][0] == "task.create"
     assert "Proactive Alert: I detected an exception/error" in mock_invoke_calls[0][1]["prompt"]
     assert mock_invoke_calls[0][2].source == "event_log"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_trust_matching(tmp_path):
+    store = TrustStore(tmp_path)
+    store.upsert(name="rule1", pattern="compile code", project_path=str(tmp_path), sender_id="user123", autonomy_level="L3")
+    store.upsert(name="rule2", pattern="run tests", project_path=str(tmp_path), sender_id="user123", autonomy_level="L3")
+    
+    provider = ScriptedProvider([
+        json.dumps({"matches": False, "reason": "no"}),
+        json.dumps({"matches": True, "reason": "yes"})
+    ])
+    pool = ModelPool(default=provider)
+    
+    matched = await store.match(prompt="execute test scripts", sender_id="user123", workspace=str(tmp_path), provider=pool)
+    assert matched is not None
+    assert len(provider.messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_log_rotation_and_chunked_reads(tmp_path):
+    daemon = SystemDaemon(tmp_path)
+    graph = GraphStore(tmp_path)
+    
+    project_path = tmp_path / "rotation_project"
+    project_path.mkdir(parents=True, exist_ok=True)
+    graph.upsert("Project", str(project_path), {"log_size_dev.log": 500})
+    
+    log_dir = project_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "dev.log"
+    
+    log_file.write_text("FATAL Error on rotated log!\n")
+    current_size = len(log_file.read_bytes())
+    assert current_size < 500
+    
+    from navi.capabilities import CapabilityResult
+    mock_invoke_calls = []
+    async def mock_invoke(name, args, permission=None, context=None):
+        mock_invoke_calls.append((name, args, context))
+        return CapabilityResult(ok=True, action="task", observation="Proactive task created", message="Created proactively", task_id="t-1")
+    daemon.capabilities.invoke = mock_invoke
+    
+    await daemon.process_events_once()
+    assert len(mock_invoke_calls) == 1
+    assert "FATAL" in mock_invoke_calls[0][1]["prompt"]
+    
+    graph.upsert("Project", str(project_path), {"log_size_dev.log": 0})
+    huge_log = "Ok log lines...\n" * 1000 + "Exception: Crashed after huge output!\n"
+    log_file.write_text(huge_log)
+    
+    mock_invoke_calls.clear()
+    await daemon.process_events_once()
+    assert len(mock_invoke_calls) == 1
+    assert "Exception" in mock_invoke_calls[0][1]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_self_healing_retry_accumulation(tmp_path):
+    tasks = TaskStore(tmp_path)
+    execution = ExecutionService(tmp_path)
+    
+    task = tasks.create(
+        title="Accumulate test",
+        prompt="Execute python script",
+        kind="task",
+        workspace=str(tmp_path),
+        autonomy_level="L3",
+    )
+    
+    res1 = ExecutionResult(
+        provider="mock", phase="execute", command=["python", "run.py"],
+        stdout="Output1", stderr="SyntaxError: invalid syntax", exit_code=1,
+        started_at=time.time(), ended_at=time.time()
+    )
+    res2 = ExecutionResult(
+        provider="mock", phase="execute", command=["python", "run.py"],
+        stdout="Output2", stderr="ImportError: module missing", exit_code=1,
+        started_at=time.time(), ended_at=time.time()
+    )
+    res3 = ExecutionResult(
+        provider="mock", phase="execute", command=["python", "run.py"],
+        stdout="Success!", stderr="", exit_code=0,
+        started_at=time.time(), ended_at=time.time()
+    )
+    
+    calls = [res1, res2, res3]
+    prompt_history = []
+    async def mock_provider_call(t, phase):
+        prompt_history.append(t.prompt)
+        return calls.pop(0)
+        
+    execution._provider_call_with_timeout = mock_provider_call
+    
+    updated_task = await execution.execute_task(task)
+    assert updated_task.status == "completed"
+    
+    assert len(prompt_history) == 3
+    assert "SyntaxError: invalid syntax" in prompt_history[2]
+    assert "ImportError: module missing" in prompt_history[2]
+
+
+def test_read_only_skills_store(tmp_path):
+    from navi.skills import SkillStore
+    
+    store = SkillStore(tmp_path)
+    assert store.skills_dir.is_dir()
+    store.builtin_skills_dir = tmp_path / "nonexistent_builtins"
+    skills = store.list_skills()
+    assert isinstance(skills, list)
