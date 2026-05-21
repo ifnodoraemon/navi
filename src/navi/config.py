@@ -29,6 +29,7 @@ class ModelConfig:
     api_base_url: str = ""
     api_key: str = ""
     kind: str = ""
+    fallbacks: list["ModelConfig"] = field(default_factory=list)
 
 
 @dataclass
@@ -91,24 +92,7 @@ def load_config(home: Path | None = None) -> NaviConfig:
     model_raw = raw.get("model") or {}
     runtime_raw = raw.get("runtime") or {}
     execution_raw = raw.get("execution") or {}
-    provider = str(env.get("NAVI_MODEL_PROVIDER", model_raw.get("provider", DEFAULT_MODEL_PROVIDER)))
-    provider_spec = _provider_spec(provider, model_raw, env)
-    raw_model = model_raw.get("model", provider_spec.default_model)
-    if provider_spec.name != DEFAULT_MODEL_PROVIDER and raw_model == DEFAULT_MODEL_MODEL:
-        raw_model = provider_spec.default_model
-
-    model = ModelConfig(
-        provider=provider,
-        model=str(env.get("NAVI_MODEL", raw_model)),
-        api_base_url=str(
-            env.get(
-                "NAVI_MODEL_API_BASE_URL",
-                model_raw.get("api_base_url", provider_spec.default_base_url),
-            )
-        ).rstrip("/"),
-        api_key=str(model_raw.get("api_key") or _first_env(env, provider_spec.api_key_env)),
-        kind=str(env.get("NAVI_MODEL_KIND", model_raw.get("kind", provider_spec.kind))),
-    )
+    model = _model_config(model_raw, env=env, allow_env_override=True)
 
     runtime = RuntimeConfig(
         service_name=str(env.get("NAVI_SERVICE_NAME", runtime_raw.get("service_name", DEFAULT_SERVICE_NAME))),
@@ -173,3 +157,42 @@ def _provider_spec(provider: str, model_raw: dict, env: dict[str, str]) -> Provi
             default_base_url=str(env.get("NAVI_MODEL_API_BASE_URL", model_raw.get("api_base_url", ""))).rstrip("/"),
             api_key_env=api_key_env,
         )
+
+
+def _model_config(model_raw: dict, *, env: dict[str, str], allow_env_override: bool) -> ModelConfig:
+    provider = str(
+        env.get("NAVI_MODEL_PROVIDER", model_raw.get("provider", DEFAULT_MODEL_PROVIDER))
+        if allow_env_override
+        else model_raw.get("provider", DEFAULT_MODEL_PROVIDER)
+    )
+    provider_spec = _provider_spec(provider, model_raw, env if allow_env_override else {})
+    raw_model = model_raw.get("model", provider_spec.default_model)
+    if provider_spec.name != DEFAULT_MODEL_PROVIDER and raw_model == DEFAULT_MODEL_MODEL:
+        raw_model = provider_spec.default_model
+    model = str(env.get("NAVI_MODEL", raw_model) if allow_env_override else raw_model)
+    api_base_url = str(
+        env.get(
+            "NAVI_MODEL_API_BASE_URL",
+            model_raw.get("api_base_url", provider_spec.default_base_url),
+        )
+        if allow_env_override
+        else model_raw.get("api_base_url", provider_spec.default_base_url)
+    ).rstrip("/")
+    kind = str(
+        env.get("NAVI_MODEL_KIND", model_raw.get("kind", provider_spec.kind))
+        if allow_env_override
+        else model_raw.get("kind", provider_spec.kind)
+    )
+    fallbacks = [
+        _model_config(item, env=env, allow_env_override=False)
+        for item in model_raw.get("fallbacks") or []
+        if isinstance(item, dict)
+    ]
+    return ModelConfig(
+        provider=provider,
+        model=model,
+        api_base_url=api_base_url,
+        api_key=str(model_raw.get("api_key") or _first_env(env, provider_spec.api_key_env)),
+        kind=kind,
+        fallbacks=fallbacks,
+    )

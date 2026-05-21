@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 from dataclasses import asdict
 from pathlib import Path
 from collections.abc import Callable
 
-from navi.agent_kernel import AgentKernel
+from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.tasks import Task
@@ -41,10 +40,9 @@ class WeixinService:
         self.client = self._build_client()
         self.daemon = SystemDaemon(home)
         self.active = self.daemon
-        self.agent = AgentKernel(
+        self.ingress = ConnectorIngressRuntime(
             home=home,
             runtime=runtime,
-            project_dir=Path.cwd(),
             allow_sources={"core"},
         )
 
@@ -107,24 +105,25 @@ class WeixinService:
     async def handle_update(self, account: WeixinAccount, update: WeixinUpdate) -> bool:
         if self.dedup.seen(update.message_id):
             return False
-        content_key = f"content:{update.sender_id}:{hashlib.md5(update.text.encode()).hexdigest()}"
-        if self.dedup.seen(content_key):
+        message = ConnectorMessage(
+            message_id=update.message_id,
+            peer_id=update.peer_id,
+            sender_id=update.sender_id,
+            text=update.text,
+            source=self.local_source,
+            session_alias_prefix=self.session_alias_prefix,
+        )
+        if self.dedup.seen(message.content_key):
             return False
         if not self._allowed(update):
             return False
         self.context_tokens.put(account.account_id, update.peer_id, update.context_token)
-        result = await self.agent.handle(
-            update.text,
-            peer_id=update.peer_id,
-            sender_id=update.sender_id,
-            source=self.local_source,
-            session_alias=self._session_alias(update.peer_id),
-        )
+        text = await self.ingress.handle(message)
         context_token = self.context_tokens.get(account.account_id, update.peer_id)
         await self.client.send_message(
             account_id=account.account_id,
             peer_id=update.peer_id,
-            text=result.text,
+            text=text,
             context_token=context_token,
         )
         return True
@@ -233,6 +232,3 @@ class WeixinService:
         if policy in {"allowlist", "pairing"}:
             return identity in allowed
         return policy == "open"
-
-    def _session_alias(self, peer_id: str) -> str:
-        return f"{self.session_alias_prefix}:{peer_id}"

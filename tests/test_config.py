@@ -146,3 +146,27 @@ def test_custom_model_provider_can_be_declared_without_package_spec(tmp_path):
     assert config.model.model == "local-agent-model"
     assert config.model.api_base_url == "http://localhost:11434/v1"
     assert config.model.api_key == "sk-local"
+
+
+def test_model_fallbacks_are_loaded_from_config(tmp_path):
+    write_default_config(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "\n".join(
+            [
+                "model:",
+                "  provider: private-primary",
+                "  kind: openai-compatible",
+                "  model: primary-model",
+                "  api_base_url: http://primary.local/v1",
+                "  fallbacks:",
+                "    - provider: mock",
+                "      model: mock",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.model.provider == "private-primary"
+    assert config.model.fallbacks[0].provider == "mock"

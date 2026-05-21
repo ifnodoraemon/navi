@@ -118,9 +118,20 @@ def _provider_config(home: Path) -> ToolResult:
         ok=True,
         facts={
             "provider": config.model.provider,
+            "kind": config.model.kind,
             "model": config.model.model,
             "api_base_url": config.model.api_base_url,
             "has_api_key": bool(config.model.api_key),
+            "fallbacks": [
+                {
+                    "provider": item.provider,
+                    "kind": item.kind,
+                    "model": item.model,
+                    "api_base_url": item.api_base_url,
+                    "has_api_key": bool(item.api_key),
+                }
+                for item in config.model.fallbacks
+            ],
         },
     )
 

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 from pathlib import Path
 
-from navi.agent_kernel import AgentKernel
+from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
 from navi.runtime import AgentRuntime
 
 from .client import MockTelegramClient, TelegramClient
@@ -30,10 +29,9 @@ class TelegramService:
         self.session_alias_prefix = session_alias_prefix
         self.client = self._build_client()
         self.seen: set[str] = set()
-        self.agent = AgentKernel(
+        self.ingress = ConnectorIngressRuntime(
             home=home,
             runtime=runtime,
-            project_dir=Path.cwd(),
             allow_sources={"core"},
         )
 
@@ -64,20 +62,21 @@ class TelegramService:
 
     async def handle_update(self, update: TelegramUpdate) -> bool:
         message_key = f"telegram:{update.chat_id}:{update.message_id}"
-        content_key = f"content:{update.sender_id}:{hashlib.md5(update.text.encode()).hexdigest()}"
-        if message_key in self.seen or content_key in self.seen:
-            return False
-        self.seen.update({message_key, content_key})
-        if not self._allowed(update):
-            return False
-        result = await self.agent.handle(
-            update.text,
+        message = ConnectorMessage(
+            message_id=message_key,
             peer_id=update.chat_id,
             sender_id=update.sender_id,
+            text=update.text,
             source=self.local_source,
-            session_alias=self._session_alias(update.chat_id),
+            session_alias_prefix=self.session_alias_prefix,
         )
-        await self.client.send_message(chat_id=update.chat_id, text=result.text)
+        if message_key in self.seen or message.content_key in self.seen:
+            return False
+        self.seen.update({message_key, message.content_key})
+        if not self._allowed(update):
+            return False
+        text = await self.ingress.handle(message)
+        await self.client.send_message(chat_id=update.chat_id, text=text)
         return True
 
     def _allowed(self, update: TelegramUpdate) -> bool:
@@ -86,6 +85,3 @@ class TelegramService:
         if self.config.dm_policy in {"allowlist", "pairing"}:
             return update.sender_id in self.config.allowed_users
         return self.config.dm_policy == "open"
-
-    def _session_alias(self, chat_id: str) -> str:
-        return f"{self.session_alias_prefix}:{chat_id}"

@@ -94,6 +94,8 @@ def model() -> None:
     """Show model configuration."""
     config = load_config(ensure_home())
     typer.echo(f"provider={config.model.provider} model={config.model.model}")
+    for item in config.model.fallbacks:
+        typer.echo(f"fallback provider={item.provider} model={item.model}")
 
 
 @app.command()

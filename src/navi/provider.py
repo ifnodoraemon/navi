@@ -119,6 +119,20 @@ class AnthropicCompatibleProvider:
         return _extract_anthropic_content(data)
 
 
+class FallbackProvider:
+    def __init__(self, providers: list[ChatProvider]):
+        self.providers = providers
+
+    async def complete(self, messages: list[ChatMessage]) -> str:
+        errors: list[str] = []
+        for provider in self.providers:
+            try:
+                return await provider.complete(messages)
+            except Exception as exc:
+                errors.append(f"{provider.__class__.__name__}: {exc}")
+        raise RuntimeError("all model providers failed: " + "; ".join(errors))
+
+
 PROVIDER_ADAPTERS: tuple[ProviderAdapter, ...] = (
     ProviderAdapter("mock", lambda config, spec: MockProvider()),
     ProviderAdapter("openai-compatible", lambda config, spec: OpenAICompatibleProvider(config, spec)),
@@ -127,6 +141,13 @@ PROVIDER_ADAPTERS: tuple[ProviderAdapter, ...] = (
 
 
 def build_provider(config: ModelConfig) -> ChatProvider:
+    providers = [_build_single_provider(config), *[_build_single_provider(item) for item in config.fallbacks]]
+    if len(providers) == 1:
+        return providers[0]
+    return FallbackProvider(providers)
+
+
+def _build_single_provider(config: ModelConfig) -> ChatProvider:
     resolved = resolve_model_config(config)
     spec = _provider_spec(resolved)
     for adapter in PROVIDER_ADAPTERS:

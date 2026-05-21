@@ -87,6 +87,24 @@ def test_build_provider_accepts_custom_openai_compatible_provider():
 
 
 @pytest.mark.asyncio
+async def test_fallback_provider_tries_next_model_when_primary_fails():
+    provider = build_provider(
+        ModelConfig(
+            provider="private-primary",
+            kind="openai-compatible",
+            model="primary-model",
+            api_base_url="http://primary.local/v1",
+            fallbacks=[ModelConfig(provider="mock", model="mock")],
+        )
+    )
+
+    result = await provider.complete([ChatMessage("user", "hello")])
+
+    assert provider.__class__.__name__ == "FallbackProvider"
+    assert result == "Navi received: hello"
+
+
+@pytest.mark.asyncio
 async def test_openai_compatible_provider_posts_chat_completion():
     requests: list[httpx.Request] = []
 

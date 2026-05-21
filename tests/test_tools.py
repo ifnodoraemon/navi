@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from navi.tasks import TaskStore
 from navi.tools import build_tool_gateway
+from navi.config import write_default_config
 
 
 def test_core_tool_registry_lists_fact_only_tools(tmp_path):
@@ -83,3 +84,29 @@ def test_tool_gateway_filters_by_permission_ceiling(tmp_path):
     gateway = build_tool_gateway(tmp_path, project_dir=tmp_path, permission_ceiling="read")
 
     assert {spec.permission for spec in gateway.list_specs()} == {"read"}
+
+
+def test_provider_config_tool_reports_model_fallbacks(tmp_path):
+    write_default_config(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "\n".join(
+            [
+                "model:",
+                "  provider: private-primary",
+                "  kind: openai-compatible",
+                "  model: primary-model",
+                "  api_base_url: http://primary.local/v1",
+                "  fallbacks:",
+                "    - provider: mock",
+                "      model: mock",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    gateway = build_tool_gateway(tmp_path, project_dir=tmp_path, allow_sources={"core"})
+
+    result = gateway.call("provider.config", {})
+
+    assert result.ok is True
+    assert result.facts["provider"] == "private-primary"
+    assert result.facts["fallbacks"][0]["provider"] == "mock"
