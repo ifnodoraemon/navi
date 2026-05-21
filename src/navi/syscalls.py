@@ -5,7 +5,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .provider import ChatMessage, ChatProvider, complete_with_role
+from .provider import ChatMessage, ModelPool
 from .tools import ToolSpec
 
 
@@ -14,13 +14,14 @@ class ModelSyscall:
     tool: str
     permission: str = "read"
     args: dict[str, Any] = field(default_factory=dict)
+    model_role: str = "responder"
     message: str = ""
     confidence: float = 0.0
     reason: str = ""
 
 
 class ModelSyscallPlanner:
-    def __init__(self, provider: ChatProvider):
+    def __init__(self, provider: ModelPool):
         self.provider = provider
 
     async def plan(
@@ -31,7 +32,9 @@ class ModelSyscallPlanner:
         conversation_context: str = "",
         observations: list[str] | None = None,
         permission_ceiling: str = "write",
+        model_roles: list[str] | None = None,
     ) -> ModelSyscall:
+        model_roles = model_roles or ["default", "planner", "responder", "notification"]
         user_parts = []
         if conversation_context.strip():
             user_parts.extend(("Recent conversation:", conversation_context.strip()))
@@ -41,12 +44,13 @@ class ModelSyscallPlanner:
             (
                 f"Current user message: {text}",
                 f"Permission ceiling: {permission_ceiling}",
+                "Available model roles:",
+                json.dumps(model_roles, ensure_ascii=False),
                 "Available tools:",
                 json.dumps([asdict(tool) for tool in tools], ensure_ascii=False),
             )
         )
-        response = await complete_with_role(
-            self.provider,
+        response = await self.provider.complete_for(
             "planner",
             [
                 ChatMessage(
@@ -58,10 +62,11 @@ class ModelSyscallPlanner:
                             "Return exactly one JSON object and no prose.",
                             "The capability manifest is authoritative for names, permissions, schemas, and effects.",
                             "Never request a permission above the permission ceiling.",
+                            "Set model_role to the model role that should handle any follow-up response synthesis.",
                             "Use recent conversation and observations as state. Decide the next syscall yourself.",
                             "If no syscall should run, select an answer/clarification capability from the manifest.",
                             "JSON shape:",
-                            '{"tool":"<available_tool_name>","permission":"read|prepare|write","args":{},"confidence":0.0,"reason":""}',
+                            '{"tool":"<available_tool_name>","permission":"read|prepare|write","args":{},"model_role":"responder","confidence":0.0,"reason":""}',
                         )
                     ),
                 ),
@@ -98,6 +103,7 @@ class ModelSyscallPlanner:
             tool=tool,
             permission=_parse_permission(data.get("permission")),
             args=args,
+            model_role=str(data.get("model_role") or "responder").strip() or "responder",
             message=message or str(args.get("message") or ""),
             confidence=_confidence(data.get("confidence")),
             reason=str(data.get("reason") or ""),

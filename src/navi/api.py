@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from .agent_kernel import AgentKernel
+from .engine import HernessEngine
 from .api_paths import API_PATHS, api_path
 from .auth import AuthInspector
 from .app_factory import build_runtime
@@ -75,7 +75,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     runtime = build_runtime(home)
     task_store = TaskStore(home)
     daemon = SystemDaemon(home)
-    agent = AgentKernel(home=home, runtime=runtime, project_dir=Path.cwd())
+    agent = HernessEngine(home=home, runtime=runtime, project_dir=Path.cwd())
     capabilities = build_capability_registry(home, project_dir=Path.cwd())
     connector_adapters = load_connector_adapters()
     connector_status_handlers = {

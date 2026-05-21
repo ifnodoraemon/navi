@@ -138,11 +138,11 @@ class ModelPool:
         self.default = default
         self.routes = routes or {}
 
-    async def complete(self, messages: list[ChatMessage]) -> str:
-        return await self.complete_for("default", messages)
-
     async def complete_for(self, role: str, messages: list[ChatMessage]) -> str:
         return await self.routes.get(role, self.default).complete(messages)
+
+    def list_roles(self) -> list[str]:
+        return sorted({"default", "planner", "responder", "notification", *self.routes})
 
 
 PROVIDER_ADAPTERS: tuple[ProviderAdapter, ...] = (
@@ -152,21 +152,12 @@ PROVIDER_ADAPTERS: tuple[ProviderAdapter, ...] = (
 )
 
 
-def build_provider(config: ModelConfig) -> ChatProvider:
+def build_provider(config: ModelConfig) -> ModelPool:
     default = _build_fallback_chain(config)
-    if not config.routes:
-        return default
     return ModelPool(
         default=default,
         routes={role: _build_fallback_chain(route_config) for role, route_config in config.routes.items()},
     )
-
-
-async def complete_with_role(provider: ChatProvider, role: str, messages: list[ChatMessage]) -> str:
-    complete_for = getattr(provider, "complete_for", None)
-    if callable(complete_for):
-        return await complete_for(role, messages)
-    return await provider.complete(messages)
 
 
 def _build_fallback_chain(config: ModelConfig) -> ChatProvider:
@@ -215,7 +206,6 @@ def _provider_spec(config: ModelConfig) -> ProviderSpec:
             raise
         return ProviderSpec(
             name=config.provider,
-            aliases=(),
             kind=config.kind,
             default_model=config.model,
             default_base_url=config.api_base_url,

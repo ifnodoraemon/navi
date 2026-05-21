@@ -14,7 +14,7 @@ from navi.provider import (
     resolve_model_config,
 )
 from navi.runtime import AgentRuntime
-from navi.agent_kernel import AgentKernel
+from navi.engine import HernessEngine
 
 
 def test_provider_registry_exposes_deepseek_defaults():
@@ -42,17 +42,18 @@ def test_resolve_deepseek_config_normalizes_model_and_base_url():
     assert config.api_key == "sk-test"
 
 
-def test_build_provider_accepts_openai_alias():
+def test_build_provider_accepts_openai_compatible_provider():
     provider = build_provider(
         ModelConfig(
-            provider="openai",
+            provider="openai-compatible",
             model="gpt-test",
             api_base_url="https://example.com/v1",
             api_key="sk-test",
         )
     )
 
-    assert provider.__class__.__name__ == "OpenAICompatibleProvider"
+    assert provider.__class__.__name__ == "ModelPool"
+    assert provider.default.__class__.__name__ == "OpenAICompatibleProvider"
 
 
 def test_list_provider_specs_is_serializable():
@@ -61,17 +62,17 @@ def test_list_provider_specs_is_serializable():
     assert {spec["name"] for spec in specs} >= {"mock", "openai-compatible", "deepseek", "anthropic"}
 
 
-def test_build_provider_accepts_anthropic_alias():
+def test_build_provider_accepts_anthropic_provider():
     provider = build_provider(
         ModelConfig(
-            provider="claude",
+            provider="anthropic",
             model="claude-sonnet-4-20250514",
             api_base_url="https://api.anthropic.com/v1",
             api_key="sk-test",
         )
     )
 
-    assert provider.__class__.__name__ == "AnthropicCompatibleProvider"
+    assert provider.default.__class__.__name__ == "AnthropicCompatibleProvider"
 
 
 def test_build_provider_accepts_custom_openai_compatible_provider():
@@ -85,7 +86,7 @@ def test_build_provider_accepts_custom_openai_compatible_provider():
         )
     )
 
-    assert provider.__class__.__name__ == "OpenAICompatibleProvider"
+    assert provider.default.__class__.__name__ == "OpenAICompatibleProvider"
 
 
 @pytest.mark.asyncio
@@ -113,7 +114,7 @@ async def test_model_pool_routes_by_role_with_fallback():
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_uses_planner_route(tmp_path):
+async def test_herness_engine_uses_planner_route(tmp_path):
     provider = build_provider(
         ModelConfig(
             provider="mock",
@@ -130,7 +131,7 @@ async def test_agent_kernel_uses_planner_route(tmp_path):
         )
     )
     runtime = AgentRuntime(home=tmp_path, provider=provider)
-    agent = AgentKernel(home=tmp_path, runtime=runtime, project_dir=tmp_path)
+    agent = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
 
     result = await agent.handle("hello", peer_id="peer", sender_id="sender", source="test")
 
@@ -150,9 +151,9 @@ async def test_fallback_provider_tries_next_model_when_primary_fails():
         )
     )
 
-    result = await provider.complete([ChatMessage("user", "hello")])
+    result = await provider.complete_for("default", [ChatMessage("user", "hello")])
 
-    assert provider.__class__.__name__ == "FallbackProvider"
+    assert provider.default.__class__.__name__ == "FallbackProvider"
     assert result == "Navi received: hello"
 
 

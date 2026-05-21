@@ -8,7 +8,7 @@ from pathlib import Path
 import typer
 import uvicorn
 
-from .agent_kernel import AgentKernel
+from .engine import HernessEngine
 from .api import create_app
 from .app_factory import build_runtime
 from .auth import AuthInspector
@@ -51,7 +51,7 @@ def chat() -> None:
     write_default_config(home)
     runtime = build_runtime(home)
     config = load_config(home)
-    agent = AgentKernel(home=home, runtime=runtime, project_dir=Path.cwd())
+    agent = HernessEngine(home=home, runtime=runtime, project_dir=Path.cwd())
     session_id: str | None = None
     typer.echo("Navi chat. Type /exit to quit.")
     while True:

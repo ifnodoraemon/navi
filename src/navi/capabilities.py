@@ -257,7 +257,7 @@ class TaskCreateCapability:
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        prompt = _arg_text(args, "prompt") or _arg_text(args, "request")
+        prompt = _arg_text(args, "prompt")
         if not prompt:
             return CapabilityResult(
                 ok=False,

@@ -4,7 +4,7 @@ import pytest
 
 from navi.action_tools import load_action_tool_specs
 from navi.syscalls import ModelSyscallPlanner
-from navi.provider import ChatMessage
+from navi.provider import ChatMessage, ModelPool
 from navi.tools import build_tool_gateway
 
 
@@ -27,7 +27,7 @@ async def test_model_syscall_planner_asks_when_schedule_time_is_vague(tmp_path):
     provider = ScriptedProvider(
         '{"tool":"clarify.ask","args":{"message":"你希望每天晚上几点上通识课？"},"confidence":0.92,"reason":"recurring request has vague time"}'
     )
-    planner = ModelSyscallPlanner(provider)
+    planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("每天晚上上一个通识课给我", tools=_tools(tmp_path))
 
@@ -38,6 +38,7 @@ async def test_model_syscall_planner_asks_when_schedule_time_is_vague(tmp_path):
     assert "capability manifest" in system
     assert "Built-in control tools" not in provider.messages[1].content
     assert "Permission ceiling: write" in provider.messages[1].content
+    assert "Available model roles:" in provider.messages[1].content
     assert "Available tools:" in provider.messages[1].content
     assert "clarify.ask" in provider.messages[1].content
 
@@ -47,7 +48,7 @@ async def test_model_syscall_planner_receives_recent_conversation_context(tmp_pa
     provider = ScriptedProvider(
         '{"tool":"task.create","permission":"prepare","args":{"prompt":"删除上一轮确认要删除的旧任务入口"},"confidence":0.9,"reason":"follow-up refers to recent conversation"}'
     )
-    planner = ModelSyscallPlanner(provider)
+    planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan(
         "删除",
@@ -66,7 +67,7 @@ async def test_model_syscall_planner_parses_watch_syscall(tmp_path):
     provider = ScriptedProvider(
         '{"tool":"watch.create","permission":"prepare","args":{"prompt":"上一个通识课给我","cron":"0 21 * * *"},"confidence":0.95,"reason":"exact time provided"}'
     )
-    planner = ModelSyscallPlanner(provider)
+    planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("每天 21 点上一个通识课给我", tools=_tools(tmp_path))
 
@@ -80,7 +81,7 @@ async def test_model_syscall_planner_parses_read_syscall(tmp_path):
     provider = ScriptedProvider(
         '{"tool":"service.status","permission":"read","args":{"name":"navi.service"},"confidence":0.95,"reason":"status lookup"}'
     )
-    planner = ModelSyscallPlanner(provider)
+    planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("检查 navi.service 状态", tools=_tools(tmp_path))
 
@@ -94,7 +95,7 @@ async def test_model_syscall_planner_parses_approval_syscall(tmp_path):
     provider = ScriptedProvider(
         '{"tool":"approval.resolve","permission":"write","args":{"decision":"approve","code":"123456"},"confidence":0.95,"reason":"explicit approval"}'
     )
-    planner = ModelSyscallPlanner(provider)
+    planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("批准 123456", tools=_tools(tmp_path))
 
@@ -108,7 +109,7 @@ async def test_model_syscall_planner_prompt_routes_engineering_investigation_to_
     provider = ScriptedProvider(
         '{"tool":"task.create","permission":"prepare","args":{"prompt":"检查配置到运行时的映射问题"},"confidence":0.9,"reason":"engineering investigation"}'
     )
-    planner = ModelSyscallPlanner(provider)
+    planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("配置项写了但运行时好像没消费，帮我检查配置到运行时的映射问题", tools=_tools(tmp_path))
 
@@ -121,7 +122,7 @@ async def test_model_syscall_planner_preserves_approval_args(tmp_path):
     provider = ScriptedProvider(
         '{"tool":"approval.resolve","permission":"write","args":{"decision":"reject","task_id":"123456"},"confidence":0.95,"reason":"explicit rejection"}'
     )
-    planner = ModelSyscallPlanner(provider)
+    planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("拒绝 123456", tools=_tools(tmp_path))
 
@@ -134,7 +135,7 @@ async def test_model_syscall_planner_preserves_declared_permission(tmp_path):
     provider = ScriptedProvider(
         '{"tool":"approval.resolve","permission":"prepare","args":{"decision":"approve","code":"123456"},"confidence":0.95,"reason":"explicit approval"}'
     )
-    planner = ModelSyscallPlanner(provider)
+    planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("批准 123456", tools=_tools(tmp_path))
 
@@ -147,9 +148,26 @@ async def test_model_syscall_planner_does_not_infer_missing_decision(tmp_path):
     provider = ScriptedProvider(
         '{"tool":"approval.resolve","permission":"write","args":{"code":"123456"},"confidence":0.95,"reason":"User explicitly requested to reject the given code."}'
     )
-    planner = ModelSyscallPlanner(provider)
+    planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("拒绝 123456", tools=_tools(tmp_path))
 
     assert call.tool == "approval.resolve"
     assert call.args == {"code": "123456"}
+
+
+@pytest.mark.asyncio
+async def test_model_syscall_planner_parses_model_role(tmp_path):
+    provider = ScriptedProvider(
+        '{"tool":"service.status","permission":"read","args":{"name":"navi.service"},"model_role":"observer","confidence":0.95,"reason":"status lookup"}'
+    )
+    planner = ModelSyscallPlanner(ModelPool(default=provider))
+
+    call = await planner.plan(
+        "检查 navi.service 状态",
+        tools=_tools(tmp_path),
+        model_roles=["planner", "observer", "responder"],
+    )
+
+    assert call.model_role == "observer"
+    assert '"observer"' in provider.messages[1].content

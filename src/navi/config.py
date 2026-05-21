@@ -152,7 +152,6 @@ def _provider_spec(provider: str, model_raw: dict, env: dict[str, str]) -> Provi
         api_key_env = tuple(model_raw.get("api_key_env") or ("NAVI_MODEL_API_KEY",))
         return ProviderSpec(
             name=provider,
-            aliases=(),
             kind=kind,
             default_model=str(env.get("NAVI_MODEL", model_raw.get("model", ""))),
             default_base_url=str(env.get("NAVI_MODEL_API_BASE_URL", model_raw.get("api_base_url", ""))).rstrip("/"),

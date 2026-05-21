@@ -9,20 +9,15 @@ from .spec_loader import load_spec
 @dataclass(frozen=True)
 class ProviderSpec:
     name: str
-    aliases: tuple[str, ...]
     kind: str
     default_model: str
     default_base_url: str
     api_key_env: tuple[str, ...] = ()
 
-    def matches(self, provider: str) -> bool:
-        return provider == self.name or provider in self.aliases
-
 
 PROVIDER_SPECS: tuple[ProviderSpec, ...] = tuple(
     ProviderSpec(
         name=str(item["name"]),
-        aliases=tuple(item.get("aliases") or ()),
         kind=str(item["kind"]),
         default_model=str(item["default_model"]),
         default_base_url=str(item["default_base_url"]),
@@ -34,7 +29,7 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = tuple(
 
 def get_provider_spec(provider: str) -> ProviderSpec:
     for spec in PROVIDER_SPECS:
-        if spec.matches(provider):
+        if provider == spec.name:
             return spec
     raise ValueError(f"Unsupported model provider: {provider}")
 
@@ -43,7 +38,6 @@ def list_provider_specs() -> list[dict[str, Any]]:
     return [
         {
             "name": spec.name,
-            "aliases": list(spec.aliases),
             "kind": spec.kind,
             "default_model": spec.default_model,
             "default_base_url": spec.default_base_url,

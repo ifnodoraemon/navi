@@ -3,13 +3,13 @@ from __future__ import annotations
 import pytest
 
 from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
-from navi.provider import MockProvider
+from navi.provider import MockProvider, ModelPool
 from navi.runtime import AgentRuntime
 
 
 @pytest.mark.asyncio
 async def test_connector_ingress_runtime_routes_message_to_agent_session(tmp_path):
-    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=MockProvider()))
     ingress = ConnectorIngressRuntime(home=tmp_path, runtime=runtime, allow_sources={"core"})
 
     text = await ingress.handle(

@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import yaml
 
-from navi.agent_kernel import AgentKernel
+from navi.engine import HernessEngine
 from navi.action_tools import load_action_tool_specs
 from navi.app_factory import build_runtime
 from navi.config import load_config
@@ -71,7 +71,7 @@ async def test_live_llm_routes_real_user_issue(case: dict[str, Any]) -> None:
 async def test_live_llm_responses_do_not_regress_to_command_instructions(case: dict[str, Any]) -> None:
     home = _require_live_provider()
     runtime = build_runtime(home)
-    router = AgentKernel(home=home, runtime=runtime, project_dir=Path.cwd())
+    router = HernessEngine(home=home, runtime=runtime, project_dir=Path.cwd())
 
     result = await asyncio.wait_for(
         router.handle(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from navi.provider import MockProvider
+from navi.provider import MockProvider, ModelPool
 from navi.runtime import AgentRuntime
 from navi.telegram.config import TelegramConfig
 from navi.telegram.models import TelegramUpdate
@@ -12,7 +12,7 @@ from navi.telegram.service import TelegramService
 @pytest.mark.asyncio
 async def test_telegram_handle_update_replies_and_saves_context(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_TELEGRAM_MOCK", "true")
-    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=MockProvider()))
     service = TelegramService(
         home=tmp_path,
         config=TelegramConfig(dm_policy="open"),
@@ -39,7 +39,7 @@ async def test_telegram_handle_update_replies_and_saves_context(tmp_path, monkey
 @pytest.mark.asyncio
 async def test_telegram_allowlist_blocks_untrusted_sender(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_TELEGRAM_MOCK", "true")
-    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=MockProvider()))
     service = TelegramService(
         home=tmp_path,
         config=TelegramConfig(dm_policy="allowlist", allowed_users=["trusted"]),

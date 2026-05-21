@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from navi.provider import ChatMessage, MockProvider
+from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.runtime import AgentRuntime
 from navi.api import create_app
 
@@ -101,7 +101,7 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
     monkeypatch.setattr(
         api_module,
         "build_runtime",
-        lambda home=None: AgentRuntime(home=tmp_path, provider=provider),
+        lambda home=None: AgentRuntime(home=tmp_path, provider=ModelPool(default=provider)),
     )
     client = TestClient(api_module.create_app(tmp_path))
 
@@ -131,7 +131,7 @@ def test_chat_api_routes_natural_language_service_status(tmp_path, monkeypatch):
     monkeypatch.setattr(
         api_module,
         "build_runtime",
-        lambda home=None: AgentRuntime(home=tmp_path, provider=provider),
+        lambda home=None: AgentRuntime(home=tmp_path, provider=ModelPool(default=provider)),
     )
     monkeypatch.setattr(
         tools_module,
@@ -167,7 +167,7 @@ def test_chat_api_routes_natural_language_approval(tmp_path, monkeypatch):
     monkeypatch.setattr(
         api_module,
         "build_runtime",
-        lambda home=None: AgentRuntime(home=tmp_path, provider=provider),
+        lambda home=None: AgentRuntime(home=tmp_path, provider=ModelPool(default=provider)),
     )
     client = TestClient(api_module.create_app(tmp_path))
     created = client.post("/v1/chat", json={"message": "帮我检查本地服务状态"})

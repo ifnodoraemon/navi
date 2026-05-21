@@ -6,7 +6,7 @@ from pathlib import Path
 from .memory import MemoryStore
 from .operating_context import OperatingContext
 from .prompting import build_system_prompt
-from .provider import ChatMessage, ChatProvider, complete_with_role
+from .provider import ChatMessage, ModelPool
 from .skills import SkillStore
 
 
@@ -17,7 +17,7 @@ class AssistantReply:
 
 
 class AgentRuntime:
-    def __init__(self, *, home: Path, provider: ChatProvider):
+    def __init__(self, *, home: Path, provider: ModelPool):
         self.home = home
         self.provider = provider
         self.memory = MemoryStore(home)
@@ -38,7 +38,10 @@ class AgentRuntime:
         return AssistantReply(session_id=session_id, content=answer)
 
     async def complete(self, messages: list[ChatMessage], *, role: str = "default") -> str:
-        return await complete_with_role(self.provider, role, messages)
+        return await self.provider.complete_for(role, messages)
+
+    def model_roles(self) -> list[str]:
+        return self.provider.list_roles()
 
     def _build_messages(
         self,

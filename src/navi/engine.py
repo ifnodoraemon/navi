@@ -5,9 +5,9 @@ from pathlib import Path
 
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .operating_context import OperatingContext
-from .syscalls import ModelSyscallPlanner
 from .provider import ChatMessage
 from .runtime import AgentRuntime
+from .syscalls import ModelSyscallPlanner
 
 MAX_AGENT_STEPS = 4
 
@@ -19,6 +19,7 @@ class AgentTurnResult:
     task_id: str = ""
     action: str = "chat"
     observation: str = ""
+    model_role: str = "responder"
     terminal: bool = False
 
 
@@ -77,6 +78,7 @@ class HernessEngine:
                 conversation_context=self._conversation_context(resolved_session_id),
                 observations=observations,
                 permission_ceiling=context.permission_ceiling,
+                model_roles=self.runtime.model_roles(),
             )
             invoked = await self.capabilities.invoke(
                 syscall.tool,
@@ -89,6 +91,7 @@ class HernessEngine:
                 task_id=invoked.task_id,
                 action=invoked.action,
                 observation=invoked.observation,
+                model_role=syscall.model_role,
                 terminal=invoked.terminal,
             )
             if result.terminal and result.action == "chat" and not result.text.strip():
@@ -99,6 +102,7 @@ class HernessEngine:
                     task_id=last_result.task_id,
                     action=last_result.action,
                     observation="\n\n".join(observations),
+                    model_role=last_result.model_role,
                     terminal=True,
                 )
             last_result = result
@@ -113,6 +117,7 @@ class HernessEngine:
                 session_id=resolved_session_id,
                 action=last_result.action if last_result else "capability",
                 task_id=last_result.task_id if last_result else "",
+                model_role=last_result.model_role if last_result else "responder",
             )
         reply = await self.runtime.chat(
             text,
@@ -150,6 +155,7 @@ class HernessEngine:
             task_id=result.task_id,
             action=result.action,
             observation=result.observation,
+            model_role=result.model_role,
             terminal=result.terminal,
         )
 
@@ -161,6 +167,7 @@ class HernessEngine:
         session_id: str | None,
         action: str,
         task_id: str = "",
+        model_role: str = "responder",
     ) -> AgentTurnResult:
         session_id = session_id or self.runtime.memory.new_session_id()
         observation = "\n\n".join(observations)
@@ -200,7 +207,7 @@ class HernessEngine:
                 ),
             )
         )
-        answer = await self.runtime.complete(messages, role="responder")
+        answer = await self.runtime.complete(messages, role=model_role)
         self.runtime.memory.add_message(session_id, "assistant", answer)
         return AgentTurnResult(
             text=answer,
@@ -208,8 +215,6 @@ class HernessEngine:
             task_id=task_id,
             action=action,
             observation=observation,
+            model_role=model_role,
             terminal=True,
         )
-
-
-AgentKernel = HernessEngine

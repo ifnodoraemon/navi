@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from navi.provider import ChatMessage, MockProvider
+from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.runtime import AgentRuntime
 from navi.operating_context import OperatingContext
 
@@ -16,9 +16,13 @@ class RecordingProvider(MockProvider):
         return await super().complete(messages)
 
 
+def _pool(provider=None) -> ModelPool:
+    return ModelPool(default=provider or MockProvider())
+
+
 @pytest.mark.asyncio
 async def test_runtime_persists_session_messages(tmp_path):
-    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    runtime = AgentRuntime(home=tmp_path, provider=_pool())
 
     reply = await runtime.chat("hello")
 
@@ -29,7 +33,7 @@ async def test_runtime_persists_session_messages(tmp_path):
 
 
 def test_memory_append_and_read(tmp_path):
-    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    runtime = AgentRuntime(home=tmp_path, provider=_pool())
 
     runtime.memory.append_memory("Prefers concise replies")
 
@@ -37,7 +41,7 @@ def test_memory_append_and_read(tmp_path):
 
 
 def test_memory_recall_prioritizes_constraints_and_relevance(tmp_path):
-    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    runtime = AgentRuntime(home=tmp_path, provider=_pool())
     runtime.memory.add_item(
         "constraint",
         "Never run destructive git commands without explicit approval.",
@@ -70,7 +74,7 @@ def test_memory_recall_prioritizes_constraints_and_relevance(tmp_path):
 
 
 def test_session_alias_rotation_preserves_old_messages(tmp_path):
-    runtime = AgentRuntime(home=tmp_path, provider=MockProvider())
+    runtime = AgentRuntime(home=tmp_path, provider=_pool())
     first = runtime.memory.current_session_id("connector:test:peer")
     runtime.memory.add_message(first, "user", "old topic")
 
@@ -86,7 +90,7 @@ def test_session_alias_rotation_preserves_old_messages(tmp_path):
 @pytest.mark.asyncio
 async def test_runtime_system_prompt_includes_local_deployment_contract(tmp_path):
     provider = RecordingProvider()
-    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
 
     await runtime.chat("列一下我本机的目录")
 
@@ -113,7 +117,7 @@ async def test_runtime_system_prompt_includes_local_deployment_contract(tmp_path
 async def test_runtime_system_prompt_uses_configured_web_url(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEB_URL", "http://navi.local")
     provider = RecordingProvider()
-    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
 
     await runtime.chat("hello")
 
@@ -124,7 +128,7 @@ async def test_runtime_system_prompt_uses_configured_web_url(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def test_runtime_system_prompt_uses_goal_directed_memory(tmp_path):
     provider = RecordingProvider()
-    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
     runtime.memory.add_item(
         "constraint",
         "Do not forget approval state during long context.",
@@ -171,7 +175,7 @@ async def test_runtime_prompt_layers_and_skill_permissions_are_scoped(tmp_path):
         encoding="utf-8",
     )
     provider = RecordingProvider()
-    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
 
     await runtime.chat(
         "hello",

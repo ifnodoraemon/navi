@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from navi.agent_kernel import AgentKernel
+from navi.engine import HernessEngine
 from navi.fact_tools import ServiceFacts
-from navi.provider import ChatMessage, MockProvider
+from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.runtime import AgentRuntime
 from navi.tasks import TaskStore
 
@@ -41,8 +41,8 @@ async def test_engine_can_chain_multiple_read_capabilities_before_answering(tmp_
             stderr="",
         ),
     )
-    runtime = AgentRuntime(home=tmp_path, provider=provider)
-    router = AgentKernel(home=tmp_path, runtime=runtime, project_dir=tmp_path)
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
+    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
 
     result = await router.handle(
         "检查当前模型和服务状态",

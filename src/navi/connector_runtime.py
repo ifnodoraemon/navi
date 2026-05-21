@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from .agent_kernel import AgentKernel
+from .engine import HernessEngine
 from .runtime import AgentRuntime
 
 
@@ -37,7 +37,7 @@ class ConnectorIngressRuntime:
         runtime: AgentRuntime,
         allow_sources: set[str] | None = None,
     ):
-        self.agent = AgentKernel(
+        self.agent = HernessEngine(
             home=home,
             runtime=runtime,
             project_dir=Path.cwd(),
