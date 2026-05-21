@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 import navi
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility path.
+    import tomli as tomllib
 
 
 def test_package_version_matches_project_metadata():
