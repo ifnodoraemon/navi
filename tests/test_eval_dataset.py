@@ -4,9 +4,10 @@ from pathlib import Path
 
 from navi.evals import (
     load_task_eval_cases,
+    load_task_eval_dataset,
     match_task_eval_case,
     task_eval_tools,
-    validate_task_eval_cases,
+    validate_task_eval_dataset,
 )
 from navi.syscalls import ModelSyscall
 
@@ -16,10 +17,19 @@ def _dataset() -> Path:
 
 
 def test_task_eval_dataset_matches_capability_manifest(tmp_path):
-    cases = load_task_eval_cases(_dataset())
-    errors = validate_task_eval_cases(cases, task_eval_tools(tmp_path, project_dir=tmp_path))
+    dataset = load_task_eval_dataset(_dataset())
+    errors = validate_task_eval_dataset(dataset, task_eval_tools(tmp_path, project_dir=tmp_path))
 
     assert errors == []
+
+
+def test_task_eval_dataset_has_100_percent_required_scenario_coverage():
+    dataset = load_task_eval_dataset(_dataset())
+    required = set(dataset["coverage"]["required_categories"])
+    observed = {str(case["category"]) for case in dataset["cases"]}
+
+    assert required <= observed
+    assert len(required) >= 18
 
 
 def test_task_eval_dataset_covers_lifecycle_regressions():

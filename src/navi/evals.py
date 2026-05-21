@@ -24,6 +24,10 @@ class EvalResult:
 
 
 def load_task_eval_cases(path: Path) -> list[dict[str, Any]]:
+    return load_task_eval_dataset(path)["cases"]
+
+
+def load_task_eval_dataset(path: Path) -> dict[str, Any]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     data = {} if loaded is None else loaded
     if not isinstance(data, dict):
@@ -34,13 +38,22 @@ def load_task_eval_cases(path: Path) -> list[dict[str, Any]]:
     for index, case in enumerate(cases):
         if not isinstance(case, dict):
             raise ValueError(f"case {index} must be a mapping")
-    return cases
+    return data
 
 
 def validate_task_eval_cases(cases: list[dict[str, Any]], tools: list[ToolSpec]) -> list[str]:
+    return validate_task_eval_dataset({"cases": cases}, tools)
+
+
+def validate_task_eval_dataset(dataset: dict[str, Any], tools: list[ToolSpec]) -> list[str]:
     errors: list[str] = []
     by_name = {tool.name: tool for tool in tools}
     seen: set[str] = set()
+    cases = dataset.get("cases")
+    if not isinstance(cases, list):
+        return ["dataset: missing cases list"]
+    required_categories = _required_categories(dataset)
+    categories_seen: set[str] = set()
     for index, case in enumerate(cases):
         case_id = str(case.get("id") or "")
         prefix = case_id or f"case[{index}]"
@@ -51,6 +64,14 @@ def validate_task_eval_cases(cases: list[dict[str, Any]], tools: list[ToolSpec])
         seen.add(case_id)
         if not str(case.get("message") or "").strip():
             errors.append(f"{prefix}: missing message")
+        category = str(case.get("category") or "").strip()
+        if required_categories:
+            if not category:
+                errors.append(f"{prefix}: missing category")
+            elif category not in required_categories:
+                errors.append(f"{prefix}: unknown category {category!r}")
+            else:
+                categories_seen.add(category)
         expected = case.get("expect")
         if not isinstance(expected, dict):
             errors.append(f"{prefix}: missing expect mapping")
@@ -64,6 +85,8 @@ def validate_task_eval_cases(cases: list[dict[str, Any]], tools: list[ToolSpec])
         if permission != tool.permission:
             errors.append(f"{prefix}: expected permission {permission!r} does not match {tool.permission!r}")
         _validate_expected_args(prefix, expected.get("args") or {}, tool, errors)
+    for category in sorted(required_categories - categories_seen):
+        errors.append(f"dataset: missing required category {category!r}")
     return errors
 
 
@@ -74,9 +97,10 @@ async def run_task_eval_dataset(
     dataset: Path,
     timeout_seconds: float = 75.0,
 ) -> list[EvalResult]:
-    cases = load_task_eval_cases(dataset)
+    loaded = load_task_eval_dataset(dataset)
+    cases = loaded["cases"]
     tools = task_eval_tools(home, project_dir=project_dir)
-    validation_errors = validate_task_eval_cases(cases, tools)
+    validation_errors = validate_task_eval_dataset(loaded, tools)
     if validation_errors:
         return [
             EvalResult(
@@ -151,3 +175,13 @@ def _validate_expected_args(
     for key in expected_args:
         if str(key) not in properties:
             errors.append(f"{prefix}: args.{key} is not declared by {tool.name}")
+
+
+def _required_categories(dataset: dict[str, Any]) -> set[str]:
+    coverage = dataset.get("coverage") or {}
+    if not isinstance(coverage, dict):
+        return set()
+    raw = coverage.get("required_categories") or []
+    if not isinstance(raw, list):
+        return set()
+    return {str(item).strip() for item in raw if str(item).strip()}

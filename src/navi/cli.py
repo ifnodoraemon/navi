@@ -17,11 +17,11 @@ from .config import load_config, write_default_config
 from .connector_registry import get_connector_adapter, load_connector_adapters
 from .defaults import DEFAULT_WEB_HOST, DEFAULT_WEB_PORT
 from .evals import (
-    load_task_eval_cases,
+    load_task_eval_dataset,
     results_to_json,
     run_task_eval_dataset,
     task_eval_tools,
-    validate_task_eval_cases,
+    validate_task_eval_dataset,
 )
 from .evolution import EvolutionEngine, EvolutionLedger
 from .graph import GraphStore
@@ -278,8 +278,8 @@ def eval_tasks(
     """Run the task routing eval dataset against the configured model."""
     home = ensure_home()
     if validate_only:
-        errors = validate_task_eval_cases(
-            load_task_eval_cases(dataset),
+        errors = validate_task_eval_dataset(
+            load_task_eval_dataset(dataset),
             task_eval_tools(home, project_dir=Path.cwd()),
         )
         if json_output:

@@ -23,6 +23,7 @@ from .graph import GraphStore
 from .paths import ensure_home
 from .tasks import TaskStore
 from .trust import TrustStore
+from . import __version__
 
 
 class ChatRequest(BaseModel):
@@ -82,7 +83,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         adapter.name: (lambda item=adapter: item.status(home))
         for adapter in connector_adapters
     }
-    app = FastAPI(title="Navi", version="0.1.0")
+    app = FastAPI(title="Navi", version=__version__)
 
     @app.get(api_path("health"))
     def health() -> dict:
