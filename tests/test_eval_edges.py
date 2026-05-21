@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from navi.evals import (
     EvalResult,
     load_task_eval_cases,
+    load_task_eval_dataset,
     match_task_eval_case,
     results_to_json,
     run_task_eval_dataset,
+    validate_task_eval_dataset,
     validate_task_eval_cases,
 )
 from navi.syscalls import ModelSyscall
@@ -40,6 +44,11 @@ def test_load_task_eval_cases_rejects_invalid_shapes(tmp_path):
     with pytest.raises(ValueError, match="case 0"):
         load_task_eval_cases(bad_case)
 
+    loaded = load_task_eval_dataset(
+        Path(__file__).resolve().parents[1] / "evals" / "task_cases.yaml"
+    )
+    assert "coverage" in loaded
+
 
 def test_validate_task_eval_cases_reports_dataset_errors():
     cases = [
@@ -71,6 +80,32 @@ def test_validate_task_eval_cases_reports_dataset_errors():
     assert "dup: expected permission 'write' does not match 'read'" in errors
     assert "dup: args.unknown is not declared by final.answer" in errors
     assert "no-expect: missing expect mapping" in errors
+
+
+def test_validate_task_eval_dataset_enforces_required_category_coverage():
+    dataset = {
+        "coverage": {"required_categories": ["greeting", "coding_debugging"]},
+        "cases": [
+            {
+                "id": "hello",
+                "category": "unknown",
+                "message": "hello",
+                "expect": {"tool": "final.answer", "permission": "read"},
+            },
+            {
+                "id": "missing-category",
+                "message": "hello",
+                "expect": {"tool": "final.answer", "permission": "read"},
+            },
+        ],
+    }
+
+    errors = validate_task_eval_dataset(dataset, [_tool()])
+
+    assert "hello: unknown category 'unknown'" in errors
+    assert "missing-category: missing category" in errors
+    assert "dataset: missing required category 'coding_debugging'" in errors
+    assert "dataset: missing required category 'greeting'" in errors
 
 
 def test_match_task_eval_case_reports_tool_and_permission_drift():
