@@ -24,7 +24,8 @@ class EvalResult:
 
 
 def load_task_eval_cases(path: Path) -> list[dict[str, Any]]:
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data = {} if loaded is None else loaded
     if not isinstance(data, dict):
         raise ValueError("eval dataset must be a mapping")
     cases = data.get("cases")
