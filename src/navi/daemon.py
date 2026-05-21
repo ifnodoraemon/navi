@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .cron import next_cron_time
@@ -30,6 +30,18 @@ class ProactiveEvent:
     prompt: str
     state_updates: dict[str, Any] = field(default_factory=dict)
     suppressed_state_updates: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProjectEventContext:
+    project_path: str
+    project_data: dict[str, Any]
+    has_active_task: bool
+    use_default_ports: bool
+
+
+EventBatch = tuple[list[ProactiveEvent], dict[str, Any]]
+EventDetector = Callable[[ProjectEventContext], Awaitable[EventBatch]]
 
 
 class SystemDaemon:
@@ -87,17 +99,7 @@ class SystemDaemon:
         if not projects:
             return created
         
-        active_tasks = self.tasks.list_by_statuses(["running", "queued", "pending"])
-
-        # Pre-build a set of resolved workspaces for O(1) active task lookup
-        active_workspaces: set[str] = set()
-        for t in active_tasks:
-            if t.workspace:
-                try:
-                    active_workspaces.add(str(Path(t.workspace).resolve()))
-                except OSError:
-                    active_workspaces.add(t.workspace)
-
+        active_workspaces = self._active_workspaces()
         primary_project = projects[0].name if projects else ""
         results = await asyncio.gather(
             *[
@@ -135,28 +137,24 @@ class SystemDaemon:
 
         project_data = dict(project.data)
         data_changed = False
-
-        try:
-            project_canonical_str = str(Path(project_path).resolve())
-        except OSError:
-            project_canonical_str = project_path
-        has_active_task = project_canonical_str in active_workspaces
+        context = ProjectEventContext(
+            project_path=project_path,
+            project_data=project_data,
+            has_active_task=self._canonical_path(project_path) in active_workspaces,
+            use_default_ports=use_default_ports,
+        )
 
         event_batches = await asyncio.gather(
-            self._detect_git_mutations(project_path, project_data),
-            self._detect_service_log_events(project_path, project_data),
-            self._detect_port_events(project_data, use_default_ports=use_default_ports),
+            *(detector(context) for detector in self._project_event_detectors()),
         )
 
         for events, state_updates in event_batches:
-            if state_updates:
-                project_data.update(state_updates)
-                data_changed = True
+            data_changed = self._apply_state_updates(project_data, state_updates) or data_changed
             for event in events:
                 created_event, event_changed = await self._apply_event_policy(
                     event,
                     project_data,
-                    has_active_task=has_active_task,
+                    has_active_task=context.has_active_task,
                 )
                 data_changed = data_changed or event_changed
                 if created_event:
@@ -166,12 +164,39 @@ class SystemDaemon:
             self.graph.upsert("Project", project_path, project_data)
         return created
 
+    def _project_event_detectors(self) -> tuple[EventDetector, ...]:
+        return (
+            self._detect_git_mutations,
+            self._detect_service_log_events,
+            self._detect_port_events,
+        )
+
+    def _active_workspaces(self) -> set[str]:
+        return {
+            self._canonical_path(task.workspace)
+            for task in self.tasks.list_by_statuses(["running", "queued", "pending"])
+            if task.workspace
+        }
+
+    @staticmethod
+    def _canonical_path(path: str) -> str:
+        try:
+            return str(Path(path).resolve())
+        except OSError:
+            return path
+
+    @staticmethod
+    def _apply_state_updates(target: dict[str, Any], updates: dict[str, Any]) -> bool:
+        target.update(updates)
+        return bool(updates)
+
     async def _detect_git_mutations(
         self,
-        project_path: str,
-        project_data: dict,
-    ) -> tuple[list[ProactiveEvent], dict[str, Any]]:
+        context: ProjectEventContext,
+    ) -> EventBatch:
         events: list[ProactiveEvent] = []
+        project_path = context.project_path
+        project_data = context.project_data
         git_dir = Path(project_path) / ".git"
         if not git_dir.exists():
             return events, {}
@@ -218,11 +243,12 @@ class SystemDaemon:
 
     async def _detect_service_log_events(
         self,
-        project_path: str,
-        project_data: dict,
-    ) -> tuple[list[ProactiveEvent], dict[str, Any]]:
+        context: ProjectEventContext,
+    ) -> EventBatch:
         events: list[ProactiveEvent] = []
         state_updates: dict[str, Any] = {}
+        project_path = context.project_path
+        project_data = context.project_data
         log_dirs = [Path(project_path), Path(project_path) / "logs", Path(project_path) / "log"]
         for log_dir in log_dirs:
             if not log_dir.exists():
@@ -299,14 +325,13 @@ class SystemDaemon:
 
     async def _detect_port_events(
         self,
-        project_data: dict,
-        *,
-        use_default_ports: bool,
-    ) -> tuple[list[ProactiveEvent], dict[str, Any]]:
+        context: ProjectEventContext,
+    ) -> EventBatch:
         events: list[ProactiveEvent] = []
         state_updates: dict[str, Any] = {}
+        project_data = context.project_data
         dev_ports = project_data.get("dev_ports", [])
-        if not dev_ports and use_default_ports:
+        if not dev_ports and context.use_default_ports:
             dev_ports = DEFAULT_DEV_PORTS
         if not dev_ports:
             return events, state_updates
@@ -363,11 +388,9 @@ class SystemDaemon:
         *,
         has_active_task: bool,
     ) -> tuple[dict | None, bool]:
+        policy_updates = event.suppressed_state_updates if has_active_task else event.state_updates
         if has_active_task:
-            if event.suppressed_state_updates:
-                project_data.update(event.suppressed_state_updates)
-                return None, True
-            return None, False
+            return None, self._apply_state_updates(project_data, policy_updates)
 
         result = await self.capabilities.invoke(
             "task.create",
@@ -380,14 +403,17 @@ class SystemDaemon:
                 source=event.source,
             ),
         )
-        if event.state_updates:
-            project_data.update(event.state_updates)
+        data_changed = self._apply_state_updates(project_data, policy_updates)
         return (
-            {
-                "message": event.message,
-                "task_id": result.task_id,
-                "action": result.action,
-                "observation": result.observation,
-            },
-            bool(event.state_updates),
+            self._event_result(event, result),
+            data_changed,
         )
+
+    @staticmethod
+    def _event_result(event: ProactiveEvent, result: Any) -> dict:
+        return {
+            "message": event.message,
+            "task_id": result.task_id,
+            "action": result.action,
+            "observation": result.observation,
+        }

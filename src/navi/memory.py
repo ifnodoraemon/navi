@@ -63,6 +63,7 @@ MEMORY_TYPES = {
 LEARNABLE_MEMORY_TYPES = ("preference", "constraint", "negative", "fact", "semantic")
 MEMORY_STATUSES = {"proposed", "accepted", "active", "contradicted", "stale", "archived", "revoked"}
 ACTIVE_STATUSES = {"accepted", "active"}
+TASK_LEARNING_LOG_LIMIT = 3000
 TYPE_PRIORITY = {
     "constraint": 100,
     "negative": 90,
@@ -571,13 +572,13 @@ class MemoryStore:
 
         # 2. Format execution logs
         logs_text_parts = []
-        for log in logs[:10]:
+        for log in logs[-10:]:
             logs_text_parts.append(
                 f"Phase: {log.phase}\n"
                 f"Command: {log.command}\n"
                 f"Exit Code: {log.exit_code}\n"
-                f"Stdout: {log.stdout[:800]}\n"
-                f"Stderr: {log.stderr[:800]}"
+                f"Stdout: {_truncate_middle(log.stdout, TASK_LEARNING_LOG_LIMIT)}\n"
+                f"Stderr: {_truncate_middle(log.stderr, TASK_LEARNING_LOG_LIMIT)}"
             )
         logs_text = "\n---\n".join(logs_text_parts)
 
@@ -726,3 +727,16 @@ class MemoryStore:
             return 0
         freshness = min(10.0, max(0.0, (item.updated_at - 1_700_000_000) / 10_000_000))
         return priority + (overlap * 12) + (item.confidence * 10) + freshness
+
+
+def _truncate_middle(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    head_limit = max(1, limit // 2)
+    tail_limit = max(1, limit - head_limit)
+    omitted = len(text) - head_limit - tail_limit
+    return (
+        f"{text[:head_limit]}\n"
+        f"... [truncated {omitted} chars from the middle] ...\n"
+        f"{text[-tail_limit:]}"
+    )

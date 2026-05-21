@@ -152,6 +152,59 @@ async def test_extract_memories_from_task(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_extract_memories_from_task_uses_recent_expanded_logs(tmp_path):
+    store = MemoryStore(tmp_path)
+    task = Task(
+        id="task-recent-logs",
+        title="Debug final failure",
+        prompt="Run a multi-step job",
+        status="failed",
+        plan_summary="Run steps",
+        result_summary="Failed late",
+        error="final failure",
+        workspace=str(tmp_path),
+        created_at=0.0,
+        updated_at=0.0,
+    )
+    logs = [
+        ExecutionLog(
+            id=f"log-{i}",
+            task_id=task.id,
+            provider="local",
+            phase="execute",
+            command=f"step {i}",
+            stdout=f"early output {i}",
+            stderr="",
+            exit_code=0,
+            started_at=0.0,
+            ended_at=0.0,
+        )
+        for i in range(12)
+    ]
+    logs[-1] = ExecutionLog(
+        id="log-final",
+        task_id=task.id,
+        provider="local",
+        phase="execute",
+        command="final step",
+        stdout="x" * 2500 + "ROOT_CAUSE_CONTEXT",
+        stderr="Traceback final failure",
+        exit_code=1,
+        started_at=0.0,
+        ended_at=0.0,
+    )
+    provider = ScriptedProvider([json.dumps({"learnings": []})])
+    pool = ModelPool(default=provider)
+
+    await store.extract_memories_from_task(task, logs, pool)
+
+    user_prompt = provider.messages[0][-1].content
+    assert "step 0" not in user_prompt
+    assert "final step" in user_prompt
+    assert "ROOT_CAUSE_CONTEXT" in user_prompt
+
+
+@pytest.mark.asyncio
 async def test_rollback_memory_item(tmp_path):
     # We will use EvolutionEngine to execute rollback and verify results
     engine = EvolutionEngine(tmp_path)
