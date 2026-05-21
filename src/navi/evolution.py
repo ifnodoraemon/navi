@@ -235,31 +235,7 @@ class EvolutionEngine:
             if not event.before:
                 self.memory.delete_item(event.target_id)
             else:
-                item_dict = json.loads(event.before)
-                with connect(self.memory.db_path) as conn:
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO memory_items(
-                            id, type, status, scope, content, source, confidence,
-                            created_at, updated_at, last_verified_at, expires_at, metadata
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            item_dict["id"],
-                            item_dict["type"],
-                            item_dict["status"],
-                            item_dict["scope"],
-                            item_dict["content"],
-                            item_dict["source"],
-                            item_dict["confidence"],
-                            item_dict["created_at"],
-                            item_dict["updated_at"],
-                            item_dict["last_verified_at"],
-                            item_dict["expires_at"],
-                            json.dumps(item_dict["metadata"], sort_keys=True) if isinstance(item_dict["metadata"], dict) else item_dict["metadata"],
-                        ),
-                    )
+                self.memory.restore_item(json.loads(event.before))
         elif event.target_type == "task_execution":
             if event.before:
                 task_dict = json.loads(event.before)

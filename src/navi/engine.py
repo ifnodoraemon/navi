@@ -142,14 +142,22 @@ class HernessEngine:
 
     def _trigger_background_memory(self, result: AgentTurnResult) -> None:
         import asyncio
+        import logging
         if result.session_id:
-            asyncio.create_task(
+            logger = logging.getLogger("navi.engine")
+            task = asyncio.create_task(
                 self.runtime.memory.extract_and_consolidate_memories(
                     session_id=result.session_id,
                     provider=self.runtime.provider,
                     task_id=result.task_id,
                 )
             )
+            def handle_done(t: asyncio.Task) -> None:
+                try:
+                    t.result()
+                except Exception as e:
+                    logger.error(f"Background memory extraction failed: {e}", exc_info=True)
+            task.add_done_callback(handle_done)
 
 
     def _conversation_context(self, session_id: str | None) -> str:

@@ -133,12 +133,14 @@ class SystemDaemon:
                         last_size = project.data.get(log_key, 0)
                         
                         if current_size > last_size:
-                            with open(file_path, "r", errors="replace") as f:
-                                f.seek(last_size)
-                                new_lines = f.readlines()
+                            def read_log_diff():
+                                with open(file_path, "r", errors="replace") as f:
+                                    f.seek(last_size)
+                                    return f.readlines()
+                            new_lines = await asyncio.to_thread(read_log_diff)
                                 
                             new_content = "".join(new_lines)
-                            if any(word in new_content for word in ["Exception", "Error:", "FATAL", "Traceback (most recent call first)"]):
+                            if any(word in new_content for word in ["Exception", "FATAL", "Traceback (most recent call first)"]):
                                 prompt = (
                                     f"Proactive Alert: I detected an exception/error in local service log file: {file_path.name}\n"
                                     f"New log entries:\n{new_content[-1500:]}\n"
@@ -165,8 +167,8 @@ class SystemDaemon:
                             updated_data = {**project.data, log_key: current_size}
                             graph.upsert("Project", project_path, updated_data)
                     except Exception:
-                        pass
-                        
+                         pass
+                         
             # C. Check socket exceptions / connection status for active development ports
             dev_ports = [3000, 5000, 8000, 8080]
             for port in dev_ports:
@@ -175,10 +177,13 @@ class SystemDaemon:
                 
                 is_active = False
                 try:
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                        s.settimeout(0.2)
-                        s.connect(("localhost", port))
-                        is_active = True
+                    _, writer = await asyncio.wait_for(
+                        asyncio.open_connection("localhost", port),
+                        timeout=0.2
+                    )
+                    writer.close()
+                    await writer.wait_closed()
+                    is_active = True
                 except Exception:
                     pass
                     

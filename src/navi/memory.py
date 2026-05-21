@@ -252,6 +252,63 @@ class MemoryStore:
         with connect(self.db_path) as conn:
             conn.execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
 
+    def restore_item(self, item_dict: dict) -> None:
+        import json
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_items(
+                    id, type, status, scope, content, source, confidence,
+                    created_at, updated_at, last_verified_at, expires_at, metadata
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item_dict["id"],
+                    item_dict["type"],
+                    item_dict["status"],
+                    item_dict["scope"],
+                    item_dict["content"],
+                    item_dict["source"],
+                    item_dict["confidence"],
+                    item_dict["created_at"],
+                    item_dict["updated_at"],
+                    item_dict["last_verified_at"],
+                    item_dict["expires_at"],
+                    json.dumps(item_dict["metadata"], sort_keys=True) if isinstance(item_dict["metadata"], dict) else item_dict["metadata"],
+                ),
+            )
+
+    def _parse_json_learnings(self, response_raw: str) -> list[dict]:
+        import re
+        import json
+        stripped = response_raw.strip()
+        raw_json = ""
+        if stripped.startswith("{") and stripped.endswith("}"):
+            raw_json = stripped
+        else:
+            fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_raw, re.DOTALL)
+            if fenced:
+                raw_json = fenced.group(1)
+            else:
+                start = response_raw.find("{")
+                end = response_raw.rfind("}")
+                if start >= 0 and end > start:
+                    raw_json = response_raw[start : end + 1]
+
+        if not raw_json:
+            return []
+
+        try:
+            data = json.loads(raw_json)
+        except json.JSONDecodeError:
+            return []
+
+        learnings = data.get("learnings")
+        if not isinstance(learnings, list):
+            return []
+        return learnings
+
 
     def recall(self, query: str, *, limit: int = 8) -> list[MemoryItem]:
         now = time.time()
@@ -440,31 +497,7 @@ class MemoryStore:
             return []
 
         # 5. Extract JSON object
-        stripped = response_raw.strip()
-        raw_json = ""
-        if stripped.startswith("{") and stripped.endswith("}"):
-            raw_json = stripped
-        else:
-            fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_raw, re.DOTALL)
-            if fenced:
-                raw_json = fenced.group(1)
-            else:
-                start = response_raw.find("{")
-                end = response_raw.rfind("}")
-                if start >= 0 and end > start:
-                    raw_json = response_raw[start : end + 1]
-
-        if not raw_json:
-            return []
-
-        try:
-            data = json.loads(raw_json)
-        except json.JSONDecodeError:
-            return []
-
-        learnings = data.get("learnings")
-        if not isinstance(learnings, list):
-            return []
+        learnings = self._parse_json_learnings(response_raw)
 
         ledger = EvolutionLedger(self.home)
         affected_items = []
@@ -610,31 +643,7 @@ class MemoryStore:
             return []
 
         # 5. Extract JSON object
-        stripped = response_raw.strip()
-        raw_json = ""
-        if stripped.startswith("{") and stripped.endswith("}"):
-            raw_json = stripped
-        else:
-            fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_raw, re.DOTALL)
-            if fenced:
-                raw_json = fenced.group(1)
-            else:
-                start = response_raw.find("{")
-                end = response_raw.rfind("}")
-                if start >= 0 and end > start:
-                    raw_json = response_raw[start : end + 1]
-
-        if not raw_json:
-            return []
-
-        try:
-            data = json.loads(raw_json)
-        except json.JSONDecodeError:
-            return []
-
-        learnings = data.get("learnings")
-        if not isinstance(learnings, list):
-            return []
+        learnings = self._parse_json_learnings(response_raw)
 
         ledger = EvolutionLedger(self.home)
         affected_items = []
