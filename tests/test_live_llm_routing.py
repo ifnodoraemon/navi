@@ -17,11 +17,14 @@ from navi.syscalls import ModelSyscall, ModelSyscallPlanner
 from navi.tools import build_tool_gateway
 
 
-pytestmark = pytest.mark.live_llm
-
-
 def _live_enabled() -> bool:
     return os.environ.get("NAVI_LIVE_LLM_TESTS", "").lower() in {"1", "true", "yes", "on"}
+
+
+pytestmark = pytest.mark.live_llm
+
+if not _live_enabled():
+    pytest.skip("set NAVI_LIVE_LLM_TESTS=1 to run real model provider tests", allow_module_level=True)
 
 
 def _home() -> Path:

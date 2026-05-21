@@ -82,7 +82,8 @@ def test_cli_tool_eval_model_and_skill_commands(tmp_path):
 
     provider = runner.invoke(app, ["tools", "call", "provider.config"], env=env)
     assert provider.exit_code == 0
-    assert '"tool": "provider.config"' in provider.output
+    assert '"action": "tool"' in provider.output
+    assert '"provider": "mock"' in provider.output
 
     bad_json = runner.invoke(app, ["tools", "call", "provider.config", "--args-json", "["], env=env)
     assert bad_json.exit_code != 0

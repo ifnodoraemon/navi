@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
+from .db import connect
 from typing import Any
 
 from .tasks import Task
@@ -53,7 +54,7 @@ class TrustStore:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS trust_rules (
@@ -98,11 +99,12 @@ class TrustStore:
         )
 
     def match(self, *, prompt: str, sender_id: str, workspace: str) -> TrustRule | None:
-        prompt_lower = prompt.lower()
+        workspace = self._normalize_project_path(workspace)
         candidates = [
             rule
             for rule in self.list(sender_id=sender_id)
-            if rule.pattern.lower() in prompt_lower and (not rule.project_path or rule.project_path == workspace)
+            if self._pattern_matches(rule.pattern, prompt)
+            and (not rule.project_path or self._normalize_project_path(rule.project_path) == workspace)
         ]
         if not candidates:
             return None
@@ -162,11 +164,12 @@ class TrustStore:
         data: dict[str, Any] | None = None,
     ) -> TrustRule:
         now = time.time()
+        project_path = self._normalize_project_path(project_path) if project_path else ""
         existing = self._get_unique(pattern, project_path, sender_id)
         payload = data or {}
         if existing:
             merged = {**existing.data, **payload}
-            with sqlite3.connect(self.db_path) as conn:
+            with connect(self.db_path) as conn:
                 conn.execute(
                     """
                     UPDATE trust_rules
@@ -189,7 +192,7 @@ class TrustStore:
             created_at=now,
             updated_at=now,
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO trust_rules(
@@ -215,7 +218,7 @@ class TrustStore:
         return rule
 
     def get(self, rule_id: str) -> TrustRule | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT id, name, pattern, project_path, sender_id, autonomy_level,
@@ -227,7 +230,7 @@ class TrustStore:
         return self._rule_from_row(row) if row else None
 
     def list(self, *, sender_id: str | None = None, limit: int = 100) -> list[TrustRule]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             if sender_id:
                 rows = conn.execute(
                     """
@@ -251,7 +254,7 @@ class TrustStore:
     def set_level(self, rule_id: str, level: str) -> TrustRule | None:
         if level not in LEVELS:
             raise ValueError(f"Unsupported autonomy level: {level}")
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 "UPDATE trust_rules SET autonomy_level = ?, updated_at = ? WHERE id = ?",
                 (level, time.time(), rule_id),
@@ -263,7 +266,8 @@ class TrustStore:
         now = time.time()
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
         existing = self.get(rule_id)
-        with sqlite3.connect(self.db_path) as conn:
+        project_path = self._normalize_project_path(str(payload.get("project_path", ""))) if payload.get("project_path") else ""
+        with connect(self.db_path) as conn:
             if existing:
                 conn.execute(
                     """
@@ -276,7 +280,7 @@ class TrustStore:
                     (
                         payload.get("name", ""),
                         payload.get("pattern", ""),
-                        payload.get("project_path", ""),
+                        project_path,
                         payload.get("sender_id", ""),
                         payload.get("autonomy_level", "L2"),
                         int(payload.get("success_count", 0)),
@@ -299,7 +303,7 @@ class TrustStore:
                         rule_id,
                         payload.get("name", ""),
                         payload.get("pattern", ""),
-                        payload.get("project_path", ""),
+                        project_path,
                         payload.get("sender_id", ""),
                         payload.get("autonomy_level", "L2"),
                         int(payload.get("success_count", 0)),
@@ -315,11 +319,11 @@ class TrustStore:
         return restored
 
     def delete(self, rule_id: str) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute("DELETE FROM trust_rules WHERE id = ?", (rule_id,))
 
     def _get_unique(self, pattern: str, project_path: str, sender_id: str) -> TrustRule | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT id, name, pattern, project_path, sender_id, autonomy_level,
@@ -345,7 +349,7 @@ class TrustStore:
         if rule is None:
             raise ValueError(f"Unknown trust rule: {rule_id}")
         data = {**rule.data, "last_reason": reason}
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 UPDATE trust_rules
@@ -389,3 +393,25 @@ class TrustStore:
     @staticmethod
     def _rule_name(task: Task) -> str:
         return f"{task.sender_id or 'local'}:{TrustStore._pattern(task.prompt)}"
+
+    @staticmethod
+    def _pattern_matches(pattern: str, prompt: str) -> bool:
+        pattern_tokens = TrustStore._tokens(pattern)
+        if not pattern_tokens:
+            return False
+        prompt_tokens = TrustStore._tokens(prompt)
+        return pattern_tokens <= prompt_tokens
+
+    @staticmethod
+    def _tokens(text: str) -> set[str]:
+        separators = "/_-.,:;!?\n\t"
+        normalized = text.lower()
+        for separator in separators:
+            normalized = normalized.replace(separator, " ")
+        return {part for part in normalized.split() if len(part) > 2}
+
+    @staticmethod
+    def _normalize_project_path(path: str) -> str:
+        if not path:
+            return ""
+        return str(Path(path).expanduser().resolve())

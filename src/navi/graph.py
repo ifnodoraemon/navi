@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
+from .db import connect
 from typing import Any
 
 
@@ -26,7 +27,7 @@ class GraphStore:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS graph_nodes (
@@ -47,7 +48,7 @@ class GraphStore:
         existing = self.get_by_name(node_type, name)
         merged = {**(existing.data if existing else {}), **data}
         if existing:
-            with sqlite3.connect(self.db_path) as conn:
+            with connect(self.db_path) as conn:
                 conn.execute(
                     "UPDATE graph_nodes SET data = ?, updated_at = ? WHERE id = ?",
                     (json.dumps(merged, sort_keys=True), now, existing.id),
@@ -61,7 +62,7 @@ class GraphStore:
             created_at=now,
             updated_at=now,
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO graph_nodes(id, type, name, data, created_at, updated_at)
@@ -79,7 +80,7 @@ class GraphStore:
         return node
 
     def get(self, node_id: str) -> GraphNode | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             row = conn.execute(
                 "SELECT id, type, name, data, created_at, updated_at FROM graph_nodes WHERE id = ?",
                 (node_id,),
@@ -87,7 +88,7 @@ class GraphStore:
         return self._node_from_row(row) if row else None
 
     def get_by_name(self, node_type: str, name: str) -> GraphNode | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT id, type, name, data, created_at, updated_at
@@ -98,7 +99,7 @@ class GraphStore:
         return self._node_from_row(row) if row else None
 
     def list(self, node_type: str | None = None, *, limit: int = 100) -> list[GraphNode]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             if node_type:
                 rows = conn.execute(
                     """
@@ -118,7 +119,7 @@ class GraphStore:
         return [self._node_from_row(row) for row in rows]
 
     def replace_data(self, node_id: str, data: dict[str, Any]) -> GraphNode | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 "UPDATE graph_nodes SET data = ?, updated_at = ? WHERE id = ?",
                 (json.dumps(data, sort_keys=True), time.time(), node_id),
@@ -126,7 +127,7 @@ class GraphStore:
         return self.get(node_id)
 
     def delete(self, node_id: str) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute("DELETE FROM graph_nodes WHERE id = ?", (node_id,))
 
     @staticmethod

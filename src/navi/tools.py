@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,7 @@ from .connector_registry import load_connector_adapters
 from .tasks import TaskStore
 
 
+logger = logging.getLogger(__name__)
 ToolHandler = Callable[[dict[str, Any]], "ToolResult"]
 
 
@@ -144,7 +146,7 @@ class ToolRegistry:
                 ended_at=result.ended_at,
             )
         except Exception:
-            pass
+            logger.exception("failed to audit tool call: %s", result.tool)
 
 
 class ToolGateway:

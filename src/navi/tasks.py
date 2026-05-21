@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import secrets
-import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
+from .db import connect
 
 
 @dataclass(frozen=True)
@@ -109,7 +110,7 @@ class TaskStore:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -226,7 +227,7 @@ class TaskStore:
             trust_rule_id=trust_rule_id,
             why_now=why_now,
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO tasks(
@@ -260,7 +261,7 @@ class TaskStore:
         return task
 
     def get(self, task_id: str) -> Task | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT id, title, status, created_at, updated_at, kind, prompt, source,
@@ -273,7 +274,7 @@ class TaskStore:
         return self._task_from_row(row) if row else None
 
     def list(self, *, limit: int = 50) -> list[Task]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, title, status, created_at, updated_at, kind, prompt, source,
@@ -286,7 +287,7 @@ class TaskStore:
         return [self._task_from_row(row) for row in rows]
 
     def list_by_status(self, status: str, *, limit: int = 20) -> list[Task]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, title, status, created_at, updated_at, kind, prompt, source,
@@ -305,7 +306,7 @@ class TaskStore:
         task = self.get(task_id)
         if task is None:
             return None
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute("DELETE FROM approvals WHERE task_id = ?", (task_id,))
             conn.execute("DELETE FROM execution_logs WHERE task_id = ?", (task_id,))
             conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
@@ -334,7 +335,7 @@ class TaskStore:
             "autonomy_level": task.autonomy_level if autonomy_level is None else autonomy_level,
             "updated_at": time.time(),
         }
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 UPDATE tasks
@@ -377,7 +378,7 @@ class TaskStore:
             created_at=now,
             updated_at=now,
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO approvals(
@@ -407,7 +408,7 @@ class TaskStore:
             return None
         now = time.time()
         new_status = "expired" if approval.expires_at < now else status
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 "UPDATE approvals SET status = ?, updated_at = ? WHERE id = ?",
                 (new_status, now, approval.id),
@@ -420,7 +421,7 @@ class TaskStore:
             return None
         now = time.time()
         new_status = "expired" if approval.expires_at < now else status
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 "UPDATE approvals SET status = ?, updated_at = ? WHERE id = ?",
                 (new_status, now, approval.id),
@@ -429,7 +430,7 @@ class TaskStore:
 
     def pending_approval_for_task(self, task_id: str, *, sender_id: str = "") -> Approval | None:
         now = time.time()
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             if sender_id:
                 row = conn.execute(
                     """
@@ -456,7 +457,7 @@ class TaskStore:
         if approval is None:
             return None
         if approval.expires_at < now:
-            with sqlite3.connect(self.db_path) as conn:
+            with connect(self.db_path) as conn:
                 conn.execute(
                     "UPDATE approvals SET status = ?, updated_at = ? WHERE id = ?",
                     ("expired", now, approval.id),
@@ -465,7 +466,7 @@ class TaskStore:
         return approval
 
     def has_approved_execution(self, task_id: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT 1 FROM approvals
@@ -477,7 +478,7 @@ class TaskStore:
         return row is not None
 
     def get_approval(self, code: str) -> Approval | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT id, task_id, code, action, peer_id, sender_id, status,
@@ -489,7 +490,7 @@ class TaskStore:
         return Approval(*row) if row else None
 
     def list_approvals(self, *, limit: int = 50) -> list[Approval]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, task_id, code, action, peer_id, sender_id, status,
@@ -514,7 +515,7 @@ class TaskStore:
             created_at=now,
             updated_at=now,
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO watches(
@@ -539,7 +540,7 @@ class TaskStore:
         return watch
 
     def list_watches(self, *, limit: int = 50) -> list[Watch]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, cron, prompt, peer_id, sender_id, enabled,
@@ -550,8 +551,20 @@ class TaskStore:
             ).fetchall()
         return [self._watch_from_row(row) for row in rows]
 
+    def get_watch(self, watch_id: str) -> Watch | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT id, cron, prompt, peer_id, sender_id, enabled,
+                       next_run_at, last_run_at, created_at, updated_at
+                FROM watches WHERE id = ?
+                """,
+                (watch_id,),
+            ).fetchone()
+        return self._watch_from_row(row) if row else None
+
     def due_watches(self, now: float) -> list[Watch]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, cron, prompt, peer_id, sender_id, enabled,
@@ -564,18 +577,18 @@ class TaskStore:
 
     def mark_watch_run(self, watch_id: str, *, last_run_at: float, next_run_at: float) -> Watch | None:
         now = time.time()
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 "UPDATE watches SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?",
                 (last_run_at, next_run_at, now, watch_id),
             )
-        return next((watch for watch in self.list_watches() if watch.id == watch_id), None)
+        return self.get_watch(watch_id)
 
     def delete_watch(self, watch_id: str) -> Watch | None:
-        watch = next((item for item in self.list_watches(limit=500) if item.id == watch_id), None)
+        watch = self.get_watch(watch_id)
         if watch is None:
             return None
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute("DELETE FROM watches WHERE id = ?", (watch_id,))
         return watch
 
@@ -604,7 +617,7 @@ class TaskStore:
             started_at=started_at,
             ended_at=ended_at,
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO execution_logs(
@@ -649,7 +662,7 @@ class TaskStore:
             started_at=started_at,
             ended_at=ended_at,
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO tool_call_logs(
@@ -671,7 +684,7 @@ class TaskStore:
         return log
 
     def list_execution_logs(self, task_id: str | None = None, *, limit: int = 50) -> list[ExecutionLog]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             if task_id:
                 rows = conn.execute(
                     """
@@ -693,7 +706,7 @@ class TaskStore:
         return [ExecutionLog(*row) for row in rows]
 
     def list_tool_call_logs(self, *, limit: int = 50) -> list[ToolCallLog]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, tool, args_json, ok, facts_json, error, started_at, ended_at

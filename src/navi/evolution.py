@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import difflib
 import json
-import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
+from .db import connect
 from typing import Any
 
 from .graph import GraphStore
@@ -36,7 +37,7 @@ class EvolutionLedger:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS evolution_events (
@@ -77,7 +78,7 @@ class EvolutionLedger:
             created_at=time.time(),
             rolled_back_at=0.0,
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO evolution_events(
@@ -102,7 +103,7 @@ class EvolutionLedger:
         return event
 
     def list(self, *, limit: int = 100) -> list[EvolutionEvent]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, task_id, target_type, target_id, reason, before, after,
@@ -114,7 +115,7 @@ class EvolutionLedger:
         return [EvolutionEvent(*row) for row in rows]
 
     def get(self, event_id: str) -> EvolutionEvent | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT id, task_id, target_type, target_id, reason, before, after,
@@ -126,7 +127,7 @@ class EvolutionLedger:
         return EvolutionEvent(*row) if row else None
 
     def mark_rolled_back(self, event_id: str) -> EvolutionEvent | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 "UPDATE evolution_events SET rolled_back_at = ? WHERE id = ?",
                 (time.time(), event_id),

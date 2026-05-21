@@ -14,6 +14,7 @@ def test_default_config_round_trip(tmp_path):
     assert config.model.provider == "mock"
     assert not hasattr(config, "weixin")
     assert config.runtime.service_name == "navi.service"
+    assert config.runtime.agent_step_budget == 8
     assert config.execution.provider == "codex"
 
 
@@ -70,6 +71,7 @@ def test_env_file_overrides_runtime_facts(tmp_path):
             [
                 "NAVI_SERVICE_NAME=custom.service",
                 "NAVI_WEB_URL=http://navi.example",
+                "NAVI_AGENT_STEP_BUDGET=12",
             ]
         ),
         encoding="utf-8",
@@ -79,6 +81,7 @@ def test_env_file_overrides_runtime_facts(tmp_path):
 
     assert config.runtime.service_name == "custom.service"
     assert config.runtime.web_url == "http://navi.example"
+    assert config.runtime.agent_step_budget == 12
 
 
 def test_env_file_overrides_execution_facts(tmp_path):

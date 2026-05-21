@@ -4,12 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .capabilities import CapabilityContext, CapabilityRegistry
+from .config import load_config
 from .operating_context import OperatingContext
 from .provider import ChatMessage
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
-
-MAX_AGENT_STEPS = 4
 
 
 @dataclass(frozen=True)
@@ -35,10 +34,12 @@ class HernessEngine:
         allow_sources: set[str] | None = None,
         disabled_tools: set[str] | None = None,
         permission_ceiling: str = "write",
+        step_budget: int | None = None,
     ):
         self.home = home
         self.runtime = runtime
         self.permission_ceiling = permission_ceiling
+        self.step_budget = step_budget or load_config(home).runtime.agent_step_budget
         self.capabilities = CapabilityRegistry(
             home=home,
             project_dir=project_dir or Path.cwd(),
@@ -71,7 +72,7 @@ class HernessEngine:
         )
         observations: list[str] = []
         last_result: AgentTurnResult | None = None
-        for _ in range(MAX_AGENT_STEPS):
+        for _ in range(self.step_budget):
             syscall = await self.planner.plan(
                 text,
                 tools=self.capabilities.planner_specs(permission_ceiling=context.permission_ceiling),

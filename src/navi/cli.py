@@ -12,7 +12,7 @@ from .engine import HernessEngine
 from .api import create_app
 from .app_factory import build_runtime
 from .auth import AuthInspector
-from .capabilities import build_capability_registry
+from .capabilities import CapabilityContext, build_capability_registry
 from .config import load_config, write_default_config
 from .connector_registry import get_connector_adapter, load_connector_adapters
 from .defaults import DEFAULT_WEB_HOST, DEFAULT_WEB_PORT
@@ -229,15 +229,41 @@ def tools_list(json_output: bool = False) -> None:
 
 @tools_app.command("call")
 def tools_call(name: str, args_json: str = "{}") -> None:
-    """Call a registered tool with a JSON object argument."""
+    """Invoke a registered capability with a JSON object argument."""
     try:
         args = json.loads(args_json)
     except json.JSONDecodeError as exc:
         raise typer.BadParameter(f"invalid JSON: {exc}") from exc
     if not isinstance(args, dict):
         raise typer.BadParameter("args must be a JSON object")
-    result = build_capability_registry(ensure_home(), project_dir=Path.cwd()).call(name, args)
-    typer.echo(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    home = ensure_home()
+    capabilities = build_capability_registry(home, project_dir=Path.cwd())
+    spec = capabilities.get(name)
+    if spec is None:
+        typer.echo(json.dumps({"ok": False, "error": f"capability not found: {name}"}, ensure_ascii=False, indent=2))
+        raise typer.Exit(code=1)
+    result = asyncio.run(
+        capabilities.invoke(
+            name,
+            args,
+            permission=spec.permission,
+            context=CapabilityContext(home=home, peer_id="cli", sender_id="cli", source="cli"),
+        )
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "ok": result.ok,
+                "action": result.action,
+                "observation": result.observation,
+                "message": result.message,
+                "task_id": result.task_id,
+                "facts": result.facts or {},
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     if not result.ok:
         raise typer.Exit(code=1)
 

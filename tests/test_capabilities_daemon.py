@@ -136,6 +136,16 @@ async def test_capability_manifest_and_execution_respect_permission_ceiling(tmp_
     assert "capability not found" in result.message
 
 
+def test_action_capabilities_are_loaded_from_manifest(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+
+    specs = {spec.name: spec for spec in capabilities.list_specs()}
+
+    assert specs["task.create"].source == "action"
+    assert specs["task.create"].permission == "prepare"
+    assert specs["approval.resolve"].permission == "write"
+
+
 def test_trust_success_does_not_auto_escalate_autonomy(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     trust = TrustStore(tmp_path)

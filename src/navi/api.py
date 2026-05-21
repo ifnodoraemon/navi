@@ -13,7 +13,7 @@ from .engine import HernessEngine
 from .api_paths import API_PATHS, api_path
 from .auth import AuthInspector
 from .app_factory import build_runtime
-from .capabilities import CapabilityContext, build_capability_registry
+from .capabilities import CapabilityContext, CapabilityResult, build_capability_registry
 from .config import load_config, write_default_config
 from .connector_registry import load_connector_adapters
 from .daemon import SystemDaemon
@@ -149,24 +149,52 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {"tasks": [task.__dict__ for task in task_store.list()]}
 
     @app.post(api_path("tasks"))
-    def create_task(request: TaskRequest) -> dict:
-        return task_store.create(request.title, prompt=request.prompt or request.title).__dict__
+    async def create_task(request: TaskRequest) -> dict:
+        result = await capabilities.invoke(
+            "task.create",
+            {"prompt": request.prompt or request.title},
+            permission="prepare",
+            context=_local_capability_context(home),
+        )
+        _raise_capability_error(result)
+        task = task_store.get(result.task_id) if result.task_id else None
+        if task is None:
+            raise HTTPException(status_code=500, detail="task.create did not return a task")
+        return task.__dict__
 
     @app.patch(api_path("task"))
-    def update_task(task_id: str, request: TaskStatusRequest) -> dict:
-        if request.status == "queued":
-            raise HTTPException(status_code=409, detail="use approval endpoint to queue execution")
-        task = task_store.update_status(task_id, request.status)
+    async def update_task(task_id: str, request: TaskStatusRequest) -> dict:
+        decision_by_status = {"queued": "approve", "rejected": "reject"}
+        decision = decision_by_status.get(request.status)
+        if decision is None:
+            raise HTTPException(
+                status_code=409,
+                detail="task status transitions must go through task capabilities",
+            )
+        result = await capabilities.invoke(
+            "approval.resolve",
+            {"decision": decision, "task_id": task_id},
+            permission="write",
+            context=_local_capability_context(home),
+        )
+        _raise_capability_error(result)
+        task = task_store.get(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="task not found")
         return task.__dict__
 
     @app.delete(api_path("task"))
-    def delete_task(task_id: str) -> dict:
-        task = task_store.delete_task(task_id)
-        if task is None:
-            raise HTTPException(status_code=404, detail="task not found")
-        return {"deleted": True, "task": task.__dict__}
+    async def delete_task(task_id: str) -> dict:
+        result = await capabilities.invoke(
+            "task.delete",
+            {"task_id": task_id},
+            permission="write",
+            context=_local_capability_context(home),
+        )
+        if not result.ok and "not found" in result.message:
+            raise HTTPException(status_code=404, detail=result.message)
+        _raise_capability_error(result)
+        return {"deleted": True, "task": result.facts}
 
     @app.get(api_path("approvals"))
     def list_approvals() -> dict:
@@ -177,17 +205,17 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {"watches": [watch.__dict__ for watch in task_store.list_watches()]}
 
     @app.post(api_path("task_approve"))
-    def approve_task(task_id: str) -> dict:
+    async def approve_task(task_id: str) -> dict:
+        result = await capabilities.invoke(
+            "approval.resolve",
+            {"decision": "approve", "task_id": task_id},
+            permission="write",
+            context=_local_capability_context(home),
+        )
+        if not result.ok and "not found" in result.message.lower():
+            raise HTTPException(status_code=409, detail=result.message)
+        _raise_capability_error(result)
         task = task_store.get(task_id)
-        if task is None:
-            raise HTTPException(status_code=404, detail="task not found")
-        local_sender = load_config(home).runtime.local_surface
-        approval = task_store.resolve_task_approval(task_id, sender_id=local_sender, status="approved")
-        if approval is None:
-            raise HTTPException(status_code=409, detail="pending approval not found for local surface")
-        if approval.status == "expired":
-            raise HTTPException(status_code=409, detail="approval expired")
-        task = task_store.update_task(task_id, status="queued")
         if task is None:
             raise HTTPException(status_code=404, detail="task not found")
         return task.__dict__
@@ -264,7 +292,8 @@ def create_app(home: Path | None = None) -> FastAPI:
                 source=load_config(home).runtime.local_surface,
             ),
         )
-        watch = task_store.list_watches(limit=1)[0] if task_store.list_watches(limit=1) else None
+        watch_id = str((result.facts or {}).get("watch_id") or "")
+        watch = task_store.get_watch(watch_id) if watch_id else None
         message = result.message or result.observation
         if watch:
             message = (
@@ -291,11 +320,17 @@ def create_app(home: Path | None = None) -> FastAPI:
         }
 
     @app.post(api_path("tool_call"))
-    def call_tool(tool_name: str, request: ToolCallRequest) -> dict:
-        result = capabilities.call(tool_name, request.args)
-        if not result.ok and not capabilities.get(tool_name):
-            raise HTTPException(status_code=404, detail=result.error)
-        return result.to_dict()
+    async def call_tool(tool_name: str, request: ToolCallRequest) -> dict:
+        spec = capabilities.get(tool_name)
+        if spec is None:
+            raise HTTPException(status_code=404, detail=f"capability not found: {tool_name}")
+        result = await capabilities.invoke(
+            tool_name,
+            request.args,
+            permission=spec.permission,
+            context=_local_capability_context(home),
+        )
+        return _capability_result_dict(result)
 
     @app.get(api_path("graph"))
     def graph() -> dict:
@@ -353,4 +388,32 @@ def _public_approval(approval) -> dict:
         "created_at": approval.created_at,
         "updated_at": approval.updated_at,
         "code_present": bool(approval.code),
+    }
+
+
+def _local_capability_context(home: Path) -> CapabilityContext:
+    local_surface = load_config(home).runtime.local_surface
+    return CapabilityContext(
+        home=home,
+        peer_id=local_surface,
+        sender_id=local_surface,
+        source=local_surface,
+    )
+
+
+def _raise_capability_error(result: CapabilityResult) -> None:
+    if result.ok:
+        return
+    raise HTTPException(status_code=409, detail=result.message or result.observation)
+
+
+def _capability_result_dict(result: CapabilityResult) -> dict[str, Any]:
+    return {
+        "ok": result.ok,
+        "action": result.action,
+        "observation": result.observation,
+        "message": result.message,
+        "task_id": result.task_id,
+        "terminal": result.terminal,
+        "facts": result.facts or {},
     }

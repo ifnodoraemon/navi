@@ -1,0 +1,122 @@
+- name: final.answer
+  handler: final_answer
+  description: Return a direct answer to the user when no more tool call is needed.
+  input_schema:
+    type: object
+    properties:
+      message:
+        type: string
+    required:
+      - message
+  output_schema:
+    type: object
+  facts_only: true
+  mutates: false
+  permission: read
+  source: action
+- name: clarify.ask
+  handler: clarify
+  description: Ask one concise clarification question when a user-owned fact is required, or when a recurring schedule has no exact time.
+  input_schema:
+    type: object
+    properties:
+      message:
+        type: string
+    required:
+      - message
+  output_schema:
+    type: object
+  facts_only: true
+  mutates: false
+  permission: read
+  source: action
+- name: task.create
+  handler: task_create
+  description: Create a tracked local task for controlled local work, engineering investigation, bug diagnosis, config-to-runtime mapping, performance investigation, or code changes. The task can inspect the local project before asking for repository paths or implementation details.
+  input_schema:
+    type: object
+    properties:
+      prompt:
+        type: string
+    required:
+      - prompt
+  output_schema:
+    type: object
+  facts_only: false
+  mutates: true
+  permission: prepare
+  source: action
+- name: watch.create
+  handler: watch_create
+  description: Create a recurring watch only when an exact cron expression can be derived.
+  input_schema:
+    type: object
+    properties:
+      prompt:
+        type: string
+      cron:
+        type: string
+    required:
+      - prompt
+      - cron
+  output_schema:
+    type: object
+  facts_only: false
+  mutates: true
+  permission: prepare
+  source: action
+- name: task.delete
+  handler: task_delete
+  description: Permanently delete a tracked task and its approvals and execution logs by task id.
+  input_schema:
+    type: object
+    properties:
+      task_id:
+        type: string
+    required:
+      - task_id
+  output_schema:
+    type: object
+  facts_only: false
+  mutates: true
+  permission: write
+  source: action
+- name: watch.delete
+  handler: watch_delete
+  description: Permanently delete a recurring watch by watch id.
+  input_schema:
+    type: object
+    properties:
+      watch_id:
+        type: string
+    required:
+      - watch_id
+  output_schema:
+    type: object
+  facts_only: false
+  mutates: true
+  permission: write
+  source: action
+- name: approval.resolve
+  handler: approval_resolve
+  description: Approve or reject a pending task with an approval code or task id.
+  input_schema:
+    type: object
+    properties:
+      decision:
+        type: string
+        enum:
+          - approve
+          - reject
+      code:
+        type: string
+      task_id:
+        type: string
+    required:
+      - decision
+  output_schema:
+    type: object
+  facts_only: false
+  mutates: true
+  permission: write
+  source: action

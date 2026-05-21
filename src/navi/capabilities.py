@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from .action_tools import load_action_tool_specs
+from .action_tools import action_handler_keys, load_action_tool_specs
 from .config import load_config
 from .cron import next_cron_time, validate_cron
 from .execution import ExecutionService
@@ -15,7 +15,7 @@ from .governance import GovernanceEngine
 from .operating_context import permission_allows
 from .graph import GraphStore
 from .tasks import TaskStore
-from .tools import ToolResult, ToolSpec, build_tool_gateway
+from .tools import ToolSpec, build_tool_gateway
 from .trust import TrustStore
 
 
@@ -111,9 +111,6 @@ class CapabilityRegistry:
         handler = self.handlers.get(name)
         return handler.spec if handler else None
 
-    def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
-        return self.gateway.call(name, args)
-
     async def invoke(
         self,
         name: str,
@@ -157,7 +154,7 @@ class CapabilityRegistry:
             name: handler
             for name, handler in handlers.items()
             if name not in self.disabled_tools
-            and (self.allow_sources is None or handler.spec.source in self.allow_sources or handler.spec.source == "action")
+            and (self.allow_sources is None or handler.spec.source in self.allow_sources)
             and permission_allows(handler.spec.permission, self.permission_ceiling)
         }
 
@@ -168,15 +165,22 @@ class ActionCapabilityProvider:
 
     def capabilities(self) -> Mapping[str, Capability]:
         specs = {spec.name: spec for spec in load_action_tool_specs()}
-        return {
-            "final.answer": FinalAnswerCapability(specs["final.answer"]),
-            "clarify.ask": ClarifyCapability(specs["clarify.ask"]),
-            "task.create": TaskCreateCapability(specs["task.create"], home=self.home),
-            "watch.create": WatchCreateCapability(specs["watch.create"], home=self.home),
-            "task.delete": TaskDeleteCapability(specs["task.delete"], home=self.home),
-            "watch.delete": WatchDeleteCapability(specs["watch.delete"], home=self.home),
-            "approval.resolve": ApprovalResolveCapability(specs["approval.resolve"], home=self.home),
+        factories = {
+            "final_answer": lambda spec: FinalAnswerCapability(spec),
+            "clarify": lambda spec: ClarifyCapability(spec),
+            "task_create": lambda spec: TaskCreateCapability(spec, home=self.home),
+            "watch_create": lambda spec: WatchCreateCapability(spec, home=self.home),
+            "task_delete": lambda spec: TaskDeleteCapability(spec, home=self.home),
+            "watch_delete": lambda spec: WatchDeleteCapability(spec, home=self.home),
+            "approval_resolve": lambda spec: ApprovalResolveCapability(spec, home=self.home),
         }
+        handlers = {}
+        for name, handler_key in action_handler_keys().items():
+            factory = factories.get(handler_key)
+            if factory is None:
+                raise ValueError(f"unknown action capability handler: {handler_key}")
+            handlers[name] = factory(specs[name])
+        return handlers
 
 
 class ToolGatewayCapabilityProvider:

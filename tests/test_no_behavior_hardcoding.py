@@ -128,3 +128,23 @@ def test_user_facing_sources_do_not_reintroduce_task_commands():
                     offenders.append(f"{path.relative_to(root)}: {label}")
 
     assert offenders == []
+
+
+def test_sqlite_connections_go_through_closing_helper():
+    root = Path(__file__).resolve().parents[1] / "src" / "navi"
+    offenders: list[str] = []
+    for path in root.rglob("*.py"):
+        if path.name == "db.py" or "__pycache__" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "sqlite3.connect(" in text:
+            offenders.append(str(path.relative_to(root)))
+
+    assert offenders == []
+
+
+def test_capability_registry_does_not_expose_raw_gateway_call():
+    source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "capabilities.py").read_text(encoding="utf-8")
+
+    assert "def call(" not in source
+    assert "return self.gateway.call" not in source

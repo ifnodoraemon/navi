@@ -43,7 +43,7 @@ class WeixinService:
         self.ingress = ConnectorIngressRuntime(
             home=home,
             runtime=runtime,
-            allow_sources={"core"},
+            allow_sources={"action", "core"},
         )
 
     def _build_client(self):

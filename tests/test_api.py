@@ -19,7 +19,8 @@ class ScriptedProvider(MockProvider):
         return self.response
 
 
-def test_local_console_api_flow(tmp_path):
+def test_local_console_api_flow(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     client = TestClient(create_app(tmp_path))
 
     health = client.get("/health")
@@ -60,13 +61,13 @@ def test_local_console_api_flow(tmp_path):
     created = client.post("/v1/tasks", json={"title": "Test the console"})
     assert created.status_code == 200
     task = created.json()
-    assert task["status"] == "pending"
+    assert task["status"] == "awaiting_approval"
 
     updated = client.patch(f"/v1/tasks/{task['id']}", json={"status": "active"})
-    assert updated.status_code == 200
-    assert updated.json()["status"] == "active"
+    assert updated.status_code == 409
     queued = client.patch(f"/v1/tasks/{task['id']}", json={"status": "queued"})
-    assert queued.status_code == 409
+    assert queued.status_code == 200
+    assert queued.json()["status"] == "queued"
     assert client.get("/v1/tasks").json()["tasks"][0]["title"] == "Test the console"
 
     deleted = client.delete(f"/v1/tasks/{task['id']}")

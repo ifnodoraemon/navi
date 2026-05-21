@@ -10,7 +10,7 @@ from navi.runtime import AgentRuntime
 @pytest.mark.asyncio
 async def test_connector_ingress_runtime_routes_message_to_agent_session(tmp_path):
     runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=MockProvider()))
-    ingress = ConnectorIngressRuntime(home=tmp_path, runtime=runtime, allow_sources={"core"})
+    ingress = ConnectorIngressRuntime(home=tmp_path, runtime=runtime, allow_sources={"action", "core"})
 
     text = await ingress.handle(
         ConnectorMessage(

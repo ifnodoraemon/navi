@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
+from .db import connect
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,7 @@ class MemoryStore:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS messages (
@@ -168,7 +169,7 @@ class MemoryStore:
             expires_at=expires_at,
             metadata=metadata or {},
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO memory_items(
@@ -211,7 +212,7 @@ class MemoryStore:
             values.append(status)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         values.append(limit)
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
                 SELECT id, type, status, scope, content, source, confidence,
@@ -225,7 +226,7 @@ class MemoryStore:
         return [self._item_from_row(row) for row in rows]
 
     def get_item(self, item_id: str) -> MemoryItem | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT id, type, status, scope, content, source, confidence,
@@ -240,7 +241,7 @@ class MemoryStore:
         status = status.strip().lower()
         if status not in MEMORY_STATUSES:
             raise ValueError(f"Unsupported memory status: {status}")
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 "UPDATE memory_items SET status = ?, updated_at = ? WHERE id = ?",
                 (status, time.time(), item_id),
@@ -285,7 +286,7 @@ class MemoryStore:
         now = time.time()
         existing = self.get_session_alias(alias)
         created_at = existing.created_at if existing else now
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO session_aliases(alias, session_id, created_at, updated_at)
@@ -297,7 +298,7 @@ class MemoryStore:
         return self.get_session_alias(alias) or SessionAlias(alias, session_id, created_at, now)
 
     def get_session_alias(self, alias: str) -> SessionAlias | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT alias, session_id, created_at, updated_at
@@ -317,7 +318,7 @@ class MemoryStore:
         return self.set_session_alias(alias, self.new_session_id())
 
     def list_session_aliases(self, *, limit: int = 50) -> list[SessionAlias]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT alias, session_id, created_at, updated_at
@@ -328,21 +329,21 @@ class MemoryStore:
         return [SessionAlias(*row) for row in rows]
 
     def add_message(self, session_id: str, role: str, content: str) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             conn.execute(
                 "INSERT INTO messages(session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
                 (session_id, role, content, time.time()),
             )
 
     def list_sessions(self) -> list[str]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT session_id FROM messages GROUP BY session_id ORDER BY MAX(created_at) DESC"
             ).fetchall()
         return [row[0] for row in rows]
 
     def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT session_id, role, content, created_at

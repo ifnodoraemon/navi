@@ -1,114 +1,37 @@
 from __future__ import annotations
 
+from typing import Any
+
+from .spec_loader import load_spec
 from .tools import ToolSpec
 
 
 def load_action_tool_specs() -> list[ToolSpec]:
-    return [
-        ToolSpec(
-            name="final.answer",
-            description="Return a direct answer to the user when no more tool call is needed.",
-            input_schema={
-                "type": "object",
-                "properties": {"message": {"type": "string"}},
-                "required": ["message"],
-            },
-            output_schema={"type": "object"},
-            source="action",
-        ),
-        ToolSpec(
-            name="clarify.ask",
-            description=(
-                "Ask one concise clarification question when a user-owned fact is required, "
-                "or when a recurring schedule has no exact time."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {"message": {"type": "string"}},
-                "required": ["message"],
-            },
-            output_schema={"type": "object"},
-            source="action",
-        ),
-        ToolSpec(
-            name="task.create",
-            description=(
-                "Create a tracked local task for controlled local work, engineering investigation, "
-                "bug diagnosis, config-to-runtime mapping, performance investigation, or code changes. "
-                "The task can inspect the local project before asking for repository paths or implementation details."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {"prompt": {"type": "string"}},
-                "required": ["prompt"],
-            },
-            output_schema={"type": "object"},
-            facts_only=False,
-            mutates=True,
-            permission="prepare",
-            source="action",
-        ),
-        ToolSpec(
-            name="watch.create",
-            description="Create a recurring watch only when an exact cron expression can be derived.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string"},
-                    "cron": {"type": "string"},
-                },
-                "required": ["prompt", "cron"],
-            },
-            output_schema={"type": "object"},
-            facts_only=False,
-            mutates=True,
-            permission="prepare",
-            source="action",
-        ),
-        ToolSpec(
-            name="task.delete",
-            description="Permanently delete a tracked task and its approvals and execution logs by task id.",
-            input_schema={
-                "type": "object",
-                "properties": {"task_id": {"type": "string"}},
-                "required": ["task_id"],
-            },
-            output_schema={"type": "object"},
-            facts_only=False,
-            mutates=True,
-            permission="write",
-            source="action",
-        ),
-        ToolSpec(
-            name="watch.delete",
-            description="Permanently delete a recurring watch by watch id.",
-            input_schema={
-                "type": "object",
-                "properties": {"watch_id": {"type": "string"}},
-                "required": ["watch_id"],
-            },
-            output_schema={"type": "object"},
-            facts_only=False,
-            mutates=True,
-            permission="write",
-            source="action",
-        ),
-        ToolSpec(
-            name="approval.resolve",
-            description="Approve or reject a pending task with an approval code or task id.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "decision": {"type": "string", "enum": ["approve", "reject"]},
-                    "code": {"type": "string"},
-                    "task_id": {"type": "string"},
-                },
-                "required": ["decision"],
-            },
-            output_schema={"type": "object"},
-            facts_only=False,
-            mutates=True,
-            permission="write",
-            source="action",
-        ),
-    ]
+    raw_specs = load_spec("action_tools.yaml") or []
+    if not isinstance(raw_specs, list):
+        raise ValueError("action_tools.yaml must contain a list")
+    return [_tool_spec(item) for item in raw_specs]
+
+
+def action_handler_keys() -> dict[str, str]:
+    return {spec["name"]: spec["handler"] for spec in _raw_action_specs()}
+
+
+def _raw_action_specs() -> list[dict[str, Any]]:
+    raw_specs = load_spec("action_tools.yaml") or []
+    if not isinstance(raw_specs, list) or not all(isinstance(item, dict) for item in raw_specs):
+        raise ValueError("action_tools.yaml must contain a list of mappings")
+    return raw_specs
+
+
+def _tool_spec(item: dict[str, Any]) -> ToolSpec:
+    return ToolSpec(
+        name=str(item["name"]),
+        description=str(item.get("description", "")),
+        input_schema=dict(item.get("input_schema") or {"type": "object"}),
+        output_schema=dict(item.get("output_schema") or {"type": "object"}),
+        facts_only=bool(item.get("facts_only", True)),
+        mutates=bool(item.get("mutates", False)),
+        permission=str(item.get("permission", "read")),
+        source=str(item.get("source", "action")),
+    )
