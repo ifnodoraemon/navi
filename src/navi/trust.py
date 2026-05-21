@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -174,14 +173,50 @@ class TrustStore:
         ]
         try:
             response_text = await provider.complete_for(role="planner", messages=messages)
-            json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group(0))
+            data = self._extract_json_object(response_text)
+            if data:
                 return bool(data.get("matches", False))
         except Exception as e:
             logger.debug("Semantic trust match failed: %s", e, exc_info=True)
         return False
 
+    @staticmethod
+    def _extract_json_object(text: str) -> dict[str, Any] | None:
+        search_from = 0
+        while True:
+            start = text.find("{", search_from)
+            if start < 0:
+                return None
+            depth = 0
+            in_string = False
+            escape_next = False
+            for i in range(start, len(text)):
+                ch = text[i]
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == "\\":
+                    if in_string:
+                        escape_next = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            data = json.loads(text[start : i + 1])
+                        except json.JSONDecodeError:
+                            search_from = start + 1
+                            break
+                        return data if isinstance(data, dict) else None
+            else:
+                return None
 
     def record_success(self, task: Task) -> TrustRule:
         rule = self.get(task.trust_rule_id) if task.trust_rule_id else None

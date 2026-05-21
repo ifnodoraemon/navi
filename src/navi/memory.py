@@ -60,6 +60,7 @@ MEMORY_TYPES = {
     "skill",
     "hypothesis",
 }
+LEARNABLE_MEMORY_TYPES = ("preference", "constraint", "negative", "fact", "semantic")
 MEMORY_STATUSES = {"proposed", "accepted", "active", "contradicted", "stale", "archived", "revoked"}
 ACTIVE_STATUSES = {"accepted", "active"}
 TYPE_PRIORITY = {
@@ -487,7 +488,7 @@ class MemoryStore:
 
                 # 2. Fetch existing active memory items
                 active_items = []
-                for item_type in ["preference", "constraint", "negative", "fact", "semantic"]:
+                for item_type in LEARNABLE_MEMORY_TYPES:
                     active_items.extend(self.list_items(memory_type=item_type, status="active", limit=100))
 
                 # 3. Format context
@@ -520,7 +521,7 @@ class MemoryStore:
                     "  \"learnings\": [\n"
                     "    {\n"
                     "      \"action\": \"add\",\n"
-                    "      \"type\": \"preference|constraint|negative|fact\",\n"
+                    f"      \"type\": \"{'|'.join(LEARNABLE_MEMORY_TYPES)}\",\n"
                     "      \"content\": \"durable fact, preference, negative lesson, or constraint (in the user's language)\",\n"
                     "      \"confidence\": 0.8\n"
                     "    },\n"
@@ -560,7 +561,7 @@ class MemoryStore:
                     if action == "add":
                         m_type = str(learning.get("type", "")).strip().lower()
                         content = str(learning.get("content", "")).strip()
-                        if not content or m_type not in ["preference", "constraint", "negative", "fact", "semantic"]:
+                        if not content or m_type not in LEARNABLE_MEMORY_TYPES:
                             continue
                         # Double check to prevent duplicate add if content already exactly exists
                         if any(item.content.lower() == content.lower() and item.type == m_type for item in active_items):
@@ -622,7 +623,7 @@ class MemoryStore:
 
         # 1. Fetch existing active memory items
         active_items = []
-        for item_type in ["preference", "constraint", "negative", "fact", "semantic"]:
+        for item_type in LEARNABLE_MEMORY_TYPES:
             active_items.extend(self.list_items(memory_type=item_type, status="active", limit=100))
 
         # 2. Format execution logs
@@ -675,7 +676,7 @@ class MemoryStore:
             "  \"learnings\": [\n"
             "    {\n"
             "      \"action\": \"add\",\n"
-            "      \"type\": \"preference|constraint|negative|fact\",\n"
+            f"      \"type\": \"{'|'.join(LEARNABLE_MEMORY_TYPES)}\",\n"
             "      \"content\": \"durable fact, preference, negative lesson, or constraint (in the user's language)\",\n"
             "      \"confidence\": 0.8\n"
             "    },\n"
@@ -715,7 +716,7 @@ class MemoryStore:
             if action == "add":
                 m_type = str(learning.get("type", "")).strip().lower()
                 content = str(learning.get("content", "")).strip()
-                if not content or m_type not in ["preference", "constraint", "negative", "fact", "semantic"]:
+                if not content or m_type not in LEARNABLE_MEMORY_TYPES:
                     continue
                 if any(item.content.lower() == content.lower() and item.type == m_type for item in active_items):
                     continue
