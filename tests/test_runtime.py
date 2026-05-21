@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from navi.provider import ChatMessage, MockProvider
-from navi.prompting import PromptContext
 from navi.runtime import AgentRuntime
+from navi.operating_context import OperatingContext
 
 
 class RecordingProvider(MockProvider):
@@ -96,18 +96,17 @@ async def test_runtime_system_prompt_includes_local_deployment_contract(tmp_path
     assert "Navi state home:" in system
     assert "Local execution bridge" in system
     assert "Web console URL: not configured" in system
-    assert "Remote connectors: managed by connector-specific adapters" in system
     assert "Do not say you have no access to the user's local machine as an absolute statement" in system
     assert "Do not frame local actions as a generic permission failure" in system
-    assert "does not itself create execution tasks" in system
-    assert "do not offer to create a task yourself" in system
     assert "this chat response itself is not a shell" in system
-    assert "treat it as intent" in system
+    assert "Do not give a CLI invocation for task creation" in system
+    assert "user input for the kernel syscall planner" in system
     assert "Do not invent product surfaces" in system
     assert "127.0.0.1:8765" not in system
     assert "Current conversational channel" not in system
+    assert "Remote connectors:" not in system
+    assert "active surface" not in system
     assert "Weixin" not in system
-    assert "/task" not in system
 
 
 @pytest.mark.asyncio
@@ -120,26 +119,6 @@ async def test_runtime_system_prompt_uses_configured_web_url(tmp_path, monkeypat
 
     system = provider.messages[0].content
     assert "Web console URL: http://navi.local" in system
-
-
-@pytest.mark.asyncio
-async def test_runtime_system_prompt_accepts_connector_context(tmp_path):
-    provider = RecordingProvider()
-    runtime = AgentRuntime(home=tmp_path, provider=provider)
-
-    await runtime.chat(
-        "列一下我本机的目录",
-        prompt_context=PromptContext(
-            surface="Test connector",
-            facts=("test connector is active",),
-            affordances=("Use /do <request> to submit tracked local actions.",),
-        ),
-    )
-
-    system = provider.messages[0].content
-    assert "Surface: Test connector" in system
-    assert "Fact: test connector is active" in system
-    assert "Available action: Use /do <request> to submit tracked local actions." in system
 
 
 @pytest.mark.asyncio
@@ -175,3 +154,40 @@ async def test_runtime_system_prompt_uses_goal_directed_memory(tmp_path):
     assert "approval state" in system
     assert "systemd user service" in system
     assert "cold media" not in system
+
+
+@pytest.mark.asyncio
+async def test_runtime_prompt_layers_and_skill_permissions_are_scoped(tmp_path):
+    read_skill = tmp_path / "skills" / "read-skill"
+    read_skill.mkdir(parents=True)
+    read_skill.joinpath("SKILL.md").write_text(
+        "---\nname: read-skill\npermission: read\n---\nRead layer skill body.",
+        encoding="utf-8",
+    )
+    write_skill = tmp_path / "skills" / "write-skill"
+    write_skill.mkdir(parents=True)
+    write_skill.joinpath("SKILL.md").write_text(
+        "---\nname: write-skill\npermission: write\n---\nWrite layer skill body.",
+        encoding="utf-8",
+    )
+    provider = RecordingProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+
+    await runtime.chat(
+        "hello",
+        operating_context=OperatingContext(
+            home=tmp_path,
+            permission_ceiling="read",
+            skill_permission_ceiling="read",
+            prompt_layers=("identity", "runtime", "skills"),
+        ),
+    )
+
+    system = provider.messages[0].content
+    assert "[identity]" in system
+    assert "[runtime]" in system
+    assert "[skills]" in system
+    assert "[authorization]" not in system
+    assert "Permission ceiling: read" in system
+    assert "Read layer skill body." in system
+    assert "Write layer skill body." not in system

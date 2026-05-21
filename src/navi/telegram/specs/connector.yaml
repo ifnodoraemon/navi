@@ -1,0 +1,6 @@
+name: telegram
+surface: connector.telegram
+status_tool: connector.telegram.status
+status_description: Return Telegram connector configuration facts without secrets.
+session_alias_prefix: connector:telegram
+local_source: telegram

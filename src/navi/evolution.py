@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import difflib
 import json
-import re
 import sqlite3
 import time
 import uuid
@@ -11,8 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from .graph import GraphStore
-from .memory import MemoryStore
-from .skills import SkillStore
 from .tasks import Task, TaskStore
 from .trust import TrustRule, TrustStore
 
@@ -153,8 +150,6 @@ class EvolutionEngine:
         self.home = home
         self.ledger = EvolutionLedger(home)
         self.graph = GraphStore(home)
-        self.memory = MemoryStore(home)
-        self.skills = SkillStore(home)
         self.trust = TrustStore(home)
         self.tasks = TaskStore(home)
 
@@ -162,15 +157,11 @@ class EvolutionEngine:
         events: list[EvolutionEvent] = []
         reason = "successful task reflection" if success else "failed task reflection"
         events.append(self._update_graph(task, success=success, reason=reason))
-        events.append(self._update_memory(task, success=success, reason=reason))
-        events.append(self._update_skill(task, success=success, reason=reason))
-        previous_rule = self.trust.get(task.trust_rule_id) if task.trust_rule_id else self.trust.match(
-            prompt=task.prompt,
-            sender_id=task.sender_id,
-            workspace=task.workspace,
-        )
+        previous_rule = self.trust.get(task.trust_rule_id) if task.trust_rule_id else None
         before = json.dumps(self._trust_payload(previous_rule) if previous_rule else {}, sort_keys=True)
-        trust_rule = self.trust.record_success(task) if success else self.trust.record_failure(task)
+        trust_rule = None
+        if previous_rule is not None:
+            trust_rule = self.trust.record_success(task) if success else self.trust.record_failure(task)
         if trust_rule:
             after = json.dumps(self._trust_payload(trust_rule), sort_keys=True)
             events.append(
@@ -227,7 +218,6 @@ class EvolutionEngine:
                 "last_task_id": task.id,
                 "last_status": "success" if success else "failure",
                 "last_prompt": task.prompt,
-                "trusted": success,
             },
         )
         after = json.dumps(node.data, sort_keys=True)
@@ -239,60 +229,6 @@ class EvolutionEngine:
             before=before,
             after=after,
         )
-
-    def _update_memory(self, task: Task, *, success: bool, reason: str) -> EvolutionEvent:
-        path = self.home / "memory" / "MEMORY.md"
-        before = path.read_text(encoding="utf-8") if path.exists() else ""
-        outcome = "succeeded" if success else "failed"
-        self.memory.append_memory(
-            f"Task {task.id} {outcome}: {task.title}. Provider={task.provider}. Workspace={task.workspace}."
-        )
-        after = path.read_text(encoding="utf-8") if path.exists() else ""
-        return self.ledger.record(
-            task_id=task.id,
-            target_type="memory",
-            target_id=str(path),
-            reason=reason,
-            before=before,
-            after=after,
-        )
-
-    def _update_skill(self, task: Task, *, success: bool, reason: str) -> EvolutionEvent:
-        slug = self._slug(task.title)
-        skill_dir = self.home / "skills" / f"auto-{slug}"
-        path = skill_dir / "SKILL.md"
-        before = path.read_text(encoding="utf-8") if path.exists() else ""
-        skill_dir.mkdir(parents=True, exist_ok=True)
-        status = "successful" if success else "failed"
-        after = (
-            "---\n"
-            f"name: auto-{slug}\n"
-            f"description: Auto-evolved playbook from {status} task {task.id}\n"
-            "---\n\n"
-            f"# Auto Playbook: {task.title}\n\n"
-            f"- Source task: `{task.id}`\n"
-            f"- Provider: `{task.provider}`\n"
-            f"- Workspace: `{task.workspace}`\n"
-            f"- Outcome: `{status}`\n\n"
-            "## Tool Policy\n\n"
-            "Use this playbook only through Navi Trust Contract decisions. Do not bypass approvals.\n\n"
-            "## Prompt Pattern\n\n"
-            f"{task.prompt}\n"
-        )
-        path.write_text(after, encoding="utf-8")
-        return self.ledger.record(
-            task_id=task.id,
-            target_type="skill",
-            target_id=str(path),
-            reason=reason,
-            before=before,
-            after=after,
-        )
-
-    @staticmethod
-    def _slug(value: str) -> str:
-        slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-        return slug[:48] or "task"
 
     @staticmethod
     def _trust_payload(rule: TrustRule) -> dict[str, Any]:

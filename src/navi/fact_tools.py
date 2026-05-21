@@ -91,7 +91,7 @@ def render_task_facts(facts: TaskFacts) -> str:
         lines.append("- approvals:")
         for approval in facts.approvals:
             lines.append(
-                f"  - code={approval.code} status={approval.status} action={approval.action} "
+                f"  - status={approval.status} action={approval.action} code_present={bool(approval.code)} "
                 f"expires_at={approval.expires_at:.0f}"
             )
     else:

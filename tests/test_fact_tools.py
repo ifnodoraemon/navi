@@ -24,5 +24,6 @@ def test_task_facts_reports_status_approvals_and_logs(tmp_path):
 
     assert f"Task `{task.id}` facts:" in rendered
     assert "- status: preparing" in rendered
-    assert f"code={approval.code}" in rendered
+    assert f"code={approval.code}" not in rendered
+    assert "code_present=True" in rendered
     assert "exit_code=124" in rendered

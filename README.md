@@ -1,12 +1,12 @@
 # Navi
 
-Navi is a local-first personal AI assistant. The first version focuses on three entry points:
+Navi is a local-first personal AI assistant. The current version focuses on three entry points:
 
 - CLI chat
 - Local Web console
-- Personal Weixin/WeChat connection through a QR-login, long-polling gateway shape
+- Personal Weixin/WeChat connection through a connector adapter
 
-It intentionally does not implement a general multi-channel gateway in v1. Weixin DM is the first-class remote channel; group chat delivery depends on the upstream iLink account behavior and is not promised.
+Connectors are transport surfaces. The core runtime receives user text, loads declared tools, and lets the model plan the next tool call without channel-specific prompt behavior.
 
 ## Requirements
 
@@ -31,8 +31,8 @@ navi web
 Mock a Weixin QR setup without calling the real iLink API:
 
 ```bash
-NAVI_WEIXIN_MOCK=true navi weixin setup
-NAVI_WEIXIN_MOCK=true navi weixin run --once
+NAVI_WEIXIN_MOCK=true navi connectors setup weixin
+NAVI_WEIXIN_MOCK=true navi connectors run weixin --once
 ```
 
 ## Config

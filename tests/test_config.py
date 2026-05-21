@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from navi.config import load_config, write_default_config
+from navi.telegram.config import load_telegram_config
+from navi.weixin.config import load_weixin_config
 
 
 def test_default_config_round_trip(tmp_path):
@@ -10,12 +12,12 @@ def test_default_config_round_trip(tmp_path):
 
     assert path.exists()
     assert config.model.provider == "mock"
-    assert config.weixin.group_policy == "disabled"
+    assert not hasattr(config, "weixin")
     assert config.runtime.service_name == "navi.service"
     assert config.execution.provider == "codex"
 
 
-def test_env_file_overrides_weixin(tmp_path):
+def test_connector_env_file_overrides_weixin(tmp_path):
     write_default_config(tmp_path)
     (tmp_path / "env").write_text(
         "\n".join(
@@ -29,12 +31,36 @@ def test_env_file_overrides_weixin(tmp_path):
         encoding="utf-8",
     )
 
-    config = load_config(tmp_path)
+    config = load_weixin_config(tmp_path)
 
-    assert config.weixin.account_id == "acct"
-    assert config.weixin.token == "token"
-    assert config.weixin.dm_policy == "allowlist"
-    assert config.weixin.allowed_users == ["user_a", "user_b"]
+    assert config.account_id == "acct"
+    assert config.token == "token"
+    assert config.dm_policy == "allowlist"
+    assert config.allowed_users == ["user_a", "user_b"]
+
+
+def test_connector_env_file_overrides_telegram(tmp_path):
+    write_default_config(tmp_path)
+    (tmp_path / "env").write_text(
+        "\n".join(
+            [
+                "NAVI_TELEGRAM_ENABLED=true",
+                "TELEGRAM_BOT_TOKEN=token",
+                "TELEGRAM_ALLOWED_USERS=123,456",
+                "TELEGRAM_DM_POLICY=allowlist",
+                "TELEGRAM_HOME_CHAT_ID=123",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_telegram_config(tmp_path)
+
+    assert config.enabled is True
+    assert config.bot_token == "token"
+    assert config.dm_policy == "allowlist"
+    assert config.allowed_users == ["123", "456"]
+    assert config.home_chat_id == "123"
 
 
 def test_env_file_overrides_runtime_facts(tmp_path):
@@ -93,3 +119,30 @@ def test_deepseek_env_defaults(tmp_path):
     assert config.model.model == "deepseek-v4-pro"
     assert config.model.api_base_url == "https://api.deepseek.com"
     assert config.model.api_key == "sk-test"
+
+
+def test_custom_model_provider_can_be_declared_without_package_spec(tmp_path):
+    write_default_config(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "\n".join(
+            [
+                "model:",
+                "  provider: private-gateway",
+                "  kind: openai-compatible",
+                "  model: local-agent-model",
+                "  api_base_url: http://localhost:11434/v1",
+                "  api_key_env:",
+                "    - PRIVATE_GATEWAY_API_KEY",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "env").write_text("PRIVATE_GATEWAY_API_KEY=sk-local", encoding="utf-8")
+
+    config = load_config(tmp_path)
+
+    assert config.model.provider == "private-gateway"
+    assert config.model.kind == "openai-compatible"
+    assert config.model.model == "local-agent-model"
+    assert config.model.api_base_url == "http://localhost:11434/v1"
+    assert config.model.api_key == "sk-local"

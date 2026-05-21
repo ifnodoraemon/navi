@@ -9,20 +9,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from .agent_kernel import AgentKernel
 from .api_paths import API_PATHS, api_path
-from .assistant import ActiveAssistant
 from .auth import AuthInspector
 from .app_factory import build_runtime
+from .capabilities import CapabilityContext, build_capability_registry
 from .config import load_config, write_default_config
-from .connector_specs import list_connector_specs
+from .connector_registry import load_connector_adapters
+from .daemon import SystemDaemon
 from .defaults import DEFAULT_LOCAL_SURFACE
 from .evolution import EvolutionEngine, EvolutionLedger
 from .graph import GraphStore
 from .paths import ensure_home
 from .tasks import TaskStore
-from .tools import build_core_tool_registry
 from .trust import TrustStore
-from .weixin.service import WeixinService
 
 
 class ChatRequest(BaseModel):
@@ -74,14 +74,13 @@ def create_app(home: Path | None = None) -> FastAPI:
     write_default_config(home)
     runtime = build_runtime(home)
     task_store = TaskStore(home)
-    active = ActiveAssistant(home)
-    tools = build_core_tool_registry(home, project_dir=Path.cwd())
+    daemon = SystemDaemon(home)
+    agent = AgentKernel(home=home, runtime=runtime, project_dir=Path.cwd())
+    capabilities = build_capability_registry(home, project_dir=Path.cwd())
+    connector_adapters = load_connector_adapters()
     connector_status_handlers = {
-        WeixinService.connector.name: lambda: WeixinService(
-            home=home,
-            config=load_config(home).weixin,
-            runtime=runtime,
-        ).status()
+        adapter.name: (lambda item=adapter: item.status(home))
+        for adapter in connector_adapters
     }
     app = FastAPI(title="Navi", version="0.1.0")
 
@@ -93,16 +92,27 @@ def create_app(home: Path | None = None) -> FastAPI:
             "home": str(home),
             "model_provider": config.model.provider,
             "connectors": {
-                WeixinService.connector.name: {
-                    "enabled": config.weixin.enabled,
-                },
+                adapter.name: {"enabled": adapter.enabled(home)}
+                for adapter in connector_adapters
             },
         }
 
     @app.post(api_path("chat"))
     async def chat(request: ChatRequest) -> dict:
-        reply = await runtime.chat(request.message, session_id=request.session_id)
-        return {"session_id": reply.session_id, "message": reply.content}
+        config = load_config(home)
+        result = await agent.handle(
+            request.message,
+            peer_id=config.runtime.local_surface,
+            sender_id=config.runtime.local_surface,
+            source=config.runtime.local_surface,
+            session_id=request.session_id,
+        )
+        return {
+            "session_id": result.session_id,
+            "message": result.text,
+            "action": result.action,
+            "task_id": result.task_id,
+        }
 
     @app.get(api_path("sessions"))
     def sessions() -> dict:
@@ -144,6 +154,8 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.patch(api_path("task"))
     def update_task(task_id: str, request: TaskStatusRequest) -> dict:
+        if request.status == "queued":
+            raise HTTPException(status_code=409, detail="use approval endpoint to queue execution")
         task = task_store.update_status(task_id, request.status)
         if task is None:
             raise HTTPException(status_code=404, detail="task not found")
@@ -151,7 +163,7 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get(api_path("approvals"))
     def list_approvals() -> dict:
-        return {"approvals": [approval.__dict__ for approval in task_store.list_approvals()]}
+        return {"approvals": [_public_approval(approval) for approval in task_store.list_approvals()]}
 
     @app.get(api_path("watches"))
     def list_watches() -> dict:
@@ -159,6 +171,15 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.post(api_path("task_approve"))
     def approve_task(task_id: str) -> dict:
+        task = task_store.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        local_sender = load_config(home).runtime.local_surface
+        approval = task_store.resolve_task_approval(task_id, sender_id=local_sender, status="approved")
+        if approval is None:
+            raise HTTPException(status_code=409, detail="pending approval not found for local surface")
+        if approval.status == "expired":
+            raise HTTPException(status_code=409, detail="approval expired")
         task = task_store.update_task(task_id, status="queued")
         if task is None:
             raise HTTPException(status_code=404, detail="task not found")
@@ -166,42 +187,90 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.post(api_path("tasks_process"))
     async def process_tasks() -> dict:
-        return {"tasks": [task.__dict__ for task in await active.process_queue_once()]}
+        return {"tasks": [task.__dict__ for task in await daemon.process_queue_once()]}
 
     @app.post(api_path("active_tasks"))
     async def create_active_task(request: ActiveTaskRequest) -> dict:
-        result = await active.create_task(
-            request.prompt,
-            peer_id=request.peer_id,
-            sender_id=request.sender_id,
-            source=load_config(home).runtime.local_surface,
+        result = await capabilities.invoke(
+            "task.create",
+            {"prompt": request.prompt},
+            permission="prepare",
+            context=CapabilityContext(
+                home=home,
+                peer_id=request.peer_id,
+                sender_id=request.sender_id,
+                source=load_config(home).runtime.local_surface,
+            ),
         )
         task = task_store.get(result.task_id) if result.task_id else None
-        return {"message": result.text, "task": task.__dict__ if task else None}
+        approval = task_store.pending_approval_for_task(result.task_id, sender_id=request.sender_id) if result.task_id else None
+        message = result.message or result.observation
+        if task and approval:
+            message = (
+                f"Task `{task.id}` is prepared for approval.\n"
+                f"Preparation:\n{task.plan_summary or '(no preparation output)'}\n\n"
+                f"Approval expires in 15 minutes.\n"
+                f"Approval code: `{approval.code}`.\n"
+                f"Reply with `approve {approval.code}` or `reject {approval.code}`."
+            )
+        return {"message": message, "task": task.__dict__ if task else None}
 
     @app.post(api_path("active_approve"))
-    def approve_active_task(request: ActiveApprovalRequest) -> dict:
-        result = active.approve(request.code, sender_id=request.sender_id)
+    async def approve_active_task(request: ActiveApprovalRequest) -> dict:
+        result = await capabilities.invoke(
+            "approval.resolve",
+            {"decision": "approve", "code": request.code},
+            permission="write",
+            context=CapabilityContext(
+                home=home,
+                sender_id=request.sender_id,
+                source=load_config(home).runtime.local_surface,
+            ),
+        )
         task = task_store.get(result.task_id) if result.task_id else None
-        return {"message": result.text, "task": task.__dict__ if task else None}
+        return {"message": result.message or result.observation, "task": task.__dict__ if task else None}
 
     @app.post(api_path("active_reject"))
-    def reject_active_task(request: ActiveApprovalRequest) -> dict:
-        result = active.reject(request.code, sender_id=request.sender_id)
-        return {"message": result.text}
+    async def reject_active_task(request: ActiveApprovalRequest) -> dict:
+        result = await capabilities.invoke(
+            "approval.resolve",
+            {"decision": "reject", "code": request.code},
+            permission="write",
+            context=CapabilityContext(
+                home=home,
+                sender_id=request.sender_id,
+                source=load_config(home).runtime.local_surface,
+            ),
+        )
+        return {"message": result.message or result.observation}
 
     @app.post(api_path("active_watches"))
-    def create_active_watch(request: WatchRequest) -> dict:
-        result = active.create_watch(
-            f"{request.cron} {request.prompt}",
-            peer_id=request.peer_id,
-            sender_id=request.sender_id,
+    async def create_active_watch(request: WatchRequest) -> dict:
+        result = await capabilities.invoke(
+            "watch.create",
+            {"cron": request.cron, "prompt": request.prompt},
+            permission="prepare",
+            context=CapabilityContext(
+                home=home,
+                peer_id=request.peer_id,
+                sender_id=request.sender_id,
+                source=load_config(home).runtime.local_surface,
+            ),
         )
-        return {"message": result.text}
+        watch = task_store.list_watches(limit=1)[0] if task_store.list_watches(limit=1) else None
+        message = result.message or result.observation
+        if watch:
+            message = (
+                f"Watch `{watch.id}` created.\n"
+                f"Cron: {watch.cron}\n"
+                f"Request: {watch.prompt}\n"
+                f"Next run at {__import__('time').ctime(watch.next_run_at)}."
+            )
+        return {"message": message}
 
     @app.post(api_path("active_watches_process"))
     async def process_watches() -> dict:
-        return {"results": [result.__dict__ for result in await active.process_watches_once()]}
+        return {"results": await daemon.process_watches_once()}
 
     @app.get(api_path("auth_status"))
     def auth_status() -> dict:
@@ -209,12 +278,15 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get(api_path("tools"))
     def list_tools() -> dict:
-        return {"tools": [asdict(spec) for spec in tools.list_specs()]}
+        return {
+            "tools": [asdict(spec) for spec in capabilities.list_specs()],
+            "sources": capabilities.list_sources(),
+        }
 
     @app.post(api_path("tool_call"))
     def call_tool(tool_name: str, request: ToolCallRequest) -> dict:
-        result = tools.call(tool_name, request.args)
-        if not result.ok and not tools.get(tool_name):
+        result = capabilities.call(tool_name, request.args)
+        if not result.ok and not capabilities.get(tool_name):
             raise HTTPException(status_code=404, detail=result.error)
         return result.to_dict()
 
@@ -252,7 +324,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             json.dumps(
                 {
                     "apiPaths": API_PATHS,
-                    "connectors": [asdict(spec) for spec in list_connector_specs()],
+                    "connectors": [asdict(adapter.spec) for adapter in connector_adapters],
                     "localSurface": load_config(home).runtime.local_surface,
                 },
                 ensure_ascii=False,
@@ -260,3 +332,18 @@ def create_app(home: Path | None = None) -> FastAPI:
         )
 
     return app
+
+
+def _public_approval(approval) -> dict:
+    return {
+        "id": approval.id,
+        "task_id": approval.task_id,
+        "action": approval.action,
+        "peer_id": approval.peer_id,
+        "sender_id": approval.sender_id,
+        "status": approval.status,
+        "expires_at": approval.expires_at,
+        "created_at": approval.created_at,
+        "updated_at": approval.updated_at,
+        "code_present": bool(approval.code),
+    }

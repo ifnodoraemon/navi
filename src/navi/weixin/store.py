@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from navi.defaults import DEFAULT_WEIXIN_BASE_URL
+from .config import DEFAULT_WEIXIN_BASE_URL
 
 from .models import WeixinAccount
 

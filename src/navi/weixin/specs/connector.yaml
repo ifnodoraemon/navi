@@ -1,0 +1,6 @@
+name: weixin
+surface: connector.weixin
+status_tool: connector.weixin.status
+status_description: Return Weixin connector configuration facts without secrets.
+session_alias_prefix: connector:weixin
+local_source: weixin

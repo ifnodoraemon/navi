@@ -8,23 +8,24 @@ from pathlib import Path
 import typer
 import uvicorn
 
-from .auth import AuthInspector
+from .agent_kernel import AgentKernel
 from .api import create_app
 from .app_factory import build_runtime
+from .auth import AuthInspector
+from .capabilities import build_capability_registry
 from .config import load_config, write_default_config
+from .connector_registry import get_connector_adapter, load_connector_adapters
 from .defaults import DEFAULT_WEB_HOST, DEFAULT_WEB_PORT
 from .evolution import EvolutionEngine, EvolutionLedger
 from .graph import GraphStore
 from .memory import MemoryStore
 from .paths import ensure_home
 from .service import build_systemd_user_unit, install_systemd_user_unit
-from .tools import build_core_tool_registry
 from .trust import TrustStore
-from .weixin.service import WeixinService
 
 app = typer.Typer(help="Navi local-first personal assistant")
-weixin_app = typer.Typer(help="Personal Weixin gateway")
 auth_app = typer.Typer(help="CLI auth and capability checks")
+connectors_app = typer.Typer(help="Connector lifecycle and status")
 graph_app = typer.Typer(help="Personal graph")
 trust_app = typer.Typer(help="Trust contract")
 evolution_app = typer.Typer(help="Evolution ledger")
@@ -32,8 +33,8 @@ service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
 tools_app = typer.Typer(help="Unified fact tool registry")
-app.add_typer(weixin_app, name="weixin")
 app.add_typer(auth_app, name="auth")
+app.add_typer(connectors_app, name="connectors")
 app.add_typer(graph_app, name="graph")
 app.add_typer(trust_app, name="trust")
 app.add_typer(evolution_app, name="evolution")
@@ -49,15 +50,25 @@ def chat() -> None:
     home = ensure_home()
     write_default_config(home)
     runtime = build_runtime(home)
+    config = load_config(home)
+    agent = AgentKernel(home=home, runtime=runtime, project_dir=Path.cwd())
     session_id: str | None = None
     typer.echo("Navi chat. Type /exit to quit.")
     while True:
         text = typer.prompt("you")
         if text.strip() in {"/exit", "/quit"}:
             break
-        reply = asyncio.run(runtime.chat(text, session_id=session_id))
-        session_id = reply.session_id
-        typer.echo(f"navi: {reply.content}")
+        result = asyncio.run(
+            agent.handle(
+                text,
+                peer_id=config.runtime.local_surface,
+                sender_id=config.runtime.local_surface,
+                source="cli",
+                session_id=session_id,
+            )
+        )
+        session_id = result.session_id or session_id
+        typer.echo(f"navi: {result.text}")
 
 
 @app.command()
@@ -70,12 +81,12 @@ def web(host: str = DEFAULT_WEB_HOST, port: int = DEFAULT_WEB_PORT) -> None:
 
 
 @app.command("run")
-def run(once: bool = False) -> None:
-    """Run the active assistant loop: Weixin, watches, and queued tasks."""
+def run(once: bool = False, connector: str | None = None) -> None:
+    """Run the active assistant loop through a connector."""
     home = ensure_home()
     write_default_config(home)
-    service = WeixinService(home=home, config=load_config(home).weixin, runtime=build_runtime(home))
-    asyncio.run(service.run(once=once))
+    adapter = _select_runnable_connector(connector)
+    asyncio.run(adapter.run(home, once))
 
 
 @app.command()
@@ -191,8 +202,8 @@ def auth_status() -> None:
 @tools_app.command("list")
 def tools_list(json_output: bool = False) -> None:
     """List registered tools as facts."""
-    registry = build_core_tool_registry(ensure_home(), project_dir=Path.cwd())
-    specs = [asdict(spec) for spec in registry.list_specs()]
+    capabilities = build_capability_registry(ensure_home(), project_dir=Path.cwd())
+    specs = [asdict(spec) for spec in capabilities.list_specs()]
     if json_output:
         typer.echo(json.dumps(specs, ensure_ascii=False, indent=2))
         return
@@ -212,7 +223,7 @@ def tools_call(name: str, args_json: str = "{}") -> None:
         raise typer.BadParameter(f"invalid JSON: {exc}") from exc
     if not isinstance(args, dict):
         raise typer.BadParameter("args must be a JSON object")
-    result = build_core_tool_registry(ensure_home(), project_dir=Path.cwd()).call(name, args)
+    result = build_capability_registry(ensure_home(), project_dir=Path.cwd()).call(name, args)
     typer.echo(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
     if not result.ok:
         raise typer.Exit(code=1)
@@ -285,35 +296,69 @@ def service_install() -> None:
     typer.echo(f"Run: systemctl --user daemon-reload && systemctl --user enable --now {unit.name}")
 
 
-@weixin_app.command("setup")
-def weixin_setup(timeout_seconds: int = 480) -> None:
-    """Start Weixin QR setup."""
+@connectors_app.command("list")
+def connectors_list() -> None:
+    """List configured connector adapters."""
+    home = ensure_home()
+    for adapter in load_connector_adapters():
+        marker = "enabled" if adapter.enabled(home) else "disabled"
+        typer.echo(f"{adapter.name}: {marker}")
+
+
+@connectors_app.command("setup")
+def connector_setup(name: str, timeout_seconds: int = 480) -> None:
+    """Run connector setup."""
     home = ensure_home()
     write_default_config(home)
-    service = WeixinService(home=home, config=load_config(home).weixin, runtime=build_runtime(home))
+    adapter = _require_connector(name)
+    if adapter.setup is None:
+        raise typer.BadParameter(f"connector does not support setup: {name}")
 
     def show_qr(url: str) -> None:
-        typer.echo("Scan this Weixin QR URL with WeChat:")
+        typer.echo("Scan this connector QR URL:")
         typer.echo(url)
 
-    result = asyncio.run(service.setup(timeout_seconds=timeout_seconds, on_qr=show_qr))
+    result = asyncio.run(adapter.setup(home, timeout_seconds, show_qr))
     typer.echo(result)
 
 
-@weixin_app.command("run")
-def weixin_run(once: bool = False) -> None:
-    """Run the Weixin long-poll gateway."""
+@connectors_app.command("run")
+def connector_run(name: str, once: bool = False) -> None:
+    """Run a connector gateway."""
     home = ensure_home()
-    service = WeixinService(home=home, config=load_config(home).weixin, runtime=build_runtime(home))
-    asyncio.run(service.run(once=once))
+    adapter = _require_connector(name)
+    if adapter.run is None:
+        raise typer.BadParameter(f"connector does not support run: {name}")
+    asyncio.run(adapter.run(home, once))
 
 
-@weixin_app.command("status")
-def weixin_status() -> None:
-    """Show Weixin status."""
+@connectors_app.command("status")
+def connector_status(name: str) -> None:
+    """Show connector status."""
     home = ensure_home()
-    service = WeixinService(home=home, config=load_config(home).weixin, runtime=build_runtime(home))
-    typer.echo(service.status())
+    adapter = _require_connector(name)
+    typer.echo(adapter.status(home))
+
+
+def _require_connector(name: str):
+    adapter = get_connector_adapter(name)
+    if adapter is None:
+        raise typer.BadParameter(f"unknown connector: {name}")
+    return adapter
+
+
+def _select_runnable_connector(name: str | None):
+    adapters = load_connector_adapters()
+    if name:
+        adapter = _require_connector(name)
+        if adapter.run is None:
+            raise typer.BadParameter(f"connector does not support run: {name}")
+        return adapter
+    runnable = [adapter for adapter in adapters if adapter.run is not None]
+    if not runnable:
+        raise typer.BadParameter("no runnable connectors configured")
+    enabled = [adapter for adapter in runnable if adapter.enabled(ensure_home())]
+    return (enabled or runnable)[0]
 
 
 if __name__ == "__main__":

@@ -6,12 +6,17 @@ from typing import Any
 
 import yaml
 
+from .operating_context import permission_allows
+
 
 @dataclass(frozen=True)
 class Skill:
     name: str
     description: str
     path: Path
+    permission: str = "read"
+    source: str = "local"
+    tags: tuple[str, ...] = ()
 
 
 class SkillStore:
@@ -19,22 +24,38 @@ class SkillStore:
         self.skills_dir = home / "skills"
         self.skills_dir.mkdir(parents=True, exist_ok=True)
 
-    def list_skills(self) -> list[Skill]:
+    def list_skills(
+        self,
+        *,
+        permission_ceiling: str = "write",
+        sources: set[str] | None = None,
+    ) -> list[Skill]:
         skills: list[Skill] = []
         for path in sorted(self.skills_dir.glob("*/SKILL.md")):
             metadata = self._frontmatter(path)
-            skills.append(
-                Skill(
-                    name=str(metadata.get("name") or path.parent.name),
-                    description=str(metadata.get("description") or ""),
-                    path=path,
-                )
+            skill = Skill(
+                name=str(metadata.get("name") or path.parent.name),
+                description=str(metadata.get("description") or ""),
+                path=path,
+                permission=str(metadata.get("permission") or "read").strip().lower(),
+                source=str(metadata.get("source") or "local").strip().lower(),
+                tags=_metadata_tuple(metadata.get("tags")),
             )
+            if sources is not None and skill.source not in sources:
+                continue
+            if not permission_allows(skill.permission, permission_ceiling):
+                continue
+            skills.append(skill)
         return skills
 
-    def render_prompt(self) -> str:
+    def render_prompt(
+        self,
+        *,
+        permission_ceiling: str = "read",
+        sources: set[str] | None = None,
+    ) -> str:
         chunks = []
-        for skill in self.list_skills():
+        for skill in self.list_skills(permission_ceiling=permission_ceiling, sources=sources):
             content = skill.path.read_text(encoding="utf-8").strip()
             if content:
                 chunks.append(content)
@@ -50,3 +71,11 @@ class SkillStore:
             return {}
         data = yaml.safe_load(parts[1]) or {}
         return data if isinstance(data, dict) else {}
+
+
+def _metadata_tuple(value: object) -> tuple[str, ...]:
+    if isinstance(value, list):
+        return tuple(str(item).strip().lower() for item in value if str(item).strip())
+    if isinstance(value, str):
+        return tuple(item.strip().lower() for item in value.split(",") if item.strip())
+    return ()

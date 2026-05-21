@@ -5,6 +5,7 @@ import pytest
 
 from navi.config import ModelConfig
 from navi.provider import (
+    AnthropicCompatibleProvider,
     ChatMessage,
     OpenAICompatibleProvider,
     build_provider,
@@ -55,7 +56,34 @@ def test_build_provider_accepts_openai_alias():
 def test_list_provider_specs_is_serializable():
     specs = list_provider_specs()
 
-    assert {spec["name"] for spec in specs} >= {"mock", "openai-compatible", "deepseek"}
+    assert {spec["name"] for spec in specs} >= {"mock", "openai-compatible", "deepseek", "anthropic"}
+
+
+def test_build_provider_accepts_anthropic_alias():
+    provider = build_provider(
+        ModelConfig(
+            provider="claude",
+            model="claude-sonnet-4-20250514",
+            api_base_url="https://api.anthropic.com/v1",
+            api_key="sk-test",
+        )
+    )
+
+    assert provider.__class__.__name__ == "AnthropicCompatibleProvider"
+
+
+def test_build_provider_accepts_custom_openai_compatible_provider():
+    provider = build_provider(
+        ModelConfig(
+            provider="private-gateway",
+            kind="openai-compatible",
+            model="local-agent-model",
+            api_base_url="http://localhost:11434/v1",
+            api_key="sk-local",
+        )
+    )
+
+    assert provider.__class__.__name__ == "OpenAICompatibleProvider"
 
 
 @pytest.mark.asyncio
@@ -95,3 +123,35 @@ async def test_openai_compatible_provider_posts_chat_completion():
     assert str(requests[0].url) == "https://api.deepseek.com/chat/completions"
     assert requests[0].headers["authorization"] == "Bearer sk-test"
     assert '"model":"deepseek-v4-pro"' in requests[0].content.decode()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_provider_posts_messages_request():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "anthropic ok"}]},
+        )
+
+    provider = AnthropicCompatibleProvider(
+        ModelConfig(
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            api_base_url="https://api.anthropic.com/v1",
+            api_key="sk-test",
+        ),
+        get_provider_spec("anthropic"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await provider.complete([ChatMessage("system", "sys"), ChatMessage("user", "hello")])
+
+    assert result == "anthropic ok"
+    assert str(requests[0].url) == "https://api.anthropic.com/v1/messages"
+    assert requests[0].headers["x-api-key"] == "sk-test"
+    body = requests[0].content.decode()
+    assert '"system":"sys"' in body
+    assert '"messages":[{"role":"user","content":"hello"}]' in body

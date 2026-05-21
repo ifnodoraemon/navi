@@ -1,0 +1,138 @@
+syscall_cases:
+  - id: greeting_stays_chat
+    source: observed:.navi/sessions.db
+    message: "你好"
+    expect:
+      tool: final.answer
+      permission: read
+
+  - id: capability_question_stays_chat
+    source: observed:.navi/sessions.db
+    message: "你可以做什么"
+    expect:
+      tool: final.answer
+      permission: read
+
+  - id: local_directory_uses_filesystem_tool
+    source: observed:.navi/sessions.db
+    message: "列一下我本机的目录"
+    expect:
+      tool: filesystem.list
+      permission: read
+
+  - id: service_start_time_uses_service_tool
+    source: observed:.navi/sessions.db
+    message: "你的最新启动时间是什么时候"
+    expect:
+      tool: service.status
+      permission: read
+
+  - id: task_not_executed_uses_task_status_tool
+    source: observed:.navi/sessions.db
+    message: "`8f59a0dcc92948c49f88de2df055dabf`为什么这个 task 没有执行"
+    expect:
+      tool: task.status
+      permission: read
+      args:
+        task_id: "8f59a0dcc92948c49f88de2df055dabf"
+
+  - id: vague_evening_watch_asks_clarification
+    source: observed:.navi/sessions.db
+    message: "每天晚上上一个通识课给我"
+    expect:
+      tool: clarify.ask
+      permission: read
+
+  - id: exact_morning_watch_creates_watch
+    source: observed:.navi/sessions.db
+    message: "每天早上 8 点进行毛选晨读"
+    expect:
+      tool: watch.create
+      permission: prepare
+      args:
+        cron: "0 8 * * *"
+
+  - id: approval_code_approves
+    source: observed:manual-followup
+    message: "批准 123456"
+    expect:
+      tool: approval.resolve
+      permission: write
+      args:
+        decision: approve
+        code: "123456"
+
+  - id: rejection_code_rejects
+    source: observed:manual-followup
+    message: "拒绝 123456"
+    expect:
+      tool: approval.resolve
+      permission: write
+      args:
+        decision: reject
+        code: "123456"
+
+  - id: git_status_uses_git_tool
+    source: observed:manual-followup
+    message: "检查 navi 仓库状态"
+    expect:
+      tool: git.status
+      permission: read
+
+  - id: hermes_connector_alive_but_unresponsive
+    source: https://github.com/NousResearch/hermes-agent/issues/29005
+    message: "微信连接器断了但 navi.service 还在运行，帮我看连接器配置和状态"
+    expect:
+      tool: connector.weixin.status
+      permission: read
+
+  - id: hermes_gateway_process_status
+    source: https://github.com/NousResearch/hermes-agent/issues/29005
+    message: "网关进程还活着但机器人没响应，检查 navi.service 状态"
+    expect:
+      tool: service.status
+      permission: read
+
+  - id: hermes_provider_config_drift
+    source: https://github.com/NousResearch/hermes-agent/issues/28984
+    message: "配置里的模型 provider 好像没有生效，帮我检查当前 provider 和 API key 状态"
+    expect:
+      tool: provider.config
+      permission: read
+
+  - id: hermes_config_runtime_contract_issue
+    source: https://github.com/NousResearch/hermes-agent/issues/28984
+    message: "配置项写了但运行时好像没消费，帮我检查配置到运行时的映射问题"
+    expect:
+      tool: task.create
+      permission: prepare
+
+  - id: hermes_terminal_tool_latency_issue
+    source: https://github.com/NousResearch/hermes-agent/pull/29006
+    message: "工具调用明显变慢，帮我检查终端执行耗时和轮询问题"
+    expect:
+      tool: task.create
+      permission: prepare
+
+response_cases:
+  - id: greeting_does_not_suggest_command_workflow
+    source: observed:.navi/sessions.db
+    message: "你好"
+    banned:
+      - "随时用"
+      - "直接用"
+      - "输入命令"
+      - "使用命令"
+      - "键入"
+      - "type a command"
+
+  - id: capabilities_do_not_suggest_command_workflow
+    source: observed:.navi/sessions.db
+    message: "你可以做什么"
+    banned:
+      - "随时用"
+      - "直接用"
+      - "输入命令"
+      - "使用命令"
+      - "键入"
+      - "type a command"

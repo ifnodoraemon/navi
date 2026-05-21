@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "navi-assistant"
 version = "0.0.1"
-description = "Local-first personal AI assistant with Weixin support"
+description = "Local-first personal AI assistant with connector support"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -30,6 +30,9 @@ navi = "navi.cli:app"
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+markers = [
+    "live_llm: calls the configured real model provider and is opt-in via NAVI_LIVE_LLM_TESTS=1",
+]
 
 [tool.ruff]
 line-length = 100

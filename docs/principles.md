@@ -13,9 +13,9 @@ Navi must be agentic in the system shape, not just in wording.
 - The agent decides from current facts, available capabilities, trust state, and connector affordances.
 - Static prompts must not encode product behavior that belongs to runtime discovery.
 - Connectors, providers, tools, and deployment surfaces must describe what they can do at runtime.
-- The agent should choose among answer, ask, plan, task, approve, execute, observe, or remember.
+- The model should choose the next declared tool call: answer, ask, plan, task, approve, execute, observe, or remember.
 - Learning must happen through explicit memory, graph, trust, and evolution records, not hidden prompt drift.
-- Intent selection must be capability-driven rather than keyword-driven. Keywords can parse narrow structured facts, but they must not define product behavior.
+- Tool planning must be capability-driven rather than keyword-driven. Keywords can parse narrow structured facts, but they must not define product behavior.
 
 ### 2. Tools Return Facts Only
 
@@ -96,9 +96,9 @@ Any action that can affect the user's machine, accounts, remote services, reposi
 
 ### 8. Approval Is State, Not Vibes
 
-User intent in chat is not the same as an executable permission grant.
+User text in chat is not the same as an executable permission grant.
 
-- "I authorize you" is an intent signal.
+- "I authorize you" is user input for the tool planner.
 - Execution still needs a tracked task and the configured approval path unless a trust rule explicitly allows it.
 - Approval source of truth must be inspectable and repairable.
 - Approval failures must say which state is missing, not pretend the agent has no local capability.
@@ -198,7 +198,7 @@ Navi's architecture should keep these boundaries:
 - `skills/`: promptable procedures and behavior guidance.
 - `plugins/`: installed code capabilities, integrations, providers, and connector surfaces.
 - `hooks/`: lifecycle gates and observers.
-- `agent/`: intent, preparation, policy, approval, and reflection.
+- `agent/`: tool planning, preparation, policy, approval, and reflection.
 - `memory/graph/trust/evolution`: typed, auditable learning and constraint stores.
 - `runtime prompt`: composed from current facts, not hand-written assumptions.
 

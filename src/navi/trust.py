@@ -99,7 +99,11 @@ class TrustStore:
 
     def match(self, *, prompt: str, sender_id: str, workspace: str) -> TrustRule | None:
         prompt_lower = prompt.lower()
-        candidates = [rule for rule in self.list(sender_id=sender_id) if rule.pattern.lower() in prompt_lower]
+        candidates = [
+            rule
+            for rule in self.list(sender_id=sender_id)
+            if rule.pattern.lower() in prompt_lower and (not rule.project_path or rule.project_path == workspace)
+        ]
         if not candidates:
             return None
         candidates.sort(key=lambda rule: (LEVELS.index(rule.autonomy_level), rule.updated_at), reverse=True)
@@ -118,9 +122,7 @@ class TrustStore:
             )
         new_success = rule.success_count + 1
         new_level = rule.autonomy_level
-        if new_success >= 3 and LEVELS.index(new_level) < LEVELS.index("L3"):
-            new_level = LEVELS[LEVELS.index(new_level) + 1]
-        project_path = rule.project_path or (task.workspace if new_level == "L3" else "")
+        project_path = rule.project_path
         return self._update_counts(
             rule.id,
             success_count=new_success,

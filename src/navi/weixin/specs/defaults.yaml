@@ -1,0 +1,4 @@
+enabled: false
+base_url: https://ilinkai.weixin.qq.com
+dm_policy: open
+group_policy: disabled

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .cli_providers import list_cli_provider_specs
 from .config import ExecutionConfig, load_config
+from .governance import GovernanceEngine
 from .tasks import Task, TaskStore
 
 
@@ -132,8 +133,10 @@ class CliExecutionProvider:
 
 class ExecutionService:
     def __init__(self, home: Path):
+        self.home = home
         self.config = load_config(home).execution
         self.tasks = TaskStore(home)
+        self.governance = GovernanceEngine(home)
         self.providers = {
             spec.name: CliExecutionProvider(name=spec.name, binary=spec.binary, config=self.config)
             for spec in list_cli_provider_specs()
@@ -167,8 +170,20 @@ class ExecutionService:
     async def process_pending_once(self, *, limit: int = 3) -> list[Task]:
         completed: list[Task] = []
         for task in self.tasks.list_by_status("queued", limit=limit):
+            if not self._execution_allowed(task):
+                blocked = self.tasks.update_task(
+                    task.id,
+                    status="blocked",
+                    error="execution grant missing: approved approval or explicit L3 trust rule required",
+                )
+                if blocked:
+                    completed.append(blocked)
+                continue
             completed.append(await self.execute_task(task))
         return completed
+
+    def _execution_allowed(self, task: Task) -> bool:
+        return self.governance.execution_allowed(task)
 
     def _log(self, task: Task, result: ExecutionResult) -> None:
         self.tasks.add_execution_log(

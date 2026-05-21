@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import subprocess
 import time
+import json
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .config import load_config
-from .connector_specs import get_connector_spec
-from .fact_tools import service_facts, task_facts
-from .weixin.store import WeixinStore
+from .connector_registry import load_connector_adapters
+from .tasks import TaskStore
 
 
 ToolHandler = Callable[[dict[str, Any]], "ToolResult"]
@@ -61,6 +59,16 @@ class RegisteredTool:
     handler: ToolHandler
 
 
+ToolProviderRegister = Callable[["ToolRegistry"], None]
+
+
+@dataclass(frozen=True)
+class ToolProvider:
+    name: str
+    source: str
+    register: ToolProviderRegister
+
+
 class ToolRegistry:
     def __init__(self, *, home: Path, project_dir: Path | None = None):
         self.home = home
@@ -75,6 +83,12 @@ class ToolRegistry:
     def list_specs(self) -> list[ToolSpec]:
         return [tool.spec for tool in sorted(self._tools.values(), key=lambda item: item.spec.name)]
 
+    def list_sources(self) -> list[str]:
+        return sorted({tool.spec.source for tool in self._tools.values()})
+
+    def registered_tools(self) -> list[RegisteredTool]:
+        return [tool for tool in sorted(self._tools.values(), key=lambda item: item.spec.name)]
+
     def get(self, name: str) -> ToolSpec | None:
         tool = self._tools.get(name)
         return tool.spec if tool else None
@@ -83,26 +97,31 @@ class ToolRegistry:
         tool = self._tools.get(name)
         started_at = time.time()
         if tool is None:
-            return ToolResult(
+            result = ToolResult(
                 tool=name,
                 ok=False,
                 error=f"tool not found: {name}",
                 started_at=started_at,
                 ended_at=time.time(),
             )
+            self._audit_call(args or {}, result)
+            return result
         try:
             result = tool.handler(args or {})
         except Exception as exc:  # pragma: no cover - defensive boundary for plugins.
-            return ToolResult(
+            result = ToolResult(
                 tool=name,
                 ok=False,
                 error=str(exc),
                 started_at=started_at,
                 ended_at=time.time(),
             )
-        if result.started_at and result.ended_at:
+            self._audit_call(args or {}, result)
             return result
-        return ToolResult(
+        if result.started_at and result.ended_at:
+            self._audit_call(args or {}, result)
+            return result
+        result = ToolResult(
             tool=result.tool,
             ok=result.ok,
             facts=result.facts,
@@ -110,204 +129,114 @@ class ToolRegistry:
             started_at=started_at,
             ended_at=time.time(),
         )
+        self._audit_call(args or {}, result)
+        return result
 
-
-def build_core_tool_registry(home: Path, *, project_dir: Path | None = None) -> ToolRegistry:
-    registry = ToolRegistry(home=home, project_dir=project_dir)
-    config = load_config(home)
-    weixin_spec = get_connector_spec(WeixinStore.connector_name())
-    registry.register(
-        ToolSpec(
-            name="service.status",
-            description="Return systemd user service facts.",
-            input_schema={
-                "type": "object",
-                "properties": {"name": {"type": "string", "default": config.runtime.service_name}},
-            },
-            output_schema={"type": "object"},
-        ),
-        lambda args: _service_status(args, default_name=config.runtime.service_name),
-    )
-    registry.register(
-        ToolSpec(
-            name="task.status",
-            description="Return task, approval, and execution log facts.",
-            input_schema={
-                "type": "object",
-                "properties": {"task_id": {"type": "string"}},
-            },
-            output_schema={"type": "object"},
-        ),
-        lambda args: _task_status(home, args),
-    )
-    registry.register(
-        ToolSpec(
-            name="provider.config",
-            description="Return configured model provider facts without secrets.",
-            input_schema={"type": "object", "properties": {}},
-            output_schema={"type": "object"},
-        ),
-        lambda args: _provider_config(home),
-    )
-    registry.register(
-        ToolSpec(
-            name=weixin_spec.status_tool,
-            description=weixin_spec.status_description,
-            input_schema={"type": "object", "properties": {}},
-            output_schema={"type": "object"},
-        ),
-        lambda args: _weixin_status(home, tool_name=weixin_spec.status_tool),
-    )
-    registry.register(
-        ToolSpec(
-            name="filesystem.list",
-            description="Return directory entry facts.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "default": "~"},
-                    "limit": {"type": "integer", "default": 50},
-                },
-            },
-            output_schema={"type": "object"},
-        ),
-        lambda args: _filesystem_list(args),
-    )
-    registry.register(
-        ToolSpec(
-            name="git.status",
-            description="Return git repository status facts.",
-            input_schema={
-                "type": "object",
-                "properties": {"path": {"type": "string", "default": str(registry.project_dir)}},
-            },
-            output_schema={"type": "object"},
-        ),
-        lambda args: _git_status(args, default_path=registry.project_dir),
-    )
-    return registry
-
-
-def _service_status(args: dict[str, Any], *, default_name: str) -> ToolResult:
-    name = str(args.get("name") or default_name)
-    facts = service_facts(name)
-    return ToolResult(tool="service.status", ok=facts.exit_code == 0, facts=asdict(facts), error=facts.stderr)
-
-
-def _task_status(home: Path, args: dict[str, Any]) -> ToolResult:
-    task_id = args.get("task_id")
-    facts = task_facts(home, str(task_id) if task_id else None)
-    return ToolResult(
-        tool="task.status",
-        ok=facts.task is not None,
-        facts={
-            "task": asdict(facts.task) if facts.task else None,
-            "approvals": [asdict(approval) for approval in facts.approvals],
-            "logs": [asdict(log) for log in facts.logs],
-        },
-        error="" if facts.task else "task not found",
-    )
-
-
-def _provider_config(home: Path) -> ToolResult:
-    config = load_config(home)
-    return ToolResult(
-        tool="provider.config",
-        ok=True,
-        facts={
-            "provider": config.model.provider,
-            "model": config.model.model,
-            "api_base_url": config.model.api_base_url,
-            "has_api_key": bool(config.model.api_key),
-        },
-    )
-
-
-def _weixin_status(home: Path, *, tool_name: str) -> ToolResult:
-    config = load_config(home)
-    store = WeixinStore(home)
-    status = {
-        "configured": bool(config.weixin.account_id or store.list_accounts()),
-        "account_id": config.weixin.account_id,
-        "saved_accounts": store.list_accounts(),
-        "dm_policy": config.weixin.dm_policy,
-        "group_policy": config.weixin.group_policy,
-    }
-    return ToolResult(tool=tool_name, ok=True, facts=status)
-
-
-def _filesystem_list(args: dict[str, Any]) -> ToolResult:
-    raw_path = str(args.get("path") or "~")
-    limit = _positive_int(args.get("limit"), default=50, maximum=200)
-    path = Path(raw_path).expanduser()
-    fact_path = path.resolve() if path.exists() else path
-    facts: dict[str, Any] = {
-        "path": str(fact_path),
-        "exists": path.exists(),
-        "is_dir": path.is_dir() if path.exists() else False,
-        "entries": [],
-        "limit": limit,
-    }
-    if not path.exists():
-        return ToolResult(tool="filesystem.list", ok=False, facts=facts, error="path not found")
-    if not path.is_dir():
-        facts["is_file"] = path.is_file()
-        facts["size"] = path.stat().st_size
-        return ToolResult(tool="filesystem.list", ok=False, facts=facts, error="path is not a directory")
-    entries = []
-    for child in sorted(path.iterdir(), key=lambda item: item.name)[:limit]:
+    def _audit_call(self, args: dict[str, Any], result: ToolResult) -> None:
         try:
-            stat = child.stat()
-            entries.append(
-                {
-                    "name": child.name,
-                    "path": str(child),
-                    "type": "directory" if child.is_dir() else "file",
-                    "size": stat.st_size,
-                    "modified_at": stat.st_mtime,
-                }
+            TaskStore(self.home).add_tool_call_log(
+                tool=result.tool,
+                args_json=json.dumps(args, ensure_ascii=False, sort_keys=True),
+                ok=result.ok,
+                facts_json=json.dumps(result.facts, ensure_ascii=False, sort_keys=True),
+                error=result.error,
+                started_at=result.started_at,
+                ended_at=result.ended_at,
             )
-        except OSError as exc:
-            entries.append({"name": child.name, "path": str(child), "type": "unknown", "error": str(exc)})
-    facts["entries"] = entries
-    facts["entry_count"] = len(entries)
-    return ToolResult(tool="filesystem.list", ok=True, facts=facts)
+        except Exception:
+            pass
 
 
-def _git_status(args: dict[str, Any], *, default_path: Path) -> ToolResult:
-    path = Path(str(args.get("path") or default_path)).expanduser()
-    branch = _run_git(path, "status", "--short", "--branch")
-    root = _run_git(path, "rev-parse", "--show-toplevel")
-    head = _run_git(path, "rev-parse", "--short", "HEAD")
-    facts = {
-        "path": str(path),
-        "root": root["stdout"].strip(),
-        "head": head["stdout"].strip(),
-        "status": branch["stdout"].splitlines(),
-        "exit_code": branch["exit_code"],
-        "stderr": branch["stderr"],
-    }
-    return ToolResult(tool="git.status", ok=branch["exit_code"] == 0, facts=facts, error=branch["stderr"])
+class ToolGateway:
+    def __init__(
+        self,
+        *,
+        home: Path,
+        project_dir: Path | None = None,
+        providers: list[ToolProvider] | None = None,
+        allow_sources: set[str] | None = None,
+        disabled_tools: set[str] | None = None,
+        permission_ceiling: str = "write",
+    ):
+        self.home = home
+        self.project_dir = project_dir or Path.cwd()
+        self.providers = providers or load_tool_providers(home, project_dir=self.project_dir)
+        self.allow_sources = allow_sources
+        self.disabled_tools = disabled_tools or set()
+        self.permission_ceiling = permission_ceiling
+        self.registry = ToolRegistry(home=home, project_dir=self.project_dir)
+        self.refresh()
+
+    def refresh(self) -> None:
+        raw = ToolRegistry(home=self.home, project_dir=self.project_dir)
+        for provider in self.providers:
+            provider.register(raw)
+        self.registry = ToolRegistry(home=self.home, project_dir=self.project_dir)
+        for tool in raw.registered_tools():
+            if self.allow_sources is not None and tool.spec.source not in self.allow_sources:
+                continue
+            if tool.spec.name in self.disabled_tools:
+                continue
+            if not _permission_allows(tool.spec.permission, self.permission_ceiling):
+                continue
+            self.registry.register(tool.spec, tool.handler)
+
+    def list_specs(self) -> list[ToolSpec]:
+        return self.registry.list_specs()
+
+    def list_sources(self) -> list[str]:
+        return self.registry.list_sources()
+
+    def get(self, name: str) -> ToolSpec | None:
+        return self.registry.get(name)
+
+    def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
+        return self.registry.call(name, args)
 
 
-def _run_git(path: Path, *args: str) -> dict[str, Any]:
-    try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=path,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-    except OSError as exc:
-        return {"stdout": "", "stderr": str(exc), "exit_code": 127}
-    return {"stdout": result.stdout, "stderr": result.stderr.strip(), "exit_code": result.returncode}
+def load_tool_providers(home: Path, *, project_dir: Path | None = None) -> list[ToolProvider]:
+    return [
+        ToolProvider(
+            name="core-facts",
+            source="core",
+            register=lambda registry: _register_core_fact_tools(registry, home=home),
+        ),
+        ToolProvider(
+            name="connectors",
+            source="connectors",
+            register=lambda registry: _register_connector_tools(registry, home=home),
+        ),
+    ]
 
 
-def _positive_int(value: Any, *, default: int, maximum: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(1, min(parsed, maximum))
+def build_tool_gateway(
+    home: Path,
+    *,
+    project_dir: Path | None = None,
+    allow_sources: set[str] | None = None,
+    disabled_tools: set[str] | None = None,
+    permission_ceiling: str = "write",
+) -> ToolGateway:
+    return ToolGateway(
+        home=home,
+        project_dir=project_dir,
+        allow_sources=allow_sources,
+        disabled_tools=disabled_tools,
+        permission_ceiling=permission_ceiling,
+    )
+
+
+def _register_core_fact_tools(registry: ToolRegistry, *, home: Path) -> None:
+    from .core_tools import register_core_tools
+
+    register_core_tools(registry, home=home)
+
+
+def _register_connector_tools(registry: ToolRegistry, *, home: Path) -> None:
+    for adapter in load_connector_adapters():
+        adapter.register_tools(registry, home)
+
+
+def _permission_allows(required: str, ceiling: str) -> bool:
+    order = {"read": 0, "prepare": 1, "write": 2}
+    return order.get(required, 0) <= order.get(ceiling, 0)

@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from navi.connector_registry import ConnectorAdapter, ConnectorSpec
+
+from .config import load_telegram_config
+
+
+def _load_spec() -> ConnectorSpec:
+    raw = yaml.safe_load((Path(__file__).with_name("specs") / "connector.yaml").read_text(encoding="utf-8"))
+    return ConnectorSpec(
+        name=str(raw["name"]),
+        surface=str(raw["surface"]),
+        status_tool=str(raw["status_tool"]),
+        status_description=str(raw["status_description"]),
+        session_alias_prefix=str(raw["session_alias_prefix"]),
+        local_source=str(raw["local_source"]),
+    )
+
+
+SPEC = _load_spec()
+
+
+def create_adapter() -> ConnectorAdapter:
+    return ConnectorAdapter(
+        spec=SPEC,
+        enabled=_enabled,
+        status=_status,
+        register_tools=lambda registry, home: _register_tools(registry, home, SPEC),
+        run=_run,
+    )
+
+
+def _enabled(home: Path) -> bool:
+    return load_telegram_config(home).enabled
+
+
+def _status(home: Path) -> dict[str, Any]:
+    config = load_telegram_config(home)
+    return {
+        "configured": bool(config.bot_token),
+        "dm_policy": config.dm_policy,
+        "home_chat_id": config.home_chat_id,
+        "allowed_users_count": len(config.allowed_users),
+    }
+
+
+def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
+    from navi.tools import ToolResult, ToolSpec
+
+    registry.register(
+        ToolSpec(
+            name=spec.status_tool,
+            description=spec.status_description,
+            input_schema={"type": "object", "properties": {}},
+            output_schema={"type": "object"},
+            source=spec.surface,
+        ),
+        lambda args: ToolResult(tool=spec.status_tool, ok=True, facts=_status(home)),
+    )
+
+
+async def _run(home: Path, once: bool) -> None:
+    await _service(home).run(once=once)
+
+
+def _service(home: Path):
+    from navi.app_factory import build_runtime
+
+    from .service import TelegramService
+
+    return TelegramService(
+        home=home,
+        config=load_telegram_config(home),
+        runtime=build_runtime(home),
+        local_source=SPEC.local_source,
+        session_alias_prefix=SPEC.session_alias_prefix,
+    )

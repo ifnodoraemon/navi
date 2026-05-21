@@ -16,13 +16,10 @@ from .defaults import (
     DEFAULT_MODEL_PROVIDER,
     DEFAULT_RUNTIME_WEB_URL,
     DEFAULT_SERVICE_NAME,
-    DEFAULT_WEIXIN_BASE_URL,
-    DEFAULT_WEIXIN_DM_POLICY,
-    DEFAULT_WEIXIN_ENABLED,
-    DEFAULT_WEIXIN_GROUP_POLICY,
 )
 from .paths import ensure_home
 from .provider_specs import get_provider_spec
+from .provider_specs import ProviderSpec
 
 
 @dataclass
@@ -31,19 +28,7 @@ class ModelConfig:
     model: str = DEFAULT_MODEL_MODEL
     api_base_url: str = ""
     api_key: str = ""
-
-
-@dataclass
-class WeixinConfig:
-    enabled: bool = DEFAULT_WEIXIN_ENABLED
-    account_id: str = ""
-    token: str = ""
-    base_url: str = DEFAULT_WEIXIN_BASE_URL
-    dm_policy: str = DEFAULT_WEIXIN_DM_POLICY
-    allowed_users: list[str] = field(default_factory=list)
-    group_policy: str = DEFAULT_WEIXIN_GROUP_POLICY
-    group_allowed_users: list[str] = field(default_factory=list)
-    home_channel: str = ""
+    kind: str = ""
 
 
 @dataclass
@@ -63,15 +48,8 @@ class ExecutionConfig:
 @dataclass
 class NaviConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
-    weixin: WeixinConfig = field(default_factory=WeixinConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
-
-
-def _split_csv(value: str | None) -> list[str]:
-    if not value:
-        return []
-    return [part.strip() for part in value.split(",") if part.strip()]
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -111,11 +89,10 @@ def load_config(home: Path | None = None) -> NaviConfig:
     env = {**env_file, **os.environ}
 
     model_raw = raw.get("model") or {}
-    weixin_raw = raw.get("weixin") or {}
     runtime_raw = raw.get("runtime") or {}
     execution_raw = raw.get("execution") or {}
     provider = str(env.get("NAVI_MODEL_PROVIDER", model_raw.get("provider", DEFAULT_MODEL_PROVIDER)))
-    provider_spec = get_provider_spec(provider)
+    provider_spec = _provider_spec(provider, model_raw, env)
     raw_model = model_raw.get("model", provider_spec.default_model)
     if provider_spec.name != DEFAULT_MODEL_PROVIDER and raw_model == DEFAULT_MODEL_MODEL:
         raw_model = provider_spec.default_model
@@ -130,22 +107,9 @@ def load_config(home: Path | None = None) -> NaviConfig:
             )
         ).rstrip("/"),
         api_key=str(model_raw.get("api_key") or _first_env(env, provider_spec.api_key_env)),
+        kind=str(env.get("NAVI_MODEL_KIND", model_raw.get("kind", provider_spec.kind))),
     )
 
-    weixin = WeixinConfig(
-        enabled=str(env.get("NAVI_WEIXIN_ENABLED", weixin_raw.get("enabled", DEFAULT_WEIXIN_ENABLED))).lower()
-        in {"1", "true", "yes", "on"},
-        account_id=str(env.get("WEIXIN_ACCOUNT_ID", weixin_raw.get("account_id", ""))),
-        token=str(env.get("WEIXIN_TOKEN", weixin_raw.get("token", ""))),
-        base_url=str(env.get("WEIXIN_BASE_URL", weixin_raw.get("base_url", DEFAULT_WEIXIN_BASE_URL))).rstrip("/"),
-        dm_policy=str(env.get("WEIXIN_DM_POLICY", weixin_raw.get("dm_policy", DEFAULT_WEIXIN_DM_POLICY))),
-        allowed_users=_split_csv(env.get("WEIXIN_ALLOWED_USERS"))
-        or list(weixin_raw.get("allowed_users", []) or []),
-        group_policy=str(env.get("WEIXIN_GROUP_POLICY", weixin_raw.get("group_policy", DEFAULT_WEIXIN_GROUP_POLICY))),
-        group_allowed_users=_split_csv(env.get("WEIXIN_GROUP_ALLOWED_USERS"))
-        or list(weixin_raw.get("group_allowed_users", []) or []),
-        home_channel=str(env.get("WEIXIN_HOME_CHANNEL", weixin_raw.get("home_channel", ""))),
-    )
     runtime = RuntimeConfig(
         service_name=str(env.get("NAVI_SERVICE_NAME", runtime_raw.get("service_name", DEFAULT_SERVICE_NAME))),
         web_url=str(env.get("NAVI_WEB_URL", runtime_raw.get("web_url", DEFAULT_RUNTIME_WEB_URL))).strip(),
@@ -156,7 +120,7 @@ def load_config(home: Path | None = None) -> NaviConfig:
         timeout_seconds=_float_env(env.get("NAVI_EXECUTION_TIMEOUT_SECONDS", execution_raw.get("timeout_seconds", DEFAULT_EXECUTION_TIMEOUT_SECONDS))),
         mock=str(env.get("NAVI_EXECUTION_MOCK", execution_raw.get("mock", DEFAULT_EXECUTION_MOCK))).lower() in {"1", "true", "yes", "on"},
     )
-    return NaviConfig(model=model, weixin=weixin, runtime=runtime, execution=execution)
+    return NaviConfig(model=model, runtime=runtime, execution=execution)
 
 
 def write_default_config(home: Path | None = None) -> Path:
@@ -168,12 +132,6 @@ def write_default_config(home: Path | None = None) -> Path:
         yaml.safe_dump(
             {
                 "model": {"provider": DEFAULT_MODEL_PROVIDER, "model": DEFAULT_MODEL_MODEL},
-                "weixin": {
-                    "enabled": DEFAULT_WEIXIN_ENABLED,
-                    "base_url": DEFAULT_WEIXIN_BASE_URL,
-                    "dm_policy": DEFAULT_WEIXIN_DM_POLICY,
-                    "group_policy": DEFAULT_WEIXIN_GROUP_POLICY,
-                },
                 "runtime": {
                     "service_name": DEFAULT_SERVICE_NAME,
                     "web_url": DEFAULT_RUNTIME_WEB_URL,
@@ -197,3 +155,21 @@ def _float_env(value: object) -> float:
         return max(1.0, float(value))
     except (TypeError, ValueError):
         return DEFAULT_EXECUTION_TIMEOUT_SECONDS
+
+
+def _provider_spec(provider: str, model_raw: dict, env: dict[str, str]) -> ProviderSpec:
+    try:
+        return get_provider_spec(provider)
+    except ValueError:
+        kind = str(env.get("NAVI_MODEL_KIND", model_raw.get("kind", ""))).strip()
+        if not kind:
+            raise
+        api_key_env = tuple(model_raw.get("api_key_env") or ("NAVI_MODEL_API_KEY",))
+        return ProviderSpec(
+            name=provider,
+            aliases=(),
+            kind=kind,
+            default_model=str(env.get("NAVI_MODEL", model_raw.get("model", ""))),
+            default_base_url=str(env.get("NAVI_MODEL_API_BASE_URL", model_raw.get("api_base_url", ""))).rstrip("/"),
+            api_key_env=api_key_env,
+        )

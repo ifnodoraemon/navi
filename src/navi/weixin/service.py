@@ -2,40 +2,51 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 from collections.abc import Callable
 
-from navi.assistant import ActiveAssistant
-from navi.config import WeixinConfig, load_config
-from navi.connector_specs import ConnectorSpec, get_connector_spec
-from navi.fact_tools import ServiceFacts, TaskFacts, render_service_facts, render_task_facts
-from navi.intent import ActionDecision, AgenticActionSelector
-from navi.prompting import PromptContext
+from navi.agent_kernel import AgentKernel
+from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
-from navi.tasks import Approval, ExecutionLog, Task
-from navi.tools import build_core_tool_registry
+from navi.tasks import Task
+from navi.daemon import SystemDaemon
 
 from .client import MockWeixinClient, WeixinClient
+from .config import WeixinConfig
 from .models import WeixinAccount, WeixinUpdate
 from .store import ContextTokenStore, MessageDeduplicator, WeixinStore
 
 
 class WeixinService:
-    connector: ConnectorSpec = get_connector_spec(Path(__file__).parent.name)
-
-    def __init__(self, *, home: Path, config: WeixinConfig, runtime: AgentRuntime):
+    def __init__(
+        self,
+        *,
+        home: Path,
+        config: WeixinConfig,
+        runtime: AgentRuntime,
+        local_source: str = "weixin",
+        session_alias_prefix: str = "connector:weixin",
+    ):
         self.home = home
         self.config = config
         self.runtime = runtime
+        self.local_source = local_source
+        self.session_alias_prefix = session_alias_prefix
         self.store = WeixinStore(home)
         self.context_tokens = ContextTokenStore(home)
         self.dedup = MessageDeduplicator()
         self.client = self._build_client()
-        self.active = ActiveAssistant(home)
-        self.tools = build_core_tool_registry(home, project_dir=Path.cwd())
-        self.action_selector = AgenticActionSelector(runtime.provider)
-        self.runtime_config = load_config(home).runtime
+        self.daemon = SystemDaemon(home)
+        self.active = self.daemon
+        self.agent = AgentKernel(
+            home=home,
+            runtime=runtime,
+            project_dir=Path.cwd(),
+            allow_sources={"core"},
+        )
 
     def _build_client(self):
         if os.environ.get("NAVI_WEIXIN_MOCK", "").lower() in {"1", "true", "yes"}:
@@ -96,74 +107,58 @@ class WeixinService:
     async def handle_update(self, account: WeixinAccount, update: WeixinUpdate) -> bool:
         if self.dedup.seen(update.message_id):
             return False
-        is_command = update.text.strip().startswith("/")
-        if not is_command:
-            content_key = f"content:{update.sender_id}:{hashlib.md5(update.text.encode()).hexdigest()}"
-            if self.dedup.seen(content_key):
-                return False
+        content_key = f"content:{update.sender_id}:{hashlib.md5(update.text.encode()).hexdigest()}"
+        if self.dedup.seen(content_key):
+            return False
         if not self._allowed(update):
             return False
         self.context_tokens.put(account.account_id, update.peer_id, update.context_token)
-        if is_command:
-            connector_result = self._handle_connector_command(update.text, peer_id=update.peer_id)
-            if connector_result:
-                await self.client.send_message(
-                    account_id=account.account_id,
-                    peer_id=update.peer_id,
-                    text=connector_result,
-                    context_token=self.context_tokens.get(account.account_id, update.peer_id),
-                )
-                return True
-            result = await self.active.handle_command(
-                update.text,
-                peer_id=update.peer_id,
-                sender_id=update.sender_id,
-                source=self.connector.local_source,
-            )
-            await self.client.send_message(
-                account_id=account.account_id,
-                peer_id=update.peer_id,
-                text=result.text,
-                context_token=self.context_tokens.get(account.account_id, update.peer_id),
-            )
-            return True
-        selected = await self.action_selector.select(update.text, tools=self.tools.list_specs())
-        if await self._handle_selected_action(account, update, selected):
-            return True
-        session_id = self.runtime.memory.current_session_id(self._session_alias(update.peer_id))
-        reply = await self.runtime.chat(
+        result = await self.agent.handle(
             update.text,
-            session_id=session_id,
-            prompt_context=self._prompt_context(),
+            peer_id=update.peer_id,
+            sender_id=update.sender_id,
+            source=self.local_source,
+            session_alias=self._session_alias(update.peer_id),
         )
         context_token = self.context_tokens.get(account.account_id, update.peer_id)
         await self.client.send_message(
             account_id=account.account_id,
             peer_id=update.peer_id,
-            text=reply.content,
+            text=result.text,
             context_token=context_token,
         )
         return True
 
     async def process_background(self, account: WeixinAccount) -> None:
-        for result in await self.active.process_watches_once():
-            task = self.active.tasks.get(result.task_id) if result.task_id else None
+        for result in await self.daemon.process_watches_once():
+            task_id = str(result.get("task_id") or "")
+            task = self.daemon.tasks.get(task_id) if task_id else None
             peer_id = task.peer_id if task else self.config.home_channel
             if not peer_id:
                 continue
+            text = await self._compose_background_message(
+                {
+                    "event": "watch_task_prepared",
+                    "task": asdict(task) if task else None,
+                    "raw_result": result.get("message") or result.get("observation") or "",
+                },
+                fallback=str(result.get("message") or result.get("observation") or ""),
+            )
             await self.client.send_message(
                 account_id=account.account_id,
                 peer_id=peer_id,
-                text=result.text,
+                text=text,
                 context_token=self.context_tokens.get(account.account_id, peer_id),
             )
-        for task in await self.active.process_queue_once():
+        for task in await self.daemon.process_queue_once():
             if not task.peer_id:
                 continue
-            text = (
-                f"Task `{task.id}` {task.status}.\n"
-                f"Result: {task.result_summary or '-'}\n"
-                f"Error: {task.error or '-'}"
+            text = await self._compose_background_message(
+                {
+                    "event": "task_execution_finished",
+                    "task": asdict(task),
+                },
+                fallback=self._task_fallback(task),
             )
             await self.client.send_message(
                 account_id=account.account_id,
@@ -171,6 +166,34 @@ class WeixinService:
                 text=text,
                 context_token=self.context_tokens.get(account.account_id, task.peer_id),
             )
+
+    async def _compose_background_message(self, facts: dict, *, fallback: str) -> str:
+        try:
+            text = await self.runtime.provider.complete(
+                [
+                    ChatMessage(
+                        "system",
+                        "\n".join(
+                            (
+                                "You are Navi composing a concise connector notification.",
+                                "Use only the supplied facts.",
+                                "Preserve task ids, approval codes, status, errors, and important result text.",
+                                "Do not mention connector internals, JSON, or hidden routers.",
+                            )
+                        ),
+                    ),
+                    ChatMessage("user", json.dumps(facts, ensure_ascii=False, sort_keys=True)),
+                ]
+            )
+        except Exception:
+            return fallback
+        stripped = text.strip()
+        return stripped or fallback
+
+    @staticmethod
+    def _task_fallback(task: Task) -> str:
+        details = task.result_summary if task.status == "completed" else task.error
+        return f"Task `{task.id}` {task.status}. {details or ''}".strip()
 
     def _resolve_account(self) -> WeixinAccount:
         if self.config.account_id:
@@ -188,7 +211,7 @@ class WeixinService:
             account = self.store.load_account(accounts[0])
             if account:
                 return account
-        raise RuntimeError("Weixin is not configured. Run `navi weixin setup` first.")
+        raise RuntimeError("Weixin is not configured. Run `navi connectors setup weixin` first.")
 
     def _allowed(self, update: WeixinUpdate) -> bool:
         if update.is_group:
@@ -207,111 +230,9 @@ class WeixinService:
     def _policy_allows(policy: str, identity: str, allowed: list[str]) -> bool:
         if policy == "disabled":
             return False
-        if policy == "allowlist":
+        if policy in {"allowlist", "pairing"}:
             return identity in allowed
-        return policy in {"open", "pairing"}
+        return policy == "open"
 
-    @staticmethod
-    def _prompt_context() -> PromptContext:
-        affordances = ActiveAssistant.command_affordances() + (
-            WeixinService.connector.session_command.affordance,
-        )
-        return PromptContext(
-            surface=WeixinService.connector.surface,
-            affordances=affordances,
-        )
-
-    def _handle_connector_command(self, text: str, *, peer_id: str) -> str:
-        command, _, rest = text.strip().partition(" ")
-        if command.lower() != self.connector.session_command.command:
-            return ""
-        action = rest.strip().split(maxsplit=1)[0].lower()
-        operation = self.connector.session_command.actions.get(action)
-        if operation == "rotate":
-            session = self.runtime.memory.rotate_session(self._session_alias(peer_id))
-            return f"Started a new conversation session: {session.session_id}"
-        if operation == "current":
-            session_id = self.runtime.memory.current_session_id(self._session_alias(peer_id))
-            return f"Current conversation session: {session_id}"
-        return f"Usage: {self.connector.session_command.usage}"
-
-    async def _handle_selected_action(
-        self,
-        account: WeixinAccount,
-        update: WeixinUpdate,
-        decision: ActionDecision,
-    ) -> bool:
-        context_token = self.context_tokens.get(account.account_id, update.peer_id)
-        if decision.kind == "ask" and decision.message:
-            await self.client.send_message(
-                account_id=account.account_id,
-                peer_id=update.peer_id,
-                text=decision.message,
-                context_token=context_token,
-            )
-            return True
-        if decision.kind == "watch" and decision.cron and decision.prompt:
-            result = self.active.create_watch_cron(
-                decision.cron,
-                decision.prompt,
-                peer_id=update.peer_id,
-                sender_id=update.sender_id,
-            )
-            await self.client.send_message(
-                account_id=account.account_id,
-                peer_id=update.peer_id,
-                text=result.text,
-                context_token=context_token,
-            )
-            return True
-        if decision.kind == "task" and decision.prompt:
-            result = await self.active.create_task(
-                decision.prompt,
-                peer_id=update.peer_id,
-                sender_id=update.sender_id,
-                source=self.connector.local_source,
-            )
-            await self.client.send_message(
-                account_id=account.account_id,
-                peer_id=update.peer_id,
-                text=result.text,
-                context_token=context_token,
-            )
-            return True
-        if decision.kind == "service_status":
-            tool_result = self.tools.call(
-                "service.status",
-                {"name": decision.target_id or self.runtime_config.service_name},
-            )
-            await self.client.send_message(
-                account_id=account.account_id,
-                peer_id=update.peer_id,
-                text=render_service_facts(ServiceFacts(**tool_result.facts))
-                if tool_result.ok
-                else tool_result.error,
-                context_token=context_token,
-            )
-            return True
-        if decision.kind == "task_status":
-            tool_result = self.tools.call("task.status", {"task_id": decision.target_id})
-            await self.client.send_message(
-                account_id=account.account_id,
-                peer_id=update.peer_id,
-                text=render_task_facts(self._task_facts_from_tool(tool_result.facts))
-                if tool_result.ok
-                else tool_result.error,
-                context_token=context_token,
-            )
-            return True
-        return False
-
-    @staticmethod
-    def _task_facts_from_tool(facts: dict) -> TaskFacts:
-        task = Task(**facts["task"]) if facts.get("task") else None
-        approvals = [Approval(**approval) for approval in facts.get("approvals", [])]
-        logs = [ExecutionLog(**log) for log in facts.get("logs", [])]
-        return TaskFacts(task=task, approvals=approvals, logs=logs)
-
-    @staticmethod
-    def _session_alias(peer_id: str) -> str:
-        return f"{WeixinService.connector.session_alias_prefix}:{peer_id}"
+    def _session_alias(self, peer_id: str) -> str:
+        return f"{self.session_alias_prefix}:{peer_id}"

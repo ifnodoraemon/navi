@@ -72,6 +72,18 @@ class ExecutionLog:
     ended_at: float
 
 
+@dataclass(frozen=True)
+class ToolCallLog:
+    id: str
+    tool: str
+    args_json: str
+    ok: bool
+    facts_json: str
+    error: str
+    started_at: float
+    ended_at: float
+
+
 TASK_COLUMNS = {
     "kind": "TEXT NOT NULL DEFAULT 'manual'",
     "prompt": "TEXT NOT NULL DEFAULT ''",
@@ -161,9 +173,24 @@ class TaskStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tool_call_logs (
+                    id TEXT PRIMARY KEY,
+                    tool TEXT NOT NULL,
+                    args_json TEXT NOT NULL,
+                    ok INTEGER NOT NULL,
+                    facts_json TEXT NOT NULL,
+                    error TEXT NOT NULL,
+                    started_at REAL NOT NULL,
+                    ended_at REAL NOT NULL
+                )
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_approvals_code ON approvals(code)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_watches_next ON watches(enabled, next_run_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_call_logs_tool ON tool_call_logs(tool, started_at)")
 
     def create(
         self,
@@ -194,7 +221,7 @@ class TaskStore:
             peer_id=peer_id,
             sender_id=sender_id,
             provider=provider,
-            workspace=workspace or str(Path.home()),
+            workspace=workspace or str(Path.cwd().resolve()),
             autonomy_level=autonomy_level,
             trust_rule_id=trust_rule_id,
             why_now=why_now,
@@ -366,7 +393,7 @@ class TaskStore:
 
     def resolve_approval(self, code: str, sender_id: str, status: str) -> Approval | None:
         approval = self.get_approval(code)
-        if approval is None or approval.sender_id != sender_id:
+        if approval is None or approval.sender_id != sender_id or approval.status != "pending":
             return None
         now = time.time()
         new_status = "expired" if approval.expires_at < now else status
@@ -376,6 +403,68 @@ class TaskStore:
                 (new_status, now, approval.id),
             )
         return self.get_approval(code)
+
+    def resolve_task_approval(self, task_id: str, *, sender_id: str, status: str) -> Approval | None:
+        approval = self.pending_approval_for_task(task_id, sender_id=sender_id)
+        if approval is None:
+            return None
+        now = time.time()
+        new_status = "expired" if approval.expires_at < now else status
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE approvals SET status = ?, updated_at = ? WHERE id = ?",
+                (new_status, now, approval.id),
+            )
+        return self.get_approval(approval.code)
+
+    def pending_approval_for_task(self, task_id: str, *, sender_id: str = "") -> Approval | None:
+        now = time.time()
+        with sqlite3.connect(self.db_path) as conn:
+            if sender_id:
+                row = conn.execute(
+                    """
+                    SELECT id, task_id, code, action, peer_id, sender_id, status,
+                           expires_at, created_at, updated_at
+                    FROM approvals
+                    WHERE task_id = ? AND sender_id = ? AND status = 'pending'
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (task_id, sender_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT id, task_id, code, action, peer_id, sender_id, status,
+                           expires_at, created_at, updated_at
+                    FROM approvals
+                    WHERE task_id = ? AND status = 'pending'
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (task_id,),
+                ).fetchone()
+        approval = Approval(*row) if row else None
+        if approval is None:
+            return None
+        if approval.expires_at < now:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE approvals SET status = ?, updated_at = ? WHERE id = ?",
+                    ("expired", now, approval.id),
+                )
+            return None
+        return approval
+
+    def has_approved_execution(self, task_id: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM approvals
+                WHERE task_id = ? AND action = 'execute' AND status = 'approved'
+                LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+        return row is not None
 
     def get_approval(self, code: str) -> Approval | None:
         with sqlite3.connect(self.db_path) as conn:
@@ -521,6 +610,48 @@ class TaskStore:
             )
         return log
 
+    def add_tool_call_log(
+        self,
+        *,
+        tool: str,
+        args_json: str,
+        ok: bool,
+        facts_json: str,
+        error: str,
+        started_at: float,
+        ended_at: float,
+    ) -> ToolCallLog:
+        log = ToolCallLog(
+            id=uuid.uuid4().hex,
+            tool=tool,
+            args_json=args_json,
+            ok=ok,
+            facts_json=facts_json,
+            error=error,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO tool_call_logs(
+                    id, tool, args_json, ok, facts_json, error, started_at, ended_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    log.id,
+                    log.tool,
+                    log.args_json,
+                    int(log.ok),
+                    log.facts_json,
+                    log.error,
+                    log.started_at,
+                    log.ended_at,
+                ),
+            )
+        return log
+
     def list_execution_logs(self, task_id: str | None = None, *, limit: int = 50) -> list[ExecutionLog]:
         with sqlite3.connect(self.db_path) as conn:
             if task_id:
@@ -543,6 +674,17 @@ class TaskStore:
                 ).fetchall()
         return [ExecutionLog(*row) for row in rows]
 
+    def list_tool_call_logs(self, *, limit: int = 50) -> list[ToolCallLog]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, tool, args_json, ok, facts_json, error, started_at, ended_at
+                FROM tool_call_logs ORDER BY started_at DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._tool_call_log_from_row(row) for row in rows]
+
     @staticmethod
     def _task_from_row(row: tuple) -> Task:
         return Task(*row)
@@ -552,6 +694,12 @@ class TaskStore:
         values = list(row)
         values[5] = bool(values[5])
         return Watch(*values)
+
+    @staticmethod
+    def _tool_call_log_from_row(row: tuple) -> ToolCallLog:
+        values = list(row)
+        values[3] = bool(values[3])
+        return ToolCallLog(*values)
 
     @staticmethod
     def _new_code() -> str:

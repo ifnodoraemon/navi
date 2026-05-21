@@ -1,13 +1,9 @@
 service_name: navi.service
-weixin_base_url: https://ilinkai.weixin.qq.com
 execution_provider: codex
 execution_timeout_seconds: 120.0
 execution_mock: false
 model_provider: mock
 model_model: mock
-weixin_enabled: false
-weixin_dm_policy: open
-weixin_group_policy: disabled
 runtime_web_url: ""
 local_surface: web
 web_host: 127.0.0.1
