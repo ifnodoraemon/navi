@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from .action_tools import load_action_tool_specs
+from .app_factory import build_runtime
+from .syscalls import ModelSyscall, ModelSyscallPlanner
+from .tools import ToolSpec, build_tool_gateway
+
+
+@dataclass(frozen=True)
+class EvalResult:
+    id: str
+    ok: bool
+    expected: dict[str, Any]
+    actual: dict[str, Any]
+    errors: list[str]
+
+
+def load_task_eval_cases(path: Path) -> list[dict[str, Any]]:
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ValueError("eval dataset must be a mapping")
+    cases = data.get("cases")
+    if not isinstance(cases, list):
+        raise ValueError("eval dataset must contain a cases list")
+    for index, case in enumerate(cases):
+        if not isinstance(case, dict):
+            raise ValueError(f"case {index} must be a mapping")
+    return cases
+
+
+def validate_task_eval_cases(cases: list[dict[str, Any]], tools: list[ToolSpec]) -> list[str]:
+    errors: list[str] = []
+    by_name = {tool.name: tool for tool in tools}
+    seen: set[str] = set()
+    for index, case in enumerate(cases):
+        case_id = str(case.get("id") or "")
+        prefix = case_id or f"case[{index}]"
+        if not case_id:
+            errors.append(f"{prefix}: missing id")
+        if case_id in seen:
+            errors.append(f"{prefix}: duplicate id")
+        seen.add(case_id)
+        if not str(case.get("message") or "").strip():
+            errors.append(f"{prefix}: missing message")
+        expected = case.get("expect")
+        if not isinstance(expected, dict):
+            errors.append(f"{prefix}: missing expect mapping")
+            continue
+        tool_name = str(expected.get("tool") or "")
+        tool = by_name.get(tool_name)
+        if tool is None:
+            errors.append(f"{prefix}: unknown expected tool {tool_name!r}")
+            continue
+        permission = str(expected.get("permission") or "")
+        if permission != tool.permission:
+            errors.append(f"{prefix}: expected permission {permission!r} does not match {tool.permission!r}")
+        _validate_expected_args(prefix, expected.get("args") or {}, tool, errors)
+    return errors
+
+
+async def run_task_eval_dataset(
+    *,
+    home: Path,
+    project_dir: Path,
+    dataset: Path,
+    timeout_seconds: float = 75.0,
+) -> list[EvalResult]:
+    cases = load_task_eval_cases(dataset)
+    tools = task_eval_tools(home, project_dir=project_dir)
+    validation_errors = validate_task_eval_cases(cases, tools)
+    if validation_errors:
+        return [
+            EvalResult(
+                id="dataset",
+                ok=False,
+                expected={},
+                actual={},
+                errors=validation_errors,
+            )
+        ]
+    runtime = build_runtime(home)
+    planner = ModelSyscallPlanner(runtime.provider)
+    results: list[EvalResult] = []
+    for case in cases:
+        decision = await asyncio.wait_for(
+            planner.plan(
+                str(case["message"]),
+                tools=tools,
+                conversation_context=str(case.get("conversation_context") or ""),
+            ),
+            timeout=timeout_seconds,
+        )
+        errors = match_task_eval_case(case, decision)
+        results.append(
+            EvalResult(
+                id=str(case["id"]),
+                ok=not errors,
+                expected=dict(case["expect"]),
+                actual=asdict(decision),
+                errors=errors,
+            )
+        )
+    return results
+
+
+def task_eval_tools(home: Path, *, project_dir: Path) -> list[ToolSpec]:
+    return [*load_action_tool_specs(), *build_tool_gateway(home, project_dir=project_dir).list_specs()]
+
+
+def match_task_eval_case(case: dict[str, Any], decision: ModelSyscall) -> list[str]:
+    expected = case.get("expect") or {}
+    errors: list[str] = []
+    expected_tool = str(expected.get("tool") or "")
+    expected_permission = str(expected.get("permission") or "")
+    if decision.tool != expected_tool:
+        errors.append(f"tool expected {expected_tool!r}, got {decision.tool!r}")
+    if decision.permission != expected_permission:
+        errors.append(f"permission expected {expected_permission!r}, got {decision.permission!r}")
+    for key, value in (expected.get("args") or {}).items():
+        actual = decision.args.get(str(key))
+        if str(actual).lower() != str(value).lower():
+            errors.append(f"args.{key} expected {value!r}, got {actual!r}")
+    return errors
+
+
+def results_to_json(results: list[EvalResult]) -> str:
+    return json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2)
+
+
+def _validate_expected_args(
+    prefix: str,
+    expected_args: dict[str, Any],
+    tool: ToolSpec,
+    errors: list[str],
+) -> None:
+    if not isinstance(expected_args, dict):
+        errors.append(f"{prefix}: expect.args must be a mapping")
+        return
+    properties = tool.input_schema.get("properties") or {}
+    if not isinstance(properties, dict):
+        properties = {}
+    for key in expected_args:
+        if str(key) not in properties:
+            errors.append(f"{prefix}: args.{key} is not declared by {tool.name}")

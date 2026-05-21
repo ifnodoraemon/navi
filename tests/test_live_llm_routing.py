@@ -12,6 +12,7 @@ from navi.engine import HernessEngine
 from navi.action_tools import load_action_tool_specs
 from navi.app_factory import build_runtime
 from navi.config import load_config
+from navi.evals import load_task_eval_cases, match_task_eval_case
 from navi.syscalls import ModelSyscall, ModelSyscallPlanner
 from navi.tools import build_tool_gateway
 
@@ -35,6 +36,10 @@ def _cases() -> dict[str, Any]:
     return data
 
 
+def _task_eval_cases() -> list[dict[str, Any]]:
+    return load_task_eval_cases(Path(__file__).resolve().parents[1] / "evals" / "task_cases.yaml")
+
+
 def _require_live_provider() -> Path:
     if not _live_enabled():
         pytest.skip("set NAVI_LIVE_LLM_TESTS=1 to run real model provider tests")
@@ -47,11 +52,14 @@ def _require_live_provider() -> Path:
     return home
 
 
-async def _select(home: Path, message: str) -> ModelSyscall:
+async def _select(home: Path, message: str, *, conversation_context: str = "") -> ModelSyscall:
     runtime = build_runtime(home)
     planner = ModelSyscallPlanner(runtime.provider)
     tools = [*load_action_tool_specs(), *build_tool_gateway(home, project_dir=Path.cwd()).list_specs()]
-    return await asyncio.wait_for(planner.plan(message, tools=tools), timeout=75)
+    return await asyncio.wait_for(
+        planner.plan(message, tools=tools, conversation_context=conversation_context),
+        timeout=75,
+    )
 
 
 @pytest.mark.parametrize("case", _cases().get("syscall_cases", []), ids=lambda item: item["id"])
@@ -65,6 +73,20 @@ async def test_live_llm_routes_real_user_issue(case: dict[str, Any]) -> None:
     assert decision.permission == expected["permission"], _format_failure(case, decision)
     for key, value in (expected.get("args") or {}).items():
         assert str(decision.args.get(key, "")).lower() == str(value).lower(), _format_failure(case, decision)
+
+
+@pytest.mark.parametrize("case", _task_eval_cases(), ids=lambda item: item["id"])
+async def test_live_llm_task_eval_dataset(case: dict[str, Any]) -> None:
+    home = _require_live_provider()
+
+    decision = await _select(
+        home,
+        str(case["message"]),
+        conversation_context=str(case.get("conversation_context") or ""),
+    )
+
+    errors = match_task_eval_case(case, decision)
+    assert errors == [], _format_failure(case, decision)
 
 
 @pytest.mark.parametrize("case", _cases().get("response_cases", []), ids=lambda item: item["id"])

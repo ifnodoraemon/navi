@@ -16,6 +16,13 @@ from .capabilities import build_capability_registry
 from .config import load_config, write_default_config
 from .connector_registry import get_connector_adapter, load_connector_adapters
 from .defaults import DEFAULT_WEB_HOST, DEFAULT_WEB_PORT
+from .evals import (
+    load_task_eval_cases,
+    results_to_json,
+    run_task_eval_dataset,
+    task_eval_tools,
+    validate_task_eval_cases,
+)
 from .evolution import EvolutionEngine, EvolutionLedger
 from .graph import GraphStore
 from .memory import MemoryStore
@@ -33,6 +40,7 @@ service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
 tools_app = typer.Typer(help="Unified fact tool registry")
+eval_app = typer.Typer(help="Evaluation datasets")
 app.add_typer(auth_app, name="auth")
 app.add_typer(connectors_app, name="connectors")
 app.add_typer(graph_app, name="graph")
@@ -42,6 +50,7 @@ app.add_typer(service_app, name="service")
 app.add_typer(memory_app, name="memory")
 app.add_typer(session_app, name="session")
 app.add_typer(tools_app, name="tools")
+app.add_typer(eval_app, name="eval")
 
 
 @app.command()
@@ -230,6 +239,50 @@ def tools_call(name: str, args_json: str = "{}") -> None:
     result = build_capability_registry(ensure_home(), project_dir=Path.cwd()).call(name, args)
     typer.echo(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
     if not result.ok:
+        raise typer.Exit(code=1)
+
+
+@eval_app.command("tasks")
+def eval_tasks(
+    dataset: Path = Path("evals") / "task_cases.yaml",
+    json_output: bool = False,
+    validate_only: bool = False,
+    timeout_seconds: float = 75.0,
+) -> None:
+    """Run the task routing eval dataset against the configured model."""
+    home = ensure_home()
+    if validate_only:
+        errors = validate_task_eval_cases(
+            load_task_eval_cases(dataset),
+            task_eval_tools(home, project_dir=Path.cwd()),
+        )
+        if json_output:
+            typer.echo(json.dumps({"ok": not errors, "errors": errors}, ensure_ascii=False, indent=2))
+        elif errors:
+            for error in errors:
+                typer.echo(error)
+        else:
+            typer.echo("ok dataset")
+        if errors:
+            raise typer.Exit(code=1)
+        return
+    results = asyncio.run(
+        run_task_eval_dataset(
+            home=home,
+            project_dir=Path.cwd(),
+            dataset=dataset,
+            timeout_seconds=timeout_seconds,
+        )
+    )
+    if json_output:
+        typer.echo(results_to_json(results))
+    else:
+        for result in results:
+            marker = "ok" if result.ok else "fail"
+            typer.echo(f"{marker} {result.id}")
+            for error in result.errors:
+                typer.echo(f"  {error}")
+    if any(not result.ok for result in results):
         raise typer.Exit(code=1)
 
 

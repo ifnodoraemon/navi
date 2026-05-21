@@ -1,0 +1,123 @@
+version: 1
+cases:
+  - id: greeting_answer
+    source: observed
+    message: "你好"
+    expect:
+      tool: final.answer
+      permission: read
+
+  - id: list_tasks
+    source: observed:2026-05-21
+    message: "列一下我们都有哪些任务"
+    expect:
+      tool: task.list
+      permission: read
+
+  - id: delete_task_from_recent_list
+    source: observed:2026-05-21
+    message: "删除任务2"
+    conversation_context: |
+      assistant: 当前任务如下：
+      1. watch 60a4729579fc4a55af3d2dee77ba53cc 每天晚上8点讲解通识知识
+      2. task 8f59a0dcc92948c49f88de2df055dabf 检查 navi.service 的上次启动时间
+    expect:
+      tool: task.delete
+      permission: write
+      args:
+        task_id: "8f59a0dcc92948c49f88de2df055dabf"
+
+  - id: delete_watch_from_recent_list
+    source: observed:2026-05-21
+    message: "删除第一个定时任务"
+    conversation_context: |
+      assistant: 当前任务如下：
+      1. watch 60a4729579fc4a55af3d2dee77ba53cc 每天晚上8点讲解通识知识
+      2. task 8f59a0dcc92948c49f88de2df055dabf 检查 navi.service 的上次启动时间
+    expect:
+      tool: watch.delete
+      permission: write
+      args:
+        watch_id: "60a4729579fc4a55af3d2dee77ba53cc"
+
+  - id: task_status_by_id
+    source: observed
+    message: "`8f59a0dcc92948c49f88de2df055dabf` 为什么这个 task 没有执行"
+    expect:
+      tool: task.status
+      permission: read
+      args:
+        task_id: "8f59a0dcc92948c49f88de2df055dabf"
+
+  - id: vague_evening_watch_clarifies
+    source: observed
+    message: "每天晚上上一个通识课给我"
+    expect:
+      tool: clarify.ask
+      permission: read
+
+  - id: exact_evening_watch
+    source: observed
+    message: "每天晚上 8 点讲解通识知识"
+    expect:
+      tool: watch.create
+      permission: prepare
+      args:
+        cron: "0 20 * * *"
+
+  - id: local_directory_fact_tool
+    source: observed
+    message: "列一下我本机的目录"
+    expect:
+      tool: filesystem.list
+      permission: read
+
+  - id: service_start_time
+    source: observed
+    message: "检查 navi.service 的上次启动时间"
+    expect:
+      tool: service.status
+      permission: read
+      args:
+        name: "navi.service"
+
+  - id: provider_config_status
+    source: architecture
+    message: "配置里的模型 provider 好像没有生效，帮我检查当前 provider 和 API key 状态"
+    expect:
+      tool: provider.config
+      permission: read
+
+  - id: connector_weixin_status
+    source: architecture
+    message: "微信连接器断了但 navi.service 还在运行，帮我看连接器配置和状态"
+    expect:
+      tool: connector.weixin.status
+      permission: read
+
+  - id: engineering_work_becomes_task
+    source: architecture
+    message: "全面检查还有哪些地方不够 agentic，是硬编码以及 workflow 的"
+    expect:
+      tool: task.create
+      permission: prepare
+
+  - id: approve_code
+    source: approval
+    message: "批准 123456"
+    expect:
+      tool: approval.resolve
+      permission: write
+      args:
+        decision: approve
+        code: "123456"
+
+  - id: reject_code
+    source: approval
+    message: "拒绝 123456"
+    expect:
+      tool: approval.resolve
+      permission: write
+      args:
+        decision: reject
+        code: "123456"
