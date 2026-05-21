@@ -28,6 +28,14 @@ dev = [
 [project.scripts]
 navi = "navi.cli:app"
 
+[tool.setuptools.package-data]
+navi = [
+    "specs/*.yaml",
+    "web/*.html",
+    "telegram/specs/*.yaml",
+    "weixin/specs/*.yaml",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
