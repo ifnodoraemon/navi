@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import time
 from pathlib import Path
 
@@ -7,6 +9,7 @@ from .capabilities import CapabilityContext, CapabilityRegistry
 from .cron import next_cron_time
 from .evolution import EvolutionEngine
 from .execution import ExecutionService
+from .graph import GraphStore
 from .tasks import Task, TaskStore
 
 
@@ -59,11 +62,6 @@ class SystemDaemon:
         return created
 
     async def process_events_once(self) -> list[dict]:
-        import asyncio
-        import hashlib
-        import socket
-        from .graph import GraphStore
-        
         created: list[dict] = []
         graph = GraphStore(self.home)
         projects = graph.list("Project")
@@ -117,7 +115,7 @@ class SystemDaemon:
                                 "action": result.action,
                                 "observation": result.observation,
                             })
-                except Exception:
+                except (OSError, asyncio.SubprocessError):
                     pass
 
             # B. Check local service logs for errors/exceptions
@@ -143,10 +141,10 @@ class SystemDaemon:
                                     return f.read().decode("utf-8", errors="replace")
                             new_content = await asyncio.to_thread(read_log_diff)
                                 
-                            if any(word in new_content for word in ["Exception", "FATAL", "Traceback (most recent call first)"]):
+                            if any(word in new_content for word in ["Exception", "FATAL", "Traceback (most recent call last):"]):
                                 prompt = (
                                     f"Proactive Alert: I detected an exception/error in local service log file: {file_path.name}\n"
-                                    f"New log entries:\n{new_content[-1500:]}\n"
+                                    f"New log entries:\n{new_content}\n"
                                     f"Analyze the error, find the root cause, and propose a fix."
                                 )
                                 result = await self.capabilities.invoke(
@@ -169,27 +167,29 @@ class SystemDaemon:
                             
                             updated_data = {**project.data, log_key: current_size}
                             graph.upsert("Project", project_path, updated_data)
-                    except Exception:
+                    except OSError:
                          pass
                          
             # C. Check socket exceptions / connection status for active development ports
             dev_ports = [3000, 5000, 8000, 8080]
-            for port in dev_ports:
-                port_key = f"port_active_{port}"
-                was_active = project.data.get(port_key, False)
-                
-                is_active = False
+            
+            async def probe_port(port: int) -> tuple[int, bool]:
                 try:
                     _, writer = await asyncio.wait_for(
                         asyncio.open_connection("localhost", port),
-                        timeout=0.2
+                        timeout=0.5
                     )
                     writer.close()
                     await writer.wait_closed()
-                    is_active = True
+                    return port, True
                 except Exception:
-                    pass
-                    
+                    return port, False
+
+            probe_results = await asyncio.gather(*(probe_port(p) for p in dev_ports))
+            for port, is_active in probe_results:
+                port_key = f"port_active_{port}"
+                was_active = project.data.get(port_key, False)
+                
                 if was_active and not is_active:
                     prompt = (
                         f"Proactive Alert: The local service on port {port} has stopped responding or crashed.\n"

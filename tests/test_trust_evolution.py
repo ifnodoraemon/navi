@@ -162,7 +162,7 @@ async def test_proactive_event_watchers(tmp_path):
     log_dir = project_path / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "dev.log"
-    log_file.write_text("Exception: Python crashed in utils.py\nTraceback (most recent call first):\n  File 'utils.py', line 12")
+    log_file.write_text("Exception: Python crashed in utils.py\nTraceback (most recent call last):\n  File 'utils.py', line 12")
     
     # Run daemon process events check
     # Mock capabilities invoke to just return a dummy result

@@ -112,11 +112,29 @@ class TrustStore:
         if not candidates:
             return None
         
+        # 1. First check candidates synchronously using token-based matching to avoid LLM calls
+        pattern_matches = [
+            rule for rule in candidates if self._pattern_matches(rule.pattern, prompt)
+        ]
+        if pattern_matches:
+            pattern_matches.sort(key=lambda rule: (LEVELS.index(rule.autonomy_level), rule.updated_at), reverse=True)
+            return pattern_matches[0]
+            
+        # 2. Fall back to semantic matching with Semaphore concurrency limits
+        if not provider:
+            return None
+            
         import asyncio
-        matches = await asyncio.gather(
-            *(self._semantic_match(rule.pattern, prompt, provider) for rule in candidates)
-        )
-        matching_rules = [rule for rule, m in zip(candidates, matches) if m]
+        sem = asyncio.Semaphore(2)
+        
+        async def sem_semantic_match(rule: TrustRule) -> tuple[TrustRule, bool]:
+            async with sem:
+                res = await self._semantic_match(rule.pattern, prompt, provider)
+                return rule, res
+                
+        tasks = [sem_semantic_match(rule) for rule in candidates]
+        results = await asyncio.gather(*tasks)
+        matching_rules = [rule for rule, m in results if m]
                 
         if not matching_rules:
             return None

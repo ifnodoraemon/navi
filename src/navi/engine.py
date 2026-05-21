@@ -48,6 +48,7 @@ class HernessEngine:
             permission_ceiling=permission_ceiling,
         )
         self.planner = ModelSyscallPlanner(runtime.provider)
+        self._memory_sem = None
 
     async def handle(
         self,
@@ -145,13 +146,18 @@ class HernessEngine:
         import logging
         if result.session_id:
             logger = logging.getLogger("navi.engine")
-            task = asyncio.create_task(
-                self.runtime.memory.extract_and_consolidate_memories(
-                    session_id=result.session_id,
-                    provider=self.runtime.provider,
-                    task_id=result.task_id,
-                )
-            )
+            if self._memory_sem is None:
+                self._memory_sem = asyncio.Semaphore(2)
+
+            async def run_with_semaphore():
+                async with self._memory_sem:
+                    await self.runtime.memory.extract_and_consolidate_memories(
+                        session_id=result.session_id,
+                        provider=self.runtime.provider,
+                        task_id=result.task_id,
+                    )
+
+            task = asyncio.create_task(run_with_semaphore())
             def handle_done(t: asyncio.Task) -> None:
                 try:
                     t.result()

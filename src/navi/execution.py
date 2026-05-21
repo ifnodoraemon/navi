@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .cli_providers import list_cli_provider_specs
@@ -195,25 +195,10 @@ class ExecutionService:
                 f"Formulate a fix (e.g. editing files, fixing imports, or adjusting configurations), apply it, and verify that the task runs successfully."
             )
             
-            healing_task = Task(
-                id=task.id,
-                title=task.title,
+            healing_task = replace(
+                task,
                 prompt=f"{task.prompt}\n\n{healing_prompt}",
-                kind=task.kind,
-                source=task.source,
-                peer_id=task.peer_id,
-                sender_id=task.sender_id,
-                provider=task.provider,
-                workspace=task.workspace,
-                autonomy_level=task.autonomy_level,
-                trust_rule_id=task.trust_rule_id,
                 status="running",
-                plan_summary=task.plan_summary,
-                result_summary=task.result_summary,
-                error=task.error,
-                why_now=task.why_now,
-                created_at=task.created_at,
-                updated_at=task.updated_at,
             )
             
             result = await self._provider_call_with_timeout(healing_task, "execute")
