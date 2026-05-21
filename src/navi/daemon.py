@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import logging
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .cron import next_cron_time
@@ -19,6 +21,15 @@ DEFAULT_DEV_PORTS = [3000, 5000, 8000, 8080]
 LOG_ERROR_KEYWORDS = ("exception", "fatal", "traceback (most recent call last):")
 MAX_LOG_READ_BYTES = 512_000
 MAX_LOG_PROMPT_CHARS = 100_000
+
+
+@dataclass(frozen=True)
+class ProactiveEvent:
+    source: str
+    message: str
+    prompt: str
+    state_updates: dict[str, Any] = field(default_factory=dict)
+    suppressed_state_updates: dict[str, Any] = field(default_factory=dict)
 
 
 class SystemDaemon:
@@ -76,11 +87,7 @@ class SystemDaemon:
         if not projects:
             return created
         
-        # Query all active (running/queued/pending) tasks to avoid loop triggers on projects with active tasks
-        running_tasks = self.tasks.list_by_status("running")
-        queued_tasks = self.tasks.list_by_status("queued")
-        pending_tasks = self.tasks.list_by_status("pending")
-        active_tasks = running_tasks + queued_tasks + pending_tasks
+        active_tasks = self.tasks.list_by_statuses(["running", "queued", "pending"])
 
         # Pre-build a set of resolved workspaces for O(1) active task lookup
         active_workspaces: set[str] = set()
@@ -135,46 +142,39 @@ class SystemDaemon:
             project_canonical_str = project_path
         has_active_task = project_canonical_str in active_workspaces
 
-        git_created, git_changed = await self._check_git_mutations(
-            project_path,
-            project_data,
-            has_active_task=has_active_task,
+        event_batches = await asyncio.gather(
+            self._detect_git_mutations(project_path, project_data),
+            self._detect_service_log_events(project_path, project_data),
+            self._detect_port_events(project_data, use_default_ports=use_default_ports),
         )
-        created.extend(git_created)
-        data_changed = data_changed or git_changed
 
-        log_created, log_changed = await self._check_service_logs(
-            project_path,
-            project_data,
-            has_active_task=has_active_task,
-        )
-        created.extend(log_created)
-        data_changed = data_changed or log_changed
-
-        port_created, port_changed = await self._probe_dev_ports(
-            project_data,
-            has_active_task=has_active_task,
-            use_default_ports=use_default_ports,
-        )
-        created.extend(port_created)
-        data_changed = data_changed or port_changed
+        for events, state_updates in event_batches:
+            if state_updates:
+                project_data.update(state_updates)
+                data_changed = True
+            for event in events:
+                created_event, event_changed = await self._apply_event_policy(
+                    event,
+                    project_data,
+                    has_active_task=has_active_task,
+                )
+                data_changed = data_changed or event_changed
+                if created_event:
+                    created.append(created_event)
 
         if data_changed:
             self.graph.upsert("Project", project_path, project_data)
         return created
 
-    async def _check_git_mutations(
+    async def _detect_git_mutations(
         self,
         project_path: str,
         project_data: dict,
-        *,
-        has_active_task: bool,
-    ) -> tuple[list[dict], bool]:
-        created: list[dict] = []
-        data_changed = False
+    ) -> tuple[list[ProactiveEvent], dict[str, Any]]:
+        events: list[ProactiveEvent] = []
         git_dir = Path(project_path) / ".git"
         if not git_dir.exists():
-            return created, data_changed
+            return events, {}
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -189,58 +189,40 @@ class SystemDaemon:
                 proc.kill()
                 await proc.wait()
                 logger.warning("Git status timed out for %s", project_path)
-                return created, data_changed
+                return events, {}
             status_text = stdout.decode(errors="replace").strip()
             if not status_text:
-                return created, data_changed
+                return events, {}
 
             current_hash = hashlib.sha256(status_text.encode()).hexdigest()
             last_hash = project_data.get("last_git_status_hash", "")
             if current_hash == last_hash:
-                return created, data_changed
+                return events, {}
 
-            if has_active_task:
-                return created, data_changed
-
-            project_data["last_git_status_hash"] = current_hash
-            data_changed = True
             prompt = (
                 f"A filesystem modification was detected in the project {project_path}.\n"
                 f"Modified files:\n{status_text}\n"
                 f"Evaluate the changes, run tests if applicable, and verify code correctness."
             )
-            result = await self.capabilities.invoke(
-                "task.create",
-                {"prompt": prompt},
-                permission="prepare",
-                context=CapabilityContext(
-                    home=self.home,
-                    peer_id="daemon",
-                    sender_id="daemon",
+            events.append(
+                ProactiveEvent(
                     source="event_git",
-                ),
-            )
-            created.append(
-                {
-                    "message": f"Git filesystem mutation detected in {project_path}.",
-                    "task_id": result.task_id,
-                    "action": result.action,
-                    "observation": result.observation,
-                }
+                    message=f"Git filesystem mutation detected in {project_path}.",
+                    prompt=prompt,
+                    state_updates={"last_git_status_hash": current_hash},
+                )
             )
         except (OSError, asyncio.SubprocessError) as e:
             logger.warning("Error checking git status for %s: %s", project_path, e)
-        return created, data_changed
+        return events, {}
 
-    async def _check_service_logs(
+    async def _detect_service_log_events(
         self,
         project_path: str,
         project_data: dict,
-        *,
-        has_active_task: bool,
-    ) -> tuple[list[dict], bool]:
-        created: list[dict] = []
-        data_changed = False
+    ) -> tuple[list[ProactiveEvent], dict[str, Any]]:
+        events: list[ProactiveEvent] = []
+        state_updates: dict[str, Any] = {}
         log_dirs = [Path(project_path), Path(project_path) / "logs", Path(project_path) / "log"]
         for log_dir in log_dirs:
             if not log_dir.exists():
@@ -252,8 +234,7 @@ class SystemDaemon:
                     last_size = project_data.get(log_key, 0)
                     if current_size < last_size:
                         last_size = 0
-                        project_data[log_key] = 0
-                        data_changed = True
+                        state_updates[log_key] = 0
 
                     if current_size <= last_size:
                         continue
@@ -266,18 +247,13 @@ class SystemDaemon:
                         read_end,
                     )
                     if not error_lines:
-                        project_data[log_key] = new_last_size
-                        data_changed = True
+                        state_updates[log_key] = new_last_size
                         continue
 
                     error_fingerprint = hashlib.sha256("\n".join(error_lines).encode()).hexdigest()
                     last_fingerprint = project_data.get(f"last_err_fp_{file_path.name}", "")
                     if error_fingerprint == last_fingerprint:
-                        project_data[log_key] = new_last_size
-                        data_changed = True
-                        continue
-
-                    if has_active_task:
+                        state_updates[log_key] = new_last_size
                         continue
 
                     prompt = (
@@ -285,31 +261,20 @@ class SystemDaemon:
                         f"New log entries:\n{new_content}\n"
                         f"Analyze the error, find the root cause, and propose a fix."
                     )
-                    result = await self.capabilities.invoke(
-                        "task.create",
-                        {"prompt": prompt},
-                        permission="prepare",
-                        context=CapabilityContext(
-                            home=self.home,
-                            peer_id="daemon",
-                            sender_id="daemon",
+                    events.append(
+                        ProactiveEvent(
                             source="event_log",
-                        ),
+                            message=f"Exception detected in log {file_path.name}.",
+                            prompt=prompt,
+                            state_updates={
+                                log_key: new_last_size,
+                                f"last_err_fp_{file_path.name}": error_fingerprint,
+                            },
+                        )
                     )
-                    created.append(
-                        {
-                            "message": f"Exception detected in log {file_path.name}.",
-                            "task_id": result.task_id,
-                            "action": result.action,
-                            "observation": result.observation,
-                        }
-                    )
-                    project_data[log_key] = new_last_size
-                    project_data[f"last_err_fp_{file_path.name}"] = error_fingerprint
-                    data_changed = True
                 except OSError as e:
                     logger.warning("Error reading log file %s: %s", file_path, e)
-        return created, data_changed
+        return events, state_updates
 
     @staticmethod
     def _read_log_diff(file_path: Path, last_size: int, read_end: int) -> tuple[str, list[str], int]:
@@ -332,20 +297,19 @@ class SystemDaemon:
             new_offset = f.tell()
         return "".join(chunks), error_lines, new_offset
 
-    async def _probe_dev_ports(
+    async def _detect_port_events(
         self,
         project_data: dict,
         *,
-        has_active_task: bool,
         use_default_ports: bool,
-    ) -> tuple[list[dict], bool]:
-        created: list[dict] = []
-        data_changed = False
+    ) -> tuple[list[ProactiveEvent], dict[str, Any]]:
+        events: list[ProactiveEvent] = []
+        state_updates: dict[str, Any] = {}
         dev_ports = project_data.get("dev_ports", [])
         if not dev_ports and use_default_ports:
             dev_ports = DEFAULT_DEV_PORTS
         if not dev_ports:
-            return created, data_changed
+            return events, state_updates
 
         normalized_ports: list[int] = []
         for port in dev_ports:
@@ -372,32 +336,58 @@ class SystemDaemon:
         for port, is_active in probe_results:
             port_key = f"port_active_{port}"
             was_active = project_data.get(port_key, False)
-            if was_active and not is_active and not has_active_task:
+            if was_active and not is_active:
                 prompt = (
                     f"Proactive Alert: The local service on port {port} has stopped responding or crashed.\n"
                     f"Please inspect the running processes, verify the server status, and restart the service if needed."
                 )
-                result = await self.capabilities.invoke(
-                    "task.create",
-                    {"prompt": prompt},
-                    permission="prepare",
-                    context=CapabilityContext(
-                        home=self.home,
-                        peer_id="daemon",
-                        sender_id="daemon",
+                events.append(
+                    ProactiveEvent(
                         source="event_port",
-                    ),
+                        message=f"Local service on port {port} went offline.",
+                        prompt=prompt,
+                        state_updates={port_key: is_active},
+                        suppressed_state_updates={port_key: is_active},
+                    )
                 )
-                created.append(
-                    {
-                        "message": f"Local service on port {port} went offline.",
-                        "task_id": result.task_id,
-                        "action": result.action,
-                        "observation": result.observation,
-                    }
-                )
+                continue
 
             if is_active != was_active:
-                project_data[port_key] = is_active
-                data_changed = True
-        return created, data_changed
+                state_updates[port_key] = is_active
+        return events, state_updates
+
+    async def _apply_event_policy(
+        self,
+        event: ProactiveEvent,
+        project_data: dict,
+        *,
+        has_active_task: bool,
+    ) -> tuple[dict | None, bool]:
+        if has_active_task:
+            if event.suppressed_state_updates:
+                project_data.update(event.suppressed_state_updates)
+                return None, True
+            return None, False
+
+        result = await self.capabilities.invoke(
+            "task.create",
+            {"prompt": event.prompt},
+            permission="prepare",
+            context=CapabilityContext(
+                home=self.home,
+                peer_id="daemon",
+                sender_id="daemon",
+                source=event.source,
+            ),
+        )
+        if event.state_updates:
+            project_data.update(event.state_updates)
+        return (
+            {
+                "message": event.message,
+                "task_id": result.task_id,
+                "action": result.action,
+                "observation": result.observation,
+            },
+            bool(event.state_updates),
+        )

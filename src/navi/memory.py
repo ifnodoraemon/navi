@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -10,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .db import connect
+from .json_utils import parse_first_json_object
 
 if TYPE_CHECKING:
     from .provider import ModelPool
@@ -288,71 +288,14 @@ class MemoryStore:
             )
 
     def _parse_json_learnings(self, response_raw: str) -> list[dict]:
-        stripped = response_raw.strip()
-        raw_json = ""
-        if stripped.startswith("{") and stripped.endswith("}"):
-            raw_json = stripped
-        else:
-            fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", response_raw, re.DOTALL)
-            if fenced:
-                raw_json = fenced.group(1)
-            else:
-                # Iterative brace-depth scanning to find the outermost JSON object
-                raw_json = self._extract_outermost_json(response_raw)
-
-        if not raw_json:
-            return []
-
-        try:
-            data = json.loads(raw_json)
-        except json.JSONDecodeError:
+        data = parse_first_json_object(response_raw)
+        if not isinstance(data, dict):
             return []
 
         learnings = data.get("learnings")
         if not isinstance(learnings, list):
             return []
         return learnings
-
-    @staticmethod
-    def _extract_outermost_json(text: str) -> str:
-        """Extract the outermost JSON object from text using brace-depth scanning."""
-        search_from = 0
-        while True:
-            start = text.find("{", search_from)
-            if start < 0:
-                return ""
-            depth = 0
-            in_string = False
-            escape_next = False
-            for i in range(start, len(text)):
-                ch = text[i]
-                if escape_next:
-                    escape_next = False
-                    continue
-                if ch == "\\":
-                    if in_string:
-                        escape_next = True
-                    continue
-                if ch == '"':
-                    in_string = not in_string
-                    continue
-                if in_string:
-                    continue
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        candidate = text[start : i + 1]
-                        try:
-                            json.loads(candidate)
-                            return candidate
-                        except json.JSONDecodeError:
-                            search_from = start + 1
-                            break
-            else:
-                return ""
-        return ""
 
 
     def recall(self, query: str, *, limit: int = 8) -> list[MemoryItem]:
