@@ -301,6 +301,16 @@ class TaskStore:
     def update_status(self, task_id: str, status: str) -> Task | None:
         return self.update_task(task_id, status=status)
 
+    def delete_task(self, task_id: str) -> Task | None:
+        task = self.get(task_id)
+        if task is None:
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM approvals WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM execution_logs WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        return task
+
     def update_task(
         self,
         task_id: str,
@@ -560,6 +570,14 @@ class TaskStore:
                 (last_run_at, next_run_at, now, watch_id),
             )
         return next((watch for watch in self.list_watches() if watch.id == watch_id), None)
+
+    def delete_watch(self, watch_id: str) -> Watch | None:
+        watch = next((item for item in self.list_watches(limit=500) if item.id == watch_id), None)
+        if watch is None:
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM watches WHERE id = ?", (watch_id,))
+        return watch
 
     def add_execution_log(
         self,

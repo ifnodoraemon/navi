@@ -139,9 +139,7 @@ class CapabilityRegistry:
                 message=f"permission ceiling {context.permission_ceiling} blocks requested permission {permission}",
                 terminal=True,
             )
-        if handler.spec.permission != permission and not (
-            handler.spec.permission == "prepare" and permission == "write"
-        ):
+        if handler.spec.permission != permission:
             return CapabilityResult(
                 ok=False,
                 action="capability_error",
@@ -175,6 +173,8 @@ class ActionCapabilityProvider:
             "clarify.ask": ClarifyCapability(specs["clarify.ask"]),
             "task.create": TaskCreateCapability(specs["task.create"], home=self.home),
             "watch.create": WatchCreateCapability(specs["watch.create"], home=self.home),
+            "task.delete": TaskDeleteCapability(specs["task.delete"], home=self.home),
+            "watch.delete": WatchDeleteCapability(specs["watch.delete"], home=self.home),
             "approval.resolve": ApprovalResolveCapability(specs["approval.resolve"], home=self.home),
         }
 
@@ -266,8 +266,6 @@ class TaskCreateCapability:
                 message="task.create requires a prompt.",
                 terminal=True,
             )
-        if permission == "write":
-            prompt = f"Execute after approval: {prompt}"
         config = load_config(self.home)
         tasks = TaskStore(self.home)
         graph = GraphStore(self.home)
@@ -377,6 +375,96 @@ class WatchCreateCapability:
         )
 
 
+class TaskDeleteCapability:
+    def __init__(self, spec: ToolSpec, *, home: Path):
+        self.spec = spec
+        self.home = home
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        task_id = _arg_text(args, "task_id")
+        if not task_id:
+            return CapabilityResult(
+                ok=False,
+                action="task",
+                observation="task.delete requires task_id.",
+                message="task.delete requires task_id.",
+                terminal=True,
+            )
+        tasks = TaskStore(self.home)
+        graph = GraphStore(self.home)
+        deleted = tasks.delete_task(task_id)
+        if deleted is None:
+            return CapabilityResult(
+                ok=False,
+                action="task",
+                observation=f"task not found: {task_id}",
+                message=f"task not found: {task_id}",
+                terminal=True,
+            )
+        graph.delete(deleted.id)
+        return _fact_result(
+            "task",
+            {
+                "deleted": True,
+                "task_id": deleted.id,
+                "title": deleted.title,
+                "status": deleted.status,
+            },
+            task_id=deleted.id,
+        )
+
+
+class WatchDeleteCapability:
+    def __init__(self, spec: ToolSpec, *, home: Path):
+        self.spec = spec
+        self.home = home
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        watch_id = _arg_text(args, "watch_id")
+        if not watch_id:
+            return CapabilityResult(
+                ok=False,
+                action="watch",
+                observation="watch.delete requires watch_id.",
+                message="watch.delete requires watch_id.",
+                terminal=True,
+            )
+        tasks = TaskStore(self.home)
+        graph = GraphStore(self.home)
+        deleted = tasks.delete_watch(watch_id)
+        if deleted is None:
+            return CapabilityResult(
+                ok=False,
+                action="watch",
+                observation=f"watch not found: {watch_id}",
+                message=f"watch not found: {watch_id}",
+                terminal=True,
+            )
+        graph.delete(deleted.id)
+        return _fact_result(
+            "watch",
+            {
+                "deleted": True,
+                "watch_id": deleted.id,
+                "cron": deleted.cron,
+                "prompt": deleted.prompt,
+            },
+            task_id=deleted.id,
+        )
+
+
 class ApprovalResolveCapability:
     def __init__(self, spec: ToolSpec, *, home: Path):
         self.spec = spec
@@ -390,7 +478,7 @@ class ApprovalResolveCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         decision = _arg_text(args, "decision").lower()
-        if decision not in {"approve", "approved", "reject", "rejected"}:
+        if decision not in {"approve", "reject"}:
             return CapabilityResult(
                 ok=False,
                 action="approval",
@@ -398,7 +486,7 @@ class ApprovalResolveCapability:
                 message="approval.resolve requires decision approve or reject.",
                 terminal=True,
             )
-        status = "approved" if decision.startswith("approve") else "rejected"
+        status = "approved" if decision == "approve" else "rejected"
         code = _arg_text(args, "code")
         task_id = _arg_text(args, "task_id")
         tasks = TaskStore(self.home)

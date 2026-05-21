@@ -62,6 +62,53 @@ async def test_watch_capability_creates_cron_watch(tmp_path):
     assert watches[0].prompt == "check the navi project"
 
 
+@pytest.mark.asyncio
+async def test_task_and_watch_delete_capabilities_remove_records(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    store = TaskStore(tmp_path)
+    task = store.create("delete me", status="failed")
+    approval = store.create_approval(task_id=task.id, peer_id="peer", sender_id="sender")
+    store.add_execution_log(
+        task_id=task.id,
+        provider="mock",
+        phase="execute",
+        command="mock",
+        stdout="",
+        stderr="",
+        exit_code=1,
+        started_at=1,
+        ended_at=2,
+    )
+    watch = store.create_watch(
+        cron="0 20 * * *",
+        prompt="delete watch",
+        peer_id="peer",
+        sender_id="sender",
+        next_run_at=1,
+    )
+
+    deleted_task = await capabilities.invoke(
+        "task.delete",
+        {"task_id": task.id},
+        permission="write",
+        context=CapabilityContext(home=tmp_path),
+    )
+    deleted_watch = await capabilities.invoke(
+        "watch.delete",
+        {"watch_id": watch.id},
+        permission="write",
+        context=CapabilityContext(home=tmp_path),
+    )
+
+    assert deleted_task.ok is True
+    assert deleted_task.facts["task_id"] == task.id
+    assert store.get(task.id) is None
+    assert store.get_approval(approval.code) is None
+    assert store.list_execution_logs(task.id) == []
+    assert deleted_watch.ok is True
+    assert store.list_watches() == []
+
+
 def test_auth_inspector_shape():
     statuses = AuthInspector().status()
 

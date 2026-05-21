@@ -16,6 +16,7 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
         "filesystem.list",
         "git.status",
         "provider.config",
+        "task.list",
         "service.status",
         "task.status",
     } <= set(specs)
@@ -42,6 +43,25 @@ def test_task_status_tool_returns_task_facts(tmp_path):
     logs = store.list_tool_call_logs()
     assert logs[0].tool == "task.status"
     assert logs[0].ok is True
+
+
+def test_task_list_tool_returns_tasks_and_watches(tmp_path):
+    store = TaskStore(tmp_path)
+    task = store.create("tool task", status="preparing")
+    watch = store.create_watch(
+        cron="0 20 * * *",
+        prompt="teach common knowledge",
+        peer_id="peer",
+        sender_id="sender",
+        next_run_at=1,
+    )
+    registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
+
+    result = registry.call("task.list", {"limit": 10})
+
+    assert result.ok is True
+    assert result.facts["tasks"][0]["id"] == task.id
+    assert result.facts["watches"][0]["id"] == watch.id
 
 
 def test_filesystem_list_tool_returns_directory_facts(tmp_path):

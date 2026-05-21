@@ -26,12 +26,12 @@ def test_provider_registry_exposes_deepseek_defaults():
     assert "DEEPSEEK_API_KEY" in spec.api_key_env
 
 
-def test_resolve_deepseek_config_normalizes_model_and_base_url():
+def test_resolve_deepseek_config_uses_provider_defaults_when_empty():
     config = resolve_model_config(
         ModelConfig(
             provider="deepseek",
-            model="mock",
-            api_base_url="https://api.openai.com/v1",
+            model="",
+            api_base_url="",
             api_key="sk-test",
         )
     )

@@ -182,12 +182,8 @@ def list_provider_specs() -> list[dict[str, Any]]:
 
 def resolve_model_config(config: ModelConfig) -> ModelConfig:
     spec = _provider_spec(config)
-    model = config.model
-    if not model or model == "mock" or (spec.name == "deepseek" and model == "deepseek-chat"):
-        model = spec.default_model
+    model = config.model or spec.default_model
     api_base_url = (config.api_base_url or spec.default_base_url).rstrip("/")
-    if api_base_url in {"", "https://api.openai.com/v1"} and spec.default_base_url:
-        api_base_url = spec.default_base_url
     api_key = config.api_key or _first_env(spec.api_key_env)
     return ModelConfig(
         provider=spec.name,

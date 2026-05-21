@@ -620,6 +620,15 @@
             status.textContent = task.status;
             actions.appendChild(status);
           }
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "secondary";
+          remove.textContent = "Delete";
+          remove.addEventListener("click", async () => {
+            await callApi("task", { method: "DELETE" }, { task_id: task.id });
+            await refreshAll();
+          });
+          actions.appendChild(remove);
           row.append(title, actions);
           nodes.tasks.appendChild(row);
         }

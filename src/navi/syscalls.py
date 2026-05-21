@@ -96,15 +96,13 @@ class ModelSyscallPlanner:
             return ModelSyscall(tool="system.planner_error", reason="planner JSON was not an object")
         tool = str(data.get("tool") or "").strip()
         args = _parse_args(data.get("args"))
-        message = str(data.get("message") or "")
-        if message and not args.get("message"):
-            args = {**args, "message": message}
+        message = str(args.get("message") or "")
         return ModelSyscall(
             tool=tool,
             permission=_parse_permission(data.get("permission")),
             args=args,
             model_role=str(data.get("model_role") or "responder").strip() or "responder",
-            message=message or str(args.get("message") or ""),
+            message=message,
             confidence=_confidence(data.get("confidence")),
             reason=str(data.get("reason") or ""),
         )

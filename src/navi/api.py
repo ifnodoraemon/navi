@@ -161,6 +161,13 @@ def create_app(home: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="task not found")
         return task.__dict__
 
+    @app.delete(api_path("task"))
+    def delete_task(task_id: str) -> dict:
+        task = task_store.delete_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        return {"deleted": True, "task": task.__dict__}
+
     @app.get(api_path("approvals"))
     def list_approvals() -> dict:
         return {"approvals": [_public_approval(approval) for approval in task_store.list_approvals()]}

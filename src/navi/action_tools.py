@@ -66,6 +66,34 @@ def load_action_tool_specs() -> list[ToolSpec]:
             source="action",
         ),
         ToolSpec(
+            name="task.delete",
+            description="Permanently delete a tracked task and its approvals and execution logs by task id.",
+            input_schema={
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "required": ["task_id"],
+            },
+            output_schema={"type": "object"},
+            facts_only=False,
+            mutates=True,
+            permission="write",
+            source="action",
+        ),
+        ToolSpec(
+            name="watch.delete",
+            description="Permanently delete a recurring watch by watch id.",
+            input_schema={
+                "type": "object",
+                "properties": {"watch_id": {"type": "string"}},
+                "required": ["watch_id"],
+            },
+            output_schema={"type": "object"},
+            facts_only=False,
+            mutates=True,
+            permission="write",
+            source="action",
+        ),
+        ToolSpec(
             name="approval.resolve",
             description="Approve or reject a pending task with an approval code or task id.",
             input_schema={

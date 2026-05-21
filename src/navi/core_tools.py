@@ -7,7 +7,7 @@ from typing import Any
 
 from .config import load_config
 from .fact_tools import service_facts, task_facts
-from .tasks import Approval
+from .tasks import Approval, TaskStore
 from .tools import ToolRegistry, ToolResult, ToolSpec
 
 
@@ -36,6 +36,18 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             output_schema={"type": "object"},
         ),
         lambda args: _task_status(home, args),
+    )
+    registry.register(
+        ToolSpec(
+            name="task.list",
+            description="Return tracked tasks and recurring watches as task-management facts.",
+            input_schema={
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "default": 20}},
+            },
+            output_schema={"type": "object"},
+        ),
+        lambda args: _task_list(home, args),
     )
     registry.register(
         ToolSpec(
@@ -93,6 +105,19 @@ def _task_status(home: Path, args: dict[str, Any]) -> ToolResult:
             "logs": [asdict(log) for log in facts.logs],
         },
         error="" if facts.task else "task not found",
+    )
+
+
+def _task_list(home: Path, args: dict[str, Any]) -> ToolResult:
+    limit = _positive_int(args.get("limit"), default=20, maximum=100)
+    store = TaskStore(home)
+    return ToolResult(
+        tool="task.list",
+        ok=True,
+        facts={
+            "tasks": [asdict(task) for task in store.list(limit=limit)],
+            "watches": [asdict(watch) for watch in store.list_watches(limit=limit)],
+        },
     )
 
 

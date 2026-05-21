@@ -69,6 +69,11 @@ def test_local_console_api_flow(tmp_path):
     assert queued.status_code == 409
     assert client.get("/v1/tasks").json()["tasks"][0]["title"] == "Test the console"
 
+    deleted = client.delete(f"/v1/tasks/{task['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert client.get("/v1/tasks").json()["tasks"] == []
+
     wx_status = client.get("/v1/connectors/weixin/status")
     assert wx_status.status_code == 200
     assert wx_status.json()["configured"] is False
