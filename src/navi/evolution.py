@@ -114,6 +114,18 @@ class EvolutionLedger:
             ).fetchall()
         return [EvolutionEvent(*row) for row in rows]
 
+    def list_for_task(self, task_id: str) -> list[EvolutionEvent]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, task_id, target_type, target_id, reason, before, after,
+                       diff, created_at, rolled_back_at
+                FROM evolution_events WHERE task_id = ? ORDER BY created_at ASC
+                """,
+                (task_id,),
+            ).fetchall()
+        return [EvolutionEvent(*row) for row in rows]
+
     def get(self, event_id: str) -> EvolutionEvent | None:
         with connect(self.db_path) as conn:
             row = conn.execute(
@@ -154,7 +166,16 @@ class EvolutionEngine:
         self.trust = TrustStore(home)
         self.tasks = TaskStore(home)
 
-    def reflect_task(self, task: Task, *, success: bool) -> list[EvolutionEvent]:
+        # Jarvis Memory components
+        from .config import load_config
+        from .provider import build_provider
+        from .memory import MemoryStore
+
+        config = load_config(home)
+        self.provider = build_provider(config.model)
+        self.memory = MemoryStore(home)
+
+    async def reflect_task(self, task: Task, *, success: bool) -> list[EvolutionEvent]:
         events: list[EvolutionEvent] = []
         reason = "successful task reflection" if success else "failed task reflection"
         events.append(self._update_graph(task, success=success, reason=reason))
@@ -180,7 +201,12 @@ class EvolutionEngine:
                 trust_rule_id=trust_rule.id,
                 autonomy_level=trust_rule.autonomy_level,
             )
-        return events
+
+        # Active Task Learning reflection
+        logs = self.tasks.list_execution_logs(task.id)
+        await self.memory.extract_memories_from_task(task, logs, self.provider)
+
+        return self.ledger.list_for_task(task.id)
 
     def rollback(self, event_id: str) -> EvolutionEvent | None:
         event = self.ledger.get(event_id)
@@ -205,6 +231,44 @@ class EvolutionEngine:
                 self.trust.restore(json.loads(event.before))
             else:
                 self.trust.delete(event.target_id)
+        elif event.target_type == "memory_item":
+            if not event.before:
+                self.memory.delete_item(event.target_id)
+            else:
+                item_dict = json.loads(event.before)
+                with connect(self.memory.db_path) as conn:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO memory_items(
+                            id, type, status, scope, content, source, confidence,
+                            created_at, updated_at, last_verified_at, expires_at, metadata
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            item_dict["id"],
+                            item_dict["type"],
+                            item_dict["status"],
+                            item_dict["scope"],
+                            item_dict["content"],
+                            item_dict["source"],
+                            item_dict["confidence"],
+                            item_dict["created_at"],
+                            item_dict["updated_at"],
+                            item_dict["last_verified_at"],
+                            item_dict["expires_at"],
+                            json.dumps(item_dict["metadata"], sort_keys=True) if isinstance(item_dict["metadata"], dict) else item_dict["metadata"],
+                        ),
+                    )
+        elif event.target_type == "task_execution":
+            if event.before:
+                task_dict = json.loads(event.before)
+                self.tasks.update_task(
+                    event.target_id,
+                    status=task_dict.get("status", "queued"),
+                    result_summary=task_dict.get("result_summary", ""),
+                    error=task_dict.get("error", ""),
+                )
         return self.ledger.mark_rolled_back(event_id)
 
     def _update_graph(self, task: Task, *, success: bool, reason: str) -> EvolutionEvent:

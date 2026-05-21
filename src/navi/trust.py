@@ -7,9 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .db import connect
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .tasks import Task
+
+if TYPE_CHECKING:
+    from .provider import ModelPool
 
 
 LEVELS = ["L0", "L1", "L2", "L3", "L4"]
@@ -75,8 +78,8 @@ class TrustStore:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trust_sender ON trust_rules(sender_id)")
 
-    def decide(self, *, prompt: str, sender_id: str, workspace: str) -> TrustDecision:
-        rule = self.match(prompt=prompt, sender_id=sender_id, workspace=workspace)
+    async def decide(self, *, prompt: str, sender_id: str, workspace: str, provider: ModelPool | None = None) -> TrustDecision:
+        rule = await self.match(prompt=prompt, sender_id=sender_id, workspace=workspace, provider=provider)
         if rule is None:
             return TrustDecision(
                 level="L2",
@@ -98,18 +101,64 @@ class TrustStore:
             trusted_project=bool(rule.project_path),
         )
 
-    def match(self, *, prompt: str, sender_id: str, workspace: str) -> TrustRule | None:
+    async def match(self, *, prompt: str, sender_id: str, workspace: str, provider: ModelPool | None = None) -> TrustRule | None:
         workspace = self._normalize_project_path(workspace)
+        rules = self.list(sender_id=sender_id)
         candidates = [
             rule
-            for rule in self.list(sender_id=sender_id)
-            if self._pattern_matches(rule.pattern, prompt)
-            and (not rule.project_path or self._normalize_project_path(rule.project_path) == workspace)
+            for rule in rules
+            if not rule.project_path or self._normalize_project_path(rule.project_path) == workspace
         ]
         if not candidates:
             return None
-        candidates.sort(key=lambda rule: (LEVELS.index(rule.autonomy_level), rule.updated_at), reverse=True)
-        return candidates[0]
+        
+        matching_rules = []
+        for rule in candidates:
+            if await self._semantic_match(rule.pattern, prompt, provider):
+                matching_rules.append(rule)
+                
+        if not matching_rules:
+            return None
+            
+        matching_rules.sort(key=lambda rule: (LEVELS.index(rule.autonomy_level), rule.updated_at), reverse=True)
+        return matching_rules[0]
+
+    async def _semantic_match(self, pattern: str, prompt: str, provider: ModelPool | None = None) -> bool:
+        if self._pattern_matches(pattern, prompt):
+            return True
+        if not provider:
+            return False
+        from .provider import ChatMessage
+        messages = [
+            ChatMessage(
+                role="system",
+                content=(
+                    "You are Navi's Trust Engine classifier.\n"
+                    "Your task is to determine whether a given user task prompt semantically matches a specific trust rule pattern.\n\n"
+                    "Evaluate if the user's intent is conceptually/semantically covered by the trust rule pattern.\n"
+                    "Respond ONLY with a JSON object:\n"
+                    "{\n"
+                    '  "matches": true or false,\n'
+                    '  "reason": "a brief explanation"\n'
+                    "}"
+                )
+            ),
+            ChatMessage(
+                role="user",
+                content=f"Trust Rule Pattern: {pattern}\nUser Task Prompt: {prompt}"
+            )
+        ]
+        try:
+            response_text = await provider.complete_for(role="planner", messages=messages)
+            import re
+            json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group(0))
+                return bool(data.get("matches", False))
+        except Exception:
+            pass
+        return False
+
 
     def record_success(self, task: Task) -> TrustRule:
         rule = self.get(task.trust_rule_id) if task.trust_rule_id else None

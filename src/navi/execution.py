@@ -156,16 +156,93 @@ class ExecutionService:
         ) or task
 
     async def execute_task(self, task: Task) -> Task:
+        # Record before state for rollback support
+        task_before = self.tasks.get(task.id)
+        import json
+        before_state = json.dumps(
+            {
+                "status": task_before.status if task_before else "queued",
+                "result_summary": task_before.result_summary if task_before else "",
+                "error": task_before.error if task_before else "",
+            },
+            sort_keys=True
+        )
+
         self.tasks.update_task(task.id, status="running")
+
         result = await self._provider_call_with_timeout(task, "execute")
         self._log(task, result)
+        
+        # Self-healing retry loop
+        retries = 0
+        max_retries = 2
+        while result.exit_code != 0 and retries < max_retries:
+            retries += 1
+            healing_prompt = (
+                f"Your previous attempt to execute the task failed with exit code {result.exit_code}.\n"
+                f"Command: {' '.join(result.command)}\n"
+                f"Stdout:\n{result.stdout}\n"
+                f"Stderr:\n{result.stderr}\n\n"
+                f"Please analyze the errors, stack traces, and failures. "
+                f"Formulate a fix (e.g. editing files, fixing imports, or adjusting configurations), apply it, and verify that the task runs successfully."
+            )
+            
+            healing_task = Task(
+                id=task.id,
+                title=task.title,
+                prompt=f"{task.prompt}\n\n=== SELF-HEALING ATTEMPT {retries} ===\n{healing_prompt}",
+                kind=task.kind,
+                source=task.source,
+                peer_id=task.peer_id,
+                sender_id=task.sender_id,
+                provider=task.provider,
+                workspace=task.workspace,
+                autonomy_level=task.autonomy_level,
+                trust_rule_id=task.trust_rule_id,
+                status="running",
+                plan_summary=task.plan_summary,
+                result_summary=task.result_summary,
+                error=task.error,
+                why_now=task.why_now,
+                created_at=task.created_at,
+                updated_at=task.updated_at,
+            )
+            
+            result = await self._provider_call_with_timeout(healing_task, "execute")
+            self._log(task, result)
+            
         status = "completed" if result.exit_code == 0 else "failed"
-        return self.tasks.update_task(
+        updated_task = self.tasks.update_task(
             task.id,
             status=status,
             result_summary=result.summary,
             error="" if result.exit_code == 0 else result.stderr,
         ) or task
+        
+        # Record the evolution event
+        task_after = self.tasks.get(task.id)
+        after_state = json.dumps(
+            {
+                "status": task_after.status if task_after else status,
+                "result_summary": task_after.result_summary if task_after else result.summary,
+                "error": task_after.error if task_after else ("" if result.exit_code == 0 else result.stderr),
+            },
+            sort_keys=True
+        )
+        
+        from .evolution import EvolutionLedger
+        ledger = EvolutionLedger(self.home)
+        ledger.record(
+            task_id=task.id,
+            target_type="task_execution",
+            target_id=task.id,
+            reason=f"task execution {'completed' if result.exit_code == 0 else 'failed'} (retries: {retries})",
+            before=before_state,
+            after=after_state,
+        )
+        
+        return updated_task
+
 
     async def process_pending_once(self, *, limit: int = 3) -> list[Task]:
         completed: list[Task] = []

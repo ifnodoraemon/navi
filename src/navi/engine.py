@@ -108,11 +108,13 @@ class HernessEngine:
                 )
             last_result = result
             if result.terminal:
-                return self._record_turn(text, result, session_id=resolved_session_id)
+                turn_res = self._record_turn(text, result, session_id=resolved_session_id)
+                self._trigger_background_memory(turn_res)
+                return turn_res
             observations.append(result.observation or result.text)
 
         if observations:
-            return await self._finalize_observations(
+            turn_res = await self._finalize_observations(
                 text,
                 observations,
                 session_id=resolved_session_id,
@@ -120,6 +122,8 @@ class HernessEngine:
                 task_id=last_result.task_id if last_result else "",
                 model_role=last_result.model_role if last_result else "responder",
             )
+            self._trigger_background_memory(turn_res)
+            return turn_res
         reply = await self.runtime.chat(
             text,
             session_id=resolved_session_id,
@@ -132,7 +136,21 @@ class HernessEngine:
                 skill_permission_ceiling="read",
             ),
         )
-        return AgentTurnResult(text=reply.content, session_id=reply.session_id, action="chat", terminal=True)
+        turn_res = AgentTurnResult(text=reply.content, session_id=reply.session_id, action="chat", terminal=True)
+        self._trigger_background_memory(turn_res)
+        return turn_res
+
+    def _trigger_background_memory(self, result: AgentTurnResult) -> None:
+        import asyncio
+        if result.session_id:
+            asyncio.create_task(
+                self.runtime.memory.extract_and_consolidate_memories(
+                    session_id=result.session_id,
+                    provider=self.runtime.provider,
+                    task_id=result.task_id,
+                )
+            )
+
 
     def _conversation_context(self, session_id: str | None) -> str:
         if not session_id:

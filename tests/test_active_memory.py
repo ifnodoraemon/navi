@@ -1,0 +1,226 @@
+from __future__ import annotations
+
+import json
+import pytest
+from pathlib import Path
+
+from navi.provider import ChatMessage, MockProvider, ModelPool
+from navi.memory import MemoryStore, MemoryItem
+from navi.evolution import EvolutionEngine, EvolutionLedger
+from navi.tasks import Task, TaskStore, ExecutionLog
+
+
+class ScriptedProvider(MockProvider):
+    def __init__(self, responses: list[str]):
+        self.responses = responses
+        self.messages: list[list[ChatMessage]] = []
+
+    async def complete(self, messages: list[ChatMessage]) -> str:
+        self.messages.append(messages)
+        return self.responses.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_extract_and_consolidate_memories_add_and_revoke(tmp_path):
+    # Setup MemoryStore
+    store = MemoryStore(tmp_path)
+    
+    # Pre-populate with an existing memory item that we'll revoke in the test
+    old_item = store.add_item(
+        memory_type="preference",
+        content="I prefer compiling using Python 3.10",
+        source="user",
+        status="active",
+        confidence=0.8,
+    )
+    
+    # We expect the model output to add a new preference for Python 3.12, and revoke the old one
+    mock_llm_response = json.dumps({
+        "learnings": [
+            {
+                "action": "add",
+                "type": "preference",
+                "content": "I prefer compiling using Python 3.12",
+                "confidence": 0.95
+            },
+            {
+                "action": "revoke",
+                "id": old_item.id,
+                "reason": "User updated their python version preference to 3.12."
+            }
+        ]
+    })
+    
+    provider = ScriptedProvider([mock_llm_response])
+    pool = ModelPool(default=provider)
+    
+    # Record some messages to mock a session turn
+    session_id = "test-session-123"
+    store.add_message(session_id, "user", "I want to compile using Python 3.12 from now on.")
+    store.add_message(session_id, "assistant", "Sure, I have updated my records.")
+    
+    # Run the extraction and consolidation
+    affected_items = await store.extract_and_consolidate_memories(
+        session_id=session_id,
+        provider=pool,
+    )
+    
+    # Verify the affected items returned
+    assert len(affected_items) == 2
+    
+    # Verify newly added preference
+    new_items = store.list_items(memory_type="preference", status="active")
+    assert len(new_items) == 1
+    assert new_items[0].content == "I prefer compiling using Python 3.12"
+    assert new_items[0].confidence == 0.95
+    
+    # Verify old preference is revoked
+    revoked_item = store.get_item(old_item.id)
+    assert revoked_item.status == "revoked"
+    
+    # Verify ledger entries
+    ledger = EvolutionLedger(tmp_path)
+    events = ledger.list()
+    # 1 event for addition, 1 event for revocation
+    assert len(events) == 2
+    
+    # Check that events have session context
+    for event in events:
+        assert event.task_id == f"session:{session_id}"
+        assert event.target_type == "memory_item"
+
+
+@pytest.mark.asyncio
+async def test_extract_memories_from_task(tmp_path):
+    store = MemoryStore(tmp_path)
+    
+    # Setup completed task
+    task = Task(
+        id="task-abc-123",
+        title="Compile package",
+        prompt="Compile the main application package using pip install .",
+        status="completed",
+        plan_summary="Install via pip",
+        result_summary="Successfully installed dependencies and compiled",
+        error="",
+        workspace=str(tmp_path),
+        created_at=0.0,
+        updated_at=0.0,
+    )
+    
+    logs = [
+        ExecutionLog(
+            id="log-1",
+            task_id="task-abc-123",
+            provider="local",
+            phase="build",
+            command="pip install .",
+            stdout="Successfully installed navi-1.0.0",
+            stderr="",
+            exit_code=0,
+            started_at=0.0,
+            ended_at=0.0,
+        )
+    ]
+    
+    mock_llm_response = json.dumps({
+        "learnings": [
+            {
+                "action": "add",
+                "type": "fact",
+                "content": "The package can be compiled using pip install .",
+                "confidence": 0.9
+            }
+        ]
+    })
+    
+    provider = ScriptedProvider([mock_llm_response])
+    pool = ModelPool(default=provider)
+    
+    affected = await store.extract_memories_from_task(task, logs, pool)
+    
+    assert len(affected) == 1
+    assert affected[0].content == "The package can be compiled using pip install ."
+    assert affected[0].type == "fact"
+    assert affected[0].status == "active"
+    
+    # Verify ledger
+    ledger = EvolutionLedger(tmp_path)
+    events = ledger.list()
+    assert len(events) == 1
+    assert events[0].task_id == "task-abc-123"
+    assert events[0].target_type == "memory_item"
+
+
+@pytest.mark.asyncio
+async def test_rollback_memory_item(tmp_path):
+    # We will use EvolutionEngine to execute rollback and verify results
+    engine = EvolutionEngine(tmp_path)
+    store = engine.memory
+    
+    # 1. Test Rollback of New Item Addition
+    new_item = store.add_item(
+        memory_type="constraint",
+        content="Do not use unsafe compiler flags.",
+        source="evolution",
+        status="active",
+        confidence=0.8,
+    )
+    
+    # Record addition event in the ledger
+    event_add = engine.ledger.record(
+        task_id="task-test-rollback",
+        target_type="memory_item",
+        target_id=new_item.id,
+        reason="Extracted safety constraint",
+        before="",
+        after=json.dumps(new_item.__dict__, default=str),
+    )
+    
+    # Assert item exists
+    assert store.get_item(new_item.id) is not None
+    
+    # Roll back addition
+    rolled_add = engine.rollback(event_add.id)
+    assert rolled_add is not None
+    assert rolled_add.rolled_back_at > 0.0
+    
+    # Assert item is deleted from DB
+    assert store.get_item(new_item.id) is None
+    
+    # 2. Test Rollback of Item Revocation
+    existing_item = store.add_item(
+        memory_type="fact",
+        content="Legacy DB runs on port 5432.",
+        source="user",
+        status="active",
+        confidence=0.9,
+    )
+    
+    # Revoke it
+    old_state = store.get_item(existing_item.id)
+    store.set_status(existing_item.id, "revoked")
+    
+    # Record revocation event in ledger
+    event_revoke = engine.ledger.record(
+        task_id="task-test-rollback",
+        target_type="memory_item",
+        target_id=existing_item.id,
+        reason="DB port changed",
+        before=json.dumps(old_state.__dict__, default=str),
+        after="revoked",
+    )
+    
+    # Assert item is currently revoked
+    assert store.get_item(existing_item.id).status == "revoked"
+    
+    # Roll back revocation
+    rolled_revoke = engine.rollback(event_revoke.id)
+    assert rolled_revoke is not None
+    assert rolled_revoke.rolled_back_at > 0.0
+    
+    # Assert item has been restored to its original active status
+    restored = store.get_item(existing_item.id)
+    assert restored is not None
+    assert restored.status == "active"
+    assert restored.content == "Legacy DB runs on port 5432."
