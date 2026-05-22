@@ -7,6 +7,7 @@ import textwrap
 from navi.daemon import ProactiveEvent, SystemDaemon
 from navi.engine import HernessEngine
 from navi.memory import MemoryStore
+from navi.trust import TrustStore
 
 
 def _source(obj) -> str:
@@ -134,8 +135,22 @@ def test_memory_async_extractors_offload_database_writes():
         assert "ledger.record" in source
 
 
-def test_daemon_port_probe_uses_ipv4_family_without_runtime_address_literal():
+def test_daemon_port_probe_uses_explicit_dual_stack_without_runtime_address_literal():
     source = _source(SystemDaemon._detect_port_events)
 
-    assert "family=socket.AF_INET" in source
+    assert "socket.AF_INET" in source
+    assert "socket.AF_INET6" in source
     assert '"127.0.0.1"' not in source
+
+
+def test_daemon_project_detector_gather_is_failure_isolated():
+    source = _source(SystemDaemon._process_project_events)
+
+    assert "return_exceptions=True" in source
+    assert "await asyncio.to_thread(self.graph.upsert" in source
+
+
+def test_trust_async_match_offloads_rule_listing():
+    source = _source(TrustStore.match)
+
+    assert "await asyncio.to_thread(self.list" in source

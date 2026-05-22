@@ -328,7 +328,7 @@ def test_daemon_primary_project_selection_is_stable(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_daemon_port_probe_forces_ipv4_address_family(tmp_path, monkeypatch):
+async def test_daemon_port_probe_checks_ipv4_and_ipv6(tmp_path, monkeypatch):
     daemon = SystemDaemon(tmp_path)
     open_calls = []
 
@@ -356,7 +356,35 @@ async def test_daemon_port_probe_forces_ipv4_address_family(tmp_path, monkeypatc
         )
     )
 
-    assert open_calls == [("localhost", 54321, {"family": socket.AF_INET})]
+    assert open_calls == [
+        ("localhost", 54321, {"family": socket.AF_INET}),
+        ("localhost", 54321, {"family": socket.AF_INET6}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_daemon_project_detectors_isolate_failures(tmp_path, caplog):
+    daemon = SystemDaemon(tmp_path)
+    graph = GraphStore(tmp_path)
+    project_path = tmp_path / "detector_project"
+    project_path.mkdir()
+    graph.upsert("Project", str(project_path), {})
+
+    async def failing_detector(context):
+        raise RuntimeError("detector failed")
+
+    async def healthy_detector(context):
+        return [], {"healthy_detector_ran": True}
+
+    daemon._project_event_detectors = lambda: (failing_detector, healthy_detector)
+    caplog.set_level("WARNING", logger="navi.daemon")
+
+    events = await daemon.process_events_once()
+
+    assert events == []
+    assert "detector failed" in caplog.text
+    project = graph.get_by_name("Project", str(project_path))
+    assert project.data["healthy_detector_ran"] is True
 
 
 def test_daemon_port_probe_timeout_is_configurable_and_bounded():

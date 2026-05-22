@@ -157,9 +157,19 @@ class SystemDaemon:
 
         event_batches = await asyncio.gather(
             *(detector(context) for detector in self._project_event_detectors()),
+            return_exceptions=True,
         )
 
-        for events, state_updates in event_batches:
+        for event_batch in event_batches:
+            if isinstance(event_batch, Exception):
+                logger.warning(
+                    "Error running proactive event detector for %s: %s",
+                    project_path,
+                    event_batch,
+                    exc_info=(type(event_batch), event_batch, event_batch.__traceback__),
+                )
+                continue
+            events, state_updates = event_batch
             data_changed = self._apply_state_updates(project_data, state_updates) or data_changed
             for event in events:
                 created_event, event_changed = await self._apply_event_policy(
@@ -172,7 +182,7 @@ class SystemDaemon:
                     created.append(created_event)
 
         if data_changed:
-            self.graph.upsert("Project", project.name, project_data)
+            await asyncio.to_thread(self.graph.upsert, "Project", project.name, project_data)
         return created
 
     def _project_event_detectors(self) -> tuple[EventDetector, ...]:
@@ -403,19 +413,26 @@ class SystemDaemon:
             except (TypeError, ValueError):
                 logger.warning("Ignoring invalid dev port value: %r", port)
 
-        async def probe_port(port: int) -> tuple[int, bool]:
+        async def probe_port_family(port: int, family: socket.AddressFamily) -> bool:
             try:
                 _, writer = await asyncio.wait_for(
-                    asyncio.open_connection("localhost", port, family=socket.AF_INET),
+                    asyncio.open_connection("localhost", port, family=family),
                     timeout=self._port_probe_timeout(project_data),
                 )
                 writer.close()
                 await writer.wait_closed()
-                return port, True
+                return True
             except OSError:
-                return port, False
+                return False
             except asyncio.TimeoutError:
-                return port, False
+                return False
+
+        async def probe_port(port: int) -> tuple[int, bool]:
+            probe_results = await asyncio.gather(
+                probe_port_family(port, socket.AF_INET),
+                probe_port_family(port, socket.AF_INET6),
+            )
+            return port, any(probe_results)
 
         probe_results = await asyncio.gather(*(probe_port(port) for port in normalized_ports))
         for port, is_active in probe_results:
