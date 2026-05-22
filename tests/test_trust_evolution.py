@@ -4,6 +4,7 @@ import asyncio
 import json
 import pytest
 import shutil
+import socket
 import subprocess
 import time
 
@@ -12,7 +13,7 @@ from navi.trust import TrustStore
 from navi.execution import ExecutionService, ExecutionResult
 from navi.evolution import EvolutionEngine, EvolutionLedger
 from navi.tasks import TaskStore
-from navi.daemon import SystemDaemon
+from navi.daemon import ProjectEventContext, SystemDaemon
 from navi.graph import GraphStore
 
 
@@ -305,6 +306,56 @@ async def test_self_healing_retry_accumulation(tmp_path):
     assert len(prompt_history) == 3
     assert "SyntaxError: invalid syntax" in prompt_history[2]
     assert "ImportError: module missing" in prompt_history[2]
+    prompt_logs = [
+        log for log in TaskStore(tmp_path).list_execution_logs(task.id)
+        if log.phase == "self_heal_prompt"
+    ]
+    assert len(prompt_logs) == 2
+    assert "SyntaxError: invalid syntax" in prompt_logs[0].stdout
+    assert "ImportError: module missing" in prompt_logs[0].stdout
+
+
+def test_daemon_primary_project_selection_is_stable(tmp_path):
+    daemon = SystemDaemon(tmp_path)
+    older = GraphStore(tmp_path).upsert("Project", str(tmp_path / "z-project"), {})
+    newer = GraphStore(tmp_path).upsert("Project", str(tmp_path / "a-project"), {})
+
+    assert daemon._primary_project_name([older, newer]) == str(tmp_path / "a-project")
+
+    marked = GraphStore(tmp_path).upsert("Project", str(tmp_path / "m-project"), {"primary": True})
+    assert daemon._primary_project_name([older, newer, marked]) == str(tmp_path / "m-project")
+
+
+@pytest.mark.asyncio
+async def test_daemon_port_probe_forces_ipv4_address_family(tmp_path, monkeypatch):
+    daemon = SystemDaemon(tmp_path)
+    open_calls = []
+
+    class FakeWriter:
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            pass
+
+    async def fake_open_connection(host, port, **kwargs):
+        open_calls.append((host, port, kwargs))
+        return object(), FakeWriter()
+
+    import navi.daemon as daemon_module
+
+    monkeypatch.setattr(daemon_module.asyncio, "open_connection", fake_open_connection)
+
+    await daemon._detect_port_events(
+        ProjectEventContext(
+            project_path=str(tmp_path),
+            project_data={"dev_ports": [54321]},
+            has_active_task=False,
+            use_default_ports=False,
+        )
+    )
+
+    assert open_calls == [("localhost", 54321, {"family": socket.AF_INET})]
 
 
 def test_read_only_skills_store(tmp_path):

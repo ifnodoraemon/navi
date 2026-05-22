@@ -205,6 +205,7 @@ class ExecutionService:
                 prompt=f"{task.prompt}\n\n{healing_prompt}",
                 status="running",
             )
+            self._log_healing_prompt(task, retries, healing_task.prompt)
             
             result = await self._provider_call_with_timeout(healing_task, "execute")
             self._log(task, result)
@@ -268,6 +269,20 @@ class ExecutionService:
             exit_code=result.exit_code,
             started_at=result.started_at,
             ended_at=result.ended_at,
+        )
+
+    def _log_healing_prompt(self, task: Task, attempt: int, prompt: str) -> None:
+        now = time.time()
+        self.tasks.add_execution_log(
+            task_id=task.id,
+            provider=task.provider or self.config.provider,
+            phase="self_heal_prompt",
+            command=f"self-healing prompt attempt {attempt}",
+            stdout=prompt,
+            stderr="",
+            exit_code=0,
+            started_at=now,
+            ended_at=now,
         )
 
     async def _provider_call_with_timeout(self, task: Task, phase: str) -> ExecutionResult:

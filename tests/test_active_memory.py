@@ -163,6 +163,21 @@ async def test_extract_and_consolidate_memories_logs_provider_failure(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_extract_and_consolidate_memories_rejects_empty_session_id(tmp_path, caplog):
+    store = MemoryStore(tmp_path)
+
+    caplog.set_level("WARNING", logger="navi.memory")
+    result = await store.extract_and_consolidate_memories(
+        "",
+        ModelPool(default=ScriptedProvider([json.dumps({"learnings": []})])),
+    )
+
+    assert result == []
+    assert "without a session id" in caplog.text
+    assert store._session_locks == {}
+
+
+@pytest.mark.asyncio
 async def test_session_lock_pool_serializes_same_session_and_cleans_up(tmp_path):
     store = MemoryStore(tmp_path)
     session_id = "lock-session"

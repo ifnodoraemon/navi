@@ -101,3 +101,23 @@ def test_memory_provider_failures_are_logged_before_fallback():
         assert "logger.warning(" in source
         assert "exc_info=True" in source
         assert "return []" in source
+
+
+def test_memory_async_extractors_offload_database_writes():
+    for method in (
+        MemoryStore.extract_and_consolidate_memories,
+        MemoryStore.extract_memories_from_task,
+    ):
+        source = _source(method)
+
+        assert "await asyncio.to_thread(" in source
+        assert "self.add_item" in source
+        assert "self.set_status" in source
+        assert "ledger.record" in source
+
+
+def test_daemon_port_probe_uses_ipv4_family_without_runtime_address_literal():
+    source = _source(SystemDaemon._detect_port_events)
+
+    assert "family=socket.AF_INET" in source
+    assert '"127.0.0.1"' not in source

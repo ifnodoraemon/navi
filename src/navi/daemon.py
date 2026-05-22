@@ -4,6 +4,7 @@ import asyncio
 import codecs
 import hashlib
 import logging
+import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -104,7 +105,7 @@ class SystemDaemon:
             return created
         
         active_workspaces = self._active_workspaces()
-        primary_project = projects[0].name if projects else ""
+        primary_project = self._primary_project_name(projects)
 
         sem = asyncio.Semaphore(MAX_PROJECT_EVENT_CONCURRENCY)
 
@@ -178,6 +179,19 @@ class SystemDaemon:
             self._detect_service_log_events,
             self._detect_port_events,
         )
+
+    def _primary_project_name(self, projects: list[GraphNode]) -> str:
+        primary_projects = [project for project in projects if project.data.get("primary")]
+        if primary_projects:
+            return sorted(primary_projects, key=lambda project: project.name)[0].name
+
+        cwd = self._canonical_path(str(Path.cwd()))
+        for project in sorted(projects, key=lambda project: project.name):
+            if self._canonical_path(project.name) == cwd:
+                return project.name
+
+        project_names = sorted(project.name for project in projects)
+        return project_names[0] if project_names else ""
 
     def _active_workspaces(self) -> set[str]:
         return {
@@ -378,7 +392,7 @@ class SystemDaemon:
         async def probe_port(port: int) -> tuple[int, bool]:
             try:
                 _, writer = await asyncio.wait_for(
-                    asyncio.open_connection("localhost", port),
+                    asyncio.open_connection("localhost", port, family=socket.AF_INET),
                     timeout=0.5,
                 )
                 writer.close()
