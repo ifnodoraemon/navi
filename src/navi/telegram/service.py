@@ -50,15 +50,65 @@ class TelegramService:
             "allowed_users_count": len(self.config.allowed_users),
         }
 
+    def update_status(self, status: str, error: str = "") -> None:
+        import time
+        import json
+        status_dir = self.home / "telegram"
+        status_dir.mkdir(parents=True, exist_ok=True)
+        status_file = status_dir / "status.json"
+        try:
+            status_file.write_text(
+                json.dumps({
+                    "status": status,
+                    "error": error,
+                    "last_update": time.time(),
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
     async def run(self, *, once: bool = False) -> None:
+        from navi.tasks import TaskStore
+        tasks = TaskStore(self.home)
         offset: int | None = None
+        sleep_time = 1.0
+        retry_count = 0
+        self.update_status("healthy")
         while True:
-            for update in await self.client.get_updates(offset=offset):
-                offset = max(offset or 0, update.update_id + 1)
-                await self.handle_update(update)
+            try:
+                updates = await self.client.get_updates(offset=offset)
+                for update in updates:
+                    offset = max(offset or 0, update.update_id + 1)
+                    await self.handle_update(update)
+                
+                # Check for activity to adapt sleep time
+                active_tasks = tasks.list_by_statuses(["queued", "running", "preparing"])
+                has_activity = len(updates) > 0 or len(active_tasks) > 0
+                if has_activity:
+                    sleep_time = 0.05
+                else:
+                    sleep_time = min(1.0, sleep_time + 0.1)
+                
+                retry_count = 0
+                self.update_status("healthy")
+                
+            except Exception as e:
+                retry_count += 1
+                error_msg = str(e)
+                if retry_count <= 5:
+                    status = "retrying"
+                    err_sleep = min(16.0, 1.5 ** retry_count)
+                    self.update_status(status, error_msg)
+                    sleep_time = err_sleep
+                else:
+                    status = "fatal"
+                    self.update_status(status, error_msg)
+                    raise e
+            
             if once:
                 return
-            await asyncio.sleep(1)
+            await asyncio.sleep(sleep_time)
 
     async def handle_update(self, update: TelegramUpdate) -> bool:
         message_key = f"telegram:{update.chat_id}:{update.message_id}"

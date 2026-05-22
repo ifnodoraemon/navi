@@ -213,3 +213,69 @@ def _model_config(model_raw: dict, *, env: dict[str, str], allow_env_override: b
         fallbacks=fallbacks,
         routes=routes,
     )
+
+
+def validate_config(config: NaviConfig, home: Path) -> list[str]:
+    errors: list[str] = []
+
+    def validate_model(m: ModelConfig, path: str):
+        if not m.provider:
+            errors.append(f"{path}.provider is empty")
+            return
+
+        try:
+            spec = get_provider_spec(m.provider)
+            kind = spec.kind
+            api_key_env = spec.api_key_env
+        except ValueError:
+            kind = m.kind
+            api_key_env = ("NAVI_MODEL_API_KEY",)
+            if not kind:
+                errors.append(f"{path}.kind is required for custom provider '{m.provider}'")
+
+        if kind and kind not in {"mock", "openai-compatible", "anthropic-compatible"}:
+            errors.append(f"{path}.kind '{kind}' is unsupported")
+
+        if kind != "mock" and not m.api_key:
+            env_hint = " or ".join(api_key_env)
+            errors.append(f"{path}.api_key is empty and no environment override ({env_hint}) is set")
+
+    validate_model(config.model, "model")
+    for idx, fb in enumerate(config.model.fallbacks):
+        validate_model(fb, f"model.fallbacks[{idx}]")
+    for role, route in config.model.routes.items():
+        validate_model(route, f"model.routes.{role}")
+
+    # Validate Connector Specs and configuration
+    from .connector_registry import load_connector_adapters
+    try:
+        adapters = load_connector_adapters()
+        for adapter in adapters:
+            spec = adapter.spec
+            if not spec.name:
+                errors.append(f"connector spec has empty name")
+            if not spec.surface:
+                errors.append(f"connector spec '{spec.name}' has empty surface")
+            if not spec.status_tool:
+                errors.append(f"connector spec '{spec.name}' has empty status_tool")
+
+            import importlib
+            try:
+                config_module = importlib.import_module(f"navi.{adapter.name}.config")
+                load_cfg = getattr(config_module, f"load_{adapter.name}_config", None)
+                if load_cfg:
+                    cfg = load_cfg(home)
+                    if getattr(cfg, "enabled", False):
+                        dm_policy = getattr(cfg, "dm_policy", "open")
+                        if dm_policy not in {"open", "disabled", "allowlist", "pairing"}:
+                            errors.append(f"{adapter.name}.dm_policy '{dm_policy}' is invalid")
+                        group_policy = getattr(cfg, "group_policy", None)
+                        if group_policy is not None and group_policy not in {"open", "disabled", "allowlist", "pairing"}:
+                            errors.append(f"{adapter.name}.group_policy '{group_policy}' is invalid")
+            except (ModuleNotFoundError, AttributeError):
+                pass
+    except Exception as e:
+        errors.append(f"connector load error: {e}")
+
+    return errors
+
