@@ -34,7 +34,16 @@ def test_connector_ingress_runtime_uses_remote_tool_allowlist(tmp_path):
 
     names = {spec.name for spec in ingress.agent.capabilities.planner_specs()}
 
-    assert {"final.answer", "clarify.ask", "task.create", "watch.create", "approval.resolve"} <= names
+    assert {
+        "final.answer",
+        "clarify.ask",
+        "task.record",
+        "task.prepare",
+        "approval.request",
+        "task.queue",
+        "watch.create",
+        "approval.resolve",
+    } <= names
     assert {"provider.config", "service.status", "task.status", "task.list"} <= names
     assert "task.delete" not in names
     assert "watch.delete" not in names

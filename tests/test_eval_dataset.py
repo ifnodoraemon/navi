@@ -32,6 +32,16 @@ def test_task_eval_dataset_has_100_percent_required_scenario_coverage():
     assert len(required) >= 18
 
 
+def test_task_eval_dataset_has_100_percent_required_tool_coverage(tmp_path):
+    dataset = load_task_eval_dataset(_dataset())
+    required = set(dataset["coverage"]["required_tools"])
+    observed = {str(case["expect"]["tool"]) for case in dataset["cases"]}
+    available = {tool.name for tool in task_eval_tools(tmp_path, project_dir=tmp_path)}
+
+    assert required == available
+    assert required <= observed
+
+
 def test_task_eval_dataset_covers_lifecycle_regressions():
     cases = load_task_eval_cases(_dataset())
     ids = {str(case["id"]) for case in cases}

@@ -12,7 +12,10 @@ CONNECTOR_ALLOWED_TOOLS = frozenset(
     {
         "final.answer",
         "clarify.ask",
-        "task.create",
+        "task.record",
+        "task.prepare",
+        "approval.request",
+        "task.queue",
         "watch.create",
         "approval.resolve",
         "provider.config",

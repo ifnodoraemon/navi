@@ -23,11 +23,12 @@ from .evals import (
     task_eval_tools,
     validate_task_eval_dataset,
 )
-from .evolution import EvolutionEngine, EvolutionLedger
+from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
 from .graph import GraphStore
 from .memory import MemoryStore
 from .paths import ensure_home
 from .service import build_systemd_user_unit, install_systemd_user_unit
+from .trace import TraceStore
 from .trust import TrustStore
 
 app = typer.Typer(help="Navi local-first personal assistant")
@@ -36,6 +37,7 @@ connectors_app = typer.Typer(help="Connector lifecycle and status")
 graph_app = typer.Typer(help="Personal graph")
 trust_app = typer.Typer(help="Trust contract")
 evolution_app = typer.Typer(help="Evolution ledger")
+trace_app = typer.Typer(help="Full-flow traces and evaluations")
 service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
@@ -46,6 +48,7 @@ app.add_typer(connectors_app, name="connectors")
 app.add_typer(graph_app, name="graph")
 app.add_typer(trust_app, name="trust")
 app.add_typer(evolution_app, name="evolution")
+app.add_typer(trace_app, name="trace")
 app.add_typer(service_app, name="service")
 app.add_typer(memory_app, name="memory")
 app.add_typer(session_app, name="session")
@@ -338,11 +341,107 @@ def trust_set(rule_id: str, level: str) -> None:
     typer.echo(f"{rule.id} -> {rule.autonomy_level}")
 
 
+@trace_app.command("list")
+def trace_list() -> None:
+    """List recent full-flow trace ids."""
+    for trace_id in TraceStore(ensure_home()).list_trace_ids():
+        typer.echo(trace_id)
+
+
+@trace_app.command("show")
+def trace_show(trace_id: str) -> None:
+    """Show events for one full-flow trace."""
+    for event in TraceStore(ensure_home()).list_events(trace_id):
+        marker = "ok" if event.ok else "fail"
+        typer.echo(f"{event.phase} {marker} tool={event.tool or '-'} role={event.model_role or '-'}")
+        if event.message:
+            typer.echo(f"  {event.message[:240]}")
+
+
+@trace_app.command("evaluate")
+def trace_evaluate(trace_id: str) -> None:
+    """Evaluate a trace to identify the likely optimization target."""
+    evaluation = TraceStore(ensure_home()).evaluate_trace(trace_id)
+    typer.echo(f"{evaluation.outcome} {evaluation.failure_domain}: {evaluation.recommendation}")
+
+
 @evolution_app.command("list")
 def evolution_list() -> None:
     """List evolution events."""
     for event in EvolutionLedger(ensure_home()).list():
         typer.echo(f"{event.id} {event.target_type} {event.target_id} task={event.task_id}")
+
+
+@evolution_app.command("targets")
+def evolution_targets() -> None:
+    """List evolvable behavior target types."""
+    for target in list_evolution_targets():
+        marker = "permissioned" if target["permissions_can_expand"] else "content"
+        typer.echo(f"{target['target_type']} source={target['source']} kind={marker} {target['description']}")
+
+
+@evolution_app.command("proposals")
+def evolution_proposals(status: str | None = None) -> None:
+    """List pending or applied evolution proposals."""
+    for proposal in EvolutionLedger(ensure_home()).list_proposals(status=status):
+        typer.echo(f"{proposal.id} {proposal.status} {proposal.target_type} {proposal.target_id}")
+
+
+@evolution_app.command("propose")
+def evolution_propose(
+    target_type: str,
+    target_id: str,
+    reason: str,
+    after: str,
+    before: str = "",
+    expected_benefit: str = "",
+    risk: str = "",
+    rollback_plan: str = "",
+    required_approval_level: str = "L2",
+    evidence: str = "",
+    source_task_id: str = "",
+    eval_cases: str = "",
+) -> None:
+    """Create a reviewable evolution proposal without mutating the target."""
+    try:
+        proposal = EvolutionLedger(ensure_home()).propose(
+            target_type=target_type,
+            target_id=target_id,
+            reason=reason,
+            expected_benefit=expected_benefit,
+            risk=risk,
+            before=before,
+            after=after,
+            rollback_plan=rollback_plan,
+            required_approval_level=required_approval_level,
+            evidence=evidence,
+            source_task_id=source_task_id,
+            eval_cases=[item.strip() for item in eval_cases.split(",") if item.strip()],
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(proposal.id)
+
+
+@evolution_app.command("apply-proposal")
+def evolution_apply_proposal(proposal_id: str) -> None:
+    """Apply a proposal by recording it in the evolution ledger."""
+    try:
+        event = EvolutionEngine(ensure_home()).apply_proposal(proposal_id)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if event is None:
+        raise typer.BadParameter("proposal not found")
+    typer.echo(event.id)
+
+
+@evolution_app.command("record-evaluation")
+def evolution_record_evaluation(proposal_id: str, evaluation_result: str) -> None:
+    """Attach post-apply evaluation evidence to an evolution proposal."""
+    proposal = EvolutionLedger(ensure_home()).record_proposal_evaluation(proposal_id, evaluation_result)
+    if proposal is None:
+        raise typer.BadParameter("proposal not found")
+    typer.echo(proposal.id)
 
 
 @evolution_app.command("show")

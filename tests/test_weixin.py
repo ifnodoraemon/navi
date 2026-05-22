@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import re
 
 from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.runtime import AgentRuntime
@@ -19,8 +20,15 @@ class ScriptedProvider(MockProvider):
     async def complete(self, messages: list[ChatMessage]) -> str:
         self.messages = messages
         if isinstance(self.response, list):
-            return self.response.pop(0)
-        return self.response
+            response = self.response.pop(0)
+        else:
+            response = self.response
+        if "TASK_ID" in response:
+            for message in reversed(messages):
+                match = re.search(r'"task_id":\s*"([^"]+)"', message.content)
+                if match:
+                    return response.replace("TASK_ID", match.group(1))
+        return response
 
 
 class PlannerThenMockProvider(MockProvider):
@@ -178,7 +186,9 @@ async def test_weixin_plain_local_action_creates_task(tmp_path, monkeypatch):
         home=tmp_path,
         provider=_pool(ScriptedProvider(
             [
-                '{"tool":"task.create","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+                '{"tool":"task.record","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+                '{"tool":"task.prepare","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
+                '{"tool":"approval.request","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
                 '{"tool":"final.answer","permission":"read","args":{"message":"已创建列目录任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',
             ]
         )),
@@ -207,7 +217,9 @@ async def test_weixin_command_like_business_text_routes_through_planner(tmp_path
         home=tmp_path,
         provider=_pool(ScriptedProvider(
             [
-                '{"tool":"task.create","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+                '{"tool":"task.record","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+                '{"tool":"task.prepare","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
+                '{"tool":"approval.request","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
                 '{"tool":"final.answer","permission":"read","args":{"message":"已创建列目录任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',
             ]
         )),
@@ -232,7 +244,9 @@ async def test_weixin_plain_approval_queues_task(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"task.create","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+            '{"tool":"task.record","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+            '{"tool":"task.prepare","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
+            '{"tool":"approval.request","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"已创建列目录任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',
         ]
     )

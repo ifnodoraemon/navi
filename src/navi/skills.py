@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,11 @@ class Skill:
     tags: tuple[str, ...] = ()
     verified: bool = True
     role: str = ""
+    version: str = "1"
+    content_hash: str = ""
+    trust_level: str = "verified"
+    scope: str = "global"
+    evaluation: dict[str, Any] | None = None
 
 
 class SkillStore:
@@ -44,6 +50,28 @@ class SkillStore:
                 return True
             return s_role.strip().lower() == role.strip().lower()
 
+        def build_skill(path: Path, metadata: dict[str, Any], *, source: str, verified: bool, default_scope: str) -> Skill:
+            name = str(metadata.get("name") or path.parent.name)
+            s_role = str(metadata.get("role") or "").strip().lower()
+            content = path.read_bytes()
+            trust_level = str(metadata.get("trust_level") or ("verified" if verified else "unverified")).strip().lower()
+            evaluation = metadata.get("evaluation") if isinstance(metadata.get("evaluation"), dict) else {}
+            return Skill(
+                name=name,
+                description=str(metadata.get("description") or ""),
+                path=path,
+                permission=str(metadata.get("permission") or "read").strip().lower(),
+                source=source,
+                tags=_metadata_tuple(metadata.get("tags")),
+                role=s_role,
+                verified=verified,
+                version=str(metadata.get("version") or "1"),
+                content_hash=hashlib.sha256(content).hexdigest(),
+                trust_level=trust_level,
+                scope=str(metadata.get("scope") or default_scope).strip().lower(),
+                evaluation=evaluation,
+            )
+
         # 1. User-defined global skills (override/highest priority)
         for path in sorted(self.skills_dir.glob("*/SKILL.md")):
             metadata = self._frontmatter(path)
@@ -51,15 +79,12 @@ class SkillStore:
             s_role = str(metadata.get("role") or "").strip().lower()
             if not role_matches(s_role):
                 continue
-            skill = Skill(
-                name=name,
-                description=str(metadata.get("description") or ""),
-                path=path,
-                permission=str(metadata.get("permission") or "read").strip().lower(),
+            skill = build_skill(
+                path,
+                metadata,
                 source=str(metadata.get("source") or "local").strip().lower(),
-                tags=_metadata_tuple(metadata.get("tags")),
-                role=s_role,
                 verified=True,
+                default_scope="global",
             )
             if sources is not None and skill.source not in sources:
                 continue
@@ -80,15 +105,12 @@ class SkillStore:
                     s_role = str(metadata.get("role") or "").strip().lower()
                     if not role_matches(s_role):
                         continue
-                    skill = Skill(
-                        name=name,
-                        description=str(metadata.get("description") or ""),
-                        path=path,
-                        permission=str(metadata.get("permission") or "read").strip().lower(),
+                    skill = build_skill(
+                        path,
+                        metadata,
                         source="workspace",
-                        tags=_metadata_tuple(metadata.get("tags")),
-                        role=s_role,
-                        verified=False,  # Workspace-loaded skills are untrusted
+                        verified=False,
+                        default_scope="workspace",
                     )
                     if sources is not None and skill.source not in sources:
                         continue
@@ -107,15 +129,12 @@ class SkillStore:
                 s_role = str(metadata.get("role") or "").strip().lower()
                 if not role_matches(s_role):
                     continue
-                skill = Skill(
-                    name=name,
-                    description=str(metadata.get("description") or ""),
-                    path=path,
-                    permission=str(metadata.get("permission") or "read").strip().lower(),
+                skill = build_skill(
+                    path,
+                    metadata,
                     source=str(metadata.get("source") or "local").strip().lower(),
-                    tags=_metadata_tuple(metadata.get("tags")),
-                    role=s_role,
                     verified=True,
+                    default_scope="builtin",
                 )
                 if sources is not None and skill.source not in sources:
                     continue

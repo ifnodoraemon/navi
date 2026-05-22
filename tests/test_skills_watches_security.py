@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import time
 from pathlib import Path
 import pytest
@@ -26,7 +25,7 @@ def test_skills_workspace_scoping_and_security_banner(tmp_path):
     # 1. Global user skill
     (skills_dir / "global_skill").mkdir()
     (skills_dir / "global_skill" / "SKILL.md").write_text(
-        "---\nname: global_skill\nrole: developer\n---\nGlobal skill content",
+        "---\nname: global_skill\nrole: developer\nversion: 2\nscope: global\nevaluation:\n  last_result: pass\n---\nGlobal skill content",
         encoding="utf-8"
     )
 
@@ -60,8 +59,15 @@ def test_skills_workspace_scoping_and_security_banner(tmp_path):
         if skill.name == "work_skill":
             assert skill.verified is False
             assert skill.source == "workspace"
+            assert skill.trust_level == "unverified"
+            assert skill.scope == "workspace"
         else:
             assert skill.verified is True
+        assert skill.content_hash
+
+    global_skill = next(skill for skill in skills if skill.name == "global_skill")
+    assert global_skill.version == "2"
+    assert global_skill.evaluation["last_result"] == "pass"
 
     # Check role filtering: "developer"
     skills_dev = store.list_skills(workspace=workspace_dir, role="developer")
@@ -79,48 +85,9 @@ def test_skills_workspace_scoping_and_security_banner(tmp_path):
     assert "loaded from an untrusted project workspace: work_skill" in prompt
 
 
-def test_watches_workspace_persistence_and_migration(tmp_path):
-    db_path = tmp_path / "tasks.db"
-
-    # Step 1: Create an old-version SQLite database WITHOUT 'workspace' column
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS watches (
-            id TEXT PRIMARY KEY,
-            cron TEXT NOT NULL,
-            prompt TEXT NOT NULL,
-            peer_id TEXT NOT NULL,
-            sender_id TEXT NOT NULL,
-            enabled INTEGER NOT NULL,
-            next_run_at REAL NOT NULL,
-            last_run_at REAL NOT NULL,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        )
-        """
-    )
-    # Insert an old watch
-    conn.execute(
-        """
-        INSERT INTO watches(id, cron, prompt, peer_id, sender_id, enabled, next_run_at, last_run_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        ("old-id", "*/5 * * * *", "Old prompt", "peer-1", "sender-1", 1, 1000.0, 0.0, 500.0, 500.0)
-    )
-    conn.commit()
-    conn.close()
-
-    # Step 2: Initialize TaskStore which should automatically trigger database schema migration (adding 'workspace')
+def test_watches_workspace_persistence(tmp_path):
     store = TaskStore(tmp_path)
 
-    # Verify migration did not destroy old watch data and set the default correctly
-    old_watch = store.get_watch("old-id")
-    assert old_watch is not None
-    assert old_watch.prompt == "Old prompt"
-    assert old_watch.workspace == ""
-
-    # Step 3: Create a new watch with a specified workspace context and assert persistence
     new_watch = store.create_watch(
         cron="*/10 * * * *",
         prompt="New prompt",
@@ -132,18 +99,16 @@ def test_watches_workspace_persistence_and_migration(tmp_path):
 
     assert new_watch.workspace == "/path/to/my_workspace"
 
-    # Verify fetching new watch
     fetched_watch = store.get_watch(new_watch.id)
     assert fetched_watch is not None
     assert fetched_watch.workspace == "/path/to/my_workspace"
 
-    # Verify listing and due lists
     all_watches = store.list_watches()
-    assert len(all_watches) == 2
+    assert len(all_watches) == 1
     assert any(w.workspace == "/path/to/my_workspace" for w in all_watches)
 
     due = store.due_watches(3000.0)
-    assert len(due) == 2
+    assert len(due) == 1
     assert any(w.workspace == "/path/to/my_workspace" for w in due)
 
 
@@ -179,11 +144,11 @@ async def test_watches_context_propagation_in_daemon(tmp_path, monkeypatch):
     created = await daemon.process_watches_once()
 
     assert len(created) == 1
-    assert len(invoked_contexts) == 1
-    # Verify context integrity: watch's workspace must propagate perfectly to execution context
-    assert invoked_contexts[0].workspace == "/home/user/project_workspace"
-    assert invoked_contexts[0].peer_id == "user-peer"
-    assert invoked_contexts[0].sender_id == "user-sender"
+    assert len(invoked_contexts) == 3
+    for context in invoked_contexts:
+        assert context.workspace == "/home/user/project_workspace"
+        assert context.peer_id == "user-peer"
+        assert context.sender_id == "user-sender"
 
 
 @pytest.mark.asyncio
@@ -243,3 +208,37 @@ def test_system_prompt_workspace_and_role_propagation(tmp_path):
     
     # Check that active role is propagated in system prompt
     assert "Active role: reviewer" in prompt
+
+
+def test_prompt_layer_override_can_be_applied_and_rolled_back(tmp_path):
+    from navi.evolution import EvolutionEngine
+    from navi.prompting import PromptLayerStore, build_system_prompt
+
+    store = PromptLayerStore(tmp_path)
+    before = store.read("style")
+    engine = EvolutionEngine(tmp_path)
+    proposal = engine.ledger.propose(
+        target_type="prompt_layer",
+        target_id="style",
+        reason="test prompt layer override",
+        expected_benefit="custom style text appears in prompt",
+        risk="style wording may be too narrow",
+        before=before,
+        after="Response style:\n- Use terse test wording.",
+        rollback_plan="restore previous style layer",
+    )
+
+    event = engine.apply_proposal(proposal.id)
+    prompt = build_system_prompt(home=tmp_path)
+
+    assert event is not None
+    assert "Use terse test wording." in prompt
+    assert "Prefer Chinese when the user writes Chinese." not in prompt
+
+    rolled = engine.rollback(event.id)
+    restored = build_system_prompt(home=tmp_path)
+
+    assert rolled is not None
+    assert rolled.rolled_back_at
+    assert "Use terse test wording." not in restored
+    assert "Prefer Chinese when the user writes Chinese." in restored

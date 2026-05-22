@@ -86,23 +86,6 @@ class ToolCallLog:
     ended_at: float
 
 
-TASK_COLUMNS = {
-    "kind": "TEXT NOT NULL DEFAULT 'manual'",
-    "prompt": "TEXT NOT NULL DEFAULT ''",
-    "source": "TEXT NOT NULL DEFAULT 'local'",
-    "peer_id": "TEXT NOT NULL DEFAULT ''",
-    "sender_id": "TEXT NOT NULL DEFAULT ''",
-    "provider": "TEXT NOT NULL DEFAULT ''",
-    "workspace": "TEXT NOT NULL DEFAULT ''",
-    "autonomy_level": "TEXT NOT NULL DEFAULT 'L2'",
-    "trust_rule_id": "TEXT NOT NULL DEFAULT ''",
-    "why_now": "TEXT NOT NULL DEFAULT ''",
-    "plan_summary": "TEXT NOT NULL DEFAULT ''",
-    "result_summary": "TEXT NOT NULL DEFAULT ''",
-    "error": "TEXT NOT NULL DEFAULT ''",
-}
-
-
 class TaskStore:
     def __init__(self, home: Path):
         self.home = home
@@ -119,14 +102,23 @@ class TaskStore:
                     title TEXT NOT NULL,
                     status TEXT NOT NULL,
                     created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    kind TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    peer_id TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    workspace TEXT NOT NULL,
+                    autonomy_level TEXT NOT NULL,
+                    trust_rule_id TEXT NOT NULL,
+                    why_now TEXT NOT NULL,
+                    plan_summary TEXT NOT NULL,
+                    result_summary TEXT NOT NULL,
+                    error TEXT NOT NULL
                 )
                 """
             )
-            existing = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
-            for name, ddl in TASK_COLUMNS.items():
-                if name not in existing:
-                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {ddl}")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS approvals (
@@ -156,13 +148,10 @@ class TaskStore:
                     last_run_at REAL NOT NULL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    workspace TEXT NOT NULL DEFAULT ''
+                    workspace TEXT NOT NULL
                 )
                 """
             )
-            existing_watches = {row[1] for row in conn.execute("PRAGMA table_info(watches)").fetchall()}
-            if "workspace" not in existing_watches:
-                conn.execute("ALTER TABLE watches ADD COLUMN workspace TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS execution_logs (

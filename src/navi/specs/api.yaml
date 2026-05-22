@@ -21,7 +21,14 @@ tools: /v1/tools
 tool_call: /v1/tools/{tool_name}/call
 graph: /v1/graph
 trust_rules: /v1/trust-rules
+traces: /v1/traces
+trace: /v1/traces/{trace_id}
+trace_evaluate: /v1/traces/{trace_id}/evaluate
 evolution_events: /v1/evolution-events
 evolution_rollback: /v1/evolution-events/{event_id}/rollback
+evolution_targets: /v1/evolution-targets
+evolution_proposals: /v1/evolution-proposals
+evolution_proposal_apply: /v1/evolution-proposals/{proposal_id}/apply
+evolution_proposal_evaluation: /v1/evolution-proposals/{proposal_id}/evaluation
 connector_status: /v1/connectors/{connector_name}/status
 index: /

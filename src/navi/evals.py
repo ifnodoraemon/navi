@@ -53,7 +53,12 @@ def validate_task_eval_dataset(dataset: dict[str, Any], tools: list[ToolSpec]) -
     if not isinstance(cases, list):
         return ["dataset: missing cases list"]
     required_categories = _required_categories(dataset)
+    required_tools = _required_tools(dataset)
+    unknown_required_tools = required_tools - set(by_name)
+    for tool_name in sorted(unknown_required_tools):
+        errors.append(f"dataset: unknown required tool {tool_name!r}")
     categories_seen: set[str] = set()
+    tools_seen: set[str] = set()
     for index, case in enumerate(cases):
         case_id = str(case.get("id") or "")
         prefix = case_id or f"case[{index}]"
@@ -81,12 +86,16 @@ def validate_task_eval_dataset(dataset: dict[str, Any], tools: list[ToolSpec]) -
         if tool is None:
             errors.append(f"{prefix}: unknown expected tool {tool_name!r}")
             continue
+        if tool_name in required_tools:
+            tools_seen.add(tool_name)
         permission = str(expected.get("permission") or "")
         if permission != tool.permission:
             errors.append(f"{prefix}: expected permission {permission!r} does not match {tool.permission!r}")
         _validate_expected_args(prefix, expected.get("args") or {}, tool, errors)
     for category in sorted(required_categories - categories_seen):
         errors.append(f"dataset: missing required category {category!r}")
+    for tool_name in sorted(required_tools - tools_seen - unknown_required_tools):
+        errors.append(f"dataset: missing required tool {tool_name!r}")
     return errors
 
 
@@ -182,6 +191,16 @@ def _required_categories(dataset: dict[str, Any]) -> set[str]:
     if not isinstance(coverage, dict):
         return set()
     raw = coverage.get("required_categories") or []
+    if not isinstance(raw, list):
+        return set()
+    return {str(item).strip() for item in raw if str(item).strip()}
+
+
+def _required_tools(dataset: dict[str, Any]) -> set[str]:
+    coverage = dataset.get("coverage") or {}
+    if not isinstance(coverage, dict):
+        return set()
+    raw = coverage.get("required_tools") or []
     if not isinstance(raw, list):
         return set()
     return {str(item).strip() for item in raw if str(item).strip()}

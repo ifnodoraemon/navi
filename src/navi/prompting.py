@@ -1,10 +1,61 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .config import load_config
 from .operating_context import OperatingContext, PromptLayer, render_prompt_layers
 from .service import systemd_user_unit_path
+from .spec_loader import load_spec
+
+
+class PromptLayerStore:
+    def __init__(self, home: Path):
+        self.home = home
+        self.overrides_dir = home / "prompt_layers"
+
+    def get(self, name: str) -> PromptLayer:
+        override = self.override_path(name)
+        if override.exists():
+            return PromptLayer(name, override.read_text(encoding="utf-8"), self._default_permission(name))
+        spec = self._default_spec(name)
+        return PromptLayer(
+            name,
+            str(spec.get("content") or ""),
+            str(spec.get("minimum_permission") or "read"),
+        )
+
+    def read(self, name: str) -> str:
+        return self.get(name).content
+
+    def write_override(self, name: str, content: str) -> Path:
+        if not _valid_layer_name(name):
+            raise ValueError("invalid prompt layer name")
+        self.overrides_dir.mkdir(parents=True, exist_ok=True)
+        path = self.override_path(name)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def delete_override(self, name: str) -> None:
+        path = self.override_path(name)
+        if path.exists():
+            path.unlink()
+
+    def override_path(self, name: str) -> Path:
+        if not _valid_layer_name(name):
+            raise ValueError("invalid prompt layer name")
+        return self.overrides_dir / f"{name}.md"
+
+    def _default_permission(self, name: str) -> str:
+        return str(self._default_spec(name).get("minimum_permission") or "read")
+
+    @staticmethod
+    def _default_spec(name: str) -> dict[str, Any]:
+        data = load_spec("prompt_layers.yaml") or {}
+        spec = data.get(name)
+        if not isinstance(spec, dict):
+            return {"content": "", "minimum_permission": "read"}
+        return spec
 
 
 def build_system_prompt(
@@ -16,6 +67,7 @@ def build_system_prompt(
     operating_context: OperatingContext | None = None,
 ) -> str:
     config = load_config(home)
+    prompt_store = PromptLayerStore(home)
     operating_context = operating_context or OperatingContext(home=home)
     workspace_path = Path(operating_context.workspace) if operating_context.workspace else (workspace or Path.cwd())
     workspace = workspace_path.resolve()
@@ -41,59 +93,23 @@ def build_system_prompt(
     ]
     if operating_context.role:
         runtime_lines.append(f"- Active role: {operating_context.role}")
-    runtime_lines.extend([
-        "- Local execution bridge: Navi can prepare managed local actions through configured execution providers.",
-        "- Local actions and fact lookups are exposed through Navi core capabilities.",
-    ])
+    runtime_static = prompt_store.read("runtime").strip()
+    if runtime_static:
+        runtime_lines.extend(runtime_static.splitlines())
 
     layers = [
-        PromptLayer(
-            "identity",
-            "\n".join(
-                [
-                    "You are Navi, the user's local-first personal AI assistant running on their own machine.",
-                    "You are not a generic cloud chatbot. Answer with awareness of Navi's local runtime, deployment, and managed action flow.",
-                    "Be concise, practical, and privacy-preserving.",
-                ]
-            ),
-        ),
+        prompt_store.get("identity"),
         PromptLayer(
             "runtime",
             "\n".join(runtime_lines),
         ),
-        PromptLayer(
-            "authorization",
-            "\n".join(
-                [
-                    "Capability and authorization rules:",
-                    "- Treat the permission ceiling as a hard OS boundary.",
-                    "- Do not say you have no access to the user's local machine as an absolute statement.",
-                    "- Do not frame local actions as a generic permission failure. Frame them as requiring Navi's managed local action flow.",
-                    "- Avoid bare statements like 'I cannot directly access the filesystem'; instead say the current chat has no action result yet, while Navi can run the requested inspection through the managed local action flow.",
-                    "- Say this chat response itself is not a shell and cannot claim to have inspected files unless a capability result or completed action result is available.",
-                    "- For local filesystem, process, git, deployment, or command actions, explain that Navi can prepare and run them through the managed local action flow.",
-                    "- If the user says they authorize an action in chat, treat that as user input for the kernel syscall planner, but still route execution through the managed action approval flow.",
-                    "- Do not give a CLI invocation for task creation unless the user explicitly asks for CLI usage.",
-                    "- Do not claim you have created, queued, drafted, approved, or executed a task unless a capability or action observation says so.",
-                    "- Do not invent product surfaces, task types, APIs, buttons, channels, or automation modes that are not listed in these runtime facts.",
-                    "- Prefer natural-language task requests over raw shell snippets unless the user explicitly asks for a command.",
-                    "- Never expose API keys, tokens, connector credentials, or secret file contents. Refer to secrets only as configured or redacted.",
-                    "- If local context is missing, state the missing fact narrowly instead of claiming general inability.",
-                ]
-            ),
-        ),
+        prompt_store.get("authorization"),
         PromptLayer("memory", f"Memory recall:\n{memory_context}" if memory_context else ""),
         PromptLayer("skills", f"Installed skills:\n{skills_context}" if skills_context else ""),
-        PromptLayer(
-            "style",
-            "\n".join(
-                [
-                    "Response style:",
-                    "- Prefer Chinese when the user writes Chinese.",
-                    "- Be direct about what is known, what needs approval, and what the next action should be.",
-                    "- Avoid generic SaaS disclaimers that contradict Navi's local deployment.",
-                ]
-            ),
-        ),
+        prompt_store.get("style"),
     ]
     return render_prompt_layers(layers, operating_context)
+
+
+def _valid_layer_name(name: str) -> bool:
+    return bool(name) and all(part.isalnum() or part in {"_", "-"} for part in name)

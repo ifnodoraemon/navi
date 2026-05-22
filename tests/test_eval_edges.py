@@ -108,6 +108,24 @@ def test_validate_task_eval_dataset_enforces_required_category_coverage():
     assert "dataset: missing required category 'greeting'" in errors
 
 
+def test_validate_task_eval_dataset_enforces_required_tool_coverage():
+    dataset = {
+        "coverage": {"required_tools": ["final.answer", "task.list", "missing.tool"]},
+        "cases": [
+            {
+                "id": "hello",
+                "message": "hello",
+                "expect": {"tool": "final.answer", "permission": "read"},
+            },
+        ],
+    }
+
+    errors = validate_task_eval_dataset(dataset, [_tool(), _tool("task.list")])
+
+    assert "dataset: unknown required tool 'missing.tool'" in errors
+    assert "dataset: missing required tool 'task.list'" in errors
+
+
 def test_match_task_eval_case_reports_tool_and_permission_drift():
     case = {"expect": {"tool": "task.list", "permission": "read"}}
     decision = ModelSyscall(tool="final.answer", permission="write")

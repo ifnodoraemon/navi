@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -173,11 +173,15 @@ class ActionCapabilityProvider:
         factories = {
             "final_answer": lambda spec: FinalAnswerCapability(spec),
             "clarify": lambda spec: ClarifyCapability(spec),
-            "task_create": lambda spec: TaskCreateCapability(spec, home=self.home),
+            "task_record": lambda spec: TaskRecordCapability(spec, home=self.home),
+            "task_prepare": lambda spec: TaskPrepareCapability(spec, home=self.home),
+            "approval_request": lambda spec: ApprovalRequestCapability(spec, home=self.home),
+            "task_queue": lambda spec: TaskQueueCapability(spec, home=self.home),
             "watch_create": lambda spec: WatchCreateCapability(spec, home=self.home),
             "task_delete": lambda spec: TaskDeleteCapability(spec, home=self.home),
             "watch_delete": lambda spec: WatchDeleteCapability(spec, home=self.home),
             "approval_resolve": lambda spec: ApprovalResolveCapability(spec, home=self.home),
+            "execution_retry": lambda spec: ExecutionRetryCapability(spec, home=self.home),
         }
         handlers = {}
         for name, handler_key in action_handler_keys().items():
@@ -254,7 +258,7 @@ class ToolCapability:
         )
 
 
-class TaskCreateCapability:
+class TaskRecordCapability:
     def __init__(self, spec: ToolSpec, *, home: Path):
         self.spec = spec
         self.home = home
@@ -271,24 +275,21 @@ class TaskCreateCapability:
             return CapabilityResult(
                 ok=False,
                 action="task",
-                observation="task.create requires a prompt.",
-                message="task.create requires a prompt.",
+                observation="task.record requires a prompt.",
+                message="task.record requires a prompt.",
                 terminal=True,
             )
         config = load_config(self.home)
         tasks = TaskStore(self.home)
         graph = GraphStore(self.home)
-        execution = ExecutionService(self.home)
-        governance = GovernanceEngine(self.home)
-        workspace = str(Path.cwd().resolve())
+        workspace = _resolve_workspace(context.workspace)
         from .provider import build_provider
-        provider = build_provider(config.model)
-        decision = await governance.decide_task(
-            prompt=prompt, sender_id=context.sender_id, workspace=workspace, provider=provider
-        )
-        audit_reason = (
-            f"trigger=model_capability; sender={context.sender_id or 'local'}; "
-            f"reason={decision.why}; autonomy={decision.level}"
+
+        decision = await GovernanceEngine(self.home).decide_task(
+            prompt=prompt,
+            sender_id=context.sender_id,
+            workspace=workspace,
+            provider=build_provider(config.model),
         )
         task = tasks.create(
             title=prompt[:120],
@@ -301,35 +302,97 @@ class TaskCreateCapability:
             workspace=workspace,
             autonomy_level=decision.level,
             trust_rule_id=decision.rule_id,
-            why_now=audit_reason,
+            why_now=f"trigger=model_capability; reason={decision.why}; autonomy={decision.level}",
         )
-        graph.upsert("Person", context.sender_id or "local", {"last_task_id": task.id, "source": context.source})
         graph.upsert("Task", task.id, {"title": task.title, "status": task.status, "prompt": task.prompt})
-        planned = await execution.plan_task(task)
-        facts: dict[str, Any] = {
-            "task_id": planned.id,
-            "status": planned.status,
-            "autonomy_level": planned.autonomy_level,
-            "trust_rule_id": planned.trust_rule_id,
-            "plan_summary": planned.plan_summary,
-        }
-        if decision.action == "auto_execute" and decision.trusted_project:
-            queued = tasks.update_task(planned.id, status="queued") or planned
-            facts["status"] = queued.status
-            return _fact_result("task", facts, task_id=queued.id)
-        approval = tasks.create_approval(task_id=planned.id, peer_id=context.peer_id, sender_id=context.sender_id)
-        awaiting = tasks.update_task(planned.id, status="awaiting_approval") or planned
-        facts.update(
+        return _fact_result(
+            "task",
             {
-                "status": awaiting.status,
-                "approval": {
-                    "action": approval.action,
-                    "code": approval.code,
-                    "expires_at": approval.expires_at,
-                },
-            }
+                "task_id": task.id,
+                "status": task.status,
+                "autonomy_level": task.autonomy_level,
+                "trust_rule_id": task.trust_rule_id,
+            },
+            task_id=task.id,
         )
-        return _fact_result("task", facts, task_id=awaiting.id)
+
+
+class TaskPrepareCapability:
+    def __init__(self, spec: ToolSpec, *, home: Path):
+        self.spec = spec
+        self.home = home
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        task_id = _arg_text(args, "task_id")
+        task = TaskStore(self.home).get(task_id) if task_id else None
+        if task is None:
+            return CapabilityResult(ok=False, action="task", observation=f"task not found: {task_id}", message=f"task not found: {task_id}", terminal=True)
+        planned = await ExecutionService(self.home).plan_task(task)
+        return _fact_result(
+            "task",
+            {"task_id": planned.id, "status": planned.status, "plan_summary": planned.plan_summary},
+            task_id=planned.id,
+        )
+
+
+class ApprovalRequestCapability:
+    def __init__(self, spec: ToolSpec, *, home: Path):
+        self.spec = spec
+        self.home = home
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        task_id = _arg_text(args, "task_id")
+        tasks = TaskStore(self.home)
+        task = tasks.get(task_id) if task_id else None
+        if task is None:
+            return CapabilityResult(ok=False, action="approval", observation=f"task not found: {task_id}", message=f"task not found: {task_id}", terminal=True)
+        approval = tasks.create_approval(task_id=task.id, peer_id=context.peer_id or task.peer_id, sender_id=context.sender_id or task.sender_id)
+        awaiting = tasks.update_task(task.id, status="awaiting_approval") or task
+        return _fact_result(
+            "approval",
+            {
+                "task_id": awaiting.id,
+                "status": awaiting.status,
+                "approval": {"action": approval.action, "code": approval.code, "expires_at": approval.expires_at},
+            },
+            task_id=awaiting.id,
+        )
+
+
+class TaskQueueCapability:
+    def __init__(self, spec: ToolSpec, *, home: Path):
+        self.spec = spec
+        self.home = home
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        task_id = _arg_text(args, "task_id")
+        tasks = TaskStore(self.home)
+        task = tasks.get(task_id) if task_id else None
+        if task is None:
+            return CapabilityResult(ok=False, action="task", observation=f"task not found: {task_id}", message=f"task not found: {task_id}", terminal=True)
+        execution = ExecutionService(self.home)
+        if not execution.execution_allowed(task):
+            return CapabilityResult(ok=False, action="task", observation="execution grant missing", message="execution grant missing", terminal=True)
+        queued = tasks.update_task(task.id, status="queued") or task
+        return _fact_result("task", {"task_id": queued.id, "status": queued.status}, task_id=queued.id)
 
 
 class WatchCreateCapability:
@@ -556,6 +619,58 @@ class ApprovalResolveCapability:
         return None
 
 
+class ExecutionRetryCapability:
+    def __init__(self, spec: ToolSpec, *, home: Path):
+        self.spec = spec
+        self.home = home
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        task_id = _arg_text(args, "task_id")
+        if not task_id:
+            return CapabilityResult(
+                ok=False,
+                action="execution",
+                observation="execution.retry requires task_id.",
+                message="execution.retry requires task_id.",
+                terminal=True,
+            )
+        tasks = TaskStore(self.home)
+        task = tasks.get(task_id)
+        if task is None:
+            return CapabilityResult(
+                ok=False,
+                action="execution",
+                observation=f"task not found: {task_id}",
+                message=f"task not found: {task_id}",
+                terminal=True,
+            )
+        execution = ExecutionService(self.home)
+        if not execution.execution_allowed(task):
+            return CapabilityResult(
+                ok=False,
+                action="execution",
+                observation="execution grant missing: approved approval or explicit L3 trust rule required",
+                message="execution grant missing: approved approval or explicit L3 trust rule required",
+                terminal=True,
+            )
+        follow_up = _arg_text(args, "follow_up_prompt")
+        retry_task = replace(task, prompt=f"{task.prompt}\n\nFollow-up execution instruction:\n{follow_up}" if follow_up else task.prompt)
+        result = await execution.execute_task(retry_task)
+        facts = {
+            "task_id": result.id,
+            "status": result.status,
+            "result_summary": result.result_summary,
+            "error": result.error,
+        }
+        return _fact_result("execution", facts, task_id=result.id)
+
+
 def build_capability_registry(
     home: Path,
     *,
@@ -588,3 +703,8 @@ def _fact_result(action: str, facts: dict[str, Any], *, task_id: str = "") -> Ca
 def _arg_text(args: dict[str, Any], key: str) -> str:
     value = args.get(key)
     return str(value).strip() if value is not None else ""
+
+
+def _resolve_workspace(workspace: str) -> str:
+    raw = workspace.strip() if workspace else ""
+    return str(Path(raw or Path.cwd()).expanduser().resolve())
