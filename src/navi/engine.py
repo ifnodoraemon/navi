@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .config import load_config
@@ -75,6 +77,7 @@ class HernessEngine:
             permission_ceiling=self.permission_ceiling,
         )
         observations: list[str] = []
+        pending_approval_prompt = ""
         last_result: AgentTurnResult | None = None
         for _ in range(self.step_budget):
             syscall = await self.planner.plan(
@@ -91,6 +94,9 @@ class HernessEngine:
                 permission=syscall.permission,
                 context=context,
             )
+            approval_prompt = self._approval_prompt_from_facts(invoked.facts)
+            if approval_prompt:
+                pending_approval_prompt = approval_prompt
             result = AgentTurnResult(
                 text=invoked.message or invoked.observation,
                 task_id=invoked.task_id,
@@ -110,6 +116,7 @@ class HernessEngine:
                     model_role=last_result.model_role,
                     terminal=True,
                 )
+                result = self._ensure_pending_approval_prompt(result, pending_approval_prompt)
             last_result = result
             if result.terminal:
                 turn_res = self._record_turn(text, result, session_id=resolved_session_id)
@@ -125,6 +132,7 @@ class HernessEngine:
                 action=last_result.action if last_result else "capability",
                 task_id=last_result.task_id if last_result else "",
                 model_role=last_result.model_role if last_result else "responder",
+                pending_approval_prompt=pending_approval_prompt,
             )
             self._trigger_background_memory(turn_res)
             return turn_res
@@ -216,6 +224,7 @@ class HernessEngine:
         action: str,
         task_id: str = "",
         model_role: str = "responder",
+        pending_approval_prompt: str = "",
     ) -> AgentTurnResult:
         session_id = session_id or self.runtime.memory.new_session_id()
         observation = "\n\n".join(observations)
@@ -256,6 +265,11 @@ class HernessEngine:
             )
         )
         answer = await self.runtime.complete(messages, role=model_role)
+        if pending_approval_prompt and not self._text_mentions_pending_approval(
+            answer,
+            pending_approval_prompt,
+        ):
+            answer = self._append_pending_approval_prompt(answer, pending_approval_prompt)
         self.runtime.memory.add_message(session_id, "assistant", answer)
         return AgentTurnResult(
             text=answer,
@@ -266,3 +280,64 @@ class HernessEngine:
             model_role=model_role,
             terminal=True,
         )
+
+    def _ensure_pending_approval_prompt(
+        self,
+        result: AgentTurnResult,
+        pending_approval_prompt: str,
+    ) -> AgentTurnResult:
+        if not pending_approval_prompt or self._text_mentions_pending_approval(
+            result.text,
+            pending_approval_prompt,
+        ):
+            return result
+        return AgentTurnResult(
+            text=self._append_pending_approval_prompt(result.text, pending_approval_prompt),
+            session_id=result.session_id,
+            task_id=result.task_id,
+            action=result.action,
+            observation=result.observation,
+            model_role=result.model_role,
+            terminal=result.terminal,
+        )
+
+    @staticmethod
+    def _append_pending_approval_prompt(text: str, pending_approval_prompt: str) -> str:
+        text = text.strip()
+        return f"{text}\n\n{pending_approval_prompt}" if text else pending_approval_prompt
+
+    @staticmethod
+    def _text_mentions_pending_approval(text: str, pending_approval_prompt: str) -> bool:
+        if pending_approval_prompt in text:
+            return True
+        marker = "审批码: `"
+        if marker not in pending_approval_prompt:
+            return False
+        code = pending_approval_prompt.split(marker, 1)[1].split("`", 1)[0]
+        return bool(code and code in text)
+
+    @staticmethod
+    def _approval_prompt_from_facts(facts: dict[str, Any] | None) -> str:
+        if not facts or facts.get("status") != "awaiting_approval":
+            return ""
+        approval = facts.get("approval")
+        if not isinstance(approval, dict):
+            return ""
+        code = str(approval.get("code") or "").strip()
+        if not code:
+            return ""
+        task_id = str(facts.get("task_id") or "").strip()
+        expires_at = approval.get("expires_at")
+        try:
+            minutes = max(0, round((float(expires_at) - time.time()) / 60)) if expires_at else 0
+        except (TypeError, ValueError):
+            minutes = 0
+        expiry = f"审批将在约 {minutes} 分钟后过期。" if minutes else "审批有过期时间，请尽快处理。"
+        lines = [
+            "需要你批准后才会执行。",
+            f"任务 ID: `{task_id}`" if task_id else "",
+            f"审批码: `{code}`",
+            expiry,
+            f"回复 `批准 {code}` / `approve {code}` 执行，或回复 `拒绝 {code}` / `reject {code}` 取消。",
+        ]
+        return "\n".join(line for line in lines if line)

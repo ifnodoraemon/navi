@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 from .engine import HernessEngine
@@ -373,6 +373,11 @@ def create_app(home: Path | None = None) -> FastAPI:
                 ensure_ascii=False,
             ),
         )
+
+    @app.get("/navi.svg", include_in_schema=False)
+    def navi_icon() -> Response:
+        svg = (Path(__file__).parent / "web" / "navi.svg").read_text(encoding="utf-8")
+        return Response(svg, media_type="image/svg+xml")
 
     return app
 
