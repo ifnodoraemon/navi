@@ -8,6 +8,21 @@ from .engine import HernessEngine
 from .runtime import AgentRuntime
 
 
+CONNECTOR_ALLOWED_TOOLS = frozenset(
+    {
+        "final.answer",
+        "clarify.ask",
+        "task.create",
+        "watch.create",
+        "approval.resolve",
+        "provider.config",
+        "service.status",
+        "task.status",
+        "task.list",
+    }
+)
+
+
 @dataclass(frozen=True)
 class ConnectorMessage:
     message_id: str
@@ -36,12 +51,14 @@ class ConnectorIngressRuntime:
         home: Path,
         runtime: AgentRuntime,
         allow_sources: set[str] | None = None,
+        allowed_tools: set[str] | None = None,
     ):
         self.agent = HernessEngine(
             home=home,
             runtime=runtime,
             project_dir=Path.cwd(),
             allow_sources=allow_sources,
+            allowed_tools=set(CONNECTOR_ALLOWED_TOOLS) if allowed_tools is None else allowed_tools,
         )
 
     async def handle(self, message: ConnectorMessage) -> str:

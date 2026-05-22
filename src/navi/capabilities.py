@@ -70,17 +70,20 @@ class CapabilityRegistry:
         home: Path,
         project_dir: Path | None = None,
         allow_sources: set[str] | None = None,
+        allowed_tools: set[str] | None = None,
         disabled_tools: set[str] | None = None,
         permission_ceiling: str = "write",
     ):
         self.home = home
         self.allow_sources = allow_sources
+        self.allowed_tools = allowed_tools
         self.disabled_tools = disabled_tools or set()
         self.permission_ceiling = permission_ceiling
         self.gateway = build_tool_gateway(
             home,
             project_dir=project_dir,
             allow_sources=allow_sources,
+            allowed_tools=allowed_tools,
             disabled_tools=disabled_tools,
             permission_ceiling=permission_ceiling,
         )
@@ -136,7 +139,7 @@ class CapabilityRegistry:
                 message=f"permission ceiling {context.permission_ceiling} blocks requested permission {permission}",
                 terminal=True,
             )
-        if handler.spec.permission != permission:
+        if not permission_allows(handler.spec.permission, permission):
             return CapabilityResult(
                 ok=False,
                 action="capability_error",
@@ -153,7 +156,8 @@ class CapabilityRegistry:
         return {
             name: handler
             for name, handler in handlers.items()
-            if name not in self.disabled_tools
+            if (self.allowed_tools is None or name in self.allowed_tools)
+            and name not in self.disabled_tools
             and (self.allow_sources is None or handler.spec.source in self.allow_sources)
             and permission_allows(handler.spec.permission, self.permission_ceiling)
         }
@@ -555,6 +559,7 @@ def build_capability_registry(
     *,
     project_dir: Path | None = None,
     allow_sources: set[str] | None = None,
+    allowed_tools: set[str] | None = None,
     disabled_tools: set[str] | None = None,
     permission_ceiling: str = "write",
 ) -> CapabilityRegistry:
@@ -562,6 +567,7 @@ def build_capability_registry(
         home=home,
         project_dir=project_dir,
         allow_sources=allow_sources,
+        allowed_tools=allowed_tools,
         disabled_tools=disabled_tools,
         permission_ceiling=permission_ceiling,
     )

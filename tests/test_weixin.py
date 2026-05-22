@@ -250,6 +250,32 @@ async def test_weixin_plain_approval_queues_task(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_weixin_remote_delete_capability_is_not_available(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
+    store_provider = ScriptedProvider(
+        '{"tool":"task.delete","permission":"write","args":{"task_id":"task-delete-me"},"confidence":0.95,"reason":"delete requested"}'
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=_pool(store_provider))
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
+    task = service.active.tasks.create("remote delete should be blocked", status="awaiting_approval")
+    store_provider.response = (
+        '{"tool":"task.delete","permission":"write","args":{"task_id":"'
+        + task.id
+        + '"},"confidence":0.95,"reason":"delete requested"}'
+    )
+
+    handled = await service.handle_update(
+        account,
+        WeixinUpdate(message_id="msg-delete", peer_id="peer", sender_id="sender", text=f"删除任务 {task.id}"),
+    )
+
+    assert handled is True
+    assert service.active.tasks.get(task.id) is not None
+    assert "capability not found: task.delete" in service.client.sent[-1]["text"]
+
+
+@pytest.mark.asyncio
 async def test_weixin_plain_task_status_uses_fact_tool(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     provider = ScriptedProvider(

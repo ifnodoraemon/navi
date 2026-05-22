@@ -36,6 +36,7 @@ class HernessEngine:
         runtime: AgentRuntime,
         project_dir: Path | None = None,
         allow_sources: set[str] | None = None,
+        allowed_tools: set[str] | None = None,
         disabled_tools: set[str] | None = None,
         permission_ceiling: str = "write",
         step_budget: int | None = None,
@@ -48,6 +49,7 @@ class HernessEngine:
             home=home,
             project_dir=project_dir or Path.cwd(),
             allow_sources=allow_sources,
+            allowed_tools=allowed_tools,
             disabled_tools=disabled_tools,
             permission_ceiling=permission_ceiling,
         )
