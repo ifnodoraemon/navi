@@ -228,12 +228,11 @@ class ExecutionService:
         ) or task
         
         # Record the evolution event
-        task_after = self.tasks.get(task.id)
         after_state = json.dumps(
             {
-                "status": task_after.status if task_after else status,
-                "result_summary": task_after.result_summary if task_after else result.summary,
-                "error": task_after.error if task_after else ("" if result.exit_code == 0 else result.stderr),
+                "status": updated_task.status,
+                "result_summary": updated_task.result_summary,
+                "error": updated_task.error,
             },
             sort_keys=True
         )

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import pytest
+import shutil
+import subprocess
 import time
 
 from navi.provider import ChatMessage, MockProvider, ModelPool
@@ -154,7 +156,7 @@ async def test_proactive_event_watchers(tmp_path):
     graph.upsert(
         "Project",
         str(project_path),
-        {"last_git_status_hash": "", "log_size_dev.log": 0},
+        {"last_git_status_hash": "", "log_size_logs/dev.log": 0},
     )
     
     # Write mock exception logs
@@ -209,7 +211,7 @@ async def test_log_rotation_and_chunked_reads(tmp_path):
     
     project_path = tmp_path / "rotation_project"
     project_path.mkdir(parents=True, exist_ok=True)
-    graph.upsert("Project", str(project_path), {"log_size_dev.log": 500})
+    graph.upsert("Project", str(project_path), {"log_size_logs/dev.log": 500})
     
     log_dir = project_path / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -230,7 +232,7 @@ async def test_log_rotation_and_chunked_reads(tmp_path):
     assert len(mock_invoke_calls) == 1
     assert "FATAL" in mock_invoke_calls[0][1]["prompt"]
     
-    graph.upsert("Project", str(project_path), {"log_size_dev.log": 0})
+    graph.upsert("Project", str(project_path), {"log_size_logs/dev.log": 0})
     huge_log = "Ok log lines...\n" * 1000 + "Exception: Crashed after huge output!\n"
     log_file.write_text(huge_log)
     
@@ -374,7 +376,7 @@ async def test_daemon_active_task_suppression(tmp_path):
     assert len(mock_invokes) == 1
     
     # Reset offsets
-    graph.upsert("Project", str(project_path), {"log_size_dev.log": 0, "last_err_fp_dev.log": ""})
+    graph.upsert("Project", str(project_path), {"log_size_logs/dev.log": 0, "last_err_fp_logs/dev.log": ""})
     mock_invokes.clear()
     
     # Case 2: Active task in progress for this workspace, should suppress proactive alert!
@@ -383,6 +385,91 @@ async def test_daemon_active_task_suppression(tmp_path):
     events_suppressed = await daemon.process_events_once()
     assert len(events_suppressed) == 0
     assert len(mock_invokes) == 0
+    project = graph.get_by_name("Project", str(project_path))
+    assert project.data["log_size_logs/dev.log"] == len(log_file.read_bytes())
+    assert project.data["last_err_fp_logs/dev.log"]
+
+
+@pytest.mark.asyncio
+async def test_daemon_git_suppression_advances_hash(tmp_path):
+    if not shutil.which("git"):
+        pytest.skip("git binary is required for daemon git status coverage")
+
+    from navi.daemon import SystemDaemon
+    from navi.graph import GraphStore
+    from navi.tasks import TaskStore
+    from navi.capabilities import CapabilityResult
+
+    daemon = SystemDaemon(tmp_path)
+    graph = GraphStore(tmp_path)
+    tasks = TaskStore(tmp_path)
+
+    project_path = tmp_path / "git_active_project"
+    project_path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init"], cwd=project_path, check=True, capture_output=True)
+    (project_path / "changed.py").write_text("print('changed')\n")
+
+    graph.upsert("Project", str(project_path), {"last_git_status_hash": ""})
+    tasks.create(
+        title="Active git task",
+        prompt="Fix git project",
+        kind="task",
+        workspace=str(project_path),
+        status="running",
+    )
+
+    mock_invokes = []
+
+    async def mock_invoke(name, args, permission=None, context=None):
+        mock_invokes.append(args)
+        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", task_id="t-1")
+
+    daemon.capabilities.invoke = mock_invoke
+
+    events = await daemon.process_events_once()
+
+    assert events == []
+    assert mock_invokes == []
+    project = graph.get_by_name("Project", str(project_path))
+    assert project.data["last_git_status_hash"]
+
+
+@pytest.mark.asyncio
+async def test_daemon_log_keys_include_relative_path(tmp_path):
+    from navi.daemon import SystemDaemon
+    from navi.graph import GraphStore
+    from navi.capabilities import CapabilityResult
+
+    daemon = SystemDaemon(tmp_path)
+    graph = GraphStore(tmp_path)
+
+    project_path = tmp_path / "collision_project"
+    project_path.mkdir(parents=True, exist_ok=True)
+    nested_log_dir = project_path / "logs"
+    nested_log_dir.mkdir(parents=True, exist_ok=True)
+    root_log = project_path / "app.log"
+    nested_log = nested_log_dir / "app.log"
+    root_log.write_text("Exception: root app failed\n")
+    nested_log.write_text("FATAL: nested app failed\n")
+    graph.upsert("Project", str(project_path), {})
+
+    mock_invokes = []
+
+    async def mock_invoke(name, args, permission=None, context=None):
+        mock_invokes.append(args)
+        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", task_id="t-1")
+
+    daemon.capabilities.invoke = mock_invoke
+
+    events = await daemon.process_events_once()
+
+    assert len(events) == 2
+    assert len(mock_invokes) == 2
+    project = graph.get_by_name("Project", str(project_path))
+    assert project.data["log_size_app.log"] == len(root_log.read_bytes())
+    assert project.data["log_size_logs/app.log"] == len(nested_log.read_bytes())
+    assert project.data["last_err_fp_app.log"]
+    assert project.data["last_err_fp_logs/app.log"]
 
 
 @pytest.mark.asyncio
@@ -396,7 +483,7 @@ async def test_daemon_fingerprint_spam_protection(tmp_path):
     
     project_path = tmp_path / "fingerprint_project"
     project_path.mkdir(parents=True, exist_ok=True)
-    graph.upsert("Project", str(project_path), {"log_size_dev.log": 0})
+    graph.upsert("Project", str(project_path), {"log_size_logs/dev.log": 0})
     
     log_dir = project_path / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -417,7 +504,7 @@ async def test_daemon_fingerprint_spam_protection(tmp_path):
     
     # Reset log_size but keep same exception contents
     project = graph.get_by_name("Project", str(project_path))
-    project.data["log_size_dev.log"] = 0
+    project.data["log_size_logs/dev.log"] = 0
     graph.upsert("Project", str(project_path), project.data)
     mock_invokes.clear()
     
@@ -430,10 +517,9 @@ async def test_daemon_fingerprint_spam_protection(tmp_path):
     log_file.write_text("FATAL: Out of memory in database connections\n")
     # Reset log size so it parses
     project = graph.get_by_name("Project", str(project_path))
-    project.data["log_size_dev.log"] = 0
+    project.data["log_size_logs/dev.log"] = 0
     graph.upsert("Project", str(project_path), project.data)
     
     events3 = await daemon.process_events_once()
     assert len(events3) == 1
     assert len(mock_invokes) == 1
-

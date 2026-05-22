@@ -235,6 +235,7 @@ class SystemDaemon:
                     message=f"Git filesystem mutation detected in {project_path}.",
                     prompt=prompt,
                     state_updates={"last_git_status_hash": current_hash},
+                    suppressed_state_updates={"last_git_status_hash": current_hash},
                 )
             )
         except (OSError, asyncio.SubprocessError) as e:
@@ -255,8 +256,9 @@ class SystemDaemon:
                 continue
             for file_path in log_dir.glob("*.log"):
                 try:
+                    log_rel_path = str(file_path.relative_to(project_path))
                     current_size = file_path.stat().st_size
-                    log_key = f"log_size_{file_path.name}"
+                    log_key = f"log_size_{log_rel_path}"
                     last_size = project_data.get(log_key, 0)
                     if current_size < last_size:
                         last_size = 0
@@ -277,24 +279,29 @@ class SystemDaemon:
                         continue
 
                     error_fingerprint = hashlib.sha256("\n".join(error_lines).encode()).hexdigest()
-                    last_fingerprint = project_data.get(f"last_err_fp_{file_path.name}", "")
+                    fp_key = f"last_err_fp_{log_rel_path}"
+                    last_fingerprint = project_data.get(fp_key, "")
                     if error_fingerprint == last_fingerprint:
                         state_updates[log_key] = new_last_size
                         continue
 
                     prompt = (
-                        f"Proactive Alert: I detected an exception/error in local service log file: {file_path.name}\n"
+                        f"Proactive Alert: I detected an exception/error in local service log file: {log_rel_path}\n"
                         f"New log entries:\n{new_content}\n"
                         f"Analyze the error, find the root cause, and propose a fix."
                     )
                     events.append(
                         ProactiveEvent(
                             source="event_log",
-                            message=f"Exception detected in log {file_path.name}.",
+                            message=f"Exception detected in log {log_rel_path}.",
                             prompt=prompt,
                             state_updates={
                                 log_key: new_last_size,
-                                f"last_err_fp_{file_path.name}": error_fingerprint,
+                                fp_key: error_fingerprint,
+                            },
+                            suppressed_state_updates={
+                                log_key: new_last_size,
+                                fp_key: error_fingerprint,
                             },
                         )
                     )
