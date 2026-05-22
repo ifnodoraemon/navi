@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from typing import TYPE_CHECKING
 from .db import connect
 from .json_utils import parse_first_json_object
 from .text_utils import truncate_middle
+
+logger = logging.getLogger("navi.memory")
 
 if TYPE_CHECKING:
     from .provider import ModelPool
@@ -498,7 +501,13 @@ class MemoryStore:
 
                 try:
                     response_raw = await provider.complete_for("planner", chat_messages)
-                except Exception:
+                except Exception as e:
+                    logger.warning(
+                        "Memory consolidation LLM call failed for session %s: %s",
+                        session_id,
+                        e,
+                        exc_info=True,
+                    )
                     return []
 
                 # 5. Extract JSON object
@@ -679,7 +688,13 @@ class MemoryStore:
 
         try:
             response_raw = await provider.complete_for("planner", chat_messages)
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "Task memory extraction LLM call failed for task %s: %s",
+                task.id,
+                e,
+                exc_info=True,
+            )
             return []
 
         # 5. Extract JSON object

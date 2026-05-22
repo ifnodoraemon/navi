@@ -112,6 +112,27 @@ async def test_extract_and_consolidate_memories_deduplicates_batch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_extract_and_consolidate_memories_logs_provider_failure(tmp_path, caplog):
+    store = MemoryStore(tmp_path)
+    session_id = "failing-session"
+    store.add_message(session_id, "user", "Remember this.")
+    store.add_message(session_id, "assistant", "Ok.")
+
+    class FailingProvider(ScriptedProvider):
+        async def complete(self, messages):
+            raise RuntimeError("planner unavailable")
+
+    caplog.set_level("WARNING", logger="navi.memory")
+    result = await store.extract_and_consolidate_memories(
+        session_id,
+        ModelPool(default=FailingProvider([])),
+    )
+
+    assert result == []
+    assert "Memory consolidation LLM call failed" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_session_lock_pool_serializes_same_session_and_cleans_up(tmp_path):
     store = MemoryStore(tmp_path)
     session_id = "lock-session"
@@ -213,6 +234,37 @@ async def test_extract_memories_from_task(tmp_path):
     assert len(events) == 1
     assert events[0].task_id == "task-abc-123"
     assert events[0].target_type == "memory_item"
+
+
+@pytest.mark.asyncio
+async def test_extract_memories_from_task_logs_provider_failure(tmp_path, caplog):
+    store = MemoryStore(tmp_path)
+    task = Task(
+        id="task-log-failure",
+        title="Compile package",
+        prompt="Compile",
+        status="failed",
+        plan_summary="",
+        result_summary="",
+        error="",
+        workspace=str(tmp_path),
+        created_at=0.0,
+        updated_at=0.0,
+    )
+
+    class FailingProvider(ScriptedProvider):
+        async def complete(self, messages):
+            raise RuntimeError("planner unavailable")
+
+    caplog.set_level("WARNING", logger="navi.memory")
+    result = await store.extract_memories_from_task(
+        task,
+        [],
+        ModelPool(default=FailingProvider([])),
+    )
+
+    assert result == []
+    assert "Task memory extraction LLM call failed" in caplog.text
 
 
 @pytest.mark.asyncio
