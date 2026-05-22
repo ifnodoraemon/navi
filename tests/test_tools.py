@@ -152,3 +152,73 @@ def test_provider_config_tool_reports_model_fallbacks(tmp_path):
     assert result.facts["provider"] == "private-primary"
     assert result.facts["fallbacks"][0]["provider"] == "mock"
     assert result.facts["routes"]["responder"]["provider"] == "mock"
+
+
+def test_tool_schema_validation(tmp_path):
+    from navi.tools import ToolRegistry, ToolSpec, ToolResult
+    registry = ToolRegistry(home=tmp_path)
+    
+    spec = ToolSpec(
+        name="test.calculator",
+        description="A simple calculator",
+        input_schema={
+            "type": "object",
+            "required": ["a", "b", "operation"],
+            "properties": {
+                "a": {"type": "integer"},
+                "b": {"type": "number"},
+                "operation": {"type": "string"},
+                "options": {
+                    "type": "object",
+                    "properties": {
+                        "precision": {"type": "integer"},
+                        "verbose": {"type": "boolean"},
+                    }
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                }
+            }
+        },
+        output_schema={},
+    )
+    
+    def handler(args):
+        return ToolResult(tool="test.calculator", ok=True, facts={"result": 42})
+        
+    registry.register(spec, handler)
+    
+    # 1. Valid invocation
+    res = registry.call("test.calculator", {
+        "a": 5,
+        "b": 3.14,
+        "operation": "add",
+        "options": {"precision": 2, "verbose": True},
+        "tags": ["math", "simple"]
+    })
+    assert res.ok is True
+    assert res.facts["result"] == 42
+    
+    # 2. Missing required fields
+    res = registry.call("test.calculator", {
+        "a": 5,
+        "operation": "add"
+    })
+    assert res.ok is False
+    assert "missing required property: b" in res.error
+    
+    # 3. Type violations
+    res = registry.call("test.calculator", {
+        "a": "not_an_int",
+        "b": True,
+        "operation": 123,
+        "options": "should_be_object",
+        "tags": ["valid", 123]
+    })
+    assert res.ok is False
+    assert "'a' must be an integer" in res.error
+    assert "'b' must be a number" in res.error
+    assert "'operation' must be a string" in res.error
+    assert "'options' must be an object" in res.error
+    assert "'tags[1]' must be a string" in res.error

@@ -44,7 +44,7 @@ class HernessEngine:
         self.home = home
         self.runtime = runtime
         self.permission_ceiling = permission_ceiling
-        self.step_budget = step_budget or load_config(home).runtime.agent_step_budget
+        self.step_budget = step_budget if step_budget is not None else load_config(home).runtime.agent_step_budget
         self.capabilities = CapabilityRegistry(
             home=home,
             project_dir=project_dir or Path.cwd(),
@@ -81,6 +81,7 @@ class HernessEngine:
         observations: list[str] = []
         pending_approval_prompt = ""
         last_result: AgentTurnResult | None = None
+        budget_exhausted = False
         for _ in range(self.step_budget):
             syscall = await self.planner.plan(
                 text,
@@ -107,8 +108,6 @@ class HernessEngine:
                 model_role=syscall.model_role,
                 terminal=invoked.terminal,
             )
-            if result.terminal and result.action == "chat" and not result.text.strip():
-                break
             if result.terminal and observations and result.action == "chat" and last_result:
                 result = AgentTurnResult(
                     text=result.text,
@@ -125,6 +124,8 @@ class HernessEngine:
                 self._trigger_background_memory(turn_res)
                 return turn_res
             observations.append(result.observation or result.text)
+        else:
+            budget_exhausted = True
 
         if observations:
             turn_res = await self._finalize_observations(
@@ -135,9 +136,34 @@ class HernessEngine:
                 task_id=last_result.task_id if last_result else "",
                 model_role=last_result.model_role if last_result else "responder",
                 pending_approval_prompt=pending_approval_prompt,
+                budget_exhausted=budget_exhausted,
             )
             self._trigger_background_memory(turn_res)
             return turn_res
+
+        if budget_exhausted:
+            resolved_session_id = resolved_session_id or self.runtime.memory.new_session_id()
+            self.runtime.memory.add_message(resolved_session_id, "user", text)
+            messages = self.runtime._build_messages(
+                resolved_session_id,
+                user_text=text,
+                operating_context=OperatingContext(
+                    home=self.home,
+                    source=source,
+                    peer_id=peer_id,
+                    sender_id=sender_id,
+                    permission_ceiling=self.permission_ceiling,
+                    skill_permission_ceiling="read",
+                ),
+            )
+            answer = await self.runtime.complete(messages, role="responder")
+            warning = "\n\n(注意：已达到步骤预算上限，任务可能未完成。) / (Warning: Step budget limit reached, the task may not be completed.)"
+            answer_with_warning = f"{answer}{warning}"
+            self.runtime.memory.add_message(resolved_session_id, "assistant", answer_with_warning)
+            turn_res = AgentTurnResult(text=answer_with_warning, session_id=resolved_session_id, action="chat", terminal=True)
+            self._trigger_background_memory(turn_res)
+            return turn_res
+
         reply = await self.runtime.chat(
             text,
             session_id=resolved_session_id,
@@ -174,6 +200,8 @@ class HernessEngine:
                 self._background_tasks.discard(t)
                 try:
                     t.result()
+                except asyncio.CancelledError:
+                    pass
                 except Exception as e:
                     logger.error(f"Background memory extraction failed: {e}", exc_info=True)
             task.add_done_callback(handle_done)
@@ -181,10 +209,14 @@ class HernessEngine:
     async def shutdown(self, *, timeout: float = 10.0) -> None:
         if not self._background_tasks:
             return
-        await asyncio.wait_for(
-            asyncio.gather(*tuple(self._background_tasks), return_exceptions=True),
-            timeout=timeout,
-        )
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tuple(self._background_tasks), return_exceptions=True),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            for task in list(self._background_tasks):
+                task.cancel()
 
     def _memory_semaphore(self) -> asyncio.Semaphore:
         if self._memory_sem is None:
@@ -227,6 +259,7 @@ class HernessEngine:
         task_id: str = "",
         model_role: str = "responder",
         pending_approval_prompt: str = "",
+        budget_exhausted: bool = False,
     ) -> AgentTurnResult:
         session_id = session_id or self.runtime.memory.new_session_id()
         observation = "\n\n".join(observations)
@@ -272,6 +305,9 @@ class HernessEngine:
             pending_approval_prompt,
         ):
             answer = self._append_pending_approval_prompt(answer, pending_approval_prompt)
+        if budget_exhausted:
+            warning = "\n\n(注意：已达到步骤预算上限，任务可能未完成。) / (Warning: Step budget limit reached, the task may not be completed.)"
+            answer = f"{answer}{warning}"
         self.runtime.memory.add_message(session_id, "assistant", answer)
         return AgentTurnResult(
             text=answer,

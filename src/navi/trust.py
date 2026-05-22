@@ -207,8 +207,18 @@ class TrustStore:
                 data={"last_task_id": task.id, "auto_created": True},
             )
         new_success = rule.success_count + 1
+        consecutive_successes = rule.data.get("consecutive_successes", 0) + 1
         new_level = rule.autonomy_level
         project_path = rule.project_path
+        if consecutive_successes >= 3:
+            current_index = LEVELS.index(rule.autonomy_level)
+            if current_index < LEVELS.index("L3"):
+                if (current_index + 1) < LEVELS.index("L3") or (task.workspace or project_path):
+                    new_level = LEVELS[current_index + 1]
+                    consecutive_successes = 0
+                    if new_level == "L3" and not project_path:
+                        project_path = task.workspace
+        updated_data = {"consecutive_successes": consecutive_successes}
         return self._update_counts(
             rule.id,
             success_count=new_success,
@@ -216,6 +226,7 @@ class TrustStore:
             autonomy_level=new_level,
             project_path=project_path,
             reason=f"Successful task {task.id}",
+            data=updated_data,
         )
 
     async def record_failure(self, task: Task) -> TrustRule | None:
@@ -235,6 +246,7 @@ class TrustStore:
             autonomy_level=new_level,
             project_path=rule.project_path,
             reason=f"Failed task {task.id}",
+            data={"consecutive_successes": 0},
         )
 
     def upsert(
@@ -428,11 +440,15 @@ class TrustStore:
         autonomy_level: str,
         project_path: str,
         reason: str,
+        data: dict[str, Any] | None = None,
     ) -> TrustRule:
         rule = self.get(rule_id)
         if rule is None:
             raise ValueError(f"Unknown trust rule: {rule_id}")
-        data = {**rule.data, "last_reason": reason}
+        base_data = rule.data
+        if data:
+            base_data = {**base_data, **data}
+        final_data = {**base_data, "last_reason": reason}
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -446,7 +462,7 @@ class TrustStore:
                     failure_count,
                     autonomy_level,
                     project_path,
-                    json.dumps(data, sort_keys=True),
+                    json.dumps(final_data, sort_keys=True),
                     time.time(),
                     rule_id,
                 ),

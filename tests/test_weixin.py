@@ -24,14 +24,30 @@ class ScriptedProvider(MockProvider):
 
 
 class PlannerThenMockProvider(MockProvider):
-    def __init__(self, decision: str = '{"tool":"final.answer","confidence":1.0,"reason":"ordinary chat"}'):
+    def __init__(self, decision: str | None = None):
         self.decision = decision
         self.messages: list[ChatMessage] = []
 
     async def complete(self, messages: list[ChatMessage]) -> str:
         self.messages = messages
         if messages and "model syscall planner" in messages[0].content:
-            return self.decision
+            if self.decision is not None:
+                return self.decision
+            import json
+            from navi.provider import _extract_planner_user_message
+            text = _extract_planner_user_message(
+                next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
+            )
+            return json.dumps(
+                {
+                    "tool": "final.answer",
+                    "permission": "read",
+                    "args": {"message": f"Navi received: {text}"},
+                    "confidence": 1.0,
+                    "reason": "ordinary chat",
+                },
+                ensure_ascii=False,
+            )
         return await super().complete(messages)
 
 

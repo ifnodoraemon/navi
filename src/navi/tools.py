@@ -16,6 +16,59 @@ logger = logging.getLogger(__name__)
 ToolHandler = Callable[[dict[str, Any]], "ToolResult"]
 
 
+def validate_schema(data: Any, schema: dict[str, Any], path: str = "") -> list[str]:
+    """Validates data against a simplified JSON Schema. Returns list of error messages."""
+    errors = []
+    if not isinstance(schema, dict):
+        return errors
+        
+    expected_type = schema.get("type")
+    
+    if expected_type == "object":
+        if not isinstance(data, dict):
+            errors.append(f"'{path or 'input'}' must be an object, got {type(data).__name__}")
+            return errors
+        
+        # Check required fields
+        required = schema.get("required", [])
+        for field in required:
+            if field not in data:
+                errors.append(f"'{path or 'input'}' is missing required property: {field}")
+                
+        # Validate properties
+        properties = schema.get("properties", {})
+        for key, val in data.items():
+            if key in properties:
+                errors.extend(validate_schema(val, properties[key], f"{path}.{key}" if path else key))
+                
+    elif expected_type == "array":
+        if not isinstance(data, (list, tuple)):
+            errors.append(f"'{path or 'input'}' must be an array, got {type(data).__name__}")
+            return errors
+        items = schema.get("items")
+        if items:
+            for idx, item in enumerate(data):
+                errors.extend(validate_schema(item, items, f"{path}[{idx}]"))
+                
+    elif expected_type == "string":
+        if not isinstance(data, str):
+            errors.append(f"'{path or 'input'}' must be a string, got {type(data).__name__}")
+            
+    elif expected_type == "integer":
+        if not isinstance(data, int) or isinstance(data, bool):
+            errors.append(f"'{path or 'input'}' must be an integer, got {type(data).__name__}")
+            
+    elif expected_type == "number":
+        if not isinstance(data, (int, float)) or isinstance(data, bool):
+            errors.append(f"'{path or 'input'}' must be a number, got {type(data).__name__}")
+            
+    elif expected_type == "boolean":
+        if not isinstance(data, bool):
+            errors.append(f"'{path or 'input'}' must be a boolean, got {type(data).__name__}")
+            
+    return errors
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -108,6 +161,19 @@ class ToolRegistry:
             )
             self._audit_call(args or {}, result)
             return result
+        schema = tool.spec.input_schema
+        if schema:
+            errors = validate_schema(args or {}, schema)
+            if errors:
+                result = ToolResult(
+                    tool=name,
+                    ok=False,
+                    error=f"Invalid arguments: {'; '.join(errors)}",
+                    started_at=started_at,
+                    ended_at=time.time(),
+                )
+                self._audit_call(args or {}, result)
+                return result
         try:
             result = tool.handler(args or {})
         except Exception as exc:  # pragma: no cover - defensive boundary for plugins.
