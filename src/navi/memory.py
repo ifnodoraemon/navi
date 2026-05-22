@@ -99,10 +99,10 @@ class MemoryStore:
                     legacy_db_path.replace(self.db_path)
                 except FileNotFoundError:
                     pass
-            self._init_db()
+        self._init_db()
         self._session_locks = {}
         self._session_lock_refs = {}
-        self._session_locks_guard = asyncio.Lock()
+        self._session_locks_guard: asyncio.Lock | None = None
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
@@ -595,7 +595,8 @@ class MemoryStore:
         return active_items
 
     async def _acquire_session_lock(self, session_id: str) -> asyncio.Lock:
-        async with self._session_locks_guard:
+        guard = self._session_lock_guard()
+        async with guard:
             lock = self._session_locks.get(session_id)
             if lock is None:
                 lock = asyncio.Lock()
@@ -604,13 +605,19 @@ class MemoryStore:
             return lock
 
     async def _release_session_lock(self, session_id: str) -> None:
-        async with self._session_locks_guard:
+        guard = self._session_lock_guard()
+        async with guard:
             refs = self._session_lock_refs.get(session_id, 0) - 1
             if refs > 0:
                 self._session_lock_refs[session_id] = refs
                 return
             self._session_lock_refs.pop(session_id, None)
             self._session_locks.pop(session_id, None)
+
+    def _session_lock_guard(self) -> asyncio.Lock:
+        if self._session_locks_guard is None:
+            self._session_locks_guard = asyncio.Lock()
+        return self._session_locks_guard
 
     async def extract_memories_from_task(
         self,

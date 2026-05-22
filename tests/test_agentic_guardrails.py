@@ -99,6 +99,19 @@ def test_engine_exposes_graceful_background_shutdown():
     assert "return_exceptions=True" in source
 
 
+def test_asyncio_primitives_are_lazily_initialized():
+    engine_init = _source(HernessEngine.__init__)
+    memory_init = _source(MemoryStore.__init__)
+    trust_init = _source(TrustStore.__init__)
+
+    assert "asyncio.Semaphore(" not in engine_init
+    assert "asyncio.Lock(" not in memory_init
+    assert "asyncio.Semaphore(" not in trust_init
+    assert "def _memory_semaphore" in _source(HernessEngine)
+    assert "def _session_lock_guard" in _source(MemoryStore)
+    assert "def _semantic_semaphore" in _source(TrustStore)
+
+
 def test_memory_provider_failures_are_logged_before_fallback():
     for method in (
         MemoryStore.extract_and_consolidate_memories,

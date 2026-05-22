@@ -180,6 +180,7 @@ async def test_extract_and_consolidate_memories_rejects_empty_session_id(tmp_pat
 @pytest.mark.asyncio
 async def test_session_lock_pool_serializes_same_session_and_cleans_up(tmp_path):
     store = MemoryStore(tmp_path)
+    assert store._session_locks_guard is None
     session_id = "lock-session"
     store.add_message(session_id, "user", "Remember that I prefer uv.")
     store.add_message(session_id, "assistant", "Noted.")
@@ -204,6 +205,7 @@ async def test_session_lock_pool_serializes_same_session_and_cleans_up(tmp_path)
     )
 
     assert max_active_calls == 1
+    assert store._session_locks_guard is not None
     assert len(store._session_locks) == 0
     assert len(store._session_lock_refs) == 0
 

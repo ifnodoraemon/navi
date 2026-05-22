@@ -465,6 +465,7 @@ def test_memory_store_migration_is_guarded_for_concurrent_initialization(tmp_pat
 @pytest.mark.asyncio
 async def test_semantic_trust_matching_reaches_later_batches(tmp_path):
     store = TrustStore(tmp_path)
+    assert store._semantic_sem is None
     store.upsert(
         name="relevant",
         pattern="deploy database",
@@ -497,6 +498,7 @@ async def test_semantic_trust_matching_reaches_later_batches(tmp_path):
 
     assert matched is not None
     assert matched.name == "relevant"
+    assert store._semantic_sem is not None
     assert len(provider.messages) == 6
 
 
@@ -609,11 +611,13 @@ async def test_engine_shutdown_waits_for_background_memory(tmp_path):
     runtime = DummyRuntime()
     runtime.memory = DummyMemory()
     engine = HernessEngine(home=tmp_path, runtime=runtime)
+    assert engine._memory_sem is None
 
     engine._trigger_background_memory(AgentTurnResult(text="hello", session_id="sess-1"))
     await engine.shutdown()
 
     assert completed is True
+    assert engine._memory_sem is not None
     assert len(engine._background_tasks) == 0
 
 

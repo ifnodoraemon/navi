@@ -50,7 +50,7 @@ class HernessEngine:
             permission_ceiling=permission_ceiling,
         )
         self.planner = ModelSyscallPlanner(runtime.provider)
-        self._memory_sem = asyncio.Semaphore(2)
+        self._memory_sem: asyncio.Semaphore | None = None
         self._background_tasks: set[asyncio.Task] = set()
 
     async def handle(
@@ -147,10 +147,9 @@ class HernessEngine:
     def _trigger_background_memory(self, result: AgentTurnResult) -> None:
         if result.session_id:
             logger = logging.getLogger("navi.engine")
-            # self._memory_sem is initialized in __init__ for task-safety
 
             async def run_with_semaphore():
-                async with self._memory_sem:
+                async with self._memory_semaphore():
                     await asyncio.shield(
                         self.runtime.memory.extract_and_consolidate_memories(
                             session_id=result.session_id,
@@ -176,6 +175,11 @@ class HernessEngine:
             asyncio.gather(*tuple(self._background_tasks), return_exceptions=True),
             timeout=timeout,
         )
+
+    def _memory_semaphore(self) -> asyncio.Semaphore:
+        if self._memory_sem is None:
+            self._memory_sem = asyncio.Semaphore(2)
+        return self._memory_sem
 
     def _conversation_context(self, session_id: str | None) -> str:
         if not session_id:

@@ -60,7 +60,7 @@ class TrustStore:
         self.home = home
         self.home.mkdir(parents=True, exist_ok=True)
         self.db_path = home / "trust.db"
-        self._semantic_sem = asyncio.Semaphore(2)
+        self._semantic_sem: asyncio.Semaphore | None = None
         self._init_db()
 
     def _init_db(self) -> None:
@@ -131,10 +131,8 @@ class TrustStore:
         if not provider:
             return None
             
-        # self._semantic_sem is initialized in __init__ for task-safety
-        
         async def sem_semantic_match(rule: TrustRule) -> tuple[TrustRule, bool]:
-            async with self._semantic_sem:
+            async with self._semantic_semaphore():
                 res = await self._semantic_match(rule.pattern, prompt, provider)
                 return rule, res
                 
@@ -157,6 +155,11 @@ class TrustStore:
             
         matching_rules.sort(key=lambda rule: (LEVELS.index(rule.autonomy_level), rule.updated_at), reverse=True)
         return matching_rules[0]
+
+    def _semantic_semaphore(self) -> asyncio.Semaphore:
+        if self._semantic_sem is None:
+            self._semantic_sem = asyncio.Semaphore(2)
+        return self._semantic_sem
 
     async def _semantic_match(self, pattern: str, prompt: str, provider: ModelPool | None = None) -> bool:
         if self._pattern_matches(pattern, prompt):
