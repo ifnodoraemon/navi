@@ -112,6 +112,36 @@ async def test_extract_and_consolidate_memories_deduplicates_batch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_extract_and_consolidate_memories_defaults_invalid_confidence(tmp_path):
+    store = MemoryStore(tmp_path)
+    session_id = "invalid-confidence-session"
+    store.add_message(session_id, "user", "Remember that pytest is preferred.")
+    store.add_message(session_id, "assistant", "Noted.")
+    provider = ScriptedProvider([
+        json.dumps(
+            {
+                "learnings": [
+                    {
+                        "action": "add",
+                        "type": "preference",
+                        "content": "Use pytest for Python tests.",
+                        "confidence": "very sure",
+                    }
+                ]
+            }
+        )
+    ])
+
+    affected_items = await store.extract_and_consolidate_memories(
+        session_id,
+        ModelPool(default=provider),
+    )
+
+    assert len(affected_items) == 1
+    assert affected_items[0].confidence == 0.7
+
+
+@pytest.mark.asyncio
 async def test_extract_and_consolidate_memories_logs_provider_failure(tmp_path, caplog):
     store = MemoryStore(tmp_path)
     session_id = "failing-session"
@@ -265,6 +295,46 @@ async def test_extract_memories_from_task_logs_provider_failure(tmp_path, caplog
 
     assert result == []
     assert "Task memory extraction LLM call failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_extract_memories_from_task_defaults_invalid_confidence(tmp_path):
+    store = MemoryStore(tmp_path)
+    task = Task(
+        id="task-invalid-confidence",
+        title="Compile package",
+        prompt="Compile",
+        status="completed",
+        plan_summary="",
+        result_summary="done",
+        error="",
+        workspace=str(tmp_path),
+        created_at=0.0,
+        updated_at=0.0,
+    )
+    provider = ScriptedProvider([
+        json.dumps(
+            {
+                "learnings": [
+                    {
+                        "action": "add",
+                        "type": "fact",
+                        "content": "Compilation completed successfully.",
+                        "confidence": {"score": 0.9},
+                    }
+                ]
+            }
+        )
+    ])
+
+    affected_items = await store.extract_memories_from_task(
+        task,
+        [],
+        ModelPool(default=provider),
+    )
+
+    assert len(affected_items) == 1
+    assert affected_items[0].confidence == 0.7
 
 
 @pytest.mark.asyncio
