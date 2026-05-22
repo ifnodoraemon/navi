@@ -26,6 +26,7 @@ class CapabilityContext:
     sender_id: str = ""
     source: str = "local"
     permission_ceiling: str = "write"
+    workspace: str = ""
 
 
 @dataclass(frozen=True)
@@ -372,6 +373,7 @@ class WatchCreateCapability:
             peer_id=context.peer_id,
             sender_id=context.sender_id,
             next_run_at=next_run,
+            workspace=context.workspace,
         )
         graph.upsert("Watch", watch.id, {"cron": cron, "prompt": prompt, "sender_id": context.sender_id})
         return _fact_result(

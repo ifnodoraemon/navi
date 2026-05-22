@@ -24,6 +24,8 @@ class OperatingContext:
     sender_id: str = ""
     permission_ceiling: str = "write"
     skill_permission_ceiling: str = "read"
+    workspace: str = ""
+    role: str = ""
     prompt_layers: tuple[str, ...] = (
         "identity",
         "runtime",

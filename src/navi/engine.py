@@ -77,6 +77,7 @@ class HernessEngine:
             sender_id=sender_id,
             source=source,
             permission_ceiling=self.permission_ceiling,
+            workspace=str(self.capabilities.gateway.project_dir.resolve()),
         )
         observations: list[str] = []
         pending_approval_prompt = ""
@@ -154,6 +155,7 @@ class HernessEngine:
                     sender_id=sender_id,
                     permission_ceiling=self.permission_ceiling,
                     skill_permission_ceiling="read",
+                    workspace=str(self.capabilities.gateway.project_dir.resolve()),
                 ),
             )
             answer = await self.runtime.complete(messages, role="responder")
@@ -174,6 +176,7 @@ class HernessEngine:
                 sender_id=sender_id,
                 permission_ceiling=self.permission_ceiling,
                 skill_permission_ceiling="read",
+                workspace=str(self.capabilities.gateway.project_dir.resolve()),
             ),
         )
         turn_res = AgentTurnResult(text=reply.content, session_id=reply.session_id, action="chat", terminal=True)
@@ -271,6 +274,7 @@ class HernessEngine:
                 home=self.home,
                 permission_ceiling=self.permission_ceiling,
                 skill_permission_ceiling="read",
+                workspace=str(self.capabilities.gateway.project_dir.resolve()),
             ),
         )
         messages.append(

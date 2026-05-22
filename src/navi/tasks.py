@@ -57,6 +57,7 @@ class Watch:
     last_run_at: float
     created_at: float
     updated_at: float
+    workspace: str = ""
 
 
 @dataclass(frozen=True)
@@ -154,10 +155,14 @@ class TaskStore:
                     next_run_at REAL NOT NULL,
                     last_run_at REAL NOT NULL,
                     created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    workspace TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
+            existing_watches = {row[1] for row in conn.execute("PRAGMA table_info(watches)").fetchall()}
+            if "workspace" not in existing_watches:
+                conn.execute("ALTER TABLE watches ADD COLUMN workspace TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS execution_logs (
@@ -517,7 +522,7 @@ class TaskStore:
             ).fetchall()
         return [Approval(*row) for row in rows]
 
-    def create_watch(self, *, cron: str, prompt: str, peer_id: str, sender_id: str, next_run_at: float) -> Watch:
+    def create_watch(self, *, cron: str, prompt: str, peer_id: str, sender_id: str, next_run_at: float, workspace: str = "") -> Watch:
         now = time.time()
         watch = Watch(
             id=uuid.uuid4().hex,
@@ -530,15 +535,16 @@ class TaskStore:
             last_run_at=0.0,
             created_at=now,
             updated_at=now,
+            workspace=workspace,
         )
         with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO watches(
                     id, cron, prompt, peer_id, sender_id, enabled,
-                    next_run_at, last_run_at, created_at, updated_at
+                    next_run_at, last_run_at, created_at, updated_at, workspace
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     watch.id,
@@ -551,6 +557,7 @@ class TaskStore:
                     watch.last_run_at,
                     watch.created_at,
                     watch.updated_at,
+                    watch.workspace,
                 ),
             )
         return watch
@@ -560,7 +567,7 @@ class TaskStore:
             rows = conn.execute(
                 """
                 SELECT id, cron, prompt, peer_id, sender_id, enabled,
-                       next_run_at, last_run_at, created_at, updated_at
+                       next_run_at, last_run_at, created_at, updated_at, workspace
                 FROM watches ORDER BY updated_at DESC LIMIT ?
                 """,
                 (limit,),
@@ -572,7 +579,7 @@ class TaskStore:
             row = conn.execute(
                 """
                 SELECT id, cron, prompt, peer_id, sender_id, enabled,
-                       next_run_at, last_run_at, created_at, updated_at
+                       next_run_at, last_run_at, created_at, updated_at, workspace
                 FROM watches WHERE id = ?
                 """,
                 (watch_id,),
@@ -584,7 +591,7 @@ class TaskStore:
             rows = conn.execute(
                 """
                 SELECT id, cron, prompt, peer_id, sender_id, enabled,
-                       next_run_at, last_run_at, created_at, updated_at
+                       next_run_at, last_run_at, created_at, updated_at, workspace
                 FROM watches WHERE enabled = 1 AND next_run_at <= ? ORDER BY next_run_at ASC
                 """,
                 (now,),
