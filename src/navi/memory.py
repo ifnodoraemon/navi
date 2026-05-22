@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from .db import connect
 from .json_utils import parse_first_json_object
+from .text_utils import truncate_middle
 
 if TYPE_CHECKING:
     from .provider import ModelPool
@@ -83,7 +84,10 @@ class MemoryStore:
         self.home = home
         self.memory_dir = home / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = home / "sessions.db"
+        legacy_db_path = home / "sessions.db"
+        self.db_path = home / "memory.db"
+        if legacy_db_path.exists() and not self.db_path.exists():
+            legacy_db_path.replace(self.db_path)
         self._init_db()
         self._session_locks = {}
 
@@ -498,6 +502,10 @@ class MemoryStore:
 
                 ledger = EvolutionLedger(self.home)
                 affected_items = []
+                seen_memory_keys = {
+                    (item.type, item.content.strip().lower())
+                    for item in active_items
+                }
                 for learning in learnings:
                     if not isinstance(learning, dict):
                         continue
@@ -507,8 +515,8 @@ class MemoryStore:
                         content = str(learning.get("content", "")).strip()
                         if not content or m_type not in LEARNABLE_MEMORY_TYPES:
                             continue
-                        # Double check to prevent duplicate add if content already exactly exists
-                        if any(item.content.lower() == content.lower() and item.type == m_type for item in active_items):
+                        memory_key = (m_type, content.lower())
+                        if memory_key in seen_memory_keys:
                             continue
 
                         try:
@@ -523,6 +531,7 @@ class MemoryStore:
                             status="active",
                             confidence=conf_val,
                         )
+                        seen_memory_keys.add(memory_key)
                         affected_items.append(new_item)
                         ledger.record(
                             task_id=task_id or f"session:{session_id}",
@@ -577,8 +586,8 @@ class MemoryStore:
                 f"Phase: {log.phase}\n"
                 f"Command: {log.command}\n"
                 f"Exit Code: {log.exit_code}\n"
-                f"Stdout: {_truncate_middle(log.stdout, TASK_LEARNING_LOG_LIMIT)}\n"
-                f"Stderr: {_truncate_middle(log.stderr, TASK_LEARNING_LOG_LIMIT)}"
+                f"Stdout: {truncate_middle(log.stdout, TASK_LEARNING_LOG_LIMIT)}\n"
+                f"Stderr: {truncate_middle(log.stderr, TASK_LEARNING_LOG_LIMIT)}"
             )
         logs_text = "\n---\n".join(logs_text_parts)
 
@@ -653,6 +662,10 @@ class MemoryStore:
 
         ledger = EvolutionLedger(self.home)
         affected_items = []
+        seen_memory_keys = {
+            (item.type, item.content.strip().lower())
+            for item in active_items
+        }
         for learning in learnings:
             if not isinstance(learning, dict):
                 continue
@@ -662,7 +675,8 @@ class MemoryStore:
                 content = str(learning.get("content", "")).strip()
                 if not content or m_type not in LEARNABLE_MEMORY_TYPES:
                     continue
-                if any(item.content.lower() == content.lower() and item.type == m_type for item in active_items):
+                memory_key = (m_type, content.lower())
+                if memory_key in seen_memory_keys:
                     continue
 
                 try:
@@ -677,6 +691,7 @@ class MemoryStore:
                     status="active",
                     confidence=conf_val,
                 )
+                seen_memory_keys.add(memory_key)
                 affected_items.append(new_item)
                 ledger.record(
                     task_id=task.id,
@@ -727,16 +742,3 @@ class MemoryStore:
             return 0
         freshness = min(10.0, max(0.0, (item.updated_at - 1_700_000_000) / 10_000_000))
         return priority + (overlap * 12) + (item.confidence * 10) + freshness
-
-
-def _truncate_middle(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    head_limit = max(1, limit // 2)
-    tail_limit = max(1, limit - head_limit)
-    omitted = len(text) - head_limit - tail_limit
-    return (
-        f"{text[:head_limit]}\n"
-        f"... [truncated {omitted} chars from the middle] ...\n"
-        f"{text[-tail_limit:]}"
-    )

@@ -90,6 +90,38 @@ async def test_extract_and_consolidate_memories_add_and_revoke(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_extract_and_consolidate_memories_deduplicates_batch(tmp_path):
+    store = MemoryStore(tmp_path)
+    session_id = "dedupe-session"
+    store.add_message(session_id, "user", "Use uv for Python package installs.")
+    store.add_message(session_id, "assistant", "Noted.")
+    duplicate_learning = {
+        "action": "add",
+        "type": "preference",
+        "content": "Use uv for Python package installs.",
+        "confidence": 0.9,
+    }
+    provider = ScriptedProvider([json.dumps({"learnings": [duplicate_learning, duplicate_learning]})])
+    pool = ModelPool(default=provider)
+
+    affected_items = await store.extract_and_consolidate_memories(session_id, pool)
+
+    assert len(affected_items) == 1
+    assert len(store.list_items(memory_type="preference", status="active")) == 1
+
+
+def test_memory_store_uses_memory_db_and_migrates_legacy_sessions_db(tmp_path):
+    legacy_path = tmp_path / "sessions.db"
+    legacy_path.write_bytes(b"")
+
+    store = MemoryStore(tmp_path)
+
+    assert store.db_path == tmp_path / "memory.db"
+    assert store.db_path.exists()
+    assert not legacy_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_extract_memories_from_task(tmp_path):
     store = MemoryStore(tmp_path)
     

@@ -183,7 +183,10 @@ class EvolutionEngine:
         before = json.dumps(self._trust_payload(previous_rule) if previous_rule else {}, sort_keys=True)
         trust_rule = None
         if previous_rule is not None:
-            trust_rule = self.trust.record_success(task) if success else self.trust.record_failure(task)
+            if success:
+                trust_rule = self.trust.record_success(task)
+            else:
+                trust_rule = await self.trust.record_failure(task)
         if trust_rule:
             after = json.dumps(self._trust_payload(trust_rule), sort_keys=True)
             events.append(

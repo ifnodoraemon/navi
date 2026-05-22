@@ -10,20 +10,9 @@ from pathlib import Path
 from .cli_providers import list_cli_provider_specs
 from .config import ExecutionConfig, load_config
 from .governance import GovernanceEngine
+from .evolution import EvolutionLedger
 from .tasks import Task, TaskStore
-
-
-def _truncate_output(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    head_limit = max(1, limit // 2)
-    tail_limit = max(1, limit - head_limit)
-    omitted = len(text) - head_limit - tail_limit
-    return (
-        f"{text[:head_limit]}\n"
-        f"... [truncated {omitted} chars from the middle] ...\n"
-        f"{text[-tail_limit:]}"
-    )
+from .text_utils import truncate_middle
 
 
 @dataclass(frozen=True)
@@ -151,6 +140,7 @@ class ExecutionService:
         self.config = load_config(home).execution
         self.tasks = TaskStore(home)
         self.governance = GovernanceEngine(home)
+        self.ledger = EvolutionLedger(home)
         self.providers = {
             spec.name: CliExecutionProvider(name=spec.name, binary=spec.binary, config=self.config)
             for spec in list_cli_provider_specs()
@@ -193,8 +183,8 @@ class ExecutionService:
         while result.exit_code != 0 and retries < max_retries:
             retries += 1
             
-            stdout_truncated = _truncate_output(result.stdout, 2000)
-            stderr_truncated = _truncate_output(result.stderr, 2000)
+            stdout_truncated = truncate_middle(result.stdout, 2000)
+            stderr_truncated = truncate_middle(result.stderr, 2000)
             attempt_log = (
                 f"=== SELF-HEALING ATTEMPT {retries} ===\n"
                 f"Your previous attempt to execute the task failed with exit code {result.exit_code}.\n"
@@ -237,9 +227,7 @@ class ExecutionService:
             sort_keys=True
         )
         
-        from .evolution import EvolutionLedger
-        ledger = EvolutionLedger(self.home)
-        ledger.record(
+        self.ledger.record(
             task_id=task.id,
             target_type="task_execution",
             target_id=task.id,

@@ -204,8 +204,8 @@ class TrustStore:
             reason=f"Successful task {task.id}",
         )
 
-    def record_failure(self, task: Task) -> TrustRule | None:
-        rule = self.get(task.trust_rule_id) if task.trust_rule_id else self.match(
+    async def record_failure(self, task: Task) -> TrustRule | None:
+        rule = self.get(task.trust_rule_id) if task.trust_rule_id else await self.match(
             prompt=task.prompt,
             sender_id=task.sender_id,
             workspace=task.workspace,

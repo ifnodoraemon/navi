@@ -527,7 +527,7 @@ class ApprovalResolveCapability:
             )
         task = tasks.update_task(approval.task_id, status="rejected")
         if task:
-            trust.record_failure(task)
+            await trust.record_failure(task)
         return _fact_result(
             "approval",
             {"task_id": approval.task_id, "approval_status": approval.status, "task_status": "rejected"},
