@@ -74,7 +74,7 @@ def test_cli_tool_eval_model_and_skill_commands(tmp_path):
 
     skills = runner.invoke(app, ["skills"], env=env)
     assert skills.exit_code == 0
-    assert "(no skills)" in skills.output
+    assert "(no skills)" in skills.output or "Code Navigator" in skills.output
 
     tools = runner.invoke(app, ["tools", "list", "--json-output"], env=env)
     assert tools.exit_code == 0

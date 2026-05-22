@@ -195,3 +195,50 @@ async def test_runtime_prompt_layers_and_skill_permissions_are_scoped(tmp_path):
     assert "Permission ceiling: read" in system
     assert "Read layer skill body." in system
     assert "Write layer skill body." not in system
+
+
+def test_skill_store_built_in_and_override(tmp_path):
+    from navi.skills import SkillStore
+
+    # 1. Prepare mock built-in skills directory
+    builtin_dir = tmp_path / "builtin"
+    builtin_dir.mkdir()
+
+    # Create built-in skill "test-skill"
+    s1 = builtin_dir / "test-skill"
+    s1.mkdir()
+    s1.joinpath("SKILL.md").write_text("---\nname: test-skill\n---\nBuilt-in version.", encoding="utf-8")
+
+    # Create built-in skill "only-builtin"
+    s2 = builtin_dir / "only-builtin"
+    s2.mkdir()
+    s2.joinpath("SKILL.md").write_text("---\nname: only-builtin\n---\nOnly builtin version.", encoding="utf-8")
+
+    # 2. Prepare user skills directory
+    user_home = tmp_path / "user"
+    user_skills_dir = user_home / "skills"
+    user_skills_dir.mkdir(parents=True)
+
+    # Override "test-skill" in user directory
+    u1 = user_skills_dir / "test-skill"
+    u1.mkdir()
+    u1.joinpath("SKILL.md").write_text("---\nname: test-skill\n---\nUser override version.", encoding="utf-8")
+
+    # 3. Instantiate SkillStore and mock its builtin_skills_dir
+    store = SkillStore(user_home)
+    store.builtin_skills_dir = builtin_dir
+
+    # List and assert
+    skills = store.list_skills()
+    skill_map = {s.name: s for s in skills}
+
+    assert "test-skill" in skill_map
+    assert "only-builtin" in skill_map
+
+    # Check that test-skill was overridden by the user version
+    assert skill_map["test-skill"].path == u1 / "SKILL.md"
+    assert skill_map["test-skill"].path.read_text(encoding="utf-8").strip().endswith("User override version.")
+
+    # Check only-builtin is correctly loaded
+    assert skill_map["only-builtin"].path == s2 / "SKILL.md"
+

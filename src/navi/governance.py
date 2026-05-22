@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .tasks import Approval, Task, TaskStore
 from .trust import TrustDecision, TrustStore
+
+if TYPE_CHECKING:
+    from .provider import ModelPool
 
 
 class GovernanceEngine:
@@ -14,8 +18,8 @@ class GovernanceEngine:
         self.tasks = TaskStore(home)
         self.trust = TrustStore(home)
 
-    def decide_task(self, *, prompt: str, sender_id: str, workspace: str) -> TrustDecision:
-        return self.trust.decide(prompt=prompt, sender_id=sender_id, workspace=workspace)
+    async def decide_task(self, *, prompt: str, sender_id: str, workspace: str, provider: ModelPool | None = None) -> TrustDecision:
+        return await self.trust.decide(prompt=prompt, sender_id=sender_id, workspace=workspace, provider=provider)
 
     def execution_allowed(self, task: Task) -> bool:
         if self.tasks.has_approved_execution(task.id):

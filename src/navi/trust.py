@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from .db import connect
-from typing import Any
+from .json_utils import parse_first_json_object
+from typing import Any, TYPE_CHECKING
 
 from .tasks import Task
 
+if TYPE_CHECKING:
+    from .provider import ModelPool
+
+logger = logging.getLogger("navi.trust")
+
 
 LEVELS = ["L0", "L1", "L2", "L3", "L4"]
+SEMANTIC_RULE_BATCH_SIZE = 5
 LEVEL_LABELS = {
     "L0": "observe",
     "L1": "suggest",
@@ -51,6 +60,7 @@ class TrustStore:
         self.home = home
         self.home.mkdir(parents=True, exist_ok=True)
         self.db_path = home / "trust.db"
+        self._semantic_sem: asyncio.Semaphore | None = None
         self._init_db()
 
     def _init_db(self) -> None:
@@ -75,8 +85,8 @@ class TrustStore:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trust_sender ON trust_rules(sender_id)")
 
-    def decide(self, *, prompt: str, sender_id: str, workspace: str) -> TrustDecision:
-        rule = self.match(prompt=prompt, sender_id=sender_id, workspace=workspace)
+    async def decide(self, *, prompt: str, sender_id: str, workspace: str, provider: ModelPool | None = None) -> TrustDecision:
+        rule = await self.match(prompt=prompt, sender_id=sender_id, workspace=workspace, provider=provider)
         if rule is None:
             return TrustDecision(
                 level="L2",
@@ -98,18 +108,92 @@ class TrustStore:
             trusted_project=bool(rule.project_path),
         )
 
-    def match(self, *, prompt: str, sender_id: str, workspace: str) -> TrustRule | None:
+    async def match(self, *, prompt: str, sender_id: str, workspace: str, provider: ModelPool | None = None) -> TrustRule | None:
         workspace = self._normalize_project_path(workspace)
+        rules = await asyncio.to_thread(self.list, sender_id=sender_id)
         candidates = [
             rule
-            for rule in self.list(sender_id=sender_id)
-            if self._pattern_matches(rule.pattern, prompt)
-            and (not rule.project_path or self._normalize_project_path(rule.project_path) == workspace)
+            for rule in rules
+            if not rule.project_path or self._normalize_project_path(rule.project_path) == workspace
         ]
         if not candidates:
             return None
-        candidates.sort(key=lambda rule: (LEVELS.index(rule.autonomy_level), rule.updated_at), reverse=True)
-        return candidates[0]
+        
+        # 1. First check candidates synchronously using token-based matching to avoid LLM calls
+        pattern_matches = [
+            rule for rule in candidates if self._pattern_matches(rule.pattern, prompt)
+        ]
+        if pattern_matches:
+            pattern_matches.sort(key=lambda rule: (LEVELS.index(rule.autonomy_level), rule.updated_at), reverse=True)
+            return pattern_matches[0]
+            
+        # 2. Fall back to semantic matching with Semaphore concurrency limits
+        if not provider:
+            return None
+            
+        async def sem_semantic_match(rule: TrustRule) -> tuple[TrustRule, bool]:
+            async with self._semantic_semaphore():
+                res = await self._semantic_match(rule.pattern, prompt, provider)
+                return rule, res
+                
+        semantic_candidates = sorted(
+            candidates,
+            key=lambda rule: (rule.success_count, rule.updated_at),
+            reverse=True,
+        )
+        matching_rules: list[TrustRule] = []
+        for start in range(0, len(semantic_candidates), SEMANTIC_RULE_BATCH_SIZE):
+            batch = semantic_candidates[start:start + SEMANTIC_RULE_BATCH_SIZE]
+            tasks = [sem_semantic_match(rule) for rule in batch]
+            results = await asyncio.gather(*tasks)
+            matching_rules = [rule for rule, m in results if m]
+            if matching_rules:
+                break
+                
+        if not matching_rules:
+            return None
+            
+        matching_rules.sort(key=lambda rule: (LEVELS.index(rule.autonomy_level), rule.updated_at), reverse=True)
+        return matching_rules[0]
+
+    def _semantic_semaphore(self) -> asyncio.Semaphore:
+        if self._semantic_sem is None:
+            self._semantic_sem = asyncio.Semaphore(2)
+        return self._semantic_sem
+
+    async def _semantic_match(self, pattern: str, prompt: str, provider: ModelPool | None = None) -> bool:
+        if self._pattern_matches(pattern, prompt):
+            return True
+        if not provider:
+            return False
+        from .provider import ChatMessage
+        messages = [
+            ChatMessage(
+                role="system",
+                content=(
+                    "You are Navi's Trust Engine classifier.\n"
+                    "Your task is to determine whether a given user task prompt semantically matches a specific trust rule pattern.\n\n"
+                    "Evaluate if the user's intent is conceptually/semantically covered by the trust rule pattern.\n"
+                    "Respond ONLY with a JSON object:\n"
+                    "{\n"
+                    '  "matches": true or false,\n'
+                    '  "reason": "a brief explanation"\n'
+                    "}"
+                )
+            ),
+            ChatMessage(
+                role="user",
+                content=f"Trust Rule Pattern: {pattern}\nUser Task Prompt: {prompt}"
+            )
+        ]
+        try:
+            response_text = await provider.complete_for(role="planner", messages=messages)
+            data = parse_first_json_object(response_text)
+            if data:
+                return bool(data.get("matches", False))
+        except Exception as e:
+            logger.debug("Semantic trust match failed: %s", e, exc_info=True)
+        return False
 
     def record_success(self, task: Task) -> TrustRule:
         rule = self.get(task.trust_rule_id) if task.trust_rule_id else None
@@ -134,8 +218,8 @@ class TrustStore:
             reason=f"Successful task {task.id}",
         )
 
-    def record_failure(self, task: Task) -> TrustRule | None:
-        rule = self.get(task.trust_rule_id) if task.trust_rule_id else self.match(
+    async def record_failure(self, task: Task) -> TrustRule | None:
+        rule = self.get(task.trust_rule_id) if task.trust_rule_id else await self.match(
             prompt=task.prompt,
             sender_id=task.sender_id,
             workspace=task.workspace,

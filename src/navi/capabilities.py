@@ -276,7 +276,11 @@ class TaskCreateCapability:
         execution = ExecutionService(self.home)
         governance = GovernanceEngine(self.home)
         workspace = str(Path.cwd().resolve())
-        decision = governance.decide_task(prompt=prompt, sender_id=context.sender_id, workspace=workspace)
+        from .provider import build_provider
+        provider = build_provider(config.model)
+        decision = await governance.decide_task(
+            prompt=prompt, sender_id=context.sender_id, workspace=workspace, provider=provider
+        )
         audit_reason = (
             f"trigger=model_capability; sender={context.sender_id or 'local'}; "
             f"reason={decision.why}; autonomy={decision.level}"
@@ -523,7 +527,7 @@ class ApprovalResolveCapability:
             )
         task = tasks.update_task(approval.task_id, status="rejected")
         if task:
-            trust.record_failure(task)
+            await trust.record_failure(task)
         return _fact_result(
             "approval",
             {"task_id": approval.task_id, "approval_status": approval.status, "task_status": "rejected"},

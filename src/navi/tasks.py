@@ -299,6 +299,22 @@ class TaskStore:
             ).fetchall()
         return [self._task_from_row(row) for row in rows]
 
+    def list_by_statuses(self, statuses: list[str], *, limit: int = 60) -> list[Task]:
+        if not statuses:
+            return []
+        placeholders = ", ".join("?" for _ in statuses)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, title, status, created_at, updated_at, kind, prompt, source,
+                       peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
+                       why_now, plan_summary, result_summary, error
+                FROM tasks WHERE status IN ({placeholders}) ORDER BY updated_at ASC LIMIT ?
+                """,
+                [*statuses, limit],
+            ).fetchall()
+        return [self._task_from_row(row) for row in rows]
+
     def update_status(self, task_id: str, status: str) -> Task | None:
         return self.update_task(task_id, status=status)
 

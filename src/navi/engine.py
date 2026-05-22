@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +50,8 @@ class HernessEngine:
             permission_ceiling=permission_ceiling,
         )
         self.planner = ModelSyscallPlanner(runtime.provider)
+        self._memory_sem: asyncio.Semaphore | None = None
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def handle(
         self,
@@ -108,11 +112,13 @@ class HernessEngine:
                 )
             last_result = result
             if result.terminal:
-                return self._record_turn(text, result, session_id=resolved_session_id)
+                turn_res = self._record_turn(text, result, session_id=resolved_session_id)
+                self._trigger_background_memory(turn_res)
+                return turn_res
             observations.append(result.observation or result.text)
 
         if observations:
-            return await self._finalize_observations(
+            turn_res = await self._finalize_observations(
                 text,
                 observations,
                 session_id=resolved_session_id,
@@ -120,6 +126,8 @@ class HernessEngine:
                 task_id=last_result.task_id if last_result else "",
                 model_role=last_result.model_role if last_result else "responder",
             )
+            self._trigger_background_memory(turn_res)
+            return turn_res
         reply = await self.runtime.chat(
             text,
             session_id=resolved_session_id,
@@ -132,7 +140,46 @@ class HernessEngine:
                 skill_permission_ceiling="read",
             ),
         )
-        return AgentTurnResult(text=reply.content, session_id=reply.session_id, action="chat", terminal=True)
+        turn_res = AgentTurnResult(text=reply.content, session_id=reply.session_id, action="chat", terminal=True)
+        self._trigger_background_memory(turn_res)
+        return turn_res
+
+    def _trigger_background_memory(self, result: AgentTurnResult) -> None:
+        if result.session_id:
+            logger = logging.getLogger("navi.engine")
+
+            async def run_with_semaphore():
+                async with self._memory_semaphore():
+                    await asyncio.shield(
+                        self.runtime.memory.extract_and_consolidate_memories(
+                            session_id=result.session_id,
+                            provider=self.runtime.provider,
+                            task_id=result.task_id,
+                        )
+                    )
+
+            task = asyncio.create_task(run_with_semaphore())
+            self._background_tasks.add(task)
+            def handle_done(t: asyncio.Task) -> None:
+                self._background_tasks.discard(t)
+                try:
+                    t.result()
+                except Exception as e:
+                    logger.error(f"Background memory extraction failed: {e}", exc_info=True)
+            task.add_done_callback(handle_done)
+
+    async def shutdown(self, *, timeout: float = 10.0) -> None:
+        if not self._background_tasks:
+            return
+        await asyncio.wait_for(
+            asyncio.gather(*tuple(self._background_tasks), return_exceptions=True),
+            timeout=timeout,
+        )
+
+    def _memory_semaphore(self) -> asyncio.Semaphore:
+        if self._memory_sem is None:
+            self._memory_sem = asyncio.Semaphore(2)
+        return self._memory_sem
 
     def _conversation_context(self, session_id: str | None) -> str:
         if not session_id:

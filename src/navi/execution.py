@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .cli_providers import list_cli_provider_specs
 from .config import ExecutionConfig, load_config
 from .governance import GovernanceEngine
+from .evolution import EvolutionLedger
 from .tasks import Task, TaskStore
+from .text_utils import truncate_middle
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,7 @@ class ExecutionService:
         self.config = load_config(home).execution
         self.tasks = TaskStore(home)
         self.governance = GovernanceEngine(home)
+        self.ledger = EvolutionLedger(home)
         self.providers = {
             spec.name: CliExecutionProvider(name=spec.name, binary=spec.binary, config=self.config)
             for spec in list_cli_provider_specs()
@@ -156,16 +160,85 @@ class ExecutionService:
         ) or task
 
     async def execute_task(self, task: Task) -> Task:
+        # Record before state for rollback support
+        task_before = self.tasks.get(task.id)
+        before_state = json.dumps(
+            {
+                "status": task_before.status if task_before else "queued",
+                "result_summary": task_before.result_summary if task_before else "",
+                "error": task_before.error if task_before else "",
+            },
+            sort_keys=True
+        )
+
         self.tasks.update_task(task.id, status="running")
+
         result = await self._provider_call_with_timeout(task, "execute")
         self._log(task, result)
+        
+        # Self-healing retry loop
+        retries = 0
+        max_retries = 2
+        accumulated_history = ""
+        while result.exit_code != 0 and retries < max_retries:
+            retries += 1
+            
+            stdout_truncated = truncate_middle(result.stdout, 2000)
+            stderr_truncated = truncate_middle(result.stderr, 2000)
+            attempt_log = (
+                f"=== SELF-HEALING ATTEMPT {retries} ===\n"
+                f"Your previous attempt to execute the task failed with exit code {result.exit_code}.\n"
+                f"Command: {' '.join(result.command)}\n"
+                f"Stdout:\n{stdout_truncated}\n"
+                f"Stderr:\n{stderr_truncated}\n\n"
+            )
+            accumulated_history += attempt_log
+            
+            healing_prompt = (
+                f"{accumulated_history}"
+                f"Please analyze the errors, stack traces, and failures. "
+                f"Formulate a fix (e.g. editing files, fixing imports, or adjusting configurations), apply it, and verify that the task runs successfully."
+            )
+            
+            healing_task = replace(
+                task,
+                prompt=f"{task.prompt}\n\n{healing_prompt}",
+                status="running",
+            )
+            self._log_healing_prompt(task, retries, healing_task.prompt)
+            
+            result = await self._provider_call_with_timeout(healing_task, "execute")
+            self._log(task, result)
+            
         status = "completed" if result.exit_code == 0 else "failed"
-        return self.tasks.update_task(
+        updated_task = self.tasks.update_task(
             task.id,
             status=status,
             result_summary=result.summary,
             error="" if result.exit_code == 0 else result.stderr,
         ) or task
+        
+        # Record the evolution event
+        after_state = json.dumps(
+            {
+                "status": updated_task.status,
+                "result_summary": updated_task.result_summary,
+                "error": updated_task.error,
+            },
+            sort_keys=True
+        )
+        
+        self.ledger.record(
+            task_id=task.id,
+            target_type="task_execution",
+            target_id=task.id,
+            reason=f"task execution {'completed' if result.exit_code == 0 else 'failed'} (retries: {retries})",
+            before=before_state,
+            after=after_state,
+        )
+        
+        return updated_task
+
 
     async def process_pending_once(self, *, limit: int = 3) -> list[Task]:
         completed: list[Task] = []
@@ -196,6 +269,20 @@ class ExecutionService:
             exit_code=result.exit_code,
             started_at=result.started_at,
             ended_at=result.ended_at,
+        )
+
+    def _log_healing_prompt(self, task: Task, attempt: int, prompt: str) -> None:
+        now = time.time()
+        self.tasks.add_execution_log(
+            task_id=task.id,
+            provider=task.provider or self.config.provider,
+            phase="self_heal_prompt",
+            command=f"self-healing prompt attempt {attempt}",
+            stdout=prompt,
+            stderr="",
+            exit_code=0,
+            started_at=now,
+            ended_at=now,
         )
 
     async def _provider_call_with_timeout(self, task: Task, phase: str) -> ExecutionResult:
