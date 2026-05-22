@@ -64,6 +64,7 @@ MEMORY_TYPES = {
 LEARNABLE_MEMORY_TYPES = ("preference", "constraint", "negative", "fact", "semantic")
 MEMORY_STATUSES = {"proposed", "accepted", "active", "contradicted", "stale", "archived", "revoked"}
 ACTIVE_STATUSES = {"accepted", "active"}
+ACTIVE_MEMORY_CONTEXT_LIMIT = 20
 TASK_LEARNING_LOG_LIMIT = 3000
 TYPE_PRIORITY = {
     "constraint": 100,
@@ -437,7 +438,13 @@ class MemoryStore:
                 # 2. Fetch existing active memory items
                 active_items = []
                 for item_type in LEARNABLE_MEMORY_TYPES:
-                    active_items.extend(self.list_items(memory_type=item_type, status="active", limit=100))
+                    active_items.extend(
+                        self.list_items(
+                            memory_type=item_type,
+                            status="active",
+                            limit=ACTIVE_MEMORY_CONTEXT_LIMIT,
+                        )
+                    )
 
                 # 3. Format context
                 conversation_text = "\n".join(f"{msg.role}: {msg.content}" for msg in messages)
@@ -577,7 +584,13 @@ class MemoryStore:
         # 1. Fetch existing active memory items
         active_items = []
         for item_type in LEARNABLE_MEMORY_TYPES:
-            active_items.extend(self.list_items(memory_type=item_type, status="active", limit=100))
+            active_items.extend(
+                self.list_items(
+                    memory_type=item_type,
+                    status="active",
+                    limit=ACTIVE_MEMORY_CONTEXT_LIMIT,
+                )
+            )
 
         # 2. Format execution logs
         logs_text_parts = []

@@ -14,10 +14,13 @@ from .evolution import EvolutionEngine
 from .execution import ExecutionService
 from .graph import GraphNode, GraphStore
 from .tasks import Task, TaskStore
+from .text_utils import truncate_middle
 
 logger = logging.getLogger("navi.daemon")
 
 DEFAULT_DEV_PORTS = [3000, 5000, 8000, 8080]
+MAX_PROJECT_EVENT_CONCURRENCY = 4
+MAX_GIT_STATUS_PROMPT_CHARS = 5000
 LOG_ERROR_KEYWORDS = ("exception", "fatal", "traceback (most recent call last):")
 MAX_LOG_READ_BYTES = 512_000
 MAX_LOG_PROMPT_CHARS = 100_000
@@ -101,15 +104,19 @@ class SystemDaemon:
         
         active_workspaces = self._active_workspaces()
         primary_project = projects[0].name if projects else ""
-        results = await asyncio.gather(
-            *[
-                self._process_project_events(
+
+        sem = asyncio.Semaphore(MAX_PROJECT_EVENT_CONCURRENCY)
+
+        async def process_project(project: GraphNode) -> list[dict]:
+            async with sem:
+                return await self._process_project_events(
                     project,
                     active_workspaces=active_workspaces,
                     use_default_ports=project.name == primary_project,
                 )
-                for project in projects
-            ],
+
+        results = await asyncio.gather(
+            *(process_project(project) for project in projects),
             return_exceptions=True,
         )
         for result in results:
@@ -224,6 +231,7 @@ class SystemDaemon:
             if current_hash == last_hash:
                 return events, {}
 
+            status_text = truncate_middle(status_text, MAX_GIT_STATUS_PROMPT_CHARS)
             prompt = (
                 f"A filesystem modification was detected in the project {project_path}.\n"
                 f"Modified files:\n{status_text}\n"
@@ -317,8 +325,7 @@ class SystemDaemon:
         with open(file_path, "rb") as f:
             f.seek(last_size)
             while f.tell() < read_end:
-                remaining = read_end - f.tell()
-                line_bytes = f.readline(min(remaining, 64_000))
+                line_bytes = f.readline(64_000)
                 if not line_bytes:
                     break
                 line = line_bytes.decode("utf-8", errors="replace")
