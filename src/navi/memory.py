@@ -91,6 +91,8 @@ class MemoryStore:
             legacy_db_path.replace(self.db_path)
         self._init_db()
         self._session_locks = {}
+        self._session_lock_refs = {}
+        self._session_locks_guard = asyncio.Lock()
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
@@ -421,12 +423,7 @@ class MemoryStore:
         from .provider import ChatMessage
         from .evolution import EvolutionLedger
 
-        if session_id not in self._session_locks:
-            self._session_locks[session_id] = [asyncio.Lock(), 0]
-        
-        lock_info = self._session_locks[session_id]
-        lock_info[1] += 1
-        lock = lock_info[0]
+        lock = await self._acquire_session_lock(session_id)
 
         try:
             async with lock:
@@ -567,10 +564,25 @@ class MemoryStore:
                             )
                 return affected_items
         finally:
-            if session_id in self._session_locks:
-                self._session_locks[session_id][1] -= 1
-                if self._session_locks[session_id][1] <= 0:
-                    self._session_locks.pop(session_id, None)
+            await self._release_session_lock(session_id)
+
+    async def _acquire_session_lock(self, session_id: str) -> asyncio.Lock:
+        async with self._session_locks_guard:
+            lock = self._session_locks.get(session_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._session_locks[session_id] = lock
+            self._session_lock_refs[session_id] = self._session_lock_refs.get(session_id, 0) + 1
+            return lock
+
+    async def _release_session_lock(self, session_id: str) -> None:
+        async with self._session_locks_guard:
+            refs = self._session_lock_refs.get(session_id, 0) - 1
+            if refs > 0:
+                self._session_lock_refs[session_id] = refs
+                return
+            self._session_lock_refs.pop(session_id, None)
+            self._session_locks.pop(session_id, None)
 
     async def extract_memories_from_task(
         self,

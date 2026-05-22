@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import pytest
 
@@ -108,6 +109,37 @@ async def test_extract_and_consolidate_memories_deduplicates_batch(tmp_path):
 
     assert len(affected_items) == 1
     assert len(store.list_items(memory_type="preference", status="active")) == 1
+
+
+@pytest.mark.asyncio
+async def test_session_lock_pool_serializes_same_session_and_cleans_up(tmp_path):
+    store = MemoryStore(tmp_path)
+    session_id = "lock-session"
+    store.add_message(session_id, "user", "Remember that I prefer uv.")
+    store.add_message(session_id, "assistant", "Noted.")
+    active_calls = 0
+    max_active_calls = 0
+
+    class SlowProvider(ScriptedProvider):
+        async def complete(self, messages):
+            nonlocal active_calls, max_active_calls
+            active_calls += 1
+            max_active_calls = max(max_active_calls, active_calls)
+            await asyncio.sleep(0.02)
+            active_calls -= 1
+            return json.dumps({"learnings": []})
+
+    provider = SlowProvider([json.dumps({"learnings": []}), json.dumps({"learnings": []})])
+    pool = ModelPool(default=provider)
+
+    await asyncio.gather(
+        store.extract_and_consolidate_memories(session_id, pool),
+        store.extract_and_consolidate_memories(session_id, pool),
+    )
+
+    assert max_active_calls == 1
+    assert len(store._session_locks) == 0
+    assert len(store._session_lock_refs) == 0
 
 
 def test_memory_store_uses_memory_db_and_migrates_legacy_sessions_db(tmp_path):

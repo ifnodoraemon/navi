@@ -242,6 +242,26 @@ async def test_log_rotation_and_chunked_reads(tmp_path):
     assert "Exception" in mock_invoke_calls[0][1]["prompt"]
 
 
+def test_log_reader_preserves_utf8_across_chunk_boundary(tmp_path):
+    from navi.daemon import SystemDaemon
+
+    log_file = tmp_path / "utf8.log"
+    prefix = b"a" * 63_999
+    log_file.write_bytes(prefix + "界 Exception: boundary failure\n".encode())
+
+    new_content, error_lines, new_offset = SystemDaemon._read_log_diff(
+        log_file,
+        0,
+        len(log_file.read_bytes()),
+    )
+
+    assert "界 Exception: boundary failure" in new_content
+    assert "�" not in new_content
+    assert len(error_lines) == 1
+    assert error_lines[0].endswith("界 Exception: boundary failure")
+    assert new_offset == len(log_file.read_bytes())
+
+
 @pytest.mark.asyncio
 async def test_self_healing_retry_accumulation(tmp_path):
     tasks = TaskStore(tmp_path)
@@ -339,6 +359,40 @@ async def test_engine_strong_task_references(tmp_path):
     # Wait for completion and verify it was discarded
     await asyncio.sleep(0.05)
     assert len(engine._background_tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_engine_background_memory_uses_cancellation_shield(tmp_path, monkeypatch):
+    from navi.engine import HernessEngine, AgentTurnResult
+    from navi.provider import ModelPool
+    import navi.engine as engine_module
+
+    shield_calls = 0
+    original_shield = engine_module.asyncio.shield
+
+    def counted_shield(awaitable):
+        nonlocal shield_calls
+        shield_calls += 1
+        return original_shield(awaitable)
+
+    class DummyRuntime:
+        def __init__(self):
+            self.provider = ModelPool(default=None)
+            self.memory = None
+
+    class DummyMemory:
+        async def extract_and_consolidate_memories(self, session_id, provider, task_id):
+            await asyncio.sleep(0.01)
+
+    runtime = DummyRuntime()
+    runtime.memory = DummyMemory()
+    monkeypatch.setattr(engine_module.asyncio, "shield", counted_shield)
+
+    engine = HernessEngine(home=tmp_path, runtime=runtime)
+    engine._trigger_background_memory(AgentTurnResult(text="hello", session_id="sess-1"))
+    await asyncio.sleep(0.05)
+
+    assert shield_calls == 1
 
 
 @pytest.mark.asyncio

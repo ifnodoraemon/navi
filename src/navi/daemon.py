@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import hashlib
 import logging
 import time
@@ -322,20 +323,37 @@ class SystemDaemon:
         chunks: list[str] = []
         error_lines: list[str] = []
         total_chars = 0
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pending_text = ""
         with open(file_path, "rb") as f:
             f.seek(last_size)
             while f.tell() < read_end:
                 line_bytes = f.readline(64_000)
                 if not line_bytes:
                     break
-                line = line_bytes.decode("utf-8", errors="replace")
-                if total_chars < MAX_LOG_PROMPT_CHARS:
-                    chunks.append(line)
-                    total_chars += len(line)
-                if any(keyword in line.lower() for keyword in LOG_ERROR_KEYWORDS):
-                    error_lines.append(line.strip())
+                pending_text += decoder.decode(line_bytes, final=False)
+                lines = pending_text.splitlines(keepends=True)
+                pending_text = ""
+                if lines and not lines[-1].endswith(("\n", "\r")):
+                    pending_text = lines.pop()
+                for line in lines:
+                    total_chars = SystemDaemon._append_log_prompt_chunk(chunks, total_chars, line)
+                    if any(keyword in line.lower() for keyword in LOG_ERROR_KEYWORDS):
+                        error_lines.append(line.strip())
             new_offset = f.tell()
+        pending_text += decoder.decode(b"", final=True)
+        if pending_text:
+            total_chars = SystemDaemon._append_log_prompt_chunk(chunks, total_chars, pending_text)
+            if any(keyword in pending_text.lower() for keyword in LOG_ERROR_KEYWORDS):
+                error_lines.append(pending_text.strip())
         return "".join(chunks), error_lines, new_offset
+
+    @staticmethod
+    def _append_log_prompt_chunk(chunks: list[str], total_chars: int, line: str) -> int:
+        if total_chars < MAX_LOG_PROMPT_CHARS:
+            chunks.append(line)
+            total_chars += len(line)
+        return total_chars
 
     async def _detect_port_events(
         self,

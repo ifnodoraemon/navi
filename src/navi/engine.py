@@ -151,10 +151,12 @@ class HernessEngine:
 
             async def run_with_semaphore():
                 async with self._memory_sem:
-                    await self.runtime.memory.extract_and_consolidate_memories(
-                        session_id=result.session_id,
-                        provider=self.runtime.provider,
-                        task_id=result.task_id,
+                    await asyncio.shield(
+                        self.runtime.memory.extract_and_consolidate_memories(
+                            session_id=result.session_id,
+                            provider=self.runtime.provider,
+                            task_id=result.task_id,
+                        )
                     )
 
             task = asyncio.create_task(run_with_semaphore())
