@@ -47,7 +47,7 @@ async def test_model_syscall_planner_asks_when_schedule_time_is_vague(tmp_path):
 @pytest.mark.asyncio
 async def test_model_syscall_planner_receives_recent_conversation_context(tmp_path):
     provider = ScriptedProvider(
-        '{"tool":"task.create","permission":"prepare","args":{"prompt":"删除上一轮确认要删除的旧任务入口"},"confidence":0.9,"reason":"follow-up refers to recent conversation"}'
+        '{"tool":"task.record","permission":"prepare","args":{"prompt":"删除上一轮确认要删除的旧任务入口"},"confidence":0.9,"reason":"follow-up refers to recent conversation"}'
     )
     planner = ModelSyscallPlanner(ModelPool(default=provider))
 
@@ -57,7 +57,7 @@ async def test_model_syscall_planner_receives_recent_conversation_context(tmp_pa
         conversation_context="assistant: 旧任务入口可以删除，是否继续？",
     )
 
-    assert call.tool == "task.create"
+    assert call.tool == "task.record"
     assert call.args["prompt"] == "删除上一轮确认要删除的旧任务入口"
     assert "Recent conversation:" in provider.messages[1].content
     assert "旧任务入口可以删除" in provider.messages[1].content
@@ -108,13 +108,13 @@ async def test_model_syscall_planner_parses_approval_syscall(tmp_path):
 @pytest.mark.asyncio
 async def test_model_syscall_planner_prompt_routes_engineering_investigation_to_task(tmp_path):
     provider = ScriptedProvider(
-        '{"tool":"task.create","permission":"prepare","args":{"prompt":"检查配置到运行时的映射问题"},"confidence":0.9,"reason":"engineering investigation"}'
+        '{"tool":"task.record","permission":"prepare","args":{"prompt":"检查配置到运行时的映射问题"},"confidence":0.9,"reason":"engineering investigation"}'
     )
     planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("配置项写了但运行时好像没消费，帮我检查配置到运行时的映射问题", tools=_tools(tmp_path))
 
-    assert call.tool == "task.create"
+    assert call.tool == "task.record"
     assert "config-to-runtime mapping" in provider.messages[1].content
 
 

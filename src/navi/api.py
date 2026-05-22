@@ -20,10 +20,11 @@ from .config import load_config, write_default_config
 from .connector_registry import load_connector_adapters
 from .daemon import SystemDaemon
 from .defaults import DEFAULT_LOCAL_SURFACE
-from .evolution import EvolutionEngine, EvolutionLedger
+from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
 from .graph import GraphStore
 from .paths import ensure_home
 from .tasks import TaskStore
+from .trace import TraceStore
 from .trust import TrustStore
 from . import __version__
 
@@ -70,6 +71,25 @@ class WatchRequest(BaseModel):
 
 class ToolCallRequest(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvolutionProposalRequest(BaseModel):
+    target_type: str
+    target_id: str
+    reason: str
+    expected_benefit: str = ""
+    risk: str = ""
+    before: str = ""
+    after: str = ""
+    rollback_plan: str = ""
+    required_approval_level: str = "L2"
+    evidence: str = ""
+    source_task_id: str = ""
+    eval_cases: list[str] = Field(default_factory=list)
+
+
+class EvolutionEvaluationRequest(BaseModel):
+    evaluation_result: str
 
 
 def create_app(home: Path | None = None) -> FastAPI:
@@ -173,15 +193,29 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.post(api_path("tasks"))
     async def create_task(request: TaskRequest) -> dict:
         result = await capabilities.invoke(
-            "task.create",
+            "task.record",
             {"prompt": request.prompt or request.title},
             permission="prepare",
             context=_local_capability_context(home),
         )
         _raise_capability_error(result)
+        prepared = await capabilities.invoke(
+            "task.prepare",
+            {"task_id": result.task_id},
+            permission="prepare",
+            context=_local_capability_context(home),
+        )
+        _raise_capability_error(prepared)
+        requested = await capabilities.invoke(
+            "approval.request",
+            {"task_id": result.task_id},
+            permission="prepare",
+            context=_local_capability_context(home),
+        )
+        _raise_capability_error(requested)
         task = task_store.get(result.task_id) if result.task_id else None
         if task is None:
-            raise HTTPException(status_code=500, detail="task.create did not return a task")
+            raise HTTPException(status_code=500, detail="task.record did not return a task")
         return task.__dict__
 
     @app.patch(api_path("task"))
@@ -248,17 +282,31 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.post(api_path("active_tasks"))
     async def create_active_task(request: ActiveTaskRequest) -> dict:
+        context = CapabilityContext(
+            home=home,
+            peer_id=request.peer_id,
+            sender_id=request.sender_id,
+            source=load_config(home).runtime.local_surface,
+        )
         result = await capabilities.invoke(
-            "task.create",
+            "task.record",
             {"prompt": request.prompt},
             permission="prepare",
-            context=CapabilityContext(
-                home=home,
-                peer_id=request.peer_id,
-                sender_id=request.sender_id,
-                source=load_config(home).runtime.local_surface,
-            ),
+            context=context,
         )
+        if result.ok:
+            await capabilities.invoke(
+                "task.prepare",
+                {"task_id": result.task_id},
+                permission="prepare",
+                context=context,
+            )
+            result = await capabilities.invoke(
+                "approval.request",
+                {"task_id": result.task_id},
+                permission="prepare",
+                context=context,
+            )
         task = task_store.get(result.task_id) if result.task_id else None
         approval = task_store.pending_approval_for_task(result.task_id, sender_id=request.sender_id) if result.task_id else None
         message = result.message or result.observation
@@ -362,9 +410,54 @@ def create_app(home: Path | None = None) -> FastAPI:
     def trust_rules() -> dict:
         return {"trust_rules": [rule.__dict__ for rule in TrustStore(home).list()]}
 
+    @app.get(api_path("traces"))
+    def traces() -> dict:
+        return {"trace_ids": TraceStore(home).list_trace_ids()}
+
+    @app.get(api_path("trace"))
+    def trace(trace_id: str) -> dict:
+        return {"events": [event.__dict__ for event in TraceStore(home).list_events(trace_id)]}
+
+    @app.post(api_path("trace_evaluate"))
+    def trace_evaluate(trace_id: str) -> dict:
+        return TraceStore(home).evaluate_trace(trace_id).__dict__
+
     @app.get(api_path("evolution_events"))
     def evolution_events() -> dict:
         return {"events": [event.__dict__ for event in EvolutionLedger(home).list()]}
+
+    @app.get(api_path("evolution_targets"))
+    def evolution_targets() -> dict:
+        return {"targets": list_evolution_targets()}
+
+    @app.get(api_path("evolution_proposals"))
+    def evolution_proposals(status: str | None = None) -> dict:
+        return {"proposals": [proposal.__dict__ for proposal in EvolutionLedger(home).list_proposals(status=status)]}
+
+    @app.post(api_path("evolution_proposals"))
+    def create_evolution_proposal(request: EvolutionProposalRequest) -> dict:
+        try:
+            proposal = EvolutionLedger(home).propose(**request.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return proposal.__dict__
+
+    @app.post(api_path("evolution_proposal_apply"))
+    def apply_evolution_proposal(proposal_id: str) -> dict:
+        try:
+            event = EvolutionEngine(home).apply_proposal(proposal_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if event is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        return event.__dict__
+
+    @app.post(api_path("evolution_proposal_evaluation"))
+    def record_evolution_proposal_evaluation(proposal_id: str, request: EvolutionEvaluationRequest) -> dict:
+        proposal = EvolutionLedger(home).record_proposal_evaluation(proposal_id, request.evaluation_result)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        return proposal.__dict__
 
     @app.post(api_path("evolution_rollback"))
     def rollback_evolution(event_id: str) -> dict:

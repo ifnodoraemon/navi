@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import navi
+from .spec_loader import load_spec
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,8 @@ class ConnectorSpec:
     status_description: str
     session_alias_prefix: str
     local_source: str
+    approval_template: str = ""
+    approval_commands: dict[str, list[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,24 @@ def get_connector_adapter(name: str) -> ConnectorAdapter | None:
         if adapter.name == name:
             return adapter
     return None
+
+
+def approval_surface_affordance(source: str) -> dict[str, Any]:
+    source = source.strip()
+    for adapter in load_connector_adapters():
+        spec = adapter.spec
+        if source in {spec.name, spec.surface, spec.local_source}:
+            return _approval_affordance_from_spec(spec)
+    raw = load_spec("surface_affordances.yaml") or {}
+    default = raw.get("default") if isinstance(raw, dict) else {}
+    return default if isinstance(default, dict) else {}
+
+
+def _approval_affordance_from_spec(spec: ConnectorSpec) -> dict[str, Any]:
+    return {
+        "approval_template": spec.approval_template,
+        "approval_commands": spec.approval_commands or {},
+    }
 
 
 def _discover_connector_factories() -> list[Callable[[], ConnectorAdapter]]:

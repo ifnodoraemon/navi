@@ -30,9 +30,9 @@
   mutates: false
   permission: read
   source: action
-- name: task.create
-  handler: task_create
-  description: Create a tracked local task for controlled local work, engineering investigation, bug diagnosis, config-to-runtime mapping, performance investigation, or code changes. The task can inspect the local project before asking for repository paths or implementation details.
+- name: task.record
+  handler: task_record
+  description: Record a tracked local task for controlled local work, engineering investigation, bug diagnosis, config-to-runtime mapping, performance investigation, or code changes without preparing, approving, or queueing it.
   input_schema:
     type: object
     properties:
@@ -45,6 +45,54 @@
   facts_only: false
   mutates: true
   permission: prepare
+  source: action
+- name: task.prepare
+  handler: task_prepare
+  description: Run one preparation pass for an existing tracked task and return preparation facts.
+  input_schema:
+    type: object
+    properties:
+      task_id:
+        type: string
+    required:
+      - task_id
+  output_schema:
+    type: object
+  facts_only: false
+  mutates: true
+  permission: prepare
+  source: action
+- name: approval.request
+  handler: approval_request
+  description: Request approval for a prepared task without queueing it.
+  input_schema:
+    type: object
+    properties:
+      task_id:
+        type: string
+    required:
+      - task_id
+  output_schema:
+    type: object
+  facts_only: false
+  mutates: true
+  permission: prepare
+  source: action
+- name: task.queue
+  handler: task_queue
+  description: Queue a task only when it already has an execution grant.
+  input_schema:
+    type: object
+    properties:
+      task_id:
+        type: string
+    required:
+      - task_id
+  output_schema:
+    type: object
+  facts_only: false
+  mutates: true
+  permission: write
   source: action
 - name: watch.create
   handler: watch_create
@@ -114,6 +162,24 @@
         type: string
     required:
       - decision
+  output_schema:
+    type: object
+  facts_only: false
+  mutates: true
+  permission: write
+  source: action
+- name: execution.retry
+  handler: execution_retry
+  description: Run one explicit follow-up execution attempt for an already approved or trusted task after observing its current status and logs.
+  input_schema:
+    type: object
+    properties:
+      task_id:
+        type: string
+      follow_up_prompt:
+        type: string
+    required:
+      - task_id
   output_schema:
     type: object
   facts_only: false

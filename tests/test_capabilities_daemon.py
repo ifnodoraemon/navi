@@ -10,6 +10,32 @@ from navi.tasks import TaskStore
 from navi.trust import TrustStore
 
 
+async def _record_prepare_request(capabilities, tmp_path, prompt, *, context=None):
+    context = context or CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", source="weixin")
+    recorded = await capabilities.invoke(
+        "task.record",
+        {"prompt": prompt},
+        permission="prepare",
+        context=context,
+    )
+    assert recorded.ok is True
+    prepared = await capabilities.invoke(
+        "task.prepare",
+        {"task_id": recorded.task_id},
+        permission="prepare",
+        context=context,
+    )
+    assert prepared.ok is True
+    requested = await capabilities.invoke(
+        "approval.request",
+        {"task_id": recorded.task_id},
+        permission="prepare",
+        context=context,
+    )
+    assert requested.ok is True
+    return requested
+
+
 @pytest.mark.asyncio
 async def test_task_approval_execution_and_evolution_through_os_primitives(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
@@ -17,12 +43,7 @@ async def test_task_approval_execution_and_evolution_through_os_primitives(tmp_p
     tasks = TaskStore(tmp_path)
     daemon = SystemDaemon(tmp_path)
 
-    planned = await capabilities.invoke(
-        "task.create",
-        {"prompt": "improve the navi project"},
-        permission="prepare",
-        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", source="weixin"),
-    )
+    planned = await _record_prepare_request(capabilities, tmp_path, "improve the navi project")
 
     assert planned.ok is True
     task = tasks.get(planned.task_id)
@@ -43,6 +64,74 @@ async def test_task_approval_execution_and_evolution_through_os_primitives(tmp_p
     assert completed[0].status == "completed"
     assert tasks.get(planned.task_id).result_summary
     assert daemon.evolution.ledger.list()
+
+
+@pytest.mark.asyncio
+async def test_task_record_uses_capability_context_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
+    process_cwd = tmp_path / "process-cwd"
+    requested_workspace = tmp_path / "requested-workspace"
+    process_cwd.mkdir()
+    requested_workspace.mkdir()
+    monkeypatch.chdir(process_cwd)
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=process_cwd)
+
+    planned = await capabilities.invoke(
+        "task.record",
+        {"prompt": "inspect the requested workspace"},
+        permission="prepare",
+        context=CapabilityContext(
+            home=tmp_path,
+            peer_id="peer",
+            sender_id="sender",
+            source="daemon",
+            workspace=str(requested_workspace),
+        ),
+    )
+
+    task = TaskStore(tmp_path).get(planned.task_id)
+    assert task is not None
+    assert task.workspace == str(requested_workspace.resolve())
+    assert str(process_cwd.resolve()) != task.workspace
+
+
+@pytest.mark.asyncio
+async def test_task_lifecycle_can_be_model_selected_step_by_step(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    tasks = TaskStore(tmp_path)
+
+    recorded = await capabilities.invoke(
+        "task.record",
+        {"prompt": "stepwise task"},
+        permission="prepare",
+        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", workspace=str(tmp_path)),
+    )
+    prepared = await capabilities.invoke(
+        "task.prepare",
+        {"task_id": recorded.task_id},
+        permission="prepare",
+        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender"),
+    )
+    requested = await capabilities.invoke(
+        "approval.request",
+        {"task_id": recorded.task_id},
+        permission="prepare",
+        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender"),
+    )
+    approval = tasks.list_approvals()[0]
+    tasks.resolve_approval(approval.code, "sender", "approved")
+    queued = await capabilities.invoke(
+        "task.queue",
+        {"task_id": recorded.task_id},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender"),
+    )
+
+    assert recorded.ok is True
+    assert prepared.facts["status"] == "prepared"
+    assert requested.facts["status"] == "awaiting_approval"
+    assert queued.facts["status"] == "queued"
 
 
 @pytest.mark.asyncio
@@ -122,11 +211,11 @@ async def test_capability_manifest_and_execution_respect_permission_ceiling(tmp_
     names = {spec.name for spec in capabilities.planner_specs()}
     assert "final.answer" in names
     assert "service.status" in names
-    assert "task.create" not in names
+    assert "task.record" not in names
     assert "approval.resolve" not in names
 
     result = await capabilities.invoke(
-        "task.create",
+        "task.record",
         {"prompt": "prepare local work"},
         permission="prepare",
         context=CapabilityContext(home=tmp_path, permission_ceiling="read"),
@@ -141,8 +230,8 @@ def test_action_capabilities_are_loaded_from_manifest(tmp_path):
 
     specs = {spec.name: spec for spec in capabilities.list_specs()}
 
-    assert specs["task.create"].source == "action"
-    assert specs["task.create"].permission == "prepare"
+    assert specs["task.record"].source == "action"
+    assert specs["task.record"].permission == "prepare"
     assert specs["approval.resolve"].permission == "write"
 
 
@@ -189,10 +278,22 @@ async def test_explicit_l3_trust_rule_can_auto_execute(tmp_path, monkeypatch):
         autonomy_level="L3",
     )
 
-    planned = await capabilities.invoke(
-        "task.create",
+    recorded = await capabilities.invoke(
+        "task.record",
         {"prompt": "trusted maintenance"},
         permission="prepare",
+        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", source="weixin"),
+    )
+    await capabilities.invoke(
+        "task.prepare",
+        {"task_id": recorded.task_id},
+        permission="prepare",
+        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", source="weixin"),
+    )
+    planned = await capabilities.invoke(
+        "task.queue",
+        {"task_id": recorded.task_id},
+        permission="write",
         context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", source="weixin"),
     )
 
@@ -228,12 +329,7 @@ async def test_evolution_rollback_restores_graph_event(tmp_path, monkeypatch):
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
     tasks = TaskStore(tmp_path)
     daemon = SystemDaemon(tmp_path)
-    planned = await capabilities.invoke(
-        "task.create",
-        {"prompt": "evolve rollback coverage"},
-        permission="prepare",
-        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", source="weixin"),
-    )
+    planned = await _record_prepare_request(capabilities, tmp_path, "evolve rollback coverage")
     approval = tasks.list_approvals()[0]
     await capabilities.invoke(
         "approval.resolve",

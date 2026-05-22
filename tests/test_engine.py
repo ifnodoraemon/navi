@@ -157,3 +157,46 @@ async def test_engine_shutdown_cancels_background_tasks(tmp_path):
     
     await asyncio.sleep(0.05)
     assert len(router._background_tasks) == 0
+
+
+def test_approval_prompt_uses_surface_affordance():
+    facts = {
+        "task_id": "task-1",
+        "status": "awaiting_approval",
+        "approval": {"code": "123456", "expires_at": 0},
+    }
+
+    telegram = HernessEngine._approval_prompt_from_facts(facts, source="telegram")
+    default = HernessEngine._approval_prompt_from_facts(facts, source="web")
+
+    assert "Approval code" in telegram
+    assert "Reply `approve 123456`" in telegram
+    assert "审批码: `123456`" in default
+    assert "批准 123456" in default
+
+
+@pytest.mark.asyncio
+async def test_engine_records_full_flow_trace_and_evaluation(tmp_path):
+    from navi.trace import TraceStore
+
+    provider = ScriptedProvider(
+        [
+            '{"tool":"final.answer","permission":"read","args":{"message":"done"},"confidence":0.9,"reason":"direct answer"}'
+        ]
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
+    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
+
+    result = await router.handle("Hello", peer_id="web", sender_id="web", source="web")
+    await router.shutdown(timeout=0.01)
+
+    trace = TraceStore(tmp_path)
+    events = trace.list_events(result.trace_id)
+    phases = [event.phase for event in events]
+    evaluation = trace.evaluate_trace(result.trace_id)
+
+    assert result.trace_id
+    assert phases == ["turn.start", "planner.syscall", "capability.result", "turn.final"]
+    assert events[1].tool == "final.answer"
+    assert evaluation.outcome == "success"
+    assert evaluation.failure_domain == "none"

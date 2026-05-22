@@ -29,6 +29,61 @@ class EvolutionEvent:
     rolled_back_at: float
 
 
+@dataclass(frozen=True)
+class EvolutionProposal:
+    id: str
+    target_type: str
+    target_id: str
+    reason: str
+    expected_benefit: str
+    risk: str
+    before: str
+    after: str
+    diff: str
+    rollback_plan: str
+    required_approval_level: str
+    evidence: str
+    source_task_id: str
+    status: str
+    created_at: float
+    applied_at: float
+    applied_event_id: str
+    eval_cases: str
+    evaluation_result: str
+
+
+@dataclass(frozen=True)
+class EvolutionTarget:
+    target_type: str
+    description: str
+    source: str
+    permissions_can_expand: bool = False
+
+
+EVOLUTION_TARGETS: tuple[EvolutionTarget, ...] = (
+    EvolutionTarget("prompt_layer", "Versioned prompt layer content that shapes model behavior.", "prompting"),
+    EvolutionTarget("skill", "Promptable skill content, metadata, provenance, and trust state.", "skills"),
+    EvolutionTarget("memory_item", "Typed durable memory item content and lifecycle state.", "memory"),
+    EvolutionTarget("memory_schema", "Memory types, priority, expiry, contradiction, and recall policy.", "memory"),
+    EvolutionTarget("tool_spec", "Capability/tool manifest schema, permissions, and descriptions.", "tools", True),
+    EvolutionTarget("connector_spec", "Connector affordances, surface commands, and status facts.", "connectors", True),
+    EvolutionTarget("trust_rule", "Sender/project scoped autonomy rule.", "trust", True),
+    EvolutionTarget("trust_policy", "Autonomy level meanings, promotion, demotion, and approval policy.", "trust", True),
+    EvolutionTarget("workflow_policy", "Daemon, execution, approval, and lifecycle decision policy.", "runtime", True),
+    EvolutionTarget("eval_case", "Evaluation dataset case and expected behavior.", "evals"),
+    EvolutionTarget("graph_node", "Personal graph project, person, and task relationship facts.", "graph"),
+    EvolutionTarget("task_execution", "Recorded task execution outcome state.", "execution"),
+)
+
+
+def list_evolution_targets() -> list[dict[str, Any]]:
+    return [target.__dict__ for target in EVOLUTION_TARGETS]
+
+
+def known_evolution_target(target_type: str) -> bool:
+    return any(target.target_type == target_type for target in EVOLUTION_TARGETS)
+
+
 class EvolutionLedger:
     def __init__(self, home: Path):
         self.home = home
@@ -55,6 +110,32 @@ class EvolutionLedger:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_evolution_task ON evolution_events(task_id)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS evolution_proposals (
+                    id TEXT PRIMARY KEY,
+                    target_type TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    expected_benefit TEXT NOT NULL,
+                    risk TEXT NOT NULL,
+                    before TEXT NOT NULL,
+                    after TEXT NOT NULL,
+                    diff TEXT NOT NULL,
+                    rollback_plan TEXT NOT NULL,
+                    required_approval_level TEXT NOT NULL,
+                    evidence TEXT NOT NULL,
+                    source_task_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    applied_at REAL NOT NULL,
+                    applied_event_id TEXT NOT NULL,
+                    eval_cases TEXT NOT NULL,
+                    evaluation_result TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_evolution_proposal_status ON evolution_proposals(status)")
 
     def record(
         self,
@@ -146,6 +227,137 @@ class EvolutionLedger:
             )
         return self.get(event_id)
 
+    def propose(
+        self,
+        *,
+        target_type: str,
+        target_id: str,
+        reason: str,
+        expected_benefit: str,
+        risk: str,
+        before: str,
+        after: str,
+        rollback_plan: str,
+        required_approval_level: str = "L2",
+        evidence: str = "",
+        source_task_id: str = "",
+        eval_cases: list[str] | None = None,
+    ) -> EvolutionProposal:
+        if not known_evolution_target(target_type):
+            raise ValueError(f"unknown evolution target type: {target_type}")
+        proposal = EvolutionProposal(
+            id=uuid.uuid4().hex,
+            target_type=target_type,
+            target_id=target_id,
+            reason=reason,
+            expected_benefit=expected_benefit,
+            risk=risk,
+            before=before,
+            after=after,
+            diff=self._diff(before, after),
+            rollback_plan=rollback_plan,
+            required_approval_level=required_approval_level,
+            evidence=evidence,
+            source_task_id=source_task_id,
+            status="proposed",
+            created_at=time.time(),
+            applied_at=0.0,
+            applied_event_id="",
+            eval_cases=json.dumps(eval_cases or [], sort_keys=True),
+            evaluation_result="",
+        )
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO evolution_proposals(
+                    id, target_type, target_id, reason, expected_benefit, risk,
+                    before, after, diff, rollback_plan, required_approval_level,
+                    evidence, source_task_id, status, created_at, applied_at,
+                    applied_event_id, eval_cases, evaluation_result
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(proposal.__dict__.values()),
+            )
+        return proposal
+
+    def list_proposals(self, *, status: str | None = None, limit: int = 100) -> list[EvolutionProposal]:
+        with connect(self.db_path) as conn:
+            if status:
+                rows = conn.execute(
+                    """
+                    SELECT id, target_type, target_id, reason, expected_benefit, risk,
+                           before, after, diff, rollback_plan, required_approval_level,
+                           evidence, source_task_id, status, created_at, applied_at,
+                           applied_event_id, eval_cases, evaluation_result
+                    FROM evolution_proposals WHERE status = ? ORDER BY created_at DESC LIMIT ?
+                    """,
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, target_type, target_id, reason, expected_benefit, risk,
+                           before, after, diff, rollback_plan, required_approval_level,
+                           evidence, source_task_id, status, created_at, applied_at,
+                           applied_event_id, eval_cases, evaluation_result
+                    FROM evolution_proposals ORDER BY created_at DESC LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        return [EvolutionProposal(*row) for row in rows]
+
+    def get_proposal(self, proposal_id: str) -> EvolutionProposal | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT id, target_type, target_id, reason, expected_benefit, risk,
+                       before, after, diff, rollback_plan, required_approval_level,
+                       evidence, source_task_id, status, created_at, applied_at,
+                       applied_event_id, eval_cases, evaluation_result
+                FROM evolution_proposals WHERE id = ?
+                """,
+                (proposal_id,),
+            ).fetchone()
+        return EvolutionProposal(*row) if row else None
+
+    def record_proposal_evaluation(self, proposal_id: str, evaluation_result: str) -> EvolutionProposal | None:
+        if self.get_proposal(proposal_id) is None:
+            return None
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE evolution_proposals SET evaluation_result = ? WHERE id = ?",
+                (evaluation_result, proposal_id),
+            )
+        return self.get_proposal(proposal_id)
+
+    def apply_proposal(self, proposal_id: str) -> EvolutionEvent | None:
+        proposal = self.get_proposal(proposal_id)
+        if proposal is None:
+            return None
+        if proposal.status == "applied" and proposal.applied_event_id:
+            return self.get(proposal.applied_event_id)
+        if proposal.status != "proposed":
+            raise ValueError(f"cannot apply proposal in status: {proposal.status}")
+        event = self.record(
+            task_id=proposal.source_task_id,
+            target_type=proposal.target_type,
+            target_id=proposal.target_id,
+            reason=proposal.reason,
+            before=proposal.before,
+            after=proposal.after,
+        )
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE evolution_proposals
+                SET status = ?, applied_at = ?, applied_event_id = ?
+                WHERE id = ?
+                """,
+                ("applied", time.time(), event.id, proposal.id),
+            )
+        return event
+
     @staticmethod
     def _diff(before: str, after: str) -> str:
         return "".join(
@@ -211,6 +423,20 @@ class EvolutionEngine:
 
         return self.ledger.list_for_task(task.id)
 
+    def apply_proposal(self, proposal_id: str) -> EvolutionEvent | None:
+        proposal = self.ledger.get_proposal(proposal_id)
+        if proposal is None:
+            return None
+        if proposal.status == "applied" and proposal.applied_event_id:
+            return self.ledger.get(proposal.applied_event_id)
+        if proposal.status != "proposed":
+            raise ValueError(f"cannot apply proposal in status: {proposal.status}")
+        if proposal.target_type == "prompt_layer":
+            from .prompting import PromptLayerStore
+
+            PromptLayerStore(self.home).write_override(proposal.target_id, proposal.after)
+        return self.ledger.apply_proposal(proposal_id)
+
     def rollback(self, event_id: str) -> EvolutionEvent | None:
         event = self.ledger.get(event_id)
         if event is None or event.rolled_back_at:
@@ -257,6 +483,14 @@ class EvolutionEngine:
                     result_summary=task_dict.get("result_summary", ""),
                     error=task_dict.get("error", ""),
                 )
+        elif event.target_type == "prompt_layer":
+            from .prompting import PromptLayerStore
+
+            store = PromptLayerStore(self.home)
+            if event.before:
+                store.write_override(event.target_id, event.before)
+            else:
+                store.delete_override(event.target_id)
         return self.ledger.mark_rolled_back(event_id)
 
     def _update_graph(self, task: Task, *, success: bool, reason: str) -> EvolutionEvent:

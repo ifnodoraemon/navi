@@ -167,3 +167,35 @@ def test_trust_async_match_offloads_rule_listing():
     source = _source(TrustStore.match)
 
     assert "await asyncio.to_thread(self.list" in source
+
+
+def test_daemon_detectors_emit_facts_not_repair_workflows():
+    source = _source(SystemDaemon)
+
+    workflow_tokens = (
+        "Analyze the error",
+        "propose a fix",
+        "restart the service",
+        "run tests if applicable",
+        "verify code correctness",
+    )
+    offenders = [token for token in workflow_tokens if token in source]
+
+    assert offenders == []
+    assert "Observation facts" in _source(SystemDaemon._event_policy_prompt)
+
+
+def test_execution_follow_up_is_explicit_capability_not_hidden_loop():
+    import yaml
+    from pathlib import Path
+    from navi.execution import ExecutionService
+
+    source = _source(ExecutionService.execute_task)
+    action_specs = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "src" / "navi" / "specs" / "action_tools.yaml").read_text(encoding="utf-8")
+    )
+    action_names = {item["name"] for item in action_specs}
+
+    assert "SELF-HEALING" not in source
+    assert "while result.exit_code" not in source
+    assert "execution.retry" in action_names

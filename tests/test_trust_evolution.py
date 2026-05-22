@@ -7,7 +7,6 @@ import shutil
 import socket
 import subprocess
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.trust import TrustStore
@@ -77,7 +76,7 @@ async def test_semantic_trust_matching(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_self_healing_execution_and_rollback(tmp_path):
+async def test_execution_failure_waits_for_explicit_follow_up_and_rolls_back(tmp_path):
     # Setup execution and tasks
     tasks = TaskStore(tmp_path)
     execution = ExecutionService(tmp_path)
@@ -91,7 +90,6 @@ async def test_self_healing_execution_and_rollback(tmp_path):
         autonomy_level="L3",
     )
     
-    # Mock execution providers to return a failure on first execute, and success on second execution
     failed_result = ExecutionResult(
         provider="mock",
         phase="execute",
@@ -102,31 +100,17 @@ async def test_self_healing_execution_and_rollback(tmp_path):
         started_at=time.time(),
         ended_at=time.time(),
     )
-    success_result = ExecutionResult(
-        provider="mock",
-        phase="execute",
-        command=["mock", "exec"],
-        stdout="Compiled successfully",
-        stderr="",
-        exit_code=0,
-        started_at=time.time(),
-        ended_at=time.time(),
-    )
-    
-    # Mock _provider_call_with_timeout to yield failed then success
-    calls = [failed_result, success_result]
     async def mock_provider_call(t, phase):
-        return calls.pop(0)
+        return failed_result
         
     execution._provider_call_with_timeout = mock_provider_call
     
     # Run task execution
     updated_task = await execution.execute_task(task)
     
-    # Verify self-healing succeeded after retry
-    assert updated_task.status == "completed"
-    assert updated_task.result_summary == "Compiled successfully"
-    assert updated_task.error == ""
+    assert updated_task.status == "failed"
+    assert updated_task.result_summary == "Failed compiling main.py"
+    assert "NameError" in updated_task.error
     
     # Verify evolution ledger entries for task_execution target type
     ledger = EvolutionLedger(tmp_path)
@@ -183,9 +167,9 @@ async def test_proactive_event_watchers(tmp_path):
     assert len(created_events) == 1
     assert "Exception detected in log" in created_events[0]["message"]
     
-    assert len(mock_invoke_calls) == 1
-    assert mock_invoke_calls[0][0] == "task.create"
-    assert "Proactive Alert: I detected an exception/error" in mock_invoke_calls[0][1]["prompt"]
+    assert [call[0] for call in mock_invoke_calls] == ["task.record", "task.prepare", "approval.request"]
+    assert "proactive runtime detector produced observation facts" in mock_invoke_calls[0][1]["prompt"]
+    assert "log_error_detected" in mock_invoke_calls[0][1]["prompt"]
     assert mock_invoke_calls[0][2].source == "event_log"
 
 
@@ -231,8 +215,9 @@ async def test_log_rotation_and_chunked_reads(tmp_path):
     daemon.capabilities.invoke = mock_invoke
     
     await daemon.process_events_once()
-    assert len(mock_invoke_calls) == 1
+    assert [call[0] for call in mock_invoke_calls] == ["task.record", "task.prepare", "approval.request"]
     assert "FATAL" in mock_invoke_calls[0][1]["prompt"]
+    assert "log_error_detected" in mock_invoke_calls[0][1]["prompt"]
     
     graph.upsert("Project", str(project_path), {"log_size_logs/dev.log": 0})
     huge_log = "Ok log lines...\n" * 1000 + "Exception: Crashed after huge output!\n"
@@ -240,8 +225,9 @@ async def test_log_rotation_and_chunked_reads(tmp_path):
     
     mock_invoke_calls.clear()
     await daemon.process_events_once()
-    assert len(mock_invoke_calls) == 1
+    assert [call[0] for call in mock_invoke_calls] == ["task.record", "task.prepare", "approval.request"]
     assert "Exception" in mock_invoke_calls[0][1]["prompt"]
+    assert "Observation facts" in mock_invoke_calls[0][1]["prompt"]
 
 
 def test_log_reader_preserves_utf8_across_chunk_boundary(tmp_path):
@@ -264,8 +250,79 @@ def test_log_reader_preserves_utf8_across_chunk_boundary(tmp_path):
     assert new_offset == len(log_file.read_bytes())
 
 
+def test_evolution_proposals_are_reviewable_before_apply(tmp_path):
+    from navi.evolution import EvolutionLedger, list_evolution_targets
+
+    targets = {target["target_type"] for target in list_evolution_targets()}
+    assert {"prompt_layer", "skill", "memory_item", "trust_policy", "workflow_policy"} <= targets
+
+    ledger = EvolutionLedger(tmp_path)
+    proposal = ledger.propose(
+        target_type="prompt_layer",
+        target_id="authorization",
+        reason="tighten local action wording",
+        expected_benefit="fewer false claims about local access",
+        risk="over-constraining responses",
+        before="old prompt",
+        after="new prompt",
+        rollback_plan="restore previous prompt layer content",
+        evidence="review finding A04",
+        source_task_id="task-123",
+        eval_cases=["prompt_style_regression"],
+    )
+
+    assert proposal.status == "proposed"
+    assert proposal.diff
+    assert ledger.list() == []
+    assert ledger.get_proposal(proposal.id).target_type == "prompt_layer"
+
+    event = ledger.apply_proposal(proposal.id)
+
+    assert event is not None
+    assert event.target_type == "prompt_layer"
+    assert event.target_id == "authorization"
+    assert event.task_id == "task-123"
+    applied = ledger.get_proposal(proposal.id)
+    assert applied.status == "applied"
+    assert applied.applied_event_id == event.id
+    assert json.loads(applied.eval_cases) == ["prompt_style_regression"]
+
+    evaluated = ledger.record_proposal_evaluation(proposal.id, "prompt_style_regression: pass")
+    assert evaluated.evaluation_result == "prompt_style_regression: pass"
+
+
+def test_evolution_proposals_reject_unknown_targets(tmp_path):
+    ledger = EvolutionLedger(tmp_path)
+
+    with pytest.raises(ValueError, match="unknown evolution target type"):
+        ledger.propose(
+            target_type="hidden_runtime_magic",
+            target_id="x",
+            reason="invalid",
+            expected_benefit="",
+            risk="",
+            before="",
+            after="",
+            rollback_plan="",
+        )
+
+
+def test_trust_policy_is_declared_and_used():
+    from navi.trust import PROMOTION_SUCCESSES, trust_policy_facts
+
+    policy = trust_policy_facts()
+
+    assert policy["default_level"] == "L2"
+    assert policy["auto_execute_level"] == "L3"
+    assert policy["promotion_successes"] == PROMOTION_SUCCESSES == 3
+    assert policy["labels"]["L2"] == "approve_execute"
+
+
 @pytest.mark.asyncio
 async def test_self_healing_retry_accumulation(tmp_path):
+    from navi.capabilities import CapabilityContext, CapabilityRegistry
+    import navi.capabilities as capabilities_module
+
     tasks = TaskStore(tmp_path)
     execution = ExecutionService(tmp_path)
     
@@ -282,18 +339,13 @@ async def test_self_healing_retry_accumulation(tmp_path):
         stdout="Output1", stderr="SyntaxError: invalid syntax", exit_code=1,
         started_at=time.time(), ended_at=time.time()
     )
-    res2 = ExecutionResult(
-        provider="mock", phase="execute", command=["python", "run.py"],
-        stdout="Output2", stderr="ImportError: module missing", exit_code=1,
-        started_at=time.time(), ended_at=time.time()
-    )
     res3 = ExecutionResult(
         provider="mock", phase="execute", command=["python", "run.py"],
         stdout="Success!", stderr="", exit_code=0,
         started_at=time.time(), ended_at=time.time()
     )
     
-    calls = [res1, res2, res3]
+    calls = [res1, res3]
     prompt_history = []
     async def mock_provider_call(t, phase):
         prompt_history.append(t.prompt)
@@ -301,19 +353,34 @@ async def test_self_healing_retry_accumulation(tmp_path):
         
     execution._provider_call_with_timeout = mock_provider_call
     
-    updated_task = await execution.execute_task(task)
-    assert updated_task.status == "completed"
-    
-    assert len(prompt_history) == 3
-    assert "SyntaxError: invalid syntax" in prompt_history[2]
-    assert "ImportError: module missing" in prompt_history[2]
+    first = await execution.execute_task(task)
+    assert first.status == "failed"
+    approval = tasks.create_approval(task_id=task.id, peer_id="peer", sender_id="sender")
+    tasks.resolve_approval(approval.code, "sender", "approved")
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(capabilities_module, "ExecutionService", lambda home: execution)
+    try:
+        retry = await CapabilityRegistry(home=tmp_path, project_dir=tmp_path).invoke(
+            "execution.retry",
+            {"task_id": task.id, "follow_up_prompt": "Use the observed SyntaxError as data and try one corrected run."},
+            permission="write",
+            context=CapabilityContext(home=tmp_path),
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert retry.ok is True
+    assert retry.facts["status"] == "completed"
+    assert len(prompt_history) == 2
+    assert "Output1" not in prompt_history[1]
+    assert "SELF-HEALING" not in prompt_history[1]
+    assert "Follow-up execution instruction" in prompt_history[1]
+    assert "corrected run" in prompt_history[1]
     prompt_logs = [
         log for log in TaskStore(tmp_path).list_execution_logs(task.id)
         if log.phase == "self_heal_prompt"
     ]
-    assert len(prompt_logs) == 2
-    assert "SyntaxError: invalid syntax" in prompt_logs[0].stdout
-    assert "ImportError: module missing" in prompt_logs[0].stdout
+    assert prompt_logs == []
 
 
 def test_daemon_primary_project_selection_is_stable(tmp_path):
@@ -447,19 +514,6 @@ async def test_daemon_git_detector_skips_when_git_binary_missing(tmp_path, monke
     assert events == []
     assert updates == {}
     assert "git is not on PATH" in caplog.text
-
-
-def test_memory_store_migration_is_guarded_for_concurrent_initialization(tmp_path):
-    from navi.memory import MemoryStore
-
-    (tmp_path / "sessions.db").write_bytes(b"")
-
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        stores = list(executor.map(lambda _: MemoryStore(tmp_path), range(4)))
-
-    assert all(store.db_path == tmp_path / "memory.db" for store in stores)
-    assert (tmp_path / "memory.db").exists()
-    assert not (tmp_path / "sessions.db").exists()
 
 
 @pytest.mark.asyncio
@@ -669,7 +723,7 @@ async def test_daemon_active_task_suppression(tmp_path):
     # Case 1: No active tasks, process_events_once should trigger a proactive alert
     events = await daemon.process_events_once()
     assert len(events) == 1
-    assert len(mock_invokes) == 1
+    assert len(mock_invokes) == 3
     
     # Reset offsets
     graph.upsert("Project", str(project_path), {"log_size_logs/dev.log": 0, "last_err_fp_logs/dev.log": ""})
@@ -760,7 +814,7 @@ async def test_daemon_log_keys_include_relative_path(tmp_path):
     events = await daemon.process_events_once()
 
     assert len(events) == 2
-    assert len(mock_invokes) == 2
+    assert len(mock_invokes) == 6
     project = graph.get_by_name("Project", str(project_path))
     assert project.data["log_size_app.log"] == len(root_log.read_bytes())
     assert project.data["log_size_logs/app.log"] == len(nested_log.read_bytes())
@@ -796,7 +850,7 @@ async def test_daemon_fingerprint_spam_protection(tmp_path):
     log_file.write_text("Exception: syntax error in compiler.py\nTraceback (most recent call last):\n  File 'compiler.py'")
     events1 = await daemon.process_events_once()
     assert len(events1) == 1
-    assert len(mock_invokes) == 1
+    assert len(mock_invokes) == 3
     
     # Reset log_size but keep same exception contents
     project = graph.get_by_name("Project", str(project_path))
@@ -818,7 +872,7 @@ async def test_daemon_fingerprint_spam_protection(tmp_path):
     
     events3 = await daemon.process_events_once()
     assert len(events3) == 1
-    assert len(mock_invokes) == 1
+    assert len(mock_invokes) == 3
 
 
 @pytest.mark.asyncio

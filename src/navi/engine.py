@@ -3,16 +3,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .config import load_config
+from .connector_registry import approval_surface_affordance
 from .operating_context import OperatingContext
 from .provider import ChatMessage
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
+from .trace import TraceStore
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,7 @@ class AgentTurnResult:
     observation: str = ""
     model_role: str = "responder"
     terminal: bool = False
+    trace_id: str = ""
 
 
 class HernessEngine:
@@ -54,6 +57,7 @@ class HernessEngine:
             permission_ceiling=permission_ceiling,
         )
         self.planner = ModelSyscallPlanner(runtime.provider)
+        self.trace = TraceStore(home)
         self._memory_sem: asyncio.Semaphore | None = None
         self._background_tasks: set[asyncio.Task] = set()
 
@@ -70,6 +74,16 @@ class HernessEngine:
         resolved_session_id = session_id
         if not resolved_session_id and session_alias:
             resolved_session_id = self.runtime.memory.current_session_id(session_alias)
+        trace_id = self.trace.new_trace_id()
+        self.trace.add_event(
+            trace_id=trace_id,
+            phase="turn.start",
+            session_id=resolved_session_id or "",
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            input_data={"message": text, "session_alias": session_alias or ""},
+        )
 
         context = CapabilityContext(
             home=self.home,
@@ -92,13 +106,42 @@ class HernessEngine:
                 permission_ceiling=context.permission_ceiling,
                 model_roles=self.runtime.model_roles(),
             )
+            self.trace.add_event(
+                trace_id=trace_id,
+                phase="planner.syscall",
+                session_id=resolved_session_id or "",
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+                tool=syscall.tool,
+                model_role="planner",
+                ok=syscall.tool != "system.planner_error",
+                input_data={"observations_count": len(observations), "permission_ceiling": context.permission_ceiling},
+                output_data=asdict(syscall),
+                message=syscall.reason,
+            )
             invoked = await self.capabilities.invoke(
                 syscall.tool,
                 syscall.args,
                 permission=syscall.permission,
                 context=context,
             )
-            approval_prompt = self._approval_prompt_from_facts(invoked.facts)
+            self.trace.add_event(
+                trace_id=trace_id,
+                phase="capability.result",
+                session_id=resolved_session_id or "",
+                task_id=invoked.task_id,
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+                tool=syscall.tool,
+                model_role=syscall.model_role,
+                ok=invoked.ok,
+                input_data={"args": syscall.args, "permission": syscall.permission},
+                output_data={"action": invoked.action, "facts": invoked.facts or {}, "terminal": invoked.terminal},
+                message=invoked.message or invoked.observation,
+            )
+            approval_prompt = self._approval_prompt_from_facts(invoked.facts, source=source)
             if approval_prompt:
                 pending_approval_prompt = approval_prompt
             result = AgentTurnResult(
@@ -122,6 +165,8 @@ class HernessEngine:
             last_result = result
             if result.terminal:
                 turn_res = self._record_turn(text, result, session_id=resolved_session_id)
+                turn_res = self._with_trace(turn_res, trace_id)
+                self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
                 self._trigger_background_memory(turn_res)
                 return turn_res
             observations.append(result.observation or result.text)
@@ -139,6 +184,8 @@ class HernessEngine:
                 pending_approval_prompt=pending_approval_prompt,
                 budget_exhausted=budget_exhausted,
             )
+            turn_res = self._with_trace(turn_res, trace_id)
+            self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
             self._trigger_background_memory(turn_res)
             return turn_res
 
@@ -162,7 +209,8 @@ class HernessEngine:
             warning = "\n\n(注意：已达到步骤预算上限，任务可能未完成。) / (Warning: Step budget limit reached, the task may not be completed.)"
             answer_with_warning = f"{answer}{warning}"
             self.runtime.memory.add_message(resolved_session_id, "assistant", answer_with_warning)
-            turn_res = AgentTurnResult(text=answer_with_warning, session_id=resolved_session_id, action="chat", terminal=True)
+            turn_res = AgentTurnResult(text=answer_with_warning, session_id=resolved_session_id, action="chat", terminal=True, trace_id=trace_id)
+            self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
             self._trigger_background_memory(turn_res)
             return turn_res
 
@@ -179,7 +227,8 @@ class HernessEngine:
                 workspace=str(self.capabilities.gateway.project_dir.resolve()),
             ),
         )
-        turn_res = AgentTurnResult(text=reply.content, session_id=reply.session_id, action="chat", terminal=True)
+        turn_res = AgentTurnResult(text=reply.content, session_id=reply.session_id, action="chat", terminal=True, trace_id=trace_id)
+        self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
         self._trigger_background_memory(turn_res)
         return turn_res
 
@@ -250,7 +299,45 @@ class HernessEngine:
             observation=result.observation,
             model_role=result.model_role,
             terminal=result.terminal,
+            trace_id=result.trace_id,
         )
+
+    @staticmethod
+    def _with_trace(result: AgentTurnResult, trace_id: str) -> AgentTurnResult:
+        return AgentTurnResult(
+            text=result.text,
+            session_id=result.session_id,
+            task_id=result.task_id,
+            action=result.action,
+            observation=result.observation,
+            model_role=result.model_role,
+            terminal=result.terminal,
+            trace_id=trace_id,
+        )
+
+    def _record_trace_final(
+        self,
+        result: AgentTurnResult,
+        trace_id: str,
+        *,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+    ) -> None:
+        self.trace.add_event(
+            trace_id=trace_id,
+            phase="turn.final",
+            session_id=result.session_id,
+            task_id=result.task_id,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            model_role=result.model_role,
+            ok=True,
+            output_data={"action": result.action, "terminal": result.terminal},
+            message=result.text,
+        )
+        self.trace.evaluate_trace(trace_id)
 
     async def _finalize_observations(
         self,
@@ -341,6 +428,7 @@ class HernessEngine:
             observation=result.observation,
             model_role=result.model_role,
             terminal=result.terminal,
+            trace_id=result.trace_id,
         )
 
     @staticmethod
@@ -359,7 +447,7 @@ class HernessEngine:
         return bool(code and code in text)
 
     @staticmethod
-    def _approval_prompt_from_facts(facts: dict[str, Any] | None) -> str:
+    def _approval_prompt_from_facts(facts: dict[str, Any] | None, *, source: str = "") -> str:
         if not facts or facts.get("status") != "awaiting_approval":
             return ""
         approval = facts.get("approval")
@@ -375,11 +463,24 @@ class HernessEngine:
         except (TypeError, ValueError):
             minutes = 0
         expiry = f"审批将在约 {minutes} 分钟后过期。" if minutes else "审批有过期时间，请尽快处理。"
-        lines = [
-            "需要你批准后才会执行。",
-            f"任务 ID: `{task_id}`" if task_id else "",
-            f"审批码: `{code}`",
-            expiry,
-            f"回复 `批准 {code}` / `approve {code}` 执行，或回复 `拒绝 {code}` / `reject {code}` 取消。",
-        ]
-        return "\n".join(line for line in lines if line)
+        affordance = approval_surface_affordance(source)
+        commands = affordance.get("approval_commands") if isinstance(affordance.get("approval_commands"), dict) else {}
+        approve_command = _first_command(commands, "approve", "approve")
+        reject_command = _first_command(commands, "reject", "reject")
+        template = str(affordance.get("approval_template") or "")
+        if not template:
+            return ""
+        return template.format(
+            task_line=f"任务 ID: `{task_id}`" if task_id else "",
+            code=code,
+            expiry=expiry,
+            approve_command=approve_command,
+            reject_command=reject_command,
+        ).strip()
+
+
+def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:
+    raw = commands.get(key)
+    if isinstance(raw, list) and raw:
+        return str(raw[0])
+    return fallback

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .db import connect
 from .json_utils import parse_first_json_object
+from .spec_loader import load_spec
 from typing import Any, TYPE_CHECKING
 
 from .tasks import Task
@@ -20,15 +21,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger("navi.trust")
 
 
-LEVELS = ["L0", "L1", "L2", "L3", "L4"]
 SEMANTIC_RULE_BATCH_SIZE = 5
-LEVEL_LABELS = {
-    "L0": "observe",
-    "L1": "suggest",
-    "L2": "approve_execute",
-    "L3": "trusted_auto",
-    "L4": "broad_delegate",
-}
+
+_TRUST_POLICY = load_spec("trust_policy.yaml")
+LEVELS = [str(level) for level in _TRUST_POLICY["levels"]]
+LEVEL_LABELS = {str(key): str(value) for key, value in (_TRUST_POLICY.get("labels") or {}).items()}
+DEFAULT_TRUST_LEVEL = str(_TRUST_POLICY.get("default_level", "L2"))
+DEFAULT_TRUST_ACTION = str(_TRUST_POLICY.get("default_action", "approval"))
+AUTO_EXECUTE_LEVEL = str(_TRUST_POLICY.get("auto_execute_level", "L3"))
+MAX_AUTO_PROMOTION_LEVEL = str(_TRUST_POLICY.get("max_auto_promotion_level", "L3"))
+PROMOTION_SUCCESSES = int(_TRUST_POLICY.get("promotion_successes", 3))
+
+
+def trust_policy_facts() -> dict[str, Any]:
+    return {
+        "levels": LEVELS,
+        "labels": LEVEL_LABELS,
+        "default_level": DEFAULT_TRUST_LEVEL,
+        "default_action": DEFAULT_TRUST_ACTION,
+        "auto_execute_level": AUTO_EXECUTE_LEVEL,
+        "max_auto_promotion_level": MAX_AUTO_PROMOTION_LEVEL,
+        "promotion_successes": PROMOTION_SUCCESSES,
+    }
 
 
 @dataclass(frozen=True)
@@ -89,17 +103,17 @@ class TrustStore:
         rule = await self.match(prompt=prompt, sender_id=sender_id, workspace=workspace, provider=provider)
         if rule is None:
             return TrustDecision(
-                level="L2",
-                action="approval",
+                level=DEFAULT_TRUST_LEVEL,
+                action=DEFAULT_TRUST_ACTION,
                 rule_id="",
                 why="No matching trust rule yet; Navi will plan first and ask for approval.",
                 trusted_project=False,
             )
-        action = "auto_execute" if rule.autonomy_level == "L3" and rule.project_path else "approval"
+        action = "auto_execute" if rule.autonomy_level == AUTO_EXECUTE_LEVEL and rule.project_path else DEFAULT_TRUST_ACTION
         if rule.autonomy_level in {"L0", "L1"}:
             action = "suggest"
         if rule.autonomy_level == "L4":
-            action = "approval"
+            action = DEFAULT_TRUST_ACTION
         return TrustDecision(
             level=rule.autonomy_level,
             action=action,
@@ -210,13 +224,13 @@ class TrustStore:
         consecutive_successes = rule.data.get("consecutive_successes", 0) + 1
         new_level = rule.autonomy_level
         project_path = rule.project_path
-        if consecutive_successes >= 3:
+        if consecutive_successes >= PROMOTION_SUCCESSES:
             current_index = LEVELS.index(rule.autonomy_level)
-            if current_index < LEVELS.index("L3"):
-                if (current_index + 1) < LEVELS.index("L3") or (task.workspace or project_path):
+            if current_index < LEVELS.index(MAX_AUTO_PROMOTION_LEVEL):
+                if (current_index + 1) < LEVELS.index(MAX_AUTO_PROMOTION_LEVEL) or (task.workspace or project_path):
                     new_level = LEVELS[current_index + 1]
                     consecutive_successes = 0
-                    if new_level == "L3" and not project_path:
+                    if new_level == AUTO_EXECUTE_LEVEL and not project_path:
                         project_path = task.workspace
         updated_data = {"consecutive_successes": consecutive_successes}
         return self._update_counts(

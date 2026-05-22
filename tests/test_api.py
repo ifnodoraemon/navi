@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 os.environ["NAVI_API_KEY"] = "test_key"
 
@@ -26,8 +27,15 @@ class ScriptedProvider(MockProvider):
     async def complete(self, messages: list[ChatMessage]) -> str:
         self.messages = messages
         if isinstance(self.response, list):
-            return self.response.pop(0)
-        return self.response
+            response = self.response.pop(0)
+        else:
+            response = self.response
+        if "TASK_ID" in response:
+            for message in reversed(messages):
+                match = re.search(r'"task_id":\s*"([^"]+)"', message.content)
+                if match:
+                    return response.replace("TASK_ID", match.group(1))
+        return response
 
 
 def test_local_console_api_flow(tmp_path, monkeypatch):
@@ -113,7 +121,9 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"task.create","permission":"prepare","args":{"prompt":"检查本地服务状态"},"confidence":0.95,"reason":"local action request"}',
+            '{"tool":"task.record","permission":"prepare","args":{"prompt":"检查本地服务状态"},"confidence":0.95,"reason":"local action request"}',
+            '{"tool":"task.prepare","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.95,"reason":"prepare task"}',
+            '{"tool":"approval.request","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.95,"reason":"request approval"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"已为你创建受控任务，等待审批后执行。"},"confidence":0.95,"reason":"task prepared"}',
         ]
     )
@@ -131,7 +141,7 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["action"] == "task"
+    assert data["action"] == "approval"
     assert data["task_id"]
     task = client.get("/v1/tasks").json()["tasks"][0]
     assert task["prompt"] == "检查本地服务状态"
@@ -184,7 +194,9 @@ def test_chat_api_routes_natural_language_approval(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"task.create","permission":"prepare","args":{"prompt":"检查本地服务状态"},"confidence":0.95,"reason":"local action request"}',
+            '{"tool":"task.record","permission":"prepare","args":{"prompt":"检查本地服务状态"},"confidence":0.95,"reason":"local action request"}',
+            '{"tool":"task.prepare","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.95,"reason":"prepare task"}',
+            '{"tool":"approval.request","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.95,"reason":"request approval"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"已创建任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',
         ]
     )
@@ -275,6 +287,94 @@ def test_active_watch_api(tmp_path):
     assert created.status_code == 200
     assert "Watch" in created.json()["message"]
     assert client.get("/v1/watches").json()["watches"][0]["prompt"] == "check active watches"
+
+
+def test_trace_api_flow(tmp_path):
+    client = authenticated_client(create_app(tmp_path))
+
+    from navi.trace import TraceStore
+
+    trace_id = "api-trace"
+    TraceStore(tmp_path).add_event(
+        trace_id=trace_id,
+        phase="capability.result",
+        tool="task.queue",
+        ok=False,
+        message="missing grant",
+    )
+
+    traces = client.get("/v1/traces")
+    assert traces.status_code == 200
+    assert trace_id in traces.json()["trace_ids"]
+
+    events = client.get(f"/v1/traces/{trace_id}")
+    assert events.status_code == 200
+    assert events.json()["events"][0]["tool"] == "task.queue"
+
+    evaluation = client.post(f"/v1/traces/{trace_id}/evaluate")
+    assert evaluation.status_code == 200
+    assert evaluation.json()["failure_domain"] == "tool_or_capability"
+
+
+def test_evolution_proposal_api_flow(tmp_path):
+    client = authenticated_client(create_app(tmp_path))
+
+    targets = client.get("/v1/evolution-targets")
+    assert targets.status_code == 200
+    assert "memory_schema" in {target["target_type"] for target in targets.json()["targets"]}
+
+    invalid = client.post(
+        "/v1/evolution-proposals",
+        json={
+            "target_type": "unknown",
+            "target_id": "target",
+            "reason": "coverage",
+            "after": "after",
+        },
+    )
+    assert invalid.status_code == 409
+
+    created = client.post(
+        "/v1/evolution-proposals",
+        json={
+            "target_type": "memory_schema",
+            "target_id": "policy",
+            "reason": "cover proposal review",
+            "expected_benefit": "more measurable changes",
+            "risk": "low",
+            "before": "old",
+            "after": "new",
+            "rollback_plan": "restore old",
+            "eval_cases": ["record_task_without_preparation"],
+        },
+    )
+    assert created.status_code == 200
+    proposal_id = created.json()["id"]
+
+    listed = client.get("/v1/evolution-proposals", params={"status": "proposed"})
+    assert listed.status_code == 200
+    assert listed.json()["proposals"][0]["id"] == proposal_id
+
+    recorded = client.post(
+        f"/v1/evolution-proposals/{proposal_id}/evaluation",
+        json={"evaluation_result": "passed targeted evals"},
+    )
+    assert recorded.status_code == 200
+    assert recorded.json()["evaluation_result"] == "passed targeted evals"
+
+    applied = client.post(f"/v1/evolution-proposals/{proposal_id}/apply")
+    assert applied.status_code == 200
+    assert applied.json()["target_type"] == "memory_schema"
+
+    rollback = client.post(f"/v1/evolution-events/{applied.json()['id']}/rollback")
+    assert rollback.status_code == 200
+    assert rollback.json()["rolled_back_at"] > 0
+
+    assert client.post("/v1/evolution-proposals/missing/apply").status_code == 404
+    assert client.post(
+        "/v1/evolution-proposals/missing/evaluation",
+        json={"evaluation_result": "missing"},
+    ).status_code == 404
 
 
 def test_api_auth_missing_and_invalid(tmp_path):

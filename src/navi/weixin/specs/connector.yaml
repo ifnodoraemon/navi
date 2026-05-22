@@ -4,3 +4,16 @@ status_tool: connector.weixin.status
 status_description: Return Weixin connector configuration facts without secrets.
 session_alias_prefix: connector:weixin
 local_source: weixin
+approval_template: |
+  需要你批准后才会执行。
+  {task_line}
+  审批码: `{code}`
+  {expiry}
+  回复 `{approve_command} {code}` / `approve {code}` 执行，或回复 `{reject_command} {code}` / `reject {code}` 取消。
+approval_commands:
+  approve:
+    - 批准
+    - approve
+  reject:
+    - 拒绝
+    - reject

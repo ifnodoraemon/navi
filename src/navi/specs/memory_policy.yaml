@@ -1,0 +1,41 @@
+types:
+  - working
+  - constraint
+  - episode
+  - semantic
+  - fact
+  - procedural
+  - preference
+  - negative
+  - skill
+  - hypothesis
+learnable_types:
+  - preference
+  - constraint
+  - negative
+  - fact
+  - semantic
+statuses:
+  - proposed
+  - accepted
+  - active
+  - contradicted
+  - stale
+  - archived
+  - revoked
+active_statuses:
+  - accepted
+  - active
+active_memory_context_limit: 20
+task_learning_log_limit: 3000
+type_priority:
+  constraint: 100
+  negative: 90
+  working: 85
+  preference: 70
+  procedural: 65
+  skill: 60
+  semantic: 55
+  fact: 55
+  hypothesis: 25
+  episode: 15
