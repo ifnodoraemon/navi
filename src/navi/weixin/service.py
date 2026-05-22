@@ -105,11 +105,15 @@ class WeixinService:
             pass
 
     async def run(self, *, once: bool = False) -> None:
+        import time
         account = self._resolve_account()
         sync_buf = self.store.load_sync_buf(account.account_id)
         sleep_time = 1.0
         retry_count = 0
         self.update_status("healthy")
+        last_tasks_check = 0.0
+        has_active_tasks = False
+        last_bg_check = 0.0
         while True:
             try:
                 batch = await self.client.get_updates(account.account_id, sync_buf=sync_buf)
@@ -118,11 +122,21 @@ class WeixinService:
                     self.store.save_sync_buf(account.account_id, sync_buf)
                 for update in batch.updates:
                     await self.handle_update(account, update)
-                await self.process_background(account)
+                
+                # Throttle background processing to at most once per second,
+                # unless there is incoming user activity in the current batch.
+                now = time.time()
+                if len(batch.updates) > 0 or (now - last_bg_check >= 1.0):
+                    await self.process_background(account)
+                    last_bg_check = now
                 
                 # Check for activity to adapt sleep time
-                active_tasks = self.daemon.tasks.list_by_statuses(["queued", "running", "preparing"])
-                has_activity = len(batch.updates) > 0 or len(active_tasks) > 0
+                if now - last_tasks_check >= 2.0:
+                    active_tasks = self.daemon.tasks.list_by_statuses(["queued", "running", "preparing"])
+                    has_active_tasks = len(active_tasks) > 0
+                    last_tasks_check = now
+
+                has_activity = len(batch.updates) > 0 or has_active_tasks
                 if has_activity:
                     sleep_time = 0.05
                 else:

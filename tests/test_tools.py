@@ -222,3 +222,14 @@ def test_tool_schema_validation(tmp_path):
     assert "'operation' must be a string" in res.error
     assert "'options' must be an object" in res.error
     assert "'tags[1]' must be a string" in res.error
+
+
+def test_provider_config_tool_handles_exceptions_robustly(tmp_path):
+    (tmp_path / "config.yaml").write_text("invalid: - [unbalanced array", encoding="utf-8")
+    from navi.core_tools import _provider_config
+    result = _provider_config(tmp_path)
+
+    assert result.ok is False
+    assert "Failed to load config" in result.error
+    assert len(result.facts["validation_errors"]) > 0
+    assert "Failed to load config" in result.facts["validation_errors"][0]

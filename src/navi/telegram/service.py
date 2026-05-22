@@ -69,12 +69,15 @@ class TelegramService:
             pass
 
     async def run(self, *, once: bool = False) -> None:
+        import time
         from navi.tasks import TaskStore
         tasks = TaskStore(self.home)
         offset: int | None = None
         sleep_time = 1.0
         retry_count = 0
         self.update_status("healthy")
+        last_tasks_check = 0.0
+        has_active_tasks = False
         while True:
             try:
                 updates = await self.client.get_updates(offset=offset)
@@ -83,8 +86,13 @@ class TelegramService:
                     await self.handle_update(update)
                 
                 # Check for activity to adapt sleep time
-                active_tasks = tasks.list_by_statuses(["queued", "running", "preparing"])
-                has_activity = len(updates) > 0 or len(active_tasks) > 0
+                now = time.time()
+                if now - last_tasks_check >= 2.0:
+                    active_tasks = tasks.list_by_statuses(["queued", "running", "preparing"])
+                    has_active_tasks = len(active_tasks) > 0
+                    last_tasks_check = now
+
+                has_activity = len(updates) > 0 or has_active_tasks
                 if has_activity:
                     sleep_time = 0.05
                 else:

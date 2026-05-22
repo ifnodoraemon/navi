@@ -66,7 +66,7 @@ def test_provider_config_tool_validation_errors(tmp_path):
         encoding="utf-8",
     )
     result = _provider_config(tmp_path)
-    assert result.ok is True
+    assert result.ok is False
     assert "validation_errors" in result.facts
     assert len(result.facts["validation_errors"]) > 0
 

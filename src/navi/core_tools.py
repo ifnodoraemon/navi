@@ -177,7 +177,8 @@ def _provider_config(home: Path) -> ToolResult:
     except Exception as e:
         return ToolResult(
             tool="provider.config",
-            ok=True,
+            ok=False,
+            error=f"Failed to load config: {e}",
             facts={
                 "provider": "",
                 "kind": "",
