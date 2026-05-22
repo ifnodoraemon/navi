@@ -90,6 +90,14 @@ def test_background_memory_tasks_are_tracked_bounded_and_observable():
     assert missing == []
 
 
+def test_engine_exposes_graceful_background_shutdown():
+    source = _source(HernessEngine.shutdown)
+
+    assert "self._background_tasks" in source
+    assert "asyncio.gather" in source
+    assert "return_exceptions=True" in source
+
+
 def test_memory_provider_failures_are_logged_before_fallback():
     for method in (
         MemoryStore.extract_and_consolidate_memories,
@@ -101,6 +109,16 @@ def test_memory_provider_failures_are_logged_before_fallback():
         assert "logger.warning(" in source
         assert "exc_info=True" in source
         assert "return []" in source
+
+
+def test_memory_session_lock_acquisition_is_inside_finally_guard():
+    source = _source(MemoryStore.extract_and_consolidate_memories)
+    acquire_pos = source.index("lock = await self._acquire_session_lock")
+    try_pos = source.index("try:")
+    finally_pos = source.index("finally:")
+
+    assert try_pos < acquire_pos < finally_pos
+    assert "if lock is not None:" in source
 
 
 def test_memory_async_extractors_offload_database_writes():

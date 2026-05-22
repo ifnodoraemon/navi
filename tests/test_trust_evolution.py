@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.trust import TrustStore
@@ -358,6 +359,119 @@ async def test_daemon_port_probe_forces_ipv4_address_family(tmp_path, monkeypatc
     assert open_calls == [("localhost", 54321, {"family": socket.AF_INET})]
 
 
+def test_daemon_port_probe_timeout_is_configurable_and_bounded():
+    assert SystemDaemon._port_probe_timeout({}) == 1.0
+    assert SystemDaemon._port_probe_timeout({"port_probe_timeout_seconds": 2}) == 2.0
+    assert SystemDaemon._port_probe_timeout({"port_probe_timeout_seconds": 0.1}) == 0.5
+    assert SystemDaemon._port_probe_timeout({"port_probe_timeout_seconds": 30}) == 10.0
+    assert SystemDaemon._port_probe_timeout({"port_probe_timeout_seconds": "bad"}) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_daemon_resolves_relative_project_paths(tmp_path, monkeypatch):
+    from navi.capabilities import CapabilityResult
+
+    monkeypatch.chdir(tmp_path)
+    daemon = SystemDaemon(tmp_path)
+    graph = GraphStore(tmp_path)
+    project_path = tmp_path / "relative_project"
+    project_path.mkdir()
+    log_file = project_path / "app.log"
+    log_file.write_text("Exception: relative path failure\n")
+    graph.upsert("Project", "relative_project", {})
+    mock_invokes = []
+
+    async def mock_invoke(name, args, permission=None, context=None):
+        mock_invokes.append(args)
+        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", task_id="t-1")
+
+    daemon.capabilities.invoke = mock_invoke
+
+    events = await daemon.process_events_once()
+
+    assert len(events) == 1
+    assert mock_invokes
+    project = graph.get_by_name("Project", "relative_project")
+    assert project is not None
+    assert project.data["log_size_app.log"] == len(log_file.read_bytes())
+
+
+@pytest.mark.asyncio
+async def test_daemon_git_detector_skips_when_git_binary_missing(tmp_path, monkeypatch, caplog):
+    daemon = SystemDaemon(tmp_path)
+    project_path = tmp_path / "gitless"
+    (project_path / ".git").mkdir(parents=True)
+
+    import navi.daemon as daemon_module
+
+    monkeypatch.setattr(daemon_module.shutil, "which", lambda binary: None)
+    caplog.set_level("WARNING", logger="navi.daemon")
+
+    events, updates = await daemon._detect_git_mutations(
+        ProjectEventContext(
+            project_path=str(project_path),
+            project_data={},
+            has_active_task=False,
+            use_default_ports=False,
+        )
+    )
+
+    assert events == []
+    assert updates == {}
+    assert "git is not on PATH" in caplog.text
+
+
+def test_memory_store_migration_is_guarded_for_concurrent_initialization(tmp_path):
+    from navi.memory import MemoryStore
+
+    (tmp_path / "sessions.db").write_bytes(b"")
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        stores = list(executor.map(lambda _: MemoryStore(tmp_path), range(4)))
+
+    assert all(store.db_path == tmp_path / "memory.db" for store in stores)
+    assert (tmp_path / "memory.db").exists()
+    assert not (tmp_path / "sessions.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_semantic_trust_matching_reaches_later_batches(tmp_path):
+    store = TrustStore(tmp_path)
+    store.upsert(
+        name="relevant",
+        pattern="deploy database",
+        project_path=str(tmp_path),
+        sender_id="user123",
+        autonomy_level="L3",
+    )
+    for idx in range(5):
+        store.upsert(
+            name=f"irrelevant-{idx}",
+            pattern=f"unrelated task {idx}",
+            project_path=str(tmp_path),
+            sender_id="user123",
+            autonomy_level="L3",
+        )
+
+    class PatternAwareProvider(ScriptedProvider):
+        async def complete(self, messages):
+            self.messages.append(messages)
+            content = messages[-1].content
+            return json.dumps({"matches": "deploy database" in content})
+
+    provider = PatternAwareProvider([])
+    matched = await store.match(
+        prompt="ship the database service",
+        sender_id="user123",
+        workspace=str(tmp_path),
+        provider=ModelPool(default=provider),
+    )
+
+    assert matched is not None
+    assert matched.name == "relevant"
+    assert len(provider.messages) == 6
+
+
 def test_read_only_skills_store(tmp_path):
     from navi.skills import SkillStore
     
@@ -444,6 +558,35 @@ async def test_engine_background_memory_uses_cancellation_shield(tmp_path, monke
     await asyncio.sleep(0.05)
 
     assert shield_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_engine_shutdown_waits_for_background_memory(tmp_path):
+    from navi.engine import HernessEngine, AgentTurnResult
+    from navi.provider import ModelPool
+
+    completed = False
+
+    class DummyRuntime:
+        def __init__(self):
+            self.provider = ModelPool(default=None)
+            self.memory = None
+
+    class DummyMemory:
+        async def extract_and_consolidate_memories(self, session_id, provider, task_id):
+            nonlocal completed
+            await asyncio.sleep(0.02)
+            completed = True
+
+    runtime = DummyRuntime()
+    runtime.memory = DummyMemory()
+    engine = HernessEngine(home=tmp_path, runtime=runtime)
+
+    engine._trigger_background_memory(AgentTurnResult(text="hello", session_id="sess-1"))
+    await engine.shutdown()
+
+    assert completed is True
+    assert len(engine._background_tasks) == 0
 
 
 @pytest.mark.asyncio

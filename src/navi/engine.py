@@ -169,6 +169,13 @@ class HernessEngine:
                     logger.error(f"Background memory extraction failed: {e}", exc_info=True)
             task.add_done_callback(handle_done)
 
+    async def shutdown(self, *, timeout: float = 10.0) -> None:
+        if not self._background_tasks:
+            return
+        await asyncio.wait_for(
+            asyncio.gather(*tuple(self._background_tasks), return_exceptions=True),
+            timeout=timeout,
+        )
 
     def _conversation_context(self, session_id: str | None) -> str:
         if not session_id:

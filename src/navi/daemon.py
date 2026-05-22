@@ -4,6 +4,7 @@ import asyncio
 import codecs
 import hashlib
 import logging
+import shutil
 import socket
 import time
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from .text_utils import truncate_middle
 logger = logging.getLogger("navi.daemon")
 
 DEFAULT_DEV_PORTS = [3000, 5000, 8000, 8080]
+DEFAULT_PORT_PROBE_TIMEOUT_SECONDS = 1.0
 MAX_PROJECT_EVENT_CONCURRENCY = 4
 MAX_GIT_STATUS_PROMPT_CHARS = 5000
 LOG_ERROR_KEYWORDS = ("exception", "fatal", "traceback (most recent call last):")
@@ -140,7 +142,7 @@ class SystemDaemon:
         use_default_ports: bool,
     ) -> list[dict]:
         created: list[dict] = []
-        project_path = project.name
+        project_path = self._resolve_project_path(project.name)
         if not project_path or not Path(project_path).exists():
             return created
 
@@ -170,7 +172,7 @@ class SystemDaemon:
                     created.append(created_event)
 
         if data_changed:
-            self.graph.upsert("Project", project_path, project_data)
+            self.graph.upsert("Project", project.name, project_data)
         return created
 
     def _project_event_detectors(self) -> tuple[EventDetector, ...]:
@@ -208,6 +210,15 @@ class SystemDaemon:
             return path
 
     @staticmethod
+    def _resolve_project_path(path: str) -> str:
+        if not path:
+            return ""
+        try:
+            return str(Path(path).expanduser().resolve(strict=False))
+        except OSError:
+            return path
+
+    @staticmethod
     def _apply_state_updates(target: dict[str, Any], updates: dict[str, Any]) -> bool:
         target.update(updates)
         return bool(updates)
@@ -221,6 +232,9 @@ class SystemDaemon:
         project_data = context.project_data
         git_dir = Path(project_path) / ".git"
         if not git_dir.exists():
+            return events, {}
+        if shutil.which("git") is None:
+            logger.warning("Skipping git proactive detector because git is not on PATH")
             return events, {}
 
         try:
@@ -393,7 +407,7 @@ class SystemDaemon:
             try:
                 _, writer = await asyncio.wait_for(
                     asyncio.open_connection("localhost", port, family=socket.AF_INET),
-                    timeout=0.5,
+                    timeout=self._port_probe_timeout(project_data),
                 )
                 writer.close()
                 await writer.wait_closed()
@@ -426,6 +440,14 @@ class SystemDaemon:
             if is_active != was_active:
                 state_updates[port_key] = is_active
         return events, state_updates
+
+    @staticmethod
+    def _port_probe_timeout(project_data: dict[str, Any]) -> float:
+        raw = project_data.get("port_probe_timeout_seconds", DEFAULT_PORT_PROBE_TIMEOUT_SECONDS)
+        try:
+            return max(0.5, min(float(raw), 10.0))
+        except (TypeError, ValueError):
+            return DEFAULT_PORT_PROBE_TIMEOUT_SECONDS
 
     async def _apply_event_policy(
         self,

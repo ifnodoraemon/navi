@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -84,15 +85,21 @@ TYPE_PRIORITY = {
 
 
 class MemoryStore:
+    _migration_lock = threading.Lock()
+
     def __init__(self, home: Path):
         self.home = home
         self.memory_dir = home / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         legacy_db_path = home / "sessions.db"
         self.db_path = home / "memory.db"
-        if legacy_db_path.exists() and not self.db_path.exists():
-            legacy_db_path.replace(self.db_path)
-        self._init_db()
+        with self._migration_lock:
+            if legacy_db_path.exists() and not self.db_path.exists():
+                try:
+                    legacy_db_path.replace(self.db_path)
+                except FileNotFoundError:
+                    pass
+            self._init_db()
         self._session_locks = {}
         self._session_lock_refs = {}
         self._session_locks_guard = asyncio.Lock()
@@ -430,9 +437,9 @@ class MemoryStore:
             logger.warning("Skipping memory consolidation without a session id")
             return []
 
-        lock = await self._acquire_session_lock(session_id)
-
+        lock: asyncio.Lock | None = None
         try:
+            lock = await self._acquire_session_lock(session_id)
             async with lock:
                 # 1. Fetch recent messages in this session
                 messages = await asyncio.to_thread(self.get_messages, session_id, limit=6)
@@ -572,7 +579,8 @@ class MemoryStore:
                             )
                 return affected_items
         finally:
-            await self._release_session_lock(session_id)
+            if lock is not None:
+                await self._release_session_lock(session_id)
 
     def _list_active_learnable_items(self) -> list[MemoryItem]:
         active_items: list[MemoryItem] = []

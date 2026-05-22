@@ -21,7 +21,7 @@ logger = logging.getLogger("navi.trust")
 
 
 LEVELS = ["L0", "L1", "L2", "L3", "L4"]
-MAX_SEMANTIC_RULE_CANDIDATES = 5
+SEMANTIC_RULE_BATCH_SIZE = 5
 LEVEL_LABELS = {
     "L0": "observe",
     "L1": "suggest",
@@ -142,10 +142,15 @@ class TrustStore:
             candidates,
             key=lambda rule: (rule.success_count, rule.updated_at),
             reverse=True,
-        )[:MAX_SEMANTIC_RULE_CANDIDATES]
-        tasks = [sem_semantic_match(rule) for rule in semantic_candidates]
-        results = await asyncio.gather(*tasks)
-        matching_rules = [rule for rule, m in results if m]
+        )
+        matching_rules: list[TrustRule] = []
+        for start in range(0, len(semantic_candidates), SEMANTIC_RULE_BATCH_SIZE):
+            batch = semantic_candidates[start:start + SEMANTIC_RULE_BATCH_SIZE]
+            tasks = [sem_semantic_match(rule) for rule in batch]
+            results = await asyncio.gather(*tasks)
+            matching_rules = [rule for rule, m in results if m]
+            if matching_rules:
+                break
                 
         if not matching_rules:
             return None
