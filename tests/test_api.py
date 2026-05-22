@@ -120,6 +120,11 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
     task = client.get("/v1/tasks").json()["tasks"][0]
     assert task["prompt"] == "检查本地服务状态"
     assert task["status"] == "awaiting_approval"
+    from navi.tasks import TaskStore
+
+    code = TaskStore(tmp_path).list_approvals()[0].code
+    assert f"审批码: `{code}`" in data["message"]
+    assert f"批准 {code}" in data["message"]
 
 
 def test_chat_api_routes_natural_language_service_status(tmp_path, monkeypatch):

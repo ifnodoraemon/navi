@@ -33,6 +33,7 @@ navi = "navi.cli:app"
 navi = [
     "specs/*.yaml",
     "web/*.html",
+    "web/*.svg",
     "telegram/specs/*.yaml",
     "weixin/specs/*.yaml",
 ]

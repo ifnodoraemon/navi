@@ -2,6 +2,8 @@
 
 Navi is a premium, **local-first personal AI assistant** designed to be your private "Jarvis". Built for developers and power users, Navi runs fully on your local machine, utilizing a lightweight, zero-configuration stack with model-driven intelligence, progressive capabilities, and an active cognitive memory engine.
 
+[中文说明](README.zh-CN.md)
+
 ---
 
 ## ✨ Core Features
