@@ -819,3 +819,60 @@ async def test_daemon_fingerprint_spam_protection(tmp_path):
     events3 = await daemon.process_events_once()
     assert len(events3) == 1
     assert len(mock_invokes) == 1
+
+
+@pytest.mark.asyncio
+async def test_trust_success_consecutive_upgrades_and_failure_resets(tmp_path):
+    from navi.trust import TrustStore
+    from navi.tasks import Task
+    import time
+
+    store = TrustStore(tmp_path)
+    # 1. Upsert a rule at L2
+    rule = store.upsert(
+        name="test rule",
+        pattern="deploy application to server",
+        project_path="",
+        sender_id="user1",
+        autonomy_level="L2",
+        data={"auto_created": True},
+    )
+
+    # 2. Record 3 successful runs
+    task = Task(
+        id="task-123",
+        title="test task",
+        status="success",
+        created_at=time.time(),
+        updated_at=time.time(),
+        prompt="deploy application to server",
+        workspace="/tmp/workspace",
+        sender_id="user1",
+        autonomy_level="L2",
+        trust_rule_id=rule.id,
+    )
+
+    # First success
+    rule = store.record_success(task)
+    assert rule.success_count == 1
+    assert rule.autonomy_level == "L2"
+    assert rule.data.get("consecutive_successes") == 1
+
+    # Second success
+    rule = store.record_success(task)
+    assert rule.success_count == 2
+    assert rule.autonomy_level == "L2"
+    assert rule.data.get("consecutive_successes") == 2
+
+    # Third success -> Promotes to L3, resets consecutive successes to 0, sets project_path
+    rule = store.record_success(task)
+    assert rule.success_count == 3
+    assert rule.autonomy_level == "L3"
+    assert rule.data.get("consecutive_successes") == 0
+    assert rule.project_path == "/tmp/workspace"
+
+    # 3. Record a failure -> Downgrades to L2, resets consecutive successes to 0
+    rule = await store.record_failure(task)
+    assert rule.failure_count == 1
+    assert rule.autonomy_level == "L2"
+    assert rule.data.get("consecutive_successes") == 0
