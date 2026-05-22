@@ -29,9 +29,14 @@ def test_local_console_api_flow(tmp_path, monkeypatch):
 
     index = client.get("/")
     assert index.status_code == 200
+    assert 'href="/navi.svg"' in index.text
     assert "id=\"sessions\"" in index.text
     assert "id=\"memory-form\"" in index.text
     assert "id=\"task-form\"" in index.text
+    icon = client.get("/navi.svg")
+    assert icon.status_code == 200
+    assert icon.headers["content-type"].startswith("image/svg+xml")
+    assert "<svg" in icon.text
 
     chat = client.post("/v1/chat", json={"message": "hello"})
     assert chat.status_code == 200
@@ -120,6 +125,11 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
     task = client.get("/v1/tasks").json()["tasks"][0]
     assert task["prompt"] == "检查本地服务状态"
     assert task["status"] == "awaiting_approval"
+    from navi.tasks import TaskStore
+
+    code = TaskStore(tmp_path).list_approvals()[0].code
+    assert f"审批码: `{code}`" in data["message"]
+    assert f"批准 {code}" in data["message"]
 
 
 def test_chat_api_routes_natural_language_service_status(tmp_path, monkeypatch):
