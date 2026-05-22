@@ -87,6 +87,7 @@ class SystemDaemon:
                     peer_id=watch.peer_id,
                     sender_id=watch.sender_id,
                     source="watch",
+                    workspace=watch.workspace,
                 ),
             )
             created.append(
@@ -176,6 +177,7 @@ class SystemDaemon:
                     event,
                     project_data,
                     has_active_task=context.has_active_task,
+                    workspace=project_path,
                 )
                 data_changed = data_changed or event_changed
                 if created_event:
@@ -472,6 +474,7 @@ class SystemDaemon:
         project_data: dict,
         *,
         has_active_task: bool,
+        workspace: str = "",
     ) -> tuple[dict | None, bool]:
         policy_updates = event.suppressed_state_updates if has_active_task else event.state_updates
         if has_active_task:
@@ -486,6 +489,7 @@ class SystemDaemon:
                 peer_id="daemon",
                 sender_id="daemon",
                 source=event.source,
+                workspace=workspace,
             ),
         )
         data_changed = self._apply_state_updates(project_data, policy_updates)

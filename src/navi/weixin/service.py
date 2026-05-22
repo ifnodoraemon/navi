@@ -87,20 +87,80 @@ class WeixinService:
                 return f"Weixin setup timed out. Scan and confirm this QR URL, then run setup again: {qr.qrcode_url}"
             await asyncio.sleep(1)
 
+    def update_status(self, status: str, error: str = "") -> None:
+        import time
+        status_dir = self.home / "weixin"
+        status_dir.mkdir(parents=True, exist_ok=True)
+        status_file = status_dir / "status.json"
+        try:
+            status_file.write_text(
+                json.dumps({
+                    "status": status,
+                    "error": error,
+                    "last_update": time.time(),
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
     async def run(self, *, once: bool = False) -> None:
+        import time
         account = self._resolve_account()
         sync_buf = self.store.load_sync_buf(account.account_id)
+        sleep_time = 1.0
+        retry_count = 0
+        self.update_status("healthy")
+        last_tasks_check = 0.0
+        has_active_tasks = False
+        last_bg_check = 0.0
         while True:
-            batch = await self.client.get_updates(account.account_id, sync_buf=sync_buf)
-            if batch.sync_buf:
-                sync_buf = batch.sync_buf
-                self.store.save_sync_buf(account.account_id, sync_buf)
-            for update in batch.updates:
-                await self.handle_update(account, update)
-            await self.process_background(account)
+            try:
+                batch = await self.client.get_updates(account.account_id, sync_buf=sync_buf)
+                if batch.sync_buf:
+                    sync_buf = batch.sync_buf
+                    self.store.save_sync_buf(account.account_id, sync_buf)
+                for update in batch.updates:
+                    await self.handle_update(account, update)
+                
+                # Throttle background processing to at most once per second,
+                # unless there is incoming user activity in the current batch.
+                now = time.time()
+                if len(batch.updates) > 0 or (now - last_bg_check >= 1.0):
+                    await self.process_background(account)
+                    last_bg_check = now
+                
+                # Check for activity to adapt sleep time
+                if now - last_tasks_check >= 2.0:
+                    active_tasks = self.daemon.tasks.list_by_statuses(["queued", "running", "preparing"])
+                    has_active_tasks = len(active_tasks) > 0
+                    last_tasks_check = now
+
+                has_activity = len(batch.updates) > 0 or has_active_tasks
+                if has_activity:
+                    sleep_time = 0.05
+                else:
+                    sleep_time = min(1.0, sleep_time + 0.1)
+                
+                retry_count = 0
+                self.update_status("healthy")
+                
+            except Exception as e:
+                retry_count += 1
+                error_msg = str(e)
+                if retry_count <= 5:
+                    status = "retrying"
+                    err_sleep = min(16.0, 1.5 ** retry_count)
+                    self.update_status(status, error_msg)
+                    sleep_time = err_sleep
+                else:
+                    status = "fatal"
+                    self.update_status(status, error_msg)
+                    raise e
+            
             if once:
                 return
-            await asyncio.sleep(1)
+            await asyncio.sleep(sleep_time)
 
     async def handle_update(self, account: WeixinAccount, update: WeixinUpdate) -> bool:
         if self.dedup.seen(update.message_id):

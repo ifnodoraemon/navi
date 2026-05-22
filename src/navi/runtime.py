@@ -52,7 +52,11 @@ class AgentRuntime:
     ) -> list[ChatMessage]:
         operating_context = operating_context or OperatingContext(home=self.home)
         memory_context = self.memory.render_context(user_text)
-        skills_context = self.skills.render_prompt(permission_ceiling=operating_context.skill_permission_ceiling)
+        skills_context = self.skills.render_prompt(
+            permission_ceiling=operating_context.skill_permission_ceiling,
+            workspace=operating_context.workspace,
+            role=operating_context.role,
+        )
 
         messages = [
             ChatMessage(

@@ -40,13 +40,29 @@ def _enabled(home: Path) -> bool:
 
 
 def _status(home: Path) -> dict[str, Any]:
+    import json
     config = load_telegram_config(home)
-    return {
+    facts = {
         "configured": bool(config.bot_token),
         "dm_policy": config.dm_policy,
         "home_chat_id": config.home_chat_id,
         "allowed_users_count": len(config.allowed_users),
+        "status": "unknown",
+        "error": "",
+        "last_update": 0.0,
     }
+    status_file = home / "telegram" / "status.json"
+    if status_file.exists():
+        try:
+            data = json.loads(status_file.read_text(encoding="utf-8"))
+            facts.update({
+                "status": data.get("status", "unknown"),
+                "error": data.get("error", ""),
+                "last_update": data.get("last_update", 0.0),
+            })
+        except Exception:
+            pass
+    return facts
 
 
 def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
