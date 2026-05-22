@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import os
+
+os.environ["NAVI_API_KEY"] = "test_key"
+
 from fastapi.testclient import TestClient
 
 from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.runtime import AgentRuntime
 from navi.api import create_app
+
+
+def authenticated_client(app, headers: dict[str, str] | None = None) -> TestClient:
+    merged = {"X-API-Key": "test_key"}
+    if headers:
+        merged.update(headers)
+    return TestClient(app, headers=merged)
 
 
 class ScriptedProvider(MockProvider):
@@ -21,7 +32,7 @@ class ScriptedProvider(MockProvider):
 
 def test_local_console_api_flow(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
-    client = TestClient(create_app(tmp_path))
+    client = authenticated_client(create_app(tmp_path))
 
     health = client.get("/health")
     assert health.status_code == 200
@@ -114,7 +125,7 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
         "build_runtime",
         lambda home=None: AgentRuntime(home=tmp_path, provider=ModelPool(default=provider)),
     )
-    client = TestClient(api_module.create_app(tmp_path))
+    client = authenticated_client(api_module.create_app(tmp_path))
 
     response = client.post("/v1/chat", json={"message": "帮我检查本地服务状态"})
 
@@ -159,7 +170,7 @@ def test_chat_api_routes_natural_language_service_status(tmp_path, monkeypatch):
             stderr="",
         ),
     )
-    client = TestClient(api_module.create_app(tmp_path))
+    client = authenticated_client(api_module.create_app(tmp_path))
 
     response = client.post("/v1/chat", json={"message": "navi 服务状态如何"})
 
@@ -185,7 +196,7 @@ def test_chat_api_routes_natural_language_approval(tmp_path, monkeypatch):
         "build_runtime",
         lambda home=None: AgentRuntime(home=tmp_path, provider=ModelPool(default=provider)),
     )
-    client = TestClient(api_module.create_app(tmp_path))
+    client = authenticated_client(api_module.create_app(tmp_path))
     created = client.post("/v1/chat", json={"message": "帮我检查本地服务状态"})
     task_id = created.json()["task_id"]
 
@@ -212,7 +223,7 @@ def test_chat_api_routes_natural_language_approval(tmp_path, monkeypatch):
 
 def test_active_api_flow(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
-    client = TestClient(create_app(tmp_path))
+    client = authenticated_client(create_app(tmp_path))
 
     created = client.post(
         "/v1/active/tasks",
@@ -239,7 +250,7 @@ def test_active_api_flow(tmp_path, monkeypatch):
 
 def test_task_process_blocks_queued_task_without_execution_grant(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
-    client = TestClient(create_app(tmp_path))
+    client = authenticated_client(create_app(tmp_path))
 
     created = client.post("/v1/tasks", json={"title": "manual task"})
     task = created.json()
@@ -254,7 +265,7 @@ def test_task_process_blocks_queued_task_without_execution_grant(tmp_path, monke
 
 
 def test_active_watch_api(tmp_path):
-    client = TestClient(create_app(tmp_path))
+    client = authenticated_client(create_app(tmp_path))
 
     created = client.post(
         "/v1/active/watches",
@@ -264,3 +275,19 @@ def test_active_watch_api(tmp_path):
     assert created.status_code == 200
     assert "Watch" in created.json()["message"]
     assert client.get("/v1/watches").json()["watches"][0]["prompt"] == "check active watches"
+
+
+def test_api_auth_missing_and_invalid(tmp_path):
+    # Test client with invalid key
+    client_invalid = TestClient(create_app(tmp_path), headers={"X-API-Key": "invalid_key"})
+    response = client_invalid.get("/v1/tasks")
+    assert response.status_code == 401
+
+    # Test client with missing key
+    client_missing = TestClient(create_app(tmp_path))
+    response = client_missing.get("/v1/tasks")
+    assert response.status_code == 401
+
+    # Test that index path "/" is bypassed
+    response = client_missing.get("/")
+    assert response.status_code == 200

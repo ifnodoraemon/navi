@@ -219,6 +219,15 @@ class EvolutionEngine:
             (self.home / "memory" / "MEMORY.md").write_text(event.before, encoding="utf-8")
         elif event.target_type == "skill":
             path = Path(event.target_id)
+            skills_dir = (self.home / "skills").resolve().absolute()
+            try:
+                resolved_path = path.resolve().absolute()
+                is_safe = skills_dir == resolved_path or skills_dir in resolved_path.parents
+            except Exception:
+                is_safe = False
+            if not is_safe:
+                raise ValueError("Skill path must be within the home skills directory")
+
             if event.before:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(event.before, encoding="utf-8")

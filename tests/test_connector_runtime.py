@@ -26,3 +26,17 @@ async def test_connector_ingress_runtime_routes_message_to_agent_session(tmp_pat
     session_id = runtime.memory.current_session_id("connector:test:peer")
     assert text == "Navi received: hello"
     assert runtime.memory.get_messages(session_id)[0].content == "hello"
+
+
+def test_connector_ingress_runtime_uses_remote_tool_allowlist(tmp_path):
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=MockProvider()))
+    ingress = ConnectorIngressRuntime(home=tmp_path, runtime=runtime)
+
+    names = {spec.name for spec in ingress.agent.capabilities.planner_specs()}
+
+    assert {"final.answer", "clarify.ask", "task.create", "watch.create", "approval.resolve"} <= names
+    assert {"provider.config", "service.status", "task.status", "task.list"} <= names
+    assert "task.delete" not in names
+    assert "watch.delete" not in names
+    assert "filesystem.list" not in names
+    assert "git.status" not in names

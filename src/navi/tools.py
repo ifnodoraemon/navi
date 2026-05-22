@@ -157,6 +157,7 @@ class ToolGateway:
         project_dir: Path | None = None,
         providers: list[ToolProvider] | None = None,
         allow_sources: set[str] | None = None,
+        allowed_tools: set[str] | None = None,
         disabled_tools: set[str] | None = None,
         permission_ceiling: str = "write",
     ):
@@ -164,6 +165,7 @@ class ToolGateway:
         self.project_dir = project_dir or Path.cwd()
         self.providers = providers or load_tool_providers(home, project_dir=self.project_dir)
         self.allow_sources = allow_sources
+        self.allowed_tools = allowed_tools
         self.disabled_tools = disabled_tools or set()
         self.permission_ceiling = permission_ceiling
         self.registry = ToolRegistry(home=home, project_dir=self.project_dir)
@@ -176,6 +178,8 @@ class ToolGateway:
         self.registry = ToolRegistry(home=self.home, project_dir=self.project_dir)
         for tool in raw.registered_tools():
             if self.allow_sources is not None and tool.spec.source not in self.allow_sources:
+                continue
+            if self.allowed_tools is not None and tool.spec.name not in self.allowed_tools:
                 continue
             if tool.spec.name in self.disabled_tools:
                 continue
@@ -216,6 +220,7 @@ def build_tool_gateway(
     *,
     project_dir: Path | None = None,
     allow_sources: set[str] | None = None,
+    allowed_tools: set[str] | None = None,
     disabled_tools: set[str] | None = None,
     permission_ceiling: str = "write",
 ) -> ToolGateway:
@@ -223,6 +228,7 @@ def build_tool_gateway(
         home=home,
         project_dir=project_dir,
         allow_sources=allow_sources,
+        allowed_tools=allowed_tools,
         disabled_tools=disabled_tools,
         permission_ceiling=permission_ceiling,
     )

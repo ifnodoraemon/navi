@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from navi.action_tools import load_action_tool_specs
-from navi.syscalls import ModelSyscallPlanner
+from navi.syscalls import ModelSyscallPlanner, _extract_json_object
 from navi.provider import ChatMessage, ModelPool
 from navi.tools import build_tool_gateway
 
@@ -38,6 +38,7 @@ async def test_model_syscall_planner_asks_when_schedule_time_is_vague(tmp_path):
     assert "capability manifest" in system
     assert "Built-in control tools" not in provider.messages[1].content
     assert "Permission ceiling: write" in provider.messages[1].content
+    assert "<user_message>" in provider.messages[1].content
     assert "Available model roles:" in provider.messages[1].content
     assert "Available tools:" in provider.messages[1].content
     assert "clarify.ask" in provider.messages[1].content
@@ -171,3 +172,11 @@ async def test_model_syscall_planner_parses_model_role(tmp_path):
 
     assert call.model_role == "observer"
     assert '"observer"' in provider.messages[1].content
+
+
+def test_extract_json_object_handles_nested_braces_and_fenced_text():
+    text = 'before```json\n{"tool":"final.answer","args":{"message":"a } brace"}}\n```after'
+
+    extracted = _extract_json_object(text)
+
+    assert extracted == '{"tool":"final.answer","args":{"message":"a } brace"}}'

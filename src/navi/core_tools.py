@@ -65,13 +65,13 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "default": "~"},
+                    "path": {"type": "string", "default": str(registry.project_dir)},
                     "limit": {"type": "integer", "default": 50},
                 },
             },
             output_schema={"type": "object"},
         ),
-        lambda args: _filesystem_list(args),
+        lambda args: _filesystem_list(args, project_dir=registry.project_dir),
     )
     registry.register(
         ToolSpec(
@@ -83,7 +83,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             },
             output_schema={"type": "object"},
         ),
-        lambda args: _git_status(args, default_path=registry.project_dir),
+        lambda args: _git_status(args, project_dir=registry.project_dir),
     )
 
 
@@ -172,10 +172,23 @@ def _provider_config(home: Path) -> ToolResult:
     )
 
 
-def _filesystem_list(args: dict[str, Any]) -> ToolResult:
-    raw_path = str(args.get("path") or "~")
+def _is_safe_path(path: Path, project_dir: Path) -> bool:
+    try:
+        resolved_path = path.resolve().absolute()
+        resolved_project = project_dir.resolve().absolute()
+        return resolved_project == resolved_path or resolved_project in resolved_path.parents
+    except Exception:
+        return False
+
+
+def _filesystem_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
+    raw_path = str(args.get("path") or str(project_dir))
     limit = _positive_int(args.get("limit"), default=50, maximum=200)
     path = Path(raw_path).expanduser()
+
+    if not _is_safe_path(path, project_dir):
+        return ToolResult(tool="filesystem.list", ok=False, error="path must be within the project directory")
+
     fact_path = path.resolve() if path.exists() else path
     facts: dict[str, Any] = {
         "path": str(fact_path),
@@ -210,8 +223,11 @@ def _filesystem_list(args: dict[str, Any]) -> ToolResult:
     return ToolResult(tool="filesystem.list", ok=True, facts=facts)
 
 
-def _git_status(args: dict[str, Any], *, default_path: Path) -> ToolResult:
-    path = Path(str(args.get("path") or default_path)).expanduser()
+def _git_status(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
+    path = Path(str(args.get("path") or project_dir)).expanduser()
+    if not _is_safe_path(path, project_dir):
+        return ToolResult(tool="git.status", ok=False, error="path must be within the project directory")
+
     branch = _run_git(path, "status", "--short", "--branch")
     root = _run_git(path, "rev-parse", "--show-toplevel")
     head = _run_git(path, "rev-parse", "--short", "HEAD")

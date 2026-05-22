@@ -512,6 +512,22 @@ def test_read_only_skills_store(tmp_path):
     assert isinstance(skills, list)
 
 
+def test_evolution_skill_rollback_rejects_paths_outside_skills_dir(tmp_path):
+    from navi.evolution import EvolutionEngine, EvolutionLedger
+
+    event = EvolutionLedger(tmp_path).record(
+        task_id="task",
+        target_type="skill",
+        target_id=str(tmp_path / "outside" / "SKILL.md"),
+        reason="malformed skill path",
+        before="old",
+        after="new",
+    )
+
+    with pytest.raises(ValueError, match="home skills directory"):
+        EvolutionEngine(tmp_path).rollback(event.id)
+
+
 @pytest.mark.asyncio
 async def test_session_locks_memory_cleanup(tmp_path):
     from navi.memory import MemoryStore

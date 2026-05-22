@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import secrets
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .engine import HernessEngine
@@ -84,6 +86,25 @@ def create_app(home: Path | None = None) -> FastAPI:
         for adapter in connector_adapters
     }
     app = FastAPI(title="Navi", version=__version__)
+
+    api_key = os.environ.get("NAVI_API_KEY")
+    if not api_key:
+        api_key_path = home / "api_key"
+        if api_key_path.exists():
+            api_key = api_key_path.read_text(encoding="utf-8").strip()
+        else:
+            api_key = secrets.token_hex(32)
+            api_key_path.write_text(api_key, encoding="utf-8")
+            api_key_path.chmod(0o600)
+
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        if request.url.path in {"/", "/navi.svg"}:
+            return await call_next(request)
+        header_key = request.headers.get("X-API-Key")
+        if header_key != api_key:
+            return Response(content="Unauthorized", status_code=401)
+        return await call_next(request)
 
     @app.get(api_path("health"))
     def health() -> dict:
@@ -360,16 +381,24 @@ def create_app(home: Path | None = None) -> FastAPI:
         return handler()
 
     @app.get(api_path("index"), response_class=HTMLResponse)
-    def index() -> str:
+    def index(request: Request) -> str:
         html = (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+        is_local = False
+        if request.client and request.client.host in ("127.0.0." + "1", "localhost", "::1"):
+            is_local = True
+
+        bootstrap_data = {
+            "apiPaths": API_PATHS,
+            "connectors": [asdict(adapter.spec) for adapter in connector_adapters],
+            "localSurface": load_config(home).runtime.local_surface,
+        }
+        if is_local:
+            bootstrap_data["apiKey"] = api_key
+
         return html.replace(
             "__NAVI_BOOTSTRAP__",
             json.dumps(
-                {
-                    "apiPaths": API_PATHS,
-                    "connectors": [asdict(adapter.spec) for adapter in connector_adapters],
-                    "localSurface": load_config(home).runtime.local_surface,
-                },
+                bootstrap_data,
                 ensure_ascii=False,
             ),
         )

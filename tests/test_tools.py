@@ -75,6 +75,19 @@ def test_filesystem_list_tool_returns_directory_facts(tmp_path):
     assert result.facts["entries"][0]["name"] == "alpha.txt"
 
 
+def test_filesystem_and_git_tools_reject_paths_outside_project(tmp_path):
+    outside = tmp_path.parent
+    registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
+
+    filesystem = registry.call("filesystem.list", {"path": str(outside)})
+    git = registry.call("git.status", {"path": str(outside)})
+
+    assert filesystem.ok is False
+    assert filesystem.error == "path must be within the project directory"
+    assert git.ok is False
+    assert git.error == "path must be within the project directory"
+
+
 def test_unknown_tool_returns_structured_error(tmp_path):
     registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
 
@@ -98,6 +111,10 @@ def test_tool_gateway_lists_sources_and_can_filter_tools(tmp_path):
 
     disabled = build_tool_gateway(tmp_path, project_dir=tmp_path, disabled_tools={"service.status"})
     assert disabled.get("service.status") is None
+
+    allowed = build_tool_gateway(tmp_path, project_dir=tmp_path, allowed_tools={"service.status"})
+    allowed_names = {spec.name for spec in allowed.list_specs()}
+    assert allowed_names == {"service.status"}
 
 
 def test_tool_gateway_filters_by_permission_ceiling(tmp_path):

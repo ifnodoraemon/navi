@@ -252,7 +252,7 @@ Known gaps:
 - `navi connectors setup weixin` currently polls QR status once; a production setup should loop with timeout and clearer scan/confirm states.
 - Weixin media support is not implemented.
 - Weixin typing indicators are not implemented.
-- No fine-grained remote-message tool approval policy exists yet.
+- Remote connector tool visibility is allowlisted; richer per-sender/per-surface policy configuration is still future work.
 - MCP servers are not connected yet; Tool Gateway is ready for an MCP provider but currently serves core and connector tools. Action/control tools are loaded separately as planner-visible specs.
 - Web UI is intentionally minimal.
 
