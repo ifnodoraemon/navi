@@ -17,7 +17,8 @@ def build_system_prompt(
 ) -> str:
     config = load_config(home)
     operating_context = operating_context or OperatingContext(home=home)
-    workspace = (workspace or Path.cwd()).resolve()
+    workspace_path = Path(operating_context.workspace) if operating_context.workspace else (workspace or Path.cwd())
+    workspace = workspace_path.resolve()
     unit_path = systemd_user_unit_path(config.runtime.service_name)
     unit_state = "installed" if unit_path.exists() else "not installed"
     web_console_fact = (
@@ -25,6 +26,25 @@ def build_system_prompt(
         if config.runtime.web_url
         else "- Web console URL: not configured in runtime context; do not assume a host or port."
     )
+
+    runtime_lines = [
+        "Local runtime facts:",
+        f"- Current workspace: {workspace}",
+        f"- Navi state home: {home.resolve()}",
+        f"- Model provider: {config.model.provider}",
+        f"- Model name: {config.model.model}",
+        f"- User systemd service {config.runtime.service_name}: {unit_state} at {unit_path}",
+        web_console_fact,
+        f"- Source: {operating_context.source}",
+        f"- Permission ceiling: {operating_context.permission_ceiling}",
+        f"- Skill permission ceiling: {operating_context.skill_permission_ceiling}",
+    ]
+    if operating_context.role:
+        runtime_lines.append(f"- Active role: {operating_context.role}")
+    runtime_lines.extend([
+        "- Local execution bridge: Navi can prepare managed local actions through configured execution providers.",
+        "- Local actions and fact lookups are exposed through Navi core capabilities.",
+    ])
 
     layers = [
         PromptLayer(
@@ -39,22 +59,7 @@ def build_system_prompt(
         ),
         PromptLayer(
             "runtime",
-            "\n".join(
-                [
-                    "Local runtime facts:",
-                    f"- Current workspace: {workspace}",
-                    f"- Navi state home: {home.resolve()}",
-                    f"- Model provider: {config.model.provider}",
-                    f"- Model name: {config.model.model}",
-                    f"- User systemd service {config.runtime.service_name}: {unit_state} at {unit_path}",
-                    web_console_fact,
-                    f"- Source: {operating_context.source}",
-                    f"- Permission ceiling: {operating_context.permission_ceiling}",
-                    f"- Skill permission ceiling: {operating_context.skill_permission_ceiling}",
-                    "- Local execution bridge: Navi can prepare managed local actions through configured execution providers.",
-                    "- Local actions and fact lookups are exposed through Navi core capabilities.",
-                ]
-            ),
+            "\n".join(runtime_lines),
         ),
         PromptLayer(
             "authorization",
