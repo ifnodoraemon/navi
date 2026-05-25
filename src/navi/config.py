@@ -103,8 +103,9 @@ def load_config(home: Path | None = None) -> NaviConfig:
         local_surface=str(env.get("NAVI_LOCAL_SURFACE", runtime_raw.get("local_surface", DEFAULT_LOCAL_SURFACE))).strip(),
         agent_step_budget=_int_env(env.get("NAVI_AGENT_STEP_BUDGET", runtime_raw.get("agent_step_budget", DEFAULT_AGENT_STEP_BUDGET))),
     )
+    execution_provider = str(env.get("NAVI_EXECUTION_PROVIDER", execution_raw.get("provider", DEFAULT_EXECUTION_PROVIDER))).strip()
     execution = ExecutionConfig(
-        provider=str(env.get("NAVI_EXECUTION_PROVIDER", execution_raw.get("provider", DEFAULT_EXECUTION_PROVIDER))),
+        provider=execution_provider if execution_provider == "navi" else DEFAULT_EXECUTION_PROVIDER,
         timeout_seconds=_float_env(env.get("NAVI_EXECUTION_TIMEOUT_SECONDS", execution_raw.get("timeout_seconds", DEFAULT_EXECUTION_TIMEOUT_SECONDS))),
         mock=str(env.get("NAVI_EXECUTION_MOCK", execution_raw.get("mock", DEFAULT_EXECUTION_MOCK))).lower() in {"1", "true", "yes", "on"},
     )
@@ -278,4 +279,3 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
         errors.append(f"connector load error: {e}")
 
     return errors
-

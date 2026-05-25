@@ -196,7 +196,7 @@ runtime:
   service_name: navi.service
   web_url: ""
 execution:
-  provider: codex
+  provider: navi
   timeout_seconds: 120.0
   mock: false
 ```
@@ -211,7 +211,7 @@ NAVI_MODEL_API_BASE_URL
 NAVI_MODEL_API_KEY
 NAVI_SERVICE_NAME
 NAVI_WEB_URL
-NAVI_EXECUTION_PROVIDER
+NAVI_EXECUTION_PROVIDER (only `navi` is honored; legacy external providers are ignored)
 NAVI_EXECUTION_TIMEOUT_SECONDS
 NAVI_EXECUTION_MOCK
 ```

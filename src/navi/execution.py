@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cli_providers import list_cli_provider_specs
-from .config import ExecutionConfig, load_config
+from .config import load_config
 from .governance import GovernanceEngine
 from .evolution import EvolutionLedger
+from .provider import ChatMessage, ModelPool, build_provider
 from .tasks import Task, TaskStore
+
+INTERNAL_EXECUTION_PROVIDER = "navi"
 
 
 @dataclass(frozen=True)
@@ -31,75 +32,170 @@ class ExecutionResult:
         return text[:1600] if text else f"{self.phase} exited with {self.exit_code}"
 
 
-class CliExecutionProvider:
-    def __init__(self, *, name: str, binary: str, config: ExecutionConfig):
-        self.name = name
-        self.binary = binary
-        self.config = config
+class NaviExecutionProvider:
+    """Internal execution planner backed by Navi's configured model pool."""
+
+    def __init__(self, *, provider: ModelPool, timeout_seconds: float):
+        self.provider = provider
+        self.timeout_seconds = timeout_seconds
 
     async def plan(self, task: Task) -> ExecutionResult:
-        if self._mock_enabled():
-            return self._mock(task, "prepare", "Preparation: inspect the request, estimate risk, then request approval.")
-        return await self._run(task, phase="prepare", sandbox="read-only")
+        return await self._complete_task(task, phase="prepare", role="planner", messages=self._prepare_messages(task))
 
     async def execute(self, task: Task) -> ExecutionResult:
-        if self._mock_enabled():
-            return self._mock(task, "execute", f"Executed task: {task.prompt}")
-        return await self._run(task, phase="execute", sandbox="workspace-write")
+        return await self._complete_task(task, phase="execute", role="responder", messages=self._execute_messages(task))
 
-    async def _run(self, task: Task, *, phase: str, sandbox: str) -> ExecutionResult:
-        prompt = self._prompt(task, phase=phase)
-        command = [
-            self.binary,
-            "exec",
-            "-C",
-            task.workspace or str(Path.home()),
-            "--sandbox",
-            sandbox,
-            "--json",
-            prompt,
+    async def run_watch(self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str = "") -> ExecutionResult:
+        messages = [
+            ChatMessage(
+                "system",
+                "You are Navi running a scheduled watch. Complete the scheduled request directly. "
+                "Do not create a task, ask for approval, or mention external execution tools.",
+            ),
+            ChatMessage(
+                "user",
+                (
+                    f"Watch source: {source}\n"
+                    f"Peer id: {peer_id}\n"
+                    f"Sender id: {sender_id}\n\n"
+                    f"Workspace: {workspace or str(Path.home())}\n\n"
+                    f"Scheduled request:\n{prompt}"
+                ),
+            ),
         ]
         started = time.time()
-        proc = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
         try:
-            stdout_raw, stderr_raw = await asyncio.wait_for(proc.communicate(), timeout=self._timeout_seconds())
-        except asyncio.TimeoutError:
-            proc.kill()
-            stdout_raw, stderr_raw = await proc.communicate()
-            ended = time.time()
+            stdout = await asyncio.wait_for(
+                self.provider.complete_for("notification", messages),
+                timeout=self.timeout_seconds,
+            )
             return ExecutionResult(
-                provider=self.name,
-                phase=phase,
-                command=command,
-                stdout=stdout_raw.decode(errors="replace"),
-                stderr=f"{self.name} {phase} timed out after {self._timeout_seconds()} seconds",
+                provider=INTERNAL_EXECUTION_PROVIDER,
+                phase="watch",
+                command=["navi", "internal", "watch"],
+                stdout=stdout,
+                stderr="",
+                exit_code=0,
+                started_at=started,
+                ended_at=time.time(),
+            )
+        except asyncio.TimeoutError:
+            return ExecutionResult(
+                provider=INTERNAL_EXECUTION_PROVIDER,
+                phase="watch",
+                command=["navi", "internal", "watch"],
+                stdout="",
+                stderr=f"navi watch timed out after {self.timeout_seconds} seconds",
                 exit_code=124,
                 started_at=started,
-                ended_at=ended,
+                ended_at=time.time(),
             )
-        ended = time.time()
-        return ExecutionResult(
-            provider=self.name,
-            phase=phase,
-            command=command,
-            stdout=stdout_raw.decode(errors="replace"),
-            stderr=stderr_raw.decode(errors="replace"),
-            exit_code=proc.returncode or 0,
-            started_at=started,
-            ended_at=ended,
-        )
+        except Exception as exc:
+            return ExecutionResult(
+                provider=INTERNAL_EXECUTION_PROVIDER,
+                phase="watch",
+                command=["navi", "internal", "watch"],
+                stdout="",
+                stderr=str(exc),
+                exit_code=1,
+                started_at=started,
+                ended_at=time.time(),
+            )
 
-    def _mock(self, task: Task, phase: str, text: str) -> ExecutionResult:
+    async def _complete_task(
+        self,
+        task: Task,
+        *,
+        phase: str,
+        role: str,
+        messages: list[ChatMessage],
+    ) -> ExecutionResult:
+        started = time.time()
+        try:
+            stdout = await asyncio.wait_for(
+                self.provider.complete_for(role, messages),
+                timeout=self.timeout_seconds,
+            )
+            return ExecutionResult(
+                provider=INTERNAL_EXECUTION_PROVIDER,
+                phase=phase,
+                command=["navi", "internal", phase, task.id],
+                stdout=stdout,
+                stderr="",
+                exit_code=0,
+                started_at=started,
+                ended_at=time.time(),
+            )
+        except asyncio.TimeoutError:
+            return ExecutionResult(
+                provider=INTERNAL_EXECUTION_PROVIDER,
+                phase=phase,
+                command=["navi", "internal", phase, task.id],
+                stdout="",
+                stderr=f"navi {phase} timed out after {self.timeout_seconds} seconds",
+                exit_code=124,
+                started_at=started,
+                ended_at=time.time(),
+            )
+        except Exception as exc:
+            return ExecutionResult(
+                provider=INTERNAL_EXECUTION_PROVIDER,
+                phase=phase,
+                command=["navi", "internal", phase, task.id],
+                stdout="",
+                stderr=str(exc),
+                exit_code=1,
+                started_at=started,
+                ended_at=time.time(),
+            )
+
+    @staticmethod
+    def _prepare_messages(task: Task) -> list[ChatMessage]:
+        return [
+            ChatMessage(
+                "system",
+                "You are Navi's internal preparation pass. Produce concise preparation facts: "
+                "intent, risk, expected actions, affected local areas, and whether user approval is required. "
+                "Do not call external CLI agents or claim files were changed.",
+            ),
+            ChatMessage(
+                "user",
+                (
+                    f"Task id: {task.id}\n"
+                    f"Workspace: {task.workspace or str(Path.home())}\n"
+                    f"Autonomy level: {task.autonomy_level}\n\n"
+                    f"Task:\n{task.prompt}"
+                ),
+            ),
+        ]
+
+    @staticmethod
+    def _execute_messages(task: Task) -> list[ChatMessage]:
+        return [
+            ChatMessage(
+                "system",
+                "You are Navi's internal execution pass. Complete the approved task using Navi's own reasoning "
+                "and available task context. Do not call external CLI agents. If the task requires OS mutation "
+                "that this internal pass cannot perform, say exactly what remains unperformed.",
+            ),
+            ChatMessage(
+                "user",
+                (
+                    f"Task id: {task.id}\n"
+                    f"Workspace: {task.workspace or str(Path.home())}\n"
+                    f"Preparation summary:\n{task.plan_summary or '(none)'}\n\n"
+                    f"Task:\n{task.prompt}"
+                ),
+            ),
+        ]
+
+    @staticmethod
+    def mock_result(task: Task, phase: str, text: str) -> ExecutionResult:
         now = time.time()
-        command = [self.binary, "exec", "--mock", phase, task.id]
         return ExecutionResult(
-            provider=self.name,
+            provider=INTERNAL_EXECUTION_PROVIDER,
             phase=phase,
-            command=command,
+            command=["navi", "internal", "--mock", phase, task.id],
             stdout=text,
             stderr="",
             exit_code=0,
@@ -107,44 +203,19 @@ class CliExecutionProvider:
             ended_at=now,
         )
 
-    @staticmethod
-    def _prompt(task: Task, *, phase: str) -> str:
-        if phase == "prepare":
-            return (
-                "You are an execution specialist called by Navi. "
-                "Do not modify files. Produce concise preparation facts: risk, expected actions, touched areas, and whether approval is needed.\n\n"
-                f"Task: {task.prompt}"
-            )
-        return (
-            "You are an execution specialist called by Navi. "
-            "Execute the approved task. Do not bypass sandboxing or approvals. "
-            "End with a concise summary of changes and verification.\n\n"
-            f"Task: {task.prompt}"
-        )
-
-    def _mock_enabled(self) -> bool:
-        return self.config.mock
-
-    def _timeout_seconds(self) -> float:
-        raw = os.environ.get("NAVI_EXECUTION_TIMEOUT_SECONDS", str(self.config.timeout_seconds))
-        try:
-            return max(1.0, float(raw))
-        except ValueError:
-            return self.config.timeout_seconds
-
 
 class ExecutionService:
     def __init__(self, home: Path):
         self.home = home
-        self.config = load_config(home).execution
+        config = load_config(home)
+        self.config = config.execution
         self.tasks = TaskStore(home)
         self.governance = GovernanceEngine(home)
         self.ledger = EvolutionLedger(home)
-        self.providers = {
-            spec.name: CliExecutionProvider(name=spec.name, binary=spec.binary, config=self.config)
-            for spec in list_cli_provider_specs()
-            if spec.supports_execution
-        }
+        self.provider = NaviExecutionProvider(
+            provider=build_provider(config.model),
+            timeout_seconds=self.config.timeout_seconds,
+        )
 
     async def plan_task(self, task: Task) -> Task:
         self.tasks.update_task(task.id, status="preparing")
@@ -204,6 +275,14 @@ class ExecutionService:
         
         return updated_task
 
+    async def run_watch(self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str = "") -> ExecutionResult:
+        return await self.provider.run_watch(
+            prompt=prompt,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            workspace=workspace,
+        )
 
     async def process_pending_once(self, *, limit: int = 3) -> list[Task]:
         completed: list[Task] = []
@@ -239,23 +318,32 @@ class ExecutionService:
             ended_at=result.ended_at,
         )
 
+    async def _provider_call(self, task: Task, phase: str) -> ExecutionResult:
+        if self.config.mock:
+            text = (
+                "Preparation: inspect the request, estimate risk, then request approval."
+                if phase == "prepare"
+                else f"Executed task internally: {task.prompt}"
+            )
+            return NaviExecutionProvider.mock_result(task, phase, text)
+        if phase == "prepare":
+            return await self.provider.plan(task)
+        return await self.provider.execute(task)
+
     async def _provider_call_with_timeout(self, task: Task, phase: str) -> ExecutionResult:
+        if self.config.mock:
+            return await self._provider_call(task, phase)
         started = time.time()
-        provider = self.providers.get(task.provider or self.config.provider) or next(iter(self.providers.values()))
-        timeout = provider._timeout_seconds()
         try:
-            if phase == "prepare":
-                return await asyncio.wait_for(provider.plan(task), timeout=timeout + 1)
-            return await asyncio.wait_for(provider.execute(task), timeout=timeout + 1)
+            return await asyncio.wait_for(self._provider_call(task, phase), timeout=self.config.timeout_seconds + 1)
         except asyncio.TimeoutError:
-            ended = time.time()
             return ExecutionResult(
-                provider=provider.name,
+                provider=INTERNAL_EXECUTION_PROVIDER,
                 phase=phase,
-                command=[provider.binary, "exec", "--timeout", phase, task.id],
+                command=["navi", "internal", "--timeout", phase, task.id],
                 stdout="",
-                stderr=f"{provider.name} {phase} timed out after {timeout} seconds",
+                stderr=f"navi {phase} timed out after {self.config.timeout_seconds} seconds",
                 exit_code=124,
                 started_at=started,
-                ended_at=ended,
+                ended_at=time.time(),
             )

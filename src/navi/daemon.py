@@ -79,22 +79,23 @@ class SystemDaemon:
         
         # 2. Run static cron watches
         for watch in self.tasks.due_watches(now):
-            result = await self._record_prepare_request(
+            result = await self.execution.run_watch(
                 prompt=watch.prompt,
-                context=CapabilityContext(
-                    home=self.home,
-                    peer_id=watch.peer_id,
-                    sender_id=watch.sender_id,
-                    source="watch",
-                    workspace=watch.workspace,
-                ),
+                source="watch",
+                peer_id=watch.peer_id,
+                sender_id=watch.sender_id,
+                workspace=watch.workspace,
             )
             created.append(
                 {
-                    "message": result.message or result.observation,
-                    "task_id": result.task_id,
-                    "action": result.action,
-                    "observation": result.observation,
+                    "message": result.summary,
+                    "task_id": "",
+                    "action": "watch",
+                    "observation": result.summary,
+                    "peer_id": watch.peer_id,
+                    "sender_id": watch.sender_id,
+                    "watch_id": watch.id,
+                    "ok": result.exit_code == 0,
                 }
             )
             self.tasks.mark_watch_run(watch.id, last_run_at=now, next_run_at=next_cron_time(watch.cron, now=now))

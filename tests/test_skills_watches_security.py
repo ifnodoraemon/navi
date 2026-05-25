@@ -8,7 +8,6 @@ import pytest
 from navi.skills import SkillStore
 from navi.tasks import TaskStore, Watch
 from navi.daemon import SystemDaemon
-from navi.capabilities import CapabilityContext, CapabilityResult
 
 
 def test_skills_workspace_scoping_and_security_banner(tmp_path):
@@ -127,28 +126,39 @@ async def test_watches_context_propagation_in_daemon(tmp_path, monkeypatch):
 
     daemon = SystemDaemon(tmp_path)
     
-    # Mock self.capabilities.invoke to capture the context used during execution
-    invoked_contexts = []
-    async def mock_invoke(tool_name, args, *, permission, context):
-        invoked_contexts.append(context)
-        return CapabilityResult(
-            ok=True,
-            action="task",
-            observation="Created task successfully",
-            task_id="mock-task-id"
+    invoked_watches = []
+
+    async def mock_run_watch(**kwargs):
+        from navi.execution import ExecutionResult
+
+        invoked_watches.append(kwargs)
+        now = time.time()
+        return ExecutionResult(
+            provider="navi",
+            phase="watch",
+            command=["navi", "internal", "watch"],
+            stdout="watch completed",
+            stderr="",
+            exit_code=0,
+            started_at=now,
+            ended_at=now,
         )
-    
-    monkeypatch.setattr(daemon.capabilities, "invoke", mock_invoke)
+
+    monkeypatch.setattr(daemon.execution, "run_watch", mock_run_watch)
 
     # Process due watches
     created = await daemon.process_watches_once()
 
     assert len(created) == 1
-    assert len(invoked_contexts) == 3
-    for context in invoked_contexts:
-        assert context.workspace == "/home/user/project_workspace"
-        assert context.peer_id == "user-peer"
-        assert context.sender_id == "user-sender"
+    assert invoked_watches == [
+        {
+            "prompt": watch.prompt,
+            "source": "watch",
+            "peer_id": "user-peer",
+            "sender_id": "user-sender",
+            "workspace": "/home/user/project_workspace",
+        }
+    ]
 
 
 @pytest.mark.asyncio

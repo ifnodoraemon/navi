@@ -192,12 +192,12 @@ class WeixinService:
         for result in await self.daemon.process_watches_once():
             task_id = str(result.get("task_id") or "")
             task = self.daemon.tasks.get(task_id) if task_id else None
-            peer_id = task.peer_id if task else self.config.home_channel
+            peer_id = str(result.get("peer_id") or "") or (task.peer_id if task else self.config.home_channel)
             if not peer_id:
                 continue
             text = await self._compose_background_message(
                 {
-                    "event": "watch_task_prepared",
+                    "event": "watch_result" if not task else "watch_task_prepared",
                     "task": asdict(task) if task else None,
                     "raw_result": result.get("message") or result.get("observation") or "",
                 },

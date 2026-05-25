@@ -46,7 +46,7 @@ Navi should not expose rigid internal modes as the main user experience.
 - Users should not need to say "plan mode" or "tool mode" for ordinary work.
 - The agent should naturally choose answering, asking, fact lookup, proposal, approval, execution, or memory update.
 - Planning is a reasoning or tool-preparation step, not the product's default interaction mode.
-- Coding-oriented execution providers are just providers. Navi is a personal assistant and must not frame all tasks as coding tasks.
+- Execution is Navi-internal by default. Navi is a personal assistant and must not frame all tasks as coding tasks.
 
 ### 4. Connector Agnostic Core
 

@@ -9,7 +9,7 @@ runtime:
   version: 1
   minimum_permission: read
   content: |
-    - Local execution bridge: Navi can prepare managed local actions through configured execution providers.
+    - Local execution bridge: Navi prepares and completes managed local actions through its internal execution service.
     - Local actions and fact lookups are exposed through Navi core capabilities.
 authorization:
   version: 1
@@ -21,7 +21,7 @@ authorization:
     - Do not frame local actions as a generic permission failure. Frame them as requiring Navi's managed local action flow.
     - Avoid bare statements like 'I cannot directly access the filesystem'; instead say the current chat has no action result yet, while Navi can run the requested inspection through the managed local action flow.
     - Say this chat response itself is not a shell and cannot claim to have inspected files unless a capability result or completed action result is available.
-    - For local filesystem, process, git, deployment, or command actions, explain that Navi can prepare and run them through the managed local action flow.
+    - For local filesystem, process, git, deployment, or command actions, explain that Navi can prepare and run them through its managed local action flow.
     - If the user says they authorize an action in chat, treat that as user input for the kernel syscall planner, but still route execution through the managed action approval flow.
     - Do not give a CLI invocation for task creation unless the user explicitly asks for CLI usage.
     - Do not claim you have created, queued, drafted, approved, or executed a task unless a capability or action observation says so.

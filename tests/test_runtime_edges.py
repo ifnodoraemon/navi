@@ -23,29 +23,19 @@ def test_paths_use_env_or_workspace(tmp_path, monkeypatch):
 
 
 def test_cli_provider_lookup():
-    assert get_cli_provider_spec("codex") is not None
+    assert get_cli_provider_spec("codex") is None
     assert get_cli_provider_spec("missing") is None
 
 
-def test_auth_inspector_handles_missing_and_negative_auth(monkeypatch):
+def test_auth_inspector_reports_internal_execution_only():
     inspector = AuthInspector()
     missing = CliProviderSpec(name="missing", binary="missing-binary")
-    assert inspector._status_for(missing).installed is False
 
-    monkeypatch.setattr("navi.auth.shutil.which", lambda binary: f"/bin/{binary}")
-    monkeypatch.setattr("navi.auth.AuthInspector._run", staticmethod(lambda command: "not logged in"))
-    spec = CliProviderSpec(
-        name="tool",
-        binary="tool",
-        version_args=("--version",),
-        auth_status_args=("auth", "status"),
-        auth_negative_markers=("not logged in",),
-    )
+    status = inspector._status_for(missing)
 
-    status = inspector._status_for(spec)
-
-    assert status.installed is True
+    assert status.installed is False
     assert status.authenticated is False
+    assert "internal execution" in status.detail
 
 
 def test_memory_rejects_invalid_types_and_statuses(tmp_path):
@@ -101,7 +91,11 @@ async def test_daemon_processes_due_watches(tmp_path, monkeypatch):
     results = await SystemDaemon(tmp_path).process_watches_once()
 
     assert len(results) == 1
-    assert results[0]["task_id"]
+    assert results[0]["action"] == "watch"
+    assert results[0]["task_id"] == ""
+    assert results[0]["peer_id"] == "peer"
+    assert "check coverage" in results[0]["message"]
+    assert store.list_by_status("awaiting_approval") == []
     updated = store.list_watches()[0]
     assert updated.id == watch.id
     assert updated.last_run_at > 0

@@ -201,7 +201,7 @@ async def test_task_and_watch_delete_capabilities_remove_records(tmp_path):
 def test_auth_inspector_shape():
     statuses = AuthInspector().status()
 
-    assert {status.name for status in statuses} == {"codex", "gemini"}
+    assert statuses == []
 
 
 @pytest.mark.asyncio
@@ -305,7 +305,7 @@ async def test_explicit_l3_trust_rule_can_auto_execute(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_codex_plan_timeout_marks_task_failed(tmp_path, monkeypatch):
+async def test_internal_plan_timeout_marks_task_failed(tmp_path, monkeypatch):
     monkeypatch.delenv("NAVI_EXECUTION_MOCK", raising=False)
     monkeypatch.setenv("NAVI_EXECUTION_TIMEOUT_SECONDS", "1")
     execution = ExecutionService(tmp_path)
@@ -316,7 +316,7 @@ async def test_codex_plan_timeout_marks_task_failed(tmp_path, monkeypatch):
 
         await asyncio.sleep(2)
 
-    monkeypatch.setattr(execution.providers["codex"], "plan", slow_plan)
+    monkeypatch.setattr(execution.provider, "plan", slow_plan)
     planned = await execution.plan_task(task)
 
     assert planned.status == "failed"

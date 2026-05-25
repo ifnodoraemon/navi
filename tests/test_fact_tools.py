@@ -10,9 +10,9 @@ def test_task_facts_reports_status_approvals_and_logs(tmp_path):
     approval = store.create_approval(task_id=task.id, peer_id="peer", sender_id="sender")
     store.add_execution_log(
         task_id=task.id,
-        provider="codex",
+        provider="navi",
         phase="prepare",
-        command="codex exec",
+        command="navi internal prepare",
         stdout="",
         stderr="timeout",
         exit_code=124,
