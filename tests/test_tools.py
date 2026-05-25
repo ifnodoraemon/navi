@@ -13,15 +13,22 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
     assert {
         "connector.weixin.status",
         "connector.telegram.status",
+        "file.read",
+        "file.write",
         "filesystem.list",
         "git.status",
         "provider.config",
+        "shell.run",
         "task.list",
         "service.status",
         "task.status",
+        "test.run",
     } <= set(specs)
-    assert all(spec.facts_only for spec in specs.values())
-    assert all(not spec.mutates for spec in specs.values())
+    assert specs["file.read"].facts_only is True
+    assert specs["file.write"].mutates is True
+    assert specs["file.write"].permission == "write"
+    assert specs["shell.run"].mutates is True
+    assert specs["test.run"].mutates is True
     assert specs["connector.weixin.status"].source == "connector.weixin"
     assert specs["connector.telegram.status"].source == "connector.telegram"
 
@@ -88,6 +95,42 @@ def test_filesystem_and_git_tools_reject_paths_outside_project(tmp_path):
     assert git.error == "path must be within the project directory"
 
 
+def test_file_read_and_write_are_workspace_scoped_and_audited(tmp_path):
+    registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
+
+    written = registry.call("file.write", {"path": "nested/out.txt", "content": "hello", "create_dirs": True})
+    read = registry.call("file.read", {"path": "nested/out.txt"})
+    outside = registry.call("file.write", {"path": str(tmp_path.parent / "outside.txt"), "content": "no"})
+
+    assert written.ok is True
+    assert written.facts["bytes_written"] == 5
+    assert read.ok is True
+    assert read.facts["content"] == "hello"
+    assert outside.ok is False
+    assert outside.error == "path must be within the project directory"
+    assert [log.tool for log in TaskStore(tmp_path).list_tool_call_logs(limit=3)] == [
+        "file.write",
+        "file.read",
+        "file.write",
+    ]
+
+
+def test_shell_and_test_run_use_non_shell_commands_inside_workspace(tmp_path):
+    (tmp_path / "test_sample.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
+
+    shell = registry.call("shell.run", {"command": ["python", "-c", "print('ok')"], "timeout_seconds": 5})
+    tests = registry.call("test.run", {"command": ["pytest", "-q", "test_sample.py"], "timeout_seconds": 20})
+    outside = registry.call("shell.run", {"command": ["python", "-V"], "cwd": str(tmp_path.parent)})
+
+    assert shell.ok is True
+    assert shell.facts["stdout"].strip() == "ok"
+    assert tests.ok is True
+    assert "1 passed" in tests.facts["stdout"]
+    assert outside.ok is False
+    assert outside.error == "path must be within the project directory"
+
+
 def test_unknown_tool_returns_structured_error(tmp_path):
     registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
 
@@ -121,6 +164,8 @@ def test_tool_gateway_filters_by_permission_ceiling(tmp_path):
     gateway = build_tool_gateway(tmp_path, project_dir=tmp_path, permission_ceiling="read")
 
     assert {spec.permission for spec in gateway.list_specs()} == {"read"}
+    assert "file.write" not in {spec.name for spec in gateway.list_specs()}
+    assert "shell.run" not in {spec.name for spec in gateway.list_specs()}
 
 
 def test_provider_config_tool_reports_model_fallbacks(tmp_path):

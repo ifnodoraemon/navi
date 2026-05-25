@@ -115,3 +115,42 @@ async def test_protocol_actions_must_be_capability_calls(tmp_path):
     assert recorded["completion"]["status"] == "failed"
     assert recorded["evidence"][0]["kind"] == "capability_result"
     assert recorded["evidence"][0]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_protocol_actions_execute_local_file_actuators(tmp_path):
+    tasks = TaskStore(tmp_path)
+    task = tasks.create("File actuator task", prompt="write a note", workspace=str(tmp_path))
+    provider = ScriptedProvider(
+        json.dumps(
+            {
+                "navi_execution": {
+                    "version": EXECUTION_PROTOCOL_VERSION,
+                    "phase": "execute",
+                    "task_id": task.id,
+                    "actions": [
+                        {
+                            "tool": "file.write",
+                            "permission": "write",
+                            "args": {"path": "notes/result.txt", "content": "actuated", "create_dirs": True},
+                        },
+                        {"tool": "file.read", "permission": "read", "args": {"path": "notes/result.txt"}},
+                    ],
+                    "evidence": [{"kind": "model_plan", "summary": "write then read"}],
+                    "verification": {"status": "proposed", "checks": ["file.read"], "reason": "read back file"},
+                    "completion": {"status": "proposed", "summary": "file updated"},
+                }
+            }
+        )
+    )
+    execution = ExecutionService(tmp_path)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    updated = await execution.execute_task(task)
+
+    assert updated.status == "completed"
+    assert (tmp_path / "notes" / "result.txt").read_text(encoding="utf-8") == "actuated"
+    protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
+    recorded = json.loads(protocol_log.stdout)
+    assert [item["tool"] for item in recorded["evidence"]] == ["file.write", "file.read"]
+    assert recorded["evidence"][1]["facts"]["content"] == "actuated"

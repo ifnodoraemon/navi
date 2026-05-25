@@ -39,12 +39,16 @@ coverage:
     - execution.retry
     - connector.telegram.status
     - connector.weixin.status
+    - file.read
+    - file.write
     - filesystem.list
     - git.status
     - provider.config
     - service.status
+    - shell.run
     - task.list
     - task.status
+    - test.run
 cases:
   - id: greeting_answer
     category: greeting
@@ -203,6 +207,42 @@ cases:
     expect:
       tool: filesystem.list
       permission: read
+
+  - id: read_project_file
+    category: local_file_context
+    source: architecture
+    message: "读取当前项目里的 README.md 内容"
+    expect:
+      tool: file.read
+      permission: read
+      args:
+        path: "README.md"
+
+  - id: write_project_note_file
+    category: engineering_work
+    source: architecture
+    message: "在当前项目 notes/agentic.md 写入一条 agentic actuator 进展记录"
+    expect:
+      tool: file.write
+      permission: write
+      args:
+        path: "notes/agentic.md"
+
+  - id: run_workspace_shell_command
+    category: engineering_work
+    source: architecture
+    message: "在当前仓库运行一个命令检查 Python 版本"
+    expect:
+      tool: shell.run
+      permission: write
+
+  - id: run_project_tests
+    category: coding_debugging
+    source: architecture
+    message: "运行当前项目的测试套件并返回结果"
+    expect:
+      tool: test.run
+      permission: write
 
   - id: service_start_time
     category: local_service_ops
