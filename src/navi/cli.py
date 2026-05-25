@@ -41,7 +41,7 @@ trace_app = typer.Typer(help="Full-flow traces and evaluations")
 service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
-tools_app = typer.Typer(help="Unified fact tool registry")
+tools_app = typer.Typer(help="Unified capability registry")
 eval_app = typer.Typer(help="Evaluation datasets")
 app.add_typer(auth_app, name="auth")
 app.add_typer(connectors_app, name="connectors")
@@ -209,7 +209,7 @@ def session_show(session_id: str, limit: int = 50) -> None:
 
 @auth_app.command("status")
 def auth_status() -> None:
-    """Show Codex/Gemini availability without exposing secrets."""
+    """Show external auth providers without exposing secrets."""
     for item in AuthInspector().status():
         marker = "ok" if item.installed and item.authenticated else "missing"
         typer.echo(f"{item.name}: {marker} path={item.path or '-'} version={item.version or '-'}")
@@ -217,7 +217,7 @@ def auth_status() -> None:
 
 @tools_app.command("list")
 def tools_list(json_output: bool = False) -> None:
-    """List registered tools as facts."""
+    """List registered capabilities as facts."""
     capabilities = build_capability_registry(ensure_home(), project_dir=Path.cwd())
     specs = [asdict(spec) for spec in capabilities.list_specs()]
     if json_output:

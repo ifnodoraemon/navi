@@ -253,7 +253,7 @@ Known gaps:
 - Weixin media support is not implemented.
 - Weixin typing indicators are not implemented.
 - Remote connector tool visibility is allowlisted; richer per-sender/per-surface policy configuration is still future work.
-- MCP servers are not connected yet; Tool Gateway is ready for an MCP provider but currently serves core and connector tools. Action/control tools are loaded separately as planner-visible specs.
+- MCP servers are not connected yet; Tool Gateway is ready for an MCP provider. Action/control and gateway tools are exposed through the unified capability registry.
 - Web UI is intentionally minimal.
 
 ## Next Implementation Steps

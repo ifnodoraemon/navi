@@ -386,6 +386,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     def list_tools() -> dict:
         return {
             "tools": [asdict(spec) for spec in capabilities.list_specs()],
+            "capabilities": [asdict(node) for node in capabilities.capability_graph()],
             "sources": capabilities.list_sources(),
         }
 

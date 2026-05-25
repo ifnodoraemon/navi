@@ -8,10 +8,10 @@ from typing import Any
 
 import yaml
 
-from .action_tools import load_action_tool_specs
 from .app_factory import build_runtime
+from .capabilities import build_capability_registry
 from .syscalls import ModelSyscall, ModelSyscallPlanner
-from .tools import ToolSpec, build_tool_gateway
+from .tools import ToolSpec
 
 
 @dataclass(frozen=True)
@@ -146,7 +146,7 @@ async def run_task_eval_dataset(
 
 
 def task_eval_tools(home: Path, *, project_dir: Path) -> list[ToolSpec]:
-    return [*load_action_tool_specs(), *build_tool_gateway(home, project_dir=project_dir).list_specs()]
+    return build_capability_registry(home, project_dir=project_dir).list_specs()
 
 
 def match_task_eval_case(case: dict[str, Any], decision: ModelSyscall) -> list[str]:

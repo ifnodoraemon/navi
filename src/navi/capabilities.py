@@ -40,6 +40,19 @@ class CapabilityResult:
     facts: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class CapabilityNode:
+    name: str
+    source: str
+    permission: str
+    facts_only: bool
+    mutates: bool
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+    provider: str
+    description: str = ""
+
+
 class Capability(Protocol):
     spec: ToolSpec
 
@@ -108,6 +121,28 @@ class CapabilityRegistry:
     def list_specs(self) -> list[ToolSpec]:
         return self.planner_specs()
 
+    def capability_graph(self, *, permission_ceiling: str | None = None) -> list[CapabilityNode]:
+        ceiling = permission_ceiling or self.permission_ceiling
+        nodes = []
+        for handler in self.handlers.values():
+            spec = handler.spec
+            if not permission_allows(spec.permission, ceiling):
+                continue
+            nodes.append(
+                CapabilityNode(
+                    name=spec.name,
+                    source=spec.source,
+                    permission=spec.permission,
+                    facts_only=spec.facts_only,
+                    mutates=spec.mutates,
+                    input_schema=spec.input_schema,
+                    output_schema=spec.output_schema,
+                    provider="tool_gateway" if isinstance(handler, ToolCapability) else "action",
+                    description=spec.description,
+                )
+            )
+        return sorted(nodes, key=lambda node: node.name)
+
     def list_sources(self) -> list[str]:
         return sorted({handler.spec.source for handler in self.handlers.values()})
 
@@ -148,7 +183,12 @@ class CapabilityRegistry:
                 message=f"capability {name} is not available with permission {permission}",
                 terminal=True,
             )
-        return await handler.invoke(args or {}, permission=permission, context=context)
+        call_args = args or {}
+        started_at = time.time()
+        result = await handler.invoke(call_args, permission=permission, context=context)
+        if handler.spec.mutates and not isinstance(handler, ToolCapability):
+            self._audit_action_capability(handler.spec, call_args, result, started_at=started_at)
+        return result
 
     def _build_handlers(self) -> Mapping[str, Capability]:
         handlers: dict[str, Capability] = {}
@@ -162,6 +202,32 @@ class CapabilityRegistry:
             and (self.allow_sources is None or handler.spec.source in self.allow_sources)
             and permission_allows(handler.spec.permission, self.permission_ceiling)
         }
+
+    def _audit_action_capability(
+        self,
+        spec: ToolSpec,
+        args: dict[str, Any],
+        result: CapabilityResult,
+        *,
+        started_at: float,
+    ) -> None:
+        facts = result.facts or {
+            "action": result.action,
+            "task_id": result.task_id,
+            "terminal": result.terminal,
+        }
+        try:
+            TaskStore(self.home).add_tool_call_log(
+                tool=spec.name,
+                args_json=json.dumps(args, ensure_ascii=False, sort_keys=True),
+                ok=result.ok,
+                facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+                error="" if result.ok else result.message or result.observation,
+                started_at=started_at,
+                ended_at=time.time(),
+            )
+        except Exception:
+            pass
 
 
 class ActionCapabilityProvider:

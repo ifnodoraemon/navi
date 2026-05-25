@@ -9,12 +9,11 @@ import pytest
 import yaml
 
 from navi.engine import HernessEngine
-from navi.action_tools import load_action_tool_specs
 from navi.app_factory import build_runtime
+from navi.capabilities import build_capability_registry
 from navi.config import load_config
 from navi.evals import load_task_eval_cases, match_task_eval_case
 from navi.syscalls import ModelSyscall, ModelSyscallPlanner
-from navi.tools import build_tool_gateway
 
 
 def _live_enabled() -> bool:
@@ -58,7 +57,7 @@ def _require_live_provider() -> Path:
 async def _select(home: Path, message: str, *, conversation_context: str = "") -> ModelSyscall:
     runtime = build_runtime(home)
     planner = ModelSyscallPlanner(runtime.provider)
-    tools = [*load_action_tool_specs(), *build_tool_gateway(home, project_dir=Path.cwd()).list_specs()]
+    tools = build_capability_registry(home, project_dir=Path.cwd()).list_specs()
     return await asyncio.wait_for(
         planner.plan(message, tools=tools, conversation_context=conversation_context),
         timeout=75,

@@ -293,6 +293,53 @@ def test_action_capabilities_are_loaded_from_manifest(tmp_path):
     assert specs["approval.resolve"].permission == "write"
 
 
+def test_capability_graph_unifies_actions_and_gateway_tools(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+
+    graph = {node.name: node for node in capabilities.capability_graph()}
+
+    assert graph["task.record"].provider == "action"
+    assert graph["task.record"].mutates is True
+    assert graph["provider.config"].provider == "tool_gateway"
+    assert graph["provider.config"].facts_only is True
+    assert {"action", "core", "connector.weixin", "connector.telegram"} <= set(capabilities.list_sources())
+
+
+@pytest.mark.asyncio
+async def test_mutating_action_capabilities_are_audited_once(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    store = TaskStore(tmp_path)
+
+    result = await capabilities.invoke(
+        "task.record",
+        {"prompt": "audit task recording"},
+        permission="prepare",
+        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender"),
+    )
+
+    assert result.ok is True
+    logs = store.list_tool_call_logs()
+    assert [log.tool for log in logs] == ["task.record"]
+    assert logs[0].ok is True
+
+
+@pytest.mark.asyncio
+async def test_gateway_capability_audit_is_not_duplicated(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    store = TaskStore(tmp_path)
+
+    result = await capabilities.invoke(
+        "provider.config",
+        {},
+        permission="read",
+        context=CapabilityContext(home=tmp_path),
+    )
+
+    assert result.ok is True
+    logs = store.list_tool_call_logs()
+    assert [log.tool for log in logs] == ["provider.config"]
+
+
 def test_trust_success_does_not_auto_escalate_autonomy(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     trust = TrustStore(tmp_path)

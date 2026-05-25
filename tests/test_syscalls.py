@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from navi.action_tools import load_action_tool_specs
+from navi.capabilities import CapabilityRegistry
 from navi.syscalls import ModelSyscallPlanner, _extract_json_object, _planner_system_prompt
 from navi.provider import ChatMessage, ModelPool
-from navi.tools import build_tool_gateway
 
 
 class ScriptedProvider:
@@ -19,7 +18,7 @@ class ScriptedProvider:
 
 
 def _tools(tmp_path):
-    return [*load_action_tool_specs(), *build_tool_gateway(tmp_path, project_dir=tmp_path).list_specs()]
+    return CapabilityRegistry(home=tmp_path, project_dir=tmp_path).list_specs()
 
 
 def test_model_syscall_planner_prompt_loads_routing_rules_from_spec():

@@ -106,6 +106,7 @@ def test_local_console_api_flow(tmp_path, monkeypatch):
     tools = client.get("/v1/tools")
     assert tools.status_code == 200
     assert "task.status" in {tool["name"] for tool in tools.json()["tools"]}
+    assert "task.record" in {node["name"] for node in tools.json()["capabilities"]}
     assert "core" in tools.json()["sources"]
 
     provider = client.post("/v1/tools/provider.config/call", json={"args": {}})
