@@ -89,7 +89,6 @@ def test_env_file_overrides_execution_facts(tmp_path):
     (tmp_path / "env").write_text(
         "\n".join(
             [
-                "NAVI_EXECUTION_PROVIDER=codex",
                 "NAVI_EXECUTION_TIMEOUT_SECONDS=9",
                 "NAVI_EXECUTION_MOCK=true",
             ]

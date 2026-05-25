@@ -10,7 +10,7 @@ import time
 
 from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.trust import TrustStore
-from navi.execution import ExecutionService, ExecutionResult
+from navi.execution import ExecutionProtocol, ExecutionService, ExecutionResult
 from navi.evolution import EvolutionEngine, EvolutionLedger
 from navi.tasks import TaskStore
 from navi.daemon import ProjectEventContext, SystemDaemon
@@ -99,6 +99,14 @@ async def test_execution_failure_waits_for_explicit_follow_up_and_rolls_back(tmp
         exit_code=1,
         started_at=time.time(),
         ended_at=time.time(),
+        protocol=ExecutionProtocol.internal_status(
+            task_id=task.id,
+            phase="execute",
+            status="failed",
+            summary="Failed compiling main.py",
+            reason="test execution failure",
+            action_kind="test_execution",
+        ),
     )
     async def mock_provider_call(t, phase):
         return failed_result
@@ -337,12 +345,28 @@ async def test_self_healing_retry_accumulation(tmp_path):
     res1 = ExecutionResult(
         provider="mock", phase="execute", command=["python", "run.py"],
         stdout="Output1", stderr="SyntaxError: invalid syntax", exit_code=1,
-        started_at=time.time(), ended_at=time.time()
+        started_at=time.time(), ended_at=time.time(),
+        protocol=ExecutionProtocol.internal_status(
+            task_id=task.id,
+            phase="execute",
+            status="failed",
+            summary="Output1",
+            reason="test execution failure",
+            action_kind="test_execution",
+        ),
     )
     res3 = ExecutionResult(
         provider="mock", phase="execute", command=["python", "run.py"],
         stdout="Success!", stderr="", exit_code=0,
-        started_at=time.time(), ended_at=time.time()
+        started_at=time.time(), ended_at=time.time(),
+        protocol=ExecutionProtocol.internal_status(
+            task_id=task.id,
+            phase="execute",
+            status="completed",
+            summary="Success!",
+            reason="test execution success",
+            action_kind="test_execution",
+        ),
     )
     
     calls = [res1, res3]

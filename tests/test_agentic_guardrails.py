@@ -199,3 +199,14 @@ def test_execution_follow_up_is_explicit_capability_not_hidden_loop():
     assert "SELF-HEALING" not in source
     assert "while result.exit_code" not in source
     assert "execution.retry" in action_names
+
+
+def test_execution_protocol_has_no_free_form_compatibility_path():
+    from navi.execution import ExecutionProtocol, NaviExecutionProvider
+
+    source = _source(ExecutionProtocol) + _source(NaviExecutionProvider._result)
+
+    assert "fallback" not in source
+    assert "free-form" not in source
+    assert "model_response" not in source
+    assert "provider output violated the required execution protocol" in source

@@ -48,70 +48,91 @@ class ExecutionProtocol:
         return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True)
 
     @classmethod
-    def from_model_output(cls, *, task_id: str, phase: str, text: str, exit_code: int) -> "ExecutionProtocol":
+    def from_model_output(cls, *, task_id: str, phase: str, text: str) -> "ExecutionProtocol":
         parsed = parse_first_json_object(text)
-        payload = parsed.get("navi_execution") if isinstance(parsed, dict) and isinstance(parsed.get("navi_execution"), dict) else parsed
-        if isinstance(payload, dict):
-            actions = _dict_list(payload.get("actions"))
-            evidence = _dict_list(payload.get("evidence"))
-            verification = payload.get("verification") if isinstance(payload.get("verification"), dict) else {}
-            completion = payload.get("completion") if isinstance(payload.get("completion"), dict) else {}
-            if not completion.get("summary"):
-                completion = {**completion, "summary": _text_summary(text, exit_code=exit_code, phase=phase)}
-            return cls(
-                version=str(payload.get("version") or EXECUTION_PROTOCOL_VERSION),
-                phase=str(payload.get("phase") or phase),
-                task_id=str(payload.get("task_id") or task_id),
-                actions=actions,
-                evidence=evidence,
-                verification=verification,
-                completion=completion,
-            )
-        return cls.fallback(task_id=task_id, phase=phase, text=text, exit_code=exit_code)
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("navi_execution"), dict):
+            raise ValueError("execution protocol missing navi_execution object")
+        payload = parsed["navi_execution"]
+        version = str(payload.get("version") or "")
+        if version != EXECUTION_PROTOCOL_VERSION:
+            raise ValueError(f"execution protocol version must be {EXECUTION_PROTOCOL_VERSION}")
+        payload_phase = str(payload.get("phase") or "")
+        if payload_phase != phase:
+            raise ValueError(f"execution protocol phase must be {phase}")
+        payload_task_id = str(payload.get("task_id") or task_id)
+        if task_id and payload_task_id != task_id:
+            raise ValueError("execution protocol task_id does not match task")
+        actions = _required_dict_list(payload, "actions")
+        evidence = _required_dict_list(payload, "evidence")
+        verification = _required_dict(payload, "verification")
+        completion = _required_dict(payload, "completion")
+        if not str(completion.get("summary") or "").strip():
+            raise ValueError("execution protocol completion.summary is required")
+        return cls(
+            version=version,
+            phase=payload_phase,
+            task_id=payload_task_id,
+            actions=actions,
+            evidence=evidence,
+            verification=verification,
+            completion=completion,
+        )
 
     @classmethod
-    def fallback(cls, *, task_id: str, phase: str, text: str, exit_code: int) -> "ExecutionProtocol":
-        summary = _text_summary(text, exit_code=exit_code, phase=phase)
+    def internal_status(
+        cls,
+        *,
+        task_id: str,
+        phase: str,
+        status: str,
+        summary: str,
+        reason: str,
+        action_kind: str,
+    ) -> "ExecutionProtocol":
         return cls(
             phase=phase,
             task_id=task_id,
             actions=[
                 {
-                    "kind": "model_response",
+                    "kind": action_kind,
                     "target": task_id,
-                    "status": "completed" if exit_code == 0 else "failed",
+                    "status": status,
                     "summary": summary,
                 }
             ],
             evidence=[
                 {
-                    "kind": "model_output",
+                    "kind": "internal_state",
                     "summary": summary,
                 }
             ],
             verification={
-                "status": "unverified",
+                "status": status,
                 "checks": [],
-                "reason": "provider returned free-form text instead of structured execution protocol",
+                "reason": reason,
             },
             completion={
-                "status": "completed" if exit_code == 0 else "failed",
+                "status": status,
                 "summary": summary,
             },
         )
 
 
-def _dict_list(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value[:20] if isinstance(item, dict)]
+def _required_dict(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    value = payload.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"execution protocol {key} must be an object")
+    return value
 
 
-def _text_summary(text: str, *, exit_code: int, phase: str) -> str:
-    stripped = (text or "").strip()
-    if stripped:
-        return stripped[:1600]
-    return f"{phase} exited with {exit_code}"
+def _required_dict_list(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    value = payload.get(key)
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"execution protocol {key} must be a non-empty list")
+    items = value[:20]
+    if not all(isinstance(item, dict) for item in items):
+        raise ValueError(f"execution protocol {key} entries must be objects")
+    return items
 
 
 def _execution_protocol_instruction(phase: str) -> str:
@@ -134,7 +155,7 @@ class ExecutionResult:
     exit_code: int
     started_at: float
     ended_at: float
-    protocol: ExecutionProtocol = field(default_factory=ExecutionProtocol)
+    protocol: ExecutionProtocol
 
     @property
     def summary(self) -> str:
@@ -282,21 +303,35 @@ class NaviExecutionProvider:
         ended_at: float,
     ) -> ExecutionResult:
         protocol_text = stdout if stdout else stderr
+        result_stderr = stderr
+        result_exit_code = exit_code
+        try:
+            protocol = ExecutionProtocol.from_model_output(
+                task_id=task_id,
+                phase=phase,
+                text=protocol_text,
+            )
+        except ValueError as exc:
+            result_exit_code = 1
+            result_stderr = str(exc)
+            protocol = ExecutionProtocol.internal_status(
+                task_id=task_id,
+                phase=phase,
+                status="failed",
+                summary=str(exc),
+                reason="provider output violated the required execution protocol",
+                action_kind="execution_error",
+            )
         return ExecutionResult(
             provider=provider,
             phase=phase,
             command=command,
             stdout=stdout,
-            stderr=stderr,
-            exit_code=exit_code,
+            stderr=result_stderr,
+            exit_code=result_exit_code,
             started_at=started_at,
             ended_at=ended_at,
-            protocol=ExecutionProtocol.from_model_output(
-                task_id=task_id,
-                phase=phase,
-                text=protocol_text,
-                exit_code=exit_code,
-            ),
+            protocol=protocol,
         )
 
     @staticmethod
@@ -353,7 +388,14 @@ class NaviExecutionProvider:
             exit_code=0,
             started_at=now,
             ended_at=now,
-            protocol=ExecutionProtocol.fallback(task_id=task.id, phase=phase, text=text, exit_code=0),
+            protocol=ExecutionProtocol.internal_status(
+                task_id=task.id,
+                phase=phase,
+                status="completed",
+                summary=text,
+                reason="execution mock mode",
+                action_kind="mock_execution",
+            ),
         )
 
 
@@ -460,13 +502,6 @@ class ExecutionService:
 
     def _log(self, task: Task, result: ExecutionResult) -> None:
         protocol = result.protocol
-        if not protocol.phase or not protocol.task_id:
-            protocol = ExecutionProtocol.from_model_output(
-                task_id=task.id,
-                phase=result.phase,
-                text=result.stdout or result.stderr,
-                exit_code=result.exit_code,
-            )
         self.tasks.add_execution_log(
             task_id=task.id,
             provider=result.provider,
@@ -518,10 +553,12 @@ class ExecutionService:
                 exit_code=124,
                 started_at=started,
                 ended_at=time.time(),
-                protocol=ExecutionProtocol.fallback(
+                protocol=ExecutionProtocol.internal_status(
                     task_id=task.id,
                     phase=phase,
-                    text=f"navi {phase} timed out after {self.config.timeout_seconds} seconds",
-                    exit_code=124,
+                    status="failed",
+                    summary=f"navi {phase} timed out after {self.config.timeout_seconds} seconds",
+                    reason="execution provider timed out",
+                    action_kind="execution_timeout",
                 ),
             )

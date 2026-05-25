@@ -61,19 +61,20 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_free_form_execution_output_gets_unverified_protocol_fallback(tmp_path):
+async def test_free_form_execution_output_fails_required_protocol(tmp_path):
     provider = ScriptedProvider("Plain execution response")
     tasks = TaskStore(tmp_path)
-    task = tasks.create("Fallback task", prompt="answer plainly", workspace=str(tmp_path))
+    task = tasks.create("Strict task", prompt="answer plainly", workspace=str(tmp_path))
     execution = ExecutionService(tmp_path)
     execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
 
     updated = await execution.execute_task(task)
 
-    assert updated.status == "completed"
-    assert updated.result_summary == "Plain execution response"
+    assert updated.status == "failed"
+    assert updated.result_summary == "execution protocol missing navi_execution object"
+    assert updated.error == "execution protocol missing navi_execution object"
     protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
     recorded = json.loads(protocol_log.stdout)
-    assert recorded["verification"]["status"] == "unverified"
-    assert recorded["actions"][0]["kind"] == "model_response"
-    assert recorded["evidence"][0]["kind"] == "model_output"
+    assert recorded["completion"]["status"] == "failed"
+    assert recorded["verification"]["reason"] == "provider output violated the required execution protocol"
+    assert recorded["actions"][0]["kind"] == "execution_error"

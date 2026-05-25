@@ -129,7 +129,7 @@ async def test_watches_context_propagation_in_daemon(tmp_path, monkeypatch):
     invoked_watches = []
 
     async def mock_run_watch(**kwargs):
-        from navi.execution import ExecutionResult
+        from navi.execution import ExecutionProtocol, ExecutionResult
 
         invoked_watches.append(kwargs)
         now = time.time()
@@ -142,6 +142,14 @@ async def test_watches_context_propagation_in_daemon(tmp_path, monkeypatch):
             exit_code=0,
             started_at=now,
             ended_at=now,
+            protocol=ExecutionProtocol.internal_status(
+                task_id="",
+                phase="watch",
+                status="completed",
+                summary="watch completed",
+                reason="test watch execution",
+                action_kind="test_watch",
+            ),
         )
 
     monkeypatch.setattr(daemon.execution, "run_watch", mock_run_watch)

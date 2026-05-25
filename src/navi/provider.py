@@ -50,6 +50,43 @@ class MockProvider:
                 ensure_ascii=False,
             )
         last = next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
+        system = messages[0].content if messages else ""
+        if "navi_execution" in system:
+            phase = _extract_required_execution_phase(system)
+            task_id = _extract_task_id(last)
+            return json.dumps(
+                {
+                    "navi_execution": {
+                        "version": "navi.actuator.v1",
+                        "phase": phase,
+                        "task_id": task_id,
+                        "actions": [
+                            {
+                                "kind": "mock_execution",
+                                "target": task_id,
+                                "status": "completed",
+                                "summary": f"Navi received: {last}",
+                            }
+                        ],
+                        "evidence": [
+                            {
+                                "kind": "mock_provider",
+                                "summary": f"Navi received: {last}",
+                            }
+                        ],
+                        "verification": {
+                            "status": "completed",
+                            "checks": ["mock provider response"],
+                            "reason": "mock model execution",
+                        },
+                        "completion": {
+                            "status": "completed",
+                            "summary": f"Navi received: {last}",
+                        },
+                    }
+                },
+                ensure_ascii=False,
+            )
         return f"Navi received: {last}"
 
 
@@ -261,3 +298,13 @@ def _extract_planner_user_message(content: str) -> str:
     if match:
         return match.group(1).strip()
     return content.strip()
+
+
+def _extract_required_execution_phase(system: str) -> str:
+    match = re.search(r"`navi_execution\.phase` must be `([^`]+)`", system)
+    return match.group(1) if match else "execute"
+
+
+def _extract_task_id(user: str) -> str:
+    match = re.search(r"^Task id:\s*(\S+)", user, flags=re.MULTILINE)
+    return match.group(1) if match else ""

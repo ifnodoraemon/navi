@@ -211,7 +211,6 @@ NAVI_MODEL_API_BASE_URL
 NAVI_MODEL_API_KEY
 NAVI_SERVICE_NAME
 NAVI_WEB_URL
-NAVI_EXECUTION_PROVIDER (only `navi` is honored; legacy external providers are ignored)
 NAVI_EXECUTION_TIMEOUT_SECONDS
 NAVI_EXECUTION_MOCK
 ```
@@ -241,7 +240,7 @@ Implemented:
 - Mock and OpenAI-compatible provider shape.
 - Bounded agent loop for observe/plan/read-tool chaining before final response.
 - Tool Gateway abstraction with provider sources, refresh, filtering, and audit logs.
-- Internal execution uses a structured `navi.actuator.v1` protocol with actions, evidence, verification, completion summary, and fallback handling for legacy free-form model output.
+- Internal execution requires the structured `navi.actuator.v1` protocol with actions, evidence, verification, and completion summary; free-form execution output is treated as a failed execution.
 - Local memory, session, and task stores.
 - Skill discovery.
 - Connector registry plus Weixin account store, context-token store, deduplication, policy checks, mock client, HTTP client skeleton, and inbound-to-agent service flow.
