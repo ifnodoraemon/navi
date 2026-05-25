@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
@@ -28,9 +29,17 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
             "version": EXECUTION_PROTOCOL_VERSION,
             "phase": "execute",
             "task_id": task.id,
-            "actions": [
-                {"tool": "provider.config", "permission": "read", "args": {}},
-                {"tool": "final.answer", "permission": "read", "args": {"message": "Answered with explicit evidence."}},
+            "plan_id": "execute-basic",
+            "steps": [
+                {
+                    "id": "answer",
+                    "actions": [
+                        {"tool": "provider.config", "permission": "read", "args": {}},
+                        {"tool": "final.answer", "permission": "read", "args": {"message": "Answered with explicit evidence."}},
+                    ],
+                    "verification": {"checks": ["context reviewed"], "reason": "no actuator mutation needed"},
+                    "on_failure": "stop",
+                }
             ],
             "evidence": [{"kind": "observation", "summary": "No filesystem mutation was available to this pass."}],
             "verification": {"status": "verified", "checks": ["context reviewed"], "reason": "no actuator mutation needed"},
@@ -57,10 +66,10 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
     assert recorded["version"] == EXECUTION_PROTOCOL_VERSION
     assert recorded["phase"] == "execute"
     assert recorded["task_id"] == task.id
-    assert recorded["actions"][0]["status"] == "completed"
-    assert recorded["actions"][1]["status"] == "completed"
-    assert recorded["evidence"][0]["kind"] == "capability_result"
-    assert recorded["evidence"][0]["tool"] == "provider.config"
+    assert recorded["steps"][0]["actions"][0]["status"] == "completed"
+    assert recorded["steps"][0]["actions"][1]["status"] == "completed"
+    capability = [item for item in recorded["evidence"] if item["kind"] == "capability_result"]
+    assert capability[0]["tool"] == "provider.config"
     assert recorded["verification"]["status"] == "verified"
 
 
@@ -81,7 +90,7 @@ async def test_free_form_execution_output_fails_required_protocol(tmp_path):
     recorded = json.loads(protocol_log.stdout)
     assert recorded["completion"]["status"] == "failed"
     assert recorded["verification"]["reason"] == "provider output violated the required execution protocol"
-    assert recorded["actions"][0]["kind"] == "execution_error"
+    assert recorded["steps"][0]["actions"][0]["kind"] == "execution_error"
 
 
 @pytest.mark.asyncio
@@ -95,7 +104,15 @@ async def test_protocol_actions_must_be_capability_calls(tmp_path):
                     "version": EXECUTION_PROTOCOL_VERSION,
                     "phase": "execute",
                     "task_id": task.id,
-                    "actions": [{"kind": "inspect", "target": "task_context"}],
+                    "plan_id": "bad-action",
+                    "steps": [
+                        {
+                            "id": "bad",
+                            "actions": [{"kind": "inspect", "target": "task_context"}],
+                            "verification": {"checks": ["context"], "reason": "model claim"},
+                            "on_failure": "stop",
+                        }
+                    ],
                     "evidence": [{"kind": "model_claim", "summary": "I inspected context."}],
                     "verification": {"status": "proposed", "checks": ["context"], "reason": "model claim"},
                     "completion": {"status": "proposed", "summary": "done"},
@@ -109,12 +126,12 @@ async def test_protocol_actions_must_be_capability_calls(tmp_path):
     updated = await execution.execute_task(task)
 
     assert updated.status == "failed"
-    assert updated.result_summary == "action 1 missing capability tool"
+    assert updated.result_summary == "step 1 action 1 missing capability tool"
     protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
     recorded = json.loads(protocol_log.stdout)
     assert recorded["completion"]["status"] == "failed"
-    assert recorded["evidence"][0]["kind"] == "capability_result"
-    assert recorded["evidence"][0]["ok"] is False
+    capability = [item for item in recorded["evidence"] if item["kind"] == "capability_result"]
+    assert capability[0]["ok"] is False
 
 
 @pytest.mark.asyncio
@@ -128,23 +145,30 @@ async def test_protocol_actions_execute_local_file_actuators(tmp_path):
                     "version": EXECUTION_PROTOCOL_VERSION,
                     "phase": "execute",
                     "task_id": task.id,
-                    "actions": [
+                    "plan_id": "file-actuator",
+                    "steps": [
                         {
-                            "tool": "file.write",
-                            "permission": "write",
-                            "args": {"path": "notes/result.txt", "content": "actuated", "create_dirs": True},
-                        },
-                        {"tool": "file.read", "permission": "read", "args": {"path": "notes/result.txt"}},
+                            "id": "write-read",
+                            "actions": [
+                                {
+                                    "tool": "file.write",
+                                    "permission": "write",
+                                    "args": {"path": "notes/result.txt", "content": "actuated", "create_dirs": True},
+                                },
+                                {"tool": "file.read", "permission": "read", "args": {"path": "notes/result.txt"}},
+                            ],
+                            "verification": {
+                                "checks": [
+                                    {"type": "file.exists", "path": "notes/result.txt"},
+                                    {"type": "file.contains", "path": "notes/result.txt", "text": "actuated"},
+                                ],
+                                "reason": "read back file",
+                            },
+                            "on_failure": "stop",
+                        }
                     ],
                     "evidence": [{"kind": "model_plan", "summary": "write then read"}],
-                    "verification": {
-                        "status": "proposed",
-                        "checks": [
-                            {"type": "file.exists", "path": "notes/result.txt"},
-                            {"type": "file.contains", "path": "notes/result.txt", "text": "actuated"},
-                        ],
-                        "reason": "read back file",
-                    },
+                    "verification": {"status": "proposed", "checks": [], "reason": "step verified"},
                     "completion": {"status": "proposed", "summary": "file updated"},
                 }
             }
@@ -178,19 +202,26 @@ async def test_verifier_policy_can_fail_after_successful_capability_actions(tmp_
                     "version": EXECUTION_PROTOCOL_VERSION,
                     "phase": "execute",
                     "task_id": task.id,
-                    "actions": [
+                    "plan_id": "verifier-failure",
+                    "steps": [
                         {
-                            "tool": "file.write",
-                            "permission": "write",
-                            "args": {"path": "notes/result.txt", "content": "actual", "create_dirs": True},
+                            "id": "write-wrong",
+                            "actions": [
+                                {
+                                    "tool": "file.write",
+                                    "permission": "write",
+                                    "args": {"path": "notes/result.txt", "content": "actual", "create_dirs": True},
+                                }
+                            ],
+                            "verification": {
+                                "checks": [{"type": "file.contains", "path": "notes/result.txt", "text": "expected"}],
+                                "reason": "expected artifact content",
+                            },
+                            "on_failure": "stop",
                         }
                     ],
                     "evidence": [{"kind": "model_plan", "summary": "write wrong content"}],
-                    "verification": {
-                        "status": "proposed",
-                        "checks": [{"type": "file.contains", "path": "notes/result.txt", "text": "expected"}],
-                        "reason": "expected artifact content",
-                    },
+                    "verification": {"status": "proposed", "checks": [], "reason": "step verified"},
                     "completion": {"status": "proposed", "summary": "file updated"},
                 }
             }
@@ -210,3 +241,133 @@ async def test_verifier_policy_can_fail_after_successful_capability_actions(tmp_
     verification = [item for item in recorded["evidence"] if item["kind"] == "verification_result"]
     assert verification[0]["check"] == "file.contains"
     assert verification[0]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_execution_rejects_plans_over_step_budget(tmp_path):
+    tasks = TaskStore(tmp_path)
+    task = tasks.create("Budget task", prompt="too many steps", workspace=str(tmp_path))
+    steps = [
+        {
+            "id": f"step-{index}",
+            "actions": [{"tool": "final.answer", "permission": "read", "args": {"message": str(index)}}],
+            "verification": {"checks": [], "reason": "noop"},
+        }
+        for index in range(6)
+    ]
+    provider = ScriptedProvider(
+        json.dumps(
+            {
+                "navi_execution": {
+                    "version": EXECUTION_PROTOCOL_VERSION,
+                    "phase": "execute",
+                    "task_id": task.id,
+                    "plan_id": "too-many-steps",
+                    "steps": steps,
+                    "evidence": [{"kind": "model_plan", "summary": "too many"}],
+                    "verification": {"status": "proposed", "checks": [], "reason": "budget"},
+                    "completion": {"status": "proposed", "summary": "too many"},
+                }
+            }
+        )
+    )
+    execution = ExecutionService(tmp_path)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    updated = await execution.execute_task(task)
+
+    assert updated.status == "failed"
+    assert updated.result_summary == "execution protocol exceeds step budget 5"
+
+
+@pytest.mark.asyncio
+async def test_execution_retry_once_policy_repeats_failed_step(tmp_path):
+    tasks = TaskStore(tmp_path)
+    task = tasks.create("Retry step task", prompt="retry failed step", workspace=str(tmp_path))
+    provider = ScriptedProvider(
+        json.dumps(
+            {
+                "navi_execution": {
+                    "version": EXECUTION_PROTOCOL_VERSION,
+                    "phase": "execute",
+                    "task_id": task.id,
+                    "plan_id": "retry-once",
+                    "steps": [
+                        {
+                            "id": "missing-file",
+                            "actions": [{"tool": "file.read", "permission": "read", "args": {"path": "missing.txt"}}],
+                            "verification": {"checks": [], "reason": "read missing file"},
+                            "on_failure": "retry_once",
+                        }
+                    ],
+                    "evidence": [{"kind": "model_plan", "summary": "retry"}],
+                    "verification": {"status": "proposed", "checks": [], "reason": "retry"},
+                    "completion": {"status": "proposed", "summary": "retry"},
+                }
+            }
+        )
+    )
+    execution = ExecutionService(tmp_path)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    updated = await execution.execute_task(task)
+
+    assert updated.status == "failed"
+    protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
+    recorded = json.loads(protocol_log.stdout)
+    capability = [item for item in recorded["evidence"] if item["kind"] == "capability_result"]
+    assert [item["attempt"] for item in capability] == [1, 2]
+    recovery = [item for item in recorded["evidence"] if item["kind"] == "recovery_decision"]
+    assert recovery[0]["policy"] == "retry_once"
+
+
+@pytest.mark.asyncio
+async def test_failed_dirty_execution_records_rollback_hint(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+    tasks = TaskStore(tmp_path)
+    task = tasks.create("Rollback hint task", prompt="write wrong file", workspace=str(project))
+    provider = ScriptedProvider(
+        json.dumps(
+            {
+                "navi_execution": {
+                    "version": EXECUTION_PROTOCOL_VERSION,
+                    "phase": "execute",
+                    "task_id": task.id,
+                    "plan_id": "dirty-failure",
+                    "steps": [
+                        {
+                            "id": "write-wrong",
+                            "actions": [
+                                {
+                                    "tool": "file.write",
+                                    "permission": "write",
+                                    "args": {"path": "artifact.txt", "content": "actual"},
+                                }
+                            ],
+                            "verification": {
+                                "checks": [{"type": "file.contains", "path": "artifact.txt", "text": "expected"}],
+                                "reason": "expected content",
+                            },
+                            "on_failure": "stop",
+                        }
+                    ],
+                    "evidence": [{"kind": "model_plan", "summary": "dirty failure"}],
+                    "verification": {"status": "proposed", "checks": [], "reason": "dirty failure"},
+                    "completion": {"status": "proposed", "summary": "dirty failure"},
+                }
+            }
+        )
+    )
+    execution = ExecutionService(tmp_path)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    updated = await execution.execute_task(task)
+
+    assert updated.status == "failed"
+    protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
+    recorded = json.loads(protocol_log.stdout)
+    rollback = [item for item in recorded["evidence"] if item["kind"] == "rollback_hint"]
+    assert rollback
+    assert "artifact.txt" in rollback[0]["after_git_status"]

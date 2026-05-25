@@ -18,6 +18,7 @@ from .tasks import Task, TaskStore
 INTERNAL_EXECUTION_PROVIDER = "navi"
 EXECUTION_PROTOCOL_VERSION = "navi.actuator.v1"
 ACTUATOR_DISABLED_TOOLS = frozenset({"task.prepare", "task.queue", "execution.retry"})
+EXECUTION_STEP_BUDGET = 5
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,8 @@ class ExecutionProtocol:
     version: str = EXECUTION_PROTOCOL_VERSION
     phase: str = ""
     task_id: str = ""
-    actions: list[dict[str, Any]] = field(default_factory=list)
+    plan_id: str = ""
+    steps: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[dict[str, Any]] = field(default_factory=list)
     verification: dict[str, Any] = field(default_factory=dict)
     completion: dict[str, Any] = field(default_factory=dict)
@@ -35,12 +37,21 @@ class ExecutionProtocol:
         summary = str(self.completion.get("summary") or "").strip()
         return summary[:1600]
 
+    @property
+    def actions(self) -> list[dict[str, Any]]:
+        flattened: list[dict[str, Any]] = []
+        for step in self.steps:
+            if isinstance(step, dict):
+                flattened.extend(item for item in step.get("actions", []) if isinstance(item, dict))
+        return flattened
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "version": self.version,
             "phase": self.phase,
             "task_id": self.task_id,
-            "actions": self.actions,
+            "plan_id": self.plan_id,
+            "steps": self.steps,
             "evidence": self.evidence,
             "verification": self.verification,
             "completion": self.completion,
@@ -64,7 +75,7 @@ class ExecutionProtocol:
         payload_task_id = str(payload.get("task_id") or task_id)
         if task_id and payload_task_id != task_id:
             raise ValueError("execution protocol task_id does not match task")
-        actions = _required_dict_list(payload, "actions")
+        steps = _required_steps(payload)
         evidence = _required_dict_list(payload, "evidence")
         verification = _required_dict(payload, "verification")
         completion = _required_dict(payload, "completion")
@@ -74,7 +85,8 @@ class ExecutionProtocol:
             version=version,
             phase=payload_phase,
             task_id=payload_task_id,
-            actions=actions,
+            plan_id=str(payload.get("plan_id") or f"{phase}:{payload_task_id or 'watch'}"),
+            steps=steps,
             evidence=evidence,
             verification=verification,
             completion=completion,
@@ -94,12 +106,20 @@ class ExecutionProtocol:
         return cls(
             phase=phase,
             task_id=task_id,
-            actions=[
+            plan_id=f"{phase}:{task_id or 'internal'}",
+            steps=[
                 {
-                    "kind": action_kind,
-                    "target": task_id,
+                    "id": "internal",
+                    "actions": [
+                        {
+                            "kind": action_kind,
+                            "target": task_id,
+                            "status": status,
+                            "summary": summary,
+                        }
+                    ],
+                    "verification": {"checks": [], "reason": reason},
                     "status": status,
-                    "summary": summary,
                 }
             ],
             evidence=[
@@ -137,17 +157,45 @@ def _required_dict_list(payload: dict[str, Any], key: str) -> list[dict[str, Any
     return items
 
 
+def _required_steps(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_steps = payload.get("steps")
+    if not isinstance(raw_steps, list) or not raw_steps:
+        raise ValueError("execution protocol steps must be a non-empty list")
+    steps: list[dict[str, Any]] = []
+    for index, raw_step in enumerate(raw_steps[:EXECUTION_STEP_BUDGET]):
+        if not isinstance(raw_step, dict):
+            raise ValueError("execution protocol step entries must be objects")
+        actions = _required_dict_list(raw_step, "actions")
+        verification = raw_step.get("verification")
+        if not isinstance(verification, dict):
+            raise ValueError("execution protocol step verification must be an object")
+        steps.append(
+            {
+                "id": str(raw_step.get("id") or f"step-{index + 1}"),
+                "description": str(raw_step.get("description") or ""),
+                "actions": actions,
+                "verification": verification,
+                "on_failure": str(raw_step.get("on_failure") or "stop"),
+            }
+        )
+    if len(raw_steps) > EXECUTION_STEP_BUDGET:
+        raise ValueError(f"execution protocol exceeds step budget {EXECUTION_STEP_BUDGET}")
+    return steps
+
+
 def _execution_protocol_instruction(phase: str) -> str:
     return (
         "Return one JSON object with key `navi_execution`. "
         f"`navi_execution.phase` must be `{phase}` and `version` must be `{EXECUTION_PROTOCOL_VERSION}`. "
-        "Each `actions` entry must be a capability call object with `tool`, `permission`, and `args`; "
+        f"Use a step plan: include `plan_id` and `steps`, with at most {EXECUTION_STEP_BUDGET} steps. "
+        "Each step must include `actions`, `verification`, and optional `on_failure` (`stop`, `continue`, or `retry_once`). "
+        "Each step action must be a capability call object with `tool`, `permission`, and `args`; "
         "examples include `final.answer`, `provider.config`, `filesystem.list`, `file.read`, `file.write`, "
         "`shell.run`, `test.run`, `git.status`, `task.status`, "
         "`task.record`, `approval.request`, `approval.resolve`, `watch.create`, `task.delete`, and `watch.delete`. "
         "Do not describe an action that is not a capability call. "
         "Include `evidence` only as proposed context; Navi will replace it with actual capability results. "
-        "`verification.checks` must state expected checks. Supported object checks: "
+        "Each step `verification.checks` must state expected checks. Supported object checks: "
         "`{\"type\":\"file.exists\",\"path\":\"...\"}`, `{\"type\":\"file.contains\",\"path\":\"...\",\"text\":\"...\"}`, "
         "`{\"type\":\"git.diff\",\"expected\":\"changed|clean\"}`, and `{\"type\":\"test.passed\"}`. "
         "`completion` may include a proposed summary, but final success is decided by capability execution."
@@ -179,7 +227,9 @@ class ActuatorRunner:
         self.home = home
 
     async def run_task(self, task: Task, result: ExecutionResult) -> ExecutionResult:
-        protocol = await self._execute_protocol_actions(task, result.protocol)
+        workspace = Path(task.workspace or Path.cwd())
+        before_state = _workspace_state(workspace, label="before")
+        protocol = await self._execute_protocol_actions(task, result.protocol, before_state=before_state)
         exit_code = 0 if protocol.completion.get("status") == "completed" else 1
         return ExecutionResult(
             provider=result.provider,
@@ -193,12 +243,19 @@ class ActuatorRunner:
             protocol=protocol,
         )
 
-    async def _execute_protocol_actions(self, task: Task, protocol: ExecutionProtocol) -> ExecutionProtocol:
+    async def _execute_protocol_actions(
+        self,
+        task: Task,
+        protocol: ExecutionProtocol,
+        *,
+        before_state: dict[str, Any],
+    ) -> ExecutionProtocol:
         from .capabilities import CapabilityContext, CapabilityRegistry
 
+        workspace = Path(task.workspace or Path.cwd())
         registry = CapabilityRegistry(
             home=self.home,
-            project_dir=Path(task.workspace or Path.cwd()),
+            project_dir=workspace,
             disabled_tools=set(ACTUATOR_DISABLED_TOOLS),
             permission_ceiling="write",
         )
@@ -210,27 +267,97 @@ class ActuatorRunner:
             permission_ceiling="write",
             workspace=task.workspace,
         )
-        acted_actions: list[dict[str, Any]] = []
-        evidence: list[dict[str, Any]] = []
+        acted_steps: list[dict[str, Any]] = []
+        evidence: list[dict[str, Any]] = [before_state]
         failures: list[str] = []
 
-        for index, action in enumerate(protocol.actions):
+        for step_index, step in enumerate(protocol.steps[:EXECUTION_STEP_BUDGET]):
+            acted_step, step_evidence, step_failures = await self._execute_step(
+                step,
+                step_index=step_index,
+                registry=registry,
+                context=context,
+                evidence=evidence,
+                workspace=workspace,
+            )
+            acted_steps.append(acted_step)
+            evidence.extend(step_evidence)
+            if step_failures and step.get("on_failure") == "retry_once":
+                evidence.append(_recovery_evidence(step_index, "retry_once", "retrying failed step once"))
+                retry_step, retry_evidence, retry_failures = await self._execute_step(
+                    step,
+                    step_index=step_index,
+                    registry=registry,
+                    context=context,
+                    evidence=evidence,
+                    workspace=workspace,
+                    attempt=2,
+                )
+                acted_steps[-1] = {**retry_step, "previous_attempt": acted_step}
+                evidence.extend(retry_evidence)
+                step_failures = retry_failures
+            if step_failures:
+                failures.extend(step_failures)
+                decision = str(step.get("on_failure") or "stop")
+                evidence.append(_recovery_evidence(step_index, decision, "step failed"))
+                if decision != "continue":
+                    break
+
+        if len(protocol.steps) > EXECUTION_STEP_BUDGET:
+            failures.append(f"execution step budget exceeded: {EXECUTION_STEP_BUDGET}")
+
+        after_state = _workspace_state(workspace, label="after")
+        evidence.append(after_state)
+        rollback = _rollback_evidence(before_state, after_state, failures)
+        if rollback:
+            evidence.append(rollback)
+        completed = not failures
+        summary = _actuator_summary(evidence, fallback=protocol.summary, failures=failures)
+        return ExecutionProtocol(
+            version=protocol.version,
+            phase=protocol.phase,
+            task_id=protocol.task_id,
+            plan_id=protocol.plan_id,
+            steps=acted_steps,
+            evidence=evidence,
+            verification={
+                "status": "verified" if completed else "failed",
+                "checks": [f"capability:{item.get('tool') or 'missing'}" for item in evidence if item.get("kind") == "capability_result"]
+                + [item.get("check", "") for item in evidence if item.get("kind") == "verification_result"],
+                "reason": "all protocol actions and verification checks passed"
+                if completed
+                else "one or more protocol actions or verification checks failed",
+            },
+            completion={
+                "status": "completed" if completed else "failed",
+                "summary": summary,
+            },
+        )
+
+    async def _execute_step(
+        self,
+        step: dict[str, Any],
+        *,
+        step_index: int,
+        registry,
+        context,
+        evidence: list[dict[str, Any]],
+        workspace: Path,
+        attempt: int = 1,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+        acted_actions: list[dict[str, Any]] = []
+        step_evidence: list[dict[str, Any]] = []
+        failures: list[str] = []
+        for action_index, action in enumerate(step.get("actions", [])):
             tool = str(action.get("tool") or "").strip()
             permission = str(action.get("permission") or "read").strip() or "read"
             args = action.get("args") if isinstance(action.get("args"), dict) else {}
             if not tool:
-                message = f"action {index + 1} missing capability tool"
+                message = f"step {step_index + 1} action {action_index + 1} missing capability tool"
                 failures.append(message)
-                acted_actions.append(
-                    {
-                        **action,
-                        "status": "failed",
-                        "error": message,
-                    }
-                )
-                evidence.append(_capability_evidence(index=index, tool="", ok=False, error=message))
+                acted_actions.append({**action, "status": "failed", "error": message, "attempt": attempt})
+                step_evidence.append(_capability_evidence(step_index=step_index, index=action_index, tool="", ok=False, error=message, attempt=attempt))
                 continue
-
             result = await registry.invoke(tool, args, permission=permission, context=context)
             if not result.ok:
                 failures.append(result.message or result.observation or f"{tool} failed")
@@ -243,11 +370,13 @@ class ActuatorRunner:
                     "status": "completed" if result.ok else "failed",
                     "observation": result.observation,
                     "terminal": result.terminal,
+                    "attempt": attempt,
                 }
             )
-            evidence.append(
+            step_evidence.append(
                 _capability_evidence(
-                    index=index,
+                    step_index=step_index,
+                    index=action_index,
                     tool=tool,
                     ok=result.ok,
                     action=result.action,
@@ -256,41 +385,33 @@ class ActuatorRunner:
                     task_id=result.task_id,
                     terminal=result.terminal,
                     facts=result.facts or {},
+                    attempt=attempt,
                 )
             )
-
         verification_evidence, verification_failures = _verify_protocol_checks(
-            protocol.verification.get("checks"),
-            evidence=evidence,
-            workspace=Path(task.workspace or Path.cwd()),
+            step.get("verification", {}).get("checks"),
+            evidence=[*evidence, *step_evidence],
+            workspace=workspace,
+            step_index=step_index,
+            attempt=attempt,
         )
-        evidence.extend(verification_evidence)
+        step_evidence.extend(verification_evidence)
         failures.extend(verification_failures)
-        completed = not failures
-        summary = _actuator_summary(evidence, fallback=protocol.summary, failures=failures)
-        return ExecutionProtocol(
-            version=protocol.version,
-            phase=protocol.phase,
-            task_id=protocol.task_id,
-            actions=acted_actions,
-            evidence=evidence,
-            verification={
-                "status": "verified" if completed else "failed",
-                "checks": [f"capability:{item.get('tool') or 'missing'}" for item in evidence if item.get("kind") == "capability_result"]
-                + [item.get("check", "") for item in verification_evidence],
-                "reason": "all protocol actions and verification checks passed"
-                if completed
-                else "one or more protocol actions or verification checks failed",
+        return (
+            {
+                **step,
+                "actions": acted_actions,
+                "status": "completed" if not failures else "failed",
+                "attempt": attempt,
             },
-            completion={
-                "status": "completed" if completed else "failed",
-                "summary": summary,
-            },
+            step_evidence,
+            failures,
         )
 
 
 def _capability_evidence(
     *,
+    step_index: int,
     index: int,
     tool: str,
     ok: bool,
@@ -301,10 +422,13 @@ def _capability_evidence(
     terminal: bool = False,
     facts: dict[str, Any] | None = None,
     error: str = "",
+    attempt: int = 1,
 ) -> dict[str, Any]:
     return {
         "kind": "capability_result",
+        "step_index": step_index,
         "action_index": index,
+        "attempt": attempt,
         "tool": tool,
         "ok": ok,
         "action": action,
@@ -322,6 +446,8 @@ def _verify_protocol_checks(
     *,
     evidence: list[dict[str, Any]],
     workspace: Path,
+    step_index: int,
+    attempt: int,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     if not isinstance(checks, list):
         return [], []
@@ -330,7 +456,7 @@ def _verify_protocol_checks(
     for index, check in enumerate(checks):
         if not isinstance(check, dict):
             continue
-        result = _run_verification_check(index=index, check=check, evidence=evidence, workspace=workspace)
+        result = _run_verification_check(index=index, check=check, evidence=evidence, workspace=workspace, step_index=step_index, attempt=attempt)
         results.append(result)
         if not result["ok"]:
             failures.append(str(result["error"] or f"verification check failed: {result['check']}"))
@@ -343,12 +469,14 @@ def _run_verification_check(
     check: dict[str, Any],
     evidence: list[dict[str, Any]],
     workspace: Path,
+    step_index: int,
+    attempt: int,
 ) -> dict[str, Any]:
     check_type = str(check.get("type") or "").strip()
     if check_type == "file.exists":
         path, error = _verified_workspace_path(check.get("path"), workspace=workspace)
         ok = bool(path and path.exists() and path.is_file())
-        return _verification_evidence(index, check_type, ok=ok, facts={"path": str(path) if path else ""}, error=error or ("" if ok else "file does not exist"))
+        return _verification_evidence(step_index, index, check_type, ok=ok, facts={"path": str(path) if path else ""}, error=error or ("" if ok else "file does not exist"), attempt=attempt)
     if check_type == "file.contains":
         path, error = _verified_workspace_path(check.get("path"), workspace=workspace)
         expected = str(check.get("text") or "")
@@ -360,11 +488,13 @@ def _run_verification_check(
                 error = str(exc)
         ok = bool(path and expected and expected in content and not error)
         return _verification_evidence(
+            step_index,
             index,
             check_type,
             ok=ok,
             facts={"path": str(path) if path else "", "text_present": expected in content if expected else False},
             error=error or ("" if ok else "expected text not found"),
+            attempt=attempt,
         )
     if check_type == "git.diff":
         expected = str(check.get("expected") or "changed").strip().lower()
@@ -372,36 +502,44 @@ def _run_verification_check(
         changed = bool(status["stdout"].strip())
         ok = (expected == "changed" and changed) or (expected == "clean" and not changed)
         return _verification_evidence(
+            step_index,
             index,
             check_type,
             ok=ok and status["exit_code"] == 0,
             facts={"expected": expected, "changed": changed, **status},
             error=status["stderr"] or ("" if ok else f"git diff expectation not met: {expected}"),
+            attempt=attempt,
         )
     if check_type == "test.passed":
         test_results = [item for item in evidence if item.get("tool") == "test.run"]
         ok = bool(test_results) and bool(test_results[-1].get("ok"))
         return _verification_evidence(
+            step_index,
             index,
             check_type,
             ok=ok,
             facts={"test_result_count": len(test_results)},
             error="" if ok else "no passing test.run result found",
+            attempt=attempt,
         )
-    return _verification_evidence(index, check_type or "unknown", ok=False, error=f"unsupported verification check: {check_type or 'missing'}")
+    return _verification_evidence(step_index, index, check_type or "unknown", ok=False, error=f"unsupported verification check: {check_type or 'missing'}", attempt=attempt)
 
 
 def _verification_evidence(
+    step_index: int,
     index: int,
     check: str,
     *,
     ok: bool,
     facts: dict[str, Any] | None = None,
     error: str = "",
+    attempt: int = 1,
 ) -> dict[str, Any]:
     return {
         "kind": "verification_result",
+        "step_index": step_index,
         "check_index": index,
+        "attempt": attempt,
         "check": check,
         "ok": ok,
         "facts": facts or {},
@@ -441,6 +579,44 @@ def _git_porcelain_status(workspace: Path) -> dict[str, Any]:
     except subprocess.TimeoutExpired:
         return {"stdout": "", "stderr": "git status timed out", "exit_code": 124}
     return {"stdout": result.stdout[:12000], "stderr": result.stderr.strip()[:12000], "exit_code": result.returncode}
+
+
+def _workspace_state(workspace: Path, *, label: str) -> dict[str, Any]:
+    status = _git_porcelain_status(workspace)
+    return {
+        "kind": "workspace_state",
+        "label": label,
+        "workspace": str(workspace),
+        "git": status,
+        "dirty": bool(status["stdout"].strip()) if status["exit_code"] == 0 else None,
+    }
+
+
+def _recovery_evidence(step_index: int, policy: str, reason: str) -> dict[str, Any]:
+    return {
+        "kind": "recovery_decision",
+        "step_index": step_index,
+        "policy": policy,
+        "reason": reason,
+    }
+
+
+def _rollback_evidence(before_state: dict[str, Any], after_state: dict[str, Any], failures: list[str]) -> dict[str, Any] | None:
+    if not failures:
+        return None
+    before_git = before_state.get("git") if isinstance(before_state.get("git"), dict) else {}
+    after_git = after_state.get("git") if isinstance(after_state.get("git"), dict) else {}
+    before_status = str(before_git.get("stdout") or "")
+    after_status = str(after_git.get("stdout") or "")
+    if before_status == after_status:
+        return None
+    return {
+        "kind": "rollback_hint",
+        "reason": "workspace changed during failed execution",
+        "before_git_status": before_status,
+        "after_git_status": after_status,
+        "suggested_action": "inspect git diff and revert or repair changed files before retrying",
+    }
 
 
 def _actuator_summary(evidence: list[dict[str, Any]], *, fallback: str, failures: list[str]) -> str:
@@ -681,11 +857,19 @@ class NaviExecutionProvider:
             protocol=ExecutionProtocol(
                 task_id=task.id,
                 phase=phase,
-                actions=[
+                plan_id=f"{phase}:{task.id}",
+                steps=[
                     {
-                        "tool": "final.answer",
-                        "permission": "read",
-                        "args": {"message": text},
+                        "id": "mock",
+                        "actions": [
+                            {
+                                "tool": "final.answer",
+                                "permission": "read",
+                                "args": {"message": text},
+                            }
+                        ],
+                        "verification": {"checks": [], "reason": "execution mock mode"},
+                        "on_failure": "stop",
                     }
                 ],
                 evidence=[{"kind": "mock_provider", "summary": text}],

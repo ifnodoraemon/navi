@@ -362,7 +362,15 @@ async def test_self_healing_retry_accumulation(tmp_path):
         protocol=ExecutionProtocol(
             task_id=task.id,
             phase="execute",
-            actions=[{"tool": "final.answer", "permission": "read", "args": {"message": "Success!"}}],
+            plan_id=f"execute:{task.id}",
+            steps=[
+                {
+                    "id": "answer",
+                    "actions": [{"tool": "final.answer", "permission": "read", "args": {"message": "Success!"}}],
+                    "verification": {"checks": [], "reason": "test execution success"},
+                    "on_failure": "stop",
+                }
+            ],
             evidence=[{"kind": "test", "summary": "Success!"}],
             verification={"status": "proposed", "checks": ["test"], "reason": "test execution success"},
             completion={"status": "proposed", "summary": "Success!"},

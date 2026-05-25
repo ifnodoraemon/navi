@@ -60,12 +60,20 @@ class MockProvider:
                         "version": "navi.actuator.v1",
                         "phase": phase,
                         "task_id": task_id,
-                        "actions": [
+                        "plan_id": f"{phase}:{task_id or 'mock'}",
+                        "steps": [
                             {
-                                "tool": "final.answer",
-                                "permission": "read",
-                                "args": {"message": f"Navi received: {last}"},
-                                "target": task_id,
+                                "id": "respond",
+                                "actions": [
+                                    {
+                                        "tool": "final.answer",
+                                        "permission": "read",
+                                        "args": {"message": f"Navi received: {last}"},
+                                        "target": task_id,
+                                    }
+                                ],
+                                "verification": {"checks": [], "reason": "mock provider response"},
+                                "on_failure": "stop",
                             }
                         ],
                         "evidence": [
