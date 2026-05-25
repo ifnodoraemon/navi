@@ -256,6 +256,50 @@ async def test_task_and_watch_delete_capabilities_remove_records(tmp_path):
     assert store.list_watches() == []
 
 
+@pytest.mark.asyncio
+async def test_task_delete_can_cleanup_failed_tasks_by_filter(tmp_path):
+    store = TaskStore(tmp_path)
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    failed_watch = store.create("old watch residue", status="failed", kind="watch", source="watch")
+    failed_manual = store.create("manual failed", status="failed", kind="manual", source="local")
+    queued = store.create("still queued", status="queued", kind="manual", source="local")
+
+    result = await capabilities.invoke(
+        "task.delete",
+        {"source": "watch", "limit": 10},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, source="connector.weixin"),
+    )
+
+    assert result.ok is True
+    assert result.facts["deleted_count"] == 1
+    assert result.facts["deleted_tasks"][0]["task_id"] == failed_watch.id
+    assert store.get(failed_watch.id) is None
+    assert store.get(failed_manual.id) is not None
+    assert store.get(queued.id) is not None
+    logs = store.list_tool_call_logs()
+    assert logs[0].tool == "task.delete"
+    assert logs[0].ok is True
+
+
+@pytest.mark.asyncio
+async def test_remote_task_delete_rejects_non_failed_single_task(tmp_path):
+    store = TaskStore(tmp_path)
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    task = store.create("active remote delete should be blocked", status="queued")
+
+    result = await capabilities.invoke(
+        "task.delete",
+        {"task_id": task.id},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, source="connector.weixin"),
+    )
+
+    assert result.ok is False
+    assert result.message == "remote task.delete can only delete failed task records."
+    assert store.get(task.id) is not None
+
+
 def test_auth_inspector_shape():
     statuses = AuthInspector().status()
 

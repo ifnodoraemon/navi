@@ -280,7 +280,7 @@ async def test_weixin_plain_approval_queues_task(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_weixin_remote_delete_capability_is_not_available(tmp_path, monkeypatch):
+async def test_weixin_remote_delete_rejects_active_task(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     store_provider = ScriptedProvider(
         '{"tool":"task.delete","permission":"write","args":{"task_id":"task-delete-me"},"confidence":0.95,"reason":"delete requested"}'
@@ -302,7 +302,7 @@ async def test_weixin_remote_delete_capability_is_not_available(tmp_path, monkey
 
     assert handled is True
     assert service.active.tasks.get(task.id) is not None
-    assert "capability not found: task.delete" in service.client.sent[-1]["text"]
+    assert "remote task.delete can only delete failed task records" in service.client.sent[-1]["text"]
 
 
 @pytest.mark.asyncio

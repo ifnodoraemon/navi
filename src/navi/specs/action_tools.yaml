@@ -115,14 +115,21 @@
   source: action
 - name: task.delete
   handler: task_delete
-  description: Permanently delete a tracked task and its approvals and execution logs by task id.
+  description: Delete tracked tasks. Use task_id for one explicit task, or status=failed with optional source/kind/limit to clean failed task records without touching active tasks.
   input_schema:
     type: object
     properties:
       task_id:
         type: string
-    required:
-      - task_id
+      status:
+        type: string
+      source:
+        type: string
+      kind:
+        type: string
+      limit:
+        type: integer
+    required: []
   output_schema:
     type: object
   facts_only: false

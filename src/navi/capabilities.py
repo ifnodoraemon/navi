@@ -532,15 +532,18 @@ class TaskDeleteCapability:
     ) -> CapabilityResult:
         task_id = _arg_text(args, "task_id")
         if not task_id:
+            return self._delete_by_filter(args)
+        tasks = TaskStore(self.home)
+        graph = GraphStore(self.home)
+        task = tasks.get(task_id)
+        if task is not None and _remote_source(context.source) and task.status != "failed":
             return CapabilityResult(
                 ok=False,
                 action="task",
-                observation="task.delete requires task_id.",
-                message="task.delete requires task_id.",
+                observation="remote task.delete can only delete failed task records.",
+                message="remote task.delete can only delete failed task records.",
                 terminal=True,
             )
-        tasks = TaskStore(self.home)
-        graph = GraphStore(self.home)
         deleted = tasks.delete_task(task_id)
         if deleted is None:
             return CapabilityResult(
@@ -560,6 +563,52 @@ class TaskDeleteCapability:
                 "status": deleted.status,
             },
             task_id=deleted.id,
+        )
+
+    def _delete_by_filter(self, args: dict[str, Any]) -> CapabilityResult:
+        status = _arg_text(args, "status") or "failed"
+        if status != "failed":
+            return CapabilityResult(
+                ok=False,
+                action="task",
+                observation="task.delete bulk cleanup only supports status=failed.",
+                message="task.delete bulk cleanup only supports status=failed.",
+                terminal=True,
+            )
+        limit = _positive_int(args.get("limit"), default=50, maximum=500)
+        source = _arg_text(args, "source")
+        kind = _arg_text(args, "kind")
+        tasks = TaskStore(self.home)
+        graph = GraphStore(self.home)
+        candidates = [
+            task
+            for task in tasks.list_by_status("failed", limit=limit)
+            if (not source or task.source == source) and (not kind or task.kind == kind)
+        ]
+        deleted = []
+        for task in candidates:
+            removed = tasks.delete_task(task.id)
+            if removed is None:
+                continue
+            graph.delete(removed.id)
+            deleted.append(
+                {
+                    "task_id": removed.id,
+                    "title": removed.title,
+                    "source": removed.source,
+                    "kind": removed.kind,
+                    "updated_at": removed.updated_at,
+                }
+            )
+        return _fact_result(
+            "task",
+            {
+                "deleted_count": len(deleted),
+                "deleted_tasks": deleted,
+                "status_filter": "failed",
+                "source_filter": source,
+                "kind_filter": kind,
+            },
         )
 
 
@@ -786,6 +835,18 @@ def _fact_result(action: str, facts: dict[str, Any], *, task_id: str = "") -> Ca
 def _arg_text(args: dict[str, Any], key: str) -> str:
     value = args.get(key)
     return str(value).strip() if value is not None else ""
+
+
+def _positive_int(value: Any, *, default: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(parsed, maximum))
+
+
+def _remote_source(source: str) -> bool:
+    return source.startswith("connector.") or source in {"weixin", "telegram"}
 
 
 def _resolve_workspace(workspace: str) -> str:

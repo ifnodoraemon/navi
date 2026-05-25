@@ -18,6 +18,7 @@ CONNECTOR_ALLOWED_TOOLS = frozenset(
         "task.queue",
         "watch.create",
         "approval.resolve",
+        "task.delete",
         "provider.config",
         "service.status",
         "task.status",
