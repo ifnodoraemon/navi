@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -146,7 +147,9 @@ def _execution_protocol_instruction(phase: str) -> str:
         "`task.record`, `approval.request`, `approval.resolve`, `watch.create`, `task.delete`, and `watch.delete`. "
         "Do not describe an action that is not a capability call. "
         "Include `evidence` only as proposed context; Navi will replace it with actual capability results. "
-        "`verification` must state the checks you expect from those capability calls. "
+        "`verification.checks` must state expected checks. Supported object checks: "
+        "`{\"type\":\"file.exists\",\"path\":\"...\"}`, `{\"type\":\"file.contains\",\"path\":\"...\",\"text\":\"...\"}`, "
+        "`{\"type\":\"git.diff\",\"expected\":\"changed|clean\"}`, and `{\"type\":\"test.passed\"}`. "
         "`completion` may include a proposed summary, but final success is decided by capability execution."
     )
 
@@ -256,6 +259,13 @@ class ActuatorRunner:
                 )
             )
 
+        verification_evidence, verification_failures = _verify_protocol_checks(
+            protocol.verification.get("checks"),
+            evidence=evidence,
+            workspace=Path(task.workspace or Path.cwd()),
+        )
+        evidence.extend(verification_evidence)
+        failures.extend(verification_failures)
         completed = not failures
         summary = _actuator_summary(evidence, fallback=protocol.summary, failures=failures)
         return ExecutionProtocol(
@@ -266,10 +276,11 @@ class ActuatorRunner:
             evidence=evidence,
             verification={
                 "status": "verified" if completed else "failed",
-                "checks": [f"capability:{item.get('tool') or 'missing'}" for item in evidence],
-                "reason": "all protocol actions executed through CapabilityRegistry"
+                "checks": [f"capability:{item.get('tool') or 'missing'}" for item in evidence if item.get("kind") == "capability_result"]
+                + [item.get("check", "") for item in verification_evidence],
+                "reason": "all protocol actions and verification checks passed"
                 if completed
-                else "one or more protocol actions failed capability execution",
+                else "one or more protocol actions or verification checks failed",
             },
             completion={
                 "status": "completed" if completed else "failed",
@@ -304,6 +315,132 @@ def _capability_evidence(
         "facts": facts or {},
         "error": error,
     }
+
+
+def _verify_protocol_checks(
+    checks: Any,
+    *,
+    evidence: list[dict[str, Any]],
+    workspace: Path,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if not isinstance(checks, list):
+        return [], []
+    results: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for index, check in enumerate(checks):
+        if not isinstance(check, dict):
+            continue
+        result = _run_verification_check(index=index, check=check, evidence=evidence, workspace=workspace)
+        results.append(result)
+        if not result["ok"]:
+            failures.append(str(result["error"] or f"verification check failed: {result['check']}"))
+    return results, failures
+
+
+def _run_verification_check(
+    *,
+    index: int,
+    check: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    workspace: Path,
+) -> dict[str, Any]:
+    check_type = str(check.get("type") or "").strip()
+    if check_type == "file.exists":
+        path, error = _verified_workspace_path(check.get("path"), workspace=workspace)
+        ok = bool(path and path.exists() and path.is_file())
+        return _verification_evidence(index, check_type, ok=ok, facts={"path": str(path) if path else ""}, error=error or ("" if ok else "file does not exist"))
+    if check_type == "file.contains":
+        path, error = _verified_workspace_path(check.get("path"), workspace=workspace)
+        expected = str(check.get("text") or "")
+        content = ""
+        if path and path.exists() and path.is_file():
+            try:
+                content = path.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                error = str(exc)
+        ok = bool(path and expected and expected in content and not error)
+        return _verification_evidence(
+            index,
+            check_type,
+            ok=ok,
+            facts={"path": str(path) if path else "", "text_present": expected in content if expected else False},
+            error=error or ("" if ok else "expected text not found"),
+        )
+    if check_type == "git.diff":
+        expected = str(check.get("expected") or "changed").strip().lower()
+        status = _git_porcelain_status(workspace)
+        changed = bool(status["stdout"].strip())
+        ok = (expected == "changed" and changed) or (expected == "clean" and not changed)
+        return _verification_evidence(
+            index,
+            check_type,
+            ok=ok and status["exit_code"] == 0,
+            facts={"expected": expected, "changed": changed, **status},
+            error=status["stderr"] or ("" if ok else f"git diff expectation not met: {expected}"),
+        )
+    if check_type == "test.passed":
+        test_results = [item for item in evidence if item.get("tool") == "test.run"]
+        ok = bool(test_results) and bool(test_results[-1].get("ok"))
+        return _verification_evidence(
+            index,
+            check_type,
+            ok=ok,
+            facts={"test_result_count": len(test_results)},
+            error="" if ok else "no passing test.run result found",
+        )
+    return _verification_evidence(index, check_type or "unknown", ok=False, error=f"unsupported verification check: {check_type or 'missing'}")
+
+
+def _verification_evidence(
+    index: int,
+    check: str,
+    *,
+    ok: bool,
+    facts: dict[str, Any] | None = None,
+    error: str = "",
+) -> dict[str, Any]:
+    return {
+        "kind": "verification_result",
+        "check_index": index,
+        "check": check,
+        "ok": ok,
+        "facts": facts or {},
+        "error": error,
+    }
+
+
+def _verified_workspace_path(value: Any, *, workspace: Path) -> tuple[Path | None, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None, "path is required"
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = workspace / path
+    try:
+        resolved = path.resolve().absolute()
+        root = workspace.resolve().absolute()
+    except OSError as exc:
+        return None, str(exc)
+    if resolved != root and root not in resolved.parents:
+        return None, "path must be within the workspace"
+    return resolved, ""
+
+
+def _git_porcelain_status(workspace: Path) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=workspace,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except OSError as exc:
+        return {"stdout": "", "stderr": str(exc), "exit_code": 127}
+    except subprocess.TimeoutExpired:
+        return {"stdout": "", "stderr": "git status timed out", "exit_code": 124}
+    return {"stdout": result.stdout[:12000], "stderr": result.stderr.strip()[:12000], "exit_code": result.returncode}
 
 
 def _actuator_summary(evidence: list[dict[str, Any]], *, fallback: str, failures: list[str]) -> str:

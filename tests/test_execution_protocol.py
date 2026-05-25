@@ -137,7 +137,14 @@ async def test_protocol_actions_execute_local_file_actuators(tmp_path):
                         {"tool": "file.read", "permission": "read", "args": {"path": "notes/result.txt"}},
                     ],
                     "evidence": [{"kind": "model_plan", "summary": "write then read"}],
-                    "verification": {"status": "proposed", "checks": ["file.read"], "reason": "read back file"},
+                    "verification": {
+                        "status": "proposed",
+                        "checks": [
+                            {"type": "file.exists", "path": "notes/result.txt"},
+                            {"type": "file.contains", "path": "notes/result.txt", "text": "actuated"},
+                        ],
+                        "reason": "read back file",
+                    },
                     "completion": {"status": "proposed", "summary": "file updated"},
                 }
             }
@@ -152,5 +159,54 @@ async def test_protocol_actions_execute_local_file_actuators(tmp_path):
     assert (tmp_path / "notes" / "result.txt").read_text(encoding="utf-8") == "actuated"
     protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
     recorded = json.loads(protocol_log.stdout)
-    assert [item["tool"] for item in recorded["evidence"]] == ["file.write", "file.read"]
-    assert recorded["evidence"][1]["facts"]["content"] == "actuated"
+    capability = [item for item in recorded["evidence"] if item["kind"] == "capability_result"]
+    assert [item["tool"] for item in capability] == ["file.write", "file.read"]
+    assert capability[1]["facts"]["content"] == "actuated"
+    verification = [item for item in recorded["evidence"] if item["kind"] == "verification_result"]
+    assert [item["check"] for item in verification] == ["file.exists", "file.contains"]
+    assert all(item["ok"] for item in verification)
+
+
+@pytest.mark.asyncio
+async def test_verifier_policy_can_fail_after_successful_capability_actions(tmp_path):
+    tasks = TaskStore(tmp_path)
+    task = tasks.create("Verifier task", prompt="write wrong content", workspace=str(tmp_path))
+    provider = ScriptedProvider(
+        json.dumps(
+            {
+                "navi_execution": {
+                    "version": EXECUTION_PROTOCOL_VERSION,
+                    "phase": "execute",
+                    "task_id": task.id,
+                    "actions": [
+                        {
+                            "tool": "file.write",
+                            "permission": "write",
+                            "args": {"path": "notes/result.txt", "content": "actual", "create_dirs": True},
+                        }
+                    ],
+                    "evidence": [{"kind": "model_plan", "summary": "write wrong content"}],
+                    "verification": {
+                        "status": "proposed",
+                        "checks": [{"type": "file.contains", "path": "notes/result.txt", "text": "expected"}],
+                        "reason": "expected artifact content",
+                    },
+                    "completion": {"status": "proposed", "summary": "file updated"},
+                }
+            }
+        )
+    )
+    execution = ExecutionService(tmp_path)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    updated = await execution.execute_task(task)
+
+    assert updated.status == "failed"
+    assert updated.result_summary == "expected text not found"
+    protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
+    recorded = json.loads(protocol_log.stdout)
+    assert recorded["completion"]["status"] == "failed"
+    assert recorded["verification"]["status"] == "failed"
+    verification = [item for item in recorded["evidence"] if item["kind"] == "verification_result"]
+    assert verification[0]["check"] == "file.contains"
+    assert verification[0]["ok"] is False

@@ -254,7 +254,7 @@ Known gaps:
 - Weixin typing indicators are not implemented.
 - Remote connector tool visibility is allowlisted; richer per-sender/per-surface policy configuration is still future work.
 - MCP servers are not connected yet; Tool Gateway is ready for an MCP provider. Action/control and gateway tools are exposed through the unified capability registry.
-- Execution protocol actions are capability-backed. Initial local actuators include project-scoped `file.read`, `file.write`, `shell.run`, and `test.run`; richer verification and remote policy controls are still needed before exposing mutating actuators to connectors.
+- Execution protocol actions are capability-backed. Initial local actuators include project-scoped `file.read`, `file.write`, `shell.run`, and `test.run`; verifier policy can check expected files, file contents, git status, and test results before marking execution complete. Richer remote policy controls are still needed before exposing mutating actuators to connectors.
 - Web UI is intentionally minimal.
 
 ## Next Implementation Steps
@@ -264,7 +264,7 @@ Recommended next order:
 1. Run a live `navi connectors setup weixin` against iLink and adjust QR/status response parsing.
 2. Run `navi connectors run weixin` with a test DM and adjust `getupdates`/`sendmessage` payload parsing.
 3. Add structured logging and visible diagnostics for Weixin connection states.
-4. Add stronger verification policies that can compare expected artifacts, test results, and git diffs before marking execution complete.
+4. Add richer verifier policies for structured diffs, command-specific assertions, and rollback hints.
 5. Add a remote-safe tool policy before enabling shell/file-write tools from Weixin.
 6. Improve local Web to show sessions, Weixin status, memory, and task list.
 7. Add text chunking for long Weixin responses.
