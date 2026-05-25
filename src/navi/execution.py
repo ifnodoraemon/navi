@@ -3,16 +3,125 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .config import load_config
 from .governance import GovernanceEngine
 from .evolution import EvolutionLedger
+from .json_utils import parse_first_json_object
 from .provider import ChatMessage, ModelPool, build_provider
 from .tasks import Task, TaskStore
 
 INTERNAL_EXECUTION_PROVIDER = "navi"
+EXECUTION_PROTOCOL_VERSION = "navi.actuator.v1"
+
+
+@dataclass(frozen=True)
+class ExecutionProtocol:
+    version: str = EXECUTION_PROTOCOL_VERSION
+    phase: str = ""
+    task_id: str = ""
+    actions: list[dict[str, Any]] = field(default_factory=list)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    verification: dict[str, Any] = field(default_factory=dict)
+    completion: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def summary(self) -> str:
+        summary = str(self.completion.get("summary") or "").strip()
+        return summary[:1600]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "phase": self.phase,
+            "task_id": self.task_id,
+            "actions": self.actions,
+            "evidence": self.evidence,
+            "verification": self.verification,
+            "completion": self.completion,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True)
+
+    @classmethod
+    def from_model_output(cls, *, task_id: str, phase: str, text: str, exit_code: int) -> "ExecutionProtocol":
+        parsed = parse_first_json_object(text)
+        payload = parsed.get("navi_execution") if isinstance(parsed, dict) and isinstance(parsed.get("navi_execution"), dict) else parsed
+        if isinstance(payload, dict):
+            actions = _dict_list(payload.get("actions"))
+            evidence = _dict_list(payload.get("evidence"))
+            verification = payload.get("verification") if isinstance(payload.get("verification"), dict) else {}
+            completion = payload.get("completion") if isinstance(payload.get("completion"), dict) else {}
+            if not completion.get("summary"):
+                completion = {**completion, "summary": _text_summary(text, exit_code=exit_code, phase=phase)}
+            return cls(
+                version=str(payload.get("version") or EXECUTION_PROTOCOL_VERSION),
+                phase=str(payload.get("phase") or phase),
+                task_id=str(payload.get("task_id") or task_id),
+                actions=actions,
+                evidence=evidence,
+                verification=verification,
+                completion=completion,
+            )
+        return cls.fallback(task_id=task_id, phase=phase, text=text, exit_code=exit_code)
+
+    @classmethod
+    def fallback(cls, *, task_id: str, phase: str, text: str, exit_code: int) -> "ExecutionProtocol":
+        summary = _text_summary(text, exit_code=exit_code, phase=phase)
+        return cls(
+            phase=phase,
+            task_id=task_id,
+            actions=[
+                {
+                    "kind": "model_response",
+                    "target": task_id,
+                    "status": "completed" if exit_code == 0 else "failed",
+                    "summary": summary,
+                }
+            ],
+            evidence=[
+                {
+                    "kind": "model_output",
+                    "summary": summary,
+                }
+            ],
+            verification={
+                "status": "unverified",
+                "checks": [],
+                "reason": "provider returned free-form text instead of structured execution protocol",
+            },
+            completion={
+                "status": "completed" if exit_code == 0 else "failed",
+                "summary": summary,
+            },
+        )
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value[:20] if isinstance(item, dict)]
+
+
+def _text_summary(text: str, *, exit_code: int, phase: str) -> str:
+    stripped = (text or "").strip()
+    if stripped:
+        return stripped[:1600]
+    return f"{phase} exited with {exit_code}"
+
+
+def _execution_protocol_instruction(phase: str) -> str:
+    return (
+        "Return one JSON object with key `navi_execution`. "
+        f"`navi_execution.phase` must be `{phase}` and `version` must be `{EXECUTION_PROTOCOL_VERSION}`. "
+        "Include `actions` as concrete attempted actions, `evidence` as observable facts or artifacts, "
+        "`verification` with status/checks/reason, and `completion` with status and summary. "
+        "If no local mutation was performed, say so in actions and verification."
+    )
 
 
 @dataclass(frozen=True)
@@ -25,9 +134,12 @@ class ExecutionResult:
     exit_code: int
     started_at: float
     ended_at: float
+    protocol: ExecutionProtocol = field(default_factory=ExecutionProtocol)
 
     @property
     def summary(self) -> str:
+        if self.protocol.summary:
+            return self.protocol.summary
         text = (self.stdout or self.stderr).strip()
         return text[:1600] if text else f"{self.phase} exited with {self.exit_code}"
 
@@ -50,7 +162,8 @@ class NaviExecutionProvider:
             ChatMessage(
                 "system",
                 "You are Navi running a scheduled watch. Complete the scheduled request directly. "
-                "Do not create a task, ask for approval, or mention external execution tools.",
+                "Do not create a task, ask for approval, or mention external execution tools. "
+                + _execution_protocol_instruction("watch"),
             ),
             ChatMessage(
                 "user",
@@ -69,9 +182,10 @@ class NaviExecutionProvider:
                 self.provider.complete_for("notification", messages),
                 timeout=self.timeout_seconds,
             )
-            return ExecutionResult(
-                provider=INTERNAL_EXECUTION_PROVIDER,
+            return self._result(
+                task_id="",
                 phase="watch",
+                provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", "watch"],
                 stdout=stdout,
                 stderr="",
@@ -80,9 +194,10 @@ class NaviExecutionProvider:
                 ended_at=time.time(),
             )
         except asyncio.TimeoutError:
-            return ExecutionResult(
-                provider=INTERNAL_EXECUTION_PROVIDER,
+            return self._result(
+                task_id="",
                 phase="watch",
+                provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", "watch"],
                 stdout="",
                 stderr=f"navi watch timed out after {self.timeout_seconds} seconds",
@@ -91,9 +206,10 @@ class NaviExecutionProvider:
                 ended_at=time.time(),
             )
         except Exception as exc:
-            return ExecutionResult(
-                provider=INTERNAL_EXECUTION_PROVIDER,
+            return self._result(
+                task_id="",
                 phase="watch",
+                provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", "watch"],
                 stdout="",
                 stderr=str(exc),
@@ -116,9 +232,10 @@ class NaviExecutionProvider:
                 self.provider.complete_for(role, messages),
                 timeout=self.timeout_seconds,
             )
-            return ExecutionResult(
-                provider=INTERNAL_EXECUTION_PROVIDER,
+            return self._result(
+                task_id=task.id,
                 phase=phase,
+                provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", phase, task.id],
                 stdout=stdout,
                 stderr="",
@@ -127,9 +244,10 @@ class NaviExecutionProvider:
                 ended_at=time.time(),
             )
         except asyncio.TimeoutError:
-            return ExecutionResult(
-                provider=INTERNAL_EXECUTION_PROVIDER,
+            return self._result(
+                task_id=task.id,
                 phase=phase,
+                provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", phase, task.id],
                 stdout="",
                 stderr=f"navi {phase} timed out after {self.timeout_seconds} seconds",
@@ -138,9 +256,10 @@ class NaviExecutionProvider:
                 ended_at=time.time(),
             )
         except Exception as exc:
-            return ExecutionResult(
-                provider=INTERNAL_EXECUTION_PROVIDER,
+            return self._result(
+                task_id=task.id,
                 phase=phase,
+                provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", phase, task.id],
                 stdout="",
                 stderr=str(exc),
@@ -150,13 +269,45 @@ class NaviExecutionProvider:
             )
 
     @staticmethod
+    def _result(
+        *,
+        task_id: str,
+        provider: str,
+        phase: str,
+        command: list[str],
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+        started_at: float,
+        ended_at: float,
+    ) -> ExecutionResult:
+        protocol_text = stdout if stdout else stderr
+        return ExecutionResult(
+            provider=provider,
+            phase=phase,
+            command=command,
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            started_at=started_at,
+            ended_at=ended_at,
+            protocol=ExecutionProtocol.from_model_output(
+                task_id=task_id,
+                phase=phase,
+                text=protocol_text,
+                exit_code=exit_code,
+            ),
+        )
+
+    @staticmethod
     def _prepare_messages(task: Task) -> list[ChatMessage]:
         return [
             ChatMessage(
                 "system",
                 "You are Navi's internal preparation pass. Produce concise preparation facts: "
                 "intent, risk, expected actions, affected local areas, and whether user approval is required. "
-                "Do not call external CLI agents or claim files were changed.",
+                "Do not call external CLI agents or claim files were changed. "
+                + _execution_protocol_instruction("prepare"),
             ),
             ChatMessage(
                 "user",
@@ -176,7 +327,8 @@ class NaviExecutionProvider:
                 "system",
                 "You are Navi's internal execution pass. Complete the approved task using Navi's own reasoning "
                 "and available task context. Do not call external CLI agents. If the task requires OS mutation "
-                "that this internal pass cannot perform, say exactly what remains unperformed.",
+                "that this internal pass cannot perform, say exactly what remains unperformed. "
+                + _execution_protocol_instruction("execute"),
             ),
             ChatMessage(
                 "user",
@@ -201,6 +353,7 @@ class NaviExecutionProvider:
             exit_code=0,
             started_at=now,
             ended_at=now,
+            protocol=ExecutionProtocol.fallback(task_id=task.id, phase=phase, text=text, exit_code=0),
         )
 
 
@@ -306,6 +459,14 @@ class ExecutionService:
         return self.governance.execution_allowed(task)
 
     def _log(self, task: Task, result: ExecutionResult) -> None:
+        protocol = result.protocol
+        if not protocol.phase or not protocol.task_id:
+            protocol = ExecutionProtocol.from_model_output(
+                task_id=task.id,
+                phase=result.phase,
+                text=result.stdout or result.stderr,
+                exit_code=result.exit_code,
+            )
         self.tasks.add_execution_log(
             task_id=task.id,
             provider=result.provider,
@@ -313,6 +474,17 @@ class ExecutionService:
             command=" ".join(result.command),
             stdout=result.stdout,
             stderr=result.stderr,
+            exit_code=result.exit_code,
+            started_at=result.started_at,
+            ended_at=result.ended_at,
+        )
+        self.tasks.add_execution_log(
+            task_id=task.id,
+            provider=result.provider,
+            phase=f"{result.phase}_protocol",
+            command=" ".join(["navi", "protocol", result.phase, task.id]),
+            stdout=protocol.to_json(),
+            stderr="",
             exit_code=result.exit_code,
             started_at=result.started_at,
             ended_at=result.ended_at,
@@ -346,4 +518,10 @@ class ExecutionService:
                 exit_code=124,
                 started_at=started,
                 ended_at=time.time(),
+                protocol=ExecutionProtocol.fallback(
+                    task_id=task.id,
+                    phase=phase,
+                    text=f"navi {phase} timed out after {self.config.timeout_seconds} seconds",
+                    exit_code=124,
+                ),
             )
