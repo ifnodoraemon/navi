@@ -571,12 +571,15 @@ class ApprovalResolveCapability:
         trust = TrustStore(self.home)
         approval = self._resolve(governance, code=code, task_id=task_id, sender_id=context.sender_id, status=status)
         if approval is None:
+            facts = tasks.approval_resolution_diagnostic(code=code, task_id=task_id, sender_id=context.sender_id)
+            message = _approval_resolution_failure_message(facts)
             return CapabilityResult(
                 ok=False,
                 action="approval",
-                observation="Approval not found for this sender.",
-                message="Approval not found for this sender.",
+                observation=message,
+                message=message,
                 terminal=True,
+                facts={"approval_resolution": facts},
             )
         if approval.status == "expired":
             return CapabilityResult(
@@ -617,6 +620,20 @@ class ApprovalResolveCapability:
         if task_id:
             return governance.resolve_task(task_id=task_id, sender_id=sender_id, status=status)
         return None
+
+
+def _approval_resolution_failure_message(facts: dict[str, Any]) -> str:
+    reason = str(facts.get("reason") or "")
+    messages = {
+        "approval_code_not_found": "Approval code was not found.",
+        "sender_mismatch": "Approval exists but belongs to a different sender.",
+        "approval_not_pending": f"Approval is not pending; current status is {facts.get('status') or 'unknown'}.",
+        "approval_expired": "Approval is expired. Create a new approval request.",
+        "task_not_found": "Task was not found for approval resolution.",
+        "task_has_no_approval": "Task has no approval request.",
+        "approval_identifier_missing": "approval.resolve requires code or task_id.",
+    }
+    return messages.get(reason, "Approval could not be resolved.")
 
 
 class ExecutionRetryCapability:

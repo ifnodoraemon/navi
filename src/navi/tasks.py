@@ -499,6 +499,51 @@ class TaskStore:
             ).fetchone()
         return Approval(*row) if row else None
 
+    def approval_resolution_diagnostic(self, *, code: str = "", task_id: str = "", sender_id: str = "") -> dict:
+        now = time.time()
+        if code:
+            approval = self.get_approval(code)
+            if approval is None:
+                return {"reason": "approval_code_not_found", "code_present": False}
+            facts = _approval_diagnostic_facts(approval, now=now, sender_id=sender_id)
+            if sender_id and approval.sender_id != sender_id:
+                return facts | {"reason": "sender_mismatch"}
+            if approval.status != "pending":
+                return facts | {"reason": "approval_not_pending"}
+            if approval.expires_at < now:
+                return facts | {"reason": "approval_expired"}
+            return facts | {"reason": "approval_pending"}
+        if task_id:
+            task = self.get(task_id)
+            approvals = self._approvals_for_task(task_id)
+            if task is None:
+                return {"reason": "task_not_found", "task_id": task_id, "approval_count": len(approvals)}
+            if not approvals:
+                return {"reason": "task_has_no_approval", "task_id": task_id, "task_status": task.status, "approval_count": 0}
+            pending = [approval for approval in approvals if approval.status == "pending"]
+            if sender_id:
+                sender_pending = [approval for approval in pending if approval.sender_id == sender_id]
+                if sender_pending:
+                    latest = sender_pending[0]
+                    return _approval_diagnostic_facts(latest, now=now, sender_id=sender_id) | {
+                        "reason": "approval_expired" if latest.expires_at < now else "approval_pending",
+                    }
+                if pending:
+                    latest = pending[0]
+                    return _approval_diagnostic_facts(latest, now=now, sender_id=sender_id) | {
+                        "reason": "sender_mismatch",
+                        "task_status": task.status,
+                        "approval_count": len(approvals),
+                    }
+            latest = approvals[0]
+            reason = "approval_expired" if latest.status == "pending" and latest.expires_at < now else "approval_not_pending"
+            return _approval_diagnostic_facts(latest, now=now, sender_id=sender_id) | {
+                "reason": reason,
+                "task_status": task.status,
+                "approval_count": len(approvals),
+            }
+        return {"reason": "approval_identifier_missing"}
+
     def list_approvals(self, *, limit: int = 50) -> list[Approval]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
@@ -508,6 +553,19 @@ class TaskStore:
                 FROM approvals ORDER BY updated_at DESC LIMIT ?
                 """,
                 (limit,),
+            ).fetchall()
+        return [Approval(*row) for row in rows]
+
+    def _approvals_for_task(self, task_id: str) -> list[Approval]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, task_id, code, action, peer_id, sender_id, status,
+                       expires_at, created_at, updated_at
+                FROM approvals WHERE task_id = ?
+                ORDER BY created_at DESC
+                """,
+                (task_id,),
             ).fetchall()
         return [Approval(*row) for row in rows]
 
@@ -747,3 +805,17 @@ class TaskStore:
     @staticmethod
     def _new_code() -> str:
         return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _approval_diagnostic_facts(approval: Approval, *, now: float, sender_id: str = "") -> dict:
+    return {
+        "approval_id": approval.id,
+        "task_id": approval.task_id,
+        "code_present": bool(approval.code),
+        "action": approval.action,
+        "status": approval.status,
+        "sender_matches": not sender_id or approval.sender_id == sender_id,
+        "is_expired": approval.expires_at < now,
+        "expires_at": approval.expires_at,
+        "updated_at": approval.updated_at,
+    }

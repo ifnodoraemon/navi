@@ -135,6 +135,64 @@ async def test_task_lifecycle_can_be_model_selected_step_by_step(tmp_path, monke
 
 
 @pytest.mark.asyncio
+async def test_approval_resolve_reports_missing_task_approval(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    task = TaskStore(tmp_path).create("orphan task", status="preparing")
+
+    result = await capabilities.invoke(
+        "approval.resolve",
+        {"decision": "reject", "task_id": task.id},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, sender_id="sender"),
+    )
+
+    assert result.ok is False
+    assert result.message == "Task has no approval request."
+    assert result.facts["approval_resolution"]["reason"] == "task_has_no_approval"
+    assert result.facts["approval_resolution"]["task_status"] == "preparing"
+
+
+@pytest.mark.asyncio
+async def test_approval_resolve_reports_sender_mismatch(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    store = TaskStore(tmp_path)
+    task = store.create("owned task")
+    approval = store.create_approval(task_id=task.id, peer_id="peer", sender_id="owner")
+
+    result = await capabilities.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": approval.code},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, sender_id="other"),
+    )
+
+    assert result.ok is False
+    assert result.message == "Approval exists but belongs to a different sender."
+    assert result.facts["approval_resolution"]["reason"] == "sender_mismatch"
+    assert result.facts["approval_resolution"]["sender_matches"] is False
+
+
+@pytest.mark.asyncio
+async def test_approval_resolve_reports_consumed_approval(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    store = TaskStore(tmp_path)
+    task = store.create("approved task")
+    approval = store.create_approval(task_id=task.id, peer_id="peer", sender_id="sender")
+    store.resolve_approval(approval.code, "sender", "approved")
+
+    result = await capabilities.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": approval.code},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, sender_id="sender"),
+    )
+
+    assert result.ok is False
+    assert result.message == "Approval is not pending; current status is approved."
+    assert result.facts["approval_resolution"]["reason"] == "approval_not_pending"
+
+
+@pytest.mark.asyncio
 async def test_watch_capability_creates_cron_watch(tmp_path):
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
 
