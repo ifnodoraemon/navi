@@ -62,10 +62,10 @@ class MockProvider:
                         "task_id": task_id,
                         "actions": [
                             {
-                                "kind": "mock_execution",
+                                "tool": "final.answer",
+                                "permission": "read",
+                                "args": {"message": f"Navi received: {last}"},
                                 "target": task_id,
-                                "status": "completed",
-                                "summary": f"Navi received: {last}",
                             }
                         ],
                         "evidence": [

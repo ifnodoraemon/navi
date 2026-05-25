@@ -21,13 +21,16 @@ class ScriptedProvider:
 
 @pytest.mark.asyncio
 async def test_execution_uses_structured_actuator_protocol(tmp_path):
+    tasks = TaskStore(tmp_path)
+    task = tasks.create("Protocol task", prompt="summarize local state", workspace=str(tmp_path))
     protocol = {
         "navi_execution": {
             "version": EXECUTION_PROTOCOL_VERSION,
             "phase": "execute",
+            "task_id": task.id,
             "actions": [
-                {"kind": "inspect", "target": "task_context", "status": "completed"},
-                {"kind": "mutation", "target": "none", "status": "not_performed"},
+                {"tool": "provider.config", "permission": "read", "args": {}},
+                {"tool": "final.answer", "permission": "read", "args": {"message": "Answered with explicit evidence."}},
             ],
             "evidence": [{"kind": "observation", "summary": "No filesystem mutation was available to this pass."}],
             "verification": {"status": "verified", "checks": ["context reviewed"], "reason": "no actuator mutation needed"},
@@ -35,8 +38,6 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
         }
     }
     provider = ScriptedProvider(json.dumps(protocol))
-    tasks = TaskStore(tmp_path)
-    task = tasks.create("Protocol task", prompt="summarize local state", workspace=str(tmp_path))
     execution = ExecutionService(tmp_path)
     execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
 
@@ -56,7 +57,10 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
     assert recorded["version"] == EXECUTION_PROTOCOL_VERSION
     assert recorded["phase"] == "execute"
     assert recorded["task_id"] == task.id
-    assert recorded["actions"][1]["status"] == "not_performed"
+    assert recorded["actions"][0]["status"] == "completed"
+    assert recorded["actions"][1]["status"] == "completed"
+    assert recorded["evidence"][0]["kind"] == "capability_result"
+    assert recorded["evidence"][0]["tool"] == "provider.config"
     assert recorded["verification"]["status"] == "verified"
 
 
@@ -78,3 +82,36 @@ async def test_free_form_execution_output_fails_required_protocol(tmp_path):
     assert recorded["completion"]["status"] == "failed"
     assert recorded["verification"]["reason"] == "provider output violated the required execution protocol"
     assert recorded["actions"][0]["kind"] == "execution_error"
+
+
+@pytest.mark.asyncio
+async def test_protocol_actions_must_be_capability_calls(tmp_path):
+    tasks = TaskStore(tmp_path)
+    task = tasks.create("Actuator task", prompt="inspect without a tool", workspace=str(tmp_path))
+    provider = ScriptedProvider(
+        json.dumps(
+            {
+                "navi_execution": {
+                    "version": EXECUTION_PROTOCOL_VERSION,
+                    "phase": "execute",
+                    "task_id": task.id,
+                    "actions": [{"kind": "inspect", "target": "task_context"}],
+                    "evidence": [{"kind": "model_claim", "summary": "I inspected context."}],
+                    "verification": {"status": "proposed", "checks": ["context"], "reason": "model claim"},
+                    "completion": {"status": "proposed", "summary": "done"},
+                }
+            }
+        )
+    )
+    execution = ExecutionService(tmp_path)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    updated = await execution.execute_task(task)
+
+    assert updated.status == "failed"
+    assert updated.result_summary == "action 1 missing capability tool"
+    protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
+    recorded = json.loads(protocol_log.stdout)
+    assert recorded["completion"]["status"] == "failed"
+    assert recorded["evidence"][0]["kind"] == "capability_result"
+    assert recorded["evidence"][0]["ok"] is False

@@ -16,6 +16,7 @@ from .tasks import Task, TaskStore
 
 INTERNAL_EXECUTION_PROVIDER = "navi"
 EXECUTION_PROTOCOL_VERSION = "navi.actuator.v1"
+ACTUATOR_DISABLED_TOOLS = frozenset({"task.prepare", "task.queue", "execution.retry"})
 
 
 @dataclass(frozen=True)
@@ -139,9 +140,13 @@ def _execution_protocol_instruction(phase: str) -> str:
     return (
         "Return one JSON object with key `navi_execution`. "
         f"`navi_execution.phase` must be `{phase}` and `version` must be `{EXECUTION_PROTOCOL_VERSION}`. "
-        "Include `actions` as concrete attempted actions, `evidence` as observable facts or artifacts, "
-        "`verification` with status/checks/reason, and `completion` with status and summary. "
-        "If no local mutation was performed, say so in actions and verification."
+        "Each `actions` entry must be a capability call object with `tool`, `permission`, and `args`; "
+        "examples include `final.answer`, `provider.config`, `filesystem.list`, `git.status`, `task.status`, "
+        "`task.record`, `approval.request`, `approval.resolve`, `watch.create`, `task.delete`, and `watch.delete`. "
+        "Do not describe an action that is not a capability call. "
+        "Include `evidence` only as proposed context; Navi will replace it with actual capability results. "
+        "`verification` must state the checks you expect from those capability calls. "
+        "`completion` may include a proposed summary, but final success is decided by capability execution."
     )
 
 
@@ -163,6 +168,153 @@ class ExecutionResult:
             return self.protocol.summary
         text = (self.stdout or self.stderr).strip()
         return text[:1600] if text else f"{self.phase} exited with {self.exit_code}"
+
+
+class ActuatorRunner:
+    def __init__(self, *, home: Path):
+        self.home = home
+
+    async def run_task(self, task: Task, result: ExecutionResult) -> ExecutionResult:
+        protocol = await self._execute_protocol_actions(task, result.protocol)
+        exit_code = 0 if protocol.completion.get("status") == "completed" else 1
+        return ExecutionResult(
+            provider=result.provider,
+            phase=result.phase,
+            command=[*result.command, "--actuated"],
+            stdout=result.stdout,
+            stderr="" if exit_code == 0 else protocol.summary,
+            exit_code=exit_code,
+            started_at=result.started_at,
+            ended_at=time.time(),
+            protocol=protocol,
+        )
+
+    async def _execute_protocol_actions(self, task: Task, protocol: ExecutionProtocol) -> ExecutionProtocol:
+        from .capabilities import CapabilityContext, CapabilityRegistry
+
+        registry = CapabilityRegistry(
+            home=self.home,
+            project_dir=Path(task.workspace or Path.cwd()),
+            disabled_tools=set(ACTUATOR_DISABLED_TOOLS),
+            permission_ceiling="write",
+        )
+        context = CapabilityContext(
+            home=self.home,
+            peer_id=task.peer_id,
+            sender_id=task.sender_id,
+            source=task.source,
+            permission_ceiling="write",
+            workspace=task.workspace,
+        )
+        acted_actions: list[dict[str, Any]] = []
+        evidence: list[dict[str, Any]] = []
+        failures: list[str] = []
+
+        for index, action in enumerate(protocol.actions):
+            tool = str(action.get("tool") or "").strip()
+            permission = str(action.get("permission") or "read").strip() or "read"
+            args = action.get("args") if isinstance(action.get("args"), dict) else {}
+            if not tool:
+                message = f"action {index + 1} missing capability tool"
+                failures.append(message)
+                acted_actions.append(
+                    {
+                        **action,
+                        "status": "failed",
+                        "error": message,
+                    }
+                )
+                evidence.append(_capability_evidence(index=index, tool="", ok=False, error=message))
+                continue
+
+            result = await registry.invoke(tool, args, permission=permission, context=context)
+            if not result.ok:
+                failures.append(result.message or result.observation or f"{tool} failed")
+            acted_actions.append(
+                {
+                    **action,
+                    "tool": tool,
+                    "permission": permission,
+                    "args": args,
+                    "status": "completed" if result.ok else "failed",
+                    "observation": result.observation,
+                    "terminal": result.terminal,
+                }
+            )
+            evidence.append(
+                _capability_evidence(
+                    index=index,
+                    tool=tool,
+                    ok=result.ok,
+                    action=result.action,
+                    observation=result.observation,
+                    message=result.message,
+                    task_id=result.task_id,
+                    terminal=result.terminal,
+                    facts=result.facts or {},
+                )
+            )
+
+        completed = not failures
+        summary = _actuator_summary(evidence, fallback=protocol.summary, failures=failures)
+        return ExecutionProtocol(
+            version=protocol.version,
+            phase=protocol.phase,
+            task_id=protocol.task_id,
+            actions=acted_actions,
+            evidence=evidence,
+            verification={
+                "status": "verified" if completed else "failed",
+                "checks": [f"capability:{item.get('tool') or 'missing'}" for item in evidence],
+                "reason": "all protocol actions executed through CapabilityRegistry"
+                if completed
+                else "one or more protocol actions failed capability execution",
+            },
+            completion={
+                "status": "completed" if completed else "failed",
+                "summary": summary,
+            },
+        )
+
+
+def _capability_evidence(
+    *,
+    index: int,
+    tool: str,
+    ok: bool,
+    action: str = "",
+    observation: str = "",
+    message: str = "",
+    task_id: str = "",
+    terminal: bool = False,
+    facts: dict[str, Any] | None = None,
+    error: str = "",
+) -> dict[str, Any]:
+    return {
+        "kind": "capability_result",
+        "action_index": index,
+        "tool": tool,
+        "ok": ok,
+        "action": action,
+        "observation": observation[:1600],
+        "message": message[:1600],
+        "task_id": task_id,
+        "terminal": terminal,
+        "facts": facts or {},
+        "error": error,
+    }
+
+
+def _actuator_summary(evidence: list[dict[str, Any]], *, fallback: str, failures: list[str]) -> str:
+    if failures:
+        return failures[0][:1600]
+    for item in evidence:
+        if item.get("message"):
+            return str(item["message"])[:1600]
+    for item in evidence:
+        if item.get("observation"):
+            return str(item["observation"])[:1600]
+    return fallback[:1600] if fallback else "all protocol actions executed"
 
 
 class NaviExecutionProvider:
@@ -388,13 +540,19 @@ class NaviExecutionProvider:
             exit_code=0,
             started_at=now,
             ended_at=now,
-            protocol=ExecutionProtocol.internal_status(
+            protocol=ExecutionProtocol(
                 task_id=task.id,
                 phase=phase,
-                status="completed",
-                summary=text,
-                reason="execution mock mode",
-                action_kind="mock_execution",
+                actions=[
+                    {
+                        "tool": "final.answer",
+                        "permission": "read",
+                        "args": {"message": text},
+                    }
+                ],
+                evidence=[{"kind": "mock_provider", "summary": text}],
+                verification={"status": "proposed", "checks": ["mock provider response"], "reason": "execution mock mode"},
+                completion={"status": "proposed", "summary": text},
             ),
         )
 
@@ -407,6 +565,7 @@ class ExecutionService:
         self.tasks = TaskStore(home)
         self.governance = GovernanceEngine(home)
         self.ledger = EvolutionLedger(home)
+        self.actuator = ActuatorRunner(home=home)
         self.provider = NaviExecutionProvider(
             provider=build_provider(config.model),
             timeout_seconds=self.config.timeout_seconds,
@@ -415,6 +574,8 @@ class ExecutionService:
     async def plan_task(self, task: Task) -> Task:
         self.tasks.update_task(task.id, status="preparing")
         result = await self._provider_call_with_timeout(task, "prepare")
+        if result.exit_code == 0:
+            result = await self.actuator.run_task(task, result)
         self._log(task, result)
         status = "prepared" if result.exit_code == 0 else "failed"
         return self.tasks.update_task(
@@ -439,6 +600,8 @@ class ExecutionService:
         self.tasks.update_task(task.id, status="running")
 
         result = await self._provider_call_with_timeout(task, "execute")
+        if result.exit_code == 0:
+            result = await self.actuator.run_task(task, result)
         self._log(task, result)
         
         status = "completed" if result.exit_code == 0 else "failed"

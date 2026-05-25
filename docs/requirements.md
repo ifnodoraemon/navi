@@ -240,7 +240,7 @@ Implemented:
 - Mock and OpenAI-compatible provider shape.
 - Bounded agent loop for observe/plan/read-tool chaining before final response.
 - Tool Gateway abstraction with provider sources, refresh, filtering, and audit logs.
-- Internal execution requires the structured `navi.actuator.v1` protocol with actions, evidence, verification, and completion summary; free-form execution output is treated as a failed execution.
+- Internal execution requires the structured `navi.actuator.v1` protocol. Protocol actions must be capability calls (`tool`, `permission`, `args`), are executed through `CapabilityRegistry`, and produce actual capability-result evidence; free-form execution output or non-capability actions are failed executions.
 - Local memory, session, and task stores.
 - Skill discovery.
 - Connector registry plus Weixin account store, context-token store, deduplication, policy checks, mock client, HTTP client skeleton, and inbound-to-agent service flow.
@@ -254,7 +254,7 @@ Known gaps:
 - Weixin typing indicators are not implemented.
 - Remote connector tool visibility is allowlisted; richer per-sender/per-surface policy configuration is still future work.
 - MCP servers are not connected yet; Tool Gateway is ready for an MCP provider. Action/control and gateway tools are exposed through the unified capability registry.
-- Execution protocol actions are recorded as evidence, but more local actuators still need to be implemented as capability-backed operations instead of model-declared actions.
+- Execution protocol actions are capability-backed, but more local actuator capabilities are still needed for file edits, shell/test execution, and richer verification.
 - Web UI is intentionally minimal.
 
 ## Next Implementation Steps
@@ -264,7 +264,7 @@ Recommended next order:
 1. Run a live `navi connectors setup weixin` against iLink and adjust QR/status response parsing.
 2. Run `navi connectors run weixin` with a test DM and adjust `getupdates`/`sendmessage` payload parsing.
 3. Add structured logging and visible diagnostics for Weixin connection states.
-4. Add capability-backed local actuators with typed evidence, then bind execution protocol actions to those actuator results.
+4. Add remote-safe file/shell/test actuator capabilities with typed evidence and approval-aware policy.
 5. Add a remote-safe tool policy before enabling shell/file-write tools from Weixin.
 6. Improve local Web to show sessions, Weixin status, memory, and task list.
 7. Add text chunking for long Weixin responses.

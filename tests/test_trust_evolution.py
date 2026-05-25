@@ -359,13 +359,13 @@ async def test_self_healing_retry_accumulation(tmp_path):
         provider="mock", phase="execute", command=["python", "run.py"],
         stdout="Success!", stderr="", exit_code=0,
         started_at=time.time(), ended_at=time.time(),
-        protocol=ExecutionProtocol.internal_status(
+        protocol=ExecutionProtocol(
             task_id=task.id,
             phase="execute",
-            status="completed",
-            summary="Success!",
-            reason="test execution success",
-            action_kind="test_execution",
+            actions=[{"tool": "final.answer", "permission": "read", "args": {"message": "Success!"}}],
+            evidence=[{"kind": "test", "summary": "Success!"}],
+            verification={"status": "proposed", "checks": ["test"], "reason": "test execution success"},
+            completion={"status": "proposed", "summary": "Success!"},
         ),
     )
     
