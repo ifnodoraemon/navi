@@ -74,6 +74,58 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_watch_protocol_empty_model_evidence_is_actuated_and_logged(tmp_path):
+    protocol = {
+        "navi_execution": {
+            "version": EXECUTION_PROTOCOL_VERSION,
+            "phase": "watch",
+            "task_id": "",
+            "plan_id": "watch-answer",
+            "steps": [
+                {
+                    "id": "notify",
+                    "actions": [
+                        {
+                            "tool": "final.answer",
+                            "permission": "read",
+                            "args": {"message": "今晚的通识知识：证据由 Navi actuator 生成。"},
+                        }
+                    ],
+                    "verification": {"checks": [], "reason": "scheduled notification"},
+                    "on_failure": "stop",
+                }
+            ],
+            "evidence": [],
+            "verification": {"status": "proposed", "checks": [], "reason": "model proposed"},
+            "completion": {"status": "proposed", "summary": "今晚的通识知识"},
+        }
+    }
+    provider = ScriptedProvider(json.dumps(protocol))
+    execution = ExecutionService(tmp_path)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    result = await execution.run_watch(
+        prompt="每天晚上8点讲解通识知识",
+        source="watch",
+        peer_id="peer",
+        sender_id="sender",
+        workspace=str(tmp_path),
+    )
+
+    assert result.exit_code == 0
+    assert result.summary == "今晚的通识知识：证据由 Navi actuator 生成。"
+    capability = [item for item in result.protocol.evidence if item["kind"] == "capability_result"]
+    assert capability[0]["tool"] == "final.answer"
+    assert result.protocol.verification["status"] == "verified"
+    logs = TaskStore(tmp_path).list_execution_logs()
+    assert {log.phase for log in logs} == {"watch", "watch_protocol"}
+    protocol_log = next(log for log in logs if log.phase == "watch_protocol")
+    recorded = json.loads(protocol_log.stdout)
+    assert recorded["phase"] == "watch"
+    assert recorded["evidence"]
+
+
+@pytest.mark.asyncio
 async def test_free_form_execution_output_fails_required_protocol(tmp_path):
     provider = ScriptedProvider("Plain execution response")
     tasks = TaskStore(tmp_path)

@@ -76,7 +76,7 @@ class ExecutionProtocol:
         if task_id and payload_task_id != task_id:
             raise ValueError("execution protocol task_id does not match task")
         steps = _required_steps(payload)
-        evidence = _required_dict_list(payload, "evidence")
+        evidence = _optional_dict_list(payload, "evidence")
         verification = _required_dict(payload, "verification")
         completion = _required_dict(payload, "completion")
         if not str(completion.get("summary") or "").strip():
@@ -151,6 +151,18 @@ def _required_dict_list(payload: dict[str, Any], key: str) -> list[dict[str, Any
     value = payload.get(key)
     if not isinstance(value, list) or not value:
         raise ValueError(f"execution protocol {key} must be a non-empty list")
+    items = value[:20]
+    if not all(isinstance(item, dict) for item in items):
+        raise ValueError(f"execution protocol {key} entries must be objects")
+    return items
+
+
+def _optional_dict_list(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    value = payload.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"execution protocol {key} must be a list")
     items = value[:20]
     if not all(isinstance(item, dict) for item in items):
         raise ValueError(f"execution protocol {key} entries must be objects")
@@ -956,13 +968,31 @@ class ExecutionService:
         return updated_task
 
     async def run_watch(self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str = "") -> ExecutionResult:
-        return await self.provider.run_watch(
+        watch_task = Task(
+            id="",
+            title=prompt[:120],
+            status="running",
+            created_at=time.time(),
+            updated_at=time.time(),
+            kind="watch",
+            prompt=prompt,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            provider=self.config.provider,
+            workspace=workspace,
+        )
+        result = await self.provider.run_watch(
             prompt=prompt,
             source=source,
             peer_id=peer_id,
             sender_id=sender_id,
             workspace=workspace,
         )
+        if result.exit_code == 0:
+            result = await self.actuator.run_task(watch_task, result)
+        self._log(watch_task, result)
+        return result
 
     async def process_pending_once(self, *, limit: int = 3) -> list[Task]:
         completed: list[Task] = []
