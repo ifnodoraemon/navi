@@ -64,6 +64,12 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
 
     store.add_event(
         trace_id="budget",
+        phase="agent.role_result",
+        model_role="responder",
+        message="responder synthesized response",
+    )
+    store.add_event(
+        trace_id="budget",
         phase="turn.final",
         message="Warning: Step budget limit reached",
     )
@@ -108,6 +114,7 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
     assert runtime_eval.failure_domain == "runtime"
     assert budget_eval.outcome == "degraded"
     assert budget_eval.failure_domain == "planning_budget"
+    assert json.loads(budget_eval.evidence_json)["agent_role_results"][0]["model_role"] == "responder"
     assert completion_eval.outcome == "failure"
     assert completion_eval.failure_domain == "completion_verifier"
     completion_evidence = json.loads(completion_eval.evidence_json)

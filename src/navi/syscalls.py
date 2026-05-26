@@ -5,6 +5,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .agent_roles import list_agent_role_names, list_agent_role_specs
 from .provider import ChatMessage, ModelPool
 from .spec_loader import load_spec
 from .tools import ToolSpec
@@ -35,7 +36,13 @@ class ModelSyscallPlanner:
         permission_ceiling: str = "write",
         model_roles: list[str] | None = None,
     ) -> ModelSyscall:
-        model_roles = model_roles or ["default", "planner", "responder", "notification"]
+        model_roles = model_roles or list_agent_role_names(["default", "planner", "responder", "notification"])
+        role_names = set(model_roles)
+        role_contracts = [
+            spec.to_prompt_dict()
+            for spec in list_agent_role_specs(model_roles)
+            if spec.name in role_names
+        ]
         user_parts = []
         if conversation_context.strip():
             user_parts.extend((
@@ -60,6 +67,8 @@ class ModelSyscallPlanner:
                 f"Permission ceiling: {permission_ceiling}",
                 "Available model roles:",
                 json.dumps(model_roles, ensure_ascii=False),
+                "Available model role contracts:",
+                json.dumps(role_contracts, ensure_ascii=False),
                 "Available tools:",
                 json.dumps([asdict(tool) for tool in tools], ensure_ascii=False),
             )

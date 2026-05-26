@@ -184,6 +184,12 @@ class TraceStore:
         failure_domain = "none"
         recommendation = "No optimization indicated from this trace."
         evidence: dict[str, Any] = {"event_count": len(events)}
+        role_events = [event for event in events if event.phase == "agent.role_result"]
+        if role_events:
+            evidence["agent_role_results"] = [
+                {"model_role": event.model_role, "message": event.message}
+                for event in role_events
+            ]
 
         first_failure = next((event for event in events if not event.ok), None)
         if first_failure:

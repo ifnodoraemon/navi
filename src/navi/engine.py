@@ -232,6 +232,10 @@ class HernessEngine:
                 text,
                 observations,
                 session_id=resolved_session_id,
+                trace_id=trace_id,
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
                 action=last_result.action if last_result else "capability",
                 task_id=last_result.task_id if last_result else "",
                 model_role=last_result.model_role if last_result else "responder",
@@ -443,6 +447,10 @@ class HernessEngine:
         observations: list[str],
         *,
         session_id: str | None,
+        trace_id: str,
+        source: str,
+        peer_id: str,
+        sender_id: str,
         action: str,
         task_id: str = "",
         model_role: str = "responder",
@@ -489,6 +497,20 @@ class HernessEngine:
             )
         )
         answer = await self.runtime.complete(messages, role=model_role)
+        self.trace.add_event(
+            trace_id=trace_id,
+            phase="agent.role_result",
+            session_id=session_id,
+            task_id=task_id,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            model_role=model_role,
+            ok=True,
+            input_data={"observations_count": len(observations), "action": action},
+            output_data={"response_chars": len(answer), "budget_exhausted": budget_exhausted},
+            message=f"{model_role} synthesized response",
+        )
         if pending_approval_prompt and not self._text_mentions_pending_approval(
             answer,
             pending_approval_prompt,

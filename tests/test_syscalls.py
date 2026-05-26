@@ -49,6 +49,9 @@ async def test_model_syscall_planner_asks_when_schedule_time_is_vague(tmp_path):
     assert "Permission ceiling: write" in provider.messages[1].content
     assert "<user_message>" in provider.messages[1].content
     assert "Available model roles:" in provider.messages[1].content
+    assert "Available model role contracts:" in provider.messages[1].content
+    assert "critic" in provider.messages[1].content
+    assert "executor" in provider.messages[1].content
     assert "Available tools:" in provider.messages[1].content
     assert "clarify.ask" in provider.messages[1].content
 

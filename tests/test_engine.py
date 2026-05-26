@@ -90,6 +90,10 @@ async def test_engine_budget_exhausted_with_observations(tmp_path):
     assert result.terminal is True
     assert "(注意：已达到步骤预算上限，任务可能未完成。)" in result.text
     assert "Warning: Step budget limit reached" in result.text
+    events = router.trace.list_events(result.trace_id)
+    role_events = [event for event in events if event.phase == "agent.role_result"]
+    assert role_events
+    assert role_events[0].model_role == "responder"
 
 
 @pytest.mark.asyncio
