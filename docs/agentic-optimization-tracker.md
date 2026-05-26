@@ -21,3 +21,17 @@ This tracker converts the current architecture review into incremental work. Che
 | [x] | A15 | P0 | trace evaluation | Add full-flow turn tracing and trace-level evaluation for optimization attribution. | Prompt, tool, memory, skill, provider, or policy optimizations can be chosen from recorded evidence instead of guesses. | `src/navi/trace.py`, `src/navi/engine.py`, `tests/test_engine.py` |
 | [x] | A16 | P0 | coverage | Raise test and eval coverage for new agentic surfaces toward complete coverage. | Every exposed planner tool has an eval case; trace, evolution, API, and CLI paths have direct regression coverage. | eval loader, eval dataset, regression tests |
 | [x] | A17 | P0 | compatibility removal | Remove historical compatibility paths and legacy combined task capability. | Current code starts from the declared agentic schema only: no old DB migration, no old Python support shim, no combined task workflow tool. | task store, memory store, action manifest, tests |
+
+## Second-Round Agentic Gaps
+
+These items came from real connector/watch usage after the first architecture pass. They focus on whether Navi behaves agentically in customer journeys, not only whether individual modules are shaped correctly.
+
+| Status | ID | Priority | Area | Optimization | Target Outcome | Primary Files |
+| --- | --- | --- | --- | --- | --- | --- |
+| [x] | A18 | P0 | completion verifier | Guard turn completion against pending tasks and partial cleanup. | The agent cannot report completion when a recorded task is still pending/prepared or failed-task cleanup left remaining records. | `src/navi/engine.py`, `src/navi/capabilities.py`, `tests/test_engine.py` |
+| [x] | A19 | P0 | watch execution | Run scheduled watches through the same actuator evidence path as tasks. | Watch output is backed by capability evidence and execution logs instead of model-proposed evidence. | `src/navi/execution.py`, `tests/test_execution_protocol.py` |
+| [x] | A20 | P0 | customer journey coverage | Add connector-level customer journeys for task cleanup and scheduled watch delivery. | Tests exercise IM entry, session state, task/watch DB, daemon background work, message send, execution logs, and verifier evidence together. | `tests/test_customer_journeys.py` |
+| [x] | A21 | P1 | trace attribution | Teach trace evaluation to classify completion-verifier failures and false-completion risk. | Trace evidence points to goal/completion policy gaps instead of only broad runtime/tool categories. | `src/navi/trace.py`, `tests/test_trace.py` |
+| [ ] | A22 | P0 | goal lifecycle | Add a first-class goal run that can continue across turns/background ticks until verified complete, blocked, or awaiting approval. | Navi can pursue user goals beyond a single message loop with durable state, progress evidence, and explicit stop conditions. | goal store, engine, daemon, verifier tests |
+| [ ] | A23 | P1 | recovery planner | Make failed verifier outcomes produce explicit recovery choices such as retry, alternate capability, ask user, or rollback proposal. | Failure handling becomes an observable agent decision instead of a hand-coded local branch or one-off answer. | execution, action tools, trace/evolution tests |
+| [ ] | A24 | P2 | multi-agent readiness | Define when planner/critic/executor split is needed and how sub-agent results become auditable evidence. | Multi-agent evolution is introduced only where parallel critique or specialization improves verified outcomes. | architecture docs, provider roles, trace schema |

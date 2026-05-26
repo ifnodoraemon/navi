@@ -197,6 +197,12 @@ class TraceStore:
             elif first_failure.phase == "capability.result":
                 failure_domain = "tool_or_capability"
                 recommendation = "Review the selected tool spec, arguments, and implementation result."
+            elif first_failure.phase == "completion.verify":
+                failure_domain = "completion_verifier"
+                recommendation = (
+                    "Review goal completion criteria and planner follow-up policy; the model tried to finish before "
+                    "the observed state satisfied the task."
+                )
             else:
                 failure_domain = "runtime"
                 recommendation = "Review runtime policy and orchestration around the failing phase."
@@ -204,6 +210,14 @@ class TraceStore:
             outcome = "degraded"
             failure_domain = "planning_budget"
             recommendation = "Review planner prompt, step budget, and whether tools need more compact observations."
+        elif _has_unverified_pending_task_completion(events):
+            outcome = "degraded"
+            failure_domain = "completion_verifier_gap"
+            recommendation = (
+                "A tracked task was only recorded or prepared before the turn finished. Tighten completion verification "
+                "or extend the agent loop to continue through preparation, approval request, or queueing."
+            )
+            evidence["pending_task_completion_risk"] = True
         elif not events:
             outcome = "unknown"
             failure_domain = "trace_missing"
@@ -270,3 +284,25 @@ def _redact(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact(item) for item in value]
     return value
+
+
+def _has_unverified_pending_task_completion(events: list[TraceEvent]) -> bool:
+    if any(event.phase == "completion.verify" for event in events):
+        return False
+    final_event = next((event for event in reversed(events) if event.phase == "turn.final"), None)
+    if final_event is None:
+        return False
+    for event in events:
+        if event.phase != "capability.result" or event.tool != "task.record" or not event.ok:
+            continue
+        try:
+            output = json.loads(event.output_json)
+        except json.JSONDecodeError:
+            continue
+        facts = output.get("facts")
+        if not isinstance(facts, dict):
+            continue
+        status = str(facts.get("status") or "")
+        if status in {"pending", "prepared"}:
+            return True
+    return False

@@ -69,6 +69,30 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
     )
     budget_eval = store.evaluate_trace("budget")
 
+    store.add_event(
+        trace_id="completion-verify",
+        phase="completion.verify",
+        ok=False,
+        tool="final.answer",
+        message="task is still pending",
+    )
+    completion_eval = store.evaluate_trace("completion-verify")
+
+    store.add_event(
+        trace_id="pending-risk",
+        phase="capability.result",
+        ok=True,
+        tool="task.record",
+        output_data={"facts": {"task_id": "task-1", "status": "pending"}},
+    )
+    store.add_event(
+        trace_id="pending-risk",
+        phase="turn.final",
+        ok=True,
+        message="done",
+    )
+    pending_eval = store.evaluate_trace("pending-risk")
+
     missing_eval = store.evaluate_trace("missing")
 
     assert planner_eval.outcome == "failure"
@@ -78,5 +102,10 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
     assert runtime_eval.failure_domain == "runtime"
     assert budget_eval.outcome == "degraded"
     assert budget_eval.failure_domain == "planning_budget"
+    assert completion_eval.outcome == "failure"
+    assert completion_eval.failure_domain == "completion_verifier"
+    assert pending_eval.outcome == "degraded"
+    assert pending_eval.failure_domain == "completion_verifier_gap"
+    assert json.loads(pending_eval.evidence_json)["pending_task_completion_risk"] is True
     assert missing_eval.outcome == "unknown"
     assert missing_eval.failure_domain == "trace_missing"
