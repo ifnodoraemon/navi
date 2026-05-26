@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .connector_registry import load_connector_adapters
-from .tasks import TaskStore
+from .runs import RunStore
 
 
 logger = logging.getLogger(__name__)
@@ -202,7 +202,7 @@ class ToolRegistry:
 
     def _audit_call(self, args: dict[str, Any], result: ToolResult) -> None:
         try:
-            TaskStore(self.home).add_tool_call_log(
+            RunStore(self.home).add_tool_call_log(
                 tool=result.tool,
                 args_json=json.dumps(args, ensure_ascii=False, sort_keys=True),
                 ok=result.ok,

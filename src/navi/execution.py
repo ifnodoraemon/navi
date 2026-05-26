@@ -14,11 +14,11 @@ from .evolution import EvolutionLedger
 from .goals import GoalStore
 from .json_utils import parse_first_json_object
 from .provider import ChatMessage, ModelPool, build_provider
-from .tasks import Task, TaskStore
+from .runs import Run, RunStore
 
 INTERNAL_EXECUTION_PROVIDER = "navi"
 EXECUTION_PROTOCOL_VERSION = "navi.actuator.v1"
-ACTUATOR_DISABLED_TOOLS = frozenset({"task.prepare", "task.queue", "execution.retry"})
+ACTUATOR_DISABLED_TOOLS = frozenset({"delegate.prepare", "delegate.run", "delegate.retry"})
 EXECUTION_STEP_BUDGET = 5
 
 
@@ -26,7 +26,7 @@ EXECUTION_STEP_BUDGET = 5
 class ExecutionProtocol:
     version: str = EXECUTION_PROTOCOL_VERSION
     phase: str = ""
-    task_id: str = ""
+    run_id: str = ""
     plan_id: str = ""
     steps: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[dict[str, Any]] = field(default_factory=list)
@@ -50,7 +50,7 @@ class ExecutionProtocol:
         return {
             "version": self.version,
             "phase": self.phase,
-            "task_id": self.task_id,
+            "run_id": self.run_id,
             "plan_id": self.plan_id,
             "steps": self.steps,
             "evidence": self.evidence,
@@ -62,7 +62,7 @@ class ExecutionProtocol:
         return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True)
 
     @classmethod
-    def from_model_output(cls, *, task_id: str, phase: str, text: str) -> "ExecutionProtocol":
+    def from_model_output(cls, *, run_id: str, phase: str, text: str) -> "ExecutionProtocol":
         parsed = parse_first_json_object(text)
         if not isinstance(parsed, dict) or not isinstance(parsed.get("navi_execution"), dict):
             raise ValueError("execution protocol missing navi_execution object")
@@ -73,9 +73,9 @@ class ExecutionProtocol:
         payload_phase = str(payload.get("phase") or "")
         if payload_phase != phase:
             raise ValueError(f"execution protocol phase must be {phase}")
-        payload_task_id = str(payload.get("task_id") or task_id)
-        if task_id and payload_task_id != task_id:
-            raise ValueError("execution protocol task_id does not match task")
+        payload_run_id = str(payload.get("run_id") or run_id)
+        if run_id and payload_run_id != run_id:
+            raise ValueError("execution protocol run_id does not match task")
         steps = _required_steps(payload)
         evidence = _optional_dict_list(payload, "evidence")
         verification = _required_dict(payload, "verification")
@@ -85,8 +85,8 @@ class ExecutionProtocol:
         return cls(
             version=version,
             phase=payload_phase,
-            task_id=payload_task_id,
-            plan_id=str(payload.get("plan_id") or f"{phase}:{payload_task_id or 'watch'}"),
+            run_id=payload_run_id,
+            plan_id=str(payload.get("plan_id") or f"{phase}:{payload_run_id or 'watch'}"),
             steps=steps,
             evidence=evidence,
             verification=verification,
@@ -97,7 +97,7 @@ class ExecutionProtocol:
     def internal_status(
         cls,
         *,
-        task_id: str,
+        run_id: str,
         phase: str,
         status: str,
         summary: str,
@@ -106,15 +106,15 @@ class ExecutionProtocol:
     ) -> "ExecutionProtocol":
         return cls(
             phase=phase,
-            task_id=task_id,
-            plan_id=f"{phase}:{task_id or 'internal'}",
+            run_id=run_id,
+            plan_id=f"{phase}:{run_id or 'internal'}",
             steps=[
                 {
                     "id": "internal",
                     "actions": [
                         {
                             "kind": action_kind,
-                            "target": task_id,
+                            "target": run_id,
                             "status": status,
                             "summary": summary,
                         }
@@ -204,8 +204,8 @@ def _execution_protocol_instruction(phase: str) -> str:
         "Each step must include `actions`, `verification`, and optional `on_failure` (`stop`, `continue`, or `retry_once`). "
         "Each step action must be a capability call object with `tool`, `permission`, and `args`; "
         "examples include `final.answer`, `provider.config`, `filesystem.list`, `file.read`, `file.write`, "
-        "`shell.run`, `test.run`, `git.status`, `task.status`, "
-        "`task.record`, `approval.request`, `approval.resolve`, `watch.create`, `task.delete`, and `watch.delete`. "
+        "`shell.run`, `test.run`, `git.status`, `delegate.status`, "
+        "`delegate.spawn`, `approval.request`, `approval.resolve`, `watch.create`, `delegate.delete`, and `watch.delete`. "
         "Do not describe an action that is not a capability call. "
         "Include `evidence` only as proposed context; Navi will replace it with actual capability results. "
         "Each step `verification.checks` must state expected checks. Supported object checks: "
@@ -239,7 +239,7 @@ class ActuatorRunner:
     def __init__(self, *, home: Path):
         self.home = home
 
-    async def run_task(self, task: Task, result: ExecutionResult) -> ExecutionResult:
+    async def run_task(self, task: Run, result: ExecutionResult) -> ExecutionResult:
         workspace = Path(task.workspace or Path.cwd())
         before_state = _workspace_state(workspace, label="before")
         protocol = await self._execute_protocol_actions(task, result.protocol, before_state=before_state)
@@ -258,7 +258,7 @@ class ActuatorRunner:
 
     async def _execute_protocol_actions(
         self,
-        task: Task,
+        task: Run,
         protocol: ExecutionProtocol,
         *,
         before_state: dict[str, Any],
@@ -329,7 +329,7 @@ class ActuatorRunner:
         return ExecutionProtocol(
             version=protocol.version,
             phase=protocol.phase,
-            task_id=protocol.task_id,
+            run_id=protocol.run_id,
             plan_id=protocol.plan_id,
             steps=acted_steps,
             evidence=evidence,
@@ -395,7 +395,7 @@ class ActuatorRunner:
                     action=result.action,
                     observation=result.observation,
                     message=result.message,
-                    task_id=result.task_id,
+                    run_id=result.run_id,
                     terminal=result.terminal,
                     facts=result.facts or {},
                     attempt=attempt,
@@ -431,7 +431,7 @@ def _capability_evidence(
     action: str = "",
     observation: str = "",
     message: str = "",
-    task_id: str = "",
+    run_id: str = "",
     terminal: bool = False,
     facts: dict[str, Any] | None = None,
     error: str = "",
@@ -447,7 +447,7 @@ def _capability_evidence(
         "action": action,
         "observation": observation[:1600],
         "message": message[:1600],
-        "task_id": task_id,
+        "run_id": run_id,
         "terminal": terminal,
         "facts": facts or {},
         "error": error,
@@ -651,10 +651,10 @@ class NaviExecutionProvider:
         self.provider = provider
         self.timeout_seconds = timeout_seconds
 
-    async def plan(self, task: Task) -> ExecutionResult:
+    async def plan(self, task: Run) -> ExecutionResult:
         return await self._complete_task(task, phase="prepare", role="planner", messages=self._prepare_messages(task))
 
-    async def execute(self, task: Task) -> ExecutionResult:
+    async def execute(self, task: Run) -> ExecutionResult:
         return await self._complete_task(task, phase="execute", role="responder", messages=self._execute_messages(task))
 
     async def run_watch(self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str = "") -> ExecutionResult:
@@ -683,7 +683,7 @@ class NaviExecutionProvider:
                 timeout=self.timeout_seconds,
             )
             return self._result(
-                task_id="",
+                run_id="",
                 phase="watch",
                 provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", "watch"],
@@ -695,7 +695,7 @@ class NaviExecutionProvider:
             )
         except asyncio.TimeoutError:
             return self._result(
-                task_id="",
+                run_id="",
                 phase="watch",
                 provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", "watch"],
@@ -707,7 +707,7 @@ class NaviExecutionProvider:
             )
         except Exception as exc:
             return self._result(
-                task_id="",
+                run_id="",
                 phase="watch",
                 provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", "watch"],
@@ -720,7 +720,7 @@ class NaviExecutionProvider:
 
     async def _complete_task(
         self,
-        task: Task,
+        task: Run,
         *,
         phase: str,
         role: str,
@@ -733,7 +733,7 @@ class NaviExecutionProvider:
                 timeout=self.timeout_seconds,
             )
             return self._result(
-                task_id=task.id,
+                run_id=task.id,
                 phase=phase,
                 provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", phase, task.id],
@@ -745,7 +745,7 @@ class NaviExecutionProvider:
             )
         except asyncio.TimeoutError:
             return self._result(
-                task_id=task.id,
+                run_id=task.id,
                 phase=phase,
                 provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", phase, task.id],
@@ -757,7 +757,7 @@ class NaviExecutionProvider:
             )
         except Exception as exc:
             return self._result(
-                task_id=task.id,
+                run_id=task.id,
                 phase=phase,
                 provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "internal", phase, task.id],
@@ -771,7 +771,7 @@ class NaviExecutionProvider:
     @staticmethod
     def _result(
         *,
-        task_id: str,
+        run_id: str,
         provider: str,
         phase: str,
         command: list[str],
@@ -786,7 +786,7 @@ class NaviExecutionProvider:
         result_exit_code = exit_code
         try:
             protocol = ExecutionProtocol.from_model_output(
-                task_id=task_id,
+                run_id=run_id,
                 phase=phase,
                 text=protocol_text,
             )
@@ -794,7 +794,7 @@ class NaviExecutionProvider:
             result_exit_code = 1
             result_stderr = str(exc)
             protocol = ExecutionProtocol.internal_status(
-                task_id=task_id,
+                run_id=run_id,
                 phase=phase,
                 status="failed",
                 summary=str(exc),
@@ -814,7 +814,7 @@ class NaviExecutionProvider:
         )
 
     @staticmethod
-    def _prepare_messages(task: Task) -> list[ChatMessage]:
+    def _prepare_messages(task: Run) -> list[ChatMessage]:
         return [
             ChatMessage(
                 "system",
@@ -826,16 +826,16 @@ class NaviExecutionProvider:
             ChatMessage(
                 "user",
                 (
-                    f"Task id: {task.id}\n"
+                    f"Run id: {task.id}\n"
                     f"Workspace: {task.workspace or str(Path.home())}\n"
                     f"Autonomy level: {task.autonomy_level}\n\n"
-                    f"Task:\n{task.prompt}"
+                    f"Run:\n{task.prompt}"
                 ),
             ),
         ]
 
     @staticmethod
-    def _execute_messages(task: Task) -> list[ChatMessage]:
+    def _execute_messages(task: Run) -> list[ChatMessage]:
         return [
             ChatMessage(
                 "system",
@@ -847,16 +847,16 @@ class NaviExecutionProvider:
             ChatMessage(
                 "user",
                 (
-                    f"Task id: {task.id}\n"
+                    f"Run id: {task.id}\n"
                     f"Workspace: {task.workspace or str(Path.home())}\n"
                     f"Preparation summary:\n{task.plan_summary or '(none)'}\n\n"
-                    f"Task:\n{task.prompt}"
+                    f"Run:\n{task.prompt}"
                 ),
             ),
         ]
 
     @staticmethod
-    def mock_result(task: Task, phase: str, text: str) -> ExecutionResult:
+    def mock_result(task: Run, phase: str, text: str) -> ExecutionResult:
         now = time.time()
         return ExecutionResult(
             provider=INTERNAL_EXECUTION_PROVIDER,
@@ -868,7 +868,7 @@ class NaviExecutionProvider:
             started_at=now,
             ended_at=now,
             protocol=ExecutionProtocol(
-                task_id=task.id,
+                run_id=task.id,
                 phase=phase,
                 plan_id=f"{phase}:{task.id}",
                 steps=[
@@ -897,7 +897,7 @@ class ExecutionService:
         self.home = home
         config = load_config(home)
         self.config = config.execution
-        self.tasks = TaskStore(home)
+        self.runs = RunStore(home)
         self.governance = GovernanceEngine(home)
         self.ledger = EvolutionLedger(home)
         self.actuator = ActuatorRunner(home=home)
@@ -906,25 +906,25 @@ class ExecutionService:
             timeout_seconds=self.config.timeout_seconds,
         )
 
-    async def plan_task(self, task: Task) -> Task:
-        self.tasks.update_task(task.id, status="preparing")
+    async def plan_task(self, task: Run) -> Run:
+        self.runs.update_run(task.id, status="preparing")
         result = await self._provider_call_with_timeout(task, "prepare")
         if result.exit_code == 0:
             result = await self.actuator.run_task(task, result)
         self._log(task, result)
         status = "prepared" if result.exit_code == 0 else "failed"
-        updated = self.tasks.update_task(
+        updated = self.runs.update_run(
             task.id,
             status=status,
             plan_summary=result.summary,
             error="" if result.exit_code == 0 else result.stderr,
         ) or task
-        GoalStore(self.home).update_for_task(updated, evidence={"task_id": updated.id, "task_status": updated.status, "phase": "prepare"})
+        GoalStore(self.home).update_for_run(updated, evidence={"run_id": updated.id, "run_status": updated.status, "phase": "prepare"})
         return updated
 
-    async def execute_task(self, task: Task) -> Task:
+    async def execute_task(self, task: Run) -> Run:
         # Record before state for rollback support
-        task_before = self.tasks.get(task.id)
+        task_before = self.runs.get(task.id)
         before_state = json.dumps(
             {
                 "status": task_before.status if task_before else "queued",
@@ -934,7 +934,7 @@ class ExecutionService:
             sort_keys=True
         )
 
-        self.tasks.update_task(task.id, status="running")
+        self.runs.update_run(task.id, status="running")
 
         result = await self._provider_call_with_timeout(task, "execute")
         if result.exit_code == 0:
@@ -942,7 +942,7 @@ class ExecutionService:
         self._log(task, result)
         
         status = "completed" if result.exit_code == 0 else "failed"
-        updated_task = self.tasks.update_task(
+        updated_task = self.runs.update_run(
             task.id,
             status=status,
             result_summary=result.summary,
@@ -960,22 +960,22 @@ class ExecutionService:
         )
         
         self.ledger.record(
-            task_id=task.id,
-            target_type="task_execution",
+            run_id=task.id,
+            target_type="run_execution",
             target_id=task.id,
-            reason=f"task execution {'completed' if result.exit_code == 0 else 'failed'}",
+            reason=f"run execution {'completed' if result.exit_code == 0 else 'failed'}",
             before=before_state,
             after=after_state,
         )
-        GoalStore(self.home).update_for_task(
+        GoalStore(self.home).update_for_run(
             updated_task,
-            evidence={"task_id": updated_task.id, "task_status": updated_task.status, "phase": "execute", "summary": updated_task.result_summary},
+            evidence={"run_id": updated_task.id, "run_status": updated_task.status, "phase": "execute", "summary": updated_task.result_summary},
         )
         
         return updated_task
 
     async def run_watch(self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str = "") -> ExecutionResult:
-        watch_task = Task(
+        watch_task = Run(
             id="",
             title=prompt[:120],
             status="running",
@@ -1001,32 +1001,32 @@ class ExecutionService:
         self._log(watch_task, result)
         return result
 
-    async def process_pending_once(self, *, limit: int = 3) -> list[Task]:
-        completed: list[Task] = []
-        for task in self.tasks.list_by_status("queued", limit=limit):
+    async def process_pending_once(self, *, limit: int = 3) -> list[Run]:
+        completed: list[Run] = []
+        for task in self.runs.list_by_status("queued", limit=limit):
             if not self._execution_allowed(task):
-                blocked = self.tasks.update_task(
+                blocked = self.runs.update_run(
                     task.id,
                     status="blocked",
                     error="execution grant missing: approved approval or explicit L3 trust rule required",
                 )
                 if blocked:
-                    GoalStore(self.home).update_for_task(blocked, evidence={"task_id": blocked.id, "task_status": blocked.status})
+                    GoalStore(self.home).update_for_run(blocked, evidence={"run_id": blocked.id, "run_status": blocked.status})
                     completed.append(blocked)
                 continue
             completed.append(await self.execute_task(task))
         return completed
 
-    def execution_allowed(self, task: Task) -> bool:
+    def execution_allowed(self, task: Run) -> bool:
         return self._execution_allowed(task)
 
-    def _execution_allowed(self, task: Task) -> bool:
+    def _execution_allowed(self, task: Run) -> bool:
         return self.governance.execution_allowed(task)
 
-    def _log(self, task: Task, result: ExecutionResult) -> None:
+    def _log(self, task: Run, result: ExecutionResult) -> None:
         protocol = result.protocol
-        self.tasks.add_execution_log(
-            task_id=task.id,
+        self.runs.add_execution_log(
+            run_id=task.id,
             provider=result.provider,
             phase=result.phase,
             command=" ".join(result.command),
@@ -1036,8 +1036,8 @@ class ExecutionService:
             started_at=result.started_at,
             ended_at=result.ended_at,
         )
-        self.tasks.add_execution_log(
-            task_id=task.id,
+        self.runs.add_execution_log(
+            run_id=task.id,
             provider=result.provider,
             phase=f"{result.phase}_protocol",
             command=" ".join(["navi", "protocol", result.phase, task.id]),
@@ -1048,7 +1048,7 @@ class ExecutionService:
             ended_at=result.ended_at,
         )
 
-    async def _provider_call(self, task: Task, phase: str) -> ExecutionResult:
+    async def _provider_call(self, task: Run, phase: str) -> ExecutionResult:
         if self.config.mock:
             text = (
                 "Preparation: inspect the request, estimate risk, then request approval."
@@ -1060,7 +1060,7 @@ class ExecutionService:
             return await self.provider.plan(task)
         return await self.provider.execute(task)
 
-    async def _provider_call_with_timeout(self, task: Task, phase: str) -> ExecutionResult:
+    async def _provider_call_with_timeout(self, task: Run, phase: str) -> ExecutionResult:
         if self.config.mock:
             return await self._provider_call(task, phase)
         started = time.time()
@@ -1077,7 +1077,7 @@ class ExecutionService:
                 started_at=started,
                 ended_at=time.time(),
                 protocol=ExecutionProtocol.internal_status(
-                    task_id=task.id,
+                    run_id=task.id,
                     phase=phase,
                     status="failed",
                     summary=f"navi {phase} timed out after {self.config.timeout_seconds} seconds",

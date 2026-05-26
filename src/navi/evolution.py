@@ -11,14 +11,14 @@ from .db import connect
 from typing import Any
 
 from .graph import GraphStore
-from .tasks import Task, TaskStore
+from .runs import Run, RunStore
 from .trust import TrustRule, TrustStore
 
 
 @dataclass(frozen=True)
 class EvolutionEvent:
     id: str
-    task_id: str
+    run_id: str
     target_type: str
     target_id: str
     reason: str
@@ -43,7 +43,7 @@ class EvolutionProposal:
     rollback_plan: str
     required_approval_level: str
     evidence: str
-    source_task_id: str
+    source_run_id: str
     status: str
     created_at: float
     applied_at: float
@@ -72,7 +72,7 @@ EVOLUTION_TARGETS: tuple[EvolutionTarget, ...] = (
     EvolutionTarget("workflow_policy", "Daemon, execution, approval, and lifecycle decision policy.", "runtime", True),
     EvolutionTarget("eval_case", "Evaluation dataset case and expected behavior.", "evals"),
     EvolutionTarget("graph_node", "Personal graph project, person, and task relationship facts.", "graph"),
-    EvolutionTarget("task_execution", "Recorded task execution outcome state.", "execution"),
+    EvolutionTarget("run_execution", "Recorded run execution outcome state.", "execution"),
 )
 
 
@@ -97,7 +97,7 @@ class EvolutionLedger:
                 """
                 CREATE TABLE IF NOT EXISTS evolution_events (
                     id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
                     target_type TEXT NOT NULL,
                     target_id TEXT NOT NULL,
                     reason TEXT NOT NULL,
@@ -109,7 +109,7 @@ class EvolutionLedger:
                 )
                 """
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_evolution_task ON evolution_events(task_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_evolution_task ON evolution_events(run_id)")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS evolution_proposals (
@@ -125,7 +125,7 @@ class EvolutionLedger:
                     rollback_plan TEXT NOT NULL,
                     required_approval_level TEXT NOT NULL,
                     evidence TEXT NOT NULL,
-                    source_task_id TEXT NOT NULL,
+                    source_run_id TEXT NOT NULL,
                     status TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     applied_at REAL NOT NULL,
@@ -140,7 +140,7 @@ class EvolutionLedger:
     def record(
         self,
         *,
-        task_id: str,
+        run_id: str,
         target_type: str,
         target_id: str,
         reason: str,
@@ -149,7 +149,7 @@ class EvolutionLedger:
     ) -> EvolutionEvent:
         event = EvolutionEvent(
             id=uuid.uuid4().hex,
-            task_id=task_id,
+            run_id=run_id,
             target_type=target_type,
             target_id=target_id,
             reason=reason,
@@ -163,14 +163,14 @@ class EvolutionLedger:
             conn.execute(
                 """
                 INSERT INTO evolution_events(
-                    id, task_id, target_type, target_id, reason, before, after,
+                    id, run_id, target_type, target_id, reason, before, after,
                     diff, created_at, rolled_back_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
-                    event.task_id,
+                    event.run_id,
                     event.target_type,
                     event.target_id,
                     event.reason,
@@ -187,7 +187,7 @@ class EvolutionLedger:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, task_id, target_type, target_id, reason, before, after,
+                SELECT id, run_id, target_type, target_id, reason, before, after,
                        diff, created_at, rolled_back_at
                 FROM evolution_events ORDER BY created_at DESC LIMIT ?
                 """,
@@ -195,15 +195,15 @@ class EvolutionLedger:
             ).fetchall()
         return [EvolutionEvent(*row) for row in rows]
 
-    def list_for_task(self, task_id: str) -> list[EvolutionEvent]:
+    def list_for_task(self, run_id: str) -> list[EvolutionEvent]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, task_id, target_type, target_id, reason, before, after,
+                SELECT id, run_id, target_type, target_id, reason, before, after,
                        diff, created_at, rolled_back_at
-                FROM evolution_events WHERE task_id = ? ORDER BY created_at ASC
+                FROM evolution_events WHERE run_id = ? ORDER BY created_at ASC
                 """,
-                (task_id,),
+                (run_id,),
             ).fetchall()
         return [EvolutionEvent(*row) for row in rows]
 
@@ -211,7 +211,7 @@ class EvolutionLedger:
         with connect(self.db_path) as conn:
             row = conn.execute(
                 """
-                SELECT id, task_id, target_type, target_id, reason, before, after,
+                SELECT id, run_id, target_type, target_id, reason, before, after,
                        diff, created_at, rolled_back_at
                 FROM evolution_events WHERE id = ?
                 """,
@@ -240,7 +240,7 @@ class EvolutionLedger:
         rollback_plan: str,
         required_approval_level: str = "L2",
         evidence: str = "",
-        source_task_id: str = "",
+        source_run_id: str = "",
         eval_cases: list[str] | None = None,
     ) -> EvolutionProposal:
         if not known_evolution_target(target_type):
@@ -258,7 +258,7 @@ class EvolutionLedger:
             rollback_plan=rollback_plan,
             required_approval_level=required_approval_level,
             evidence=evidence,
-            source_task_id=source_task_id,
+            source_run_id=source_run_id,
             status="proposed",
             created_at=time.time(),
             applied_at=0.0,
@@ -272,7 +272,7 @@ class EvolutionLedger:
                 INSERT INTO evolution_proposals(
                     id, target_type, target_id, reason, expected_benefit, risk,
                     before, after, diff, rollback_plan, required_approval_level,
-                    evidence, source_task_id, status, created_at, applied_at,
+                    evidence, source_run_id, status, created_at, applied_at,
                     applied_event_id, eval_cases, evaluation_result
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -288,7 +288,7 @@ class EvolutionLedger:
                     """
                     SELECT id, target_type, target_id, reason, expected_benefit, risk,
                            before, after, diff, rollback_plan, required_approval_level,
-                           evidence, source_task_id, status, created_at, applied_at,
+                           evidence, source_run_id, status, created_at, applied_at,
                            applied_event_id, eval_cases, evaluation_result
                     FROM evolution_proposals WHERE status = ? ORDER BY created_at DESC LIMIT ?
                     """,
@@ -299,7 +299,7 @@ class EvolutionLedger:
                     """
                     SELECT id, target_type, target_id, reason, expected_benefit, risk,
                            before, after, diff, rollback_plan, required_approval_level,
-                           evidence, source_task_id, status, created_at, applied_at,
+                           evidence, source_run_id, status, created_at, applied_at,
                            applied_event_id, eval_cases, evaluation_result
                     FROM evolution_proposals ORDER BY created_at DESC LIMIT ?
                     """,
@@ -313,7 +313,7 @@ class EvolutionLedger:
                 """
                 SELECT id, target_type, target_id, reason, expected_benefit, risk,
                        before, after, diff, rollback_plan, required_approval_level,
-                       evidence, source_task_id, status, created_at, applied_at,
+                       evidence, source_run_id, status, created_at, applied_at,
                        applied_event_id, eval_cases, evaluation_result
                 FROM evolution_proposals WHERE id = ?
                 """,
@@ -340,7 +340,7 @@ class EvolutionLedger:
         if proposal.status != "proposed":
             raise ValueError(f"cannot apply proposal in status: {proposal.status}")
         event = self.record(
-            task_id=proposal.source_task_id,
+            run_id=proposal.source_run_id,
             target_type=proposal.target_type,
             target_id=proposal.target_id,
             reason=proposal.reason,
@@ -376,7 +376,7 @@ class EvolutionEngine:
         self.ledger = EvolutionLedger(home)
         self.graph = GraphStore(home)
         self.trust = TrustStore(home)
-        self.tasks = TaskStore(home)
+        self.runs = RunStore(home)
 
         # Jarvis Memory components
         from .config import load_config
@@ -387,7 +387,7 @@ class EvolutionEngine:
         self.provider = build_provider(config.model)
         self.memory = MemoryStore(home)
 
-    async def reflect_task(self, task: Task, *, success: bool) -> list[EvolutionEvent]:
+    async def reflect_run(self, task: Run, *, success: bool) -> list[EvolutionEvent]:
         events: list[EvolutionEvent] = []
         reason = "successful task reflection" if success else "failed task reflection"
         events.append(self._update_graph(task, success=success, reason=reason))
@@ -403,7 +403,7 @@ class EvolutionEngine:
             after = json.dumps(self._trust_payload(trust_rule), sort_keys=True)
             events.append(
                 self.ledger.record(
-                    task_id=task.id,
+                    run_id=task.id,
                     target_type="trust_rule",
                     target_id=trust_rule.id,
                     reason=reason,
@@ -411,15 +411,15 @@ class EvolutionEngine:
                     after=after,
                 )
             )
-            self.tasks.update_task(
+            self.runs.update_run(
                 task.id,
                 trust_rule_id=trust_rule.id,
                 autonomy_level=trust_rule.autonomy_level,
             )
 
-        # Active Task Learning reflection
-        logs = self.tasks.list_execution_logs(task.id)
-        await self.memory.extract_memories_from_task(task, logs, self.provider)
+        # Active Run Learning reflection
+        logs = self.runs.list_execution_logs(task.id)
+        await self.memory.extract_memories_from_run(task, logs, self.provider)
 
         return self.ledger.list_for_task(task.id)
 
@@ -474,10 +474,10 @@ class EvolutionEngine:
                 self.memory.delete_item(event.target_id)
             else:
                 self.memory.restore_item(json.loads(event.before))
-        elif event.target_type == "task_execution":
+        elif event.target_type == "run_execution":
             if event.before:
                 task_dict = json.loads(event.before)
-                self.tasks.update_task(
+                self.runs.update_run(
                     event.target_id,
                     status=task_dict.get("status", "queued"),
                     result_summary=task_dict.get("result_summary", ""),
@@ -493,7 +493,7 @@ class EvolutionEngine:
                 store.delete_override(event.target_id)
         return self.ledger.mark_rolled_back(event_id)
 
-    def _update_graph(self, task: Task, *, success: bool, reason: str) -> EvolutionEvent:
+    def _update_graph(self, task: Run, *, success: bool, reason: str) -> EvolutionEvent:
         name = task.workspace or str(Path.home())
         before_node = self.graph.get_by_name("Project", name)
         before = json.dumps(before_node.data if before_node else {}, sort_keys=True)
@@ -502,14 +502,14 @@ class EvolutionEngine:
             name,
             {
                 "path": name,
-                "last_task_id": task.id,
+                "last_run_id": task.id,
                 "last_status": "success" if success else "failure",
                 "last_prompt": task.prompt,
             },
         )
         after = json.dumps(node.data, sort_keys=True)
         return self.ledger.record(
-            task_id=task.id,
+            run_id=task.id,
             target_type="graph_node",
             target_id=node.id,
             reason=reason,

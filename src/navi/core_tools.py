@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_config
-from .fact_tools import service_facts, task_facts
-from .tasks import Approval, TaskStore
+from .fact_tools import service_facts, run_facts
+from .runs import Approval, RunStore
 from .tools import ToolRegistry, ToolResult, ToolSpec
 
 
@@ -27,27 +27,27 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     )
     registry.register(
         ToolSpec(
-            name="task.status",
-            description="Return task, approval, and execution log facts.",
+            name="delegate.status",
+            description="Return delegation run, approval, and execution log facts.",
             input_schema={
                 "type": "object",
-                "properties": {"task_id": {"type": "string"}},
+                "properties": {"run_id": {"type": "string"}},
             },
             output_schema={"type": "object"},
         ),
-        lambda args: _task_status(home, args),
+        lambda args: _run_status(home, args),
     )
     registry.register(
         ToolSpec(
-            name="task.list",
-            description="Return tracked tasks and recurring watches as task-management facts.",
+            name="delegate.list",
+            description="Return delegation runs and recurring watches as delegation-management facts.",
             input_schema={
                 "type": "object",
                 "properties": {"limit": {"type": "integer", "default": 20}},
             },
             output_schema={"type": "object"},
         ),
-        lambda args: _task_list(home, args),
+        lambda args: _run_list(home, args),
     )
     registry.register(
         ToolSpec(
@@ -169,34 +169,34 @@ def _service_status(args: dict[str, Any], *, default_name: str) -> ToolResult:
     return ToolResult(tool="service.status", ok=facts.exit_code == 0, facts=asdict(facts), error=facts.stderr)
 
 
-def _task_status(home: Path, args: dict[str, Any]) -> ToolResult:
-    task_id = args.get("task_id")
-    facts = task_facts(home, str(task_id) if task_id else None)
+def _run_status(home: Path, args: dict[str, Any]) -> ToolResult:
+    run_id = args.get("run_id")
+    facts = run_facts(home, str(run_id) if run_id else None)
     return ToolResult(
-        tool="task.status",
-        ok=facts.task is not None,
+        tool="delegate.status",
+        ok=facts.run is not None,
         facts={
-            "task": asdict(facts.task) if facts.task else None,
+            "run": asdict(facts.run) if facts.run else None,
             "approvals": [_approval_facts(approval) for approval in facts.approvals],
             "logs": [asdict(log) for log in facts.logs],
         },
-        error="" if facts.task else "task not found",
+        error="" if facts.run else "delegation run not found",
     )
 
 
-def _task_list(home: Path, args: dict[str, Any]) -> ToolResult:
+def _run_list(home: Path, args: dict[str, Any]) -> ToolResult:
     limit = _positive_int(args.get("limit"), default=20, maximum=100)
-    store = TaskStore(home)
-    listed_tasks = store.list(limit=limit)
+    store = RunStore(home)
+    listed_runs = store.list(limit=limit)
     return ToolResult(
-        tool="task.list",
+        tool="delegate.list",
         ok=True,
         facts={
-            "tasks": [asdict(task) for task in listed_tasks],
+            "runs": [asdict(run) for run in listed_runs],
             "watches": [asdict(watch) for watch in store.list_watches(limit=limit)],
-            "task_status_counts": store.count_tasks_by_status(),
-            "returned_task_count": len(listed_tasks),
-            "task_limit": limit,
+            "run_status_counts": store.count_runs_by_status(),
+            "returned_run_count": len(listed_runs),
+            "run_limit": limit,
         },
     )
 
@@ -204,7 +204,7 @@ def _task_list(home: Path, args: dict[str, Any]) -> ToolResult:
 def _approval_facts(approval: Approval) -> dict[str, Any]:
     return {
         "id": approval.id,
-        "task_id": approval.task_id,
+        "run_id": approval.run_id,
         "action": approval.action,
         "peer_id": approval.peer_id,
         "sender_id": approval.sender_id,

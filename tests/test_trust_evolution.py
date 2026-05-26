@@ -12,7 +12,7 @@ from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.trust import TrustStore
 from navi.execution import ExecutionProtocol, ExecutionService, ExecutionResult
 from navi.evolution import EvolutionEngine, EvolutionLedger
-from navi.tasks import TaskStore
+from navi.runs import RunStore
 from navi.daemon import ProjectEventContext, SystemDaemon
 from navi.graph import GraphStore
 
@@ -78,14 +78,14 @@ async def test_semantic_trust_matching(tmp_path):
 @pytest.mark.asyncio
 async def test_execution_failure_waits_for_explicit_follow_up_and_rolls_back(tmp_path):
     # Setup execution and tasks
-    tasks = TaskStore(tmp_path)
+    runs = RunStore(tmp_path)
     execution = ExecutionService(tmp_path)
     
     # Create task
-    task = tasks.create(
+    task = runs.create(
         title="Heal test",
         prompt="Fix the broken code",
-        kind="task",
+        kind="delegation",
         workspace=str(tmp_path),
         autonomy_level="L3",
     )
@@ -100,7 +100,7 @@ async def test_execution_failure_waits_for_explicit_follow_up_and_rolls_back(tmp
         started_at=time.time(),
         ended_at=time.time(),
         protocol=ExecutionProtocol.internal_status(
-            task_id=task.id,
+            run_id=task.id,
             phase="execute",
             status="failed",
             summary="Failed compiling main.py",
@@ -113,18 +113,18 @@ async def test_execution_failure_waits_for_explicit_follow_up_and_rolls_back(tmp
         
     execution._provider_call_with_timeout = mock_provider_call
     
-    # Run task execution
+    # Run run execution
     updated_task = await execution.execute_task(task)
     
     assert updated_task.status == "failed"
     assert updated_task.result_summary == "Failed compiling main.py"
     assert "NameError" in updated_task.error
     
-    # Verify evolution ledger entries for task_execution target type
+    # Verify evolution ledger entries for run_execution target type
     ledger = EvolutionLedger(tmp_path)
     events = ledger.list()
     assert len(events) == 1
-    assert events[0].target_type == "task_execution"
+    assert events[0].target_type == "run_execution"
     assert events[0].target_id == task.id
     
     # Verify rollback reverts task state in database
@@ -132,7 +132,7 @@ async def test_execution_failure_waits_for_explicit_follow_up_and_rolls_back(tmp
     rolled_back_event = evolution.rollback(events[0].id)
     assert rolled_back_event.rolled_back_at > 0
     
-    rolled_task = tasks.get(task.id)
+    rolled_task = runs.get(task.id)
     assert rolled_task.status == "pending"
     assert rolled_task.result_summary == ""
 
@@ -165,7 +165,7 @@ async def test_proactive_event_watchers(tmp_path):
     mock_invoke_calls = []
     async def mock_invoke(name, args, permission=None, context=None):
         mock_invoke_calls.append((name, args, context))
-        return CapabilityResult(ok=True, action="task", observation="Proactive task created", message="Created proactively", task_id="t-1")
+        return CapabilityResult(ok=True, action="task", observation="Proactive task created", message="Created proactively", run_id="t-1")
         
     daemon.capabilities.invoke = mock_invoke
     
@@ -175,7 +175,7 @@ async def test_proactive_event_watchers(tmp_path):
     assert len(created_events) == 1
     assert "Exception detected in log" in created_events[0]["message"]
     
-    assert [call[0] for call in mock_invoke_calls] == ["task.record", "task.prepare", "approval.request"]
+    assert [call[0] for call in mock_invoke_calls] == ["delegate.spawn", "delegate.prepare", "approval.request"]
     assert "proactive runtime detector produced observation facts" in mock_invoke_calls[0][1]["prompt"]
     assert "log_error_detected" in mock_invoke_calls[0][1]["prompt"]
     assert mock_invoke_calls[0][2].source == "event_log"
@@ -219,11 +219,11 @@ async def test_log_rotation_and_chunked_reads(tmp_path):
     mock_invoke_calls = []
     async def mock_invoke(name, args, permission=None, context=None):
         mock_invoke_calls.append((name, args, context))
-        return CapabilityResult(ok=True, action="task", observation="Proactive task created", message="Created proactively", task_id="t-1")
+        return CapabilityResult(ok=True, action="task", observation="Proactive task created", message="Created proactively", run_id="t-1")
     daemon.capabilities.invoke = mock_invoke
     
     await daemon.process_events_once()
-    assert [call[0] for call in mock_invoke_calls] == ["task.record", "task.prepare", "approval.request"]
+    assert [call[0] for call in mock_invoke_calls] == ["delegate.spawn", "delegate.prepare", "approval.request"]
     assert "FATAL" in mock_invoke_calls[0][1]["prompt"]
     assert "log_error_detected" in mock_invoke_calls[0][1]["prompt"]
     
@@ -233,7 +233,7 @@ async def test_log_rotation_and_chunked_reads(tmp_path):
     
     mock_invoke_calls.clear()
     await daemon.process_events_once()
-    assert [call[0] for call in mock_invoke_calls] == ["task.record", "task.prepare", "approval.request"]
+    assert [call[0] for call in mock_invoke_calls] == ["delegate.spawn", "delegate.prepare", "approval.request"]
     assert "Exception" in mock_invoke_calls[0][1]["prompt"]
     assert "Observation facts" in mock_invoke_calls[0][1]["prompt"]
 
@@ -275,7 +275,7 @@ def test_evolution_proposals_are_reviewable_before_apply(tmp_path):
         after="new prompt",
         rollback_plan="restore previous prompt layer content",
         evidence="review finding A04",
-        source_task_id="task-123",
+        source_run_id="task-123",
         eval_cases=["prompt_style_regression"],
     )
 
@@ -289,7 +289,7 @@ def test_evolution_proposals_are_reviewable_before_apply(tmp_path):
     assert event is not None
     assert event.target_type == "prompt_layer"
     assert event.target_id == "authorization"
-    assert event.task_id == "task-123"
+    assert event.run_id == "task-123"
     applied = ledger.get_proposal(proposal.id)
     assert applied.status == "applied"
     assert applied.applied_event_id == event.id
@@ -331,13 +331,13 @@ async def test_self_healing_retry_accumulation(tmp_path):
     from navi.capabilities import CapabilityContext, CapabilityRegistry
     import navi.capabilities as capabilities_module
 
-    tasks = TaskStore(tmp_path)
+    runs = RunStore(tmp_path)
     execution = ExecutionService(tmp_path)
     
-    task = tasks.create(
+    task = runs.create(
         title="Accumulate test",
         prompt="Execute python script",
-        kind="task",
+        kind="delegation",
         workspace=str(tmp_path),
         autonomy_level="L3",
     )
@@ -347,7 +347,7 @@ async def test_self_healing_retry_accumulation(tmp_path):
         stdout="Output1", stderr="SyntaxError: invalid syntax", exit_code=1,
         started_at=time.time(), ended_at=time.time(),
         protocol=ExecutionProtocol.internal_status(
-            task_id=task.id,
+            run_id=task.id,
             phase="execute",
             status="failed",
             summary="Output1",
@@ -360,7 +360,7 @@ async def test_self_healing_retry_accumulation(tmp_path):
         stdout="Success!", stderr="", exit_code=0,
         started_at=time.time(), ended_at=time.time(),
         protocol=ExecutionProtocol(
-            task_id=task.id,
+            run_id=task.id,
             phase="execute",
             plan_id=f"execute:{task.id}",
             steps=[
@@ -387,14 +387,14 @@ async def test_self_healing_retry_accumulation(tmp_path):
     
     first = await execution.execute_task(task)
     assert first.status == "failed"
-    approval = tasks.create_approval(task_id=task.id, peer_id="peer", sender_id="sender")
-    tasks.resolve_approval(approval.code, "sender", "approved")
+    approval = runs.create_approval(run_id=task.id, peer_id="peer", sender_id="sender")
+    runs.resolve_approval(approval.code, "sender", "approved")
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(capabilities_module, "ExecutionService", lambda home: execution)
     try:
         retry = await CapabilityRegistry(home=tmp_path, project_dir=tmp_path).invoke(
-            "execution.retry",
-            {"task_id": task.id, "follow_up_prompt": "Use the observed SyntaxError as data and try one corrected run."},
+            "delegate.retry",
+            {"run_id": task.id, "follow_up_prompt": "Use the observed SyntaxError as data and try one corrected run."},
             permission="write",
             context=CapabilityContext(home=tmp_path),
         )
@@ -409,7 +409,7 @@ async def test_self_healing_retry_accumulation(tmp_path):
     assert "Follow-up execution instruction" in prompt_history[1]
     assert "corrected run" in prompt_history[1]
     prompt_logs = [
-        log for log in TaskStore(tmp_path).list_execution_logs(task.id)
+        log for log in RunStore(tmp_path).list_execution_logs(task.id)
         if log.phase == "self_heal_prompt"
     ]
     assert prompt_logs == []
@@ -510,7 +510,7 @@ async def test_daemon_resolves_relative_project_paths(tmp_path, monkeypatch):
 
     async def mock_invoke(name, args, permission=None, context=None):
         mock_invokes.append(args)
-        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", task_id="t-1")
+        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", run_id="t-1")
 
     daemon.capabilities.invoke = mock_invoke
 
@@ -602,7 +602,7 @@ def test_evolution_skill_rollback_rejects_paths_outside_skills_dir(tmp_path):
     from navi.evolution import EvolutionEngine, EvolutionLedger
 
     event = EvolutionLedger(tmp_path).record(
-        task_id="task",
+        run_id="task",
         target_type="skill",
         target_id=str(tmp_path / "outside" / "SKILL.md"),
         reason="malformed skill path",
@@ -640,7 +640,7 @@ async def test_engine_strong_task_references(tmp_path):
             self.memory = None
             
     class DummyMemory:
-        async def extract_and_consolidate_memories(self, session_id, provider, task_id):
+        async def extract_and_consolidate_memories(self, session_id, provider, run_id):
             await asyncio.sleep(0.01)
             
     runtime = DummyRuntime()
@@ -678,7 +678,7 @@ async def test_engine_background_memory_uses_cancellation_shield(tmp_path, monke
             self.memory = None
 
     class DummyMemory:
-        async def extract_and_consolidate_memories(self, session_id, provider, task_id):
+        async def extract_and_consolidate_memories(self, session_id, provider, run_id):
             await asyncio.sleep(0.01)
 
     runtime = DummyRuntime()
@@ -705,7 +705,7 @@ async def test_engine_shutdown_waits_for_background_memory(tmp_path):
             self.memory = None
 
     class DummyMemory:
-        async def extract_and_consolidate_memories(self, session_id, provider, task_id):
+        async def extract_and_consolidate_memories(self, session_id, provider, run_id):
             nonlocal completed
             await asyncio.sleep(0.02)
             completed = True
@@ -727,12 +727,12 @@ async def test_engine_shutdown_waits_for_background_memory(tmp_path):
 async def test_daemon_active_task_suppression(tmp_path):
     from navi.daemon import SystemDaemon
     from navi.graph import GraphStore
-    from navi.tasks import TaskStore
+    from navi.runs import RunStore
     from navi.capabilities import CapabilityResult
     
     daemon = SystemDaemon(tmp_path)
     graph = GraphStore(tmp_path)
-    tasks = TaskStore(tmp_path)
+    runs = RunStore(tmp_path)
     
     project_path = tmp_path / "active_project"
     project_path.mkdir(parents=True, exist_ok=True)
@@ -749,7 +749,7 @@ async def test_daemon_active_task_suppression(tmp_path):
     mock_invokes = []
     async def mock_invoke(name, args, permission=None, context=None):
         mock_invokes.append(args)
-        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", task_id="t-1")
+        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", run_id="t-1")
     daemon.capabilities.invoke = mock_invoke
     
     # Case 1: No active tasks, process_events_once should trigger a proactive alert
@@ -762,7 +762,7 @@ async def test_daemon_active_task_suppression(tmp_path):
     mock_invokes.clear()
     
     # Case 2: Active task in progress for this workspace, should suppress proactive alert!
-    tasks.create(title="Active task", prompt="Fix something", kind="task", workspace=str(project_path), status="running")
+    runs.create(title="Active task", prompt="Fix something", kind="delegation", workspace=str(project_path), status="running")
     
     events_suppressed = await daemon.process_events_once()
     assert len(events_suppressed) == 0
@@ -779,12 +779,12 @@ async def test_daemon_git_suppression_advances_hash(tmp_path):
 
     from navi.daemon import SystemDaemon
     from navi.graph import GraphStore
-    from navi.tasks import TaskStore
+    from navi.runs import RunStore
     from navi.capabilities import CapabilityResult
 
     daemon = SystemDaemon(tmp_path)
     graph = GraphStore(tmp_path)
-    tasks = TaskStore(tmp_path)
+    runs = RunStore(tmp_path)
 
     project_path = tmp_path / "git_active_project"
     project_path.mkdir(parents=True, exist_ok=True)
@@ -792,10 +792,10 @@ async def test_daemon_git_suppression_advances_hash(tmp_path):
     (project_path / "changed.py").write_text("print('changed')\n")
 
     graph.upsert("Project", str(project_path), {"last_git_status_hash": ""})
-    tasks.create(
+    runs.create(
         title="Active git task",
         prompt="Fix git project",
-        kind="task",
+        kind="delegation",
         workspace=str(project_path),
         status="running",
     )
@@ -804,7 +804,7 @@ async def test_daemon_git_suppression_advances_hash(tmp_path):
 
     async def mock_invoke(name, args, permission=None, context=None):
         mock_invokes.append(args)
-        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", task_id="t-1")
+        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", run_id="t-1")
 
     daemon.capabilities.invoke = mock_invoke
 
@@ -839,7 +839,7 @@ async def test_daemon_log_keys_include_relative_path(tmp_path):
 
     async def mock_invoke(name, args, permission=None, context=None):
         mock_invokes.append(args)
-        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", task_id="t-1")
+        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", run_id="t-1")
 
     daemon.capabilities.invoke = mock_invoke
 
@@ -875,7 +875,7 @@ async def test_daemon_fingerprint_spam_protection(tmp_path):
     mock_invokes = []
     async def mock_invoke(name, args, permission=None, context=None):
         mock_invokes.append(args)
-        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", task_id="t-1")
+        return CapabilityResult(ok=True, action="task", observation="ok", message="ok", run_id="t-1")
     daemon.capabilities.invoke = mock_invoke
     
     # Write first exception
@@ -910,7 +910,7 @@ async def test_daemon_fingerprint_spam_protection(tmp_path):
 @pytest.mark.asyncio
 async def test_trust_success_consecutive_upgrades_and_failure_resets(tmp_path):
     from navi.trust import TrustStore
-    from navi.tasks import Task
+    from navi.runs import Run
     import time
 
     store = TrustStore(tmp_path)
@@ -925,7 +925,7 @@ async def test_trust_success_consecutive_upgrades_and_failure_resets(tmp_path):
     )
 
     # 2. Record 3 successful runs
-    task = Task(
+    task = Run(
         id="task-123",
         title="test task",
         status="success",

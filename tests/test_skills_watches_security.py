@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
 import time
-from pathlib import Path
 import pytest
 
 from navi.skills import SkillStore
-from navi.tasks import TaskStore, Watch
+from navi.runs import RunStore
 from navi.daemon import SystemDaemon
 
 
@@ -85,7 +83,7 @@ def test_skills_workspace_scoping_and_security_banner(tmp_path):
 
 
 def test_watches_workspace_persistence(tmp_path):
-    store = TaskStore(tmp_path)
+    store = RunStore(tmp_path)
 
     new_watch = store.create_watch(
         cron="*/10 * * * *",
@@ -113,7 +111,7 @@ def test_watches_workspace_persistence(tmp_path):
 
 @pytest.mark.asyncio
 async def test_watches_context_propagation_in_daemon(tmp_path, monkeypatch):
-    store = TaskStore(tmp_path)
+    store = RunStore(tmp_path)
     # Register a watch with a specific workspace
     watch = store.create_watch(
         cron="*/5 * * * *",
@@ -143,7 +141,7 @@ async def test_watches_context_propagation_in_daemon(tmp_path, monkeypatch):
             started_at=now,
             ended_at=now,
             protocol=ExecutionProtocol.internal_status(
-                task_id="",
+                run_id="",
                 phase="watch",
                 status="completed",
                 summary="watch completed",
@@ -192,7 +190,7 @@ async def test_memory_consolidation_prompt_injection_safety_isolation(tmp_path):
     await store.extract_and_consolidate_memories(
         session_id=session_id,
         provider=pool,
-        task_id="task-1"
+        run_id="task-1"
     )
 
     assert len(captured_messages) > 0

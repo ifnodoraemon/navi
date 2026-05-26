@@ -6,13 +6,13 @@ import pytest
 
 from navi.evals import (
     EvalResult,
-    load_task_eval_cases,
-    load_task_eval_dataset,
-    match_task_eval_case,
+    load_delegation_eval_cases,
+    load_delegation_eval_dataset,
+    match_delegation_eval_case,
     results_to_json,
-    run_task_eval_dataset,
-    validate_task_eval_dataset,
-    validate_task_eval_cases,
+    run_delegation_eval_dataset,
+    validate_delegation_eval_dataset,
+    validate_delegation_eval_cases,
 )
 from navi.syscalls import ModelSyscall
 from navi.tools import ToolSpec
@@ -28,29 +28,29 @@ def _tool(name: str = "final.answer", permission: str = "read") -> ToolSpec:
     )
 
 
-def test_load_task_eval_cases_rejects_invalid_shapes(tmp_path):
+def test_load_delegation_eval_cases_rejects_invalid_shapes(tmp_path):
     not_mapping = tmp_path / "not_mapping.yaml"
     not_mapping.write_text("[]", encoding="utf-8")
     with pytest.raises(ValueError, match="must be a mapping"):
-        load_task_eval_cases(not_mapping)
+        load_delegation_eval_cases(not_mapping)
 
     missing_cases = tmp_path / "missing_cases.yaml"
     missing_cases.write_text("version: 1", encoding="utf-8")
     with pytest.raises(ValueError, match="cases list"):
-        load_task_eval_cases(missing_cases)
+        load_delegation_eval_cases(missing_cases)
 
     bad_case = tmp_path / "bad_case.yaml"
     bad_case.write_text("cases:\n  - text\n", encoding="utf-8")
     with pytest.raises(ValueError, match="case 0"):
-        load_task_eval_cases(bad_case)
+        load_delegation_eval_cases(bad_case)
 
-    loaded = load_task_eval_dataset(
-        Path(__file__).resolve().parents[1] / "evals" / "task_cases.yaml"
+    loaded = load_delegation_eval_dataset(
+        Path(__file__).resolve().parents[1] / "evals" / "delegation_cases.yaml"
     )
     assert "coverage" in loaded
 
 
-def test_validate_task_eval_cases_reports_dataset_errors():
+def test_validate_delegation_eval_cases_reports_dataset_errors():
     cases = [
         {},
         {
@@ -70,7 +70,7 @@ def test_validate_task_eval_cases_reports_dataset_errors():
         {"id": "no-expect", "message": "hello"},
     ]
 
-    errors = validate_task_eval_cases(cases, [_tool()])
+    errors = validate_delegation_eval_cases(cases, [_tool()])
 
     assert "case[0]: missing id" in errors
     assert "case[0]: missing message" in errors
@@ -82,7 +82,7 @@ def test_validate_task_eval_cases_reports_dataset_errors():
     assert "no-expect: missing expect mapping" in errors
 
 
-def test_validate_task_eval_dataset_enforces_required_category_coverage():
+def test_validate_delegation_eval_dataset_enforces_required_category_coverage():
     dataset = {
         "coverage": {"required_categories": ["greeting", "coding_debugging"]},
         "cases": [
@@ -100,7 +100,7 @@ def test_validate_task_eval_dataset_enforces_required_category_coverage():
         ],
     }
 
-    errors = validate_task_eval_dataset(dataset, [_tool()])
+    errors = validate_delegation_eval_dataset(dataset, [_tool()])
 
     assert "hello: unknown category 'unknown'" in errors
     assert "missing-category: missing category" in errors
@@ -108,9 +108,9 @@ def test_validate_task_eval_dataset_enforces_required_category_coverage():
     assert "dataset: missing required category 'greeting'" in errors
 
 
-def test_validate_task_eval_dataset_enforces_required_tool_coverage():
+def test_validate_delegation_eval_dataset_enforces_required_tool_coverage():
     dataset = {
-        "coverage": {"required_tools": ["final.answer", "task.list", "missing.tool"]},
+        "coverage": {"required_tools": ["final.answer", "delegate.list", "missing.tool"]},
         "cases": [
             {
                 "id": "hello",
@@ -120,19 +120,19 @@ def test_validate_task_eval_dataset_enforces_required_tool_coverage():
         ],
     }
 
-    errors = validate_task_eval_dataset(dataset, [_tool(), _tool("task.list")])
+    errors = validate_delegation_eval_dataset(dataset, [_tool(), _tool("delegate.list")])
 
     assert "dataset: unknown required tool 'missing.tool'" in errors
-    assert "dataset: missing required tool 'task.list'" in errors
+    assert "dataset: missing required tool 'delegate.list'" in errors
 
 
-def test_match_task_eval_case_reports_tool_and_permission_drift():
-    case = {"expect": {"tool": "task.list", "permission": "read"}}
+def test_match_delegation_eval_case_reports_tool_and_permission_drift():
+    case = {"expect": {"tool": "delegate.list", "permission": "read"}}
     decision = ModelSyscall(tool="final.answer", permission="write")
 
-    errors = match_task_eval_case(case, decision)
+    errors = match_delegation_eval_case(case, decision)
 
-    assert "tool expected 'task.list', got 'final.answer'" in errors
+    assert "tool expected 'delegate.list', got 'final.answer'" in errors
     assert "permission expected 'read', got 'write'" in errors
 
 
@@ -153,7 +153,7 @@ def test_results_to_json_serializes_eval_results():
 
 
 @pytest.mark.asyncio
-async def test_run_task_eval_dataset_returns_dataset_error(tmp_path):
+async def test_run_delegation_eval_dataset_returns_dataset_error(tmp_path):
     dataset = tmp_path / "bad.yaml"
     dataset.write_text(
         """
@@ -167,7 +167,7 @@ cases:
         encoding="utf-8",
     )
 
-    results = await run_task_eval_dataset(home=tmp_path, project_dir=tmp_path, dataset=dataset)
+    results = await run_delegation_eval_dataset(home=tmp_path, project_dir=tmp_path, dataset=dataset)
 
     assert results[0].id == "dataset"
     assert results[0].ok is False

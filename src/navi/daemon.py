@@ -17,7 +17,7 @@ from .cron import next_cron_time
 from .evolution import EvolutionEngine
 from .execution import ExecutionService
 from .graph import GraphNode, GraphStore
-from .tasks import Task, TaskStore
+from .runs import Run, RunStore
 from .text_utils import truncate_middle
 
 logger = logging.getLogger("navi.daemon")
@@ -29,7 +29,7 @@ MAX_GIT_STATUS_PROMPT_CHARS = 5000
 LOG_ERROR_KEYWORDS = ("exception", "fatal", "traceback (most recent call last):")
 MAX_LOG_READ_BYTES = 512_000
 MAX_LOG_PROMPT_CHARS = 100_000
-MAX_FAILED_WATCH_TASK_RECORDS = 50
+MAX_FAILED_WATCH_RUN_RECORDS = 50
 
 
 @dataclass(frozen=True)
@@ -58,16 +58,16 @@ class SystemDaemon:
 
     def __init__(self, home: Path):
         self.home = home
-        self.tasks = TaskStore(home)
+        self.runs = RunStore(home)
         self.execution = ExecutionService(home)
         self.evolution = EvolutionEngine(home)
         self.capabilities = CapabilityRegistry(home=home, project_dir=Path.cwd())
         self.graph = GraphStore(home)
 
-    async def process_queue_once(self) -> list[Task]:
+    async def process_queue_once(self) -> list[Run]:
         completed = await self.execution.process_pending_once()
         for task in completed:
-            await self.evolution.reflect_task(task, success=task.status == "completed")
+            await self.evolution.reflect_run(task, success=task.status == "completed")
         return completed
 
     async def process_watches_once(self) -> list[dict]:
@@ -78,10 +78,10 @@ class SystemDaemon:
         events = await self.process_events_once()
         created.extend(events)
 
-        self._prune_failed_watch_task_records()
+        self._prune_failed_watch_delegate_spawns()
         
         # 2. Run static cron watches
-        for watch in self.tasks.due_watches(now):
+        for watch in self.runs.due_watches(now):
             result = await self.execution.run_watch(
                 prompt=watch.prompt,
                 source="watch",
@@ -92,7 +92,7 @@ class SystemDaemon:
             created.append(
                 {
                     "message": result.summary,
-                    "task_id": "",
+                    "run_id": "",
                     "action": "watch",
                     "observation": result.summary,
                     "peer_id": watch.peer_id,
@@ -101,19 +101,19 @@ class SystemDaemon:
                     "ok": result.exit_code == 0,
                 }
             )
-            self.tasks.mark_watch_run(watch.id, last_run_at=now, next_run_at=next_cron_time(watch.cron, now=now))
+            self.runs.mark_watch_run(watch.id, last_run_at=now, next_run_at=next_cron_time(watch.cron, now=now))
         return created
 
-    def _prune_failed_watch_task_records(self, *, keep_latest: int = MAX_FAILED_WATCH_TASK_RECORDS) -> int:
+    def _prune_failed_watch_delegate_spawns(self, *, keep_latest: int = MAX_FAILED_WATCH_RUN_RECORDS) -> int:
         keep_latest = max(0, keep_latest)
-        total = self.tasks.count_tasks(status="failed", source="watch", kind="task")
+        total = self.runs.count_runs(status="failed", source="watch", kind="delegation")
         excess = max(0, total - keep_latest)
         if excess == 0:
             return 0
-        stale = self.tasks.list_by_status_filtered("failed", source="watch", kind="task", limit=excess)
+        stale = self.runs.list_by_status_filtered("failed", source="watch", kind="delegation", limit=excess)
         pruned = 0
         for task in stale:
-            removed = self.tasks.delete_task(task.id)
+            removed = self.runs.delete_run(task.id)
             if removed is None:
                 continue
             self.graph.delete(removed.id)
@@ -229,7 +229,7 @@ class SystemDaemon:
     def _active_workspaces(self) -> set[str]:
         return {
             self._canonical_path(task.workspace)
-            for task in self.tasks.list_by_statuses(["running", "queued", "pending"])
+            for task in self.runs.list_by_statuses(["running", "queued", "pending"])
             if task.workspace
         }
 
@@ -518,7 +518,7 @@ class SystemDaemon:
 
     async def _record_prepare_request(self, *, prompt: str, context: CapabilityContext):
         recorded = await self.capabilities.invoke(
-            "task.record",
+            "delegate.spawn",
             {"prompt": prompt},
             permission="prepare",
             context=context,
@@ -526,8 +526,8 @@ class SystemDaemon:
         if not recorded.ok:
             return recorded
         prepared = await self.capabilities.invoke(
-            "task.prepare",
-            {"task_id": recorded.task_id},
+            "delegate.prepare",
+            {"run_id": recorded.run_id},
             permission="prepare",
             context=context,
         )
@@ -535,7 +535,7 @@ class SystemDaemon:
             return prepared
         return await self.capabilities.invoke(
             "approval.request",
-            {"task_id": recorded.task_id},
+            {"run_id": recorded.run_id},
             permission="prepare",
             context=context,
         )
@@ -557,7 +557,7 @@ class SystemDaemon:
         return {
             "message": event.message,
             "facts": event.facts,
-            "task_id": result.task_id,
+            "run_id": result.run_id,
             "action": result.action,
             "observation": result.observation,
         }

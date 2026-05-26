@@ -253,7 +253,7 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
         for adapter in adapters:
             spec = adapter.spec
             if not spec.name:
-                errors.append(f"connector spec has empty name")
+                errors.append("connector spec has empty name")
             if not spec.surface:
                 errors.append(f"connector spec '{spec.name}' has empty surface")
             if not spec.status_tool:

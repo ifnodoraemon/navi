@@ -12,17 +12,17 @@ CONNECTOR_ALLOWED_TOOLS = frozenset(
     {
         "final.answer",
         "clarify.ask",
-        "task.record",
-        "task.prepare",
+        "delegate.spawn",
+        "delegate.prepare",
         "approval.request",
-        "task.queue",
+        "delegate.run",
         "watch.create",
         "approval.resolve",
-        "task.delete",
+        "delegate.delete",
         "provider.config",
         "service.status",
-        "task.status",
-        "task.list",
+        "delegate.status",
+        "delegate.list",
     }
 )
 

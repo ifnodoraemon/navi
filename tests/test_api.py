@@ -32,7 +32,7 @@ class ScriptedProvider(MockProvider):
             response = self.response
         if "TASK_ID" in response:
             for message in reversed(messages):
-                match = re.search(r'"task_id":\s*"([^"]+)"', message.content)
+                match = re.search(r'"run_id":\s*"([^"]+)"', message.content)
                 if match:
                     return response.replace("TASK_ID", match.group(1))
         return response
@@ -51,7 +51,7 @@ def test_local_console_api_flow(tmp_path, monkeypatch):
     assert 'href="/navi.svg"' in index.text
     assert "id=\"sessions\"" in index.text
     assert "id=\"memory-form\"" in index.text
-    assert "id=\"task-form\"" in index.text
+    assert "id=\"delegation-form\"" in index.text
     icon = client.get("/navi.svg")
     assert icon.status_code == 200
     assert icon.headers["content-type"].startswith("image/svg+xml")
@@ -82,29 +82,29 @@ def test_local_console_api_flow(tmp_path, monkeypatch):
     assert memory.status_code == 200
     assert "Prefers direct answers" in client.get("/v1/memory").json()["memory"]
 
-    created = client.post("/v1/tasks", json={"title": "Test the console"})
+    created = client.post("/v1/delegations", json={"title": "Test the console"})
     assert created.status_code == 200
     task = created.json()
     assert task["status"] == "awaiting_approval"
     goals = client.get("/v1/goals", params={"status": "awaiting_approval"})
     assert goals.status_code == 200
     goal = goals.json()["goals"][0]
-    assert goal["task_id"] == task["id"]
+    assert goal["run_id"] == task["id"]
     shown_goal = client.get(f"/v1/goals/{goal['id']}")
     assert shown_goal.status_code == 200
     assert shown_goal.json()["events"][0]["event_type"] == "goal.created"
 
-    updated = client.patch(f"/v1/tasks/{task['id']}", json={"status": "active"})
+    updated = client.patch(f"/v1/delegations/{task['id']}", json={"status": "active"})
     assert updated.status_code == 409
-    queued = client.patch(f"/v1/tasks/{task['id']}", json={"status": "queued"})
+    queued = client.patch(f"/v1/delegations/{task['id']}", json={"status": "queued"})
     assert queued.status_code == 200
     assert queued.json()["status"] == "queued"
-    assert client.get("/v1/tasks").json()["tasks"][0]["title"] == "Test the console"
+    assert client.get("/v1/delegations").json()["delegations"][0]["title"] == "Test the console"
 
-    deleted = client.delete(f"/v1/tasks/{task['id']}")
+    deleted = client.delete(f"/v1/delegations/{task['id']}")
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] is True
-    assert client.get("/v1/tasks").json()["tasks"] == []
+    assert client.get("/v1/delegations").json()["delegations"] == []
 
     wx_status = client.get("/v1/connectors/weixin/status")
     assert wx_status.status_code == 200
@@ -112,8 +112,8 @@ def test_local_console_api_flow(tmp_path, monkeypatch):
 
     tools = client.get("/v1/tools")
     assert tools.status_code == 200
-    assert "task.status" in {tool["name"] for tool in tools.json()["tools"]}
-    assert "task.record" in {node["name"] for node in tools.json()["capabilities"]}
+    assert "delegate.status" in {tool["name"] for tool in tools.json()["tools"]}
+    assert "delegate.spawn" in {node["name"] for node in tools.json()["capabilities"]}
     assert "core" in tools.json()["sources"]
 
     provider = client.post("/v1/tools/provider.config/call", json={"args": {}})
@@ -129,9 +129,9 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"task.record","permission":"prepare","args":{"prompt":"检查本地服务状态"},"confidence":0.95,"reason":"local action request"}',
-            '{"tool":"task.prepare","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.95,"reason":"prepare task"}',
-            '{"tool":"approval.request","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.95,"reason":"request approval"}',
+            '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"检查本地服务状态"},"confidence":0.95,"reason":"local action request"}',
+            '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.95,"reason":"prepare task"}',
+            '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.95,"reason":"request approval"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"已为你创建受控任务，等待审批后执行。"},"confidence":0.95,"reason":"task prepared"}',
         ]
     )
@@ -150,13 +150,13 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["action"] == "approval"
-    assert data["task_id"]
-    task = client.get("/v1/tasks").json()["tasks"][0]
+    assert data["run_id"]
+    task = client.get("/v1/delegations").json()["delegations"][0]
     assert task["prompt"] == "检查本地服务状态"
     assert task["status"] == "awaiting_approval"
-    from navi.tasks import TaskStore
+    from navi.runs import RunStore
 
-    code = TaskStore(tmp_path).list_approvals()[0].code
+    code = RunStore(tmp_path).list_approvals()[0].code
     assert f"审批码: `{code}`" in data["message"]
     assert f"批准 {code}" in data["message"]
 
@@ -202,9 +202,9 @@ def test_chat_api_routes_natural_language_approval(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"task.record","permission":"prepare","args":{"prompt":"检查本地服务状态"},"confidence":0.95,"reason":"local action request"}',
-            '{"tool":"task.prepare","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.95,"reason":"prepare task"}',
-            '{"tool":"approval.request","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.95,"reason":"request approval"}',
+            '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"检查本地服务状态"},"confidence":0.95,"reason":"local action request"}',
+            '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.95,"reason":"prepare task"}',
+            '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.95,"reason":"request approval"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"已创建任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',
         ]
     )
@@ -218,11 +218,11 @@ def test_chat_api_routes_natural_language_approval(tmp_path, monkeypatch):
     )
     client = authenticated_client(api_module.create_app(tmp_path))
     created = client.post("/v1/chat", json={"message": "帮我检查本地服务状态"})
-    task_id = created.json()["task_id"]
+    run_id = created.json()["run_id"]
 
-    from navi.tasks import TaskStore
+    from navi.runs import RunStore
 
-    code = TaskStore(tmp_path).list_approvals()[0].code
+    code = RunStore(tmp_path).list_approvals()[0].code
     provider.response = [
         (
             '{"tool":"approval.resolve","permission":"write","args":{"decision":"approve","code":"'
@@ -237,8 +237,8 @@ def test_chat_api_routes_natural_language_approval(tmp_path, monkeypatch):
     assert approved.status_code == 200
     data = approved.json()
     assert data["action"] == "approval"
-    assert data["task_id"] == task_id
-    assert TaskStore(tmp_path).get(task_id).status == "queued"
+    assert data["run_id"] == run_id
+    assert RunStore(tmp_path).get(run_id).status == "queued"
 
 
 def test_active_api_flow(tmp_path, monkeypatch):
@@ -246,23 +246,23 @@ def test_active_api_flow(tmp_path, monkeypatch):
     client = authenticated_client(create_app(tmp_path))
 
     created = client.post(
-        "/v1/active/tasks",
+        "/v1/active/delegations",
         json={"prompt": "active api task", "peer_id": "web", "sender_id": "web"},
     )
 
     assert created.status_code == 200
     created_data = created.json()
     assert "prepared for approval" in created_data["message"]
-    task = created_data["task"]
+    task = created_data["delegation"]
     assert task["status"] == "awaiting_approval"
 
-    approved = client.post(f"/v1/tasks/{task['id']}/approve")
+    approved = client.post(f"/v1/delegations/{task['id']}/approve")
     assert approved.status_code == 200
     assert approved.json()["status"] == "queued"
 
-    processed = client.post("/v1/tasks/process")
+    processed = client.post("/v1/delegations/process")
     assert processed.status_code == 200
-    assert processed.json()["tasks"][0]["status"] == "completed"
+    assert processed.json()["delegations"][0]["status"] == "completed"
 
     assert client.get("/v1/graph").json()["nodes"]
     assert client.get("/v1/evolution-events").json()["events"]
@@ -272,16 +272,16 @@ def test_task_process_blocks_queued_task_without_execution_grant(tmp_path, monke
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     client = authenticated_client(create_app(tmp_path))
 
-    created = client.post("/v1/tasks", json={"title": "manual task"})
+    created = client.post("/v1/delegations", json={"title": "manual task"})
     task = created.json()
-    from navi.tasks import TaskStore
+    from navi.runs import RunStore
 
-    TaskStore(tmp_path).update_task(task["id"], status="queued")
+    RunStore(tmp_path).update_run(task["id"], status="queued")
 
-    processed = client.post("/v1/tasks/process")
+    processed = client.post("/v1/delegations/process")
 
     assert processed.status_code == 200
-    assert processed.json()["tasks"][0]["status"] == "blocked"
+    assert processed.json()["delegations"][0]["status"] == "blocked"
 
 
 def test_active_watch_api(tmp_path):
@@ -306,7 +306,7 @@ def test_trace_api_flow(tmp_path):
     TraceStore(tmp_path).add_event(
         trace_id=trace_id,
         phase="capability.result",
-        tool="task.queue",
+        tool="delegate.run",
         ok=False,
         message="missing grant",
     )
@@ -317,7 +317,7 @@ def test_trace_api_flow(tmp_path):
 
     events = client.get(f"/v1/traces/{trace_id}")
     assert events.status_code == 200
-    assert events.json()["events"][0]["tool"] == "task.queue"
+    assert events.json()["events"][0]["tool"] == "delegate.run"
 
     evaluation = client.post(f"/v1/traces/{trace_id}/evaluate")
     assert evaluation.status_code == 200
@@ -388,12 +388,12 @@ def test_evolution_proposal_api_flow(tmp_path):
 def test_api_auth_missing_and_invalid(tmp_path):
     # Test client with invalid key
     client_invalid = TestClient(create_app(tmp_path), headers={"X-API-Key": "invalid_key"})
-    response = client_invalid.get("/v1/tasks")
+    response = client_invalid.get("/v1/delegations")
     assert response.status_code == 401
 
     # Test client with missing key
     client_missing = TestClient(create_app(tmp_path))
-    response = client_missing.get("/v1/tasks")
+    response = client_missing.get("/v1/delegations")
     assert response.status_code == 401
 
     # Test that index path "/" is bypassed

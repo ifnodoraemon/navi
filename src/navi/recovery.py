@@ -33,12 +33,12 @@ class RecoveryPlanner:
         block_reason: str,
         events: list[dict[str, Any]],
     ) -> RecoveryPlan:
-        task_id, task_status = _blocked_task(block_reason)
-        if task_id:
-            return self._task_progress_plan(
+        run_id, run_status = _blocked_run(block_reason)
+        if run_id:
+            return self._run_progress_plan(
                 block_reason=block_reason,
-                task_id=task_id,
-                task_status=task_status,
+                run_id=run_id,
+                run_status=run_status,
             )
 
         cleanup_facts = _last_cleanup_facts(events)
@@ -75,28 +75,28 @@ class RecoveryPlanner:
             ],
         )
 
-    def _task_progress_plan(
+    def _run_progress_plan(
         self,
         *,
         block_reason: str,
-        task_id: str,
-        task_status: str,
+        run_id: str,
+        run_status: str,
     ) -> RecoveryPlan:
-        if task_status == "pending":
+        if run_status == "pending":
             first = RecoveryChoice(
                 kind="continue",
-                reason="The task exists but has not been prepared.",
-                tool="task.prepare",
+                reason="The delegation run exists but has not been prepared.",
+                tool="delegate.prepare",
                 permission="prepare",
-                args={"task_id": task_id},
+                args={"run_id": run_id},
             )
         else:
             first = RecoveryChoice(
                 kind="ask_user",
-                reason="The task is prepared and needs user approval before execution.",
+                reason="The delegation run is prepared and needs user approval before execution.",
                 tool="approval.request",
                 permission="prepare",
-                args={"task_id": task_id},
+                args={"run_id": run_id},
             )
         return RecoveryPlan(
             trigger="completion.verify",
@@ -109,12 +109,12 @@ class RecoveryPlanner:
                     reason="Ask the user how to proceed if approval context is missing.",
                     tool="final.answer",
                     permission="read",
-                    args={"message": "The task is not verified complete yet. Please approve or clarify next steps."},
+                    args={"message": "The delegation run is not verified complete yet. Please approve or clarify next steps."},
                 ),
                 RecoveryChoice(
                     kind="alternate_capability",
-                    reason="Inspect task state before choosing another action.",
-                    tool="task.list",
+                    reason="Inspect delegation state before choosing another action.",
+                    tool="delegate.list",
                     permission="read",
                 ),
             ],
@@ -136,7 +136,7 @@ class RecoveryPlanner:
                 RecoveryChoice(
                     kind="continue",
                     reason="Cleanup is incomplete; run the same cleanup without the limiting filter.",
-                    tool="task.delete",
+                    tool="delegate.delete",
                     permission="write",
                     args=args,
                 ),
@@ -153,7 +153,7 @@ class RecoveryPlanner:
                 ),
                 RecoveryChoice(
                     kind="rollback_proposal",
-                    reason="If cleanup removed the wrong records, propose rollback from trace and task evidence.",
+                    reason="If cleanup removed the wrong records, propose rollback from trace and run evidence.",
                     tool="evolution.propose",
                     permission="prepare",
                 ),
@@ -161,8 +161,8 @@ class RecoveryPlanner:
         )
 
 
-def _blocked_task(block_reason: str) -> tuple[str, str]:
-    match = re.search(r"task\s+([A-Za-z0-9_-]+)\s+is still\s+([A-Za-z0-9_-]+)", block_reason)
+def _blocked_run(block_reason: str) -> tuple[str, str]:
+    match = re.search(r"(?:delegation run|run)\s+([A-Za-z0-9_-]+)\s+is still\s+([A-Za-z0-9_-]+)", block_reason)
     if not match:
         return "", ""
     return match.group(1), match.group(2)
@@ -170,7 +170,7 @@ def _blocked_task(block_reason: str) -> tuple[str, str]:
 
 def _last_cleanup_facts(events: list[dict[str, Any]]) -> dict[str, Any]:
     for event in reversed(events):
-        if event.get("tool") != "task.delete":
+        if event.get("tool") != "delegate.delete":
             continue
         facts = event.get("facts")
         if isinstance(facts, dict) and facts.get("cleanup_complete") is False:

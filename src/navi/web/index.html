@@ -133,7 +133,7 @@
       }
       .sessions-header,
       .panel-header,
-      .task-row {
+      .delegation-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -244,22 +244,22 @@
         display: grid;
         gap: 8px;
       }
-      .task-list,
+      .delegation-list,
       .skill-list {
         display: grid;
         gap: 8px;
       }
-      .task-row {
+      .delegation-row {
         border: 1px solid #d8e0e6;
         border-radius: 8px;
         background: #fff;
         padding: 9px;
       }
-      .task-row select {
+      .delegation-row select {
         width: 120px;
         min-height: 32px;
       }
-      .task-title {
+      .delegation-title {
         min-width: 0;
         overflow-wrap: anywhere;
       }
@@ -360,14 +360,14 @@
           </div>
           <div class="panel">
             <div class="panel-header">
-              <h2>Tasks</h2>
-              <button class="ghost" type="button" id="refresh-tasks">Reload</button>
+              <h2>Delegations</h2>
+              <button class="ghost" type="button" id="refresh-delegations">Reload</button>
             </div>
-            <form id="task-form">
-              <input id="task-title" placeholder="New task title" />
-              <button type="submit">Create Task</button>
+            <form id="delegation-form">
+              <input id="delegation-title" placeholder="New delegation prompt" />
+              <button type="submit">Delegate</button>
             </form>
-            <div class="task-list" id="tasks"></div>
+            <div class="delegation-list" id="delegations"></div>
           </div>
           <div class="panel">
             <h2>Connectors</h2>
@@ -419,9 +419,9 @@
         memory: document.querySelector("#memory"),
         memoryForm: document.querySelector("#memory-form"),
         memoryInput: document.querySelector("#memory-input"),
-        taskForm: document.querySelector("#task-form"),
-        taskTitle: document.querySelector("#task-title"),
-        tasks: document.querySelector("#tasks"),
+        delegationForm: document.querySelector("#delegation-form"),
+        delegationTitle: document.querySelector("#delegation-title"),
+        delegations: document.querySelector("#delegations"),
         connector: document.querySelector("#connector"),
         skills: document.querySelector("#skills"),
         auth: document.querySelector("#auth"),
@@ -596,54 +596,54 @@
         nodes.memory.value = data.memory || "";
       }
 
-      async function refreshTasks() {
-        const data = await callApi("tasks");
-        nodes.tasks.replaceChildren();
-        const tasks = data.tasks || [];
-        if (tasks.length === 0) {
+      async function refreshDelegations() {
+        const data = await callApi("delegations");
+        nodes.delegations.replaceChildren();
+        const delegations = data.delegations || [];
+        if (delegations.length === 0) {
           const empty = document.createElement("div");
           empty.className = "small muted";
-          empty.textContent = "No tasks yet.";
-          nodes.tasks.appendChild(empty);
+          empty.textContent = "No delegations yet.";
+          nodes.delegations.appendChild(empty);
           return;
         }
-        for (const task of tasks) {
+        for (const delegation of delegations) {
           const row = document.createElement("div");
-          row.className = "task-row";
+          row.className = "delegation-row";
           const title = document.createElement("div");
-          title.className = "task-title";
+          title.className = "delegation-title";
           const heading = document.createElement("h3");
-          heading.textContent = task.title;
+          heading.textContent = delegation.title;
           const meta = document.createElement("div");
           meta.className = "small muted";
-          meta.textContent = `${task.status} ${task.autonomy_level || ""} ${formatTime(task.updated_at)}`;
-          if (task.plan_summary) {
+          meta.textContent = `${delegation.status} ${delegation.autonomy_level || ""} ${formatTime(delegation.updated_at)}`;
+          if (delegation.plan_summary) {
             const plan = document.createElement("div");
             plan.className = "small muted";
-            plan.textContent = task.plan_summary.slice(0, 220);
+            plan.textContent = delegation.plan_summary.slice(0, 220);
             title.append(heading, meta, plan);
           } else {
             title.append(heading, meta);
           }
           const actions = document.createElement("div");
           actions.className = "stack";
-          if (task.status === "awaiting_approval") {
+          if (delegation.status === "awaiting_approval") {
             const approve = document.createElement("button");
             approve.type = "button";
             approve.className = "secondary";
             approve.textContent = "Approve";
             approve.addEventListener("click", async () => {
-              await callApi("task_approve", { method: "POST" }, { task_id: task.id });
+              await callApi("delegation_approve", { method: "POST" }, { run_id: delegation.id });
               await refreshAll();
             });
             actions.appendChild(approve);
           }
-          if (task.status === "queued") {
+          if (delegation.status === "queued") {
             const run = document.createElement("button");
             run.type = "button";
             run.textContent = "Run";
             run.addEventListener("click", async () => {
-              await callApi("tasks_process", { method: "POST" });
+              await callApi("delegations_process", { method: "POST" });
               await refreshAll();
             });
             actions.appendChild(run);
@@ -651,7 +651,7 @@
           if (!actions.children.length) {
             const status = document.createElement("div");
             status.className = "small muted";
-            status.textContent = task.status;
+            status.textContent = delegation.status;
             actions.appendChild(status);
           }
           const remove = document.createElement("button");
@@ -659,12 +659,12 @@
           remove.className = "secondary";
           remove.textContent = "Delete";
           remove.addEventListener("click", async () => {
-            await callApi("task", { method: "DELETE" }, { task_id: task.id });
+            await callApi("delegation", { method: "DELETE" }, { run_id: delegation.id });
             await refreshAll();
           });
           actions.appendChild(remove);
           row.append(title, actions);
-          nodes.tasks.appendChild(row);
+          nodes.delegations.appendChild(row);
         }
       }
 
@@ -737,7 +737,7 @@
           refreshStatus(),
           refreshSessions(),
           refreshMemory(),
-          refreshTasks(),
+          refreshDelegations(),
           refreshSkills(),
           refreshAuth(),
           refreshTrust(),
@@ -779,12 +779,12 @@
         await refreshMemory();
       });
 
-      nodes.taskForm.addEventListener("submit", async (event) => {
+      nodes.delegationForm.addEventListener("submit", async (event) => {
         event.preventDefault();
-        const title = nodes.taskTitle.value.trim();
+        const title = nodes.delegationTitle.value.trim();
         if (!title) return;
-        nodes.taskTitle.value = "";
-        const data = await callApi("active_tasks", {
+        nodes.delegationTitle.value = "";
+        const data = await callApi("active_delegations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ prompt: title, peer_id: localSurface, sender_id: localSurface }),
@@ -805,8 +805,8 @@
           nodes.memory.value = error.message;
         });
       });
-      document.querySelector("#refresh-tasks").addEventListener("click", () => {
-        refreshTasks().catch((error) => setNotice(nodes.connector, error.message, true));
+      document.querySelector("#refresh-delegations").addEventListener("click", () => {
+        refreshDelegations().catch((error) => setNotice(nodes.connector, error.message, true));
       });
 
       refreshAll().catch((error) => {

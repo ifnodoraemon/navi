@@ -7,7 +7,7 @@ import pytest
 
 from navi.execution import EXECUTION_PROTOCOL_VERSION, ExecutionService, NaviExecutionProvider
 from navi.provider import ChatMessage, ModelPool
-from navi.tasks import TaskStore
+from navi.runs import RunStore
 
 
 class ScriptedProvider:
@@ -22,13 +22,13 @@ class ScriptedProvider:
 
 @pytest.mark.asyncio
 async def test_execution_uses_structured_actuator_protocol(tmp_path):
-    tasks = TaskStore(tmp_path)
-    task = tasks.create("Protocol task", prompt="summarize local state", workspace=str(tmp_path))
+    runs = RunStore(tmp_path)
+    task = runs.create("Protocol task", prompt="summarize local state", workspace=str(tmp_path))
     protocol = {
         "navi_execution": {
             "version": EXECUTION_PROTOCOL_VERSION,
             "phase": "execute",
-            "task_id": task.id,
+            "run_id": task.id,
             "plan_id": "execute-basic",
             "steps": [
                 {
@@ -60,12 +60,12 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
     assert "evidence" in system_prompt
     assert "verification" in system_prompt
 
-    protocol_logs = [log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol"]
+    protocol_logs = [log for log in runs.list_execution_logs(task.id) if log.phase == "execute_protocol"]
     assert len(protocol_logs) == 1
     recorded = json.loads(protocol_logs[0].stdout)
     assert recorded["version"] == EXECUTION_PROTOCOL_VERSION
     assert recorded["phase"] == "execute"
-    assert recorded["task_id"] == task.id
+    assert recorded["run_id"] == task.id
     assert recorded["steps"][0]["actions"][0]["status"] == "completed"
     assert recorded["steps"][0]["actions"][1]["status"] == "completed"
     capability = [item for item in recorded["evidence"] if item["kind"] == "capability_result"]
@@ -79,7 +79,7 @@ async def test_watch_protocol_empty_model_evidence_is_actuated_and_logged(tmp_pa
         "navi_execution": {
             "version": EXECUTION_PROTOCOL_VERSION,
             "phase": "watch",
-            "task_id": "",
+            "run_id": "",
             "plan_id": "watch-answer",
             "steps": [
                 {
@@ -117,7 +117,7 @@ async def test_watch_protocol_empty_model_evidence_is_actuated_and_logged(tmp_pa
     capability = [item for item in result.protocol.evidence if item["kind"] == "capability_result"]
     assert capability[0]["tool"] == "final.answer"
     assert result.protocol.verification["status"] == "verified"
-    logs = TaskStore(tmp_path).list_execution_logs()
+    logs = RunStore(tmp_path).list_execution_logs()
     assert {log.phase for log in logs} == {"watch", "watch_protocol"}
     protocol_log = next(log for log in logs if log.phase == "watch_protocol")
     recorded = json.loads(protocol_log.stdout)
@@ -128,8 +128,8 @@ async def test_watch_protocol_empty_model_evidence_is_actuated_and_logged(tmp_pa
 @pytest.mark.asyncio
 async def test_free_form_execution_output_fails_required_protocol(tmp_path):
     provider = ScriptedProvider("Plain execution response")
-    tasks = TaskStore(tmp_path)
-    task = tasks.create("Strict task", prompt="answer plainly", workspace=str(tmp_path))
+    runs = RunStore(tmp_path)
+    task = runs.create("Strict task", prompt="answer plainly", workspace=str(tmp_path))
     execution = ExecutionService(tmp_path)
     execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
 
@@ -138,7 +138,7 @@ async def test_free_form_execution_output_fails_required_protocol(tmp_path):
     assert updated.status == "failed"
     assert updated.result_summary == "execution protocol missing navi_execution object"
     assert updated.error == "execution protocol missing navi_execution object"
-    protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
+    protocol_log = next(log for log in runs.list_execution_logs(task.id) if log.phase == "execute_protocol")
     recorded = json.loads(protocol_log.stdout)
     assert recorded["completion"]["status"] == "failed"
     assert recorded["verification"]["reason"] == "provider output violated the required execution protocol"
@@ -147,15 +147,15 @@ async def test_free_form_execution_output_fails_required_protocol(tmp_path):
 
 @pytest.mark.asyncio
 async def test_protocol_actions_must_be_capability_calls(tmp_path):
-    tasks = TaskStore(tmp_path)
-    task = tasks.create("Actuator task", prompt="inspect without a tool", workspace=str(tmp_path))
+    runs = RunStore(tmp_path)
+    task = runs.create("Actuator task", prompt="inspect without a tool", workspace=str(tmp_path))
     provider = ScriptedProvider(
         json.dumps(
             {
                 "navi_execution": {
                     "version": EXECUTION_PROTOCOL_VERSION,
                     "phase": "execute",
-                    "task_id": task.id,
+                    "run_id": task.id,
                     "plan_id": "bad-action",
                     "steps": [
                         {
@@ -179,7 +179,7 @@ async def test_protocol_actions_must_be_capability_calls(tmp_path):
 
     assert updated.status == "failed"
     assert updated.result_summary == "step 1 action 1 missing capability tool"
-    protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
+    protocol_log = next(log for log in runs.list_execution_logs(task.id) if log.phase == "execute_protocol")
     recorded = json.loads(protocol_log.stdout)
     assert recorded["completion"]["status"] == "failed"
     capability = [item for item in recorded["evidence"] if item["kind"] == "capability_result"]
@@ -188,15 +188,15 @@ async def test_protocol_actions_must_be_capability_calls(tmp_path):
 
 @pytest.mark.asyncio
 async def test_protocol_actions_execute_local_file_actuators(tmp_path):
-    tasks = TaskStore(tmp_path)
-    task = tasks.create("File actuator task", prompt="write a note", workspace=str(tmp_path))
+    runs = RunStore(tmp_path)
+    task = runs.create("File actuator task", prompt="write a note", workspace=str(tmp_path))
     provider = ScriptedProvider(
         json.dumps(
             {
                 "navi_execution": {
                     "version": EXECUTION_PROTOCOL_VERSION,
                     "phase": "execute",
-                    "task_id": task.id,
+                    "run_id": task.id,
                     "plan_id": "file-actuator",
                     "steps": [
                         {
@@ -233,7 +233,7 @@ async def test_protocol_actions_execute_local_file_actuators(tmp_path):
 
     assert updated.status == "completed"
     assert (tmp_path / "notes" / "result.txt").read_text(encoding="utf-8") == "actuated"
-    protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
+    protocol_log = next(log for log in runs.list_execution_logs(task.id) if log.phase == "execute_protocol")
     recorded = json.loads(protocol_log.stdout)
     capability = [item for item in recorded["evidence"] if item["kind"] == "capability_result"]
     assert [item["tool"] for item in capability] == ["file.write", "file.read"]
@@ -245,15 +245,15 @@ async def test_protocol_actions_execute_local_file_actuators(tmp_path):
 
 @pytest.mark.asyncio
 async def test_verifier_policy_can_fail_after_successful_capability_actions(tmp_path):
-    tasks = TaskStore(tmp_path)
-    task = tasks.create("Verifier task", prompt="write wrong content", workspace=str(tmp_path))
+    runs = RunStore(tmp_path)
+    task = runs.create("Verifier task", prompt="write wrong content", workspace=str(tmp_path))
     provider = ScriptedProvider(
         json.dumps(
             {
                 "navi_execution": {
                     "version": EXECUTION_PROTOCOL_VERSION,
                     "phase": "execute",
-                    "task_id": task.id,
+                    "run_id": task.id,
                     "plan_id": "verifier-failure",
                     "steps": [
                         {
@@ -286,7 +286,7 @@ async def test_verifier_policy_can_fail_after_successful_capability_actions(tmp_
 
     assert updated.status == "failed"
     assert updated.result_summary == "expected text not found"
-    protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
+    protocol_log = next(log for log in runs.list_execution_logs(task.id) if log.phase == "execute_protocol")
     recorded = json.loads(protocol_log.stdout)
     assert recorded["completion"]["status"] == "failed"
     assert recorded["verification"]["status"] == "failed"
@@ -297,8 +297,8 @@ async def test_verifier_policy_can_fail_after_successful_capability_actions(tmp_
 
 @pytest.mark.asyncio
 async def test_execution_rejects_plans_over_step_budget(tmp_path):
-    tasks = TaskStore(tmp_path)
-    task = tasks.create("Budget task", prompt="too many steps", workspace=str(tmp_path))
+    runs = RunStore(tmp_path)
+    task = runs.create("Budget task", prompt="too many steps", workspace=str(tmp_path))
     steps = [
         {
             "id": f"step-{index}",
@@ -313,7 +313,7 @@ async def test_execution_rejects_plans_over_step_budget(tmp_path):
                 "navi_execution": {
                     "version": EXECUTION_PROTOCOL_VERSION,
                     "phase": "execute",
-                    "task_id": task.id,
+                    "run_id": task.id,
                     "plan_id": "too-many-steps",
                     "steps": steps,
                     "evidence": [{"kind": "model_plan", "summary": "too many"}],
@@ -334,15 +334,15 @@ async def test_execution_rejects_plans_over_step_budget(tmp_path):
 
 @pytest.mark.asyncio
 async def test_execution_retry_once_policy_repeats_failed_step(tmp_path):
-    tasks = TaskStore(tmp_path)
-    task = tasks.create("Retry step task", prompt="retry failed step", workspace=str(tmp_path))
+    runs = RunStore(tmp_path)
+    task = runs.create("Retry step task", prompt="retry failed step", workspace=str(tmp_path))
     provider = ScriptedProvider(
         json.dumps(
             {
                 "navi_execution": {
                     "version": EXECUTION_PROTOCOL_VERSION,
                     "phase": "execute",
-                    "task_id": task.id,
+                    "run_id": task.id,
                     "plan_id": "retry-once",
                     "steps": [
                         {
@@ -365,7 +365,7 @@ async def test_execution_retry_once_policy_repeats_failed_step(tmp_path):
     updated = await execution.execute_task(task)
 
     assert updated.status == "failed"
-    protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
+    protocol_log = next(log for log in runs.list_execution_logs(task.id) if log.phase == "execute_protocol")
     recorded = json.loads(protocol_log.stdout)
     capability = [item for item in recorded["evidence"] if item["kind"] == "capability_result"]
     assert [item["attempt"] for item in capability] == [1, 2]
@@ -378,15 +378,15 @@ async def test_failed_dirty_execution_records_rollback_hint(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
     subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
-    tasks = TaskStore(tmp_path)
-    task = tasks.create("Rollback hint task", prompt="write wrong file", workspace=str(project))
+    runs = RunStore(tmp_path)
+    task = runs.create("Rollback hint task", prompt="write wrong file", workspace=str(project))
     provider = ScriptedProvider(
         json.dumps(
             {
                 "navi_execution": {
                     "version": EXECUTION_PROTOCOL_VERSION,
                     "phase": "execute",
-                    "task_id": task.id,
+                    "run_id": task.id,
                     "plan_id": "dirty-failure",
                     "steps": [
                         {
@@ -418,7 +418,7 @@ async def test_failed_dirty_execution_records_rollback_hint(tmp_path):
     updated = await execution.execute_task(task)
 
     assert updated.status == "failed"
-    protocol_log = next(log for log in tasks.list_execution_logs(task.id) if log.phase == "execute_protocol")
+    protocol_log = next(log for log in runs.list_execution_logs(task.id) if log.phase == "execute_protocol")
     recorded = json.loads(protocol_log.stdout)
     rollback = [item for item in recorded["evidence"] if item["kind"] == "rollback_hint"]
     assert rollback

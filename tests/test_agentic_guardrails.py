@@ -115,7 +115,7 @@ def test_asyncio_primitives_are_lazily_initialized():
 def test_memory_provider_failures_are_logged_before_fallback():
     for method in (
         MemoryStore.extract_and_consolidate_memories,
-        MemoryStore.extract_memories_from_task,
+        MemoryStore.extract_memories_from_run,
     ):
         source = _source(method)
 
@@ -138,7 +138,7 @@ def test_memory_session_lock_acquisition_is_inside_finally_guard():
 def test_memory_async_extractors_offload_database_writes():
     for method in (
         MemoryStore.extract_and_consolidate_memories,
-        MemoryStore.extract_memories_from_task,
+        MemoryStore.extract_memories_from_run,
     ):
         source = _source(method)
 
@@ -198,7 +198,7 @@ def test_execution_follow_up_is_explicit_capability_not_hidden_loop():
 
     assert "SELF-HEALING" not in source
     assert "while result.exit_code" not in source
-    assert "execution.retry" in action_names
+    assert "delegate.retry" in action_names
 
 
 def test_execution_protocol_has_no_free_form_compatibility_path():

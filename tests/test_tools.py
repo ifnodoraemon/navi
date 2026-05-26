@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from navi.tasks import TaskStore
+from navi.runs import RunStore
 from navi.tools import build_tool_gateway
 from navi.config import write_default_config
 
@@ -19,9 +19,9 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
         "git.status",
         "provider.config",
         "shell.run",
-        "task.list",
+        "delegate.list",
         "service.status",
-        "task.status",
+        "delegate.status",
         "test.run",
     } <= set(specs)
     assert specs["file.read"].facts_only is True
@@ -33,27 +33,27 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
     assert specs["connector.telegram.status"].source == "connector.telegram"
 
 
-def test_task_status_tool_returns_task_facts(tmp_path):
-    store = TaskStore(tmp_path)
+def test_run_status_tool_returns_task_facts(tmp_path):
+    store = RunStore(tmp_path)
     task = store.create("tool task", status="preparing")
-    approval = store.create_approval(task_id=task.id, peer_id="peer", sender_id="sender")
+    approval = store.create_approval(run_id=task.id, peer_id="peer", sender_id="sender")
     registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
 
-    result = registry.call("task.status", {"task_id": task.id})
+    result = registry.call("delegate.status", {"run_id": task.id})
 
     assert result.ok is True
-    assert result.facts["task"]["id"] == task.id
+    assert result.facts["run"]["id"] == task.id
     assert "code" not in result.facts["approvals"][0]
     assert result.facts["approvals"][0]["code_present"] is True
     assert result.error == ""
     assert approval.code
     logs = store.list_tool_call_logs()
-    assert logs[0].tool == "task.status"
+    assert logs[0].tool == "delegate.status"
     assert logs[0].ok is True
 
 
 def test_task_list_tool_returns_tasks_and_watches(tmp_path):
-    store = TaskStore(tmp_path)
+    store = RunStore(tmp_path)
     task = store.create("tool task", status="preparing")
     failed = store.create("failed task", status="failed")
     watch = store.create_watch(
@@ -65,14 +65,14 @@ def test_task_list_tool_returns_tasks_and_watches(tmp_path):
     )
     registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
 
-    result = registry.call("task.list", {"limit": 10})
+    result = registry.call("delegate.list", {"limit": 10})
 
     assert result.ok is True
-    assert {item["id"] for item in result.facts["tasks"]} == {task.id, failed.id}
+    assert {item["id"] for item in result.facts["runs"]} == {task.id, failed.id}
     assert result.facts["watches"][0]["id"] == watch.id
-    assert result.facts["task_status_counts"] == {"failed": 1, "preparing": 1}
-    assert result.facts["returned_task_count"] == 2
-    assert result.facts["task_limit"] == 10
+    assert result.facts["run_status_counts"] == {"failed": 1, "preparing": 1}
+    assert result.facts["returned_run_count"] == 2
+    assert result.facts["run_limit"] == 10
 
 
 def test_filesystem_list_tool_returns_directory_facts(tmp_path):
@@ -112,7 +112,7 @@ def test_file_read_and_write_are_workspace_scoped_and_audited(tmp_path):
     assert read.facts["content"] == "hello"
     assert outside.ok is False
     assert outside.error == "path must be within the project directory"
-    assert [log.tool for log in TaskStore(tmp_path).list_tool_call_logs(limit=3)] == [
+    assert [log.tool for log in RunStore(tmp_path).list_tool_call_logs(limit=3)] == [
         "file.write",
         "file.read",
         "file.write",

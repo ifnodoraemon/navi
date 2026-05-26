@@ -9,7 +9,7 @@ from navi.fact_tools import ServiceFacts
 from navi.goals import GoalStore
 from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.runtime import AgentRuntime
-from navi.tasks import TaskStore
+from navi.runs import RunStore
 
 
 class ScriptedProvider(MockProvider):
@@ -22,7 +22,7 @@ class ScriptedProvider(MockProvider):
         response = self.responses.pop(0)
         if "TASK_ID" in response:
             for message in reversed(messages):
-                match = re.search(r'"task_id":\s*"([^"]+)"', message.content)
+                match = re.search(r'"run_id":\s*"([^"]+)"', message.content)
                 if match:
                     return response.replace("TASK_ID", match.group(1))
         return response
@@ -66,7 +66,7 @@ async def test_engine_can_chain_multiple_read_capabilities_before_answering(tmp_
     assert "Observed facts in this turn:" in provider.messages[1][1].content
     assert "provider" in provider.messages[1][1].content
     assert "service.status" in provider.messages[2][1].content
-    logs = TaskStore(tmp_path).list_tool_call_logs()
+    logs = RunStore(tmp_path).list_tool_call_logs()
     assert [log.tool for log in logs[:2]] == ["service.status", "provider.config"]
 
 
@@ -122,10 +122,10 @@ async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tm
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"task.record","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local work"}',
+            '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local work"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"已完成。"},"confidence":0.9,"reason":"premature"}',
-            '{"tool":"task.prepare","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"prepare pending task"}',
-            '{"tool":"approval.request","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
+            '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"prepare pending task"}',
+            '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"任务已准备好，等待审批。"},"confidence":0.9,"reason":"approval is pending"}',
         ]
     )
@@ -139,9 +139,9 @@ async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tm
         source="web",
     )
 
-    task = TaskStore(tmp_path).list()[0]
+    task = RunStore(tmp_path).list()[0]
     assert task.status == "awaiting_approval"
-    goal = GoalStore(tmp_path).get_by_task(task.id)
+    goal = GoalStore(tmp_path).get_by_run(task.id)
     assert goal is not None
     assert goal.trace_id == result.trace_id
     assert goal.session_id == result.session_id
@@ -158,14 +158,14 @@ async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tm
 
 @pytest.mark.asyncio
 async def test_engine_blocks_final_answer_after_partial_failed_task_cleanup(tmp_path):
-    store = TaskStore(tmp_path)
+    store = RunStore(tmp_path)
     for index in range(3):
-        store.create(f"failed cleanup {index}", status="failed", source="watch", kind="task")
+        store.create(f"failed cleanup {index}", status="failed", source="watch", kind="delegation")
     provider = ScriptedProvider(
         [
-            '{"tool":"task.delete","permission":"write","args":{"status":"failed","source":"watch","limit":1},"confidence":0.9,"reason":"cleanup failed tasks"}',
+            '{"tool":"delegate.delete","permission":"write","args":{"status":"failed","source":"watch","limit":1},"confidence":0.9,"reason":"cleanup failed tasks"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"清理完成。"},"confidence":0.9,"reason":"premature"}',
-            '{"tool":"task.delete","permission":"write","args":{"status":"failed","source":"watch"},"confidence":0.9,"reason":"finish cleanup"}',
+            '{"tool":"delegate.delete","permission":"write","args":{"status":"failed","source":"watch"},"confidence":0.9,"reason":"finish cleanup"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"失败任务已清理完毕。"},"confidence":0.9,"reason":"verified complete"}',
         ]
     )
@@ -179,7 +179,7 @@ async def test_engine_blocks_final_answer_after_partial_failed_task_cleanup(tmp_
         source="web",
     )
 
-    assert store.count_tasks(status="failed", source="watch") == 0
+    assert store.count_runs(status="failed", source="watch") == 0
     assert result.text == "失败任务已清理完毕。"
     assert len(provider.messages) == 4
     assert "Recovery plan:" in provider.messages[2][1].content
@@ -247,7 +247,7 @@ async def test_engine_shutdown_cancels_background_tasks(tmp_path):
 
 def test_approval_prompt_uses_surface_affordance():
     facts = {
-        "task_id": "task-1",
+        "run_id": "task-1",
         "status": "awaiting_approval",
         "approval": {"code": "123456", "expires_at": 0},
     }

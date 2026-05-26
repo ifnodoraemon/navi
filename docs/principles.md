@@ -111,7 +111,7 @@ Memory is not a text dump. Uncontrolled memory creates drift, stale recalls, and
 - Memory writes must have source, timestamp, scope, and reason.
 - Memory retrieval must be selective and explainable.
 - Old or conflicting memories must be surfaced as conflicts, not silently merged.
-- Background learning should be separate from foreground task execution.
+- Background learning should be separate from foreground run execution.
 
 ### 10. Memory Should Be an Operating System, Not a Notebook
 
@@ -137,7 +137,7 @@ Navi should evolve, but never mutate itself silently.
 - Self-evolution starts as a proposal with a reason, expected benefit, affected target, and rollback plan.
 - Evolution targets include prompts, tools, skills, connector affordances, memory schemas, trust rules, and workflows.
 - Applying an evolution requires the configured approval policy unless it is purely observational.
-- Every applied evolution must create a ledger event with before, after, diff, source task, and rollback status.
+- Every applied evolution must create a ledger event with before, after, diff, source run, and rollback status.
 - The agent must evaluate whether an evolution improved outcomes using evidence, not vibes.
 - Failed evolutions should lower trust in the changed rule or workflow.
 - The agent must distinguish between user preference, environmental fact, one-off workaround, and reusable skill before evolving.

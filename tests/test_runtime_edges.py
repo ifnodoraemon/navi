@@ -9,7 +9,7 @@ from navi.cli_providers import CliProviderSpec, get_cli_provider_spec
 from navi.daemon import SystemDaemon
 from navi.memory import MemoryStore
 from navi.paths import ensure_home, navi_home
-from navi.tasks import TaskStore
+from navi.runs import RunStore
 
 
 def test_paths_use_env_or_workspace(tmp_path, monkeypatch):
@@ -79,7 +79,7 @@ def test_memory_recall_filters_status_and_expiry(tmp_path):
 @pytest.mark.asyncio
 async def test_daemon_processes_due_watches(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
-    store = TaskStore(tmp_path)
+    store = RunStore(tmp_path)
     watch = store.create_watch(
         cron="*/5 * * * *",
         prompt="check coverage",
@@ -92,7 +92,7 @@ async def test_daemon_processes_due_watches(tmp_path, monkeypatch):
 
     assert len(results) == 1
     assert results[0]["action"] == "watch"
-    assert results[0]["task_id"] == ""
+    assert results[0]["run_id"] == ""
     assert results[0]["peer_id"] == "peer"
     assert "check coverage" in results[0]["message"]
     assert store.list_by_status("awaiting_approval") == []
@@ -103,19 +103,19 @@ async def test_daemon_processes_due_watches(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_daemon_prunes_excess_failed_watch_task_records(tmp_path, monkeypatch):
-    store = TaskStore(tmp_path)
+async def test_daemon_prunes_excess_failed_watch_delegate_spawns(tmp_path, monkeypatch):
+    store = RunStore(tmp_path)
     daemon = SystemDaemon(tmp_path)
     async def no_events():
         return []
 
     monkeypatch.setattr(daemon, "process_events_once", no_events)
     for index in range(55):
-        store.create(f"old failed watch {index}", status="failed", source="watch", kind="task")
-    local_failed = store.create("keep local failed", status="failed", source="local", kind="task")
+        store.create(f"old failed watch {index}", status="failed", source="watch", kind="delegation")
+    local_failed = store.create("keep local failed", status="failed", source="local", kind="delegation")
 
     results = await daemon.process_watches_once()
 
     assert results == []
-    assert store.count_tasks(status="failed", source="watch", kind="task") == 50
+    assert store.count_runs(status="failed", source="watch", kind="delegation") == 50
     assert store.get(local_failed.id) is not None

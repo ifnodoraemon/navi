@@ -25,8 +25,8 @@ def test_model_syscall_planner_prompt_loads_routing_rules_from_spec():
     system = _planner_system_prompt()
 
     assert "TASK ROUTING RULES" in system
-    assert "Use tracked tasks for complex local work" in system
-    assert "After task.record" in system
+    assert "Use delegation runs for complex local work" in system
+    assert "After delegate.spawn" in system
     assert "cleanup_complete=true" in system
     assert "SECURITY GUIDELINE" in system
 
@@ -59,7 +59,7 @@ async def test_model_syscall_planner_asks_when_schedule_time_is_vague(tmp_path):
 @pytest.mark.asyncio
 async def test_model_syscall_planner_receives_recent_conversation_context(tmp_path):
     provider = ScriptedProvider(
-        '{"tool":"task.record","permission":"prepare","args":{"prompt":"删除上一轮确认要删除的旧任务入口"},"confidence":0.9,"reason":"follow-up refers to recent conversation"}'
+        '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"删除上一轮确认要删除的旧任务入口"},"confidence":0.9,"reason":"follow-up refers to recent conversation"}'
     )
     planner = ModelSyscallPlanner(ModelPool(default=provider))
 
@@ -69,7 +69,7 @@ async def test_model_syscall_planner_receives_recent_conversation_context(tmp_pa
         conversation_context="assistant: 旧任务入口可以删除，是否继续？",
     )
 
-    assert call.tool == "task.record"
+    assert call.tool == "delegate.spawn"
     assert call.args["prompt"] == "删除上一轮确认要删除的旧任务入口"
     assert "Recent conversation:" in provider.messages[1].content
     assert "旧任务入口可以删除" in provider.messages[1].content
@@ -120,27 +120,27 @@ async def test_model_syscall_planner_parses_approval_syscall(tmp_path):
 @pytest.mark.asyncio
 async def test_model_syscall_planner_prompt_routes_engineering_investigation_to_task(tmp_path):
     provider = ScriptedProvider(
-        '{"tool":"task.record","permission":"prepare","args":{"prompt":"检查配置到运行时的映射问题"},"confidence":0.9,"reason":"engineering investigation"}'
+        '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"检查配置到运行时的映射问题"},"confidence":0.9,"reason":"engineering investigation"}'
     )
     planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("配置项写了但运行时好像没消费，帮我检查配置到运行时的映射问题", tools=_tools(tmp_path))
 
-    assert call.tool == "task.record"
+    assert call.tool == "delegate.spawn"
     assert "config-to-runtime mapping" in provider.messages[1].content
 
 
 @pytest.mark.asyncio
 async def test_model_syscall_planner_preserves_approval_args(tmp_path):
     provider = ScriptedProvider(
-        '{"tool":"approval.resolve","permission":"write","args":{"decision":"reject","task_id":"123456"},"confidence":0.95,"reason":"explicit rejection"}'
+        '{"tool":"approval.resolve","permission":"write","args":{"decision":"reject","run_id":"123456"},"confidence":0.95,"reason":"explicit rejection"}'
     )
     planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("拒绝 123456", tools=_tools(tmp_path))
 
     assert call.tool == "approval.resolve"
-    assert call.args == {"decision": "reject", "task_id": "123456"}
+    assert call.args == {"decision": "reject", "run_id": "123456"}
 
 
 @pytest.mark.asyncio

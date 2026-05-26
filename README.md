@@ -70,7 +70,7 @@ All local state is structured under `.navi/` or a custom `NAVI_HOME` directory:
 ├── evolution.db      # Evolution Ledger logs
 ├── graph.db          # Project dependency and context graph
 ├── memory.db         # Active cognitive memory & session stores
-├── tasks.db          # Scheduled and queued background tasks
+├── runs.db          # Scheduled and queued background tasks
 ├── trust.db          # Trust engine states
 └── skills/           # Custom procedural guides (SKILL.md)
 ```

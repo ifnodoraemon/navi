@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import pytest
-from pathlib import Path
 
-from navi.config import load_config, write_default_config, validate_config, ModelConfig, NaviConfig
+from navi.config import load_config, write_default_config, validate_config
 from navi.weixin.service import WeixinService
 from navi.weixin.config import WeixinConfig
 from navi.weixin.connector import _status as weixin_status
@@ -14,7 +12,6 @@ from navi.telegram.config import TelegramConfig
 from navi.telegram.connector import _status as telegram_status
 from navi.provider import MockProvider, ModelPool
 from navi.runtime import AgentRuntime
-from navi.tasks import TaskStore
 from navi.core_tools import _provider_config
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import connect
-from .tasks import Task
+from .runs import Run
 
 GOAL_STATUS_ACTIVE = "active"
 GOAL_STATUS_AWAITING_APPROVAL = "awaiting_approval"
@@ -27,7 +27,7 @@ class Goal:
     sender_id: str
     session_id: str
     workspace: str
-    task_id: str
+    run_id: str
     trace_id: str
     evidence_json: str
     blocked_reason: str
@@ -42,7 +42,7 @@ class GoalEvent:
     goal_id: str
     event_type: str
     status: str
-    task_id: str
+    run_id: str
     trace_id: str
     evidence_json: str
     created_at: float
@@ -68,7 +68,7 @@ class GoalStore:
                     sender_id TEXT NOT NULL,
                     session_id TEXT NOT NULL,
                     workspace TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
                     trace_id TEXT NOT NULL,
                     evidence_json TEXT NOT NULL,
                     blocked_reason TEXT NOT NULL,
@@ -85,7 +85,7 @@ class GoalStore:
                     goal_id TEXT NOT NULL,
                     event_type TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
                     trace_id TEXT NOT NULL,
                     evidence_json TEXT NOT NULL,
                     created_at REAL NOT NULL
@@ -93,7 +93,7 @@ class GoalStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status, updated_at)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_task ON goals(task_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_run ON goals(run_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goal_events_goal ON goal_events(goal_id, created_at)")
 
     def create(
@@ -105,7 +105,7 @@ class GoalStore:
         sender_id: str = "",
         session_id: str = "",
         workspace: str = "",
-        task_id: str = "",
+        run_id: str = "",
         trace_id: str = "",
         evidence: dict[str, Any] | None = None,
     ) -> Goal:
@@ -119,7 +119,7 @@ class GoalStore:
             sender_id=sender_id,
             session_id=session_id,
             workspace=workspace,
-            task_id=task_id,
+            run_id=run_id,
             trace_id=trace_id,
             evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
             blocked_reason="",
@@ -132,7 +132,7 @@ class GoalStore:
                 """
                 INSERT INTO goals(
                     id, objective, status, source, peer_id, sender_id, session_id,
-                    workspace, task_id, trace_id, evidence_json, blocked_reason,
+                    workspace, run_id, trace_id, evidence_json, blocked_reason,
                     created_at, updated_at, completed_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -146,7 +146,7 @@ class GoalStore:
                     goal.sender_id,
                     goal.session_id,
                     goal.workspace,
-                    goal.task_id,
+                    goal.run_id,
                     goal.trace_id,
                     goal.evidence_json,
                     goal.blocked_reason,
@@ -155,7 +155,7 @@ class GoalStore:
                     goal.completed_at,
                 ),
             )
-        self.record_event(goal.id, "goal.created", status=goal.status, task_id=task_id, trace_id=trace_id, evidence=evidence or {})
+        self.record_event(goal.id, "goal.created", status=goal.status, run_id=run_id, trace_id=trace_id, evidence=evidence or {})
         return goal
 
     def get(self, goal_id: str) -> Goal | None:
@@ -163,7 +163,7 @@ class GoalStore:
             row = conn.execute(
                 """
                 SELECT id, objective, status, source, peer_id, sender_id, session_id,
-                       workspace, task_id, trace_id, evidence_json, blocked_reason,
+                       workspace, run_id, trace_id, evidence_json, blocked_reason,
                        created_at, updated_at, completed_at
                 FROM goals WHERE id = ?
                 """,
@@ -171,16 +171,16 @@ class GoalStore:
             ).fetchone()
         return Goal(*row) if row else None
 
-    def get_by_task(self, task_id: str) -> Goal | None:
+    def get_by_run(self, run_id: str) -> Goal | None:
         with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT id, objective, status, source, peer_id, sender_id, session_id,
-                       workspace, task_id, trace_id, evidence_json, blocked_reason,
+                       workspace, run_id, trace_id, evidence_json, blocked_reason,
                        created_at, updated_at, completed_at
-                FROM goals WHERE task_id = ? ORDER BY updated_at DESC LIMIT 1
+                FROM goals WHERE run_id = ? ORDER BY updated_at DESC LIMIT 1
                 """,
-                (task_id,),
+                (run_id,),
             ).fetchone()
         return Goal(*row) if row else None
 
@@ -188,7 +188,7 @@ class GoalStore:
         if status:
             query = """
                 SELECT id, objective, status, source, peer_id, sender_id, session_id,
-                       workspace, task_id, trace_id, evidence_json, blocked_reason,
+                       workspace, run_id, trace_id, evidence_json, blocked_reason,
                        created_at, updated_at, completed_at
                 FROM goals WHERE status = ? ORDER BY updated_at DESC LIMIT ?
                 """
@@ -196,7 +196,7 @@ class GoalStore:
         else:
             query = """
                 SELECT id, objective, status, source, peer_id, sender_id, session_id,
-                       workspace, task_id, trace_id, evidence_json, blocked_reason,
+                       workspace, run_id, trace_id, evidence_json, blocked_reason,
                        created_at, updated_at, completed_at
                 FROM goals ORDER BY updated_at DESC LIMIT ?
                 """
@@ -209,7 +209,7 @@ class GoalStore:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, goal_id, event_type, status, task_id, trace_id, evidence_json, created_at
+                SELECT id, goal_id, event_type, status, run_id, trace_id, evidence_json, created_at
                 FROM goal_events WHERE goal_id = ? ORDER BY created_at ASC LIMIT ?
                 """,
                 (goal_id, limit),
@@ -235,7 +235,7 @@ class GoalStore:
                     goal_id,
                 ),
             )
-        self.record_event(goal_id, "goal.trace_attached", status=goal.status, task_id=goal.task_id, trace_id=trace_id, evidence=evidence or {})
+        self.record_event(goal_id, "goal.trace_attached", status=goal.status, run_id=goal.run_id, trace_id=trace_id, evidence=evidence or {})
         return self.get(goal_id)
 
     def update_status(
@@ -269,21 +269,21 @@ class GoalStore:
                     goal_id,
                 ),
             )
-        self.record_event(goal_id, event_type, status=status, task_id=goal.task_id, trace_id=goal.trace_id, evidence=evidence or {})
+        self.record_event(goal_id, event_type, status=status, run_id=goal.run_id, trace_id=goal.trace_id, evidence=evidence or {})
         return self.get(goal_id)
 
-    def update_for_task(self, task: Task, *, evidence: dict[str, Any] | None = None) -> Goal | None:
-        goal = self.get_by_task(task.id)
+    def update_for_run(self, run: Run, *, evidence: dict[str, Any] | None = None) -> Goal | None:
+        goal = self.get_by_run(run.id)
         if goal is None:
             return None
-        status = _goal_status_for_task(task)
-        reason = task.error if status == GOAL_STATUS_BLOCKED else ""
+        status = _goal_status_for_run(run)
+        reason = run.error if status == GOAL_STATUS_BLOCKED else ""
         return self.update_status(
             goal.id,
             status=status,
             blocked_reason=reason,
-            evidence=evidence or {"task_id": task.id, "task_status": task.status},
-            event_type="goal.task_status",
+            evidence=evidence or {"run_id": run.id, "run_status": run.status},
+            event_type="goal.run_status",
         )
 
     def record_event(
@@ -292,7 +292,7 @@ class GoalStore:
         event_type: str,
         *,
         status: str,
-        task_id: str = "",
+        run_id: str = "",
         trace_id: str = "",
         evidence: dict[str, Any] | None = None,
     ) -> GoalEvent:
@@ -301,7 +301,7 @@ class GoalStore:
             goal_id=goal_id,
             event_type=event_type,
             status=status,
-            task_id=task_id,
+            run_id=run_id,
             trace_id=trace_id,
             evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
             created_at=time.time(),
@@ -309,7 +309,7 @@ class GoalStore:
         with connect(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO goal_events(id, goal_id, event_type, status, task_id, trace_id, evidence_json, created_at)
+                INSERT INTO goal_events(id, goal_id, event_type, status, run_id, trace_id, evidence_json, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -317,7 +317,7 @@ class GoalStore:
                     event.goal_id,
                     event.event_type,
                     event.status,
-                    event.task_id,
+                    event.run_id,
                     event.trace_id,
                     event.evidence_json,
                     event.created_at,
@@ -326,14 +326,14 @@ class GoalStore:
         return event
 
 
-def _goal_status_for_task(task: Task) -> str:
-    if task.status == "completed":
+def _goal_status_for_run(run: Run) -> str:
+    if run.status == "completed":
         return GOAL_STATUS_VERIFIED_COMPLETE
-    if task.status == "awaiting_approval":
+    if run.status == "awaiting_approval":
         return GOAL_STATUS_AWAITING_APPROVAL
-    if task.status == "rejected":
+    if run.status == "rejected":
         return GOAL_STATUS_REJECTED
-    if task.status in {"failed", "blocked"}:
+    if run.status in {"failed", "blocked"}:
         return GOAL_STATUS_BLOCKED
     return GOAL_STATUS_ACTIVE
 

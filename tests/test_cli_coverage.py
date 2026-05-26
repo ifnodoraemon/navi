@@ -81,7 +81,7 @@ def test_cli_tool_eval_model_and_skill_commands(tmp_path):
 
     tools = runner.invoke(app, ["tools", "list", "--json-output"], env=env)
     assert tools.exit_code == 0
-    assert '"task.list"' in tools.output
+    assert '"delegate.list"' in tools.output
 
     provider = runner.invoke(app, ["tools", "call", "provider.config"], env=env)
     assert provider.exit_code == 0
@@ -92,8 +92,8 @@ def test_cli_tool_eval_model_and_skill_commands(tmp_path):
     assert bad_json.exit_code != 0
     assert "invalid JSON" in bad_json.output
 
-    dataset = Path(__file__).resolve().parents[1] / "evals" / "task_cases.yaml"
-    eval_result = runner.invoke(app, ["eval", "tasks", "--validate-only", "--dataset", str(dataset)], env=env)
+    dataset = Path(__file__).resolve().parents[1] / "evals" / "delegation_cases.yaml"
+    eval_result = runner.invoke(app, ["eval", "delegations", "--validate-only", "--dataset", str(dataset)], env=env)
     assert eval_result.exit_code == 0
     assert "ok dataset" in eval_result.output
 
@@ -207,7 +207,7 @@ def test_cli_trace_commands(tmp_path):
 
 def test_cli_goal_commands(tmp_path):
     env = _env(tmp_path)
-    goal = GoalStore(tmp_path).create(objective="finish cli goal", task_id="task-1")
+    goal = GoalStore(tmp_path).create(objective="finish cli goal", run_id="task-1")
 
     listed = runner.invoke(app, ["goal", "list"], env=env)
     assert listed.exit_code == 0

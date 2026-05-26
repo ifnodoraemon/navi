@@ -23,7 +23,7 @@ from .trace import TraceStore
 class AgentTurnResult:
     text: str
     session_id: str = ""
-    task_id: str = ""
+    run_id: str = ""
     action: str = "chat"
     observation: str = ""
     model_role: str = "responder"
@@ -146,7 +146,7 @@ class HernessEngine:
                 trace_id=trace_id,
                 phase="capability.result",
                 session_id=resolved_session_id or "",
-                task_id=invoked.task_id,
+                run_id=invoked.run_id,
                 source=source,
                 peer_id=peer_id,
                 sender_id=sender_id,
@@ -162,7 +162,7 @@ class HernessEngine:
                 pending_approval_prompt = approval_prompt
             result = AgentTurnResult(
                 text=invoked.message or invoked.observation,
-                task_id=invoked.task_id,
+                run_id=invoked.run_id,
                 action=invoked.action,
                 observation=invoked.observation,
                 model_role=syscall.model_role,
@@ -171,7 +171,7 @@ class HernessEngine:
             if result.terminal and observations and result.action == "chat" and last_result:
                 result = AgentTurnResult(
                     text=result.text,
-                    task_id=last_result.task_id,
+                    run_id=last_result.run_id,
                     action=last_result.action,
                     observation="\n\n".join(observations),
                     model_role=last_result.model_role,
@@ -191,7 +191,7 @@ class HernessEngine:
                         trace_id=trace_id,
                         phase="completion.verify",
                         session_id=resolved_session_id or "",
-                        task_id=result.task_id,
+                        run_id=result.run_id,
                         source=source,
                         peer_id=peer_id,
                         sender_id=sender_id,
@@ -205,7 +205,7 @@ class HernessEngine:
                         trace_id=trace_id,
                         phase="recovery.plan",
                         session_id=resolved_session_id or "",
-                        task_id=result.task_id,
+                        run_id=result.run_id,
                         source=source,
                         peer_id=peer_id,
                         sender_id=sender_id,
@@ -237,7 +237,7 @@ class HernessEngine:
                 peer_id=peer_id,
                 sender_id=sender_id,
                 action=last_result.action if last_result else "capability",
-                task_id=last_result.task_id if last_result else "",
+                run_id=last_result.run_id if last_result else "",
                 model_role=last_result.model_role if last_result else "responder",
                 pending_approval_prompt=pending_approval_prompt,
                 budget_exhausted=budget_exhausted,
@@ -302,35 +302,35 @@ class HernessEngine:
     def _completion_block_reason(events: list[dict[str, Any]]) -> str:
         if not events:
             return ""
-        latest_task_status: dict[str, str] = {}
+        latest_run_status: dict[str, str] = {}
         for event in events:
             facts = event.get("facts")
             if not isinstance(facts, dict):
                 continue
-            task_id = str(facts.get("task_id") or "").strip()
-            status = str(facts.get("status") or facts.get("task_status") or "").strip()
-            if task_id and status:
-                latest_task_status[task_id] = status
+            run_id = str(facts.get("run_id") or facts.get("run_id") or "").strip()
+            status = str(facts.get("status") or facts.get("run_status") or facts.get("run_status") or "").strip()
+            if run_id and status:
+                latest_run_status[run_id] = status
         for event in events:
-            if event.get("tool") != "task.record":
+            if event.get("tool") != "delegate.spawn":
                 continue
             facts = event.get("facts")
             if not isinstance(facts, dict):
                 continue
-            task_id = str(facts.get("task_id") or "").strip()
-            status = latest_task_status.get(task_id) or str(facts.get("status") or "").strip()
-            if task_id and status in {"pending", "prepared"}:
+            run_id = str(facts.get("run_id") or facts.get("run_id") or "").strip()
+            status = latest_run_status.get(run_id) or str(facts.get("status") or "").strip()
+            if run_id and status in {"pending", "prepared"}:
                 return (
                     "completion verifier blocked final answer: "
-                    f"task {task_id} is still {status}; prepare it and request approval or queue it before reporting completion."
+                    f"delegation run {run_id} is still {status}; prepare it and request approval or run it before reporting completion."
                 )
-        last_delete = next((event for event in reversed(events) if event.get("tool") == "task.delete"), None)
+        last_delete = next((event for event in reversed(events) if event.get("tool") == "delegate.delete"), None)
         facts = last_delete.get("facts") if isinstance(last_delete, dict) else None
         if isinstance(facts, dict) and facts.get("cleanup_complete") is False:
             remaining = facts.get("remaining_count")
             return (
                 "completion verifier blocked final answer: "
-                f"task.delete left {remaining} failed task records; continue cleanup or report the remaining count explicitly."
+                f"delegate.delete left {remaining} failed delegation runs; continue cleanup or report the remaining count explicitly."
             )
         return ""
 
@@ -344,13 +344,13 @@ class HernessEngine:
                         self.runtime.memory.extract_and_consolidate_memories(
                             session_id=result.session_id,
                             provider=self.runtime.provider,
-                            task_id=result.task_id,
+                            run_id=result.run_id,
                         )
                     )
 
             task = asyncio.create_task(run_with_semaphore())
             self._background_tasks.add(task)
-            def handle_done(t: asyncio.Task) -> None:
+            def handle_done(t: asyncio.Run) -> None:
                 self._background_tasks.discard(t)
                 try:
                     t.result()
@@ -396,7 +396,7 @@ class HernessEngine:
         return AgentTurnResult(
             text=result.text,
             session_id=session_id,
-            task_id=result.task_id,
+            run_id=result.run_id,
             action=result.action,
             observation=result.observation,
             model_role=result.model_role,
@@ -409,7 +409,7 @@ class HernessEngine:
         return AgentTurnResult(
             text=result.text,
             session_id=result.session_id,
-            task_id=result.task_id,
+            run_id=result.run_id,
             action=result.action,
             observation=result.observation,
             model_role=result.model_role,
@@ -430,7 +430,7 @@ class HernessEngine:
             trace_id=trace_id,
             phase="turn.final",
             session_id=result.session_id,
-            task_id=result.task_id,
+            run_id=result.run_id,
             source=source,
             peer_id=peer_id,
             sender_id=sender_id,
@@ -452,7 +452,7 @@ class HernessEngine:
         peer_id: str,
         sender_id: str,
         action: str,
-        task_id: str = "",
+        run_id: str = "",
         model_role: str = "responder",
         pending_approval_prompt: str = "",
         budget_exhausted: bool = False,
@@ -501,7 +501,7 @@ class HernessEngine:
             trace_id=trace_id,
             phase="agent.role_result",
             session_id=session_id,
-            task_id=task_id,
+            run_id=run_id,
             source=source,
             peer_id=peer_id,
             sender_id=sender_id,
@@ -523,7 +523,7 @@ class HernessEngine:
         return AgentTurnResult(
             text=answer,
             session_id=session_id,
-            task_id=task_id,
+            run_id=run_id,
             action=action,
             observation=observation,
             model_role=model_role,
@@ -543,7 +543,7 @@ class HernessEngine:
         return AgentTurnResult(
             text=self._append_pending_approval_prompt(result.text, pending_approval_prompt),
             session_id=result.session_id,
-            task_id=result.task_id,
+            run_id=result.run_id,
             action=result.action,
             observation=result.observation,
             model_role=result.model_role,
@@ -576,7 +576,7 @@ class HernessEngine:
         code = str(approval.get("code") or "").strip()
         if not code:
             return ""
-        task_id = str(facts.get("task_id") or "").strip()
+        run_id = str(facts.get("run_id") or "").strip()
         expires_at = approval.get("expires_at")
         try:
             minutes = max(0, round((float(expires_at) - time.time()) / 60)) if expires_at else 0
@@ -591,7 +591,7 @@ class HernessEngine:
         if not template:
             return ""
         return template.format(
-            task_line=f"任务 ID: `{task_id}`" if task_id else "",
+            task_line=f"任务 ID: `{run_id}`" if run_id else "",
             code=code,
             expiry=expiry,
             approve_command=approve_command,

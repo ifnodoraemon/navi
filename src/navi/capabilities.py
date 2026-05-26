@@ -15,7 +15,7 @@ from .goals import GoalStore
 from .governance import GovernanceEngine
 from .operating_context import permission_allows
 from .graph import GraphStore
-from .tasks import TaskStore
+from .runs import RunStore
 from .tools import ToolSpec, build_tool_gateway
 from .trust import TrustStore
 
@@ -36,7 +36,7 @@ class CapabilityResult:
     action: str
     observation: str
     message: str = ""
-    task_id: str = ""
+    run_id: str = ""
     terminal: bool = False
     facts: dict[str, Any] | None = None
 
@@ -214,11 +214,11 @@ class CapabilityRegistry:
     ) -> None:
         facts = result.facts or {
             "action": result.action,
-            "task_id": result.task_id,
+            "run_id": result.run_id,
             "terminal": result.terminal,
         }
         try:
-            TaskStore(self.home).add_tool_call_log(
+            RunStore(self.home).add_tool_call_log(
                 tool=spec.name,
                 args_json=json.dumps(args, ensure_ascii=False, sort_keys=True),
                 ok=result.ok,
@@ -240,12 +240,12 @@ class ActionCapabilityProvider:
         factories = {
             "final_answer": lambda spec: FinalAnswerCapability(spec),
             "clarify": lambda spec: ClarifyCapability(spec),
-            "task_record": lambda spec: TaskRecordCapability(spec, home=self.home),
-            "task_prepare": lambda spec: TaskPrepareCapability(spec, home=self.home),
+            "delegate_spawn": lambda spec: DelegateSpawnCapability(spec, home=self.home),
+            "delegate_prepare": lambda spec: DelegatePrepareCapability(spec, home=self.home),
             "approval_request": lambda spec: ApprovalRequestCapability(spec, home=self.home),
-            "task_queue": lambda spec: TaskQueueCapability(spec, home=self.home),
+            "delegate_run": lambda spec: DelegateRunCapability(spec, home=self.home),
             "watch_create": lambda spec: WatchCreateCapability(spec, home=self.home),
-            "task_delete": lambda spec: TaskDeleteCapability(spec, home=self.home),
+            "delegate_delete": lambda spec: DelegateDeleteCapability(spec, home=self.home),
             "watch_delete": lambda spec: WatchDeleteCapability(spec, home=self.home),
             "approval_resolve": lambda spec: ApprovalResolveCapability(spec, home=self.home),
             "execution_retry": lambda spec: ExecutionRetryCapability(spec, home=self.home),
@@ -325,7 +325,7 @@ class ToolCapability:
         )
 
 
-class TaskRecordCapability:
+class DelegateSpawnCapability:
     def __init__(self, spec: ToolSpec, *, home: Path):
         self.spec = spec
         self.home = home
@@ -341,13 +341,13 @@ class TaskRecordCapability:
         if not prompt:
             return CapabilityResult(
                 ok=False,
-                action="task",
-                observation="task.record requires a prompt.",
-                message="task.record requires a prompt.",
+                action="delegation",
+                observation="delegate.spawn requires an objective.",
+                message="delegate.spawn requires an objective.",
                 terminal=True,
             )
         config = load_config(self.home)
-        tasks = TaskStore(self.home)
+        runs = RunStore(self.home)
         graph = GraphStore(self.home)
         workspace = _resolve_workspace(context.workspace)
         from .provider import build_provider
@@ -358,10 +358,10 @@ class TaskRecordCapability:
             workspace=workspace,
             provider=build_provider(config.model),
         )
-        task = tasks.create(
+        task = runs.create(
             title=prompt[:120],
             prompt=prompt,
-            kind="task",
+            kind="delegation",
             source=context.source,
             peer_id=context.peer_id,
             sender_id=context.sender_id,
@@ -371,30 +371,30 @@ class TaskRecordCapability:
             trust_rule_id=decision.rule_id,
             why_now=f"trigger=model_capability; reason={decision.why}; autonomy={decision.level}",
         )
-        graph.upsert("Task", task.id, {"title": task.title, "status": task.status, "prompt": task.prompt})
+        graph.upsert("DelegationRun", task.id, {"objective": task.title, "status": task.status, "prompt": task.prompt})
         goal = GoalStore(self.home).create(
             objective=task.prompt,
             source=task.source,
             peer_id=task.peer_id,
             sender_id=task.sender_id,
             workspace=task.workspace,
-            task_id=task.id,
-            evidence={"task_id": task.id, "task_status": task.status, "autonomy_level": task.autonomy_level},
+            run_id=task.id,
+            evidence={"run_id": task.id, "run_status": task.status, "autonomy_level": task.autonomy_level},
         )
         return _fact_result(
-            "task",
+            "delegation",
             {
                 "goal_id": goal.id,
-                "task_id": task.id,
+                "run_id": task.id,
                 "status": task.status,
                 "autonomy_level": task.autonomy_level,
                 "trust_rule_id": task.trust_rule_id,
             },
-            task_id=task.id,
+            run_id=task.id,
         )
 
 
-class TaskPrepareCapability:
+class DelegatePrepareCapability:
     def __init__(self, spec: ToolSpec, *, home: Path):
         self.spec = spec
         self.home = home
@@ -406,16 +406,16 @@ class TaskPrepareCapability:
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        task_id = _arg_text(args, "task_id")
-        task = TaskStore(self.home).get(task_id) if task_id else None
+        run_id = _arg_text(args, "run_id") or _arg_text(args, "run_id")
+        task = RunStore(self.home).get(run_id) if run_id else None
         if task is None:
-            return CapabilityResult(ok=False, action="task", observation=f"task not found: {task_id}", message=f"task not found: {task_id}", terminal=True)
+            return CapabilityResult(ok=False, action="delegation", observation=f"delegation run not found: {run_id}", message=f"delegation run not found: {run_id}", terminal=True)
         planned = await ExecutionService(self.home).plan_task(task)
-        GoalStore(self.home).update_for_task(planned, evidence={"task_id": planned.id, "task_status": planned.status})
+        GoalStore(self.home).update_for_run(planned, evidence={"run_id": planned.id, "run_status": planned.status})
         return _fact_result(
-            "task",
-            {"task_id": planned.id, "status": planned.status, "plan_summary": planned.plan_summary},
-            task_id=planned.id,
+            "delegation",
+            {"run_id": planned.id, "status": planned.status, "plan_summary": planned.plan_summary},
+            run_id=planned.id,
         )
 
 
@@ -431,29 +431,29 @@ class ApprovalRequestCapability:
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        task_id = _arg_text(args, "task_id")
-        tasks = TaskStore(self.home)
-        task = tasks.get(task_id) if task_id else None
+        run_id = _arg_text(args, "run_id") or _arg_text(args, "run_id")
+        runs = RunStore(self.home)
+        task = runs.get(run_id) if run_id else None
         if task is None:
-            return CapabilityResult(ok=False, action="approval", observation=f"task not found: {task_id}", message=f"task not found: {task_id}", terminal=True)
-        approval = tasks.create_approval(task_id=task.id, peer_id=context.peer_id or task.peer_id, sender_id=context.sender_id or task.sender_id)
-        awaiting = tasks.update_task(task.id, status="awaiting_approval") or task
-        GoalStore(self.home).update_for_task(
+            return CapabilityResult(ok=False, action="approval", observation=f"delegation run not found: {run_id}", message=f"delegation run not found: {run_id}", terminal=True)
+        approval = runs.create_approval(run_id=task.id, peer_id=context.peer_id or task.peer_id, sender_id=context.sender_id or task.sender_id)
+        awaiting = runs.update_run(task.id, status="awaiting_approval") or task
+        GoalStore(self.home).update_for_run(
             awaiting,
-            evidence={"task_id": awaiting.id, "task_status": awaiting.status, "approval_status": approval.status},
+            evidence={"run_id": awaiting.id, "run_status": awaiting.status, "approval_status": approval.status},
         )
         return _fact_result(
             "approval",
             {
-                "task_id": awaiting.id,
+                "run_id": awaiting.id,
                 "status": awaiting.status,
                 "approval": {"action": approval.action, "code": approval.code, "expires_at": approval.expires_at},
             },
-            task_id=awaiting.id,
+            run_id=awaiting.id,
         )
 
 
-class TaskQueueCapability:
+class DelegateRunCapability:
     def __init__(self, spec: ToolSpec, *, home: Path):
         self.spec = spec
         self.home = home
@@ -465,17 +465,17 @@ class TaskQueueCapability:
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        task_id = _arg_text(args, "task_id")
-        tasks = TaskStore(self.home)
-        task = tasks.get(task_id) if task_id else None
+        run_id = _arg_text(args, "run_id") or _arg_text(args, "run_id")
+        runs = RunStore(self.home)
+        task = runs.get(run_id) if run_id else None
         if task is None:
-            return CapabilityResult(ok=False, action="task", observation=f"task not found: {task_id}", message=f"task not found: {task_id}", terminal=True)
+            return CapabilityResult(ok=False, action="delegation", observation=f"delegation run not found: {run_id}", message=f"delegation run not found: {run_id}", terminal=True)
         execution = ExecutionService(self.home)
         if not execution.execution_allowed(task):
-            return CapabilityResult(ok=False, action="task", observation="execution grant missing", message="execution grant missing", terminal=True)
-        queued = tasks.update_task(task.id, status="queued") or task
-        GoalStore(self.home).update_for_task(queued, evidence={"task_id": queued.id, "task_status": queued.status})
-        return _fact_result("task", {"task_id": queued.id, "status": queued.status}, task_id=queued.id)
+            return CapabilityResult(ok=False, action="delegation", observation="execution grant missing", message="execution grant missing", terminal=True)
+        queued = runs.update_run(task.id, status="queued") or task
+        GoalStore(self.home).update_for_run(queued, evidence={"run_id": queued.id, "run_status": queued.status})
+        return _fact_result("delegation", {"run_id": queued.id, "status": queued.status}, run_id=queued.id)
 
 
 class WatchCreateCapability:
@@ -511,9 +511,9 @@ class WatchCreateCapability:
                 message=f"Invalid cron: {exc}",
                 terminal=True,
             )
-        tasks = TaskStore(self.home)
+        runs = RunStore(self.home)
         graph = GraphStore(self.home)
-        watch = tasks.create_watch(
+        watch = runs.create_watch(
             cron=cron,
             prompt=prompt,
             peer_id=context.peer_id,
@@ -531,11 +531,11 @@ class WatchCreateCapability:
                 "next_run_at": watch.next_run_at,
                 "next_run_text": time.ctime(watch.next_run_at),
             },
-            task_id=watch.id,
+            run_id=watch.id,
         )
 
 
-class TaskDeleteCapability:
+class DelegateDeleteCapability:
     def __init__(self, spec: ToolSpec, *, home: Path):
         self.spec = spec
         self.home = home
@@ -547,39 +547,39 @@ class TaskDeleteCapability:
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        task_id = _arg_text(args, "task_id")
-        if not task_id:
+        run_id = _arg_text(args, "run_id") or _arg_text(args, "run_id")
+        if not run_id:
             return self._delete_by_filter(args)
-        tasks = TaskStore(self.home)
+        runs = RunStore(self.home)
         graph = GraphStore(self.home)
-        task = tasks.get(task_id)
+        task = runs.get(run_id)
         if task is not None and _remote_source(context.source) and task.status != "failed":
             return CapabilityResult(
                 ok=False,
-                action="task",
-                observation="remote task.delete can only delete failed task records.",
-                message="remote task.delete can only delete failed task records.",
+                action="delegation",
+                observation="remote delegate.delete can only delete failed delegation runs.",
+                message="remote delegate.delete can only delete failed delegation runs.",
                 terminal=True,
             )
-        deleted = tasks.delete_task(task_id)
+        deleted = runs.delete_run(run_id)
         if deleted is None:
             return CapabilityResult(
                 ok=False,
-                action="task",
-                observation=f"task not found: {task_id}",
-                message=f"task not found: {task_id}",
+                action="delegation",
+                observation=f"delegation run not found: {run_id}",
+                message=f"delegation run not found: {run_id}",
                 terminal=True,
             )
         graph.delete(deleted.id)
         return _fact_result(
-            "task",
+            "delegation",
             {
                 "deleted": True,
-                "task_id": deleted.id,
+                "run_id": deleted.id,
                 "title": deleted.title,
                 "status": deleted.status,
             },
-            task_id=deleted.id,
+            run_id=deleted.id,
         )
 
     def _delete_by_filter(self, args: dict[str, Any]) -> CapabilityResult:
@@ -587,41 +587,41 @@ class TaskDeleteCapability:
         if status != "failed":
             return CapabilityResult(
                 ok=False,
-                action="task",
-                observation="task.delete bulk cleanup only supports status=failed.",
-                message="task.delete bulk cleanup only supports status=failed.",
+                action="delegation",
+                observation="delegate.delete bulk cleanup only supports status=failed.",
+                message="delegate.delete bulk cleanup only supports status=failed.",
                 terminal=True,
             )
         raw_limit = args.get("limit")
         limit = _positive_int(raw_limit, default=5000, maximum=5000) if raw_limit is not None else None
         source = _arg_text(args, "source")
         kind = _arg_text(args, "kind")
-        tasks = TaskStore(self.home)
+        runs = RunStore(self.home)
         graph = GraphStore(self.home)
-        before_count = tasks.count_tasks(status="failed", source=source, kind=kind)
-        candidates = tasks.list_by_status_filtered("failed", source=source, kind=kind, limit=limit)
+        before_count = runs.count_runs(status="failed", source=source, kind=kind)
+        candidates = runs.list_by_status_filtered("failed", source=source, kind=kind, limit=limit)
         deleted = []
         for task in candidates:
-            removed = tasks.delete_task(task.id)
+            removed = runs.delete_run(task.id)
             if removed is None:
                 continue
             graph.delete(removed.id)
             deleted.append(
                 {
-                    "task_id": removed.id,
+                    "run_id": removed.id,
                     "title": removed.title,
                     "source": removed.source,
                     "kind": removed.kind,
                     "updated_at": removed.updated_at,
                 }
             )
-        remaining_count = tasks.count_tasks(status="failed", source=source, kind=kind)
+        remaining_count = runs.count_runs(status="failed", source=source, kind=kind)
         return _fact_result(
-            "task",
+            "delegation",
             {
                 "before_count": before_count,
                 "deleted_count": len(deleted),
-                "deleted_tasks": deleted,
+                "deleted_runs": deleted,
                 "remaining_count": remaining_count,
                 "cleanup_complete": remaining_count == 0,
                 "status_filter": "failed",
@@ -653,9 +653,9 @@ class WatchDeleteCapability:
                 message="watch.delete requires watch_id.",
                 terminal=True,
             )
-        tasks = TaskStore(self.home)
+        runs = RunStore(self.home)
         graph = GraphStore(self.home)
-        deleted = tasks.delete_watch(watch_id)
+        deleted = runs.delete_watch(watch_id)
         if deleted is None:
             return CapabilityResult(
                 ok=False,
@@ -673,7 +673,7 @@ class WatchDeleteCapability:
                 "cron": deleted.cron,
                 "prompt": deleted.prompt,
             },
-            task_id=deleted.id,
+            run_id=deleted.id,
         )
 
 
@@ -700,13 +700,13 @@ class ApprovalResolveCapability:
             )
         status = "approved" if decision == "approve" else "rejected"
         code = _arg_text(args, "code")
-        task_id = _arg_text(args, "task_id")
-        tasks = TaskStore(self.home)
+        run_id = _arg_text(args, "run_id") or _arg_text(args, "run_id")
+        runs = RunStore(self.home)
         governance = GovernanceEngine(self.home)
         trust = TrustStore(self.home)
-        approval = self._resolve(governance, code=code, task_id=task_id, sender_id=context.sender_id, status=status)
+        approval = self._resolve(governance, code=code, run_id=run_id, sender_id=context.sender_id, status=status)
         if approval is None:
-            facts = tasks.approval_resolution_diagnostic(code=code, task_id=task_id, sender_id=context.sender_id)
+            facts = runs.approval_resolution_diagnostic(code=code, run_id=run_id, sender_id=context.sender_id)
             message = _approval_resolution_failure_message(facts)
             return CapabilityResult(
                 ok=False,
@@ -720,28 +720,28 @@ class ApprovalResolveCapability:
             return CapabilityResult(
                 ok=False,
                 action="approval",
-                observation="Approval code expired. Create a new task.",
-                message="Approval code expired. Create a new task.",
+                observation="Approval code expired. Create a new delegation run.",
+                message="Approval code expired. Create a new delegation run.",
                 terminal=True,
             )
         if status == "approved":
-            task = tasks.update_task(approval.task_id, status="queued")
-            resolved_task_id = task.id if task else approval.task_id
+            task = runs.update_run(approval.run_id, status="queued")
+            resolved_run_id = task.id if task else approval.run_id
             if task:
-                GoalStore(self.home).update_for_task(task, evidence={"task_id": task.id, "task_status": task.status, "approval_status": approval.status})
+                GoalStore(self.home).update_for_run(task, evidence={"run_id": task.id, "run_status": task.status, "approval_status": approval.status})
             return _fact_result(
                 "approval",
-                {"task_id": resolved_task_id, "approval_status": approval.status, "task_status": "queued"},
-                task_id=resolved_task_id,
+                {"run_id": resolved_run_id, "approval_status": approval.status, "run_status": "queued"},
+                run_id=resolved_run_id,
             )
-        task = tasks.update_task(approval.task_id, status="rejected")
+        task = runs.update_run(approval.run_id, status="rejected")
         if task:
             await trust.record_failure(task)
-            GoalStore(self.home).update_for_task(task, evidence={"task_id": task.id, "task_status": task.status, "approval_status": approval.status})
+            GoalStore(self.home).update_for_run(task, evidence={"run_id": task.id, "run_status": task.status, "approval_status": approval.status})
         return _fact_result(
             "approval",
-            {"task_id": approval.task_id, "approval_status": approval.status, "task_status": "rejected"},
-            task_id=approval.task_id,
+            {"run_id": approval.run_id, "approval_status": approval.status, "run_status": "rejected"},
+            run_id=approval.run_id,
         )
 
     @staticmethod
@@ -749,14 +749,14 @@ class ApprovalResolveCapability:
         governance: GovernanceEngine,
         *,
         code: str,
-        task_id: str,
+        run_id: str,
         sender_id: str,
         status: str,
     ):
         if code:
             return governance.resolve_code(code=code, sender_id=sender_id, status=status)
-        if task_id:
-            return governance.resolve_task(task_id=task_id, sender_id=sender_id, status=status)
+        if run_id:
+            return governance.resolve_task(run_id=run_id, sender_id=sender_id, status=status)
         return None
 
 
@@ -767,9 +767,9 @@ def _approval_resolution_failure_message(facts: dict[str, Any]) -> str:
         "sender_mismatch": "Approval exists but belongs to a different sender.",
         "approval_not_pending": f"Approval is not pending; current status is {facts.get('status') or 'unknown'}.",
         "approval_expired": "Approval is expired. Create a new approval request.",
-        "task_not_found": "Task was not found for approval resolution.",
-        "task_has_no_approval": "Task has no approval request.",
-        "approval_identifier_missing": "approval.resolve requires code or task_id.",
+        "run_not_found": "Run was not found for approval resolution.",
+        "run_has_no_approval": "Run has no approval request.",
+        "approval_identifier_missing": "approval.resolve requires code or run_id.",
     }
     return messages.get(reason, "Approval could not be resolved.")
 
@@ -786,23 +786,23 @@ class ExecutionRetryCapability:
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        task_id = _arg_text(args, "task_id")
-        if not task_id:
+        run_id = _arg_text(args, "run_id") or _arg_text(args, "run_id")
+        if not run_id:
             return CapabilityResult(
                 ok=False,
                 action="execution",
-                observation="execution.retry requires task_id.",
-                message="execution.retry requires task_id.",
+                observation="delegate.retry requires run_id.",
+                message="delegate.retry requires run_id.",
                 terminal=True,
             )
-        tasks = TaskStore(self.home)
-        task = tasks.get(task_id)
+        runs = RunStore(self.home)
+        task = runs.get(run_id)
         if task is None:
             return CapabilityResult(
                 ok=False,
                 action="execution",
-                observation=f"task not found: {task_id}",
-                message=f"task not found: {task_id}",
+                observation=f"delegation run not found: {run_id}",
+                message=f"delegation run not found: {run_id}",
                 terminal=True,
             )
         execution = ExecutionService(self.home)
@@ -818,12 +818,12 @@ class ExecutionRetryCapability:
         retry_task = replace(task, prompt=f"{task.prompt}\n\nFollow-up execution instruction:\n{follow_up}" if follow_up else task.prompt)
         result = await execution.execute_task(retry_task)
         facts = {
-            "task_id": result.id,
+            "run_id": result.id,
             "status": result.status,
             "result_summary": result.result_summary,
             "error": result.error,
         }
-        return _fact_result("execution", facts, task_id=result.id)
+        return _fact_result("execution", facts, run_id=result.id)
 
 
 def build_capability_registry(
@@ -845,12 +845,12 @@ def build_capability_registry(
     )
 
 
-def _fact_result(action: str, facts: dict[str, Any], *, task_id: str = "") -> CapabilityResult:
+def _fact_result(action: str, facts: dict[str, Any], *, run_id: str = "") -> CapabilityResult:
     return CapabilityResult(
         ok=True,
         action=action,
         observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
-        task_id=task_id,
+        run_id=run_id,
         facts=facts,
     )
 

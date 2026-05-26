@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .defaults import DEFAULT_SERVICE_NAME
-from .tasks import Approval, ExecutionLog, Task, TaskStore
+from .runs import Approval, ExecutionLog, Run, RunStore
 
 
 @dataclass(frozen=True)
@@ -18,8 +18,8 @@ class ServiceFacts:
 
 
 @dataclass(frozen=True)
-class TaskFacts:
-    task: Task | None
+class RunFacts:
+    run: Run | None
     approvals: list[Approval]
     logs: list[ExecutionLog]
 
@@ -59,33 +59,33 @@ def render_service_facts(facts: ServiceFacts) -> str:
     return "\n".join(lines)
 
 
-def task_facts(home: Path, task_id: str | None = None) -> TaskFacts:
-    store = TaskStore(home)
-    task = store.get(task_id) if task_id else (store.list(limit=1)[0] if store.list(limit=1) else None)
-    if task is None:
-        return TaskFacts(task=None, approvals=[], logs=[])
-    approvals = [approval for approval in store.list_approvals(limit=100) if approval.task_id == task.id]
-    logs = store.list_execution_logs(task.id, limit=20)
-    return TaskFacts(task=task, approvals=approvals, logs=logs)
+def run_facts(home: Path, run_id: str | None = None) -> RunFacts:
+    store = RunStore(home)
+    run = store.get(run_id) if run_id else (store.list(limit=1)[0] if store.list(limit=1) else None)
+    if run is None:
+        return RunFacts(run=None, approvals=[], logs=[])
+    approvals = [approval for approval in store.list_approvals(limit=100) if approval.run_id == run.id]
+    logs = store.list_execution_logs(run.id, limit=20)
+    return RunFacts(run=run, approvals=approvals, logs=logs)
 
 
-def render_task_facts(facts: TaskFacts) -> str:
-    if facts.task is None:
-        return "Task facts:\n- task: not found"
-    task = facts.task
+def render_run_facts(facts: RunFacts) -> str:
+    if facts.run is None:
+        return "Run facts:\n- run: not found"
+    run = facts.run
     lines = [
-        f"Task `{task.id}` facts:",
-        f"- status: {task.status}",
-        f"- source: {task.source}",
-        f"- kind: {task.kind}",
-        f"- provider: {task.provider}",
-        f"- workspace: {task.workspace or '-'}",
-        f"- title: {task.title}",
-        f"- prompt: {task.prompt}",
-        f"- autonomy_level: {task.autonomy_level}",
-        f"- preparation_summary: {task.plan_summary or '-'}",
-        f"- result_summary: {task.result_summary or '-'}",
-        f"- error: {task.error or '-'}",
+        f"Run `{run.id}` facts:",
+        f"- status: {run.status}",
+        f"- source: {run.source}",
+        f"- kind: {run.kind}",
+        f"- provider: {run.provider}",
+        f"- workspace: {run.workspace or '-'}",
+        f"- title: {run.title}",
+        f"- prompt: {run.prompt}",
+        f"- autonomy_level: {run.autonomy_level}",
+        f"- preparation_summary: {run.plan_summary or '-'}",
+        f"- result_summary: {run.result_summary or '-'}",
+        f"- error: {run.error or '-'}",
     ]
     if facts.approvals:
         lines.append("- approvals:")

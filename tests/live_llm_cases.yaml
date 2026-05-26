@@ -27,14 +27,14 @@ syscall_cases:
       tool: service.status
       permission: read
 
-  - id: task_not_executed_uses_task_status_tool
+  - id: delegation_not_executed_uses_delegation_status_tool
     source: observed:.navi/memory.db
-    message: "`8f59a0dcc92948c49f88de2df055dabf`为什么这个 task 没有执行"
+    message: "`8f59a0dcc92948c49f88de2df055dabf`为什么这个 delegation run 没有执行"
     expect:
-      tool: task.status
+      tool: delegate.status
       permission: read
       args:
-        task_id: "8f59a0dcc92948c49f88de2df055dabf"
+        run_id: "8f59a0dcc92948c49f88de2df055dabf"
 
   - id: vague_evening_watch_asks_clarification
     source: observed:.navi/memory.db
@@ -104,14 +104,14 @@ syscall_cases:
     source: https://github.com/NousResearch/hermes-agent/issues/28984
     message: "配置项写了但运行时好像没消费，帮我检查配置到运行时的映射问题"
     expect:
-      tool: task.record
+      tool: delegate.spawn
       permission: prepare
 
   - id: hermes_terminal_tool_latency_issue
     source: https://github.com/NousResearch/hermes-agent/pull/29006
     message: "工具调用明显变慢，帮我检查终端执行耗时和轮询问题"
     expect:
-      tool: task.record
+      tool: delegate.spawn
       permission: prepare
 
 response_cases:

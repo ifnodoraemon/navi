@@ -10,7 +10,7 @@ from collections.abc import Callable
 from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
-from navi.tasks import Task
+from navi.runs import Run
 from navi.daemon import SystemDaemon
 
 from .client import MockWeixinClient, WeixinClient
@@ -112,7 +112,7 @@ class WeixinService:
         retry_count = 0
         self.update_status("healthy")
         last_tasks_check = 0.0
-        has_active_tasks = False
+        has_active_runs = False
         last_bg_check = 0.0
         while True:
             try:
@@ -132,11 +132,11 @@ class WeixinService:
                 
                 # Check for activity to adapt sleep time
                 if now - last_tasks_check >= 2.0:
-                    active_tasks = self.daemon.tasks.list_by_statuses(["queued", "running", "preparing"])
-                    has_active_tasks = len(active_tasks) > 0
+                    active_runs = self.daemon.runs.list_by_statuses(["queued", "running", "preparing"])
+                    has_active_runs = len(active_runs) > 0
                     last_tasks_check = now
 
-                has_activity = len(batch.updates) > 0 or has_active_tasks
+                has_activity = len(batch.updates) > 0 or has_active_runs
                 if has_activity:
                     sleep_time = 0.05
                 else:
@@ -190,8 +190,8 @@ class WeixinService:
 
     async def process_background(self, account: WeixinAccount) -> None:
         for result in await self.daemon.process_watches_once():
-            task_id = str(result.get("task_id") or "")
-            task = self.daemon.tasks.get(task_id) if task_id else None
+            run_id = str(result.get("run_id") or "")
+            task = self.daemon.runs.get(run_id) if run_id else None
             peer_id = str(result.get("peer_id") or "") or (task.peer_id if task else self.config.home_channel)
             if not peer_id:
                 continue
@@ -214,7 +214,7 @@ class WeixinService:
                 continue
             text = await self._compose_background_message(
                 {
-                    "event": "task_execution_finished",
+                    "event": "run_execution_finished",
                     "task": asdict(task),
                 },
                 fallback=self._task_fallback(task),
@@ -251,9 +251,9 @@ class WeixinService:
         return stripped or fallback
 
     @staticmethod
-    def _task_fallback(task: Task) -> str:
+    def _task_fallback(task: Run) -> str:
         details = task.result_summary if task.status == "completed" else task.error
-        return f"Task `{task.id}` {task.status}. {details or ''}".strip()
+        return f"Run `{task.id}` {task.status}. {details or ''}".strip()
 
     def _resolve_account(self) -> WeixinAccount:
         if self.config.account_id:

@@ -25,7 +25,7 @@ class ScriptedProvider(MockProvider):
             response = self.response
         if "TASK_ID" in response:
             for message in reversed(messages):
-                match = re.search(r'"task_id":\s*"([^"]+)"', message.content)
+                match = re.search(r'"run_id":\s*"([^"]+)"', message.content)
                 if match:
                     return response.replace("TASK_ID", match.group(1))
         return response
@@ -149,7 +149,7 @@ async def test_weixin_plain_schedule_message_creates_watch(tmp_path, monkeypatch
     )
 
     assert handled is True
-    watches = service.active.tasks.list_watches()
+    watches = service.active.runs.list_watches()
     assert watches[0].cron == "0 8 * * *"
     assert watches[0].prompt == "进行毛选晨读"
     assert "晨读提醒" in service.client.sent[-1]["text"]
@@ -173,7 +173,7 @@ async def test_weixin_plain_schedule_with_vague_period_asks_clarification(tmp_pa
     )
 
     assert handled is True
-    assert service.active.tasks.list_watches() == []
+    assert service.active.runs.list_watches() == []
     assert service.client.sent[-1]["text"] == "你希望每天晚上几点上通识课？"
     assert "watch.create" not in service.client.sent[-1]["text"]
 
@@ -186,9 +186,9 @@ async def test_weixin_plain_local_action_creates_task(tmp_path, monkeypatch):
         home=tmp_path,
         provider=_pool(ScriptedProvider(
             [
-                '{"tool":"task.record","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
-                '{"tool":"task.prepare","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
-                '{"tool":"approval.request","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
+                '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+                '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
+                '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
                 '{"tool":"final.answer","permission":"read","args":{"message":"已创建列目录任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',
             ]
         )),
@@ -202,7 +202,7 @@ async def test_weixin_plain_local_action_creates_task(tmp_path, monkeypatch):
     )
 
     assert handled is True
-    task = service.active.tasks.list()[0]
+    task = service.active.runs.list()[0]
     assert task.status == "awaiting_approval"
     assert task.prompt == "列一下我本机的目录"
     assert "等待审批" in service.client.sent[-1]["text"]
@@ -217,9 +217,9 @@ async def test_weixin_command_like_business_text_routes_through_planner(tmp_path
         home=tmp_path,
         provider=_pool(ScriptedProvider(
             [
-                '{"tool":"task.record","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
-                '{"tool":"task.prepare","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
-                '{"tool":"approval.request","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
+                '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+                '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
+                '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
                 '{"tool":"final.answer","permission":"read","args":{"message":"已创建列目录任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',
             ]
         )),
@@ -233,7 +233,7 @@ async def test_weixin_command_like_business_text_routes_through_planner(tmp_path
     )
 
     assert handled is True
-    task = service.active.tasks.list()[0]
+    task = service.active.runs.list()[0]
     assert task.status == "awaiting_approval"
     assert task.prompt == "列一下我本机的目录"
 
@@ -244,9 +244,9 @@ async def test_weixin_plain_approval_queues_task(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"task.record","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
-            '{"tool":"task.prepare","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
-            '{"tool":"approval.request","permission":"prepare","args":{"task_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
+            '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+            '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
+            '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"已创建列目录任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',
         ]
     )
@@ -258,8 +258,8 @@ async def test_weixin_plain_approval_queues_task(tmp_path, monkeypatch):
         account,
         WeixinUpdate(message_id="msg-task", peer_id="peer", sender_id="sender", text="列一下我本机的目录"),
     )
-    task = service.active.tasks.list()[0]
-    code = service.active.tasks.list_approvals()[0].code
+    task = service.active.runs.list()[0]
+    code = service.active.runs.list_approvals()[0].code
     provider.response = [
         (
             '{"tool":"approval.resolve","permission":"write","args":{"decision":"approve","code":"'
@@ -275,7 +275,7 @@ async def test_weixin_plain_approval_queues_task(tmp_path, monkeypatch):
     )
 
     assert handled is True
-    assert service.active.tasks.get(task.id).status == "queued"
+    assert service.active.runs.get(task.id).status == "queued"
     assert "执行队列" in service.client.sent[-1]["text"]
 
 
@@ -283,14 +283,14 @@ async def test_weixin_plain_approval_queues_task(tmp_path, monkeypatch):
 async def test_weixin_remote_delete_rejects_active_task(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     store_provider = ScriptedProvider(
-        '{"tool":"task.delete","permission":"write","args":{"task_id":"task-delete-me"},"confidence":0.95,"reason":"delete requested"}'
+        '{"tool":"delegate.delete","permission":"write","args":{"run_id":"task-delete-me"},"confidence":0.95,"reason":"delete requested"}'
     )
     runtime = AgentRuntime(home=tmp_path, provider=_pool(store_provider))
     service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
-    task = service.active.tasks.create("remote delete should be blocked", status="awaiting_approval")
+    task = service.active.runs.create("remote delete should be blocked", status="awaiting_approval")
     store_provider.response = (
-        '{"tool":"task.delete","permission":"write","args":{"task_id":"'
+        '{"tool":"delegate.delete","permission":"write","args":{"run_id":"'
         + task.id
         + '"},"confidence":0.95,"reason":"delete requested"}'
     )
@@ -301,18 +301,18 @@ async def test_weixin_remote_delete_rejects_active_task(tmp_path, monkeypatch):
     )
 
     assert handled is True
-    assert service.active.tasks.get(task.id) is not None
-    assert "remote task.delete can only delete failed task records" in service.client.sent[-1]["text"]
+    assert service.active.runs.get(task.id) is not None
+    assert "remote delegate.delete can only delete failed delegation runs" in service.client.sent[-1]["text"]
 
 
 @pytest.mark.asyncio
-async def test_weixin_cleanup_failed_tasks_cannot_finish_with_remaining_records(tmp_path, monkeypatch):
+async def test_weixin_cleanup_failed_delegations_cannot_finish_with_remaining_records(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"task.delete","permission":"write","args":{"status":"failed","source":"watch","limit":1},"confidence":0.95,"reason":"cleanup failed tasks"}',
+            '{"tool":"delegate.delete","permission":"write","args":{"status":"failed","source":"watch","limit":1},"confidence":0.95,"reason":"cleanup failed tasks"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"清理完成。"},"confidence":0.95,"reason":"premature"}',
-            '{"tool":"task.delete","permission":"write","args":{"status":"failed","source":"watch"},"confidence":0.95,"reason":"finish cleanup"}',
+            '{"tool":"delegate.delete","permission":"write","args":{"status":"failed","source":"watch"},"confidence":0.95,"reason":"finish cleanup"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"失败任务已清理完毕。"},"confidence":0.95,"reason":"verified"}',
         ]
     )
@@ -320,7 +320,7 @@ async def test_weixin_cleanup_failed_tasks_cannot_finish_with_remaining_records(
     service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
     for index in range(3):
-        service.active.tasks.create(f"failed {index}", status="failed", source="watch", kind="task")
+        service.active.runs.create(f"failed {index}", status="failed", source="watch", kind="delegation")
 
     handled = await service.handle_update(
         account,
@@ -328,16 +328,16 @@ async def test_weixin_cleanup_failed_tasks_cannot_finish_with_remaining_records(
     )
 
     assert handled is True
-    assert service.active.tasks.count_tasks(status="failed", source="watch") == 0
+    assert service.active.runs.count_runs(status="failed", source="watch") == 0
     assert service.client.sent[-1]["text"] == "失败任务已清理完毕。"
     assert provider.response == []
 
 
 @pytest.mark.asyncio
-async def test_weixin_plain_task_status_uses_fact_tool(tmp_path, monkeypatch):
+async def test_weixin_plain_run_status_uses_fact_tool(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     provider = ScriptedProvider(
-        '{"tool":"task.status","permission":"read","args":{},"confidence":0.9,"reason":"task status request"}'
+        '{"tool":"delegate.status","permission":"read","args":{},"confidence":0.9,"reason":"task status request"}'
     )
     runtime = AgentRuntime(
         home=tmp_path,
@@ -345,10 +345,10 @@ async def test_weixin_plain_task_status_uses_fact_tool(tmp_path, monkeypatch):
     )
     service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
-    task = service.active.tasks.create("check startup", status="preparing")
+    task = service.active.runs.create("check startup", status="preparing")
     provider.response = [
         (
-            '{"tool":"task.status","permission":"read","args":{"task_id":"'
+            '{"tool":"delegate.status","permission":"read","args":{"run_id":"'
             + task.id
             + '"},"confidence":0.9,"reason":"task status request"}'
         ),
@@ -537,12 +537,12 @@ async def test_weixin_background_task_notification_uses_model_text(tmp_path, mon
     runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
     service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
-    created = service.active.tasks.create(
+    created = service.active.runs.create(
         "list dir",
         status="completed",
         peer_id="peer",
     )
-    task = service.active.tasks.update_task(created.id, result_summary="listed files")
+    task = service.active.runs.update_run(created.id, result_summary="listed files")
     assert task is not None
 
     async def no_watches():
@@ -557,7 +557,7 @@ async def test_weixin_background_task_notification_uses_model_text(tmp_path, mon
     await service.process_background(account)
 
     assert service.client.sent[-1]["text"] == "任务完成：目录已经列出。"
-    assert "task_execution_finished" in provider.messages[-1].content
+    assert "run_execution_finished" in provider.messages[-1].content
 
 
 def test_weixin_extract_text_from_ilink_item_list():

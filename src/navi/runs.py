@@ -11,7 +11,7 @@ from .db import connect
 
 
 @dataclass(frozen=True)
-class Task:
+class Run:
     id: str
     title: str
     status: str
@@ -35,7 +35,7 @@ class Task:
 @dataclass(frozen=True)
 class Approval:
     id: str
-    task_id: str
+    run_id: str
     code: str
     action: str
     peer_id: str
@@ -64,7 +64,7 @@ class Watch:
 @dataclass(frozen=True)
 class ExecutionLog:
     id: str
-    task_id: str
+    run_id: str
     provider: str
     phase: str
     command: str
@@ -87,18 +87,18 @@ class ToolCallLog:
     ended_at: float
 
 
-class TaskStore:
+class RunStore:
     def __init__(self, home: Path):
         self.home = home
         self.home.mkdir(parents=True, exist_ok=True)
-        self.db_path = home / "tasks.db"
+        self.db_path = home / "runs.db"
         self._init_db()
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS tasks (
+                CREATE TABLE IF NOT EXISTS runs (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -124,7 +124,7 @@ class TaskStore:
                 """
                 CREATE TABLE IF NOT EXISTS approvals (
                     id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
                     code TEXT NOT NULL UNIQUE,
                     action TEXT NOT NULL,
                     peer_id TEXT NOT NULL,
@@ -157,7 +157,7 @@ class TaskStore:
                 """
                 CREATE TABLE IF NOT EXISTS execution_logs (
                     id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
                     provider TEXT NOT NULL,
                     phase TEXT NOT NULL,
                     command TEXT NOT NULL,
@@ -183,7 +183,7 @@ class TaskStore:
                 )
                 """
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, updated_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_approvals_code ON approvals(code)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_watches_next ON watches(enabled, next_run_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_call_logs_tool ON tool_call_logs(tool, started_at)")
@@ -203,9 +203,9 @@ class TaskStore:
         trust_rule_id: str = "",
         why_now: str = "",
         status: str = "pending",
-    ) -> Task:
+    ) -> Run:
         now = time.time()
-        task = Task(
+        run = Run(
             id=uuid.uuid4().hex,
             title=title,
             status=status,
@@ -225,7 +225,7 @@ class TaskStore:
         with connect(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO tasks(
+                INSERT INTO runs(
                     id, title, status, created_at, updated_at, kind, prompt, source,
                     peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id, why_now,
                     plan_summary, result_summary, error
@@ -233,66 +233,66 @@ class TaskStore:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    task.id,
-                    task.title,
-                    task.status,
-                    task.created_at,
-                    task.updated_at,
-                    task.kind,
-                    task.prompt,
-                    task.source,
-                    task.peer_id,
-                    task.sender_id,
-                    task.provider,
-                    task.workspace,
-                    task.autonomy_level,
-                    task.trust_rule_id,
-                    task.why_now,
-                    task.plan_summary,
-                    task.result_summary,
-                    task.error,
+                    run.id,
+                    run.title,
+                    run.status,
+                    run.created_at,
+                    run.updated_at,
+                    run.kind,
+                    run.prompt,
+                    run.source,
+                    run.peer_id,
+                    run.sender_id,
+                    run.provider,
+                    run.workspace,
+                    run.autonomy_level,
+                    run.trust_rule_id,
+                    run.why_now,
+                    run.plan_summary,
+                    run.result_summary,
+                    run.error,
                 ),
             )
-        return task
+        return run
 
-    def get(self, task_id: str) -> Task | None:
+    def get(self, run_id: str) -> Run | None:
         with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT id, title, status, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
-                FROM tasks WHERE id = ?
+                FROM runs WHERE id = ?
                 """,
-                (task_id,),
+                (run_id,),
             ).fetchone()
-        return self._task_from_row(row) if row else None
+        return self._run_from_row(row) if row else None
 
-    def list(self, *, limit: int = 50) -> list[Task]:
+    def list(self, *, limit: int = 50) -> list[Run]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, title, status, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
-                FROM tasks ORDER BY updated_at DESC LIMIT ?
+                FROM runs ORDER BY updated_at DESC LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
-        return [self._task_from_row(row) for row in rows]
+        return [self._run_from_row(row) for row in rows]
 
-    def list_by_status(self, status: str, *, limit: int = 20) -> list[Task]:
+    def list_by_status(self, status: str, *, limit: int = 20) -> list[Run]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, title, status, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
-                FROM tasks WHERE status = ? ORDER BY updated_at ASC LIMIT ?
+                FROM runs WHERE status = ? ORDER BY updated_at ASC LIMIT ?
                 """,
                 (status, limit),
             ).fetchall()
-        return [self._task_from_row(row) for row in rows]
+        return [self._run_from_row(row) for row in rows]
 
     def list_by_status_filtered(
         self,
@@ -301,7 +301,7 @@ class TaskStore:
         source: str = "",
         kind: str = "",
         limit: int | None = None,
-    ) -> list[Task]:
+    ) -> list[Run]:
         clauses = ["status = ?"]
         params: list[Any] = [status]
         if source:
@@ -320,13 +320,13 @@ class TaskStore:
                 SELECT id, title, status, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
-                FROM tasks WHERE {" AND ".join(clauses)} ORDER BY updated_at ASC{limit_clause}
+                FROM runs WHERE {" AND ".join(clauses)} ORDER BY updated_at ASC{limit_clause}
                 """,
                 params,
             ).fetchall()
-        return [self._task_from_row(row) for row in rows]
+        return [self._run_from_row(row) for row in rows]
 
-    def count_tasks(self, *, status: str = "", source: str = "", kind: str = "") -> int:
+    def count_runs(self, *, status: str = "", source: str = "", kind: str = "") -> int:
         clauses: list[str] = []
         params: list[Any] = []
         if status:
@@ -340,15 +340,15 @@ class TaskStore:
             params.append(kind)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with connect(self.db_path) as conn:
-            row = conn.execute(f"SELECT COUNT(*) FROM tasks{where}", params).fetchone()
+            row = conn.execute(f"SELECT COUNT(*) FROM runs{where}", params).fetchone()
         return int(row[0] if row else 0)
 
-    def count_tasks_by_status(self) -> dict[str, int]:
+    def count_runs_by_status(self) -> dict[str, int]:
         with connect(self.db_path) as conn:
-            rows = conn.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status").fetchall()
+            rows = conn.execute("SELECT status, COUNT(*) FROM runs GROUP BY status").fetchall()
         return {str(row[0]): int(row[1]) for row in rows}
 
-    def list_by_statuses(self, statuses: list[str], *, limit: int = 60) -> list[Task]:
+    def list_by_statuses(self, statuses: list[str], *, limit: int = 60) -> list[Run]:
         if not statuses:
             return []
         placeholders = ", ".join("?" for _ in statuses)
@@ -358,28 +358,28 @@ class TaskStore:
                 SELECT id, title, status, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
-                FROM tasks WHERE status IN ({placeholders}) ORDER BY updated_at ASC LIMIT ?
+                FROM runs WHERE status IN ({placeholders}) ORDER BY updated_at ASC LIMIT ?
                 """,
                 [*statuses, limit],
             ).fetchall()
-        return [self._task_from_row(row) for row in rows]
+        return [self._run_from_row(row) for row in rows]
 
-    def update_status(self, task_id: str, status: str) -> Task | None:
-        return self.update_task(task_id, status=status)
+    def update_status(self, run_id: str, status: str) -> Run | None:
+        return self.update_run(run_id, status=status)
 
-    def delete_task(self, task_id: str) -> Task | None:
-        task = self.get(task_id)
-        if task is None:
+    def delete_run(self, run_id: str) -> Run | None:
+        run = self.get(run_id)
+        if run is None:
             return None
         with connect(self.db_path) as conn:
-            conn.execute("DELETE FROM approvals WHERE task_id = ?", (task_id,))
-            conn.execute("DELETE FROM execution_logs WHERE task_id = ?", (task_id,))
-            conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        return task
+            conn.execute("DELETE FROM approvals WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM execution_logs WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+        return run
 
-    def update_task(
+    def update_run(
         self,
-        task_id: str,
+        run_id: str,
         *,
         status: str | None = None,
         plan_summary: str | None = None,
@@ -387,23 +387,23 @@ class TaskStore:
         error: str | None = None,
         trust_rule_id: str | None = None,
         autonomy_level: str | None = None,
-    ) -> Task | None:
-        task = self.get(task_id)
-        if task is None:
+    ) -> Run | None:
+        run = self.get(run_id)
+        if run is None:
             return None
         values = {
-            "status": task.status if status is None else status,
-            "plan_summary": task.plan_summary if plan_summary is None else plan_summary,
-            "result_summary": task.result_summary if result_summary is None else result_summary,
-            "error": task.error if error is None else error,
-            "trust_rule_id": task.trust_rule_id if trust_rule_id is None else trust_rule_id,
-            "autonomy_level": task.autonomy_level if autonomy_level is None else autonomy_level,
+            "status": run.status if status is None else status,
+            "plan_summary": run.plan_summary if plan_summary is None else plan_summary,
+            "result_summary": run.result_summary if result_summary is None else result_summary,
+            "error": run.error if error is None else error,
+            "trust_rule_id": run.trust_rule_id if trust_rule_id is None else trust_rule_id,
+            "autonomy_level": run.autonomy_level if autonomy_level is None else autonomy_level,
             "updated_at": time.time(),
         }
         with connect(self.db_path) as conn:
             conn.execute(
                 """
-                UPDATE tasks
+                UPDATE runs
                 SET status = ?, plan_summary = ?, result_summary = ?, error = ?,
                     trust_rule_id = ?, autonomy_level = ?, updated_at = ?
                 WHERE id = ?
@@ -416,15 +416,15 @@ class TaskStore:
                     values["trust_rule_id"],
                     values["autonomy_level"],
                     values["updated_at"],
-                    task_id,
+                    run_id,
                 ),
             )
-        return self.get(task_id)
+        return self.get(run_id)
 
     def create_approval(
         self,
         *,
-        task_id: str,
+        run_id: str,
         peer_id: str,
         sender_id: str,
         action: str = "execute",
@@ -433,7 +433,7 @@ class TaskStore:
         now = time.time()
         approval = Approval(
             id=uuid.uuid4().hex,
-            task_id=task_id,
+            run_id=run_id,
             code=self._new_code(),
             action=action,
             peer_id=peer_id,
@@ -447,14 +447,14 @@ class TaskStore:
             conn.execute(
                 """
                 INSERT INTO approvals(
-                    id, task_id, code, action, peer_id, sender_id, status,
+                    id, run_id, code, action, peer_id, sender_id, status,
                     expires_at, created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     approval.id,
-                    approval.task_id,
+                    approval.run_id,
                     approval.code,
                     approval.action,
                     approval.peer_id,
@@ -480,8 +480,8 @@ class TaskStore:
             )
         return self.get_approval(code)
 
-    def resolve_task_approval(self, task_id: str, *, sender_id: str, status: str) -> Approval | None:
-        approval = self.pending_approval_for_task(task_id, sender_id=sender_id)
+    def resolve_run_approval(self, run_id: str, *, sender_id: str, status: str) -> Approval | None:
+        approval = self.pending_approval_for_run(run_id, sender_id=sender_id)
         if approval is None:
             return None
         now = time.time()
@@ -493,30 +493,30 @@ class TaskStore:
             )
         return self.get_approval(approval.code)
 
-    def pending_approval_for_task(self, task_id: str, *, sender_id: str = "") -> Approval | None:
+    def pending_approval_for_run(self, run_id: str, *, sender_id: str = "") -> Approval | None:
         now = time.time()
         with connect(self.db_path) as conn:
             if sender_id:
                 row = conn.execute(
                     """
-                    SELECT id, task_id, code, action, peer_id, sender_id, status,
+                    SELECT id, run_id, code, action, peer_id, sender_id, status,
                            expires_at, created_at, updated_at
                     FROM approvals
-                    WHERE task_id = ? AND sender_id = ? AND status = 'pending'
+                    WHERE run_id = ? AND sender_id = ? AND status = 'pending'
                     ORDER BY created_at DESC LIMIT 1
                     """,
-                    (task_id, sender_id),
+                    (run_id, sender_id),
                 ).fetchone()
             else:
                 row = conn.execute(
                     """
-                    SELECT id, task_id, code, action, peer_id, sender_id, status,
+                    SELECT id, run_id, code, action, peer_id, sender_id, status,
                            expires_at, created_at, updated_at
                     FROM approvals
-                    WHERE task_id = ? AND status = 'pending'
+                    WHERE run_id = ? AND status = 'pending'
                     ORDER BY created_at DESC LIMIT 1
                     """,
-                    (task_id,),
+                    (run_id,),
                 ).fetchone()
         approval = Approval(*row) if row else None
         if approval is None:
@@ -530,15 +530,15 @@ class TaskStore:
             return None
         return approval
 
-    def has_approved_execution(self, task_id: str) -> bool:
+    def has_approved_execution(self, run_id: str) -> bool:
         with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT 1 FROM approvals
-                WHERE task_id = ? AND action = 'execute' AND status = 'approved'
+                WHERE run_id = ? AND action = 'execute' AND status = 'approved'
                 LIMIT 1
                 """,
-                (task_id,),
+                (run_id,),
             ).fetchone()
         return row is not None
 
@@ -546,7 +546,7 @@ class TaskStore:
         with connect(self.db_path) as conn:
             row = conn.execute(
                 """
-                SELECT id, task_id, code, action, peer_id, sender_id, status,
+                SELECT id, run_id, code, action, peer_id, sender_id, status,
                        expires_at, created_at, updated_at
                 FROM approvals WHERE code = ?
                 """,
@@ -554,7 +554,7 @@ class TaskStore:
             ).fetchone()
         return Approval(*row) if row else None
 
-    def approval_resolution_diagnostic(self, *, code: str = "", task_id: str = "", sender_id: str = "") -> dict:
+    def approval_resolution_diagnostic(self, *, code: str = "", run_id: str = "", sender_id: str = "") -> dict:
         now = time.time()
         if code:
             approval = self.get_approval(code)
@@ -568,13 +568,13 @@ class TaskStore:
             if approval.expires_at < now:
                 return facts | {"reason": "approval_expired"}
             return facts | {"reason": "approval_pending"}
-        if task_id:
-            task = self.get(task_id)
-            approvals = self._approvals_for_task(task_id)
-            if task is None:
-                return {"reason": "task_not_found", "task_id": task_id, "approval_count": len(approvals)}
+        if run_id:
+            run = self.get(run_id)
+            approvals = self._approvals_for_run(run_id)
+            if run is None:
+                return {"reason": "run_not_found", "run_id": run_id, "approval_count": len(approvals)}
             if not approvals:
-                return {"reason": "task_has_no_approval", "task_id": task_id, "task_status": task.status, "approval_count": 0}
+                return {"reason": "run_has_no_approval", "run_id": run_id, "run_status": run.status, "approval_count": 0}
             pending = [approval for approval in approvals if approval.status == "pending"]
             if sender_id:
                 sender_pending = [approval for approval in pending if approval.sender_id == sender_id]
@@ -587,14 +587,14 @@ class TaskStore:
                     latest = pending[0]
                     return _approval_diagnostic_facts(latest, now=now, sender_id=sender_id) | {
                         "reason": "sender_mismatch",
-                        "task_status": task.status,
+                        "run_status": run.status,
                         "approval_count": len(approvals),
                     }
             latest = approvals[0]
             reason = "approval_expired" if latest.status == "pending" and latest.expires_at < now else "approval_not_pending"
             return _approval_diagnostic_facts(latest, now=now, sender_id=sender_id) | {
                 "reason": reason,
-                "task_status": task.status,
+                "run_status": run.status,
                 "approval_count": len(approvals),
             }
         return {"reason": "approval_identifier_missing"}
@@ -603,7 +603,7 @@ class TaskStore:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, task_id, code, action, peer_id, sender_id, status,
+                SELECT id, run_id, code, action, peer_id, sender_id, status,
                        expires_at, created_at, updated_at
                 FROM approvals ORDER BY updated_at DESC LIMIT ?
                 """,
@@ -611,16 +611,16 @@ class TaskStore:
             ).fetchall()
         return [Approval(*row) for row in rows]
 
-    def _approvals_for_task(self, task_id: str) -> list[Approval]:
+    def _approvals_for_run(self, run_id: str) -> list[Approval]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, task_id, code, action, peer_id, sender_id, status,
+                SELECT id, run_id, code, action, peer_id, sender_id, status,
                        expires_at, created_at, updated_at
-                FROM approvals WHERE task_id = ?
+                FROM approvals WHERE run_id = ?
                 ORDER BY created_at DESC
                 """,
-                (task_id,),
+                (run_id,),
             ).fetchall()
         return [Approval(*row) for row in rows]
 
@@ -720,7 +720,7 @@ class TaskStore:
     def add_execution_log(
         self,
         *,
-        task_id: str,
+        run_id: str,
         provider: str,
         phase: str,
         command: str,
@@ -732,7 +732,7 @@ class TaskStore:
     ) -> ExecutionLog:
         log = ExecutionLog(
             id=uuid.uuid4().hex,
-            task_id=task_id,
+            run_id=run_id,
             provider=provider,
             phase=phase,
             command=command,
@@ -746,14 +746,14 @@ class TaskStore:
             conn.execute(
                 """
                 INSERT INTO execution_logs(
-                    id, task_id, provider, phase, command, stdout, stderr,
+                    id, run_id, provider, phase, command, stdout, stderr,
                     exit_code, started_at, ended_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     log.id,
-                    log.task_id,
+                    log.run_id,
                     log.provider,
                     log.phase,
                     log.command,
@@ -808,21 +808,21 @@ class TaskStore:
             )
         return log
 
-    def list_execution_logs(self, task_id: str | None = None, *, limit: int = 50) -> list[ExecutionLog]:
+    def list_execution_logs(self, run_id: str | None = None, *, limit: int = 50) -> list[ExecutionLog]:
         with connect(self.db_path) as conn:
-            if task_id:
+            if run_id:
                 rows = conn.execute(
                     """
-                    SELECT id, task_id, provider, phase, command, stdout, stderr,
+                    SELECT id, run_id, provider, phase, command, stdout, stderr,
                            exit_code, started_at, ended_at
-                    FROM execution_logs WHERE task_id = ? ORDER BY started_at DESC LIMIT ?
+                    FROM execution_logs WHERE run_id = ? ORDER BY started_at DESC LIMIT ?
                     """,
-                    (task_id, limit),
+                    (run_id, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     """
-                    SELECT id, task_id, provider, phase, command, stdout, stderr,
+                    SELECT id, run_id, provider, phase, command, stdout, stderr,
                            exit_code, started_at, ended_at
                     FROM execution_logs ORDER BY started_at DESC LIMIT ?
                     """,
@@ -842,8 +842,8 @@ class TaskStore:
         return [self._tool_call_log_from_row(row) for row in rows]
 
     @staticmethod
-    def _task_from_row(row: tuple) -> Task:
-        return Task(*row)
+    def _run_from_row(row: tuple) -> Run:
+        return Run(*row)
 
     @staticmethod
     def _watch_from_row(row: tuple) -> Watch:
@@ -865,7 +865,7 @@ class TaskStore:
 def _approval_diagnostic_facts(approval: Approval, *, now: float, sender_id: str = "") -> dict:
     return {
         "approval_id": approval.id,
-        "task_id": approval.task_id,
+        "run_id": approval.run_id,
         "code_present": bool(approval.code),
         "action": approval.action,
         "status": approval.status,

@@ -15,7 +15,7 @@ class TraceEvent:
     id: str
     trace_id: str
     session_id: str
-    task_id: str
+    run_id: str
     phase: str
     source: str
     peer_id: str
@@ -55,7 +55,7 @@ class TraceStore:
                     id TEXT PRIMARY KEY,
                     trace_id TEXT NOT NULL,
                     session_id TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
                     phase TEXT NOT NULL,
                     source TEXT NOT NULL,
                     peer_id TEXT NOT NULL,
@@ -96,7 +96,7 @@ class TraceStore:
         trace_id: str,
         phase: str,
         session_id: str = "",
-        task_id: str = "",
+        run_id: str = "",
         source: str = "",
         peer_id: str = "",
         sender_id: str = "",
@@ -111,7 +111,7 @@ class TraceStore:
             id=uuid.uuid4().hex,
             trace_id=trace_id,
             session_id=session_id,
-            task_id=task_id,
+            run_id=run_id,
             phase=phase,
             source=source,
             peer_id=peer_id,
@@ -128,7 +128,7 @@ class TraceStore:
             conn.execute(
                 """
                 INSERT INTO trace_events(
-                    id, trace_id, session_id, task_id, phase, source, peer_id,
+                    id, trace_id, session_id, run_id, phase, source, peer_id,
                     sender_id, tool, model_role, ok, input_json, output_json,
                     message, created_at
                 )
@@ -138,7 +138,7 @@ class TraceStore:
                     event.id,
                     event.trace_id,
                     event.session_id,
-                    event.task_id,
+                    event.run_id,
                     event.phase,
                     event.source,
                     event.peer_id,
@@ -158,7 +158,7 @@ class TraceStore:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, trace_id, session_id, task_id, phase, source, peer_id,
+                SELECT id, trace_id, session_id, run_id, phase, source, peer_id,
                        sender_id, tool, model_role, ok, input_json, output_json,
                        message, created_at
                 FROM trace_events WHERE trace_id = ? ORDER BY created_at ASC LIMIT ?
@@ -229,14 +229,14 @@ class TraceStore:
             outcome = "degraded"
             failure_domain = "planning_budget"
             recommendation = "Review planner prompt, step budget, and whether tools need more compact observations."
-        elif _has_unverified_pending_task_completion(events):
+        elif _has_unverified_pending_run_completion(events):
             outcome = "degraded"
             failure_domain = "completion_verifier_gap"
             recommendation = (
                 "A tracked task was only recorded or prepared before the turn finished. Tighten completion verification "
                 "or extend the agent loop to continue through preparation, approval request, or queueing."
             )
-            evidence["pending_task_completion_risk"] = True
+            evidence["pending_run_completion_risk"] = True
         elif not events:
             outcome = "unknown"
             failure_domain = "trace_missing"
@@ -305,14 +305,14 @@ def _redact(value: Any) -> Any:
     return value
 
 
-def _has_unverified_pending_task_completion(events: list[TraceEvent]) -> bool:
+def _has_unverified_pending_run_completion(events: list[TraceEvent]) -> bool:
     if any(event.phase == "completion.verify" for event in events):
         return False
     final_event = next((event for event in reversed(events) if event.phase == "turn.final"), None)
     if final_event is None:
         return False
     for event in events:
-        if event.phase != "capability.result" or event.tool != "task.record" or not event.ok:
+        if event.phase != "capability.result" or event.tool != "delegate.spawn" or not event.ok:
             continue
         try:
             output = json.loads(event.output_json)

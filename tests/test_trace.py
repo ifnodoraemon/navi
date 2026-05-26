@@ -49,7 +49,7 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
         trace_id="tool-failure",
         phase="capability.result",
         ok=False,
-        tool="task.queue",
+        tool="delegate.run",
         message="missing execution grant",
     )
     tool_eval = store.evaluate_trace("tool-failure")
@@ -94,8 +94,8 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
         trace_id="pending-risk",
         phase="capability.result",
         ok=True,
-        tool="task.record",
-        output_data={"facts": {"task_id": "task-1", "status": "pending"}},
+        tool="delegate.spawn",
+        output_data={"facts": {"run_id": "task-1", "status": "pending"}},
     )
     store.add_event(
         trace_id="pending-risk",
@@ -122,6 +122,6 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
     assert completion_evidence["recovery_recommended"] == "continue"
     assert pending_eval.outcome == "degraded"
     assert pending_eval.failure_domain == "completion_verifier_gap"
-    assert json.loads(pending_eval.evidence_json)["pending_task_completion_risk"] is True
+    assert json.loads(pending_eval.evidence_json)["pending_run_completion_risk"] is True
     assert missing_eval.outcome == "unknown"
     assert missing_eval.failure_domain == "trace_missing"

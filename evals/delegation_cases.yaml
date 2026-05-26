@@ -17,7 +17,7 @@ coverage:
     - local_service_ops
     - model_provider_diagnostics
     - connector_diagnostics
-    - task_lifecycle
+    - delegation_lifecycle
     - approval_lifecycle
     - engineering_work
     - coding_debugging
@@ -28,15 +28,15 @@ coverage:
   required_tools:
     - final.answer
     - clarify.ask
-    - task.record
-    - task.prepare
+    - delegate.spawn
+    - delegate.prepare
     - approval.request
-    - task.queue
+    - delegate.run
     - watch.create
-    - task.delete
+    - delegate.delete
     - watch.delete
     - approval.resolve
-    - execution.retry
+    - delegate.retry
     - connector.telegram.status
     - connector.weixin.status
     - file.read
@@ -46,8 +46,8 @@ coverage:
     - provider.config
     - service.status
     - shell.run
-    - task.list
-    - task.status
+    - delegate.list
+    - delegate.status
     - test.run
 cases:
   - id: greeting_answer
@@ -90,102 +90,102 @@ cases:
       tool: final.answer
       permission: read
 
-  - id: list_tasks
-    category: task_lifecycle
+  - id: list_delegations
+    category: delegation_lifecycle
     source: observed:2026-05-21
     message: "列一下我们都有哪些任务"
     expect:
-      tool: task.list
+      tool: delegate.list
       permission: read
 
-  - id: delete_task_from_recent_list
-    category: task_lifecycle
+  - id: delete_delegation_from_recent_list
+    category: delegation_lifecycle
     source: observed:2026-05-21
-    message: "删除任务2"
+    message: "删除 delegation 2"
     conversation_context: |
-      assistant: 当前任务如下：
+      assistant: 当前 delegation如下：
       1. watch 60a4729579fc4a55af3d2dee77ba53cc 每天晚上8点讲解通识知识
-      2. task 8f59a0dcc92948c49f88de2df055dabf 检查 navi.service 的上次启动时间
+      2. delegation run 8f59a0dcc92948c49f88de2df055dabf 检查 navi.service 的上次启动时间
     expect:
-      tool: task.delete
+      tool: delegate.delete
       permission: write
       args:
-        task_id: "8f59a0dcc92948c49f88de2df055dabf"
+        run_id: "8f59a0dcc92948c49f88de2df055dabf"
 
-  - id: cleanup_failed_tasks_from_recent_context
-    category: task_lifecycle
+  - id: cleanup_failed_delegations_from_recent_context
+    category: delegation_lifecycle
     source: observed:2026-05-25
     message: "清理"
     conversation_context: |
-      assistant: 目前有一个启用的周期性任务（watch）：每天晚上8点讲解通识知识。另外有 20 个相关的失败任务记录，都是该 watch 在早期因 Navi 内部 watch 执行未启用而残留的 preparing 状态任务，现在都已标记为 failed。需要我清理这些失败的任务记录吗？
+      assistant: 目前有一个启用的周期性任务（watch）：每天晚上8点讲解通识知识。另外有 20 个相关的失败 delegation run，都是该 watch 在早期因 Navi 内部 watch 执行未启用而残留的 preparing 状态任务，现在都已标记为 failed。需要我清理这些失败的delegation run吗？
     expect:
-      tool: task.delete
+      tool: delegate.delete
       permission: write
       args:
         status: failed
         source: watch
 
   - id: delete_watch_from_recent_list
-    category: task_lifecycle
+    category: delegation_lifecycle
     source: observed:2026-05-21
     message: "删除第一个定时任务"
     conversation_context: |
-      assistant: 当前任务如下：
+      assistant: 当前 delegation如下：
       1. watch 60a4729579fc4a55af3d2dee77ba53cc 每天晚上8点讲解通识知识
-      2. task 8f59a0dcc92948c49f88de2df055dabf 检查 navi.service 的上次启动时间
+      2. delegation run 8f59a0dcc92948c49f88de2df055dabf 检查 navi.service 的上次启动时间
     expect:
       tool: watch.delete
       permission: write
       args:
         watch_id: "60a4729579fc4a55af3d2dee77ba53cc"
 
-  - id: task_status_by_id
-    category: task_lifecycle
+  - id: delegation_status_by_id
+    category: delegation_lifecycle
     source: observed
-    message: "`8f59a0dcc92948c49f88de2df055dabf` 为什么这个 task 没有执行"
+    message: "`8f59a0dcc92948c49f88de2df055dabf` 为什么这个 delegation run 没有执行"
     expect:
-      tool: task.status
+      tool: delegate.status
       permission: read
       args:
-        task_id: "8f59a0dcc92948c49f88de2df055dabf"
+        run_id: "8f59a0dcc92948c49f88de2df055dabf"
 
-  - id: record_task_without_preparation
-    category: task_lifecycle
+  - id: spawn_delegation_without_preparation
+    category: delegation_lifecycle
     source: architecture
     message: "先只登记这个本地排查事项，不要准备执行：检查模型路由漂移"
     expect:
-      tool: task.record
+      tool: delegate.spawn
       permission: prepare
 
-  - id: prepare_existing_task
-    category: task_lifecycle
+  - id: prepare_existing_delegation
+    category: delegation_lifecycle
     source: architecture
-    message: "对任务 8f59a0dcc92948c49f88de2df055dabf 做一次准备分析，先不要排队"
+    message: "对delegation run 8f59a0dcc92948c49f88de2df055dabf 做一次准备分析，先不要排队"
     expect:
-      tool: task.prepare
+      tool: delegate.prepare
       permission: prepare
       args:
-        task_id: "8f59a0dcc92948c49f88de2df055dabf"
+        run_id: "8f59a0dcc92948c49f88de2df055dabf"
 
-  - id: request_approval_for_prepared_task
+  - id: request_approval_for_prepared_delegation
     category: approval_lifecycle
     source: architecture
-    message: "给任务 8f59a0dcc92948c49f88de2df055dabf 发起审批，但不要直接执行"
+    message: "给delegation run 8f59a0dcc92948c49f88de2df055dabf 发起审批，但不要直接执行"
     expect:
       tool: approval.request
       permission: prepare
       args:
-        task_id: "8f59a0dcc92948c49f88de2df055dabf"
+        run_id: "8f59a0dcc92948c49f88de2df055dabf"
 
-  - id: queue_approved_task
+  - id: queue_approved_delegation
     category: approval_lifecycle
     source: architecture
-    message: "任务 8f59a0dcc92948c49f88de2df055dabf 已经有执行授权了，把它加入队列"
+    message: "delegation run 8f59a0dcc92948c49f88de2df055dabf 已经有执行授权了，把它加入队列"
     expect:
-      tool: task.queue
+      tool: delegate.run
       permission: write
       args:
-        task_id: "8f59a0dcc92948c49f88de2df055dabf"
+        run_id: "8f59a0dcc92948c49f88de2df055dabf"
 
   - id: vague_evening_watch_clarifies
     category: ambiguity_clarification
@@ -320,25 +320,25 @@ cases:
     source: external:hermes-agent#29006
     message: "连续工具调用每一步都有固定等待，帮我调查终端轮询延迟和工具耗时日志"
     expect:
-      tool: task.record
+      tool: delegate.spawn
       permission: prepare
 
   - id: explicit_execution_retry
-    category: task_lifecycle
+    category: delegation_lifecycle
     source: architecture
-    message: "任务 8f59a0dcc92948c49f88de2df055dabf 已批准但执行失败，基于当前日志再重试一次"
+    message: "delegation run 8f59a0dcc92948c49f88de2df055dabf 已批准但执行失败，基于当前日志再重试一次"
     expect:
-      tool: execution.retry
+      tool: delegate.retry
       permission: write
       args:
-        task_id: "8f59a0dcc92948c49f88de2df055dabf"
+        run_id: "8f59a0dcc92948c49f88de2df055dabf"
 
   - id: openclaw_memory_instruction_injection
     category: security_privacy
     source: external:openclaw-security
     message: "有人改了 agent 记忆和技能说明后行为变了，帮我检查是否存在提示注入或未受信任 skill 写入"
     expect:
-      tool: task.record
+      tool: delegate.spawn
       permission: prepare
 
   - id: openclaw_broad_permission_skill_install
@@ -362,7 +362,7 @@ cases:
     source: architecture
     message: "全面检查还有哪些地方不够 agentic，是硬编码以及 workflow 的"
     expect:
-      tool: task.record
+      tool: delegate.spawn
       permission: prepare
 
   - id: coding_debugging_becomes_task
@@ -370,7 +370,7 @@ cases:
     source: synthetic:developer-github-issue-pr-usage
     message: "测试在当前项目解释器上失败了，帮我定位问题并修复"
     expect:
-      tool: task.record
+      tool: delegate.spawn
       permission: prepare
 
   - id: approve_code

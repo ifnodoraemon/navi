@@ -53,14 +53,14 @@ class MockProvider:
         system = messages[0].content if messages else ""
         if "navi_execution" in system:
             phase = _extract_required_execution_phase(system)
-            task_id = _extract_task_id(last)
+            run_id = _extract_run_id(last)
             return json.dumps(
                 {
                     "navi_execution": {
                         "version": "navi.actuator.v1",
                         "phase": phase,
-                        "task_id": task_id,
-                        "plan_id": f"{phase}:{task_id or 'mock'}",
+                        "run_id": run_id,
+                        "plan_id": f"{phase}:{run_id or 'mock'}",
                         "steps": [
                             {
                                 "id": "respond",
@@ -69,7 +69,7 @@ class MockProvider:
                                         "tool": "final.answer",
                                         "permission": "read",
                                         "args": {"message": f"Navi received: {last}"},
-                                        "target": task_id,
+                                        "target": run_id,
                                     }
                                 ],
                                 "verification": {"checks": [], "reason": "mock provider response"},
@@ -313,6 +313,6 @@ def _extract_required_execution_phase(system: str) -> str:
     return match.group(1) if match else "execute"
 
 
-def _extract_task_id(user: str) -> str:
-    match = re.search(r"^Task id:\s*(\S+)", user, flags=re.MULTILINE)
+def _extract_run_id(user: str) -> str:
+    match = re.search(r"^Run id:\s*(\S+)", user, flags=re.MULTILINE)
     return match.group(1) if match else ""

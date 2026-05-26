@@ -17,11 +17,11 @@ from .config import load_config, write_default_config
 from .connector_registry import get_connector_adapter, load_connector_adapters
 from .defaults import DEFAULT_WEB_HOST, DEFAULT_WEB_PORT
 from .evals import (
-    load_task_eval_dataset,
+    load_delegation_eval_dataset,
     results_to_json,
-    run_task_eval_dataset,
-    task_eval_tools,
-    validate_task_eval_dataset,
+    run_delegation_eval_dataset,
+    delegation_eval_tools,
+    validate_delegation_eval_dataset,
 )
 from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
@@ -263,7 +263,7 @@ def tools_call(name: str, args_json: str = "{}") -> None:
                 "action": result.action,
                 "observation": result.observation,
                 "message": result.message,
-                "task_id": result.task_id,
+                "run_id": result.run_id,
                 "facts": result.facts or {},
             },
             ensure_ascii=False,
@@ -274,19 +274,19 @@ def tools_call(name: str, args_json: str = "{}") -> None:
         raise typer.Exit(code=1)
 
 
-@eval_app.command("tasks")
-def eval_tasks(
-    dataset: Path = Path("evals") / "task_cases.yaml",
+@eval_app.command("delegations")
+def eval_delegations(
+    dataset: Path = Path("evals") / "delegation_cases.yaml",
     json_output: bool = False,
     validate_only: bool = False,
     timeout_seconds: float = 75.0,
 ) -> None:
-    """Run the task routing eval dataset against the configured model."""
+    """Run the delegation routing eval dataset against the configured model."""
     home = ensure_home()
     if validate_only:
-        errors = validate_task_eval_dataset(
-            load_task_eval_dataset(dataset),
-            task_eval_tools(home, project_dir=Path.cwd()),
+        errors = validate_delegation_eval_dataset(
+            load_delegation_eval_dataset(dataset),
+            delegation_eval_tools(home, project_dir=Path.cwd()),
         )
         if json_output:
             typer.echo(json.dumps({"ok": not errors, "errors": errors}, ensure_ascii=False, indent=2))
@@ -299,7 +299,7 @@ def eval_tasks(
             raise typer.Exit(code=1)
         return
     results = asyncio.run(
-        run_task_eval_dataset(
+        run_delegation_eval_dataset(
             home=home,
             project_dir=Path.cwd(),
             dataset=dataset,
@@ -372,7 +372,7 @@ def trace_evaluate(trace_id: str) -> None:
 def goal_list(status: str = "", limit: int = 50) -> None:
     """List durable goals as facts."""
     for goal in GoalStore(ensure_home()).list(status=status, limit=limit):
-        task = f" task={goal.task_id}" if goal.task_id else ""
+        task = f" task={goal.run_id}" if goal.run_id else ""
         trace = f" trace={goal.trace_id}" if goal.trace_id else ""
         typer.echo(f"{goal.id} {goal.status}{task}{trace} {goal.objective}")
 
@@ -384,19 +384,19 @@ def goal_show(goal_id: str) -> None:
     goal = store.get(goal_id)
     if goal is None:
         raise typer.BadParameter("goal not found")
-    typer.echo(f"{goal.id} {goal.status} task={goal.task_id or '-'} trace={goal.trace_id or '-'}")
+    typer.echo(f"{goal.id} {goal.status} task={goal.run_id or '-'} trace={goal.trace_id or '-'}")
     typer.echo(goal.objective)
     if goal.blocked_reason:
         typer.echo(f"blocked: {goal.blocked_reason}")
     for event in store.list_events(goal_id):
-        typer.echo(f"- {event.event_type} {event.status} task={event.task_id or '-'} trace={event.trace_id or '-'}")
+        typer.echo(f"- {event.event_type} {event.status} task={event.run_id or '-'} trace={event.trace_id or '-'}")
 
 
 @evolution_app.command("list")
 def evolution_list() -> None:
     """List evolution events."""
     for event in EvolutionLedger(ensure_home()).list():
-        typer.echo(f"{event.id} {event.target_type} {event.target_id} task={event.task_id}")
+        typer.echo(f"{event.id} {event.target_type} {event.target_id} task={event.run_id}")
 
 
 @evolution_app.command("targets")
@@ -426,7 +426,7 @@ def evolution_propose(
     rollback_plan: str = "",
     required_approval_level: str = "L2",
     evidence: str = "",
-    source_task_id: str = "",
+    source_run_id: str = "",
     eval_cases: str = "",
 ) -> None:
     """Create a reviewable evolution proposal without mutating the target."""
@@ -442,7 +442,7 @@ def evolution_propose(
             rollback_plan=rollback_plan,
             required_approval_level=required_approval_level,
             evidence=evidence,
-            source_task_id=source_task_id,
+            source_run_id=source_run_id,
             eval_cases=[item.strip() for item in eval_cases.split(",") if item.strip()],
         )
     except ValueError as exc:

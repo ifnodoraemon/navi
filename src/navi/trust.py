@@ -13,7 +13,7 @@ from .json_utils import parse_first_json_object
 from .spec_loader import load_spec
 from typing import Any, TYPE_CHECKING
 
-from .tasks import Task
+from .runs import Run
 
 if TYPE_CHECKING:
     from .provider import ModelPool
@@ -197,7 +197,7 @@ class TrustStore:
             ),
             ChatMessage(
                 role="user",
-                content=f"Trust Rule Pattern: {pattern}\nUser Task Prompt: {prompt}"
+                content=f"Trust Rule Pattern: {pattern}\nUser Run Prompt: {prompt}"
             )
         ]
         try:
@@ -209,7 +209,7 @@ class TrustStore:
             logger.debug("Semantic trust match failed: %s", e, exc_info=True)
         return False
 
-    def record_success(self, task: Task) -> TrustRule:
+    def record_success(self, task: Run) -> TrustRule:
         rule = self.get(task.trust_rule_id) if task.trust_rule_id else None
         if rule is None:
             rule = self.upsert(
@@ -218,7 +218,7 @@ class TrustStore:
                 project_path=task.workspace if task.autonomy_level == "L3" else "",
                 sender_id=task.sender_id,
                 autonomy_level=task.autonomy_level or "L2",
-                data={"last_task_id": task.id, "auto_created": True},
+                data={"last_run_id": task.id, "auto_created": True},
             )
         new_success = rule.success_count + 1
         consecutive_successes = rule.data.get("consecutive_successes", 0) + 1
@@ -243,7 +243,7 @@ class TrustStore:
             data=updated_data,
         )
 
-    async def record_failure(self, task: Task) -> TrustRule | None:
+    async def record_failure(self, task: Run) -> TrustRule | None:
         rule = self.get(task.trust_rule_id) if task.trust_rule_id else await self.match(
             prompt=task.prompt,
             sender_id=task.sender_id,
@@ -505,7 +505,7 @@ class TrustStore:
         return " ".join(words[:3]) or prompt[:24].lower() or "task"
 
     @staticmethod
-    def _rule_name(task: Task) -> str:
+    def _rule_name(task: Run) -> str:
         return f"{task.sender_id or 'local'}:{TrustStore._pattern(task.prompt)}"
 
     @staticmethod

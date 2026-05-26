@@ -12,7 +12,7 @@ from navi.engine import HernessEngine
 from navi.app_factory import build_runtime
 from navi.capabilities import build_capability_registry
 from navi.config import load_config
-from navi.evals import load_task_eval_cases, match_task_eval_case
+from navi.evals import load_delegation_eval_cases, match_delegation_eval_case
 from navi.syscalls import ModelSyscall, ModelSyscallPlanner
 
 
@@ -39,7 +39,7 @@ def _cases() -> dict[str, Any]:
 
 
 def _task_eval_cases() -> list[dict[str, Any]]:
-    return load_task_eval_cases(Path(__file__).resolve().parents[1] / "evals" / "task_cases.yaml")
+    return load_delegation_eval_cases(Path(__file__).resolve().parents[1] / "evals" / "delegation_cases.yaml")
 
 
 def _require_live_provider() -> Path:
@@ -87,7 +87,7 @@ async def test_live_llm_task_eval_dataset(case: dict[str, Any]) -> None:
         conversation_context=str(case.get("conversation_context") or ""),
     )
 
-    errors = match_task_eval_case(case, decision)
+    errors = match_delegation_eval_case(case, decision)
     assert errors == [], _format_failure(case, decision)
 
 

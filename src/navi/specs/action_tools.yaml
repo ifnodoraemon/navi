@@ -30,9 +30,9 @@
   mutates: false
   permission: read
   source: action
-- name: task.record
-  handler: task_record
-  description: Record a tracked local task for controlled local work, engineering investigation, bug diagnosis, config-to-runtime mapping, performance investigation, or code changes without preparing, approving, or queueing it.
+- name: delegate.spawn
+  handler: delegate_spawn
+  description: Spawn a tracked delegation run for controlled local work, engineering investigation, bug diagnosis, config-to-runtime mapping, performance investigation, or code changes without preparing, approving, or running it.
   input_schema:
     type: object
     properties:
@@ -46,16 +46,16 @@
   mutates: true
   permission: prepare
   source: action
-- name: task.prepare
-  handler: task_prepare
-  description: Run one preparation pass for an existing tracked task and return preparation facts.
+- name: delegate.prepare
+  handler: delegate_prepare
+  description: Run one preparation pass for an existing delegation run and return preparation facts.
   input_schema:
     type: object
     properties:
-      task_id:
+      run_id:
         type: string
     required:
-      - task_id
+      - run_id
   output_schema:
     type: object
   facts_only: false
@@ -64,30 +64,30 @@
   source: action
 - name: approval.request
   handler: approval_request
-  description: Request approval for a prepared task without queueing it.
+  description: Request approval for a prepared delegation run without running it.
   input_schema:
     type: object
     properties:
-      task_id:
+      run_id:
         type: string
     required:
-      - task_id
+      - run_id
   output_schema:
     type: object
   facts_only: false
   mutates: true
   permission: prepare
   source: action
-- name: task.queue
-  handler: task_queue
-  description: Queue a task only when it already has an execution grant.
+- name: delegate.run
+  handler: delegate_run
+  description: Run a delegation only when it already has an execution grant.
   input_schema:
     type: object
     properties:
-      task_id:
+      run_id:
         type: string
     required:
-      - task_id
+      - run_id
   output_schema:
     type: object
   facts_only: false
@@ -113,13 +113,13 @@
   mutates: true
   permission: prepare
   source: action
-- name: task.delete
-  handler: task_delete
-  description: Delete tracked tasks. Use task_id for one explicit task, or status=failed with optional source/kind to clean all matching failed task records without touching active tasks. Use limit only for an intentionally partial cleanup.
+- name: delegate.delete
+  handler: delegate_delete
+  description: Delete delegation runs. Use run_id for one explicit failed run, or status=failed with optional source/kind to clean all matching failed run records without touching active runs. Use limit only for an intentionally partial cleanup.
   input_schema:
     type: object
     properties:
-      task_id:
+      run_id:
         type: string
       status:
         type: string
@@ -154,7 +154,7 @@
   source: action
 - name: approval.resolve
   handler: approval_resolve
-  description: Approve or reject a pending task with an approval code or task id.
+  description: Approve or reject a pending delegation run with an approval code or run id.
   input_schema:
     type: object
     properties:
@@ -165,7 +165,7 @@
           - reject
       code:
         type: string
-      task_id:
+      run_id:
         type: string
     required:
       - decision
@@ -175,18 +175,18 @@
   mutates: true
   permission: write
   source: action
-- name: execution.retry
+- name: delegate.retry
   handler: execution_retry
-  description: Run one explicit follow-up execution attempt for an already approved or trusted task after observing its current status and logs.
+  description: Run one explicit follow-up execution attempt for an already approved or trusted delegation after observing its current status and logs.
   input_schema:
     type: object
     properties:
-      task_id:
+      run_id:
         type: string
       follow_up_prompt:
         type: string
     required:
-      - task_id
+      - run_id
   output_schema:
     type: object
   facts_only: false

@@ -24,7 +24,7 @@ from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
 from .graph import GraphStore
 from .paths import ensure_home
-from .tasks import TaskStore
+from .runs import RunStore
 from .trace import TraceStore
 from .trust import TrustStore
 from . import __version__
@@ -43,16 +43,16 @@ class SessionRequest(BaseModel):
     alias: str | None = None
 
 
-class TaskRequest(BaseModel):
+class DelegationRequest(BaseModel):
     title: str
     prompt: str | None = None
 
 
-class TaskStatusRequest(BaseModel):
+class DelegationStatusRequest(BaseModel):
     status: str
 
 
-class ActiveTaskRequest(BaseModel):
+class ActiveDelegationRequest(BaseModel):
     prompt: str
     peer_id: str = DEFAULT_LOCAL_SURFACE
     sender_id: str = DEFAULT_LOCAL_SURFACE
@@ -85,7 +85,7 @@ class EvolutionProposalRequest(BaseModel):
     rollback_plan: str = ""
     required_approval_level: str = "L2"
     evidence: str = ""
-    source_task_id: str = ""
+    source_run_id: str = ""
     eval_cases: list[str] = Field(default_factory=list)
 
 
@@ -97,7 +97,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     home = home or ensure_home()
     write_default_config(home)
     runtime = build_runtime(home)
-    task_store = TaskStore(home)
+    task_store = RunStore(home)
     goal_store = GoalStore(home)
     daemon = SystemDaemon(home)
     agent = HernessEngine(home=home, runtime=runtime, project_dir=Path.cwd())
@@ -155,7 +155,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             "session_id": result.session_id,
             "message": result.text,
             "action": result.action,
-            "task_id": result.task_id,
+            "run_id": result.run_id,
         }
 
     @app.get(api_path("sessions"))
@@ -188,71 +188,71 @@ def create_app(home: Path | None = None) -> FastAPI:
     def skills() -> dict:
         return {"skills": [skill.__dict__ | {"path": str(skill.path)} for skill in runtime.skills.list_skills()]}
 
-    @app.get(api_path("tasks"))
-    def list_tasks() -> dict:
-        return {"tasks": [task.__dict__ for task in task_store.list()]}
+    @app.get(api_path("delegations"))
+    def list_delegations() -> dict:
+        return {"delegations": [task.__dict__ for task in task_store.list()]}
 
-    @app.post(api_path("tasks"))
-    async def create_task(request: TaskRequest) -> dict:
+    @app.post(api_path("delegations"))
+    async def create_delegation(request: DelegationRequest) -> dict:
         result = await capabilities.invoke(
-            "task.record",
+            "delegate.spawn",
             {"prompt": request.prompt or request.title},
             permission="prepare",
             context=_local_capability_context(home),
         )
         _raise_capability_error(result)
         prepared = await capabilities.invoke(
-            "task.prepare",
-            {"task_id": result.task_id},
+            "delegate.prepare",
+            {"run_id": result.run_id},
             permission="prepare",
             context=_local_capability_context(home),
         )
         _raise_capability_error(prepared)
         requested = await capabilities.invoke(
             "approval.request",
-            {"task_id": result.task_id},
+            {"run_id": result.run_id},
             permission="prepare",
             context=_local_capability_context(home),
         )
         _raise_capability_error(requested)
-        task = task_store.get(result.task_id) if result.task_id else None
+        task = task_store.get(result.run_id) if result.run_id else None
         if task is None:
-            raise HTTPException(status_code=500, detail="task.record did not return a task")
+            raise HTTPException(status_code=500, detail="delegate.spawn did not return a delegation run")
         return task.__dict__
 
-    @app.patch(api_path("task"))
-    async def update_task(task_id: str, request: TaskStatusRequest) -> dict:
+    @app.patch(api_path("delegation"))
+    async def update_delegation(run_id: str, request: DelegationStatusRequest) -> dict:
         decision_by_status = {"queued": "approve", "rejected": "reject"}
         decision = decision_by_status.get(request.status)
         if decision is None:
             raise HTTPException(
                 status_code=409,
-                detail="task status transitions must go through task capabilities",
+                detail="delegation status transitions must go through delegation capabilities",
             )
         result = await capabilities.invoke(
             "approval.resolve",
-            {"decision": decision, "task_id": task_id},
+            {"decision": decision, "run_id": run_id},
             permission="write",
             context=_local_capability_context(home),
         )
         _raise_capability_error(result)
-        task = task_store.get(task_id)
+        task = task_store.get(run_id)
         if task is None:
-            raise HTTPException(status_code=404, detail="task not found")
+            raise HTTPException(status_code=404, detail="delegation run not found")
         return task.__dict__
 
-    @app.delete(api_path("task"))
-    async def delete_task(task_id: str) -> dict:
+    @app.delete(api_path("delegation"))
+    async def delete_delegation(run_id: str) -> dict:
         result = await capabilities.invoke(
-            "task.delete",
-            {"task_id": task_id},
+            "delegate.delete",
+            {"run_id": run_id},
             permission="write",
             context=_local_capability_context(home),
         )
         if not result.ok and "not found" in result.message:
             raise HTTPException(status_code=404, detail=result.message)
         _raise_capability_error(result)
-        return {"deleted": True, "task": result.facts}
+        return {"deleted": True, "delegation": result.facts}
 
     @app.get(api_path("approvals"))
     def list_approvals() -> dict:
@@ -262,28 +262,28 @@ def create_app(home: Path | None = None) -> FastAPI:
     def list_watches() -> dict:
         return {"watches": [watch.__dict__ for watch in task_store.list_watches()]}
 
-    @app.post(api_path("task_approve"))
-    async def approve_task(task_id: str) -> dict:
+    @app.post(api_path("delegation_approve"))
+    async def approve_delegation(run_id: str) -> dict:
         result = await capabilities.invoke(
             "approval.resolve",
-            {"decision": "approve", "task_id": task_id},
+            {"decision": "approve", "run_id": run_id},
             permission="write",
             context=_local_capability_context(home),
         )
         if not result.ok and "not found" in result.message.lower():
             raise HTTPException(status_code=409, detail=result.message)
         _raise_capability_error(result)
-        task = task_store.get(task_id)
+        task = task_store.get(run_id)
         if task is None:
-            raise HTTPException(status_code=404, detail="task not found")
+            raise HTTPException(status_code=404, detail="delegation run not found")
         return task.__dict__
 
-    @app.post(api_path("tasks_process"))
-    async def process_tasks() -> dict:
-        return {"tasks": [task.__dict__ for task in await daemon.process_queue_once()]}
+    @app.post(api_path("delegations_process"))
+    async def process_delegations() -> dict:
+        return {"delegations": [task.__dict__ for task in await daemon.process_queue_once()]}
 
-    @app.post(api_path("active_tasks"))
-    async def create_active_task(request: ActiveTaskRequest) -> dict:
+    @app.post(api_path("active_delegations"))
+    async def create_active_delegation(request: ActiveDelegationRequest) -> dict:
         context = CapabilityContext(
             home=home,
             peer_id=request.peer_id,
@@ -291,39 +291,39 @@ def create_app(home: Path | None = None) -> FastAPI:
             source=load_config(home).runtime.local_surface,
         )
         result = await capabilities.invoke(
-            "task.record",
+            "delegate.spawn",
             {"prompt": request.prompt},
             permission="prepare",
             context=context,
         )
         if result.ok:
             await capabilities.invoke(
-                "task.prepare",
-                {"task_id": result.task_id},
+                "delegate.prepare",
+                {"run_id": result.run_id},
                 permission="prepare",
                 context=context,
             )
             result = await capabilities.invoke(
                 "approval.request",
-                {"task_id": result.task_id},
+                {"run_id": result.run_id},
                 permission="prepare",
                 context=context,
             )
-        task = task_store.get(result.task_id) if result.task_id else None
-        approval = task_store.pending_approval_for_task(result.task_id, sender_id=request.sender_id) if result.task_id else None
+        task = task_store.get(result.run_id) if result.run_id else None
+        approval = task_store.pending_approval_for_run(result.run_id, sender_id=request.sender_id) if result.run_id else None
         message = result.message or result.observation
         if task and approval:
             message = (
-                f"Task `{task.id}` is prepared for approval.\n"
+                f"Delegation run `{task.id}` is prepared for approval.\n"
                 f"Preparation:\n{task.plan_summary or '(no preparation output)'}\n\n"
                 f"Approval expires in 15 minutes.\n"
                 f"Approval code: `{approval.code}`.\n"
                 f"Reply with `approve {approval.code}` or `reject {approval.code}`."
             )
-        return {"message": message, "task": task.__dict__ if task else None}
+        return {"message": message, "delegation": task.__dict__ if task else None}
 
     @app.post(api_path("active_approve"))
-    async def approve_active_task(request: ActiveApprovalRequest) -> dict:
+    async def approve_active_delegation(request: ActiveApprovalRequest) -> dict:
         result = await capabilities.invoke(
             "approval.resolve",
             {"decision": "approve", "code": request.code},
@@ -334,11 +334,11 @@ def create_app(home: Path | None = None) -> FastAPI:
                 source=load_config(home).runtime.local_surface,
             ),
         )
-        task = task_store.get(result.task_id) if result.task_id else None
-        return {"message": result.message or result.observation, "task": task.__dict__ if task else None}
+        task = task_store.get(result.run_id) if result.run_id else None
+        return {"message": result.message or result.observation, "delegation": task.__dict__ if task else None}
 
     @app.post(api_path("active_reject"))
-    async def reject_active_task(request: ActiveApprovalRequest) -> dict:
+    async def reject_active_delegation(request: ActiveApprovalRequest) -> dict:
         result = await capabilities.invoke(
             "approval.resolve",
             {"decision": "reject", "code": request.code},
@@ -454,7 +454,9 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.post(api_path("evolution_proposals"))
     def create_evolution_proposal(request: EvolutionProposalRequest) -> dict:
         try:
-            proposal = EvolutionLedger(home).propose(**request.model_dump())
+            data = request.model_dump()
+            data["source_run_id"] = data.pop("source_run_id", "")
+            proposal = EvolutionLedger(home).propose(**data)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return proposal.__dict__
@@ -524,7 +526,7 @@ def create_app(home: Path | None = None) -> FastAPI:
 def _public_approval(approval) -> dict:
     return {
         "id": approval.id,
-        "task_id": approval.task_id,
+        "run_id": approval.run_id,
         "action": approval.action,
         "peer_id": approval.peer_id,
         "sender_id": approval.sender_id,
@@ -558,7 +560,7 @@ def _capability_result_dict(result: CapabilityResult) -> dict[str, Any]:
         "action": result.action,
         "observation": result.observation,
         "message": result.message,
-        "task_id": result.task_id,
+        "run_id": result.run_id,
         "terminal": result.terminal,
         "facts": result.facts or {},
     }

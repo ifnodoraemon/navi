@@ -37,15 +37,15 @@ def test_connector_ingress_runtime_uses_remote_tool_allowlist(tmp_path):
     assert {
         "final.answer",
         "clarify.ask",
-        "task.record",
-        "task.prepare",
+        "delegate.spawn",
+        "delegate.prepare",
         "approval.request",
-        "task.queue",
+        "delegate.run",
         "watch.create",
         "approval.resolve",
-        "task.delete",
+        "delegate.delete",
     } <= names
-    assert {"provider.config", "service.status", "task.status", "task.list"} <= names
+    assert {"provider.config", "service.status", "delegate.status", "delegate.list"} <= names
     assert "watch.delete" not in names
     assert "file.read" not in names
     assert "file.write" not in names

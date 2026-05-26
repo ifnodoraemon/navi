@@ -23,11 +23,11 @@ class EvalResult:
     errors: list[str]
 
 
-def load_task_eval_cases(path: Path) -> list[dict[str, Any]]:
-    return load_task_eval_dataset(path)["cases"]
+def load_delegation_eval_cases(path: Path) -> list[dict[str, Any]]:
+    return load_delegation_eval_dataset(path)["cases"]
 
 
-def load_task_eval_dataset(path: Path) -> dict[str, Any]:
+def load_delegation_eval_dataset(path: Path) -> dict[str, Any]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     data = {} if loaded is None else loaded
     if not isinstance(data, dict):
@@ -41,11 +41,11 @@ def load_task_eval_dataset(path: Path) -> dict[str, Any]:
     return data
 
 
-def validate_task_eval_cases(cases: list[dict[str, Any]], tools: list[ToolSpec]) -> list[str]:
-    return validate_task_eval_dataset({"cases": cases}, tools)
+def validate_delegation_eval_cases(cases: list[dict[str, Any]], tools: list[ToolSpec]) -> list[str]:
+    return validate_delegation_eval_dataset({"cases": cases}, tools)
 
 
-def validate_task_eval_dataset(dataset: dict[str, Any], tools: list[ToolSpec]) -> list[str]:
+def validate_delegation_eval_dataset(dataset: dict[str, Any], tools: list[ToolSpec]) -> list[str]:
     errors: list[str] = []
     by_name = {tool.name: tool for tool in tools}
     seen: set[str] = set()
@@ -99,17 +99,17 @@ def validate_task_eval_dataset(dataset: dict[str, Any], tools: list[ToolSpec]) -
     return errors
 
 
-async def run_task_eval_dataset(
+async def run_delegation_eval_dataset(
     *,
     home: Path,
     project_dir: Path,
     dataset: Path,
     timeout_seconds: float = 75.0,
 ) -> list[EvalResult]:
-    loaded = load_task_eval_dataset(dataset)
+    loaded = load_delegation_eval_dataset(dataset)
     cases = loaded["cases"]
-    tools = task_eval_tools(home, project_dir=project_dir)
-    validation_errors = validate_task_eval_dataset(loaded, tools)
+    tools = delegation_eval_tools(home, project_dir=project_dir)
+    validation_errors = validate_delegation_eval_dataset(loaded, tools)
     if validation_errors:
         return [
             EvalResult(
@@ -132,7 +132,7 @@ async def run_task_eval_dataset(
             ),
             timeout=timeout_seconds,
         )
-        errors = match_task_eval_case(case, decision)
+        errors = match_delegation_eval_case(case, decision)
         results.append(
             EvalResult(
                 id=str(case["id"]),
@@ -145,11 +145,11 @@ async def run_task_eval_dataset(
     return results
 
 
-def task_eval_tools(home: Path, *, project_dir: Path) -> list[ToolSpec]:
+def delegation_eval_tools(home: Path, *, project_dir: Path) -> list[ToolSpec]:
     return build_capability_registry(home, project_dir=project_dir).list_specs()
 
 
-def match_task_eval_case(case: dict[str, Any], decision: ModelSyscall) -> list[str]:
+def match_delegation_eval_case(case: dict[str, Any], decision: ModelSyscall) -> list[str]:
     expected = case.get("expect") or {}
     errors: list[str] = []
     expected_tool = str(expected.get("tool") or "")
