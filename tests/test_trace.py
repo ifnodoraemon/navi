@@ -76,6 +76,12 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
         tool="final.answer",
         message="task is still pending",
     )
+    store.add_event(
+        trace_id="completion-verify",
+        phase="recovery.plan",
+        ok=True,
+        output_data={"recommended": "continue"},
+    )
     completion_eval = store.evaluate_trace("completion-verify")
 
     store.add_event(
@@ -104,6 +110,9 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
     assert budget_eval.failure_domain == "planning_budget"
     assert completion_eval.outcome == "failure"
     assert completion_eval.failure_domain == "completion_verifier"
+    completion_evidence = json.loads(completion_eval.evidence_json)
+    assert completion_evidence["recovery_plan_recorded"] is True
+    assert completion_evidence["recovery_recommended"] == "continue"
     assert pending_eval.outcome == "degraded"
     assert pending_eval.failure_domain == "completion_verifier_gap"
     assert json.loads(pending_eval.evidence_json)["pending_task_completion_risk"] is True

@@ -199,10 +199,23 @@ class TraceStore:
                 recommendation = "Review the selected tool spec, arguments, and implementation result."
             elif first_failure.phase == "completion.verify":
                 failure_domain = "completion_verifier"
-                recommendation = (
-                    "Review goal completion criteria and planner follow-up policy; the model tried to finish before "
-                    "the observed state satisfied the task."
-                )
+                recovery_plan = next((event for event in events if event.phase == "recovery.plan"), None)
+                if recovery_plan:
+                    evidence["recovery_plan_recorded"] = True
+                    try:
+                        recovery_output = json.loads(recovery_plan.output_json or "{}")
+                    except json.JSONDecodeError:
+                        recovery_output = {}
+                    evidence["recovery_recommended"] = recovery_output.get("recommended", "")
+                    recommendation = (
+                        "Review whether the recorded recovery plan led to a successful follow-up action."
+                    )
+                else:
+                    evidence["recovery_plan_recorded"] = False
+                    recommendation = (
+                        "Review goal completion criteria and planner follow-up policy; the model tried to finish before "
+                        "the observed state satisfied the task."
+                    )
             else:
                 failure_domain = "runtime"
                 recommendation = "Review runtime policy and orchestration around the failing phase."

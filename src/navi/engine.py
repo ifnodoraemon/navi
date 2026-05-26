@@ -13,6 +13,7 @@ from .connector_registry import approval_surface_affordance
 from .goals import GoalStore
 from .operating_context import OperatingContext
 from .provider import ChatMessage
+from .recovery import RecoveryPlanner
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
 from .trace import TraceStore
@@ -58,6 +59,7 @@ class HernessEngine:
             permission_ceiling=permission_ceiling,
         )
         self.planner = ModelSyscallPlanner(runtime.provider)
+        self.recovery = RecoveryPlanner()
         self.trace = TraceStore(home)
         self._memory_sem: asyncio.Semaphore | None = None
         self._background_tasks: set[asyncio.Task] = set()
@@ -180,7 +182,11 @@ class HernessEngine:
             if result.terminal:
                 block_reason = self._completion_block_reason(completion_events)
                 if block_reason:
-                    observations.append(block_reason)
+                    recovery_plan = self.recovery.plan_completion_failure(
+                        block_reason=block_reason,
+                        events=completion_events,
+                    )
+                    observations.append(recovery_plan.to_observation())
                     self.trace.add_event(
                         trace_id=trace_id,
                         phase="completion.verify",
@@ -194,6 +200,21 @@ class HernessEngine:
                         ok=False,
                         output_data={"reason": block_reason},
                         message=block_reason,
+                    )
+                    self.trace.add_event(
+                        trace_id=trace_id,
+                        phase="recovery.plan",
+                        session_id=resolved_session_id or "",
+                        task_id=result.task_id,
+                        source=source,
+                        peer_id=peer_id,
+                        sender_id=sender_id,
+                        tool=syscall.tool,
+                        model_role="planner",
+                        ok=True,
+                        input_data={"block_reason": block_reason},
+                        output_data=asdict(recovery_plan),
+                        message=recovery_plan.recommended,
                     )
                     continue
                 turn_res = self._record_turn(text, result, session_id=resolved_session_id)

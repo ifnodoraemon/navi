@@ -144,8 +144,12 @@ async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tm
     assert result.text.startswith("任务已准备好，等待审批。")
     assert "审批码:" in result.text
     assert len(provider.messages) == 5
+    assert "Recovery plan:" in provider.messages[2][1].content
     trace_events = router.trace.list_events(result.trace_id)
     assert any(event.phase == "completion.verify" and not event.ok for event in trace_events)
+    recovery_events = [event for event in trace_events if event.phase == "recovery.plan"]
+    assert recovery_events
+    assert recovery_events[0].message == "continue"
 
 
 @pytest.mark.asyncio
@@ -174,8 +178,12 @@ async def test_engine_blocks_final_answer_after_partial_failed_task_cleanup(tmp_
     assert store.count_tasks(status="failed", source="watch") == 0
     assert result.text == "失败任务已清理完毕。"
     assert len(provider.messages) == 4
+    assert "Recovery plan:" in provider.messages[2][1].content
     trace_events = router.trace.list_events(result.trace_id)
     assert any(event.phase == "completion.verify" and not event.ok for event in trace_events)
+    recovery_events = [event for event in trace_events if event.phase == "recovery.plan"]
+    assert recovery_events
+    assert recovery_events[0].message == "continue"
 
 
 @pytest.mark.asyncio
