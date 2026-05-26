@@ -29,6 +29,7 @@ MAX_GIT_STATUS_PROMPT_CHARS = 5000
 LOG_ERROR_KEYWORDS = ("exception", "fatal", "traceback (most recent call last):")
 MAX_LOG_READ_BYTES = 512_000
 MAX_LOG_PROMPT_CHARS = 100_000
+MAX_FAILED_WATCH_TASK_RECORDS = 50
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,8 @@ class SystemDaemon:
         # 1. Run proactive event-driven checks
         events = await self.process_events_once()
         created.extend(events)
+
+        self._prune_failed_watch_task_records()
         
         # 2. Run static cron watches
         for watch in self.tasks.due_watches(now):
@@ -100,6 +103,22 @@ class SystemDaemon:
             )
             self.tasks.mark_watch_run(watch.id, last_run_at=now, next_run_at=next_cron_time(watch.cron, now=now))
         return created
+
+    def _prune_failed_watch_task_records(self, *, keep_latest: int = MAX_FAILED_WATCH_TASK_RECORDS) -> int:
+        keep_latest = max(0, keep_latest)
+        total = self.tasks.count_tasks(status="failed", source="watch", kind="task")
+        excess = max(0, total - keep_latest)
+        if excess == 0:
+            return 0
+        stale = self.tasks.list_by_status_filtered("failed", source="watch", kind="task", limit=excess)
+        pruned = 0
+        for task in stale:
+            removed = self.tasks.delete_task(task.id)
+            if removed is None:
+                continue
+            self.graph.delete(removed.id)
+            pruned += 1
+        return pruned
 
     async def process_events_once(self) -> list[dict]:
         created: list[dict] = []

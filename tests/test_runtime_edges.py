@@ -100,3 +100,22 @@ async def test_daemon_processes_due_watches(tmp_path, monkeypatch):
     assert updated.id == watch.id
     assert updated.last_run_at > 0
     assert updated.next_run_at > updated.last_run_at
+
+
+@pytest.mark.asyncio
+async def test_daemon_prunes_excess_failed_watch_task_records(tmp_path, monkeypatch):
+    store = TaskStore(tmp_path)
+    daemon = SystemDaemon(tmp_path)
+    async def no_events():
+        return []
+
+    monkeypatch.setattr(daemon, "process_events_once", no_events)
+    for index in range(55):
+        store.create(f"old failed watch {index}", status="failed", source="watch", kind="task")
+    local_failed = store.create("keep local failed", status="failed", source="local", kind="task")
+
+    results = await daemon.process_watches_once()
+
+    assert results == []
+    assert store.count_tasks(status="failed", source="watch", kind="task") == 50
+    assert store.get(local_failed.id) is not None
