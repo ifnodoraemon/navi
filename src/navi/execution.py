@@ -11,6 +11,7 @@ from typing import Any
 from .config import load_config
 from .governance import GovernanceEngine
 from .evolution import EvolutionLedger
+from .goals import GoalStore
 from .json_utils import parse_first_json_object
 from .provider import ChatMessage, ModelPool, build_provider
 from .tasks import Task, TaskStore
@@ -912,12 +913,14 @@ class ExecutionService:
             result = await self.actuator.run_task(task, result)
         self._log(task, result)
         status = "prepared" if result.exit_code == 0 else "failed"
-        return self.tasks.update_task(
+        updated = self.tasks.update_task(
             task.id,
             status=status,
             plan_summary=result.summary,
             error="" if result.exit_code == 0 else result.stderr,
         ) or task
+        GoalStore(self.home).update_for_task(updated, evidence={"task_id": updated.id, "task_status": updated.status, "phase": "prepare"})
+        return updated
 
     async def execute_task(self, task: Task) -> Task:
         # Record before state for rollback support
@@ -964,6 +967,10 @@ class ExecutionService:
             before=before_state,
             after=after_state,
         )
+        GoalStore(self.home).update_for_task(
+            updated_task,
+            evidence={"task_id": updated_task.id, "task_status": updated_task.status, "phase": "execute", "summary": updated_task.result_summary},
+        )
         
         return updated_task
 
@@ -1004,6 +1011,7 @@ class ExecutionService:
                     error="execution grant missing: approved approval or explicit L3 trust rule required",
                 )
                 if blocked:
+                    GoalStore(self.home).update_for_task(blocked, evidence={"task_id": blocked.id, "task_status": blocked.status})
                     completed.append(blocked)
                 continue
             completed.append(await self.execute_task(task))

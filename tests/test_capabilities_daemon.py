@@ -6,6 +6,7 @@ from navi.auth import AuthInspector
 from navi.capabilities import CapabilityContext, CapabilityRegistry
 from navi.daemon import SystemDaemon
 from navi.execution import ExecutionService
+from navi.goals import GOAL_STATUS_ACTIVE, GOAL_STATUS_AWAITING_APPROVAL, GOAL_STATUS_VERIFIED_COMPLETE, GoalStore
 from navi.tasks import TaskStore
 from navi.trust import TrustStore
 
@@ -49,6 +50,10 @@ async def test_task_approval_execution_and_evolution_through_os_primitives(tmp_p
     task = tasks.get(planned.task_id)
     assert task is not None
     assert task.status == "awaiting_approval"
+    goal_store = GoalStore(tmp_path)
+    goal = goal_store.get_by_task(task.id)
+    assert goal is not None
+    assert goal.status == GOAL_STATUS_AWAITING_APPROVAL
     approval = tasks.list_approvals()[0]
 
     approved = await capabilities.invoke(
@@ -59,10 +64,20 @@ async def test_task_approval_execution_and_evolution_through_os_primitives(tmp_p
     )
 
     assert approved.facts["task_status"] == "queued"
+    queued_goal = goal_store.get_by_task(task.id)
+    assert queued_goal is not None
+    assert queued_goal.status == GOAL_STATUS_ACTIVE
     completed = await daemon.process_queue_once()
 
     assert completed[0].status == "completed"
     assert tasks.get(planned.task_id).result_summary
+    completed_goal = goal_store.get_by_task(task.id)
+    assert completed_goal is not None
+    assert completed_goal.status == GOAL_STATUS_VERIFIED_COMPLETE
+    assert {event.event_type for event in goal_store.list_events(completed_goal.id)} >= {
+        "goal.created",
+        "goal.task_status",
+    }
     assert daemon.evolution.ledger.list()
 
 

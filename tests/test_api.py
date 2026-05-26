@@ -86,6 +86,13 @@ def test_local_console_api_flow(tmp_path, monkeypatch):
     assert created.status_code == 200
     task = created.json()
     assert task["status"] == "awaiting_approval"
+    goals = client.get("/v1/goals", params={"status": "awaiting_approval"})
+    assert goals.status_code == 200
+    goal = goals.json()["goals"][0]
+    assert goal["task_id"] == task["id"]
+    shown_goal = client.get(f"/v1/goals/{goal['id']}")
+    assert shown_goal.status_code == 200
+    assert shown_goal.json()["events"][0]["event_type"] == "goal.created"
 
     updated = client.patch(f"/v1/tasks/{task['id']}", json={"status": "active"})
     assert updated.status_code == 409

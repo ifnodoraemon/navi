@@ -6,6 +6,7 @@ import pytest
 
 from navi.engine import HernessEngine
 from navi.fact_tools import ServiceFacts
+from navi.goals import GoalStore
 from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.runtime import AgentRuntime
 from navi.tasks import TaskStore
@@ -136,6 +137,10 @@ async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tm
 
     task = TaskStore(tmp_path).list()[0]
     assert task.status == "awaiting_approval"
+    goal = GoalStore(tmp_path).get_by_task(task.id)
+    assert goal is not None
+    assert goal.trace_id == result.trace_id
+    assert goal.session_id == result.session_id
     assert result.text.startswith("任务已准备好，等待审批。")
     assert "审批码:" in result.text
     assert len(provider.messages) == 5
@@ -214,7 +219,7 @@ async def test_engine_shutdown_cancels_background_tasks(tmp_path):
         
     runtime.memory.extract_and_consolidate_memories = slow_consolidate
 
-    result = await router.handle(
+    await router.handle(
         "Hello",
         peer_id="web",
         sender_id="web",

@@ -10,6 +10,7 @@ from typing import Any
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .config import load_config
 from .connector_registry import approval_surface_affordance
+from .goals import GoalStore
 from .operating_context import OperatingContext
 from .provider import ChatMessage
 from .runtime import AgentRuntime
@@ -95,6 +96,7 @@ class HernessEngine:
         )
         observations: list[str] = []
         completion_events: list[dict[str, Any]] = []
+        goal_ids: set[str] = set()
         pending_approval_prompt = ""
         last_result: AgentTurnResult | None = None
         budget_exhausted = False
@@ -135,6 +137,9 @@ class HernessEngine:
                     "action": invoked.action,
                 }
             )
+            goal_id = str((invoked.facts or {}).get("goal_id") or "").strip()
+            if goal_id:
+                goal_ids.add(goal_id)
             self.trace.add_event(
                 trace_id=trace_id,
                 phase="capability.result",
@@ -193,6 +198,7 @@ class HernessEngine:
                     continue
                 turn_res = self._record_turn(text, result, session_id=resolved_session_id)
                 turn_res = self._with_trace(turn_res, trace_id)
+                self._attach_goals(goal_ids, trace_id=trace_id, session_id=turn_res.session_id, evidence={"final_action": turn_res.action})
                 self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
                 self._trigger_background_memory(turn_res)
                 return turn_res
@@ -212,6 +218,7 @@ class HernessEngine:
                 budget_exhausted=budget_exhausted,
             )
             turn_res = self._with_trace(turn_res, trace_id)
+            self._attach_goals(goal_ids, trace_id=trace_id, session_id=turn_res.session_id, evidence={"final_action": turn_res.action, "budget_exhausted": budget_exhausted})
             self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
             self._trigger_background_memory(turn_res)
             return turn_res
@@ -258,6 +265,13 @@ class HernessEngine:
         self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
         self._trigger_background_memory(turn_res)
         return turn_res
+
+    def _attach_goals(self, goal_ids: set[str], *, trace_id: str, session_id: str, evidence: dict[str, Any]) -> None:
+        if not goal_ids:
+            return
+        goals = GoalStore(self.home)
+        for goal_id in sorted(goal_ids):
+            goals.attach_trace(goal_id, trace_id=trace_id, session_id=session_id, evidence=evidence)
 
     @staticmethod
     def _completion_block_reason(events: list[dict[str, Any]]) -> str:

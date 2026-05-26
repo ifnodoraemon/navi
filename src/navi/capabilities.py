@@ -11,6 +11,7 @@ from .action_tools import action_handler_keys, load_action_tool_specs
 from .config import load_config
 from .cron import next_cron_time, validate_cron
 from .execution import ExecutionService
+from .goals import GoalStore
 from .governance import GovernanceEngine
 from .operating_context import permission_allows
 from .graph import GraphStore
@@ -371,9 +372,19 @@ class TaskRecordCapability:
             why_now=f"trigger=model_capability; reason={decision.why}; autonomy={decision.level}",
         )
         graph.upsert("Task", task.id, {"title": task.title, "status": task.status, "prompt": task.prompt})
+        goal = GoalStore(self.home).create(
+            objective=task.prompt,
+            source=task.source,
+            peer_id=task.peer_id,
+            sender_id=task.sender_id,
+            workspace=task.workspace,
+            task_id=task.id,
+            evidence={"task_id": task.id, "task_status": task.status, "autonomy_level": task.autonomy_level},
+        )
         return _fact_result(
             "task",
             {
+                "goal_id": goal.id,
                 "task_id": task.id,
                 "status": task.status,
                 "autonomy_level": task.autonomy_level,
@@ -400,6 +411,7 @@ class TaskPrepareCapability:
         if task is None:
             return CapabilityResult(ok=False, action="task", observation=f"task not found: {task_id}", message=f"task not found: {task_id}", terminal=True)
         planned = await ExecutionService(self.home).plan_task(task)
+        GoalStore(self.home).update_for_task(planned, evidence={"task_id": planned.id, "task_status": planned.status})
         return _fact_result(
             "task",
             {"task_id": planned.id, "status": planned.status, "plan_summary": planned.plan_summary},
@@ -426,6 +438,10 @@ class ApprovalRequestCapability:
             return CapabilityResult(ok=False, action="approval", observation=f"task not found: {task_id}", message=f"task not found: {task_id}", terminal=True)
         approval = tasks.create_approval(task_id=task.id, peer_id=context.peer_id or task.peer_id, sender_id=context.sender_id or task.sender_id)
         awaiting = tasks.update_task(task.id, status="awaiting_approval") or task
+        GoalStore(self.home).update_for_task(
+            awaiting,
+            evidence={"task_id": awaiting.id, "task_status": awaiting.status, "approval_status": approval.status},
+        )
         return _fact_result(
             "approval",
             {
@@ -458,6 +474,7 @@ class TaskQueueCapability:
         if not execution.execution_allowed(task):
             return CapabilityResult(ok=False, action="task", observation="execution grant missing", message="execution grant missing", terminal=True)
         queued = tasks.update_task(task.id, status="queued") or task
+        GoalStore(self.home).update_for_task(queued, evidence={"task_id": queued.id, "task_status": queued.status})
         return _fact_result("task", {"task_id": queued.id, "status": queued.status}, task_id=queued.id)
 
 
@@ -710,6 +727,8 @@ class ApprovalResolveCapability:
         if status == "approved":
             task = tasks.update_task(approval.task_id, status="queued")
             resolved_task_id = task.id if task else approval.task_id
+            if task:
+                GoalStore(self.home).update_for_task(task, evidence={"task_id": task.id, "task_status": task.status, "approval_status": approval.status})
             return _fact_result(
                 "approval",
                 {"task_id": resolved_task_id, "approval_status": approval.status, "task_status": "queued"},
@@ -718,6 +737,7 @@ class ApprovalResolveCapability:
         task = tasks.update_task(approval.task_id, status="rejected")
         if task:
             await trust.record_failure(task)
+            GoalStore(self.home).update_for_task(task, evidence={"task_id": task.id, "task_status": task.status, "approval_status": approval.status})
         return _fact_result(
             "approval",
             {"task_id": approval.task_id, "approval_status": approval.status, "task_status": "rejected"},

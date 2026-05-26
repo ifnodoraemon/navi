@@ -21,6 +21,7 @@ from .connector_registry import load_connector_adapters
 from .daemon import SystemDaemon
 from .defaults import DEFAULT_LOCAL_SURFACE
 from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
+from .goals import GoalStore
 from .graph import GraphStore
 from .paths import ensure_home
 from .tasks import TaskStore
@@ -97,6 +98,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     write_default_config(home)
     runtime = build_runtime(home)
     task_store = TaskStore(home)
+    goal_store = GoalStore(home)
     daemon = SystemDaemon(home)
     agent = HernessEngine(home=home, runtime=runtime, project_dir=Path.cwd())
     capabilities = build_capability_registry(home, project_dir=Path.cwd())
@@ -422,6 +424,20 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.post(api_path("trace_evaluate"))
     def trace_evaluate(trace_id: str) -> dict:
         return TraceStore(home).evaluate_trace(trace_id).__dict__
+
+    @app.get(api_path("goals"))
+    def list_goals(status: str = "", limit: int = 50) -> dict:
+        return {"goals": [goal.__dict__ for goal in goal_store.list(status=status, limit=limit)]}
+
+    @app.get(api_path("goal"))
+    def get_goal(goal_id: str) -> dict:
+        goal = goal_store.get(goal_id)
+        if goal is None:
+            raise HTTPException(status_code=404, detail="goal not found")
+        return {
+            "goal": goal.__dict__,
+            "events": [event.__dict__ for event in goal_store.list_events(goal_id)],
+        }
 
     @app.get(api_path("evolution_events"))
     def evolution_events() -> dict:

@@ -24,6 +24,7 @@ from .evals import (
     validate_task_eval_dataset,
 )
 from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
+from .goals import GoalStore
 from .graph import GraphStore
 from .memory import MemoryStore
 from .paths import ensure_home
@@ -38,6 +39,7 @@ graph_app = typer.Typer(help="Personal graph")
 trust_app = typer.Typer(help="Trust contract")
 evolution_app = typer.Typer(help="Evolution ledger")
 trace_app = typer.Typer(help="Full-flow traces and evaluations")
+goal_app = typer.Typer(help="Durable goal lifecycle")
 service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
@@ -49,6 +51,7 @@ app.add_typer(graph_app, name="graph")
 app.add_typer(trust_app, name="trust")
 app.add_typer(evolution_app, name="evolution")
 app.add_typer(trace_app, name="trace")
+app.add_typer(goal_app, name="goal")
 app.add_typer(service_app, name="service")
 app.add_typer(memory_app, name="memory")
 app.add_typer(session_app, name="session")
@@ -363,6 +366,30 @@ def trace_evaluate(trace_id: str) -> None:
     """Evaluate a trace to identify the likely optimization target."""
     evaluation = TraceStore(ensure_home()).evaluate_trace(trace_id)
     typer.echo(f"{evaluation.outcome} {evaluation.failure_domain}: {evaluation.recommendation}")
+
+
+@goal_app.command("list")
+def goal_list(status: str = "", limit: int = 50) -> None:
+    """List durable goals as facts."""
+    for goal in GoalStore(ensure_home()).list(status=status, limit=limit):
+        task = f" task={goal.task_id}" if goal.task_id else ""
+        trace = f" trace={goal.trace_id}" if goal.trace_id else ""
+        typer.echo(f"{goal.id} {goal.status}{task}{trace} {goal.objective}")
+
+
+@goal_app.command("show")
+def goal_show(goal_id: str) -> None:
+    """Show one durable goal and its lifecycle events."""
+    store = GoalStore(ensure_home())
+    goal = store.get(goal_id)
+    if goal is None:
+        raise typer.BadParameter("goal not found")
+    typer.echo(f"{goal.id} {goal.status} task={goal.task_id or '-'} trace={goal.trace_id or '-'}")
+    typer.echo(goal.objective)
+    if goal.blocked_reason:
+        typer.echo(f"blocked: {goal.blocked_reason}")
+    for event in store.list_events(goal_id):
+        typer.echo(f"- {event.event_type} {event.status} task={event.task_id or '-'} trace={event.trace_id or '-'}")
 
 
 @evolution_app.command("list")

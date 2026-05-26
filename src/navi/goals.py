@@ -1,0 +1,350 @@
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .db import connect
+from .tasks import Task
+
+GOAL_STATUS_ACTIVE = "active"
+GOAL_STATUS_AWAITING_APPROVAL = "awaiting_approval"
+GOAL_STATUS_VERIFIED_COMPLETE = "verified_complete"
+GOAL_STATUS_BLOCKED = "blocked"
+GOAL_STATUS_REJECTED = "rejected"
+
+
+@dataclass(frozen=True)
+class Goal:
+    id: str
+    objective: str
+    status: str
+    source: str
+    peer_id: str
+    sender_id: str
+    session_id: str
+    workspace: str
+    task_id: str
+    trace_id: str
+    evidence_json: str
+    blocked_reason: str
+    created_at: float
+    updated_at: float
+    completed_at: float
+
+
+@dataclass(frozen=True)
+class GoalEvent:
+    id: str
+    goal_id: str
+    event_type: str
+    status: str
+    task_id: str
+    trace_id: str
+    evidence_json: str
+    created_at: float
+
+
+class GoalStore:
+    def __init__(self, home: Path):
+        self.home = home
+        self.home.mkdir(parents=True, exist_ok=True)
+        self.db_path = home / "goals.db"
+        self._init_db()
+
+    def _init_db(self) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS goals (
+                    id TEXT PRIMARY KEY,
+                    objective TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    peer_id TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    workspace TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    trace_id TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    blocked_reason TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    completed_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS goal_events (
+                    id TEXT PRIMARY KEY,
+                    goal_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    trace_id TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status, updated_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_task ON goals(task_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_goal_events_goal ON goal_events(goal_id, created_at)")
+
+    def create(
+        self,
+        *,
+        objective: str,
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+        session_id: str = "",
+        workspace: str = "",
+        task_id: str = "",
+        trace_id: str = "",
+        evidence: dict[str, Any] | None = None,
+    ) -> Goal:
+        now = time.time()
+        goal = Goal(
+            id=uuid.uuid4().hex,
+            objective=objective,
+            status=GOAL_STATUS_ACTIVE,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            session_id=session_id,
+            workspace=workspace,
+            task_id=task_id,
+            trace_id=trace_id,
+            evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
+            blocked_reason="",
+            created_at=now,
+            updated_at=now,
+            completed_at=0.0,
+        )
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO goals(
+                    id, objective, status, source, peer_id, sender_id, session_id,
+                    workspace, task_id, trace_id, evidence_json, blocked_reason,
+                    created_at, updated_at, completed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    goal.id,
+                    goal.objective,
+                    goal.status,
+                    goal.source,
+                    goal.peer_id,
+                    goal.sender_id,
+                    goal.session_id,
+                    goal.workspace,
+                    goal.task_id,
+                    goal.trace_id,
+                    goal.evidence_json,
+                    goal.blocked_reason,
+                    goal.created_at,
+                    goal.updated_at,
+                    goal.completed_at,
+                ),
+            )
+        self.record_event(goal.id, "goal.created", status=goal.status, task_id=task_id, trace_id=trace_id, evidence=evidence or {})
+        return goal
+
+    def get(self, goal_id: str) -> Goal | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT id, objective, status, source, peer_id, sender_id, session_id,
+                       workspace, task_id, trace_id, evidence_json, blocked_reason,
+                       created_at, updated_at, completed_at
+                FROM goals WHERE id = ?
+                """,
+                (goal_id,),
+            ).fetchone()
+        return Goal(*row) if row else None
+
+    def get_by_task(self, task_id: str) -> Goal | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT id, objective, status, source, peer_id, sender_id, session_id,
+                       workspace, task_id, trace_id, evidence_json, blocked_reason,
+                       created_at, updated_at, completed_at
+                FROM goals WHERE task_id = ? ORDER BY updated_at DESC LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+        return Goal(*row) if row else None
+
+    def list(self, *, status: str = "", limit: int = 50) -> list[Goal]:
+        if status:
+            query = """
+                SELECT id, objective, status, source, peer_id, sender_id, session_id,
+                       workspace, task_id, trace_id, evidence_json, blocked_reason,
+                       created_at, updated_at, completed_at
+                FROM goals WHERE status = ? ORDER BY updated_at DESC LIMIT ?
+                """
+            params: tuple[Any, ...] = (status, limit)
+        else:
+            query = """
+                SELECT id, objective, status, source, peer_id, sender_id, session_id,
+                       workspace, task_id, trace_id, evidence_json, blocked_reason,
+                       created_at, updated_at, completed_at
+                FROM goals ORDER BY updated_at DESC LIMIT ?
+                """
+            params = (limit,)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [Goal(*row) for row in rows]
+
+    def list_events(self, goal_id: str, *, limit: int = 100) -> list[GoalEvent]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, goal_id, event_type, status, task_id, trace_id, evidence_json, created_at
+                FROM goal_events WHERE goal_id = ? ORDER BY created_at ASC LIMIT ?
+                """,
+                (goal_id, limit),
+            ).fetchall()
+        return [GoalEvent(*row) for row in rows]
+
+    def attach_trace(self, goal_id: str, *, trace_id: str, session_id: str = "", evidence: dict[str, Any] | None = None) -> Goal | None:
+        goal = self.get(goal_id)
+        if goal is None:
+            return None
+        merged_evidence = _merge_evidence(goal.evidence_json, evidence)
+        now = time.time()
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE goals SET trace_id = ?, session_id = ?, evidence_json = ?, updated_at = ? WHERE id = ?
+                """,
+                (
+                    trace_id or goal.trace_id,
+                    session_id or goal.session_id,
+                    json.dumps(merged_evidence, ensure_ascii=False, sort_keys=True),
+                    now,
+                    goal_id,
+                ),
+            )
+        self.record_event(goal_id, "goal.trace_attached", status=goal.status, task_id=goal.task_id, trace_id=trace_id, evidence=evidence or {})
+        return self.get(goal_id)
+
+    def update_status(
+        self,
+        goal_id: str,
+        *,
+        status: str,
+        blocked_reason: str = "",
+        evidence: dict[str, Any] | None = None,
+        event_type: str = "goal.status",
+    ) -> Goal | None:
+        goal = self.get(goal_id)
+        if goal is None:
+            return None
+        merged_evidence = _merge_evidence(goal.evidence_json, evidence)
+        now = time.time()
+        completed_at = now if status in {GOAL_STATUS_VERIFIED_COMPLETE, GOAL_STATUS_BLOCKED, GOAL_STATUS_REJECTED} else 0.0
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE goals
+                SET status = ?, blocked_reason = ?, evidence_json = ?, updated_at = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    blocked_reason,
+                    json.dumps(merged_evidence, ensure_ascii=False, sort_keys=True),
+                    now,
+                    completed_at,
+                    goal_id,
+                ),
+            )
+        self.record_event(goal_id, event_type, status=status, task_id=goal.task_id, trace_id=goal.trace_id, evidence=evidence or {})
+        return self.get(goal_id)
+
+    def update_for_task(self, task: Task, *, evidence: dict[str, Any] | None = None) -> Goal | None:
+        goal = self.get_by_task(task.id)
+        if goal is None:
+            return None
+        status = _goal_status_for_task(task)
+        reason = task.error if status == GOAL_STATUS_BLOCKED else ""
+        return self.update_status(
+            goal.id,
+            status=status,
+            blocked_reason=reason,
+            evidence=evidence or {"task_id": task.id, "task_status": task.status},
+            event_type="goal.task_status",
+        )
+
+    def record_event(
+        self,
+        goal_id: str,
+        event_type: str,
+        *,
+        status: str,
+        task_id: str = "",
+        trace_id: str = "",
+        evidence: dict[str, Any] | None = None,
+    ) -> GoalEvent:
+        event = GoalEvent(
+            id=uuid.uuid4().hex,
+            goal_id=goal_id,
+            event_type=event_type,
+            status=status,
+            task_id=task_id,
+            trace_id=trace_id,
+            evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
+            created_at=time.time(),
+        )
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO goal_events(id, goal_id, event_type, status, task_id, trace_id, evidence_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.id,
+                    event.goal_id,
+                    event.event_type,
+                    event.status,
+                    event.task_id,
+                    event.trace_id,
+                    event.evidence_json,
+                    event.created_at,
+                ),
+            )
+        return event
+
+
+def _goal_status_for_task(task: Task) -> str:
+    if task.status == "completed":
+        return GOAL_STATUS_VERIFIED_COMPLETE
+    if task.status == "awaiting_approval":
+        return GOAL_STATUS_AWAITING_APPROVAL
+    if task.status == "rejected":
+        return GOAL_STATUS_REJECTED
+    if task.status in {"failed", "blocked"}:
+        return GOAL_STATUS_BLOCKED
+    return GOAL_STATUS_ACTIVE
+
+
+def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict[str, Any]:
+    try:
+        existing = json.loads(existing_json or "{}")
+    except json.JSONDecodeError:
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    if evidence:
+        existing.update(evidence)
+    return existing

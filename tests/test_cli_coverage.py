@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 
 from navi.cli import app
 from navi.evolution import EvolutionLedger
+from navi.goals import GoalStore
 from navi.memory import MemoryStore
 from navi.trace import TraceStore
 
@@ -202,3 +203,18 @@ def test_cli_trace_commands(tmp_path):
     evaluated = runner.invoke(app, ["trace", "evaluate", trace_id], env=env)
     assert evaluated.exit_code == 0
     assert "failure prompt_or_provider_parser" in evaluated.output
+
+
+def test_cli_goal_commands(tmp_path):
+    env = _env(tmp_path)
+    goal = GoalStore(tmp_path).create(objective="finish cli goal", task_id="task-1")
+
+    listed = runner.invoke(app, ["goal", "list"], env=env)
+    assert listed.exit_code == 0
+    assert goal.id in listed.output
+    assert "finish cli goal" in listed.output
+
+    shown = runner.invoke(app, ["goal", "show", goal.id], env=env)
+    assert shown.exit_code == 0
+    assert "goal.created" in shown.output
+    assert "task=task-1" in shown.output
