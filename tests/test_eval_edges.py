@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -172,3 +173,42 @@ cases:
     assert results[0].id == "dataset"
     assert results[0].ok is False
     assert "unknown expected tool" in results[0].errors[0]
+
+
+@pytest.mark.asyncio
+async def test_run_delegation_eval_dataset_records_case_timeout(tmp_path, monkeypatch):
+    dataset = tmp_path / "cases.yaml"
+    dataset.write_text(
+        """
+cases:
+  - id: slow
+    message: hello
+    expect:
+      tool: final.answer
+      permission: read
+""",
+        encoding="utf-8",
+    )
+
+    async def slow_plan(self, message, *, tools, conversation_context=""):
+        await asyncio.sleep(1)
+        return ModelSyscall(tool="final.answer", permission="read")
+
+    monkeypatch.setattr("navi.evals.ModelSyscallPlanner.plan", slow_plan)
+
+    results = await run_delegation_eval_dataset(
+        home=tmp_path,
+        project_dir=tmp_path,
+        dataset=dataset,
+        timeout_seconds=0.01,
+    )
+
+    assert results == [
+        EvalResult(
+            id="slow",
+            ok=False,
+            expected={"tool": "final.answer", "permission": "read"},
+            actual={},
+            errors=["planner timed out after 0.01s"],
+        )
+    ]

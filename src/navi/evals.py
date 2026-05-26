@@ -124,14 +124,37 @@ async def run_delegation_eval_dataset(
     planner = ModelSyscallPlanner(runtime.provider)
     results: list[EvalResult] = []
     for case in cases:
-        decision = await asyncio.wait_for(
-            planner.plan(
-                str(case["message"]),
-                tools=tools,
-                conversation_context=str(case.get("conversation_context") or ""),
-            ),
-            timeout=timeout_seconds,
-        )
+        try:
+            decision = await asyncio.wait_for(
+                planner.plan(
+                    str(case["message"]),
+                    tools=tools,
+                    conversation_context=str(case.get("conversation_context") or ""),
+                ),
+                timeout=timeout_seconds,
+            )
+        except TimeoutError:
+            results.append(
+                EvalResult(
+                    id=str(case["id"]),
+                    ok=False,
+                    expected=dict(case["expect"]),
+                    actual={},
+                    errors=[f"planner timed out after {timeout_seconds:g}s"],
+                )
+            )
+            continue
+        except Exception as exc:
+            results.append(
+                EvalResult(
+                    id=str(case["id"]),
+                    ok=False,
+                    expected=dict(case["expect"]),
+                    actual={},
+                    errors=[f"planner error: {type(exc).__name__}: {exc}"],
+                )
+            )
+            continue
         errors = match_delegation_eval_case(case, decision)
         results.append(
             EvalResult(
