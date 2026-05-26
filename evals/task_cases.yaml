@@ -112,6 +112,19 @@ cases:
       args:
         task_id: "8f59a0dcc92948c49f88de2df055dabf"
 
+  - id: cleanup_failed_tasks_from_recent_context
+    category: task_lifecycle
+    source: observed:2026-05-25
+    message: "清理"
+    conversation_context: |
+      assistant: 目前有一个启用的周期性任务（watch）：每天晚上8点讲解通识知识。另外有 20 个相关的失败任务记录，都是该 watch 在早期因 Navi 内部 watch 执行未启用而残留的 preparing 状态任务，现在都已标记为 failed。需要我清理这些失败的任务记录吗？
+    expect:
+      tool: task.delete
+      permission: write
+      args:
+        status: failed
+        source: watch
+
   - id: delete_watch_from_recent_list
     category: task_lifecycle
     source: observed:2026-05-21

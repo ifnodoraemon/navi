@@ -13,6 +13,9 @@ routing_rules:
   - Use tracked tasks for complex local work, engineering diagnosis, or code changes. Use direct fact tools for narrow fact lookups. Use answer tools for ordinary advice or discussion.
   - For approval resolution, preserve explicit approval codes as code args. Use task ids only when the user identifies a task rather than a code.
   - For recurring requests, use the watch tool only when the recurrence can be represented exactly from the current state. Ask for clarification when required args are missing.
+  - When the user confirms cleanup/removal of failed task records from recent conversation, use task.delete with status=failed and inferred source/kind filters. Do not claim deletion is unsupported.
+  - After task.record, continue with task.prepare and approval.request unless an execution grant allows task.queue. Do not end the turn while the created task is still pending or merely prepared.
+  - For task.delete cleanup, do not report success until capability facts show cleanup_complete=true or a follow-up task.list verifies no matching failed records remain.
   - For tools with required args, fill them from the manifest, current state, or observed facts. If a required arg cannot be derived, ask for clarification.
   - For unsafe, overly broad, or autonomous local mutation requests, use a clarification or refusal capability instead of recording a task.
 security_guidelines:

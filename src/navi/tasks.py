@@ -5,6 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .db import connect
 
@@ -292,6 +293,60 @@ class TaskStore:
                 (status, limit),
             ).fetchall()
         return [self._task_from_row(row) for row in rows]
+
+    def list_by_status_filtered(
+        self,
+        status: str,
+        *,
+        source: str = "",
+        kind: str = "",
+        limit: int | None = None,
+    ) -> list[Task]:
+        clauses = ["status = ?"]
+        params: list[Any] = [status]
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = " LIMIT ?"
+            params.append(limit)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, title, status, created_at, updated_at, kind, prompt, source,
+                       peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
+                       why_now, plan_summary, result_summary, error
+                FROM tasks WHERE {" AND ".join(clauses)} ORDER BY updated_at ASC{limit_clause}
+                """,
+                params,
+            ).fetchall()
+        return [self._task_from_row(row) for row in rows]
+
+    def count_tasks(self, *, status: str = "", source: str = "", kind: str = "") -> int:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with connect(self.db_path) as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM tasks{where}", params).fetchone()
+        return int(row[0] if row else 0)
+
+    def count_tasks_by_status(self) -> dict[str, int]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status").fetchall()
+        return {str(row[0]): int(row[1]) for row in rows}
 
     def list_by_statuses(self, statuses: list[str], *, limit: int = 60) -> list[Task]:
         if not statuses:

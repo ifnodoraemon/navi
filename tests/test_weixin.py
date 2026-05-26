@@ -306,6 +306,34 @@ async def test_weixin_remote_delete_rejects_active_task(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_weixin_cleanup_failed_tasks_cannot_finish_with_remaining_records(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
+    provider = ScriptedProvider(
+        [
+            '{"tool":"task.delete","permission":"write","args":{"status":"failed","source":"watch","limit":1},"confidence":0.95,"reason":"cleanup failed tasks"}',
+            '{"tool":"final.answer","permission":"read","args":{"message":"清理完成。"},"confidence":0.95,"reason":"premature"}',
+            '{"tool":"task.delete","permission":"write","args":{"status":"failed","source":"watch"},"confidence":0.95,"reason":"finish cleanup"}',
+            '{"tool":"final.answer","permission":"read","args":{"message":"失败任务已清理完毕。"},"confidence":0.95,"reason":"verified"}',
+        ]
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
+    for index in range(3):
+        service.active.tasks.create(f"failed {index}", status="failed", source="watch", kind="task")
+
+    handled = await service.handle_update(
+        account,
+        WeixinUpdate(message_id="msg-cleanup", peer_id="peer", sender_id="sender", text="清理"),
+    )
+
+    assert handled is True
+    assert service.active.tasks.count_tasks(status="failed", source="watch") == 0
+    assert service.client.sent[-1]["text"] == "失败任务已清理完毕。"
+    assert provider.response == []
+
+
+@pytest.mark.asyncio
 async def test_weixin_plain_task_status_uses_fact_tool(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     provider = ScriptedProvider(

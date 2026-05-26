@@ -26,6 +26,8 @@ def test_model_syscall_planner_prompt_loads_routing_rules_from_spec():
 
     assert "TASK ROUTING RULES" in system
     assert "Use tracked tasks for complex local work" in system
+    assert "After task.record" in system
+    assert "cleanup_complete=true" in system
     assert "SECURITY GUIDELINE" in system
 
 

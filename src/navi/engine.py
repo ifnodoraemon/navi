@@ -94,6 +94,7 @@ class HernessEngine:
             workspace=str(self.capabilities.gateway.project_dir.resolve()),
         )
         observations: list[str] = []
+        completion_events: list[dict[str, Any]] = []
         pending_approval_prompt = ""
         last_result: AgentTurnResult | None = None
         budget_exhausted = False
@@ -125,6 +126,14 @@ class HernessEngine:
                 syscall.args,
                 permission=syscall.permission,
                 context=context,
+            )
+            completion_events.append(
+                {
+                    "tool": syscall.tool,
+                    "ok": invoked.ok,
+                    "facts": invoked.facts or {},
+                    "action": invoked.action,
+                }
             )
             self.trace.add_event(
                 trace_id=trace_id,
@@ -164,6 +173,24 @@ class HernessEngine:
                 result = self._ensure_pending_approval_prompt(result, pending_approval_prompt)
             last_result = result
             if result.terminal:
+                block_reason = self._completion_block_reason(completion_events)
+                if block_reason:
+                    observations.append(block_reason)
+                    self.trace.add_event(
+                        trace_id=trace_id,
+                        phase="completion.verify",
+                        session_id=resolved_session_id or "",
+                        task_id=result.task_id,
+                        source=source,
+                        peer_id=peer_id,
+                        sender_id=sender_id,
+                        tool=syscall.tool,
+                        model_role=syscall.model_role,
+                        ok=False,
+                        output_data={"reason": block_reason},
+                        message=block_reason,
+                    )
+                    continue
                 turn_res = self._record_turn(text, result, session_id=resolved_session_id)
                 turn_res = self._with_trace(turn_res, trace_id)
                 self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
@@ -231,6 +258,42 @@ class HernessEngine:
         self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
         self._trigger_background_memory(turn_res)
         return turn_res
+
+    @staticmethod
+    def _completion_block_reason(events: list[dict[str, Any]]) -> str:
+        if not events:
+            return ""
+        latest_task_status: dict[str, str] = {}
+        for event in events:
+            facts = event.get("facts")
+            if not isinstance(facts, dict):
+                continue
+            task_id = str(facts.get("task_id") or "").strip()
+            status = str(facts.get("status") or facts.get("task_status") or "").strip()
+            if task_id and status:
+                latest_task_status[task_id] = status
+        for event in events:
+            if event.get("tool") != "task.record":
+                continue
+            facts = event.get("facts")
+            if not isinstance(facts, dict):
+                continue
+            task_id = str(facts.get("task_id") or "").strip()
+            status = latest_task_status.get(task_id) or str(facts.get("status") or "").strip()
+            if task_id and status in {"pending", "prepared"}:
+                return (
+                    "completion verifier blocked final answer: "
+                    f"task {task_id} is still {status}; prepare it and request approval or queue it before reporting completion."
+                )
+        last_delete = next((event for event in reversed(events) if event.get("tool") == "task.delete"), None)
+        facts = last_delete.get("facts") if isinstance(last_delete, dict) else None
+        if isinstance(facts, dict) and facts.get("cleanup_complete") is False:
+            remaining = facts.get("remaining_count")
+            return (
+                "completion verifier blocked final answer: "
+                f"task.delete left {remaining} failed task records; continue cleanup or report the remaining count explicitly."
+            )
+        return ""
 
     def _trigger_background_memory(self, result: AgentTurnResult) -> None:
         if result.session_id:

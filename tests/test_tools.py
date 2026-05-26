@@ -55,6 +55,7 @@ def test_task_status_tool_returns_task_facts(tmp_path):
 def test_task_list_tool_returns_tasks_and_watches(tmp_path):
     store = TaskStore(tmp_path)
     task = store.create("tool task", status="preparing")
+    failed = store.create("failed task", status="failed")
     watch = store.create_watch(
         cron="0 20 * * *",
         prompt="teach common knowledge",
@@ -67,8 +68,11 @@ def test_task_list_tool_returns_tasks_and_watches(tmp_path):
     result = registry.call("task.list", {"limit": 10})
 
     assert result.ok is True
-    assert result.facts["tasks"][0]["id"] == task.id
+    assert {item["id"] for item in result.facts["tasks"]} == {task.id, failed.id}
     assert result.facts["watches"][0]["id"] == watch.id
+    assert result.facts["task_status_counts"] == {"failed": 1, "preparing": 1}
+    assert result.facts["returned_task_count"] == 2
+    assert result.facts["task_limit"] == 10
 
 
 def test_filesystem_list_tool_returns_directory_facts(tmp_path):

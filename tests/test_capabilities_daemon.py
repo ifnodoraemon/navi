@@ -261,25 +261,51 @@ async def test_task_delete_can_cleanup_failed_tasks_by_filter(tmp_path):
     store = TaskStore(tmp_path)
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
     failed_watch = store.create("old watch residue", status="failed", kind="watch", source="watch")
+    failed_watch_2 = store.create("old watch residue 2", status="failed", kind="watch", source="watch")
     failed_manual = store.create("manual failed", status="failed", kind="manual", source="local")
     queued = store.create("still queued", status="queued", kind="manual", source="local")
 
     result = await capabilities.invoke(
         "task.delete",
-        {"source": "watch", "limit": 10},
+        {"source": "watch"},
         permission="write",
         context=CapabilityContext(home=tmp_path, source="connector.weixin"),
     )
 
     assert result.ok is True
-    assert result.facts["deleted_count"] == 1
-    assert result.facts["deleted_tasks"][0]["task_id"] == failed_watch.id
+    assert result.facts["before_count"] == 2
+    assert result.facts["deleted_count"] == 2
+    assert result.facts["remaining_count"] == 0
+    assert result.facts["cleanup_complete"] is True
+    assert {task["task_id"] for task in result.facts["deleted_tasks"]} == {failed_watch.id, failed_watch_2.id}
     assert store.get(failed_watch.id) is None
+    assert store.get(failed_watch_2.id) is None
     assert store.get(failed_manual.id) is not None
     assert store.get(queued.id) is not None
     logs = store.list_tool_call_logs()
     assert logs[0].tool == "task.delete"
     assert logs[0].ok is True
+
+
+@pytest.mark.asyncio
+async def test_task_delete_reports_partial_cleanup_when_limited(tmp_path):
+    store = TaskStore(tmp_path)
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    for index in range(3):
+        store.create(f"failed {index}", status="failed", kind="task", source="watch")
+
+    result = await capabilities.invoke(
+        "task.delete",
+        {"source": "watch", "status": "failed", "limit": 1},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, source="weixin"),
+    )
+
+    assert result.ok is True
+    assert result.facts["deleted_count"] == 1
+    assert result.facts["remaining_count"] == 2
+    assert result.facts["cleanup_complete"] is False
+    assert store.count_tasks(status="failed", source="watch") == 2
 
 
 @pytest.mark.asyncio

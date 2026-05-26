@@ -187,12 +187,16 @@ def _task_status(home: Path, args: dict[str, Any]) -> ToolResult:
 def _task_list(home: Path, args: dict[str, Any]) -> ToolResult:
     limit = _positive_int(args.get("limit"), default=20, maximum=100)
     store = TaskStore(home)
+    listed_tasks = store.list(limit=limit)
     return ToolResult(
         tool="task.list",
         ok=True,
         facts={
-            "tasks": [asdict(task) for task in store.list(limit=limit)],
+            "tasks": [asdict(task) for task in listed_tasks],
             "watches": [asdict(watch) for watch in store.list_watches(limit=limit)],
+            "task_status_counts": store.count_tasks_by_status(),
+            "returned_task_count": len(listed_tasks),
+            "task_limit": limit,
         },
     )
 

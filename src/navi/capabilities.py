@@ -575,16 +575,14 @@ class TaskDeleteCapability:
                 message="task.delete bulk cleanup only supports status=failed.",
                 terminal=True,
             )
-        limit = _positive_int(args.get("limit"), default=50, maximum=500)
+        raw_limit = args.get("limit")
+        limit = _positive_int(raw_limit, default=5000, maximum=5000) if raw_limit is not None else None
         source = _arg_text(args, "source")
         kind = _arg_text(args, "kind")
         tasks = TaskStore(self.home)
         graph = GraphStore(self.home)
-        candidates = [
-            task
-            for task in tasks.list_by_status("failed", limit=limit)
-            if (not source or task.source == source) and (not kind or task.kind == kind)
-        ]
+        before_count = tasks.count_tasks(status="failed", source=source, kind=kind)
+        candidates = tasks.list_by_status_filtered("failed", source=source, kind=kind, limit=limit)
         deleted = []
         for task in candidates:
             removed = tasks.delete_task(task.id)
@@ -600,14 +598,19 @@ class TaskDeleteCapability:
                     "updated_at": removed.updated_at,
                 }
             )
+        remaining_count = tasks.count_tasks(status="failed", source=source, kind=kind)
         return _fact_result(
             "task",
             {
+                "before_count": before_count,
                 "deleted_count": len(deleted),
                 "deleted_tasks": deleted,
+                "remaining_count": remaining_count,
+                "cleanup_complete": remaining_count == 0,
                 "status_filter": "failed",
                 "source_filter": source,
                 "kind_filter": kind,
+                "limit_filter": limit,
             },
         )
 

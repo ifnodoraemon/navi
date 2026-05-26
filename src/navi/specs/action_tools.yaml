@@ -115,7 +115,7 @@
   source: action
 - name: task.delete
   handler: task_delete
-  description: Delete tracked tasks. Use task_id for one explicit task, or status=failed with optional source/kind/limit to clean failed task records without touching active tasks.
+  description: Delete tracked tasks. Use task_id for one explicit task, or status=failed with optional source/kind to clean all matching failed task records without touching active tasks. Use limit only for an intentionally partial cleanup.
   input_schema:
     type: object
     properties:
