@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from navi.execution import EXECUTION_PROTOCOL_VERSION, ExecutionService, NaviExecutionProvider
+from navi.execution import EXECUTION_PROTOCOL_VERSION, SUBAGENT_EXECUTOR_ROLE, ExecutionService, NaviExecutionProvider
 from navi.provider import ChatMessage, ModelPool
 from navi.runs import RunStore
 
@@ -54,11 +54,14 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
 
     assert updated.status == "completed"
     assert updated.result_summary == "Answered with explicit evidence."
+    execution_logs = [log for log in runs.list_execution_logs(task.id) if log.phase == "execute"]
+    assert execution_logs[0].command.startswith(f"navi subagent {SUBAGENT_EXECUTOR_ROLE} execute")
     system_prompt = provider.messages[0][0].content
     assert "navi_execution" in system_prompt
     assert "actions" in system_prompt
     assert "evidence" in system_prompt
     assert "verification" in system_prompt
+    assert "executor sub-agent" in system_prompt
 
     protocol_logs = [log for log in runs.list_execution_logs(task.id) if log.phase == "execute_protocol"]
     assert len(protocol_logs) == 1

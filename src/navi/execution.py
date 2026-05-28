@@ -20,6 +20,9 @@ INTERNAL_EXECUTION_PROVIDER = "navi"
 EXECUTION_PROTOCOL_VERSION = "navi.actuator.v1"
 ACTUATOR_DISABLED_TOOLS = frozenset({"delegate.prepare", "delegate.run", "delegate.retry"})
 EXECUTION_STEP_BUDGET = 5
+SUBAGENT_PLANNER_ROLE = "planner"
+SUBAGENT_EXECUTOR_ROLE = "executor"
+SUBAGENT_NOTIFICATION_ROLE = "notification"
 
 
 @dataclass(frozen=True)
@@ -226,6 +229,7 @@ class ExecutionResult:
     started_at: float
     ended_at: float
     protocol: ExecutionProtocol
+    model_role: str = ""
 
     @property
     def summary(self) -> str:
@@ -652,10 +656,10 @@ class NaviExecutionProvider:
         self.timeout_seconds = timeout_seconds
 
     async def plan(self, task: Run) -> ExecutionResult:
-        return await self._complete_task(task, phase="prepare", role="planner", messages=self._prepare_messages(task))
+        return await self._complete_task(task, phase="prepare", role=SUBAGENT_PLANNER_ROLE, messages=self._prepare_messages(task))
 
     async def execute(self, task: Run) -> ExecutionResult:
-        return await self._complete_task(task, phase="execute", role="responder", messages=self._execute_messages(task))
+        return await self._complete_task(task, phase="execute", role=SUBAGENT_EXECUTOR_ROLE, messages=self._execute_messages(task))
 
     async def run_watch(self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str = "") -> ExecutionResult:
         messages = [
@@ -686,36 +690,39 @@ class NaviExecutionProvider:
                 run_id="",
                 phase="watch",
                 provider=INTERNAL_EXECUTION_PROVIDER,
-                command=["navi", "internal", "watch"],
+                command=["navi", "subagent", SUBAGENT_NOTIFICATION_ROLE, "watch"],
                 stdout=stdout,
                 stderr="",
                 exit_code=0,
                 started_at=started,
                 ended_at=time.time(),
+                model_role=SUBAGENT_NOTIFICATION_ROLE,
             )
         except asyncio.TimeoutError:
             return self._result(
                 run_id="",
                 phase="watch",
                 provider=INTERNAL_EXECUTION_PROVIDER,
-                command=["navi", "internal", "watch"],
+                command=["navi", "subagent", SUBAGENT_NOTIFICATION_ROLE, "watch"],
                 stdout="",
                 stderr=f"navi watch timed out after {self.timeout_seconds} seconds",
                 exit_code=124,
                 started_at=started,
                 ended_at=time.time(),
+                model_role=SUBAGENT_NOTIFICATION_ROLE,
             )
         except Exception as exc:
             return self._result(
                 run_id="",
                 phase="watch",
                 provider=INTERNAL_EXECUTION_PROVIDER,
-                command=["navi", "internal", "watch"],
+                command=["navi", "subagent", SUBAGENT_NOTIFICATION_ROLE, "watch"],
                 stdout="",
                 stderr=str(exc),
                 exit_code=1,
                 started_at=started,
                 ended_at=time.time(),
+                model_role=SUBAGENT_NOTIFICATION_ROLE,
             )
 
     async def _complete_task(
@@ -736,36 +743,39 @@ class NaviExecutionProvider:
                 run_id=task.id,
                 phase=phase,
                 provider=INTERNAL_EXECUTION_PROVIDER,
-                command=["navi", "internal", phase, task.id],
+                command=["navi", "subagent", role, phase, task.id],
                 stdout=stdout,
                 stderr="",
                 exit_code=0,
                 started_at=started,
                 ended_at=time.time(),
+                model_role=role,
             )
         except asyncio.TimeoutError:
             return self._result(
                 run_id=task.id,
                 phase=phase,
                 provider=INTERNAL_EXECUTION_PROVIDER,
-                command=["navi", "internal", phase, task.id],
+                command=["navi", "subagent", role, phase, task.id],
                 stdout="",
                 stderr=f"navi {phase} timed out after {self.timeout_seconds} seconds",
                 exit_code=124,
                 started_at=started,
                 ended_at=time.time(),
+                model_role=role,
             )
         except Exception as exc:
             return self._result(
                 run_id=task.id,
                 phase=phase,
                 provider=INTERNAL_EXECUTION_PROVIDER,
-                command=["navi", "internal", phase, task.id],
+                command=["navi", "subagent", role, phase, task.id],
                 stdout="",
                 stderr=str(exc),
                 exit_code=1,
                 started_at=started,
                 ended_at=time.time(),
+                model_role=role,
             )
 
     @staticmethod
@@ -780,6 +790,7 @@ class NaviExecutionProvider:
         exit_code: int,
         started_at: float,
         ended_at: float,
+        model_role: str = "",
     ) -> ExecutionResult:
         protocol_text = stdout if stdout else stderr
         result_stderr = stderr
@@ -811,6 +822,7 @@ class NaviExecutionProvider:
             started_at=started_at,
             ended_at=ended_at,
             protocol=protocol,
+            model_role=model_role,
         )
 
     @staticmethod
@@ -840,7 +852,7 @@ class NaviExecutionProvider:
             ChatMessage(
                 "system",
                 "You are Navi's internal execution pass. Complete the approved task using Navi's own reasoning "
-                "and available task context. Do not call external CLI agents. If the task requires OS mutation "
+                "as the executor sub-agent with isolated role context. Do not call external CLI agents. If the task requires OS mutation "
                 "that this internal pass cannot perform, say exactly what remains unperformed. "
                 + _execution_protocol_instruction("execute"),
             ),
@@ -889,6 +901,7 @@ class NaviExecutionProvider:
                 verification={"status": "proposed", "checks": ["mock provider response"], "reason": "execution mock mode"},
                 completion={"status": "proposed", "summary": text},
             ),
+            model_role="mock",
         )
 
 
