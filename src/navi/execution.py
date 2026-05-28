@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_config
+from .critic import CriticDecision, review_execution_protocol
 from .governance import GovernanceEngine
 from .evolution import EvolutionLedger
 from .goals import GoalStore
@@ -953,13 +954,19 @@ class ExecutionService:
         if result.exit_code == 0:
             result = await self.actuator.run_task(task, result)
         self._log(task, result)
-        
-        status = "completed" if result.exit_code == 0 else "failed"
+
+        critic = review_execution_protocol(result.protocol)
+        self._log_critic_decision(task, critic)
+
+        status = "completed" if result.exit_code == 0 and critic.passed else "failed"
+        error = "" if status == "completed" else result.stderr
+        if result.exit_code == 0 and not critic.passed:
+            error = "critic gate blocked completion: " + "; ".join(critic.findings)
         updated_task = self.runs.update_run(
             task.id,
             status=status,
             result_summary=result.summary,
-            error="" if result.exit_code == 0 else result.stderr,
+            error=error,
         ) or task
         
         # Record the evolution event
@@ -982,7 +989,14 @@ class ExecutionService:
         )
         GoalStore(self.home).update_for_run(
             updated_task,
-            evidence={"run_id": updated_task.id, "run_status": updated_task.status, "phase": "execute", "summary": updated_task.result_summary},
+            evidence={
+                "run_id": updated_task.id,
+                "run_status": updated_task.status,
+                "phase": "execute",
+                "summary": updated_task.result_summary,
+                "critic": critic.evidence,
+                "critic_findings": critic.findings,
+            },
         )
         
         return updated_task
@@ -1059,6 +1073,29 @@ class ExecutionService:
             exit_code=result.exit_code,
             started_at=result.started_at,
             ended_at=result.ended_at,
+        )
+
+    def _log_critic_decision(self, task: Run, decision: CriticDecision) -> None:
+        now = time.time()
+        self.runs.add_execution_log(
+            run_id=task.id,
+            provider=INTERNAL_EXECUTION_PROVIDER,
+            phase="critic",
+            command=" ".join(["navi", "subagent", "critic", "verify", task.id]),
+            stdout=json.dumps(
+                {
+                    "passed": decision.passed,
+                    "findings": decision.findings,
+                    "recommendation": decision.recommendation,
+                    "evidence": decision.evidence,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            stderr="" if decision.passed else "; ".join(decision.findings),
+            exit_code=0 if decision.passed else 1,
+            started_at=now,
+            ended_at=now,
         )
 
     async def _provider_call(self, task: Run, phase: str) -> ExecutionResult:

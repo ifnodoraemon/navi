@@ -276,13 +276,16 @@ class GoalStore:
         goal = self.get_by_run(run.id)
         if goal is None:
             return None
-        status = _goal_status_for_run(run)
+        evidence = evidence or {"run_id": run.id, "run_status": run.status}
+        status = _goal_status_for_run(run, evidence=evidence)
         reason = run.error if status == GOAL_STATUS_BLOCKED else ""
+        if run.status == "completed" and status == GOAL_STATUS_BLOCKED and not reason:
+            reason = "critic gate evidence missing or failed"
         return self.update_status(
             goal.id,
             status=status,
             blocked_reason=reason,
-            evidence=evidence or {"run_id": run.id, "run_status": run.status},
+            evidence=evidence,
             event_type="goal.run_status",
         )
 
@@ -326,9 +329,9 @@ class GoalStore:
         return event
 
 
-def _goal_status_for_run(run: Run) -> str:
+def _goal_status_for_run(run: Run, *, evidence: dict[str, Any] | None = None) -> str:
     if run.status == "completed":
-        return GOAL_STATUS_VERIFIED_COMPLETE
+        return GOAL_STATUS_VERIFIED_COMPLETE if _critic_passed(evidence or {}) else GOAL_STATUS_BLOCKED
     if run.status == "awaiting_approval":
         return GOAL_STATUS_AWAITING_APPROVAL
     if run.status == "rejected":
@@ -336,6 +339,13 @@ def _goal_status_for_run(run: Run) -> str:
     if run.status in {"failed", "blocked"}:
         return GOAL_STATUS_BLOCKED
     return GOAL_STATUS_ACTIVE
+
+
+def _critic_passed(evidence: dict[str, Any]) -> bool:
+    critic = evidence.get("critic")
+    if isinstance(critic, dict):
+        return critic.get("passed") is True
+    return False
 
 
 def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict[str, Any]:

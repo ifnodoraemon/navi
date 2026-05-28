@@ -25,9 +25,17 @@ def test_goal_store_tracks_task_lifecycle_with_evidence(tmp_path):
     assert completed is not None
     updated = goals.update_for_run(completed, evidence={"run_status": completed.status, "result": "ok"})
     assert updated is not None
-    assert updated.status == GOAL_STATUS_VERIFIED_COMPLETE
-    assert updated.completed_at > 0
-    evidence = json.loads(updated.evidence_json)
+    assert updated.status == GOAL_STATUS_BLOCKED
+    assert updated.blocked_reason == "critic gate evidence missing or failed"
+
+    verified = goals.update_for_run(
+        completed,
+        evidence={"run_status": completed.status, "result": "ok", "critic": {"passed": True}},
+    )
+    assert verified is not None
+    assert verified.status == GOAL_STATUS_VERIFIED_COMPLETE
+    assert verified.completed_at > 0
+    evidence = json.loads(verified.evidence_json)
     assert evidence["created_from"] == "test"
     assert evidence["result"] == "ok"
 
@@ -46,6 +54,7 @@ def test_goal_store_tracks_task_lifecycle_with_evidence(tmp_path):
 
     assert [event.event_type for event in goals.list_events(goal.id)] == [
         "goal.created",
+        "goal.run_status",
         "goal.run_status",
         "goal.run_status",
         "goal.run_status",

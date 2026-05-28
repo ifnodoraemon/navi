@@ -6,6 +6,7 @@ import subprocess
 import pytest
 
 from navi.execution import EXECUTION_PROTOCOL_VERSION, SUBAGENT_EXECUTOR_ROLE, ExecutionService, NaviExecutionProvider
+from navi.goals import GOAL_STATUS_VERIFIED_COMPLETE, GoalStore
 from navi.provider import ChatMessage, ModelPool
 from navi.runs import RunStore
 
@@ -74,6 +75,8 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
     capability = [item for item in recorded["evidence"] if item["kind"] == "capability_result"]
     assert capability[0]["tool"] == "provider.config"
     assert recorded["verification"]["status"] == "verified"
+    critic_log = next(log for log in runs.list_execution_logs(task.id) if log.phase == "critic")
+    assert json.loads(critic_log.stdout)["passed"] is True
 
 
 @pytest.mark.asyncio
@@ -193,6 +196,7 @@ async def test_protocol_actions_must_be_capability_calls(tmp_path):
 async def test_protocol_actions_execute_local_file_actuators(tmp_path):
     runs = RunStore(tmp_path)
     task = runs.create("File actuator task", prompt="write a note", workspace=str(tmp_path))
+    goal = GoalStore(tmp_path).create(objective=task.prompt, run_id=task.id)
     provider = ScriptedProvider(
         json.dumps(
             {
@@ -244,6 +248,56 @@ async def test_protocol_actions_execute_local_file_actuators(tmp_path):
     verification = [item for item in recorded["evidence"] if item["kind"] == "verification_result"]
     assert [item["check"] for item in verification] == ["file.exists", "file.contains"]
     assert all(item["ok"] for item in verification)
+    updated_goal = GoalStore(tmp_path).get(goal.id)
+    assert updated_goal is not None
+    assert updated_goal.status == GOAL_STATUS_VERIFIED_COMPLETE
+
+
+@pytest.mark.asyncio
+async def test_critic_gate_blocks_mutation_without_independent_verification(tmp_path):
+    runs = RunStore(tmp_path)
+    task = runs.create("Unverified mutation", prompt="write without checking", workspace=str(tmp_path))
+    provider = ScriptedProvider(
+        json.dumps(
+            {
+                "navi_execution": {
+                    "version": EXECUTION_PROTOCOL_VERSION,
+                    "phase": "execute",
+                    "run_id": task.id,
+                    "plan_id": "unverified-mutation",
+                    "steps": [
+                        {
+                            "id": "write-only",
+                            "actions": [
+                                {
+                                    "tool": "file.write",
+                                    "permission": "write",
+                                    "args": {"path": "notes/result.txt", "content": "actuated", "create_dirs": True},
+                                }
+                            ],
+                            "verification": {"checks": [], "reason": "model says done"},
+                            "on_failure": "stop",
+                        }
+                    ],
+                    "evidence": [{"kind": "model_plan", "summary": "write only"}],
+                    "verification": {"status": "proposed", "checks": [], "reason": "model says done"},
+                    "completion": {"status": "proposed", "summary": "file updated"},
+                }
+            }
+        )
+    )
+    execution = ExecutionService(tmp_path)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    updated = await execution.execute_task(task)
+
+    assert updated.status == "failed"
+    assert "critic gate blocked completion" in updated.error
+    assert "mutating execution lacks independent verification checks" in updated.error
+    critic_log = next(log for log in runs.list_execution_logs(task.id) if log.phase == "critic")
+    critic = json.loads(critic_log.stdout)
+    assert critic["passed"] is False
+    assert "mutating execution lacks independent verification checks" in critic["findings"]
 
 
 @pytest.mark.asyncio
