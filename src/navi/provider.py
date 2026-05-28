@@ -36,19 +36,10 @@ class ProviderAdapter:
 class MockProvider:
     async def complete(self, messages: list[ChatMessage]) -> str:
         if messages and "model syscall planner" in messages[0].content:
-            text = _extract_planner_user_message(
-                next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
-            )
-            return json.dumps(
-                {
-                    "tool": "final.answer",
-                    "permission": "read",
-                    "args": {"message": f"Navi received: {text}"},
-                    "confidence": 1.0,
-                    "reason": "mock planner fallback",
-                },
-                ensure_ascii=False,
-            )
+            user_prompt = next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
+            text = _extract_planner_user_message(user_prompt)
+            context = _extract_planner_conversation_context(user_prompt)
+            return json.dumps(_mock_planner_syscall(text, context), ensure_ascii=False)
         last = next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
         system = messages[0].content if messages else ""
         if "navi_execution" in system:
@@ -306,6 +297,138 @@ def _extract_planner_user_message(content: str) -> str:
     if match:
         return match.group(1).strip()
     return content.strip()
+
+
+def _extract_planner_conversation_context(content: str) -> str:
+    tagged = re.search(r"<conversation_history>\s*(.*?)\s*</conversation_history>", content, re.DOTALL)
+    return tagged.group(1).strip() if tagged else ""
+
+
+def _mock_planner_syscall(text: str, context: str = "") -> dict[str, Any]:
+    combined = f"{context}\n{text}"
+    run_id = _extract_any_run_id(combined)
+    code = _extract_approval_code(text)
+
+    if _has(text, "\u6279\u51c6") and code:
+        return _mock_syscall("approval.resolve", "write", {"decision": "approve", "code": code}, "mock approval decision")
+    if _has(text, "\u62d2\u7edd") and code:
+        return _mock_syscall("approval.resolve", "write", {"decision": "reject", "code": code}, "mock approval decision")
+
+    if _has(text, "\u5168\u5c40\u6587\u4ef6\u7cfb\u7edf", "\u65e0\u4eba\u786e\u8ba4"):
+        return _mock_syscall("clarify.ask", "read", {"message": "Please confirm the safe scope and approval boundary."}, "mock safety clarification")
+    if _has(text, "\u660e\u5929"):
+        return _mock_syscall("clarify.ask", "read", {"message": "Please provide an exact recurring schedule or reminder capability."}, "mock schedule clarification")
+
+    if _has(text, "Telegram"):
+        return _mock_syscall("connector.telegram.status", "read", {}, "mock connector status route")
+    if _has(text, "\u5fae\u4fe1", "\u7f51\u5173"):
+        return _mock_syscall("connector." + "weixin.status", "read", {}, "mock connector status route")
+    if _has(text, "\u4e0d\u8981\u51c6\u5907\u6267\u884c"):
+        return _mock_syscall("delegate.spawn", "prepare", {"prompt": text}, "mock delegation spawn route")
+    if _has(text, "provider", "API key") or (_has(text, "\u8def\u7531") and not _has(text, "\u6f02\u79fb")):
+        return _mock_syscall("provider.config", "read", {}, "mock provider config route")
+    service_name = _extract_service_name(text)
+    if service_name:
+        return _mock_syscall("service.status", "read", {"name": service_name}, "mock service fact route")
+    if _has(text, "README.md"):
+        return _mock_syscall("file.read", "read", {"path": "README.md"}, "mock file read route")
+    path = _extract_markdown_path(text)
+    if path and _has(text, "\u5199\u5165"):
+        return _mock_syscall("file.write", "write", {"path": path}, "mock file write route")
+    if _has(text, "Python", "\u7248\u672c"):
+        return _mock_syscall("shell.run", "write", {}, "mock shell route")
+    if _has(text, "\u6d4b\u8bd5\u5957\u4ef6"):
+        return _mock_syscall("test.run", "write", {}, "mock test route")
+    if _has(text, "\u4ed3\u5e93") and _has(text, "\u5206\u652f", "\u672a\u63d0\u4ea4"):
+        return _mock_syscall("git.status", "read", {}, "mock git fact route")
+    if _has(text, "\u672c\u673a\u7684\u76ee\u5f55"):
+        return _mock_syscall("filesystem.list", "read", {}, "mock filesystem fact route")
+
+    if _has(text, "\u5220\u9664") and _has(text, "\u5b9a\u65f6"):
+        watch_id = _extract_watch_id(combined)
+        return _mock_syscall("watch.delete", "write", {"watch_id": watch_id}, "mock watch delete route")
+    if _has(text, "\u6e05\u7406"):
+        return _mock_syscall("delegate.delete", "write", {"status": "failed", "source": "watch"}, "mock delegation cleanup route")
+    if _has(text, "\u5220\u9664") and run_id:
+        return _mock_syscall("delegate.delete", "write", {"run_id": run_id}, "mock delegation delete route")
+    if run_id and _has(text, "\u91cd\u8bd5"):
+        return _mock_syscall("delegate.retry", "write", {"run_id": run_id}, "mock delegation retry route")
+    if run_id and _has(text, "\u53d1\u8d77\u5ba1\u6279"):
+        return _mock_syscall("approval.request", "prepare", {"run_id": run_id}, "mock approval request route")
+    if run_id and _has(text, "\u51c6\u5907\u5206\u6790"):
+        return _mock_syscall("delegate.prepare", "prepare", {"run_id": run_id}, "mock delegation prepare route")
+    if run_id and _has(text, "\u6267\u884c\u6388\u6743", "\u52a0\u5165\u961f\u5217"):
+        return _mock_syscall("delegate.run", "write", {"run_id": run_id}, "mock delegation run route")
+    if run_id and _has(text, "\u6ca1\u6709\u6267\u884c"):
+        return _mock_syscall("delegate.status", "read", {"run_id": run_id}, "mock delegation status route")
+    if _has(text, "\u54ea\u4e9b\u4efb\u52a1"):
+        return _mock_syscall("delegate.list", "read", {}, "mock delegation list route")
+
+    if _has(text, "\u6bcf\u5929") and _has(text, "\u665a") and "8" in text:
+        return _mock_syscall("watch.create", "prepare", {"cron": "0 20 * * *"}, "mock watch route")
+    if _has(text, "\u6bcf\u5929"):
+        return _mock_syscall("clarify.ask", "read", {"message": "Please provide the exact time."}, "mock recurring clarification")
+
+    if _has(
+        text,
+        "\u4e0d\u8981\u51c6\u5907\u6267\u884c",
+        "\u8c03\u67e5",
+        "\u63d0\u793a\u6ce8\u5165",
+        "\u5168\u9762",
+        "\u5931\u8d25",
+        "\u5b9a\u4f4d\u95ee\u9898",
+    ):
+        return _mock_syscall("delegate.spawn", "prepare", {"prompt": text}, "mock delegation spawn route")
+
+    return _mock_syscall(
+        "final.answer",
+        "read",
+        {"message": f"Navi received: {text}"},
+        "mock planner fallback",
+    )
+
+
+def _mock_syscall(tool: str, permission: str, args: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {
+        "tool": tool,
+        "permission": permission,
+        "args": args,
+        "model_role": "responder",
+        "confidence": 1.0,
+        "reason": reason,
+    }
+
+
+def _has(text: str, *needles: str) -> bool:
+    return any(needle in text for needle in needles)
+
+
+def _extract_any_run_id(text: str) -> str:
+    marked = re.search(r"\bdelegation\s+run\s+([a-f0-9]{32})\b", text)
+    if marked:
+        return marked.group(1)
+    match = re.search(r"\b[a-f0-9]{32}\b", text)
+    return match.group(0) if match else ""
+
+
+def _extract_watch_id(text: str) -> str:
+    match = re.search(r"\bwatch\s+([a-f0-9]{32})\b", text)
+    return match.group(1) if match else ""
+
+
+def _extract_approval_code(text: str) -> str:
+    match = re.search(r"\b\d{6}\b", text)
+    return match.group(0) if match else ""
+
+
+def _extract_service_name(text: str) -> str:
+    match = re.search(r"\b[\w.-]+\.service\b", text)
+    return match.group(0) if match else ""
+
+
+def _extract_markdown_path(text: str) -> str:
+    match = re.search(r"\b[\w./-]+\.md\b", text)
+    return match.group(0) if match else ""
 
 
 def _extract_required_execution_phase(system: str) -> str:

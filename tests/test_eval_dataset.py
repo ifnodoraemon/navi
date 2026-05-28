@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from navi.evals import (
     load_delegation_eval_cases,
     load_delegation_eval_dataset,
     match_delegation_eval_case,
     delegation_eval_tools,
+    run_delegation_eval_dataset,
     validate_delegation_eval_dataset,
 )
 from navi.syscalls import ModelSyscall
@@ -75,3 +78,20 @@ def test_task_eval_case_matcher_reports_arg_drift():
     errors = match_delegation_eval_case(case, decision)
 
     assert "args.run_id expected 'expected', got 'actual'" in errors
+
+
+@pytest.mark.asyncio
+async def test_mock_planner_passes_delegation_eval_dataset(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "mock")
+    monkeypatch.setenv("NAVI_MODEL", "mock")
+
+    results = await run_delegation_eval_dataset(
+        home=tmp_path,
+        project_dir=tmp_path,
+        dataset=_dataset(),
+        timeout_seconds=1,
+    )
+
+    failures = [result for result in results if not result.ok]
+    assert failures == []
+    assert len(results) >= 38
