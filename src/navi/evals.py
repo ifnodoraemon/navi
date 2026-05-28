@@ -10,6 +10,7 @@ import yaml
 
 from .app_factory import build_runtime
 from .capabilities import build_capability_registry
+from .provider import ModelPool
 from .syscalls import ModelSyscall, ModelSyscallPlanner
 from .tools import ToolSpec
 
@@ -105,6 +106,7 @@ async def run_delegation_eval_dataset(
     project_dir: Path,
     dataset: Path,
     timeout_seconds: float = 75.0,
+    provider: ModelPool | None = None,
 ) -> list[EvalResult]:
     loaded = load_delegation_eval_dataset(dataset)
     cases = loaded["cases"]
@@ -120,8 +122,8 @@ async def run_delegation_eval_dataset(
                 errors=validation_errors,
             )
         ]
-    runtime = build_runtime(home)
-    planner = ModelSyscallPlanner(runtime.provider)
+    runtime_provider = provider or build_runtime(home).provider
+    planner = ModelSyscallPlanner(runtime_provider)
     results: list[EvalResult] = []
     for case in cases:
         try:

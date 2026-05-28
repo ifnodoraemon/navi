@@ -97,6 +97,10 @@ def test_cli_tool_eval_model_and_skill_commands(tmp_path):
     assert eval_result.exit_code == 0
     assert "ok dataset" in eval_result.output
 
+    mock_eval = runner.invoke(app, ["eval", "delegations", "--mock-provider", "--dataset", str(dataset)], env=env)
+    assert mock_eval.exit_code == 0
+    assert "ok reject_code" in mock_eval.output
+
 
 def test_cli_graph_trust_evolution_and_connector_status(tmp_path):
     env = _env(tmp_path)

@@ -13,7 +13,7 @@ from .api import create_app
 from .app_factory import build_runtime
 from .auth import AuthInspector
 from .capabilities import CapabilityContext, build_capability_registry
-from .config import load_config, write_default_config
+from .config import ModelConfig, load_config, write_default_config
 from .connector_registry import get_connector_adapter, load_connector_adapters
 from .defaults import DEFAULT_WEB_HOST, DEFAULT_WEB_PORT
 from .evals import (
@@ -28,6 +28,7 @@ from .goals import GoalStore
 from .graph import GraphStore
 from .memory import MemoryStore
 from .paths import ensure_home
+from .provider import build_provider
 from .service import build_systemd_user_unit, install_systemd_user_unit
 from .trace import TraceStore
 from .trust import TrustStore
@@ -280,6 +281,7 @@ def eval_delegations(
     json_output: bool = False,
     validate_only: bool = False,
     timeout_seconds: float = 75.0,
+    mock_provider: bool = False,
 ) -> None:
     """Run the delegation routing eval dataset against the configured model."""
     home = ensure_home()
@@ -304,6 +306,7 @@ def eval_delegations(
             project_dir=Path.cwd(),
             dataset=dataset,
             timeout_seconds=timeout_seconds,
+            provider=build_provider(ModelConfig(provider="mock", model="mock")) if mock_provider else None,
         )
     )
     if json_output:
