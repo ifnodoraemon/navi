@@ -12,6 +12,10 @@ Role definitions live in `src/navi/specs/agent_roles.yaml`.
 - `critic` reviews plans, execution results, and completion claims for missing evidence or unsafe assumptions. Current execution uses a deterministic critic gate before a completed run can update its goal to `verified_complete`.
 - `executor` transforms approved plans into actuator instructions and evidence requirements.
 
+## Runtime Records
+
+Sub-agent role executions are persisted in `subagents.db` and exposed through `navi subagent list/show` plus `/v1/subagents`. Each record includes role, phase, linked run id, status, command, input facts, output summary, error, and timestamps.
+
 ## Split Criteria
 
 Use a separate role when one of these is true:
@@ -31,6 +35,7 @@ Every role handoff must leave trace evidence:
 - `planner.syscall` records selected tool, permission, args, confidence, and reason.
 - `agent.role_result` records model role, source observation count, target action, and response summary.
 - `critic` execution logs record findings, recommendation, and pass/fail evidence for actuator-backed completion.
+- `subagent_runs` records planner, executor, critic, and notification lifecycle status independently from delegation rows.
 - `recovery.plan` records verifier-triggered recovery choices.
 - Execution roles must preserve actuator evidence with a non-empty evidence list and verification status.
 

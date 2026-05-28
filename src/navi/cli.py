@@ -30,6 +30,7 @@ from .memory import MemoryStore
 from .paths import ensure_home
 from .provider import build_provider
 from .service import build_systemd_user_unit, install_systemd_user_unit
+from .subagents import SubagentRunStore
 from .trace import TraceStore
 from .trust import TrustStore
 
@@ -41,6 +42,7 @@ trust_app = typer.Typer(help="Trust contract")
 evolution_app = typer.Typer(help="Evolution ledger")
 trace_app = typer.Typer(help="Full-flow traces and evaluations")
 goal_app = typer.Typer(help="Durable goal lifecycle")
+subagent_app = typer.Typer(help="Sub-agent runtime records")
 service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
@@ -53,6 +55,7 @@ app.add_typer(trust_app, name="trust")
 app.add_typer(evolution_app, name="evolution")
 app.add_typer(trace_app, name="trace")
 app.add_typer(goal_app, name="goal")
+app.add_typer(subagent_app, name="subagent")
 app.add_typer(service_app, name="service")
 app.add_typer(memory_app, name="memory")
 app.add_typer(session_app, name="session")
@@ -393,6 +396,27 @@ def goal_show(goal_id: str) -> None:
         typer.echo(f"blocked: {goal.blocked_reason}")
     for event in store.list_events(goal_id):
         typer.echo(f"- {event.event_type} {event.status} task={event.run_id or '-'} trace={event.trace_id or '-'}")
+
+
+@subagent_app.command("list")
+def subagent_list(role: str = "", status: str = "", run_id: str = "", limit: int = 50) -> None:
+    """List sub-agent runtime records as facts."""
+    for item in SubagentRunStore(ensure_home()).list(role=role, status=status, run_id=run_id, limit=limit):
+        task = f" run={item.run_id}" if item.run_id else ""
+        typer.echo(f"{item.id} {item.role} {item.phase} {item.status}{task}")
+
+
+@subagent_app.command("show")
+def subagent_show(subagent_id: str) -> None:
+    """Show one sub-agent runtime record."""
+    item = SubagentRunStore(ensure_home()).get(subagent_id)
+    if item is None:
+        raise typer.BadParameter("sub-agent run not found")
+    typer.echo(f"{item.id} {item.role} {item.phase} {item.status} run={item.run_id or '-'}")
+    typer.echo(f"command: {item.command}")
+    if item.error:
+        typer.echo(f"error: {item.error}")
+    typer.echo(item.output_json)
 
 
 @evolution_app.command("list")

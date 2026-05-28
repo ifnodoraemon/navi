@@ -241,6 +241,7 @@ Implemented:
 - Bounded agent loop for observe/plan/read-tool chaining before final response.
 - Tool Gateway abstraction with provider sources, refresh, filtering, and audit logs.
 - Internal execution requires the structured `navi.actuator.v1` protocol. Protocol actions must be capability calls (`tool`, `permission`, `args`), are executed through `CapabilityRegistry`, and produce actual capability-result evidence; free-form execution output or non-capability actions are failed executions. Completed execution is treated as a completion candidate until the critic gate verifies non-empty actuator evidence, successful verification status, and independent checks for mutating actions.
+- Planner, executor, critic, and notification role executions are recorded as sub-agent runtime records with status and evidence separate from delegation rows. CLI and API consumers can inspect these records through `navi subagent list/show` and `/v1/subagents`.
 - Local memory, session, and task stores.
 - Skill discovery.
 - Connector registry plus Weixin account store, context-token store, deduplication, policy checks, mock client, HTTP client skeleton, and inbound-to-agent service flow.

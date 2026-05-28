@@ -8,6 +8,7 @@ from navi.cli import app
 from navi.evolution import EvolutionLedger
 from navi.goals import GoalStore
 from navi.memory import MemoryStore
+from navi.subagents import SubagentRunStore
 from navi.trace import TraceStore
 
 
@@ -222,3 +223,20 @@ def test_cli_goal_commands(tmp_path):
     assert shown.exit_code == 0
     assert "goal.created" in shown.output
     assert "task=task-1" in shown.output
+
+
+def test_cli_subagent_commands(tmp_path):
+    env = _env(tmp_path)
+    store = SubagentRunStore(tmp_path)
+    item = store.start(role="executor", phase="execute", run_id="run-1")
+    store.finish(item.id, status="completed", output_data={"summary": "ok"})
+
+    listed = runner.invoke(app, ["subagent", "list", "--run-id", "run-1"], env=env)
+    assert listed.exit_code == 0
+    assert item.id in listed.output
+    assert "executor execute completed run=run-1" in listed.output
+
+    shown = runner.invoke(app, ["subagent", "show", item.id], env=env)
+    assert shown.exit_code == 0
+    assert "command: navi subagent executor execute run-1" in shown.output
+    assert '"summary": "ok"' in shown.output

@@ -26,6 +26,8 @@ trace: /v1/traces/{trace_id}
 trace_evaluate: /v1/traces/{trace_id}/evaluate
 goals: /v1/goals
 goal: /v1/goals/{goal_id}
+subagents: /v1/subagents
+subagent: /v1/subagents/{subagent_id}
 evolution_events: /v1/evolution-events
 evolution_rollback: /v1/evolution-events/{event_id}/rollback
 evolution_targets: /v1/evolution-targets

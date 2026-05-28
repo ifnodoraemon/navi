@@ -25,6 +25,7 @@ from .goals import GoalStore
 from .graph import GraphStore
 from .paths import ensure_home
 from .runs import RunStore
+from .subagents import SubagentRunStore
 from .trace import TraceStore
 from .trust import TrustStore
 from . import __version__
@@ -99,6 +100,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     runtime = build_runtime(home)
     task_store = RunStore(home)
     goal_store = GoalStore(home)
+    subagent_store = SubagentRunStore(home)
     daemon = SystemDaemon(home)
     agent = HernessEngine(home=home, runtime=runtime, project_dir=Path.cwd())
     capabilities = build_capability_registry(home, project_dir=Path.cwd())
@@ -438,6 +440,22 @@ def create_app(home: Path | None = None) -> FastAPI:
             "goal": goal.__dict__,
             "events": [event.__dict__ for event in goal_store.list_events(goal_id)],
         }
+
+    @app.get(api_path("subagents"))
+    def list_subagents(role: str = "", status: str = "", run_id: str = "", limit: int = 50) -> dict:
+        return {
+            "subagents": [
+                subagent.__dict__
+                for subagent in subagent_store.list(role=role, status=status, run_id=run_id, limit=limit)
+            ]
+        }
+
+    @app.get(api_path("subagent"))
+    def get_subagent(subagent_id: str) -> dict:
+        subagent = subagent_store.get(subagent_id)
+        if subagent is None:
+            raise HTTPException(status_code=404, detail="subagent run not found")
+        return {"subagent": subagent.__dict__}
 
     @app.get(api_path("evolution_events"))
     def evolution_events() -> dict:

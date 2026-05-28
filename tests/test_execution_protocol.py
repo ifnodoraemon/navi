@@ -9,6 +9,7 @@ from navi.execution import EXECUTION_PROTOCOL_VERSION, SUBAGENT_EXECUTOR_ROLE, E
 from navi.goals import GOAL_STATUS_VERIFIED_COMPLETE, GoalStore
 from navi.provider import ChatMessage, ModelPool
 from navi.runs import RunStore
+from navi.subagents import SubagentRunStore
 
 
 class ScriptedProvider:
@@ -77,6 +78,11 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
     assert recorded["verification"]["status"] == "verified"
     critic_log = next(log for log in runs.list_execution_logs(task.id) if log.phase == "critic")
     assert json.loads(critic_log.stdout)["passed"] is True
+    subagents = SubagentRunStore(tmp_path).list(run_id=task.id)
+    assert [(item.role, item.phase, item.status) for item in subagents] == [
+        ("critic", "verify", "completed"),
+        ("executor", "execute", "completed"),
+    ]
 
 
 @pytest.mark.asyncio

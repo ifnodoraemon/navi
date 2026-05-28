@@ -263,6 +263,13 @@ def test_active_api_flow(tmp_path, monkeypatch):
     processed = client.post("/v1/delegations/process")
     assert processed.status_code == 200
     assert processed.json()["delegations"][0]["status"] == "completed"
+    subagents = client.get("/v1/subagents", params={"run_id": task["id"]})
+    assert subagents.status_code == 200
+    roles = {item["role"] for item in subagents.json()["subagents"]}
+    assert {"executor", "critic"} <= roles
+    shown = client.get(f"/v1/subagents/{subagents.json()['subagents'][0]['id']}")
+    assert shown.status_code == 200
+    assert shown.json()["subagent"]["status"] in {"completed", "failed"}
 
     assert client.get("/v1/graph").json()["nodes"]
     assert client.get("/v1/evolution-events").json()["events"]

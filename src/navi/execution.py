@@ -16,6 +16,7 @@ from .goals import GoalStore
 from .json_utils import parse_first_json_object
 from .provider import ChatMessage, ModelPool, build_provider
 from .runs import Run, RunStore
+from .subagents import SubagentRunStore
 
 INTERNAL_EXECUTION_PROVIDER = "navi"
 EXECUTION_PROTOCOL_VERSION = "navi.actuator.v1"
@@ -915,6 +916,7 @@ class ExecutionService:
         self.governance = GovernanceEngine(home)
         self.ledger = EvolutionLedger(home)
         self.actuator = ActuatorRunner(home=home)
+        self.subagents = SubagentRunStore(home)
         self.provider = NaviExecutionProvider(
             provider=build_provider(config.model),
             timeout_seconds=self.config.timeout_seconds,
@@ -955,7 +957,20 @@ class ExecutionService:
             result = await self.actuator.run_task(task, result)
         self._log(task, result)
 
+        critic_run = self.subagents.start(
+            role="critic",
+            phase="verify",
+            run_id=task.id,
+            command=["navi", "subagent", "critic", "verify", task.id],
+            input_data={"protocol_phase": result.protocol.phase, "protocol_plan_id": result.protocol.plan_id},
+        )
         critic = review_execution_protocol(result.protocol)
+        self.subagents.finish(
+            critic_run.id,
+            status="completed" if critic.passed else "failed",
+            output_data={"findings": critic.findings, "recommendation": critic.recommendation, "evidence": critic.evidence},
+            error="" if critic.passed else "; ".join(critic.findings),
+        )
         self._log_critic_decision(task, critic)
 
         status = "completed" if result.exit_code == 0 and critic.passed else "failed"
@@ -1016,6 +1031,13 @@ class ExecutionService:
             provider=self.config.provider,
             workspace=workspace,
         )
+        subagent_run = self.subagents.start(
+            role=SUBAGENT_NOTIFICATION_ROLE,
+            phase="watch",
+            run_id="",
+            command=["navi", "subagent", SUBAGENT_NOTIFICATION_ROLE, "watch"],
+            input_data={"source": source, "peer_id": peer_id, "sender_id": sender_id, "workspace": workspace},
+        )
         result = await self.provider.run_watch(
             prompt=prompt,
             source=source,
@@ -1026,6 +1048,17 @@ class ExecutionService:
         if result.exit_code == 0:
             result = await self.actuator.run_task(watch_task, result)
         self._log(watch_task, result)
+        self.subagents.finish(
+            subagent_run.id,
+            status="completed" if result.exit_code == 0 else "failed",
+            output_data={
+                "exit_code": result.exit_code,
+                "summary": result.summary,
+                "provider": result.provider,
+                "model_role": result.model_role,
+            },
+            error=result.stderr,
+        )
         return result
 
     async def process_pending_once(self, *, limit: int = 3) -> list[Run]:
@@ -1111,13 +1144,25 @@ class ExecutionService:
         return await self.provider.execute(task)
 
     async def _provider_call_with_timeout(self, task: Run, phase: str) -> ExecutionResult:
+        role = SUBAGENT_PLANNER_ROLE if phase == "prepare" else SUBAGENT_EXECUTOR_ROLE
+        subagent_run = self.subagents.start(
+            role=role,
+            phase=phase,
+            run_id=task.id,
+            command=["navi", "subagent", role, phase, task.id],
+            input_data={"workspace": task.workspace, "autonomy_level": task.autonomy_level},
+        )
         if self.config.mock:
-            return await self._provider_call(task, phase)
+            result = await self._provider_call(task, phase)
+            self._finish_provider_subagent(subagent_run.id, result)
+            return result
         started = time.time()
         try:
-            return await asyncio.wait_for(self._provider_call(task, phase), timeout=self.config.timeout_seconds + 1)
+            result = await asyncio.wait_for(self._provider_call(task, phase), timeout=self.config.timeout_seconds + 1)
+            self._finish_provider_subagent(subagent_run.id, result)
+            return result
         except asyncio.TimeoutError:
-            return ExecutionResult(
+            result = ExecutionResult(
                 provider=INTERNAL_EXECUTION_PROVIDER,
                 phase=phase,
                 command=["navi", "internal", "--timeout", phase, task.id],
@@ -1135,3 +1180,39 @@ class ExecutionService:
                     action_kind="execution_timeout",
                 ),
             )
+            self._finish_provider_subagent(subagent_run.id, result)
+            return result
+        except Exception as exc:
+            result = ExecutionResult(
+                provider=INTERNAL_EXECUTION_PROVIDER,
+                phase=phase,
+                command=["navi", "internal", "--error", phase, task.id],
+                stdout="",
+                stderr=str(exc),
+                exit_code=1,
+                started_at=started,
+                ended_at=time.time(),
+                protocol=ExecutionProtocol.internal_status(
+                    run_id=task.id,
+                    phase=phase,
+                    status="failed",
+                    summary=str(exc),
+                    reason="execution provider raised an unexpected error",
+                    action_kind="execution_error",
+                ),
+            )
+            self._finish_provider_subagent(subagent_run.id, result)
+            return result
+
+    def _finish_provider_subagent(self, subagent_id: str, result: ExecutionResult) -> None:
+        self.subagents.finish(
+            subagent_id,
+            status="completed" if result.exit_code == 0 else "failed",
+            output_data={
+                "exit_code": result.exit_code,
+                "summary": result.summary,
+                "provider": result.provider,
+                "model_role": result.model_role,
+            },
+            error=result.stderr,
+        )
