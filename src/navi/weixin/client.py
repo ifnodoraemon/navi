@@ -25,6 +25,9 @@ SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2
 SEND_CHUNK_RETRIES = 3
 SEND_CHUNK_RETRY_DELAY_SECONDS = 1.0
+TYPING_START = 1
+TYPING_STOP = 2
+CONFIG_TIMEOUT_SECONDS = 10.0
 
 
 class WeixinClient:
@@ -100,6 +103,26 @@ class WeixinClient:
             await self._send_chunk(peer_id=peer_id, text=chunk, context_token=context_token)
             if index < len(chunks) - 1:
                 await self._sleep_between_chunks()
+
+    async def get_typing_ticket(self, *, user_id: str, context_token: str = "") -> str:
+        payload: dict[str, Any] = {"ilink_user_id": user_id}
+        if context_token:
+            payload["context_token"] = context_token
+        response = await self._post("/ilink/bot/getconfig", payload, timeout=CONFIG_TIMEOUT_SECONDS)
+        return str(response.get("typing_ticket") or "")
+
+    async def send_typing(self, *, peer_id: str, typing_ticket: str, status: int) -> None:
+        if not typing_ticket:
+            return
+        await self._post(
+            "/ilink/bot/sendtyping",
+            {
+                "ilink_user_id": peer_id,
+                "typing_ticket": typing_ticket,
+                "status": status,
+            },
+            timeout=CONFIG_TIMEOUT_SECONDS,
+        )
 
     async def _send_chunk(self, *, peer_id: str, text: str, context_token: str = "") -> None:
         if not text.strip():
@@ -207,6 +230,7 @@ class WeixinClient:
 class MockWeixinClient:
     def __init__(self) -> None:
         self.sent: list[dict[str, str]] = []
+        self.typing: list[dict[str, str | int]] = []
 
     async def request_qr(self) -> WeixinQr:
         return WeixinQr(qrcode_url="mock://navi-weixin-qr", ticket="mock-ticket")
@@ -252,6 +276,14 @@ class MockWeixinClient:
                     "context_token": context_token,
                 }
             )
+
+    async def get_typing_ticket(self, *, user_id: str, context_token: str = "") -> str:
+        if os.environ.get("NAVI_WEIXIN_MOCK_TYPING", "").lower() not in {"1", "true", "yes"}:
+            return ""
+        return f"mock-typing-{user_id}"
+
+    async def send_typing(self, *, peer_id: str, typing_ticket: str, status: int) -> None:
+        self.typing.append({"peer_id": peer_id, "typing_ticket": typing_ticket, "status": status})
 
 
 def _random_wechat_uin() -> str:

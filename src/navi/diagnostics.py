@@ -15,6 +15,7 @@ from .fact_tools import service_facts
 from .service import systemd_user_unit_path
 from .telegram.config import load_telegram_config
 from .weixin.config import load_weixin_config
+from .weixin.store import WeixinStore
 
 
 @dataclass(frozen=True)
@@ -135,12 +136,14 @@ def _connector_config_checks(home: Path) -> list[DiagnosticCheck]:
     )
     weixin_name = "weixin"
     weixin = load_weixin_config(home)
-    weixin_ready = weixin.enabled and weixin.account_id and weixin.token
+    saved_account = WeixinStore(home).load_account(weixin.account_id) if weixin.account_id else None
+    token_present = bool(weixin.token or (saved_account and saved_account.token))
+    weixin_ready = weixin.enabled and weixin.account_id and token_present
     checks.append(
         DiagnosticCheck(
             f"connector.{weixin_name}.config",
             "ok" if weixin_ready else "missing",
-            f"enabled={weixin.enabled} account_present={bool(weixin.account_id)} token_present={bool(weixin.token)}",
+            f"enabled={weixin.enabled} account_present={bool(weixin.account_id)} token_present={token_present}",
         )
     )
     return checks

@@ -13,7 +13,7 @@ from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.daemon import SystemDaemon
 
-from .client import MockWeixinClient, WeixinClient
+from .client import MockWeixinClient, TYPING_START, TYPING_STOP, WeixinClient
 from .config import WeixinConfig
 from .models import WeixinAccount, WeixinUpdate
 from .store import ContextTokenStore, MessageDeduplicator, WeixinStore
@@ -38,6 +38,7 @@ class WeixinService:
         self.context_tokens = ContextTokenStore(home)
         self.dedup = MessageDeduplicator()
         self.client = self._build_client()
+        self.typing_tickets: dict[str, str] = {}
         self.daemon = SystemDaemon(home)
         self.active = self.daemon
         self.ingress = ConnectorIngressRuntime(
@@ -154,9 +155,9 @@ class WeixinService:
                     self.update_status(status, error_msg)
                     sleep_time = err_sleep
                 else:
-                    status = "fatal"
+                    status = "degraded"
+                    sleep_time = min(60.0, 5.0 * retry_count)
                     self.update_status(status, error_msg)
-                    raise e
             
             if once:
                 return
@@ -178,8 +179,10 @@ class WeixinService:
         if not self._allowed(update):
             return False
         self.context_tokens.put(account.account_id, update.peer_id, update.context_token)
-        text = await self.ingress.handle(message)
         context_token = self.context_tokens.get(account.account_id, update.peer_id)
+        text = await self._handle_with_typing(update, message, context_token=context_token)
+        if not text.strip():
+            text = "我收到消息了，但这次没有生成有效回复。请稍后再试。"
         await self.client.send_message(
             account_id=account.account_id,
             peer_id=update.peer_id,
@@ -187,6 +190,61 @@ class WeixinService:
             context_token=context_token,
         )
         return True
+
+    async def _handle_with_typing(self, update: WeixinUpdate, message: ConnectorMessage, *, context_token: str) -> str:
+        typing_ticket = await self._typing_ticket(update.sender_id, context_token=context_token)
+        stop_typing = asyncio.Event()
+        typing_task = (
+            asyncio.create_task(self._keep_typing(update.sender_id, typing_ticket, stop_typing))
+            if typing_ticket
+            else None
+        )
+        try:
+            return await self.ingress.handle(message)
+        except Exception as exc:
+            self.update_status("degraded", f"message handler failed: {type(exc).__name__}: {exc}")
+            return "我收到消息了，但本地处理链路刚刚出错了。请稍后再试，或让我诊断 provider / service 状态。"
+        finally:
+            stop_typing.set()
+            if typing_task:
+                await typing_task
+
+    async def _typing_ticket(self, sender_id: str, *, context_token: str) -> str:
+        if not sender_id:
+            return ""
+        cached = self.typing_tickets.get(sender_id)
+        if cached:
+            return cached
+        try:
+            ticket = await self.client.get_typing_ticket(user_id=sender_id, context_token=context_token)
+        except Exception:
+            return ""
+        if ticket:
+            self.typing_tickets[sender_id] = ticket
+        return ticket
+
+    async def _keep_typing(self, peer_id: str, typing_ticket: str, stop_event: asyncio.Event) -> None:
+        try:
+            while not stop_event.is_set():
+                await self._send_typing_safely(peer_id, typing_ticket, TYPING_START)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=3.0)
+                except TimeoutError:
+                    continue
+        finally:
+            await self._send_typing_safely(peer_id, typing_ticket, TYPING_STOP)
+
+    async def _send_typing_safely(self, peer_id: str, typing_ticket: str, status: int) -> None:
+        try:
+            if isinstance(self.client, MockWeixinClient):
+                await self.client.send_typing(peer_id=peer_id, typing_ticket=typing_ticket, status=status)
+                return
+            await asyncio.wait_for(
+                self.client.send_typing(peer_id=peer_id, typing_ticket=typing_ticket, status=status),
+                timeout=1.5,
+            )
+        except Exception:
+            pass
 
     async def process_background(self, account: WeixinAccount) -> None:
         for result in await self.daemon.process_watches_once():

@@ -46,6 +46,19 @@ def service_facts(name: str | None = None) -> ServiceFacts:
         key, _, value = line.partition("=")
         if key:
             properties[key] = value
+    if result.returncode != 0:
+        fallback = subprocess.run(
+            ["systemctl", "--user", "is-active", name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        active_state = fallback.stdout.strip()
+        if fallback.returncode == 0 and active_state:
+            properties["ActiveState"] = active_state
+            properties.setdefault("SubState", active_state)
+            return ServiceFacts(name=name, properties=properties, exit_code=0, stderr=result.stderr.strip())
     return ServiceFacts(name=name, properties=properties, exit_code=result.returncode, stderr=result.stderr.strip())
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 import re
+import asyncio
 
 from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.runtime import AgentRuntime
@@ -59,6 +60,17 @@ class PlannerThenMockProvider(MockProvider):
         return await super().complete(messages)
 
 
+class SlowPlannerProvider(PlannerThenMockProvider):
+    async def complete(self, messages: list[ChatMessage]) -> str:
+        await asyncio.sleep(0)
+        return await super().complete(messages)
+
+
+class FailingProvider(MockProvider):
+    async def complete(self, messages: list[ChatMessage]) -> str:
+        raise RuntimeError("provider unavailable")
+
+
 def _pool(provider=None) -> ModelPool:
     return ModelPool(default=provider or MockProvider())
 
@@ -86,6 +98,48 @@ async def test_weixin_handle_update_replies_and_saves_context(tmp_path, monkeypa
     assert service.client.sent[0]["text"] == "Navi received: ping"
     session_id = runtime.memory.current_session_id("connector:weixin:peer")
     assert runtime.memory.get_messages(session_id)
+
+
+@pytest.mark.asyncio
+async def test_weixin_handle_update_sends_typing_indicator(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK_TYPING", "true")
+    runtime = AgentRuntime(home=tmp_path, provider=_pool(SlowPlannerProvider()))
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
+
+    handled = await service.handle_update(
+        account,
+        WeixinUpdate(
+            message_id="msg-typing",
+            peer_id="peer",
+            sender_id="sender",
+            text="ping",
+            context_token="ctx",
+        ),
+    )
+
+    assert handled is True
+    assert service.client.typing[0]["status"] == 1
+    assert service.client.typing[-1]["status"] == 2
+
+
+@pytest.mark.asyncio
+async def test_weixin_handle_update_returns_fallback_on_provider_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK_TYPING", "true")
+    runtime = AgentRuntime(home=tmp_path, provider=_pool(FailingProvider()))
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
+
+    handled = await service.handle_update(
+        account,
+        WeixinUpdate(message_id="msg-provider-error", peer_id="peer", sender_id="sender", text="你好", context_token="ctx"),
+    )
+
+    assert handled is True
+    assert "本地处理链路" in service.client.sent[-1]["text"]
+    assert service.client.typing[-1]["status"] == 2
 
 
 @pytest.mark.asyncio

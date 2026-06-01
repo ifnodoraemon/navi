@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from navi.db import connect
 from navi.trace import TraceStore
 
 
@@ -31,6 +32,34 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
         "nested": {"password": "[redacted]"},
     }
     assert json.loads(events[0].output_json)["approval_code"] == "[redacted]"
+
+
+def test_trace_store_migrates_legacy_event_schema(tmp_path):
+    with connect(tmp_path / "traces.db") as conn:
+        conn.execute(
+            """
+            CREATE TABLE trace_events (
+                id TEXT PRIMARY KEY,
+                trace_id TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                tool TEXT NOT NULL,
+                model_role TEXT NOT NULL,
+                ok INTEGER NOT NULL,
+                input_json TEXT NOT NULL,
+                output_json TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+
+    store = TraceStore(tmp_path)
+    store.add_event(trace_id="legacy", phase="turn.start", run_id="run-1", source="weixin")
+
+    event = store.list_events("legacy")[0]
+    assert event.run_id == "run-1"
+    assert event.source == "weixin"
 
 
 def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):

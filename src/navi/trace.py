@@ -70,6 +70,17 @@ class TraceStore:
                 )
                 """
             )
+            _ensure_columns(
+                conn,
+                "trace_events",
+                {
+                    "session_id": "TEXT NOT NULL DEFAULT ''",
+                    "run_id": "TEXT NOT NULL DEFAULT ''",
+                    "source": "TEXT NOT NULL DEFAULT ''",
+                    "peer_id": "TEXT NOT NULL DEFAULT ''",
+                    "sender_id": "TEXT NOT NULL DEFAULT ''",
+                },
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_events_trace ON trace_events(trace_id, created_at)")
             conn.execute(
                 """
@@ -125,32 +136,31 @@ class TraceStore:
             created_at=time.time(),
         )
         with connect(self.db_path) as conn:
+            values: dict[str, Any] = {
+                "id": event.id,
+                "trace_id": event.trace_id,
+                "session_id": event.session_id,
+                "run_id": event.run_id,
+                "phase": event.phase,
+                "source": event.source,
+                "peer_id": event.peer_id,
+                "sender_id": event.sender_id,
+                "tool": event.tool,
+                "model_role": event.model_role,
+                "ok": int(event.ok),
+                "input_json": event.input_json,
+                "output_json": event.output_json,
+                "message": event.message,
+                "created_at": event.created_at,
+            }
+            columns = _table_columns(conn, "trace_events")
+            if "task_id" in columns:
+                values["task_id"] = event.run_id
+            insert_columns = [name for name in values if name in columns]
+            placeholders = ", ".join("?" for _ in insert_columns)
             conn.execute(
-                """
-                INSERT INTO trace_events(
-                    id, trace_id, session_id, run_id, phase, source, peer_id,
-                    sender_id, tool, model_role, ok, input_json, output_json,
-                    message, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.id,
-                    event.trace_id,
-                    event.session_id,
-                    event.run_id,
-                    event.phase,
-                    event.source,
-                    event.peer_id,
-                    event.sender_id,
-                    event.tool,
-                    event.model_role,
-                    int(event.ok),
-                    event.input_json,
-                    event.output_json,
-                    event.message,
-                    event.created_at,
-                ),
+                f"INSERT INTO trace_events({', '.join(insert_columns)}) VALUES ({placeholders})",
+                tuple(values[name] for name in insert_columns),
             )
         return event
 
@@ -303,6 +313,17 @@ def _redact(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact(item) for item in value]
     return value
+
+
+def _ensure_columns(conn, table: str, columns: dict[str, str]) -> None:
+    existing = _table_columns(conn, table)
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def _table_columns(conn, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
 def _has_unverified_pending_run_completion(events: list[TraceEvent]) -> bool:
