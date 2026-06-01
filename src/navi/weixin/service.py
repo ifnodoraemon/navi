@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from dataclasses import asdict
 from pathlib import Path
 from collections.abc import Callable
@@ -89,7 +90,6 @@ class WeixinService:
             await asyncio.sleep(1)
 
     def update_status(self, status: str, error: str = "") -> None:
-        import time
         status_dir = self.home / "weixin"
         status_dir.mkdir(parents=True, exist_ok=True)
         status_file = status_dir / "status.json"
@@ -102,6 +102,21 @@ class WeixinService:
                 }, ensure_ascii=False),
                 encoding="utf-8",
             )
+        except Exception:
+            pass
+
+    def record_event(self, event: str, **facts) -> None:
+        event_dir = self.home / "weixin"
+        event_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "ts": time.time(),
+            "event": event,
+            **_redact_event_facts(facts),
+        }
+        try:
+            with (event_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+                handle.write("\n")
         except Exception:
             pass
 
@@ -149,6 +164,7 @@ class WeixinService:
             except Exception as e:
                 retry_count += 1
                 error_msg = str(e)
+                self.record_event("poll.error", retry_count=retry_count, error=error_msg)
                 if retry_count <= 5:
                     status = "retrying"
                     err_sleep = min(16.0, 1.5 ** retry_count)
@@ -165,6 +181,7 @@ class WeixinService:
 
     async def handle_update(self, account: WeixinAccount, update: WeixinUpdate) -> bool:
         if self.dedup.seen(update.message_id):
+            self.record_event("message.duplicate", message_id=update.message_id, peer_id=update.peer_id)
             return False
         message = ConnectorMessage(
             message_id=update.message_id,
@@ -175,20 +192,34 @@ class WeixinService:
             session_alias_prefix=self.session_alias_prefix,
         )
         if self.dedup.seen(message.content_key):
+            self.record_event("message.duplicate_content", message_id=update.message_id, peer_id=update.peer_id)
             return False
         if not self._allowed(update):
+            self.record_event("message.blocked", message_id=update.message_id, peer_id=update.peer_id, sender_id=update.sender_id)
             return False
+        self.record_event(
+            "message.received",
+            message_id=update.message_id,
+            peer_id=update.peer_id,
+            sender_id=update.sender_id,
+            text_preview=update.text[:120],
+        )
         self.context_tokens.put(account.account_id, update.peer_id, update.context_token)
         context_token = self.context_tokens.get(account.account_id, update.peer_id)
         text = await self._handle_with_typing(update, message, context_token=context_token)
         if not text.strip():
             text = "我收到消息了，但这次没有生成有效回复。请稍后再试。"
-        await self.client.send_message(
-            account_id=account.account_id,
-            peer_id=update.peer_id,
-            text=text,
-            context_token=context_token,
-        )
+        try:
+            await self.client.send_message(
+                account_id=account.account_id,
+                peer_id=update.peer_id,
+                text=text,
+                context_token=context_token,
+            )
+        except Exception as exc:
+            self.record_event("reply.error", peer_id=update.peer_id, error=f"{type(exc).__name__}: {exc}")
+            raise
+        self.record_event("reply.sent", peer_id=update.peer_id, text_preview=text[:120])
         return True
 
     async def _handle_with_typing(self, update: WeixinUpdate, message: ConnectorMessage, *, context_token: str) -> str:
@@ -203,6 +234,7 @@ class WeixinService:
             return await self.ingress.handle(message)
         except Exception as exc:
             self.update_status("degraded", f"message handler failed: {type(exc).__name__}: {exc}")
+            self.record_event("handler.error", peer_id=update.peer_id, sender_id=update.sender_id, error=f"{type(exc).__name__}: {exc}")
             return "我收到消息了，但本地处理链路刚刚出错了。请稍后再试，或让我诊断 provider / service 状态。"
         finally:
             stop_typing.set()
@@ -221,6 +253,7 @@ class WeixinService:
             return ""
         if ticket:
             self.typing_tickets[sender_id] = ticket
+            self.record_event("typing.ticket", sender_id=sender_id)
         return ticket
 
     async def _keep_typing(self, peer_id: str, typing_ticket: str, stop_event: asyncio.Event) -> None:
@@ -238,12 +271,15 @@ class WeixinService:
         try:
             if isinstance(self.client, MockWeixinClient):
                 await self.client.send_typing(peer_id=peer_id, typing_ticket=typing_ticket, status=status)
+                self.record_event("typing.sent", peer_id=peer_id, status=status)
                 return
             await asyncio.wait_for(
                 self.client.send_typing(peer_id=peer_id, typing_ticket=typing_ticket, status=status),
                 timeout=1.5,
             )
+            self.record_event("typing.sent", peer_id=peer_id, status=status)
         except Exception:
+            self.record_event("typing.error", peer_id=peer_id, status=status)
             pass
 
     async def process_background(self, account: WeixinAccount) -> None:
@@ -351,3 +387,14 @@ class WeixinService:
         if policy in {"allowlist", "pairing"}:
             return identity in allowed
         return policy == "open"
+
+
+def _redact_event_facts(facts: dict) -> dict:
+    redacted = {}
+    for key, value in facts.items():
+        key_text = str(key).lower()
+        if any(token in key_text for token in ("token", "secret", "password", "key", "code")):
+            redacted[key] = "[redacted]"
+        else:
+            redacted[key] = value
+    return redacted

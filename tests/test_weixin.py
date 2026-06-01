@@ -122,6 +122,10 @@ async def test_weixin_handle_update_sends_typing_indicator(tmp_path, monkeypatch
     assert handled is True
     assert service.client.typing[0]["status"] == 1
     assert service.client.typing[-1]["status"] == 2
+    events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8")
+    assert "message.received" in events
+    assert "typing.sent" in events
+    assert "reply.sent" in events
 
 
 @pytest.mark.asyncio

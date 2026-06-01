@@ -1,0 +1,106 @@
+version: 1
+description: Connector-level Weixin journeys that assert user-visible IM behavior, delivery events, and state changes.
+journeys:
+  - id: weixin_hello_replies_and_records_events
+    user_goal: Send a simple greeting from Weixin and get a visible reply plus delivery trace.
+    steps:
+      - inbound:
+          text: "你好"
+          message_id: "wx-hello"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          sent_contains: "Navi received"
+          event_contains:
+            - message.received
+            - reply.sent
+
+  - id: weixin_provider_failure_returns_visible_fallback
+    provider: failing
+    user_goal: See a local error reply when the model provider fails instead of silent no-response.
+    steps:
+      - inbound:
+          text: "你好"
+          message_id: "wx-provider-failure"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          sent_contains: "本地处理链路"
+          event_contains:
+            - message.received
+            - handler.error
+            - reply.sent
+
+  - id: weixin_local_work_request_gets_approval
+    user_goal: Ask from Weixin to fix a local problem and receive one approval task.
+    steps:
+      - inbound:
+          text: "测试在当前项目解释器上失败了，帮我定位问题并修复"
+          message_id: "wx-approval"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          sent_contains: "审批码"
+          run_count_delta: 1
+
+  - id: weixin_exact_schedule_creates_watch
+    user_goal: Schedule a recurring lesson through Weixin with an exact time.
+    steps:
+      - inbound:
+          text: "每天晚上 8 点讲解通识知识"
+          message_id: "wx-watch"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          watch_count_delta: 1
+
+  - id: weixin_vague_reminder_clarifies_without_watch
+    user_goal: Ask an underspecified reminder through Weixin and get a clarification, not a bogus watch.
+    steps:
+      - inbound:
+          text: "明天上午提醒我看 PR"
+          message_id: "wx-vague"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          sent_contains_any:
+            - "Navi received"
+            - "几点"
+            - "exact recurring"
+          run_count_delta: 0
+          watch_count_delta: 0
+
+  - id: weixin_duplicate_message_is_ignored
+    user_goal: Ensure duplicate Weixin delivery does not create duplicate replies.
+    steps:
+      - inbound:
+          text: "你好"
+          message_id: "wx-duplicate"
+        expect:
+          handled: true
+          sent_count_delta: 1
+      - inbound:
+          text: "你好"
+          message_id: "wx-duplicate"
+        expect:
+          handled: false
+          sent_count_delta: 0
+          event_contains:
+            - message.duplicate
+
+  - id: weixin_clean_failed_tasks
+    user_goal: Clean old failed watch task records from Weixin.
+    steps:
+      - seed_failed_run:
+          title: "old failed watch run"
+          source: watch
+          kind: delegation
+        expect:
+          failed_run_count: 1
+      - inbound:
+          text: "清理失败任务"
+          message_id: "wx-clean-failed"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          failed_run_count: 0

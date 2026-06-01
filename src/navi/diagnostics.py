@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from .capabilities import build_capability_registry
 from .config import load_config, validate_config
 from .connector_registry import load_connector_adapters
 from .fact_tools import service_facts
+from .provider import resolve_model_config
+from .provider_specs import get_provider_spec
 from .service import systemd_user_unit_path
 from .telegram.config import load_telegram_config
 from .weixin.config import load_weixin_config
@@ -182,27 +185,39 @@ def _api_connectivity_checks(config) -> list[DiagnosticCheck]:
     if not config.model.api_base_url or not config.model.api_key:
         return [DiagnosticCheck("api.model.connectivity", "warn", "skipped: model API config incomplete")]
     try:
-        response = httpx.get(
-            config.model.api_base_url,
-            headers=_connectivity_headers(config),
-            timeout=min(config.model.timeout_seconds, 5.0),
-        )
-    except httpx.HTTPError as exc:
+        resolved = resolve_model_config(config.model)
+        spec = get_provider_spec(resolved.provider)
+        if spec.kind == "anthropic-compatible":
+            response = httpx.post(
+                f"{resolved.api_base_url}/messages",
+                headers={
+                    "x-api-key": resolved.api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": resolved.model,
+                    "max_tokens": 8,
+                    "messages": [{"role": "user", "content": "health check"}],
+                },
+                timeout=5.0,
+            )
+        else:
+            response = httpx.post(
+                f"{resolved.api_base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {resolved.api_key}"},
+                json={
+                    "model": resolved.model,
+                    "messages": [{"role": "user", "content": "health check"}],
+                    "temperature": 0,
+                    "max_tokens": 8,
+                },
+                timeout=5.0,
+            )
+        response.raise_for_status()
+    except Exception as exc:
         return [DiagnosticCheck("api.model.connectivity", "warn", f"{exc.__class__.__name__}")]
-    reachable = response.status_code < 500
-    return [
-        DiagnosticCheck(
-            "api.model.connectivity",
-            "ok" if reachable else "warn",
-            f"HTTP {response.status_code}",
-        )
-    ]
-
-
-def _connectivity_headers(config) -> dict[str, str]:
-    if config.model.kind == "anthropic-compatible":
-        return {"x-api-key": config.model.api_key, "anthropic-version": "2023-06-01"}
-    return {"Authorization": f"Bearer {config.model.api_key}"}
+    return [DiagnosticCheck("api.model.connectivity", "ok", "chat completion succeeded")]
 
 
 def _first_existing_path(paths: tuple[Path, ...]) -> Path | None:
@@ -221,7 +236,25 @@ def _service_runtime_check(name: str) -> DiagnosticCheck:
     substate = facts.properties.get("SubState") or "unknown"
     if facts.exit_code == 0 and active == "active":
         return DiagnosticCheck("service.runtime", "ok", f"{name} {active}/{substate}")
+    fallback = _systemd_is_active(name)
+    if fallback:
+        return DiagnosticCheck("service.runtime", "ok", f"{name} {fallback}/running")
     return DiagnosticCheck("service.runtime", "warn", f"{name} {active}/{substate} exit_code={facts.exit_code}")
+
+
+def _systemd_is_active(name: str) -> str:
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except Exception:
+        return ""
+    state = result.stdout.strip()
+    return state if result.returncode == 0 and state == "active" else ""
 
 
 def _check_path(name: str, path: Path, *, required: bool) -> DiagnosticCheck:

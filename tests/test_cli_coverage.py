@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 from typer.testing import CliRunner
 
@@ -122,6 +123,11 @@ def test_cli_tool_eval_model_and_skill_commands(tmp_path):
     assert claw_validate.exit_code == 0
     assert "ok dataset" in claw_validate.output
 
+    weixin_dataset = Path(__file__).resolve().parents[1] / "evals" / "weixin_journeys.yaml"
+    weixin_validate = runner.invoke(app, ["eval", "connector", "--validate-only", "--dataset", str(weixin_dataset)], env=env)
+    assert weixin_validate.exit_code == 0
+    assert "ok dataset" in weixin_validate.output
+
 
 def test_cli_graph_trust_evolution_and_connector_status(tmp_path):
     env = _env(tmp_path)
@@ -200,6 +206,16 @@ def test_cli_graph_trust_evolution_and_connector_status(tmp_path):
     assert connectors.exit_code == 0
     assert "weixin:" in connectors.output
     assert "telegram:" in connectors.output
+
+    events_dir = tmp_path / "weixin"
+    events_dir.mkdir(parents=True)
+    (events_dir / "events.jsonl").write_text(
+        json.dumps({"ts": 1, "event": "message.received", "peer_id": "peer"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    tail = runner.invoke(app, ["connectors", "tail", "weixin"], env=env)
+    assert tail.exit_code == 0
+    assert "message.received" in tail.output
 
     unknown = runner.invoke(app, ["connectors", "status", "missing"], env=env)
     assert unknown.exit_code != 0

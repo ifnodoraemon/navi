@@ -9,11 +9,13 @@ from navi.evals import (
     load_daily_journey_eval_dataset,
     load_delegation_eval_cases,
     load_delegation_eval_dataset,
+    load_weixin_journey_eval_dataset,
     match_delegation_eval_case,
     run_claw_eval_dataset,
     delegation_eval_tools,
     run_daily_journey_eval_dataset,
     run_delegation_eval_dataset,
+    run_weixin_journey_eval_dataset,
     validate_delegation_eval_dataset,
 )
 from navi.syscalls import ModelSyscall
@@ -29,6 +31,10 @@ def _daily_dataset() -> Path:
 
 def _claw_dataset() -> Path:
     return Path(__file__).resolve().parents[1] / "evals" / "claw_navi.yaml"
+
+
+def _weixin_dataset() -> Path:
+    return Path(__file__).resolve().parents[1] / "evals" / "weixin_journeys.yaml"
 
 
 def test_task_eval_dataset_matches_capability_manifest(tmp_path):
@@ -186,3 +192,34 @@ async def test_mock_runtime_passes_claw_eval_dataset(tmp_path, monkeypatch):
     failures = [result for result in results if not result.ok]
     assert failures == []
     assert all(result.pass_count == 3 for result in results)
+
+
+def test_weixin_journey_eval_dataset_is_user_visible():
+    dataset = load_weixin_journey_eval_dataset(_weixin_dataset())
+    ids = {str(journey["id"]) for journey in dataset["journeys"]}
+
+    assert {
+        "weixin_hello_replies_and_records_events",
+        "weixin_provider_failure_returns_visible_fallback",
+        "weixin_local_work_request_gets_approval",
+        "weixin_exact_schedule_creates_watch",
+        "weixin_vague_reminder_clarifies_without_watch",
+        "weixin_duplicate_message_is_ignored",
+        "weixin_clean_failed_tasks",
+    } <= ids
+    assert all("user_goal" in journey for journey in dataset["journeys"])
+
+
+@pytest.mark.asyncio
+async def test_mock_runtime_passes_weixin_journey_eval_dataset(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
+
+    results = await run_weixin_journey_eval_dataset(
+        home=tmp_path,
+        project_dir=tmp_path,
+        dataset=_weixin_dataset(),
+        timeout_seconds=5,
+    )
+
+    failures = [result for result in results if not result.ok]
+    assert failures == []

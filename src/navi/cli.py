@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
@@ -20,9 +21,11 @@ from .defaults import DEFAULT_WEB_HOST, DEFAULT_WEB_PORT
 from .evals import (
     claw_results_to_json,
     load_claw_eval_dataset,
+    load_connector_journey_eval_dataset,
     load_daily_journey_eval_dataset,
     load_delegation_eval_dataset,
     run_claw_eval_dataset,
+    run_connector_journey_eval_dataset,
     results_to_json,
     run_daily_journey_eval_dataset,
     run_delegation_eval_dataset,
@@ -135,6 +138,8 @@ def doctor(connectivity: bool = False) -> None:
     typer.echo("Navi doctor")
     typer.echo(f"model: {config.model.provider}/{config.model.model}")
     for check in checks:
+        if check.name == "service.runtime" and check.status != "ok" and _cli_service_active(config.runtime.service_name):
+            check = type(check)("service.runtime", "ok", f"{config.runtime.service_name} active/running")
         detail = f" {check.detail}" if check.detail else ""
         typer.echo(f"{check.name}: {check.status}{detail}")
     if any(check.status == "error" for check in checks):
@@ -439,6 +444,41 @@ def eval_claw(
         raise typer.Exit(code=1)
 
 
+@eval_app.command("connector")
+def eval_connector(
+    dataset: Path = Path("evals") / "connector_journeys.yaml",
+    json_output: bool = False,
+    validate_only: bool = False,
+    timeout_seconds: float = 30.0,
+) -> None:
+    """Run connector journey evals against a mock local runtime."""
+    if validate_only:
+        loaded = load_connector_journey_eval_dataset(dataset)
+        if json_output:
+            typer.echo(json.dumps({"ok": True, "journeys": len(loaded["journeys"]), "errors": []}, ensure_ascii=False, indent=2))
+        else:
+            typer.echo(f"ok dataset journeys={len(loaded['journeys'])}")
+        return
+    results = asyncio.run(
+        run_connector_journey_eval_dataset(
+            home=ensure_home(),
+            project_dir=Path.cwd(),
+            dataset=dataset,
+            timeout_seconds=timeout_seconds,
+        )
+    )
+    if json_output:
+        typer.echo(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
+    else:
+        for result in results:
+            marker = "ok" if result.ok else "fail"
+            typer.echo(f"{marker} {result.id}")
+            for error in result.errors:
+                typer.echo(f"  {error}")
+    if any(not result.ok for result in results):
+        raise typer.Exit(code=1)
+
+
 @graph_app.command("list")
 def graph_list() -> None:
     """List personal graph nodes."""
@@ -691,6 +731,25 @@ def connector_status(name: str) -> None:
     typer.echo(adapter.status(home))
 
 
+@connectors_app.command("tail")
+def connector_tail(name: str, limit: int = 20, json_output: bool = False) -> None:
+    """Show recent connector ingress and delivery events."""
+    home = ensure_home()
+    _require_connector(name)
+    events = _tail_connector_events(home, name, limit=limit)
+    if json_output:
+        typer.echo(json.dumps(events, ensure_ascii=False, indent=2))
+        return
+    if not events:
+        typer.echo("(no events)")
+        return
+    for event in events:
+        ts = event.get("ts", "-")
+        kind = event.get("event", "-")
+        facts = " ".join(f"{key}={value}" for key, value in event.items() if key not in {"ts", "event"})
+        typer.echo(f"{ts} {kind} {facts}".rstrip())
+
+
 def _require_connector(name: str):
     adapter = get_connector_adapter(name)
     if adapter is None:
@@ -710,6 +769,48 @@ def _select_runnable_connector(name: str | None):
         raise typer.BadParameter("no runnable connectors configured")
     enabled = [adapter for adapter in runnable if adapter.enabled(ensure_home())]
     return (enabled or runnable)[0]
+
+
+def _tail_connector_events(home: Path, name: str, *, limit: int) -> list[dict]:
+    path = home / name / "events.jsonl"
+    if not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines()[-max(1, limit):]
+    events = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def _cli_service_active(name: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except Exception:
+        return False
+    if result.returncode == 0 and result.stdout.strip() == "active":
+        return True
+    try:
+        status = subprocess.run(
+            ["systemctl", "--user", "status", name, "--no-pager"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except Exception:
+        return False
+    return "Active: active (running)" in status.stdout
 
 
 if __name__ == "__main__":
