@@ -340,12 +340,10 @@ class HernessEngine:
 
             async def run_with_semaphore():
                 async with self._memory_semaphore():
-                    await asyncio.shield(
-                        self.runtime.memory.extract_and_consolidate_memories(
-                            session_id=result.session_id,
-                            provider=self.runtime.provider,
-                            run_id=result.run_id,
-                        )
+                    await self.runtime.memory.extract_and_consolidate_memories(
+                        session_id=result.session_id,
+                        provider=self.runtime.provider,
+                        run_id=result.run_id,
                     )
 
             task = asyncio.create_task(run_with_semaphore())
@@ -371,6 +369,7 @@ class HernessEngine:
         except asyncio.TimeoutError:
             for task in list(self._background_tasks):
                 task.cancel()
+            await asyncio.gather(*tuple(self._background_tasks), return_exceptions=True)
 
     def _memory_semaphore(self) -> asyncio.Semaphore:
         if self._memory_sem is None:

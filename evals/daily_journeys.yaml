@@ -1,0 +1,142 @@
+version: 1
+description: User-facing daily journeys. These evals assert externally visible behavior and state changes, not internal tool preferences.
+journeys:
+  - id: casual_chat_does_not_create_task
+    user_goal: Say hello and get a direct response.
+    steps:
+      - user: "你好"
+        expect:
+          action: chat
+          run_count_delta: 0
+
+  - id: local_work_request_gets_one_approval_task
+    user_goal: Ask Navi to fix a local project problem and receive one prepared task awaiting approval.
+    steps:
+      - user: "测试在当前项目解释器上失败了，帮我定位问题并修复"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+          goal_status: awaiting_approval
+          text_contains: "审批码"
+
+  - id: approval_then_background_execution_completes_goal
+    user_goal: Approve the prepared local task, let the background executor process it, and see durable goal completion.
+    steps:
+      - user: "测试在当前项目解释器上失败了，帮我定位问题并修复"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+          goal_status: awaiting_approval
+      - user: "批准 {{approval_code}}"
+        expect:
+          action: approval
+          run_count_delta: 0
+          run_status: queued
+      - process_pending: true
+        expect:
+          run_status: completed
+          goal_status: verified_complete
+
+  - id: recurring_evening_lesson_creates_watch
+    user_goal: Schedule a recurring daily lesson with an exact time.
+    steps:
+      - user: "每天晚上 8 点讲解通识知识"
+        expect:
+          action: watch
+          watch_count_delta: 1
+
+  - id: vague_reminder_asks_clarification
+    user_goal: Ask for an underspecified one-off reminder and get a clarification question instead of a bogus watch.
+    steps:
+      - user: "明天上午提醒我看 PR"
+        expect:
+          action: ask
+          run_count_delta: 0
+          watch_count_delta: 0
+
+  - id: user_can_ask_current_task_list
+    user_goal: Ask what tasks Navi currently has after creating one.
+    steps:
+      - user: "测试在当前项目解释器上失败了，帮我定位问题并修复"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+      - user: "现在有哪些任务"
+        expect:
+          action: tool
+          run_count: 1
+          text_contains_any:
+            - "runs"
+            - "awaiting_approval"
+            - "awaiting approval"
+
+  - id: user_can_ask_why_task_not_executed
+    user_goal: Ask why the current task has not executed yet and get task status rather than a new task.
+    steps:
+      - user: "测试在当前项目解释器上失败了，帮我定位问题并修复"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+      - user: "{{run_id}} 为什么还没执行"
+        expect:
+          action: tool
+          run_count: 1
+          text_contains_any:
+            - "awaiting_approval"
+            - "awaiting approval"
+            - "approvals"
+
+  - id: user_can_reject_pending_task
+    user_goal: Reject a prepared task and see it move to rejected without execution.
+    steps:
+      - user: "测试在当前项目解释器上失败了，帮我定位问题并修复"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+      - user: "拒绝 {{approval_code}}"
+        expect:
+          action: approval
+          run_count_delta: 0
+          run_status: rejected
+          goal_status: rejected
+
+  - id: user_can_clean_failed_tasks
+    user_goal: Clean up failed task leftovers after Navi reports them.
+    steps:
+      - seed_failed_run:
+          title: "old failed watch run"
+          source: watch
+          kind: delegation
+        expect:
+          failed_run_count: 1
+      - user: "清理失败任务"
+        expect:
+          action: delegation
+          failed_run_count: 0
+
+  - id: user_can_check_model_provider_status
+    user_goal: Ask whether model provider configuration is active without creating a task.
+    steps:
+      - user: "配置里的模型 provider 好像没有生效，帮我检查当前 provider 和 API key 状态"
+        expect:
+          action: tool
+          run_count_delta: 0
+          text_contains_any:
+            - "provider"
+            - "api_base_url"
+
+  - id: user_can_check_connector_status
+    user_goal: Ask why Weixin is not responding and get connector status facts without creating a task.
+    steps:
+      - user: "微信连接器断了但 navi.service 还在运行，帮我看连接器配置和状态"
+        expect:
+          action: tool
+          run_count_delta: 0
+          text_contains_any:
+            - "configured"
+            - "status"

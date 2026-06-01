@@ -424,12 +424,12 @@ class MemoryStore:
             lock = await self._acquire_session_lock(session_id)
             async with lock:
                 # 1. Fetch recent messages in this session
-                messages = await asyncio.to_thread(self.get_messages, session_id, limit=6)
+                messages = self.get_messages(session_id, limit=6)
                 if not messages:
                     return []
 
                 # 2. Fetch existing active memory items
-                active_items = await asyncio.to_thread(self._list_active_learnable_items)
+                active_items = self._list_active_learnable_items()
 
                 # 3. Format context
                 conversation_text = "\n".join(f"{msg.role}: {msg.content}" for msg in messages)
@@ -526,8 +526,7 @@ class MemoryStore:
                         except (ValueError, TypeError):
                             conf_val = 0.7
 
-                        new_item = await asyncio.to_thread(
-                            self.add_item,
+                        new_item = self.add_item(
                             memory_type=m_type,
                             content=content,
                             source="evolution",
@@ -536,8 +535,7 @@ class MemoryStore:
                         )
                         seen_memory_keys.add(memory_key)
                         affected_items.append(new_item)
-                        await asyncio.to_thread(
-                            ledger.record,
+                        ledger.record(
                             run_id=run_id or f"session:{session_id}",
                             target_type="memory_item",
                             target_id=new_item.id,
@@ -549,13 +547,12 @@ class MemoryStore:
                         item_id = str(learning.get("id", "")).strip()
                         if not item_id:
                             continue
-                        old_item = await asyncio.to_thread(self.get_item, item_id)
+                        old_item = self.get_item(item_id)
                         if old_item and old_item.status in ["active", "accepted"]:
-                            updated_item = await asyncio.to_thread(self.set_status, item_id, "revoked")
+                            updated_item = self.set_status(item_id, "revoked")
                             if updated_item:
                                 affected_items.append(updated_item)
-                            await asyncio.to_thread(
-                                ledger.record,
+                            ledger.record(
                                 run_id=run_id or f"session:{session_id}",
                                 target_type="memory_item",
                                 target_id=item_id,
@@ -615,7 +612,7 @@ class MemoryStore:
         from .evolution import EvolutionLedger
 
         # 1. Fetch existing active memory items
-        active_items = await asyncio.to_thread(self._list_active_learnable_items)
+        active_items = self._list_active_learnable_items()
 
         # 2. Format execution logs
         logs_text_parts = []
@@ -732,8 +729,7 @@ class MemoryStore:
                 except (ValueError, TypeError):
                     conf_val = 0.7
 
-                new_item = await asyncio.to_thread(
-                    self.add_item,
+                new_item = self.add_item(
                     memory_type=m_type,
                     content=content,
                     source="evolution",
@@ -742,8 +738,7 @@ class MemoryStore:
                 )
                 seen_memory_keys.add(memory_key)
                 affected_items.append(new_item)
-                await asyncio.to_thread(
-                    ledger.record,
+                ledger.record(
                     run_id=task.id,
                     target_type="memory_item",
                     target_id=new_item.id,
@@ -755,13 +750,12 @@ class MemoryStore:
                 item_id = str(learning.get("id", "")).strip()
                 if not item_id:
                     continue
-                old_item = await asyncio.to_thread(self.get_item, item_id)
+                old_item = self.get_item(item_id)
                 if old_item and old_item.status in ["active", "accepted"]:
-                    updated_item = await asyncio.to_thread(self.set_status, item_id, "revoked")
+                    updated_item = self.set_status(item_id, "revoked")
                     if updated_item:
                         affected_items.append(updated_item)
-                    await asyncio.to_thread(
-                        ledger.record,
+                    ledger.record(
                         run_id=task.id,
                         target_type="memory_item",
                         target_id=item_id,

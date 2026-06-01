@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 from navi.goals import (
     GOAL_STATUS_ACTIVE,
@@ -59,3 +60,52 @@ def test_goal_store_tracks_task_lifecycle_with_evidence(tmp_path):
         "goal.run_status",
         "goal.run_status",
     ]
+
+
+def test_goal_store_migrates_legacy_schema(tmp_path):
+    with sqlite3.connect(tmp_path / "goals.db") as conn:
+        conn.execute(
+            """
+            CREATE TABLE goals (
+                id TEXT PRIMARY KEY,
+                objective TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source TEXT NOT NULL,
+                peer_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                workspace TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO goals(
+                id, objective, status, source, peer_id, sender_id,
+                session_id, workspace, created_at, updated_at
+            )
+            VALUES ('legacy-goal', 'legacy objective', 'active', '', '', '', '', '', 1, 1)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE goal_events (
+                id TEXT PRIMARY KEY,
+                goal_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+
+    store = GoalStore(tmp_path)
+
+    legacy = store.get("legacy-goal")
+    assert legacy is not None
+    assert legacy.run_id == ""
+    assert legacy.trace_id == ""
+    assert json.loads(legacy.evidence_json) == {}
+    assert legacy.completed_at == 0.0

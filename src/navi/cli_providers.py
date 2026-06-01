@@ -12,6 +12,7 @@ class CliProviderSpec:
     version_args: tuple[str, ...] = ()
     auth_status_args: tuple[str, ...] = ()
     auth_negative_markers: tuple[str, ...] = ()
+    auth_files: tuple[str, ...] = ()
     auth_detail: str = ""
     supports_execution: bool = False
 
@@ -23,6 +24,7 @@ CLI_PROVIDER_SPECS: tuple[CliProviderSpec, ...] = tuple(
         version_args=tuple(item.get("version_args") or ()),
         auth_status_args=tuple(item.get("auth_status_args") or ()),
         auth_negative_markers=tuple(item.get("auth_negative_markers") or ()),
+        auth_files=tuple(item.get("auth_files") or ()),
         auth_detail=str(item.get("auth_detail") or ""),
         supports_execution=bool(item.get("supports_execution", False)),
     )

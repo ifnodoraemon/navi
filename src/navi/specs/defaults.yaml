@@ -4,6 +4,7 @@ execution_timeout_seconds: 120.0
 execution_mock: false
 model_provider: mock
 model_model: mock
+model_timeout_seconds: 60.0
 runtime_web_url: ""
 local_surface: web
 agent_step_budget: 8

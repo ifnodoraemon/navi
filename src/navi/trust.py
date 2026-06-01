@@ -124,7 +124,7 @@ class TrustStore:
 
     async def match(self, *, prompt: str, sender_id: str, workspace: str, provider: ModelPool | None = None) -> TrustRule | None:
         workspace = self._normalize_project_path(workspace)
-        rules = await asyncio.to_thread(self.list, sender_id=sender_id)
+        rules = self.list(sender_id=sender_id)
         candidates = [
             rule
             for rule in rules

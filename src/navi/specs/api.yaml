@@ -17,6 +17,7 @@ active_reject: /v1/active/reject
 active_watches: /v1/active/watches
 active_watches_process: /v1/active/watches/process
 auth_status: /v1/auth/status
+diagnostics: /v1/diagnostics
 tools: /v1/tools
 tool_call: /v1/tools/{tool_name}/call
 graph: /v1/graph

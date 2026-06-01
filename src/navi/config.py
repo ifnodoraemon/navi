@@ -13,6 +13,7 @@ from .defaults import (
     DEFAULT_EXECUTION_TIMEOUT_SECONDS,
     DEFAULT_AGENT_STEP_BUDGET,
     DEFAULT_LOCAL_SURFACE,
+    DEFAULT_MODEL_TIMEOUT_SECONDS,
     DEFAULT_MODEL_MODEL,
     DEFAULT_MODEL_PROVIDER,
     DEFAULT_RUNTIME_WEB_URL,
@@ -30,6 +31,7 @@ class ModelConfig:
     api_base_url: str = ""
     api_key: str = ""
     kind: str = ""
+    timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
     fallbacks: list["ModelConfig"] = field(default_factory=list)
     routes: dict[str, "ModelConfig"] = field(default_factory=dict)
 
@@ -105,7 +107,13 @@ def load_config(home: Path | None = None) -> NaviConfig:
     )
     execution = ExecutionConfig(
         provider=DEFAULT_EXECUTION_PROVIDER,
-        timeout_seconds=_float_env(env.get("NAVI_EXECUTION_TIMEOUT_SECONDS", execution_raw.get("timeout_seconds", DEFAULT_EXECUTION_TIMEOUT_SECONDS))),
+        timeout_seconds=_float_env(
+            env.get(
+                "NAVI_EXECUTION_TIMEOUT_SECONDS",
+                execution_raw.get("timeout_seconds", DEFAULT_EXECUTION_TIMEOUT_SECONDS),
+            ),
+            default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+        ),
         mock=str(env.get("NAVI_EXECUTION_MOCK", execution_raw.get("mock", DEFAULT_EXECUTION_MOCK))).lower() in {"1", "true", "yes", "on"},
     )
     return NaviConfig(model=model, runtime=runtime, execution=execution)
@@ -119,7 +127,11 @@ def write_default_config(home: Path | None = None) -> Path:
     path.write_text(
         yaml.safe_dump(
             {
-                "model": {"provider": DEFAULT_MODEL_PROVIDER, "model": DEFAULT_MODEL_MODEL},
+                "model": {
+                    "provider": DEFAULT_MODEL_PROVIDER,
+                    "model": DEFAULT_MODEL_MODEL,
+                    "timeout_seconds": DEFAULT_MODEL_TIMEOUT_SECONDS,
+                },
                 "runtime": {
                     "service_name": DEFAULT_SERVICE_NAME,
                     "web_url": DEFAULT_RUNTIME_WEB_URL,
@@ -139,11 +151,11 @@ def write_default_config(home: Path | None = None) -> Path:
     return path
 
 
-def _float_env(value: object) -> float:
+def _float_env(value: object, *, default: float) -> float:
     try:
         return max(1.0, float(value))
     except (TypeError, ValueError):
-        return DEFAULT_EXECUTION_TIMEOUT_SECONDS
+        return default
 
 
 def _int_env(value: object) -> int:
@@ -194,6 +206,15 @@ def _model_config(model_raw: dict, *, env: dict[str, str], allow_env_override: b
         if allow_env_override
         else model_raw.get("kind", provider_spec.kind)
     )
+    timeout_seconds = _float_env(
+        env.get(
+            "NAVI_MODEL_TIMEOUT_SECONDS",
+            model_raw.get("timeout_seconds", DEFAULT_MODEL_TIMEOUT_SECONDS),
+        )
+        if allow_env_override
+        else model_raw.get("timeout_seconds", DEFAULT_MODEL_TIMEOUT_SECONDS),
+        default=DEFAULT_MODEL_TIMEOUT_SECONDS,
+    )
     fallbacks = [
         _model_config(item, env=env, allow_env_override=False)
         for item in model_raw.get("fallbacks") or []
@@ -210,6 +231,7 @@ def _model_config(model_raw: dict, *, env: dict[str, str], allow_env_override: b
         api_base_url=api_base_url,
         api_key=str(model_raw.get("api_key") or _first_env(env, provider_spec.api_key_env)),
         kind=kind,
+        timeout_seconds=timeout_seconds,
         fallbacks=fallbacks,
         routes=routes,
     )

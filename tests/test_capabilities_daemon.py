@@ -344,7 +344,7 @@ async def test_remote_delegate_delete_rejects_non_failed_single_task(tmp_path):
 def test_auth_inspector_shape():
     statuses = AuthInspector().status()
 
-    assert statuses == []
+    assert {status.name for status in statuses} >= {"codex", "qwen", "claude", "gemini"}
 
 
 @pytest.mark.asyncio

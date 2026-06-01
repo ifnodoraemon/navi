@@ -78,7 +78,6 @@ def test_background_memory_tasks_are_tracked_bounded_and_observable():
 
     expected_tokens = (
         "self._memory_sem",
-        "asyncio.shield",
         "asyncio.create_task",
         "self._background_tasks.add(task)",
         "self._background_tasks.discard(t)",
@@ -135,14 +134,14 @@ def test_memory_session_lock_acquisition_is_inside_finally_guard():
     assert "if lock is not None:" in source
 
 
-def test_memory_async_extractors_offload_database_writes():
+def test_memory_async_extractors_avoid_default_threadpool_shutdown_hangs():
     for method in (
         MemoryStore.extract_and_consolidate_memories,
         MemoryStore.extract_memories_from_run,
     ):
         source = _source(method)
 
-        assert "await asyncio.to_thread(" in source
+        assert "asyncio.to_thread(" not in source
         assert "self.add_item" in source
         assert "self.set_status" in source
         assert "ledger.record" in source
@@ -163,10 +162,11 @@ def test_daemon_project_detector_gather_is_failure_isolated():
     assert "await asyncio.to_thread(self.graph.upsert" in source
 
 
-def test_trust_async_match_offloads_rule_listing():
+def test_trust_async_match_avoids_default_threadpool_shutdown_hangs():
     source = _source(TrustStore.match)
 
-    assert "await asyncio.to_thread(self.list" in source
+    assert "asyncio.to_thread(self.list" not in source
+    assert "self.list(sender_id=sender_id)" in source
 
 
 def test_daemon_detectors_emit_facts_not_repair_workflows():

@@ -23,11 +23,11 @@ def test_paths_use_env_or_workspace(tmp_path, monkeypatch):
 
 
 def test_cli_provider_lookup():
-    assert get_cli_provider_spec("codex") is None
+    assert get_cli_provider_spec("codex") is not None
     assert get_cli_provider_spec("missing") is None
 
 
-def test_auth_inspector_reports_internal_execution_only():
+def test_auth_inspector_reports_missing_binary():
     inspector = AuthInspector()
     missing = CliProviderSpec(name="missing", binary="missing-binary")
 
@@ -35,7 +35,29 @@ def test_auth_inspector_reports_internal_execution_only():
 
     assert status.installed is False
     assert status.authenticated is False
-    assert "internal execution" in status.detail
+    assert "binary not found" in status.detail
+
+
+def test_auth_inspector_detects_binary_and_auth_file(tmp_path, monkeypatch):
+    fake_bin = tmp_path / "fake-cli"
+    fake_bin.write_text("#!/bin/sh\necho fake-cli 1.0\n", encoding="utf-8")
+    fake_bin.chmod(0o755)
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    status = AuthInspector()._status_for(
+        CliProviderSpec(
+            name="fake",
+            binary="fake-cli",
+            version_args=("--version",),
+            auth_files=(str(auth_file),),
+        )
+    )
+
+    assert status.installed is True
+    assert status.authenticated is True
+    assert status.version == "fake-cli 1.0"
 
 
 def test_memory_rejects_invalid_types_and_statuses(tmp_path):

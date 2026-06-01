@@ -48,6 +48,11 @@ navi web
 # 聊天
 navi chat
 
+# 诊断
+navi status
+navi doctor
+navi doctor --connectivity
+
 # 本地 Web/API
 navi web
 
@@ -69,6 +74,26 @@ navi skills
 navi trust list
 navi trust set <rule_id> <autonomy_level>
 ```
+
+本地 API 也提供同一组诊断信息：`/v1/diagnostics`。
+如需短超时 API 连通性探测，使用 `/v1/diagnostics?connectivity=true`。
+
+## 评测
+
+Navi 的核心评测贴近日常用户行为，而不是只测内部工具偏好：
+
+```bash
+# 工具路由覆盖
+navi eval delegations --dataset evals/delegation_cases.yaml
+
+# 用户可见的日常流程
+navi eval daily --dataset evals/daily_journeys.yaml
+
+# 面向 Navi 核心流程的 Claw-Eval 风格 Pass^3 任务集
+navi eval claw --dataset evals/claw_navi.yaml --attempts 3
+```
+
+`evals/claw_navi.yaml` 是仓库内的 Claw-Eval 兼容子集，保留 task/split/rubric/Pass^3 结构，但不把大体积外部 fixture 放进仓库。
 
 ## 本地状态目录
 

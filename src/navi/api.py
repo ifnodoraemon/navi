@@ -19,6 +19,7 @@ from .capabilities import CapabilityContext, CapabilityResult, build_capability_
 from .config import load_config, write_default_config
 from .connector_registry import load_connector_adapters
 from .daemon import SystemDaemon
+from .diagnostics import run_diagnostics
 from .defaults import DEFAULT_LOCAL_SURFACE
 from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
@@ -385,6 +386,15 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.get(api_path("auth_status"))
     def auth_status() -> dict:
         return {"providers": [item.__dict__ for item in AuthInspector().status()]}
+
+    @app.get(api_path("diagnostics"))
+    def diagnostics(connectivity: bool = False) -> dict:
+        return {
+            "checks": [
+                check.__dict__
+                for check in run_diagnostics(home, project_dir=Path.cwd(), include_connectivity=connectivity)
+            ]
+        }
 
     @app.get(api_path("tools"))
     def list_tools() -> dict:

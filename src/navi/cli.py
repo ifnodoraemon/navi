@@ -15,10 +15,16 @@ from .auth import AuthInspector
 from .capabilities import CapabilityContext, build_capability_registry
 from .config import ModelConfig, load_config, write_default_config
 from .connector_registry import get_connector_adapter, load_connector_adapters
+from .diagnostics import run_diagnostics
 from .defaults import DEFAULT_WEB_HOST, DEFAULT_WEB_PORT
 from .evals import (
+    claw_results_to_json,
+    load_claw_eval_dataset,
+    load_daily_journey_eval_dataset,
     load_delegation_eval_dataset,
+    run_claw_eval_dataset,
     results_to_json,
+    run_daily_journey_eval_dataset,
     run_delegation_eval_dataset,
     delegation_eval_tools,
     validate_delegation_eval_dataset,
@@ -97,6 +103,42 @@ def web(host: str = DEFAULT_WEB_HOST, port: int = DEFAULT_WEB_PORT) -> None:
     write_default_config(home)
     typer.echo(f"Navi web: http://{host}:{port}")
     uvicorn.run(create_app(home), host=host, port=port)
+
+
+@app.command()
+def status() -> None:
+    """Show a compact local assistant status summary."""
+    home = ensure_home()
+    write_default_config(home)
+    config = load_config(home)
+    tools = build_capability_registry(home, project_dir=Path.cwd()).list_specs()
+    sessions = MemoryStore(home).list_sessions()
+    goals = GoalStore(home).list()
+    connectors = load_connector_adapters()
+    typer.echo("Navi status")
+    typer.echo(f"home={home}")
+    typer.echo(f"model={config.model.provider}/{config.model.model} timeout={config.model.timeout_seconds:g}s")
+    typer.echo(f"execution={config.execution.provider} timeout={config.execution.timeout_seconds:g}s mock={config.execution.mock}")
+    typer.echo(f"tools={len(tools)} sessions={len(sessions)} goals={len(goals)}")
+    for adapter in connectors:
+        marker = "enabled" if adapter.enabled(home) else "disabled"
+        typer.echo(f"connector.{adapter.name}={marker}")
+
+
+@app.command()
+def doctor(connectivity: bool = False) -> None:
+    """Run configuration and capability diagnostics."""
+    home = ensure_home()
+    write_default_config(home)
+    config = load_config(home)
+    checks = run_diagnostics(home, project_dir=Path.cwd(), include_connectivity=connectivity)
+    typer.echo("Navi doctor")
+    typer.echo(f"model: {config.model.provider}/{config.model.model}")
+    for check in checks:
+        detail = f" {check.detail}" if check.detail else ""
+        typer.echo(f"{check.name}: {check.status}{detail}")
+    if any(check.status == "error" for check in checks):
+        raise typer.Exit(code=1)
 
 
 @app.command("run")
@@ -318,6 +360,79 @@ def eval_delegations(
         for result in results:
             marker = "ok" if result.ok else "fail"
             typer.echo(f"{marker} {result.id}")
+            for error in result.errors:
+                typer.echo(f"  {error}")
+    if any(not result.ok for result in results):
+        raise typer.Exit(code=1)
+
+
+@eval_app.command("daily")
+def eval_daily(
+    dataset: Path = Path("evals") / "daily_journeys.yaml",
+    json_output: bool = False,
+    validate_only: bool = False,
+    timeout_seconds: float = 30.0,
+) -> None:
+    """Run user-facing daily journey evals against the local runtime."""
+    if validate_only:
+        load_daily_journey_eval_dataset(dataset)
+        if json_output:
+            typer.echo(json.dumps({"ok": True, "errors": []}, ensure_ascii=False, indent=2))
+        else:
+            typer.echo("ok dataset")
+        return
+    results = asyncio.run(
+        run_daily_journey_eval_dataset(
+            home=ensure_home(),
+            project_dir=Path.cwd(),
+            dataset=dataset,
+            timeout_seconds=timeout_seconds,
+        )
+    )
+    if json_output:
+        typer.echo(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
+    else:
+        for result in results:
+            marker = "ok" if result.ok else "fail"
+            typer.echo(f"{marker} {result.id}")
+            for error in result.errors:
+                typer.echo(f"  {error}")
+    if any(not result.ok for result in results):
+        raise typer.Exit(code=1)
+
+
+@eval_app.command("claw")
+def eval_claw(
+    dataset: Path = Path("evals") / "claw_navi.yaml",
+    json_output: bool = False,
+    validate_only: bool = False,
+    attempts: int = 3,
+    timeout_seconds: float = 30.0,
+) -> None:
+    """Run Claw-Eval style Pass^3 user task evals against Navi core flows."""
+    if validate_only:
+        loaded = load_claw_eval_dataset(dataset)
+        if json_output:
+            typer.echo(json.dumps({"ok": True, "tasks": len(loaded["tasks"]), "errors": []}, ensure_ascii=False, indent=2))
+        else:
+            typer.echo(f"ok dataset tasks={len(loaded['tasks'])}")
+        return
+    results = asyncio.run(
+        run_claw_eval_dataset(
+            home=ensure_home(),
+            project_dir=Path.cwd(),
+            dataset=dataset,
+            attempts=attempts,
+            timeout_seconds=timeout_seconds,
+        )
+    )
+    if json_output:
+        typer.echo(claw_results_to_json(results))
+    else:
+        for result in results:
+            marker = "ok" if result.ok else "fail"
+            domains = ",".join(result.error_domains) if result.error_domains else "-"
+            typer.echo(f"{marker} {result.task_id} pass={result.pass_count}/{result.attempts} domains={domains}")
             for error in result.errors:
                 typer.echo(f"  {error}")
     if any(not result.ok for result in results):

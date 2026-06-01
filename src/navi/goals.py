@@ -78,6 +78,17 @@ class GoalStore:
                 )
                 """
             )
+            _ensure_columns(
+                conn,
+                "goals",
+                {
+                    "run_id": "TEXT NOT NULL DEFAULT ''",
+                    "trace_id": "TEXT NOT NULL DEFAULT ''",
+                    "evidence_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "blocked_reason": "TEXT NOT NULL DEFAULT ''",
+                    "completed_at": "REAL NOT NULL DEFAULT 0.0",
+                },
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS goal_events (
@@ -91,6 +102,15 @@ class GoalStore:
                     created_at REAL NOT NULL
                 )
                 """
+            )
+            _ensure_columns(
+                conn,
+                "goal_events",
+                {
+                    "run_id": "TEXT NOT NULL DEFAULT ''",
+                    "trace_id": "TEXT NOT NULL DEFAULT ''",
+                    "evidence_json": "TEXT NOT NULL DEFAULT '{}'",
+                },
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status, updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_run ON goals(run_id)")
@@ -358,3 +378,10 @@ def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict
     if evidence:
         existing.update(evidence)
     return existing
+
+
+def _ensure_columns(conn, table: str, columns: dict[str, str]) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")

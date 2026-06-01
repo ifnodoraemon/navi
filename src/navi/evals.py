@@ -10,7 +10,11 @@ import yaml
 
 from .app_factory import build_runtime
 from .capabilities import build_capability_registry
+from .engine import HernessEngine
+from .execution import ExecutionService
+from .goals import GoalStore
 from .provider import ModelPool
+from .runs import RunStore
 from .syscalls import ModelSyscall, ModelSyscallPlanner
 from .tools import ToolSpec
 
@@ -22,6 +26,28 @@ class EvalResult:
     expected: dict[str, Any]
     actual: dict[str, Any]
     errors: list[str]
+
+
+@dataclass(frozen=True)
+class DailyJourneyResult:
+    id: str
+    ok: bool
+    errors: list[str]
+    events: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class ClawEvalResult:
+    task_id: str
+    ok: bool
+    split: str
+    category: str
+    language: str
+    pass_count: int
+    attempts: int
+    error_domains: list[str]
+    errors: list[str]
+    attempts_detail: list[dict[str, Any]]
 
 
 def load_delegation_eval_cases(path: Path) -> list[dict[str, Any]]:
@@ -40,6 +66,305 @@ def load_delegation_eval_dataset(path: Path) -> dict[str, Any]:
         if not isinstance(case, dict):
             raise ValueError(f"case {index} must be a mapping")
     return data
+
+
+def load_daily_journey_eval_dataset(path: Path) -> dict[str, Any]:
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data = {} if loaded is None else loaded
+    if not isinstance(data, dict):
+        raise ValueError("daily journey eval dataset must be a mapping")
+    journeys = data.get("journeys")
+    if not isinstance(journeys, list):
+        raise ValueError("daily journey eval dataset must contain a journeys list")
+    for index, journey in enumerate(journeys):
+        if not isinstance(journey, dict):
+            raise ValueError(f"journey {index} must be a mapping")
+        steps = journey.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise ValueError(f"journey {journey.get('id') or index} must contain non-empty steps")
+    return data
+
+
+def load_claw_eval_dataset(path: Path) -> dict[str, Any]:
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data = {} if loaded is None else loaded
+    if not isinstance(data, dict):
+        raise ValueError("claw eval dataset must be a mapping")
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list):
+        raise ValueError("claw eval dataset must contain a tasks list")
+    seen: set[str] = set()
+    for index, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            raise ValueError(f"task {index} must be a mapping")
+        task_id = str(task.get("task_id") or "").strip()
+        prefix = task_id or f"task[{index}]"
+        if not task_id:
+            raise ValueError(f"{prefix}: missing task_id")
+        if task_id in seen:
+            raise ValueError(f"{prefix}: duplicate task_id")
+        seen.add(task_id)
+        for key in ("query", "language", "category", "split"):
+            if not str(task.get(key) or "").strip():
+                raise ValueError(f"{prefix}: missing {key}")
+        if str(task.get("split")) not in {"general", "multimodal", "multi_turn"}:
+            raise ValueError(f"{prefix}: split must be general, multimodal, or multi_turn")
+        journey = task.get("journey")
+        if not isinstance(journey, dict):
+            raise ValueError(f"{prefix}: missing journey mapping")
+        steps = journey.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise ValueError(f"{prefix}: journey must contain non-empty steps")
+    return data
+
+
+async def run_daily_journey_eval_dataset(
+    *,
+    home: Path,
+    project_dir: Path,
+    dataset: Path,
+    timeout_seconds: float = 30.0,
+) -> list[DailyJourneyResult]:
+    loaded = load_daily_journey_eval_dataset(dataset)
+    results: list[DailyJourneyResult] = []
+    for journey in loaded["journeys"]:
+        journey_home = home / "daily_journeys" / _safe_path_name(str(journey.get("id") or "journey"))
+        result = await asyncio.wait_for(
+            _run_daily_journey(home=journey_home, project_dir=project_dir, journey=journey),
+            timeout=timeout_seconds,
+        )
+        results.append(result)
+    return results
+
+
+async def run_claw_eval_dataset(
+    *,
+    home: Path,
+    project_dir: Path,
+    dataset: Path,
+    attempts: int = 3,
+    timeout_seconds: float = 30.0,
+) -> list[ClawEvalResult]:
+    loaded = load_claw_eval_dataset(dataset)
+    run_attempts = attempts if attempts > 0 else int(loaded.get("pass_at") or 3)
+    results: list[ClawEvalResult] = []
+    for task in loaded["tasks"]:
+        task_id = str(task["task_id"])
+        attempt_details: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for attempt in range(1, run_attempts + 1):
+            attempt_home = home / "claw_eval" / _safe_path_name(task_id) / f"attempt_{attempt}"
+            journey = _claw_task_to_journey(task)
+            try:
+                result = await asyncio.wait_for(
+                    _run_daily_journey(home=attempt_home, project_dir=project_dir, journey=journey),
+                    timeout=timeout_seconds,
+                )
+            except TimeoutError:
+                attempt_details.append({"attempt": attempt, "ok": False, "errors": [f"timed out after {timeout_seconds:g}s"]})
+                errors.append(f"attempt[{attempt}]: timed out after {timeout_seconds:g}s")
+                continue
+            except Exception as exc:
+                message = f"{type(exc).__name__}: {exc}"
+                attempt_details.append({"attempt": attempt, "ok": False, "errors": [message]})
+                errors.append(f"attempt[{attempt}]: {message}")
+                continue
+            attempt_errors = [f"attempt[{attempt}]: {error}" for error in result.errors]
+            errors.extend(attempt_errors)
+            attempt_details.append(
+                {
+                    "attempt": attempt,
+                    "ok": result.ok,
+                    "errors": result.errors,
+                    "events": result.events,
+                }
+            )
+        pass_count = sum(1 for item in attempt_details if item.get("ok") is True)
+        results.append(
+            ClawEvalResult(
+                task_id=task_id,
+                ok=pass_count == run_attempts,
+                split=str(task["split"]),
+                category=str(task["category"]),
+                language=str(task["language"]),
+                pass_count=pass_count,
+                attempts=run_attempts,
+                error_domains=_claw_error_domains(task, errors),
+                errors=errors,
+                attempts_detail=attempt_details,
+            )
+        )
+    return results
+
+
+def _claw_task_to_journey(task: dict[str, Any]) -> dict[str, Any]:
+    journey = dict(task["journey"])
+    journey.setdefault("id", task["task_id"])
+    journey.setdefault("user_goal", task.get("query") or task["task_id"])
+    return journey
+
+
+def _claw_error_domains(task: dict[str, Any], errors: list[str]) -> list[str]:
+    if not errors:
+        return []
+    domains: set[str] = set()
+    dimensions = task.get("rubric_dimensions") or []
+    if isinstance(dimensions, list):
+        domains.update(str(item) for item in dimensions if str(item))
+    if errors:
+        domains.add("completion")
+    if any("run_count_delta" in error or "watch_count_delta" in error for error in errors):
+        domains.add("safety")
+    if any(error.startswith("attempt[") for error in errors):
+        domains.add("robustness")
+    return sorted(domains)
+
+
+async def _run_daily_journey(*, home: Path, project_dir: Path, journey: dict[str, Any]) -> DailyJourneyResult:
+    runtime = build_runtime(home)
+    engine = HernessEngine(home=home, runtime=runtime, project_dir=project_dir)
+    runs = RunStore(home)
+    goals = GoalStore(home)
+    execution = ExecutionService(home)
+    session_id = ""
+    events: list[dict[str, Any]] = []
+    errors: list[str] = []
+    latest_run_id = ""
+    try:
+        for index, step in enumerate(journey["steps"]):
+            before_runs = runs.list(limit=500)
+            before_watches = runs.list_watches(limit=500)
+            expect = step.get("expect") or {}
+            if not isinstance(step, dict):
+                errors.append(f"step[{index}]: step must be a mapping")
+                continue
+            if "user" in step:
+                message = _render_journey_text(str(step["user"]), runs, latest_run_id=latest_run_id)
+                turn = await engine.handle(
+                    message,
+                    peer_id="daily-eval",
+                    sender_id="daily-eval",
+                    source="cli",
+                    session_id=session_id or None,
+                )
+                session_id = turn.session_id
+                latest_run_id = turn.run_id or latest_run_id or _latest_run_id(runs)
+                event = {"kind": "user", "message": message, "action": turn.action, "run_id": turn.run_id, "text": turn.text}
+            elif step.get("process_pending"):
+                processed = await execution.process_pending_once(limit=5)
+                if processed:
+                    latest_run_id = processed[-1].id
+                event = {"kind": "process_pending", "processed": [item.__dict__ for item in processed]}
+            elif "seed_failed_run" in step:
+                seed = step.get("seed_failed_run") or {}
+                title = str(seed.get("title") or "failed daily eval task")
+                run = runs.create(
+                    title,
+                    prompt=str(seed.get("prompt") or title),
+                    status="failed",
+                    source=str(seed.get("source") or "watch"),
+                    kind=str(seed.get("kind") or "delegation"),
+                    peer_id="daily-eval",
+                    sender_id="daily-eval",
+                    workspace=str(project_dir),
+                )
+                latest_run_id = run.id
+                event = {"kind": "seed_failed_run", "run_id": run.id}
+            else:
+                errors.append(f"step[{index}]: missing user, process_pending, or seed_failed_run")
+                continue
+            events.append(event)
+            errors.extend(
+                _match_daily_expectation(
+                    f"step[{index}]",
+                    expect,
+                    event=event,
+                    runs=runs,
+                    goals=goals,
+                    latest_run_id=latest_run_id,
+                    before_run_count=len(before_runs),
+                    before_watch_count=len(before_watches),
+                )
+            )
+    finally:
+        await engine.shutdown(timeout=1)
+    return DailyJourneyResult(id=str(journey.get("id") or ""), ok=not errors, errors=errors, events=events)
+
+
+def _render_journey_text(text: str, runs: RunStore, *, latest_run_id: str) -> str:
+    if "{{approval_code}}" in text:
+        approvals = runs.list_approvals(limit=20)
+        code = approvals[0].code if approvals else ""
+        text = text.replace("{{approval_code}}", code)
+    if "{{run_id}}" in text:
+        text = text.replace("{{run_id}}", latest_run_id)
+    return text
+
+
+def _match_daily_expectation(
+    prefix: str,
+    expect: dict[str, Any],
+    *,
+    event: dict[str, Any],
+    runs: RunStore,
+    goals: GoalStore,
+    latest_run_id: str,
+    before_run_count: int,
+    before_watch_count: int,
+) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(expect, dict):
+        return [f"{prefix}: expect must be a mapping"]
+    if "action" in expect and event.get("action") != expect["action"]:
+        errors.append(f"{prefix}: action expected {expect['action']!r}, got {event.get('action')!r}")
+    if "text_contains" in expect and str(expect["text_contains"]) not in str(event.get("text") or ""):
+        errors.append(f"{prefix}: text did not contain {expect['text_contains']!r}")
+    if "text_contains_any" in expect:
+        expected_any = [str(item) for item in expect["text_contains_any"]]
+        text = str(event.get("text") or "")
+        if not any(item in text for item in expected_any):
+            errors.append(f"{prefix}: text did not contain any of {expected_any!r}")
+    if "run_count_delta" in expect:
+        delta = len(runs.list(limit=500)) - before_run_count
+        if delta != int(expect["run_count_delta"]):
+            errors.append(f"{prefix}: run_count_delta expected {expect['run_count_delta']!r}, got {delta!r}")
+    if "run_count" in expect:
+        count = len(runs.list(limit=500))
+        if count != int(expect["run_count"]):
+            errors.append(f"{prefix}: run_count expected {expect['run_count']!r}, got {count!r}")
+    if "failed_run_count" in expect:
+        count = runs.count_runs(status="failed")
+        if count != int(expect["failed_run_count"]):
+            errors.append(f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}")
+    if "watch_count_delta" in expect:
+        delta = len(runs.list_watches(limit=500)) - before_watch_count
+        if delta != int(expect["watch_count_delta"]):
+            errors.append(f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}")
+    if "watch_count" in expect:
+        count = len(runs.list_watches(limit=500))
+        if count != int(expect["watch_count"]):
+            errors.append(f"{prefix}: watch_count expected {expect['watch_count']!r}, got {count!r}")
+    if "run_status" in expect:
+        run = runs.get(latest_run_id)
+        actual = run.status if run else ""
+        if actual != expect["run_status"]:
+            errors.append(f"{prefix}: run_status expected {expect['run_status']!r}, got {actual!r}")
+    if "goal_status" in expect:
+        goal = goals.get_by_run(latest_run_id)
+        actual = goal.status if goal else ""
+        if actual != expect["goal_status"]:
+            errors.append(f"{prefix}: goal_status expected {expect['goal_status']!r}, got {actual!r}")
+    return errors
+
+
+def _latest_run_id(runs: RunStore) -> str:
+    listed = runs.list(limit=1)
+    return listed[0].id if listed else ""
+
+
+def _safe_path_name(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value.strip())
+    return safe or "journey"
 
 
 def validate_delegation_eval_cases(cases: list[dict[str, Any]], tools: list[ToolSpec]) -> list[str]:
@@ -191,6 +516,10 @@ def match_delegation_eval_case(case: dict[str, Any], decision: ModelSyscall) -> 
 
 
 def results_to_json(results: list[EvalResult]) -> str:
+    return json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2)
+
+
+def claw_results_to_json(results: list[ClawEvalResult]) -> str:
     return json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2)
 
 

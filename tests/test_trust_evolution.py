@@ -659,18 +659,11 @@ async def test_engine_strong_task_references(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_engine_background_memory_uses_cancellation_shield(tmp_path, monkeypatch):
+async def test_engine_shutdown_cancels_slow_background_memory(tmp_path):
     from navi.engine import HernessEngine, AgentTurnResult
     from navi.provider import ModelPool
-    import navi.engine as engine_module
 
-    shield_calls = 0
-    original_shield = engine_module.asyncio.shield
-
-    def counted_shield(awaitable):
-        nonlocal shield_calls
-        shield_calls += 1
-        return original_shield(awaitable)
+    cancelled = False
 
     class DummyRuntime:
         def __init__(self):
@@ -679,17 +672,22 @@ async def test_engine_background_memory_uses_cancellation_shield(tmp_path, monke
 
     class DummyMemory:
         async def extract_and_consolidate_memories(self, session_id, provider, run_id):
-            await asyncio.sleep(0.01)
+            nonlocal cancelled
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
 
     runtime = DummyRuntime()
     runtime.memory = DummyMemory()
-    monkeypatch.setattr(engine_module.asyncio, "shield", counted_shield)
 
     engine = HernessEngine(home=tmp_path, runtime=runtime)
     engine._trigger_background_memory(AgentTurnResult(text="hello", session_id="sess-1"))
-    await asyncio.sleep(0.05)
+    await engine.shutdown(timeout=0.01)
 
-    assert shield_calls == 1
+    assert cancelled is True
+    assert len(engine._background_tasks) == 0
 
 
 @pytest.mark.asyncio

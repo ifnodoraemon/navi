@@ -80,6 +80,11 @@ All local state is structured under `.navi/` or a custom `NAVI_HOME` directory:
 ## 💬 Command Line Interface
 
 ```bash
+# Diagnostics
+navi status
+navi doctor
+navi doctor --connectivity
+
 # Active Memory
 navi memory list
 navi memory add preference "I prefer using Python 3.12"
@@ -101,3 +106,23 @@ navi skills
 navi trust list
 navi trust set <rule_id> <autonomy_level>
 ```
+
+The same diagnostic checks are available from the local API at `/v1/diagnostics`.
+Use `/v1/diagnostics?connectivity=true` for short live API connectivity probes.
+
+## Evaluations
+
+Navi keeps core-flow evals close to daily user behavior:
+
+```bash
+# Tool routing coverage
+navi eval delegations --dataset evals/delegation_cases.yaml
+
+# User-visible daily journeys
+navi eval daily --dataset evals/daily_journeys.yaml
+
+# Claw-Eval style Pass^3 task suite for Navi core flows
+navi eval claw --dataset evals/claw_navi.yaml --attempts 3
+```
+
+`evals/claw_navi.yaml` is a repository-local Claw-Eval compatible subset. It preserves the task/split/rubric/Pass^3 shape while avoiding large external fixtures in the repo.

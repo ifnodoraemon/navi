@@ -121,6 +121,17 @@ def test_local_console_api_flow(tmp_path, monkeypatch):
     assert provider.json()["ok"] is True
     assert provider.json()["facts"]["provider"] == "mock"
 
+    diagnostics = client.get("/v1/diagnostics")
+    assert diagnostics.status_code == 200
+    checks = {check["name"]: check for check in diagnostics.json()["checks"]}
+    assert checks["config.validation"]["status"] == "ok"
+    assert "capabilities" in checks
+    diagnostics_with_connectivity = client.get("/v1/diagnostics", params={"connectivity": "true"})
+    connectivity_checks = {
+        check["name"]: check for check in diagnostics_with_connectivity.json()["checks"]
+    }
+    assert connectivity_checks["api.model.connectivity"]["status"] == "ok"
+
     missing_tool = client.post("/v1/tools/missing.tool/call", json={"args": {}})
     assert missing_tool.status_code == 404
 

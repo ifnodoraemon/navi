@@ -12,6 +12,7 @@ def test_default_config_round_trip(tmp_path):
 
     assert path.exists()
     assert config.model.provider == "mock"
+    assert config.model.timeout_seconds == 60
     assert not hasattr(config, "weixin")
     assert config.runtime.service_name == "navi.service"
     assert config.runtime.agent_step_budget == 8
@@ -82,6 +83,15 @@ def test_env_file_overrides_runtime_facts(tmp_path):
     assert config.runtime.service_name == "custom.service"
     assert config.runtime.web_url == "http://navi.example"
     assert config.runtime.agent_step_budget == 12
+
+
+def test_env_file_overrides_model_timeout(tmp_path):
+    write_default_config(tmp_path)
+    (tmp_path / "env").write_text("NAVI_MODEL_TIMEOUT_SECONDS=17", encoding="utf-8")
+
+    config = load_config(tmp_path)
+
+    assert config.model.timeout_seconds == 17
 
 
 def test_env_file_overrides_execution_facts(tmp_path):
@@ -199,4 +209,5 @@ def test_model_routes_are_loaded_from_config(tmp_path):
     config = load_config(tmp_path)
 
     assert config.model.routes["planner"].provider == "private-planner"
+    assert config.model.routes["planner"].timeout_seconds == 60
     assert config.model.routes["planner"].fallbacks[0].provider == "mock"

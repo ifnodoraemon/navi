@@ -72,6 +72,16 @@ def test_cli_memory_and_session_commands(tmp_path):
 def test_cli_tool_eval_model_and_skill_commands(tmp_path):
     env = _env(tmp_path)
 
+    status = runner.invoke(app, ["status"], env=env)
+    assert status.exit_code == 0
+    assert "Navi status" in status.output
+    assert "tools=" in status.output
+
+    doctor = runner.invoke(app, ["doctor"], env=env)
+    assert doctor.exit_code == 0
+    assert "Navi doctor" in doctor.output
+    assert "config: ok" in doctor.output
+
     model = runner.invoke(app, ["model"], env=env)
     assert model.exit_code == 0
     assert "provider=" in model.output
@@ -101,6 +111,16 @@ def test_cli_tool_eval_model_and_skill_commands(tmp_path):
     mock_eval = runner.invoke(app, ["eval", "delegations", "--mock-provider", "--dataset", str(dataset)], env=env)
     assert mock_eval.exit_code == 0
     assert "ok reject_code" in mock_eval.output
+
+    daily_dataset = Path(__file__).resolve().parents[1] / "evals" / "daily_journeys.yaml"
+    daily_validate = runner.invoke(app, ["eval", "daily", "--validate-only", "--dataset", str(daily_dataset)], env=env)
+    assert daily_validate.exit_code == 0
+    assert "ok dataset" in daily_validate.output
+
+    claw_dataset = Path(__file__).resolve().parents[1] / "evals" / "claw_navi.yaml"
+    claw_validate = runner.invoke(app, ["eval", "claw", "--validate-only", "--dataset", str(claw_dataset)], env=env)
+    assert claw_validate.exit_code == 0
+    assert "ok dataset" in claw_validate.output
 
 
 def test_cli_graph_trust_evolution_and_connector_status(tmp_path):

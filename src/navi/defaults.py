@@ -10,6 +10,7 @@ DEFAULT_EXECUTION_TIMEOUT_SECONDS = float(_DEFAULTS["execution_timeout_seconds"]
 DEFAULT_EXECUTION_MOCK = bool(_DEFAULTS["execution_mock"])
 DEFAULT_MODEL_PROVIDER = str(_DEFAULTS["model_provider"])
 DEFAULT_MODEL_MODEL = str(_DEFAULTS["model_model"])
+DEFAULT_MODEL_TIMEOUT_SECONDS = float(_DEFAULTS["model_timeout_seconds"])
 DEFAULT_RUNTIME_WEB_URL = str(_DEFAULTS["runtime_web_url"])
 DEFAULT_LOCAL_SURFACE = str(_DEFAULTS["local_surface"])
 DEFAULT_AGENT_STEP_BUDGET = int(_DEFAULTS["agent_step_budget"])

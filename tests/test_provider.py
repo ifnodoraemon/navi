@@ -40,6 +40,7 @@ def test_resolve_deepseek_config_uses_provider_defaults_when_empty():
     assert config.model == "deepseek-v4-pro"
     assert config.api_base_url == "https://api.deepseek.com"
     assert config.api_key == "sk-test"
+    assert config.timeout_seconds == 60
 
 
 def test_build_provider_accepts_openai_compatible_provider():
@@ -183,6 +184,7 @@ async def test_openai_compatible_provider_posts_chat_completion():
             model="deepseek-v4-pro",
             api_base_url="https://api.deepseek.com",
             api_key="sk-test",
+            timeout_seconds=13,
         ),
         get_provider_spec("deepseek"),
         transport=httpx.MockTransport(handler),
@@ -194,6 +196,8 @@ async def test_openai_compatible_provider_posts_chat_completion():
     assert str(requests[0].url) == "https://api.deepseek.com/chat/completions"
     assert requests[0].headers["authorization"] == "Bearer sk-test"
     assert '"model":"deepseek-v4-pro"' in requests[0].content.decode()
+    assert requests[0].extensions["timeout"]["connect"] == 13
+    assert provider.config.timeout_seconds == 13
 
 
 @pytest.mark.asyncio

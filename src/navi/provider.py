@@ -39,7 +39,8 @@ class MockProvider:
             user_prompt = next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
             text = _extract_planner_user_message(user_prompt)
             context = _extract_planner_conversation_context(user_prompt)
-            return json.dumps(_mock_planner_syscall(text, context), ensure_ascii=False)
+            observations = _extract_planner_observations(user_prompt)
+            return json.dumps(_mock_planner_syscall(text, context, observations), ensure_ascii=False)
         last = next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
         system = messages[0].content if messages else ""
         if "navi_execution" in system:
@@ -111,7 +112,7 @@ class OpenAICompatibleProvider:
             "temperature": 0,
         }
         headers = {"Authorization": f"Bearer {self.config.api_key}"}
-        async with httpx.AsyncClient(timeout=60, transport=self.transport) as client:
+        async with httpx.AsyncClient(timeout=self.config.timeout_seconds, transport=self.transport) as client:
             response = await client.post(
                 f"{self.config.api_base_url}/chat/completions",
                 json=payload,
@@ -144,7 +145,7 @@ class AnthropicCompatibleProvider:
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=60, transport=self.transport) as client:
+        async with httpx.AsyncClient(timeout=self.config.timeout_seconds, transport=self.transport) as client:
             response = await client.post(
                 f"{self.config.api_base_url}/messages",
                 json=payload,
@@ -227,6 +228,7 @@ def resolve_model_config(config: ModelConfig) -> ModelConfig:
         api_base_url=api_base_url,
         api_key=api_key,
         kind=spec.kind,
+        timeout_seconds=config.timeout_seconds,
     )
 
 
@@ -304,10 +306,41 @@ def _extract_planner_conversation_context(content: str) -> str:
     return tagged.group(1).strip() if tagged else ""
 
 
-def _mock_planner_syscall(text: str, context: str = "") -> dict[str, Any]:
-    combined = f"{context}\n{text}"
+def _extract_planner_observations(content: str) -> str:
+    tagged = re.search(r"<observed_facts>\s*(.*?)\s*</observed_facts>", content, re.DOTALL)
+    return tagged.group(1).strip() if tagged else ""
+
+
+def _mock_planner_syscall(text: str, context: str = "", observations: str = "") -> dict[str, Any]:
+    combined = f"{context}\n{observations}\n{text}"
     run_id = _extract_any_run_id(combined)
     code = _extract_approval_code(text)
+
+    if run_id and '"status": "awaiting_approval"' in observations:
+        return _mock_syscall(
+            "final.answer",
+            "read",
+            {"message": f"Delegation run {run_id} is prepared and awaiting approval."},
+            "mock follow-up reports approval needed",
+        )
+    if run_id and '"approval_status": "approved"' in observations and '"run_status": "queued"' in observations:
+        return _mock_syscall(
+            "final.answer",
+            "read",
+            {"message": f"Delegation run {run_id} has been approved and queued."},
+            "mock follow-up reports queued task",
+        )
+    if '"watch_id":' in observations:
+        return _mock_syscall(
+            "final.answer",
+            "read",
+            {"message": "Recurring watch has been created."},
+            "mock follow-up reports created watch",
+        )
+    if run_id and '"status": "prepared"' in observations:
+        return _mock_syscall("approval.request", "prepare", {"run_id": run_id}, "mock follow-up requests approval")
+    if run_id and '"status": "pending"' in observations:
+        return _mock_syscall("delegate.prepare", "prepare", {"run_id": run_id}, "mock follow-up prepares spawned task")
 
     if _has(text, "\u6279\u51c6") and code:
         return _mock_syscall("approval.resolve", "write", {"decision": "approve", "code": code}, "mock approval decision")
@@ -359,13 +392,13 @@ def _mock_planner_syscall(text: str, context: str = "") -> dict[str, Any]:
         return _mock_syscall("delegate.prepare", "prepare", {"run_id": run_id}, "mock delegation prepare route")
     if run_id and _has(text, "\u6267\u884c\u6388\u6743", "\u52a0\u5165\u961f\u5217"):
         return _mock_syscall("delegate.run", "write", {"run_id": run_id}, "mock delegation run route")
-    if run_id and _has(text, "\u6ca1\u6709\u6267\u884c"):
+    if run_id and _has(text, "\u6ca1\u6709\u6267\u884c", "\u8fd8\u6ca1\u6267\u884c"):
         return _mock_syscall("delegate.status", "read", {"run_id": run_id}, "mock delegation status route")
     if _has(text, "\u54ea\u4e9b\u4efb\u52a1"):
         return _mock_syscall("delegate.list", "read", {}, "mock delegation list route")
 
     if _has(text, "\u6bcf\u5929") and _has(text, "\u665a") and "8" in text:
-        return _mock_syscall("watch.create", "prepare", {"cron": "0 20 * * *"}, "mock watch route")
+        return _mock_syscall("watch.create", "prepare", {"cron": "0 20 * * *", "prompt": text}, "mock watch route")
     if _has(text, "\u6bcf\u5929"):
         return _mock_syscall("clarify.ask", "read", {"message": "Please provide the exact time."}, "mock recurring clarification")
 
