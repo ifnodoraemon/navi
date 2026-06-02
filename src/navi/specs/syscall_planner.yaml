@@ -15,6 +15,7 @@ routing_rules:
   - For recurring requests, use the watch tool only when the recurrence can be represented exactly from the current state. Ask for clarification when required args are missing.
   - When the user confirms cleanup/removal of failed delegation records from recent conversation, use delegate.delete with status=failed and inferred source/kind filters. Do not claim deletion is unsupported.
   - After delegate.spawn, continue with delegate.prepare and approval.request unless an execution grant allows delegate.run. Do not end the turn while the created run is still pending or merely prepared.
+  - If the current user message is a terse follow-up asking to fix/continue and recent conversation contains a concrete error, failed command, or local diagnosis target, carry that context into a delegation run instead of asking for a run id.
   - For delegate.delete cleanup, do not report success until capability facts show cleanup_complete=true or a follow-up delegate.list verifies no matching failed records remain.
   - For tools with required args, fill them from the manifest, current state, or observed facts. If a required arg cannot be derived, ask for clarification.
   - For unsafe, overly broad, or autonomous local mutation requests, use a clarification or refusal capability instead of spawning a delegation run.

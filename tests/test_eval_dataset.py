@@ -29,6 +29,14 @@ def _daily_dataset() -> Path:
     return Path(__file__).resolve().parents[1] / "evals" / "daily_journeys.yaml"
 
 
+def _user_dataset() -> Path:
+    return Path(__file__).resolve().parents[1] / "evals" / "user_journeys.yaml"
+
+
+def _public_agent_dataset() -> Path:
+    return Path(__file__).resolve().parents[1] / "evals" / "public_agent_journeys.yaml"
+
+
 def _claw_dataset() -> Path:
     return Path(__file__).resolve().parents[1] / "evals" / "claw_navi.yaml"
 
@@ -153,6 +161,73 @@ async def test_mock_runtime_passes_daily_journey_eval_dataset(tmp_path, monkeypa
     assert failures == []
 
 
+def test_user_journey_eval_dataset_is_extracted_from_real_dialogues():
+    dataset = load_daily_journey_eval_dataset(_user_dataset())
+    ids = {str(journey["id"]) for journey in dataset["journeys"]}
+
+    assert {
+        "execution_protocol_error_how_to_fix_prepares_task",
+        "terse_fix_follow_up_uses_previous_error_context",
+        "weixin_no_reply_checks_connector_trace",
+        "contradiction_follow_up_does_not_create_task",
+        "deepseek_network_claim_runs_provider_check",
+    } <= ids
+    assert all("source_dialogue" in journey for journey in dataset["journeys"])
+
+
+@pytest.mark.asyncio
+async def test_mock_runtime_passes_user_journey_eval_dataset(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "mock")
+    monkeypatch.setenv("NAVI_MODEL", "mock")
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
+
+    results = await run_daily_journey_eval_dataset(
+        home=tmp_path,
+        project_dir=tmp_path,
+        dataset=_user_dataset(),
+        timeout_seconds=5,
+    )
+
+    failures = [result for result in results if not result.ok]
+    assert failures == []
+
+
+def test_public_agent_journey_eval_dataset_covers_hermes_and_openclaw_patterns():
+    dataset = load_daily_journey_eval_dataset(_public_agent_dataset())
+    ids = {str(journey["id"]) for journey in dataset["journeys"]}
+    patterns = {str(journey.get("public_pattern") or "") for journey in dataset["journeys"]}
+
+    assert {
+        "public_hermes_pr_review_cron_to_messenger",
+        "public_hermes_manual_pr_review_gets_approval",
+        "public_hermes_provider_route_drift_check",
+        "public_openclaw_bugfix_with_tests",
+        "public_openclaw_privacy_redaction",
+        "public_openclaw_memory_follow_up",
+        "public_openclaw_broad_permission_boundary",
+    } <= ids
+    assert any(pattern.startswith("hermes_") for pattern in patterns)
+    assert any(pattern.startswith("clawbench_") for pattern in patterns)
+    assert len(dataset["journeys"]) >= 12
+
+
+@pytest.mark.asyncio
+async def test_mock_runtime_passes_public_agent_journey_eval_dataset(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "mock")
+    monkeypatch.setenv("NAVI_MODEL", "mock")
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
+
+    results = await run_daily_journey_eval_dataset(
+        home=tmp_path,
+        project_dir=tmp_path,
+        dataset=_public_agent_dataset(),
+        timeout_seconds=5,
+    )
+
+    failures = [result for result in results if not result.ok]
+    assert failures == []
+
+
 def test_claw_eval_dataset_is_user_task_shaped():
     dataset = load_claw_eval_dataset(_claw_dataset())
     task_ids = {str(task["task_id"]) for task in dataset["tasks"]}
@@ -169,6 +244,13 @@ def test_claw_eval_dataset_is_user_task_shaped():
         "navi_general_provider_diagnostics",
         "navi_general_connector_diagnostics",
         "navi_safety_broad_permission_skill_install",
+        "navi_public_hermes_pr_review_cron_to_messenger",
+        "navi_public_hermes_manual_pr_review_gets_approval",
+        "navi_public_hermes_provider_route_drift_check",
+        "navi_public_openclaw_bugfix_with_tests",
+        "navi_public_openclaw_privacy_redaction",
+        "navi_public_openclaw_memory_follow_up",
+        "navi_public_openclaw_broad_permission_boundary",
     } <= task_ids
     assert {"general", "multi_turn"} <= splits
     assert all("query" in task for task in dataset["tasks"])
@@ -202,6 +284,8 @@ def test_weixin_journey_eval_dataset_is_user_visible():
         "weixin_hello_replies_and_records_events",
         "weixin_provider_failure_returns_visible_fallback",
         "weixin_local_work_request_gets_approval",
+        "weixin_execution_protocol_error_how_to_fix_gets_approval",
+        "weixin_terse_fix_follow_up_uses_previous_error_context",
         "weixin_exact_schedule_creates_watch",
         "weixin_vague_reminder_clarifies_without_watch",
         "weixin_duplicate_message_is_ignored",

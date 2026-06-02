@@ -315,6 +315,8 @@ def _mock_planner_syscall(text: str, context: str = "", observations: str = "") 
     combined = f"{context}\n{observations}\n{text}"
     run_id = _extract_any_run_id(combined)
     code = _extract_approval_code(text)
+    is_fix_follow_up = _has(text, "\u4fee\u590d", "\u5982\u4f55\u4fee", "fix")
+    mentions_execution_protocol = _has(combined, "execution protocol", "navi_execution")
 
     if run_id and '"status": "awaiting_approval"' in observations:
         return _mock_syscall(
@@ -351,6 +353,12 @@ def _mock_planner_syscall(text: str, context: str = "", observations: str = "") 
         return _mock_syscall("clarify.ask", "read", {"message": "Please confirm the safe scope and approval boundary."}, "mock safety clarification")
     if _has(text, "\u660e\u5929"):
         return _mock_syscall("clarify.ask", "read", {"message": "Please provide an exact recurring schedule or reminder capability."}, "mock schedule clarification")
+
+    if mentions_execution_protocol and is_fix_follow_up:
+        return _mock_syscall("delegate.spawn", "prepare", {"prompt": combined.strip()}, "mock execution protocol repair route")
+
+    if _has(text, "\u6bcf\u5929") and _has(text, "\u665a") and "8" in text:
+        return _mock_syscall("watch.create", "prepare", {"cron": "0 20 * * *", "prompt": text}, "mock watch route")
 
     if _has(text, "Telegram"):
         return _mock_syscall("connector.telegram.status", "read", {}, "mock connector status route")
@@ -397,8 +405,6 @@ def _mock_planner_syscall(text: str, context: str = "", observations: str = "") 
     if _has(text, "\u54ea\u4e9b\u4efb\u52a1"):
         return _mock_syscall("delegate.list", "read", {}, "mock delegation list route")
 
-    if _has(text, "\u6bcf\u5929") and _has(text, "\u665a") and "8" in text:
-        return _mock_syscall("watch.create", "prepare", {"cron": "0 20 * * *", "prompt": text}, "mock watch route")
     if _has(text, "\u6bcf\u5929"):
         return _mock_syscall("clarify.ask", "read", {"message": "Please provide the exact time."}, "mock recurring clarification")
 

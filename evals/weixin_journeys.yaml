@@ -43,6 +43,37 @@ journeys:
           sent_contains: "审批码"
           run_count_delta: 1
 
+  - id: weixin_execution_protocol_error_how_to_fix_gets_approval
+    user_goal: Ask from Weixin how to fix a concrete execution protocol error and receive one approval task.
+    steps:
+      - inbound:
+          text: "execution protocol evidence must be a list 这是为什么，如何修复"
+          message_id: "wx-execution-protocol-fix"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          sent_contains: "审批码"
+          run_count_delta: 1
+
+  - id: weixin_terse_fix_follow_up_uses_previous_error_context
+    user_goal: Continue a previous concrete error from Weixin with a terse fix request instead of receiving a contextless clarification.
+    steps:
+      - inbound:
+          text: "execution protocol evidence must be a list 这是为什么"
+          message_id: "wx-execution-protocol-why"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          run_count_delta: 0
+      - inbound:
+          text: "修复一下"
+          message_id: "wx-execution-protocol-follow-up"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          sent_contains: "审批码"
+          run_count_delta: 1
+
   - id: weixin_exact_schedule_creates_watch
     user_goal: Schedule a recurring lesson through Weixin with an exact time.
     steps:

@@ -1,0 +1,77 @@
+version: 1
+source: extracted_from_recent_user_dialogues
+description: Daily user journeys extracted from recent Navi/Weixin conversations. These keep evals aligned with actual usage rather than imagined workflows.
+journeys:
+  - id: execution_protocol_error_how_to_fix_prepares_task
+    user_goal: Report a concrete execution protocol error and ask how to fix it, receiving a prepared local repair task.
+    source_dialogue:
+      channel: weixin
+      user_text: "execution protocol evidence must be a list 这是为什么，如何修复"
+    steps:
+      - user: "execution protocol evidence must be a list 这是为什么，如何修复"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+          goal_status: awaiting_approval
+          text_contains: "审批码"
+
+  - id: terse_fix_follow_up_uses_previous_error_context
+    user_goal: After explaining a specific error, a terse follow-up should continue from that context instead of asking for a run id.
+    source_dialogue:
+      channel: weixin
+      user_texts:
+        - "execution protocol evidence must be a list 这是为什么"
+        - "修复一下"
+    steps:
+      - user: "execution protocol evidence must be a list 这是为什么"
+        expect:
+          action: chat
+          run_count_delta: 0
+      - user: "修复一下"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+          goal_status: awaiting_approval
+          text_contains: "审批码"
+
+  - id: weixin_no_reply_checks_connector_trace
+    user_goal: When Weixin receives a message but no reply appears, inspect connector status and recent events instead of creating unrelated work.
+    source_dialogue:
+      channel: user_request
+      user_text: "我通过微信发送你好，没有消息"
+    steps:
+      - user: "微信发送你好没有消息，帮我看连接器状态和最近消息到哪一步"
+        expect:
+          action: tool
+          run_count_delta: 0
+          text_contains_any:
+            - "configured"
+            - "status"
+            - "healthy"
+
+  - id: contradiction_follow_up_does_not_create_task
+    user_goal: A contradiction challenge should answer from conversation context and not create a new task.
+    source_dialogue:
+      channel: weixin
+      user_text: "你之前不是说不存在吗"
+    steps:
+      - user: "你之前不是说不存在吗"
+        expect:
+          action: chat
+          run_count_delta: 0
+
+  - id: deepseek_network_claim_runs_provider_check
+    user_goal: When the user says DeepSeek is reachable but Navi diagnostics disagree, inspect provider configuration rather than assuming network failure.
+    source_dialogue:
+      channel: user_request
+      user_text: "deepseek我看网络可达"
+    steps:
+      - user: "deepseek 我看网络可达，但 doctor 说模型连接失败，帮我检查 provider 配置"
+        expect:
+          action: tool
+          run_count_delta: 0
+          text_contains_any:
+            - "provider"
+            - "api_base_url"
