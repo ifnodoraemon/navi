@@ -33,6 +33,10 @@ def _user_dataset() -> Path:
     return Path(__file__).resolve().parents[1] / "evals" / "user_journeys.yaml"
 
 
+def _regression_dataset() -> Path:
+    return Path(__file__).resolve().parents[1] / "evals" / "regression_journeys.yaml"
+
+
 def _public_agent_dataset() -> Path:
     return Path(__file__).resolve().parents[1] / "evals" / "public_agent_journeys.yaml"
 
@@ -185,6 +189,49 @@ async def test_mock_runtime_passes_user_journey_eval_dataset(tmp_path, monkeypat
         home=tmp_path,
         project_dir=tmp_path,
         dataset=_user_dataset(),
+        timeout_seconds=5,
+    )
+
+    failures = [result for result in results if not result.ok]
+    assert failures == []
+
+
+def test_regression_journey_eval_dataset_tracks_real_incidents():
+    dataset = load_daily_journey_eval_dataset(_regression_dataset())
+    ids = {str(journey["id"]) for journey in dataset["journeys"]}
+    incident_ids = {str(item["id"]) for item in dataset["incidents"]}
+
+    assert {
+        "weixin_hello_no_visible_reply",
+        "terse_fix_lost_previous_error_context",
+        "execution_protocol_evidence_must_be_list",
+        "deepseek_direct_shell_for_error_repair",
+        "watch_protocol_verification_must_be_object",
+        "watch_created_then_delegate_status_false_failure",
+        "evolution_legacy_schema_run_id_failure",
+        "provider_diagnostics_drift",
+        "connector_status_drift",
+    } <= incident_ids
+    assert {
+        "execution_protocol_error_how_to_fix_prepares_task",
+        "terse_fix_follow_up_uses_previous_error_context",
+        "exact_schedule_watch_creation_returns_watch_without_new_run",
+        "task_list_shows_existing_watch_without_runs",
+        "provider_config_check_does_not_create_task",
+        "connector_status_check_does_not_create_task",
+    } <= ids
+
+
+@pytest.mark.asyncio
+async def test_mock_runtime_passes_regression_journey_eval_dataset(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "mock")
+    monkeypatch.setenv("NAVI_MODEL", "mock")
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
+
+    results = await run_daily_journey_eval_dataset(
+        home=tmp_path,
+        project_dir=tmp_path,
+        dataset=_regression_dataset(),
         timeout_seconds=5,
     )
 

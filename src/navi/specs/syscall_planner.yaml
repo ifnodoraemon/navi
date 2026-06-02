@@ -11,6 +11,7 @@ system_lines:
   - '{"tool":"<available_tool_name>","permission":"read|prepare|write","args":{},"model_role":"responder","confidence":0.0,"reason":""}'
 routing_rules:
   - Use delegation runs for complex local work, engineering diagnosis, or code changes. Use direct fact tools for narrow fact lookups. Use answer tools for ordinary advice or discussion.
+  - When the user reports a concrete local/runtime error and asks how to fix it or asks you to repair it, use delegate.spawn. Do not use shell.run/test.run/file.write directly for multi-step diagnosis or repair from chat.
   - For approval resolution, preserve explicit approval codes as code args. Use run ids only when the user identifies a delegation run rather than a code.
   - For recurring requests, use the watch tool only when the recurrence can be represented exactly from the current state. Ask for clarification when required args are missing.
   - When the user confirms cleanup/removal of failed delegation records from recent conversation, use delegate.delete with status=failed and inferred source/kind filters. Do not claim deletion is unsupported.

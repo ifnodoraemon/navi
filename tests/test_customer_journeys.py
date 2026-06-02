@@ -126,5 +126,5 @@ async def test_customer_journey_scheduled_watch_sends_message_without_failed_tas
     protocol_log = next(log for log in service.active.runs.list_execution_logs(limit=10) if log.phase == "watch_protocol")
     recorded = json.loads(protocol_log.stdout)
     assert recorded["evidence"]
-    assert recorded["verification"]["status"] == "verified"
+    assert recorded["verification"]["status"] == "completed"
     assert provider.responses == []

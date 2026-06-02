@@ -13,6 +13,7 @@ from navi.app_factory import build_runtime
 from navi.capabilities import build_capability_registry
 from navi.config import load_config
 from navi.evals import load_delegation_eval_cases, match_delegation_eval_case
+from navi.execution import NaviExecutionProvider
 from navi.syscalls import ModelSyscall, ModelSyscallPlanner
 
 
@@ -109,6 +110,30 @@ async def test_live_llm_responses_do_not_regress_to_command_instructions(case: d
 
     for banned in case.get("banned") or []:
         assert banned not in result.text, f"{case['id']} leaked {banned!r} in response:\n{result.text}"
+
+
+@pytest.mark.parametrize("case", _cases().get("watch_cases", []), ids=lambda item: item["id"])
+async def test_live_llm_watch_notification_does_not_regress(case: dict[str, Any]) -> None:
+    home = _require_live_provider()
+    runtime = build_runtime(home)
+    execution = NaviExecutionProvider(provider=runtime.provider, timeout_seconds=75)
+
+    result = await asyncio.wait_for(
+        execution.run_watch(
+            prompt=str(case["prompt"]),
+            source="live-eval",
+            peer_id="live-eval",
+            sender_id="live-eval",
+            workspace=str(Path.cwd()),
+        ),
+        timeout=90,
+    )
+
+    expected = case.get("expect") or {}
+    if "exit_code" in expected:
+        assert result.exit_code == int(expected["exit_code"]), f"{case['id']} failed: {result.stderr}\n{result.stdout}"
+    if expected.get("summary_nonempty"):
+        assert result.summary.strip(), f"{case['id']} returned an empty summary:\n{result}"
 
 
 def _format_failure(case: dict[str, Any], decision: ModelSyscall) -> str:

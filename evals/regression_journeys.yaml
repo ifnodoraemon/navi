@@ -1,0 +1,108 @@
+version: 1
+source: navi_real_incident_regressions
+description: Regression journeys for real Navi failures seen during Hermes/OpenClaw parity work. Run this dataset on every upgrade.
+incidents:
+  - id: weixin_hello_no_visible_reply
+    covered_by:
+      - evals/weixin_journeys.yaml:weixin_hello_replies_and_records_events
+      - tests/test_weixin.py:test_weixin_handle_update_replies_and_saves_context
+  - id: terse_fix_lost_previous_error_context
+    covered_by:
+      - terse_fix_follow_up_uses_previous_error_context
+      - evals/weixin_journeys.yaml:weixin_terse_fix_follow_up_uses_previous_error_context
+  - id: execution_protocol_evidence_must_be_list
+    covered_by:
+      - execution_protocol_error_how_to_fix_prepares_task
+      - tests/test_execution_protocol.py:test_watch_notification_does_not_fail_on_malformed_execution_protocol
+  - id: deepseek_direct_shell_for_error_repair
+    covered_by:
+      - execution_protocol_error_how_to_fix_prepares_task
+      - tests/live_llm_cases.yaml:regression_execution_protocol_fix_request_uses_delegation
+  - id: watch_protocol_verification_must_be_object
+    covered_by:
+      - tests/test_execution_protocol.py:test_watch_notification_does_not_fail_on_malformed_execution_protocol
+      - tests/test_weixin.py:test_weixin_background_watch_result_sends_visible_message_and_event
+  - id: watch_created_then_delegate_status_false_failure
+    covered_by:
+      - exact_schedule_watch_creation_returns_watch_without_new_run
+  - id: evolution_legacy_schema_run_id_failure
+    covered_by:
+      - tests/test_regression_incidents.py:test_evolution_ledger_uses_latest_run_id_schema
+  - id: provider_diagnostics_drift
+    covered_by:
+      - provider_config_check_does_not_create_task
+  - id: connector_status_drift
+    covered_by:
+      - connector_status_check_does_not_create_task
+journeys:
+  - id: execution_protocol_error_how_to_fix_prepares_task
+    user_goal: A concrete execution protocol error plus a fix request should create one approval task.
+    steps:
+      - user: "execution protocol evidence must be a list 这是为什么，如何修复"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+          goal_status: awaiting_approval
+          text_contains: "审批码"
+
+  - id: terse_fix_follow_up_uses_previous_error_context
+    user_goal: After a specific error explanation, a terse fix follow-up should use conversation context.
+    steps:
+      - user: "execution protocol evidence must be a list 这是为什么"
+        expect:
+          action: chat
+          run_count_delta: 0
+      - user: "修复一下"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+
+  - id: exact_schedule_watch_creation_returns_watch_without_new_run
+    user_goal: Creating an exact recurring watch should create a watch and not turn the watch id into a delegation status lookup.
+    steps:
+      - user: "每天晚上 8 点讲解通识知识"
+        expect:
+          action: watch
+          watch_count_delta: 1
+          run_count_delta: 0
+
+  - id: task_list_shows_existing_watch_without_runs
+    user_goal: Asking current tasks after a watch exists should show watch state without inventing active runs.
+    steps:
+      - user: "每天晚上 8 点讲解通识知识"
+        expect:
+          action: watch
+          watch_count_delta: 1
+      - user: "当前我们都有哪些任务"
+        expect:
+          action: tool
+          run_count: 0
+          watch_count: 1
+          text_contains_any:
+            - "watches"
+            - "Watch"
+            - "cron"
+
+  - id: provider_config_check_does_not_create_task
+    user_goal: Provider diagnostics should return facts rather than a spurious delegation task.
+    steps:
+      - user: "deepseek 我看网络可达，但 doctor 说模型连接失败，帮我检查 provider 配置"
+        expect:
+          action: tool
+          run_count_delta: 0
+          text_contains_any:
+            - "provider"
+            - "api_base_url"
+
+  - id: connector_status_check_does_not_create_task
+    user_goal: Weixin no-reply investigation should inspect connector status and not create unrelated work.
+    steps:
+      - user: "微信发送你好没有消息，帮我看连接器状态和最近消息到哪一步"
+        expect:
+          action: tool
+          run_count_delta: 0
+          text_contains_any:
+            - "configured"
+            - "status"

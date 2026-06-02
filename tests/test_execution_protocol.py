@@ -86,7 +86,7 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_watch_protocol_empty_model_evidence_is_actuated_and_logged(tmp_path):
+async def test_watch_notification_protocol_summary_is_logged_without_actuator(tmp_path):
     protocol = {
         "navi_execution": {
             "version": EXECUTION_PROTOCOL_VERSION,
@@ -125,16 +125,15 @@ async def test_watch_protocol_empty_model_evidence_is_actuated_and_logged(tmp_pa
     )
 
     assert result.exit_code == 0
-    assert result.summary == "今晚的通识知识：证据由 Navi actuator 生成。"
-    capability = [item for item in result.protocol.evidence if item["kind"] == "capability_result"]
-    assert capability[0]["tool"] == "final.answer"
-    assert result.protocol.verification["status"] == "verified"
+    assert result.summary == "今晚的通识知识"
+    assert result.protocol.steps[0]["actions"][0]["kind"] == "watch_notification"
+    assert result.protocol.verification["status"] == "completed"
     logs = RunStore(tmp_path).list_execution_logs()
     assert {log.phase for log in logs} == {"watch", "watch_protocol"}
     protocol_log = next(log for log in logs if log.phase == "watch_protocol")
     recorded = json.loads(protocol_log.stdout)
     assert recorded["phase"] == "watch"
-    assert recorded["evidence"]
+    assert recorded["evidence"][0]["kind"] == "internal_state"
 
 
 @pytest.mark.asyncio
@@ -154,7 +153,84 @@ async def test_free_form_execution_output_fails_required_protocol(tmp_path):
     recorded = json.loads(protocol_log.stdout)
     assert recorded["completion"]["status"] == "failed"
     assert recorded["verification"]["reason"] == "provider output violated the required execution protocol"
-    assert recorded["steps"][0]["actions"][0]["kind"] == "execution_error"
+
+
+@pytest.mark.asyncio
+async def test_watch_notification_does_not_fail_on_malformed_execution_protocol():
+    provider = ScriptedProvider(
+        json.dumps(
+            {
+                "navi_execution": {
+                    "version": EXECUTION_PROTOCOL_VERSION,
+                    "phase": "watch",
+                    "plan_id": "watch-pmp-001",
+                    "steps": [
+                        {
+                            "id": "notify",
+                            "actions": [{"tool": "final.answer", "permission": "read", "args": {"message": "pmp"}}],
+                            "verification": ["bad shape from real provider"],
+                        }
+                    ],
+                    "evidence": [{"kind": "provider", "summary": "pmp"}],
+                    "verification": ["bad top-level shape"],
+                    "completion": {"status": "completed", "summary": "pmp"},
+                }
+            }
+        )
+    )
+    execution = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    result = await execution.run_watch(
+        prompt="pmp",
+        source="watch",
+        peer_id="peer",
+        sender_id="sender",
+        workspace="",
+    )
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert result.summary.startswith("{")
+    assert result.protocol.phase == "watch"
+    assert result.protocol.completion["status"] == "completed"
+    assert "navi_execution" not in provider.messages[0][0].content
+
+
+@pytest.mark.asyncio
+async def test_watch_notification_extracts_summary_from_valid_protocol():
+    provider = ScriptedProvider(
+        json.dumps(
+            {
+                "navi_execution": {
+                    "version": EXECUTION_PROTOCOL_VERSION,
+                    "phase": "watch",
+                    "plan_id": "watch-summary",
+                    "steps": [
+                        {
+                            "id": "notify",
+                            "actions": [{"tool": "final.answer", "permission": "read", "args": {"message": "PMP reminder"}}],
+                            "verification": {"checks": [], "reason": "notification only"},
+                        }
+                    ],
+                    "evidence": [{"kind": "provider", "summary": "PMP reminder"}],
+                    "verification": {"status": "completed", "checks": [], "reason": "notification only"},
+                    "completion": {"status": "completed", "summary": "PMP reminder"},
+                }
+            }
+        )
+    )
+    execution = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    result = await execution.run_watch(
+        prompt="pmp",
+        source="watch",
+        peer_id="peer",
+        sender_id="sender",
+        workspace="",
+    )
+
+    assert result.exit_code == 0
+    assert result.summary == "PMP reminder"
 
 
 @pytest.mark.asyncio

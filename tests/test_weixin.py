@@ -618,6 +618,43 @@ async def test_weixin_background_task_notification_uses_model_text(tmp_path, mon
     assert "run_execution_finished" in provider.messages[-1].content
 
 
+@pytest.mark.asyncio
+async def test_weixin_background_watch_result_sends_visible_message_and_event(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
+    provider = ScriptedProvider("pmp")
+    runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
+
+    async def due_watch_result():
+        return [
+            {
+                "message": "pmp",
+                "run_id": "",
+                "action": "watch",
+                "observation": "pmp",
+                "peer_id": "peer",
+                "sender_id": "sender",
+                "watch_id": "watch-1",
+                "ok": True,
+            }
+        ]
+
+    async def no_completed_tasks():
+        return []
+
+    monkeypatch.setattr(service.active, "process_watches_once", due_watch_result)
+    monkeypatch.setattr(service.active, "process_queue_once", no_completed_tasks)
+
+    await service.process_background(account)
+
+    assert service.client.sent[-1]["peer_id"] == "peer"
+    assert service.client.sent[-1]["text"] == "pmp"
+    events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8")
+    assert "background.sent" in events
+    assert "watch_result" in events
+
+
 def test_weixin_extract_text_from_ilink_item_list():
     payload = {
         "item_list": [

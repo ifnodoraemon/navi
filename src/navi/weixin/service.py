@@ -303,6 +303,7 @@ class WeixinService:
                 text=text,
                 context_token=self.context_tokens.get(account.account_id, peer_id),
             )
+            self.record_event("background.sent", peer_id=peer_id, background_event="watch_result" if not task else "watch_task_prepared", text_preview=text[:120])
         for task in await self.daemon.process_queue_once():
             if not task.peer_id:
                 continue
@@ -319,6 +320,7 @@ class WeixinService:
                 text=text,
                 context_token=self.context_tokens.get(account.account_id, task.peer_id),
             )
+            self.record_event("background.sent", peer_id=task.peer_id, background_event="run_execution_finished", text_preview=text[:120])
 
     async def _compose_background_message(self, facts: dict, *, fallback: str) -> str:
         try:

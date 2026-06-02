@@ -668,8 +668,8 @@ class NaviExecutionProvider:
             ChatMessage(
                 "system",
                 "You are Navi running a scheduled watch. Complete the scheduled request directly. "
-                "Do not create a task, ask for approval, or mention external execution tools. "
-                + _execution_protocol_instruction("watch"),
+                "Return the exact notification text to send to the user. "
+                "Do not create a task, ask for approval, call tools, or mention external execution tools.",
             ),
             ChatMessage(
                 "user",
@@ -688,9 +688,7 @@ class NaviExecutionProvider:
                 self.provider.complete_for("notification", messages),
                 timeout=self.timeout_seconds,
             )
-            return self._result(
-                run_id="",
-                phase="watch",
+            return self._watch_result(
                 provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "subagent", SUBAGENT_NOTIFICATION_ROLE, "watch"],
                 stdout=stdout,
@@ -701,9 +699,7 @@ class NaviExecutionProvider:
                 model_role=SUBAGENT_NOTIFICATION_ROLE,
             )
         except asyncio.TimeoutError:
-            return self._result(
-                run_id="",
-                phase="watch",
+            return self._watch_result(
                 provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "subagent", SUBAGENT_NOTIFICATION_ROLE, "watch"],
                 stdout="",
@@ -714,9 +710,7 @@ class NaviExecutionProvider:
                 model_role=SUBAGENT_NOTIFICATION_ROLE,
             )
         except Exception as exc:
-            return self._result(
-                run_id="",
-                phase="watch",
+            return self._watch_result(
                 provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "subagent", SUBAGENT_NOTIFICATION_ROLE, "watch"],
                 stdout="",
@@ -828,6 +822,41 @@ class NaviExecutionProvider:
         )
 
     @staticmethod
+    def _watch_result(
+        *,
+        provider: str,
+        command: list[str],
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+        started_at: float,
+        ended_at: float,
+        model_role: str = "",
+    ) -> ExecutionResult:
+        ok = exit_code == 0
+        summary = _watch_notification_summary(stdout) if ok else (stderr.strip() or f"watch exited with {exit_code}")
+        protocol = ExecutionProtocol.internal_status(
+            run_id="",
+            phase="watch",
+            status="completed" if ok else "failed",
+            summary=summary,
+            reason="scheduled watch notification completed" if ok else "scheduled watch notification failed",
+            action_kind="watch_notification",
+        )
+        return ExecutionResult(
+            provider=provider,
+            phase="watch",
+            command=command,
+            stdout=stdout,
+            stderr="" if ok else stderr,
+            exit_code=0 if ok else exit_code,
+            started_at=started_at,
+            ended_at=ended_at,
+            protocol=protocol,
+            model_role=model_role,
+        )
+
+    @staticmethod
     def _prepare_messages(task: Run) -> list[ChatMessage]:
         return [
             ChatMessage(
@@ -905,6 +934,17 @@ class NaviExecutionProvider:
             ),
             model_role="mock",
         )
+
+
+def _watch_notification_summary(text: str) -> str:
+    raw = text.strip()
+    if not raw:
+        return "scheduled watch completed"
+    try:
+        protocol = ExecutionProtocol.from_model_output(run_id="", phase="watch", text=raw)
+    except ValueError:
+        return raw[:1600]
+    return protocol.summary or raw[:1600]
 
 
 class ExecutionService:
@@ -1045,8 +1085,6 @@ class ExecutionService:
             sender_id=sender_id,
             workspace=workspace,
         )
-        if result.exit_code == 0:
-            result = await self.actuator.run_task(watch_task, result)
         self._log(watch_task, result)
         self.subagents.finish(
             subagent_run.id,
