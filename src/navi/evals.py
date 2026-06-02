@@ -351,6 +351,12 @@ def _match_weixin_expectation(
         expected_any = [str(item) for item in expect["sent_contains_any"]]
         if not any(item in text for item in expected_any):
             errors.append(f"{prefix}: sent text did not contain any of {expected_any!r}")
+    if "sent_not_contains_any" in expect:
+        text = sent[-1]["text"] if sent else ""
+        forbidden = [str(item) for item in expect["sent_not_contains_any"]]
+        found = [item for item in forbidden if item in text]
+        if found:
+            errors.append(f"{prefix}: sent text contained forbidden items {found!r}")
     if "run_count_delta" in expect:
         delta = len(runs.list(limit=500)) - before_run_count
         if delta != int(expect["run_count_delta"]):
@@ -524,6 +530,12 @@ def _match_daily_expectation(
         text = str(event.get("text") or "")
         if not any(item in text for item in expected_any):
             errors.append(f"{prefix}: text did not contain any of {expected_any!r}")
+    if "text_not_contains_any" in expect:
+        forbidden = [str(item) for item in expect["text_not_contains_any"]]
+        text = str(event.get("text") or "")
+        found = [item for item in forbidden if item in text]
+        if found:
+            errors.append(f"{prefix}: text contained forbidden items {found!r}")
     if "run_count_delta" in expect:
         delta = len(runs.list(limit=500)) - before_run_count
         if delta != int(expect["run_count_delta"]):

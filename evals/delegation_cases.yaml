@@ -46,6 +46,8 @@ coverage:
     - provider.config
     - service.status
     - shell.run
+    - skills.list
+    - tools.list
     - delegate.list
     - delegate.status
     - test.run
@@ -88,6 +90,22 @@ cases:
     message: "用初学者能懂的方式讲一下什么是 CI/CD"
     expect:
       tool: final.answer
+      permission: read
+
+  - id: installed_skills_list
+    category: seeking_information
+    source: observed:weixin:skill_query_answered_with_tools
+    message: "你都有哪些skill"
+    expect:
+      tool: skills.list
+      permission: read
+
+  - id: callable_tools_list
+    category: seeking_information
+    source: observed:weixin:tools_query_omitted_once_watch_semantics
+    message: "你都有哪些工具"
+    expect:
+      tool: tools.list
       permission: read
 
   - id: list_delegations

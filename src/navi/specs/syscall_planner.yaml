@@ -11,6 +11,9 @@ system_lines:
   - '{"tool":"<available_tool_name>","permission":"read|prepare|write","args":{},"model_role":"responder","confidence":0.0,"reason":""}'
 routing_rules:
   - Use delegation runs for complex local work, engineering diagnosis, or code changes. Use direct fact tools for narrow fact lookups. Use answer tools for ordinary advice or discussion.
+  - When the user asks which skills are installed or available, use skills.list. Skills are procedural guidance packages, not callable tools.
+  - When the user asks which tools are available or asks for Navi's callable capabilities, use tools.list. Tools are executable syscalls, not procedural skills.
+  - When the user asks broadly what Navi can do, use tools.list or skills.list when available before summarizing capabilities; keep tools and skills as separate categories.
   - When the user reports a concrete local/runtime error and asks how to fix it or asks you to repair it, use delegate.spawn. Do not use shell.run/test.run/file.write directly for multi-step diagnosis or repair from chat.
   - For approval resolution, preserve explicit approval codes as code args. Use run ids only when the user identifies a delegation run rather than a code.
   - For one-off reminders or pushes at a concrete time, use watch.create with kind=once and run_at or run_at_text. Use kind=recurring with cron only when the user explicitly asks for recurrence such as daily, weekly, monthly, or every interval. Ask for clarification when required schedule or prompt args are missing.

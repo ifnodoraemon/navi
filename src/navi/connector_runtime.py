@@ -23,6 +23,8 @@ CONNECTOR_ALLOWED_TOOLS = frozenset(
         "service.status",
         "delegate.status",
         "delegate.list",
+        "skills.list",
+        "tools.list",
     }
 )
 

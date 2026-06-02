@@ -10,7 +10,21 @@ syscall_cases:
     source: observed:.navi/memory.db
     message: "你可以做什么"
     expect:
-      tool: final.answer
+      tool: tools.list
+      permission: read
+
+  - id: skills_question_uses_skills_list
+    source: observed:weixin:skill_query_answered_with_tools
+    message: "你都有哪些skill"
+    expect:
+      tool: skills.list
+      permission: read
+
+  - id: tools_question_uses_tools_list
+    source: observed:weixin:tools_query_omitted_once_watch_semantics
+    message: "你都有哪些工具"
+    expect:
+      tool: tools.list
       permission: read
 
   - id: local_directory_uses_filesystem_tool

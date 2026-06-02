@@ -37,6 +37,15 @@ incidents:
   - id: connector_status_drift
     covered_by:
       - connector_status_check_does_not_create_task
+  - id: skill_query_answered_with_tools
+    covered_by:
+      - skills_query_lists_skills_not_tools
+      - evals/weixin_journeys.yaml:weixin_skills_query_distinguishes_skills_from_tools
+  - id: tools_query_omitted_once_watch_semantics
+    covered_by:
+      - tools_query_lists_tools_not_skills
+      - capability_query_mentions_one_shot_and_recurring
+      - evals/weixin_journeys.yaml:weixin_tools_query_distinguishes_tools_from_skills
 journeys:
   - id: execution_protocol_error_how_to_fix_prepares_task
     user_goal: A concrete execution protocol error plus a fix request should create one approval task.
@@ -119,3 +128,44 @@ journeys:
           text_contains_any:
             - "configured"
             - "status"
+
+  - id: skills_query_lists_skills_not_tools
+    user_goal: Asking for skills should list installed procedural skills and not rebrand executable tools as skills.
+    steps:
+      - user: "你都有哪些skill"
+        expect:
+          action: tool
+          run_count_delta: 0
+          text_contains_any:
+            - "Code Navigator"
+            - "Memory Curator"
+          text_not_contains_any:
+            - "watch.create"
+            - "delegate.spawn"
+
+  - id: tools_query_lists_tools_not_skills
+    user_goal: Asking for tools should list callable tools and preserve one-shot watch semantics.
+    steps:
+      - user: "你都有哪些工具"
+        expect:
+          action: tool
+          run_count_delta: 0
+          text_contains_any:
+            - "watch.create"
+            - "delegate.spawn"
+          text_contains: "kind=once"
+          text_not_contains_any:
+            - "Code Navigator"
+            - "Memory Curator"
+
+  - id: capability_query_mentions_one_shot_and_recurring
+    user_goal: A broad capability question should be grounded in callable tools and mention one-shot versus recurring reminders.
+    steps:
+      - user: "你现在可以做什么"
+        expect:
+          action: tool
+          run_count_delta: 0
+          text_contains_any:
+            - "kind=once"
+            - "one-shot"
+          text_contains: "kind=recurring"

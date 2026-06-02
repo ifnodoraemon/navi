@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_config
+from .action_tools import load_action_tool_specs
 from .fact_tools import service_facts, run_facts
 from .runs import Approval, RunStore
+from .skills import SkillStore
 from .tools import ToolRegistry, ToolResult, ToolSpec
 
 
@@ -57,6 +59,24 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             output_schema={"type": "object"},
         ),
         lambda args: _provider_config(home),
+    )
+    registry.register(
+        ToolSpec(
+            name="skills.list",
+            description="Return installed procedural skill facts. Skills are guidance packages, not callable tools.",
+            input_schema={"type": "object", "properties": {}},
+            output_schema={"type": "object"},
+        ),
+        lambda args: _skills_list(home, workspace=registry.project_dir),
+    )
+    registry.register(
+        ToolSpec(
+            name="tools.list",
+            description="Return callable capability facts. Tools are executable syscalls, not procedural skills.",
+            input_schema={"type": "object", "properties": {}},
+            output_schema={"type": "object"},
+        ),
+        lambda args: _tools_list(registry),
     )
     registry.register(
         ToolSpec(
@@ -270,6 +290,59 @@ def _provider_config(home: Path) -> ToolResult:
                 "validation_errors": [f"Failed to load config: {e}"],
             },
         )
+
+
+def _skills_list(home: Path, *, workspace: Path) -> ToolResult:
+    skills = SkillStore(home).list_skills(permission_ceiling="read", workspace=workspace)
+    return ToolResult(
+        tool="skills.list",
+        ok=True,
+        facts={
+            "category": "skills",
+            "definition": "procedural guidance packages loaded into Navi's prompt context",
+            "not_tools": True,
+            "skills": [
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "source": skill.source,
+                    "scope": skill.scope,
+                    "permission": skill.permission,
+                    "verified": skill.verified,
+                    "tags": list(skill.tags),
+                }
+                for skill in skills
+            ],
+            "count": len(skills),
+        },
+    )
+
+
+def _tools_list(registry: ToolRegistry) -> ToolResult:
+    specs = sorted([*load_action_tool_specs(), *registry.list_specs()], key=lambda spec: spec.name)
+    return ToolResult(
+        tool="tools.list",
+        ok=True,
+        facts={
+            "category": "tools",
+            "definition": "callable capabilities selected by the model syscall planner",
+            "not_skills": True,
+            "tools": [
+                {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "permission": spec.permission,
+                    "facts_only": spec.facts_only,
+                    "mutates": spec.mutates,
+                    "source": spec.source,
+                    "input_properties": sorted((spec.input_schema.get("properties") or {}).keys()),
+                    "required": list(spec.input_schema.get("required") or []),
+                }
+                for spec in specs
+            ],
+            "count": len(specs),
+        },
+    )
 
 
 def _is_safe_path(path: Path, project_dir: Path) -> bool:

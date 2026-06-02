@@ -99,6 +99,41 @@ journeys:
           watch_kind: once
           watch_cron: once
 
+  - id: weixin_skills_query_distinguishes_skills_from_tools
+    user_goal: Ask for skills through Weixin and receive actual procedural skills, not callable tools.
+    steps:
+      - inbound:
+          text: "你都有哪些skill"
+          message_id: "wx-skills-list"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          run_count_delta: 0
+          sent_contains_any:
+            - "Code Navigator"
+            - "Memory Curator"
+          sent_not_contains_any:
+            - "watch.create"
+            - "delegate.spawn"
+
+  - id: weixin_tools_query_distinguishes_tools_from_skills
+    user_goal: Ask for tools through Weixin and receive callable capabilities, including one-shot scheduling semantics.
+    steps:
+      - inbound:
+          text: "你都有哪些工具"
+          message_id: "wx-tools-list"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          run_count_delta: 0
+          sent_contains_any:
+            - "watch.create"
+            - "delegate.spawn"
+          sent_contains: "kind=once"
+          sent_not_contains_any:
+            - "Code Navigator"
+            - "Memory Curator"
+
   - id: weixin_vague_reminder_clarifies_without_watch
     user_goal: Ask an underspecified reminder through Weixin and get a clarification, not a bogus watch.
     steps:

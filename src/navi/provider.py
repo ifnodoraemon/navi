@@ -87,6 +87,9 @@ class MockProvider:
                 },
                 ensure_ascii=False,
             )
+        observation_answer = _mock_observation_answer(last)
+        if observation_answer:
+            return observation_answer
         return f"Navi received: {last}"
 
 
@@ -353,6 +356,10 @@ def _mock_planner_syscall(text: str, context: str = "", observations: str = "") 
         return _mock_syscall("clarify.ask", "read", {"message": "Please confirm the safe scope and approval boundary."}, "mock safety clarification")
     if _has(text, "\u660e\u5929"):
         return _mock_syscall("clarify.ask", "read", {"message": "Please provide an exact recurring schedule or reminder capability."}, "mock schedule clarification")
+    if _looks_like_inventory_query(text) and _has(text.lower(), "skill"):
+        return _mock_syscall("skills.list", "read", {}, "mock skills facts route")
+    if (_looks_like_inventory_query(text) and _has(text, "\u5de5\u5177")) or _has(text, "\u53ef\u4ee5\u505a\u4ec0\u4e48"):
+        return _mock_syscall("tools.list", "read", {}, "mock tools facts route")
 
     if mentions_execution_protocol and is_fix_follow_up:
         return _mock_syscall("delegate.spawn", "prepare", {"prompt": combined.strip()}, "mock execution protocol repair route")
@@ -430,6 +437,31 @@ def _mock_planner_syscall(text: str, context: str = "", observations: str = "") 
     )
 
 
+def _mock_observation_answer(text: str) -> str:
+    if '"capability": "skills.list"' in text:
+        names = _extract_json_string_values(text, "name")
+        descriptions = _extract_json_string_values(text, "description")
+        pairs = [f"{name}: {descriptions[index]}" for index, name in enumerate(names) if name and index < len(descriptions)]
+        detail = "; ".join(pairs) if pairs else "no installed skills"
+        return f"Skills are procedural guidance packages, separate from callable tools. Installed skills: {detail}."
+    if '"capability": "tools.list"' in text:
+        names = _extract_json_string_values(text, "name")
+        selected = [name for name in names if name in {"watch.create", "delegate.spawn", "delegate.list", "delegate.status", "service.status", "skills.list", "tools.list"}]
+        if not selected:
+            selected = names[:8]
+        return (
+            "Tools are callable capabilities, separate from skills. Available tools include "
+            f"{', '.join(selected)}. watch.create supports kind=once for one-shot reminders and "
+            "kind=recurring with cron for explicit recurring schedules."
+        )
+    return ""
+
+
+def _extract_json_string_values(text: str, key: str) -> list[str]:
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*"([^"]*)"')
+    return [match.group(1) for match in pattern.finditer(text)]
+
+
 def _mock_syscall(tool: str, permission: str, args: dict[str, Any], reason: str) -> dict[str, Any]:
     return {
         "tool": tool,
@@ -443,6 +475,17 @@ def _mock_syscall(tool: str, permission: str, args: dict[str, Any], reason: str)
 
 def _has(text: str, *needles: str) -> bool:
     return any(needle in text for needle in needles)
+
+
+def _looks_like_inventory_query(text: str) -> bool:
+    lowered = text.lower()
+    return _has(lowered, "list", "available") or _has(
+        text,
+        "\u54ea\u4e9b",
+        "\u6709\u4ec0\u4e48",
+        "\u5217\u4e00\u4e0b",
+        "\u6e05\u5355",
+    )
 
 
 def _extract_any_run_id(text: str) -> str:
