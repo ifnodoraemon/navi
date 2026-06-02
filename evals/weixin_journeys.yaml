@@ -84,6 +84,20 @@ journeys:
           handled: true
           sent_count_delta: 1
           watch_count_delta: 1
+          watch_kind: recurring
+
+  - id: weixin_one_shot_push_creates_once_watch
+    user_goal: Schedule a one-shot push through Weixin without creating a daily recurring watch.
+    steps:
+      - inbound:
+          text: "15:30的时候给我推送一下pmp相关知识"
+          message_id: "wx-once-watch"
+        expect:
+          handled: true
+          sent_count_delta: 1
+          watch_count_delta: 1
+          watch_kind: once
+          watch_cron: once
 
   - id: weixin_vague_reminder_clarifies_without_watch
     user_goal: Ask an underspecified reminder through Weixin and get a clarification, not a bogus watch.

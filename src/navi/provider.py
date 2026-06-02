@@ -357,8 +357,11 @@ def _mock_planner_syscall(text: str, context: str = "", observations: str = "") 
     if mentions_execution_protocol and is_fix_follow_up:
         return _mock_syscall("delegate.spawn", "prepare", {"prompt": combined.strip()}, "mock execution protocol repair route")
 
+    if _looks_like_one_shot_time(text):
+        return _mock_syscall("watch.create", "prepare", {"kind": "once", "run_at_text": text, "prompt": text}, "mock one-shot watch route")
+
     if _has(text, "\u6bcf\u5929") and _has(text, "\u665a") and "8" in text:
-        return _mock_syscall("watch.create", "prepare", {"cron": "0 20 * * *", "prompt": text}, "mock watch route")
+        return _mock_syscall("watch.create", "prepare", {"kind": "recurring", "cron": "0 20 * * *", "prompt": text}, "mock watch route")
 
     if _has(text, "Telegram"):
         return _mock_syscall("connector.telegram.status", "read", {}, "mock connector status route")
@@ -453,6 +456,12 @@ def _extract_any_run_id(text: str) -> str:
 def _extract_watch_id(text: str) -> str:
     match = re.search(r"\bwatch\s+([a-f0-9]{32})\b", text)
     return match.group(1) if match else ""
+
+
+def _looks_like_one_shot_time(text: str) -> bool:
+    if _has(text, "\u6bcf\u5929", "\u6bcf\u5468", "\u6bcf\u6708", "\u6bcf\u5e74"):
+        return False
+    return bool(re.search(r"(^|\D)([01]?\d|2[0-3])[:：][0-5]\d", text) or re.search(r"\d{1,2}\s*(?:\u70b9|\u65f6)", text))
 
 
 def _extract_approval_code(text: str) -> str:

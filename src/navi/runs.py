@@ -59,6 +59,7 @@ class Watch:
     created_at: float
     updated_at: float
     workspace: str = ""
+    kind: str = "recurring"
 
 
 @dataclass(frozen=True)
@@ -149,10 +150,12 @@ class RunStore:
                     last_run_at REAL NOT NULL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    workspace TEXT NOT NULL
+                    workspace TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'recurring'
                 )
                 """
             )
+            self._ensure_watch_columns(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS execution_logs (
@@ -187,6 +190,12 @@ class RunStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_approvals_code ON approvals(code)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_watches_next ON watches(enabled, next_run_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_call_logs_tool ON tool_call_logs(tool, started_at)")
+
+    @staticmethod
+    def _ensure_watch_columns(conn) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(watches)").fetchall()}
+        if "kind" not in columns:
+            conn.execute("ALTER TABLE watches ADD COLUMN kind TEXT NOT NULL DEFAULT 'recurring'")
 
     def create(
         self,
@@ -624,7 +633,7 @@ class RunStore:
             ).fetchall()
         return [Approval(*row) for row in rows]
 
-    def create_watch(self, *, cron: str, prompt: str, peer_id: str, sender_id: str, next_run_at: float, workspace: str = "") -> Watch:
+    def create_watch(self, *, cron: str, prompt: str, peer_id: str, sender_id: str, next_run_at: float, workspace: str = "", kind: str = "recurring") -> Watch:
         now = time.time()
         watch = Watch(
             id=uuid.uuid4().hex,
@@ -638,15 +647,16 @@ class RunStore:
             created_at=now,
             updated_at=now,
             workspace=workspace,
+            kind=kind,
         )
         with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO watches(
                     id, cron, prompt, peer_id, sender_id, enabled,
-                    next_run_at, last_run_at, created_at, updated_at, workspace
+                    next_run_at, last_run_at, created_at, updated_at, workspace, kind
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     watch.id,
@@ -660,6 +670,7 @@ class RunStore:
                     watch.created_at,
                     watch.updated_at,
                     watch.workspace,
+                    watch.kind,
                 ),
             )
         return watch
@@ -669,7 +680,7 @@ class RunStore:
             rows = conn.execute(
                 """
                 SELECT id, cron, prompt, peer_id, sender_id, enabled,
-                       next_run_at, last_run_at, created_at, updated_at, workspace
+                       next_run_at, last_run_at, created_at, updated_at, workspace, kind
                 FROM watches ORDER BY updated_at DESC LIMIT ?
                 """,
                 (limit,),
@@ -681,7 +692,7 @@ class RunStore:
             row = conn.execute(
                 """
                 SELECT id, cron, prompt, peer_id, sender_id, enabled,
-                       next_run_at, last_run_at, created_at, updated_at, workspace
+                       next_run_at, last_run_at, created_at, updated_at, workspace, kind
                 FROM watches WHERE id = ?
                 """,
                 (watch_id,),
@@ -693,7 +704,7 @@ class RunStore:
             rows = conn.execute(
                 """
                 SELECT id, cron, prompt, peer_id, sender_id, enabled,
-                       next_run_at, last_run_at, created_at, updated_at, workspace
+                       next_run_at, last_run_at, created_at, updated_at, workspace, kind
                 FROM watches WHERE enabled = 1 AND next_run_at <= ? ORDER BY next_run_at ASC
                 """,
                 (now,),
@@ -706,6 +717,15 @@ class RunStore:
             conn.execute(
                 "UPDATE watches SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?",
                 (last_run_at, next_run_at, now, watch_id),
+            )
+        return self.get_watch(watch_id)
+
+    def mark_watch_completed_once(self, watch_id: str, *, last_run_at: float) -> Watch | None:
+        now = time.time()
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE watches SET enabled = 0, last_run_at = ?, updated_at = ? WHERE id = ?",
+                (last_run_at, now, watch_id),
             )
         return self.get_watch(watch_id)
 

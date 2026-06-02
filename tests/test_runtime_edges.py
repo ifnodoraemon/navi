@@ -125,6 +125,29 @@ async def test_daemon_processes_due_watches(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_daemon_disables_one_shot_watch_after_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
+    store = RunStore(tmp_path)
+    watch = store.create_watch(
+        cron="once",
+        prompt="pmp related knowledge",
+        peer_id="peer",
+        sender_id="sender",
+        next_run_at=time.time() - 1,
+        kind="once",
+    )
+
+    results = await SystemDaemon(tmp_path).process_watches_once()
+
+    assert len(results) == 1
+    updated = store.get_watch(watch.id)
+    assert updated is not None
+    assert updated.kind == "once"
+    assert updated.enabled is False
+    assert updated.last_run_at > 0
+
+
+@pytest.mark.asyncio
 async def test_daemon_prunes_excess_failed_watch_delegate_spawns(tmp_path, monkeypatch):
     store = RunStore(tmp_path)
     daemon = SystemDaemon(tmp_path)

@@ -52,6 +52,15 @@ syscall_cases:
       args:
         cron: "0 8 * * *"
 
+  - id: one_shot_push_creates_once_watch
+    source: observed:weixin:one_shot_push_became_daily_recurring_watch
+    message: "15:30的时候给我推送一下pmp相关知识"
+    expect:
+      tool: watch.create
+      permission: prepare
+      args:
+        kind: once
+
   - id: approval_code_approves
     source: observed:manual-followup
     message: "批准 123456"

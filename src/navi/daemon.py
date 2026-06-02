@@ -101,7 +101,10 @@ class SystemDaemon:
                     "ok": result.exit_code == 0,
                 }
             )
-            self.runs.mark_watch_run(watch.id, last_run_at=now, next_run_at=next_cron_time(watch.cron, now=now))
+            if watch.kind == "once":
+                self.runs.mark_watch_completed_once(watch.id, last_run_at=now)
+            else:
+                self.runs.mark_watch_run(watch.id, last_run_at=now, next_run_at=next_cron_time(watch.cron, now=now))
         return created
 
     def _prune_failed_watch_delegate_spawns(self, *, keep_latest: int = MAX_FAILED_WATCH_RUN_RECORDS) -> int:

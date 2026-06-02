@@ -222,6 +222,26 @@ async def test_watch_capability_creates_cron_watch(tmp_path):
     watches = RunStore(tmp_path).list_watches()
     assert watches[0].cron == "*/5 * * * *"
     assert watches[0].prompt == "check the navi project"
+    assert watches[0].kind == "recurring"
+
+
+@pytest.mark.asyncio
+async def test_watch_capability_creates_one_shot_watch(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+
+    result = await capabilities.invoke(
+        "watch.create",
+        {"kind": "once", "run_at_text": "15:30", "prompt": "pmp related knowledge"},
+        permission="prepare",
+        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender"),
+    )
+
+    assert result.ok is True
+    watches = RunStore(tmp_path).list_watches()
+    assert watches[0].cron == "once"
+    assert watches[0].kind == "once"
+    assert watches[0].prompt == "pmp related knowledge"
+    assert watches[0].next_run_at > 0
 
 
 @pytest.mark.asyncio

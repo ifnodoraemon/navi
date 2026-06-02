@@ -96,7 +96,7 @@
   source: action
 - name: watch.create
   handler: watch_create
-  description: Create a recurring watch only when an exact cron expression can be derived.
+  description: Create a scheduled watch. Use kind=once with run_at for one-off reminders; use kind=recurring with cron only for explicit recurring requests.
   input_schema:
     type: object
     properties:
@@ -104,9 +104,14 @@
         type: string
       cron:
         type: string
+      run_at:
+        type: number
+      run_at_text:
+        type: string
+      kind:
+        type: string
     required:
       - prompt
-      - cron
   output_schema:
     type: object
   facts_only: false

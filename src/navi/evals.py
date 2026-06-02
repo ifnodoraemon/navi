@@ -359,6 +359,16 @@ def _match_weixin_expectation(
         delta = len(runs.list_watches(limit=500)) - before_watch_count
         if delta != int(expect["watch_count_delta"]):
             errors.append(f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}")
+    if "watch_kind" in expect:
+        watches = runs.list_watches(limit=1)
+        actual = watches[0].kind if watches else ""
+        if actual != str(expect["watch_kind"]):
+            errors.append(f"{prefix}: watch_kind expected {expect['watch_kind']!r}, got {actual!r}")
+    if "watch_cron" in expect:
+        watches = runs.list_watches(limit=1)
+        actual = watches[0].cron if watches else ""
+        if actual != str(expect["watch_cron"]):
+            errors.append(f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}")
     if "failed_run_count" in expect:
         count = runs.count_runs(status="failed")
         if count != int(expect["failed_run_count"]):
@@ -534,6 +544,16 @@ def _match_daily_expectation(
         count = len(runs.list_watches(limit=500))
         if count != int(expect["watch_count"]):
             errors.append(f"{prefix}: watch_count expected {expect['watch_count']!r}, got {count!r}")
+    if "watch_kind" in expect:
+        watches = runs.list_watches(limit=1)
+        actual = watches[0].kind if watches else ""
+        if actual != str(expect["watch_kind"]):
+            errors.append(f"{prefix}: watch_kind expected {expect['watch_kind']!r}, got {actual!r}")
+    if "watch_cron" in expect:
+        watches = runs.list_watches(limit=1)
+        actual = watches[0].cron if watches else ""
+        if actual != str(expect["watch_cron"]):
+            errors.append(f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}")
     if "run_status" in expect:
         run = runs.get(latest_run_id)
         actual = run.status if run else ""

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -491,26 +493,51 @@ class WatchCreateCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         cron = _arg_text(args, "cron")
+        run_at_text = _arg_text(args, "run_at_text")
+        kind = _arg_text(args, "kind") or ("once" if args.get("run_at") is not None or run_at_text else "recurring")
         prompt = _arg_text(args, "prompt")
-        if not cron or not prompt:
+        if not prompt:
             return CapabilityResult(
                 ok=False,
                 action="watch",
-                observation="watch.create requires cron and prompt.",
-                message="watch.create requires cron and prompt.",
+                observation="watch.create requires prompt.",
+                message="watch.create requires prompt.",
                 terminal=True,
             )
-        try:
-            validate_cron(cron)
-            next_run = next_cron_time(cron)
-        except ValueError as exc:
-            return CapabilityResult(
-                ok=False,
-                action="watch",
-                observation=f"Invalid cron: {exc}",
-                message=f"Invalid cron: {exc}",
-                terminal=True,
-            )
+        if kind == "once":
+            next_run = _float_or_none(args.get("run_at"))
+            if next_run is None and run_at_text:
+                next_run = _parse_one_shot_run_at(run_at_text)
+            if next_run is None:
+                return CapabilityResult(
+                    ok=False,
+                    action="watch",
+                    observation="watch.create kind=once requires run_at or run_at_text.",
+                    message="watch.create kind=once requires run_at or run_at_text.",
+                    terminal=True,
+                )
+            cron = "once"
+        else:
+            kind = "recurring"
+            if not cron:
+                return CapabilityResult(
+                    ok=False,
+                    action="watch",
+                    observation="watch.create kind=recurring requires cron.",
+                    message="watch.create kind=recurring requires cron.",
+                    terminal=True,
+                )
+            try:
+                validate_cron(cron)
+                next_run = next_cron_time(cron)
+            except ValueError as exc:
+                return CapabilityResult(
+                    ok=False,
+                    action="watch",
+                    observation=f"Invalid cron: {exc}",
+                    message=f"Invalid cron: {exc}",
+                    terminal=True,
+                )
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         watch = runs.create_watch(
@@ -520,13 +547,15 @@ class WatchCreateCapability:
             sender_id=context.sender_id,
             next_run_at=next_run,
             workspace=context.workspace,
+            kind=kind,
         )
-        graph.upsert("Watch", watch.id, {"cron": cron, "prompt": prompt, "sender_id": context.sender_id})
+        graph.upsert("Watch", watch.id, {"cron": cron, "prompt": prompt, "sender_id": context.sender_id, "kind": kind})
         return _fact_result(
             "watch",
             {
                 "watch_id": watch.id,
                 "cron": watch.cron,
+                "kind": watch.kind,
                 "prompt": watch.prompt,
                 "next_run_at": watch.next_run_at,
                 "next_run_text": time.ctime(watch.next_run_at),
@@ -858,6 +887,48 @@ def _fact_result(action: str, facts: dict[str, Any], *, run_id: str = "") -> Cap
 def _arg_text(args: dict[str, Any], key: str) -> str:
     value = args.get(key)
     return str(value).strip() if value is not None else ""
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_one_shot_run_at(text: str, *, now: float | None = None) -> float | None:
+    raw = text.strip()
+    if not raw:
+        return None
+    base = datetime.fromtimestamp(now or time.time())
+    day_offset = 1 if "\u660e\u5929" in raw else 0
+    hour, minute = _parse_clock_time(raw)
+    if hour is None:
+        return None
+    candidate = base.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=day_offset)
+    if day_offset == 0 and candidate.timestamp() <= base.timestamp():
+        candidate += timedelta(days=1)
+    return candidate.timestamp()
+
+
+def _parse_clock_time(text: str) -> tuple[int | None, int]:
+    match = re.search(r"(^|\D)([01]?\d|2[0-3])[:：]([0-5]\d)", text)
+    if match:
+        return int(match.group(2)), int(match.group(3))
+    match = re.search(r"(\d{1,2})\s*(?:\u70b9|\u65f6)(?:\s*([0-5]?\d)\s*\u5206?)?", text)
+    if not match:
+        return None, 0
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    if "\u4e0b\u5348" in text and hour < 12:
+        hour += 12
+    if "\u665a\u4e0a" in text and hour < 12:
+        hour += 12
+    if "\u4e2d\u5348" in text and hour < 12:
+        hour += 12
+    if hour > 23 or minute > 59:
+        return None, 0
+    return hour, minute
 
 
 def _positive_int(value: Any, *, default: int, maximum: int) -> int:

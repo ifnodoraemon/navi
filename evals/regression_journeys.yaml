@@ -25,6 +25,9 @@ incidents:
   - id: watch_created_then_delegate_status_false_failure
     covered_by:
       - exact_schedule_watch_creation_returns_watch_without_new_run
+  - id: one_shot_push_became_daily_recurring_watch
+    covered_by:
+      - one_shot_time_push_creates_once_watch
   - id: evolution_legacy_schema_run_id_failure
     covered_by:
       - tests/test_regression_incidents.py:test_evolution_ledger_uses_latest_run_id_schema
@@ -84,6 +87,16 @@ journeys:
             - "watches"
             - "Watch"
             - "cron"
+
+  - id: one_shot_time_push_creates_once_watch
+    user_goal: A concrete non-recurring push request should create a one-shot watch, not a daily recurring cron watch.
+    steps:
+      - user: "15:30的时候给我推送一下pmp相关知识"
+        expect:
+          action: watch
+          watch_count_delta: 1
+          watch_kind: once
+          watch_cron: once
 
   - id: provider_config_check_does_not_create_task
     user_goal: Provider diagnostics should return facts rather than a spurious delegation task.

@@ -208,6 +208,7 @@ def test_regression_journey_eval_dataset_tracks_real_incidents():
         "deepseek_direct_shell_for_error_repair",
         "watch_protocol_verification_must_be_object",
         "watch_created_then_delegate_status_false_failure",
+        "one_shot_push_became_daily_recurring_watch",
         "evolution_legacy_schema_run_id_failure",
         "provider_diagnostics_drift",
         "connector_status_drift",
@@ -217,6 +218,7 @@ def test_regression_journey_eval_dataset_tracks_real_incidents():
         "terse_fix_follow_up_uses_previous_error_context",
         "exact_schedule_watch_creation_returns_watch_without_new_run",
         "task_list_shows_existing_watch_without_runs",
+        "one_shot_time_push_creates_once_watch",
         "provider_config_check_does_not_create_task",
         "connector_status_check_does_not_create_task",
     } <= ids
@@ -334,6 +336,7 @@ def test_weixin_journey_eval_dataset_is_user_visible():
         "weixin_execution_protocol_error_how_to_fix_gets_approval",
         "weixin_terse_fix_follow_up_uses_previous_error_context",
         "weixin_exact_schedule_creates_watch",
+        "weixin_one_shot_push_creates_once_watch",
         "weixin_vague_reminder_clarifies_without_watch",
         "weixin_duplicate_message_is_ignored",
         "weixin_clean_failed_tasks",
