@@ -611,10 +611,16 @@ def _workspace_state(workspace: Path, *, label: str) -> dict[str, Any]:
     }
 
 
+def _require_workspace_value(workspace: str, *, run_id: str = "") -> str:
+    value = workspace.strip()
+    if not value:
+        suffix = f" for run {run_id}" if run_id else ""
+        raise ValueError(f"workspace is required{suffix}")
+    return value
+
+
 def _task_workspace(task: Run) -> Path:
-    if not task.workspace.strip():
-        raise ValueError(f"Run {task.id} has no workspace")
-    return Path(task.workspace)
+    return Path(_require_workspace_value(task.workspace, run_id=task.id))
 
 
 def _recovery_evidence(step_index: int, policy: str, reason: str) -> dict[str, Any]:
@@ -669,7 +675,8 @@ class NaviExecutionProvider:
     async def execute(self, task: Run) -> ExecutionResult:
         return await self._complete_task(task, phase="execute", role=SUBAGENT_EXECUTOR_ROLE, messages=self._execute_messages(task))
 
-    async def run_watch(self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str = "") -> ExecutionResult:
+    async def run_watch(self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str) -> ExecutionResult:
+        workspace = _require_workspace_value(workspace)
         messages = [
             ChatMessage(
                 "system",
@@ -686,7 +693,7 @@ class NaviExecutionProvider:
                     f"Watch source: {source}\n"
                     f"Peer id: {peer_id}\n"
                     f"Sender id: {sender_id}\n\n"
-                    f"Workspace: {workspace.strip() or 'unspecified'}\n\n"
+                    f"Workspace: {workspace}\n\n"
                     f"Scheduled request:\n{prompt}"
                 ),
             ),
@@ -1159,7 +1166,8 @@ class ExecutionService:
         
         return updated_task
 
-    async def run_watch(self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str = "") -> ExecutionResult:
+    async def run_watch(self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str) -> ExecutionResult:
+        workspace = _require_workspace_value(workspace)
         watch_task = Run(
             id="",
             title=prompt[:120],

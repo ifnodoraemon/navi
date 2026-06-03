@@ -25,7 +25,7 @@ class JourneyProvider:
 
 def _service(tmp_path, provider: JourneyProvider) -> tuple[WeixinService, WeixinAccount]:
     runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
     return service, account
 

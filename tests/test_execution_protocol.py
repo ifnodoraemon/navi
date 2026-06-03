@@ -219,7 +219,7 @@ async def test_execution_protocol_shape_error_gets_one_repair_attempt(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_watch_notification_does_not_fail_on_malformed_execution_protocol():
+async def test_watch_notification_does_not_fail_on_malformed_execution_protocol(tmp_path):
     provider = ScriptedProvider(
         json.dumps(
             {
@@ -248,7 +248,7 @@ async def test_watch_notification_does_not_fail_on_malformed_execution_protocol(
         source="watch",
         peer_id="peer",
         sender_id="sender",
-        workspace="",
+        workspace=str(tmp_path),
     )
 
     assert result.exit_code == 0
@@ -260,7 +260,7 @@ async def test_watch_notification_does_not_fail_on_malformed_execution_protocol(
 
 
 @pytest.mark.asyncio
-async def test_watch_notification_extracts_summary_from_valid_protocol():
+async def test_watch_notification_extracts_summary_from_valid_protocol(tmp_path):
     provider = ScriptedProvider(
         json.dumps(
             {
@@ -289,7 +289,7 @@ async def test_watch_notification_extracts_summary_from_valid_protocol():
         source="watch",
         peer_id="peer",
         sender_id="sender",
-        workspace="",
+        workspace=str(tmp_path),
     )
 
     assert result.exit_code == 0
@@ -297,7 +297,7 @@ async def test_watch_notification_extracts_summary_from_valid_protocol():
 
 
 @pytest.mark.asyncio
-async def test_watch_notification_retries_title_only_output():
+async def test_watch_notification_retries_title_only_output(tmp_path):
     provider = ScriptedProvider(
         [
             "通识讲解",
@@ -311,7 +311,7 @@ async def test_watch_notification_retries_title_only_output():
         source="watch",
         peer_id="peer",
         sender_id="sender",
-        workspace="",
+        workspace=str(tmp_path),
     )
 
     assert result.exit_code == 0

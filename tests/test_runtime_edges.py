@@ -111,7 +111,7 @@ async def test_daemon_processes_due_watches(tmp_path, monkeypatch):
         workspace=str(tmp_path),
     )
 
-    results = await SystemDaemon(tmp_path).process_watches_once()
+    results = await SystemDaemon(tmp_path, project_dir=tmp_path).process_watches_once()
 
     assert len(results) == 1
     assert results[0]["action"] == "watch"
@@ -139,7 +139,7 @@ async def test_daemon_disables_one_shot_watch_after_run(tmp_path, monkeypatch):
         kind="once",
     )
 
-    results = await SystemDaemon(tmp_path).process_watches_once()
+    results = await SystemDaemon(tmp_path, project_dir=tmp_path).process_watches_once()
 
     assert len(results) == 1
     updated = store.get_watch(watch.id)
@@ -152,7 +152,7 @@ async def test_daemon_disables_one_shot_watch_after_run(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_daemon_prunes_excess_failed_watch_delegate_spawns(tmp_path, monkeypatch):
     store = RunStore(tmp_path)
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     async def no_events():
         return []
 

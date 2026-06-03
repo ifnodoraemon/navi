@@ -99,11 +99,11 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
     )
 
 
-async def _run(home: Path, once: bool) -> None:
-    await _service(home).run(once=once)
+async def _run(home: Path, project_dir: Path, once: bool) -> None:
+    await _service(home, project_dir).run(once=once)
 
 
-def _service(home: Path):
+def _service(home: Path, project_dir: Path):
     from navi.app_factory import build_runtime
 
     from .service import TelegramService
@@ -112,6 +112,7 @@ def _service(home: Path):
         home=home,
         config=load_telegram_config(home),
         runtime=build_runtime(home),
+        project_dir=project_dir,
         local_source=SPEC.local_source,
         session_alias_prefix=SPEC.session_alias_prefix,
     )

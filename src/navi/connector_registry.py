@@ -30,8 +30,8 @@ class ConnectorAdapter:
     status: Callable[[Path], dict[str, Any]]
     diagnostics: Callable[[Path], list[dict[str, str]]] | None
     register_tools: Callable[[Any, Path], None]
-    setup: Callable[[Path, int, Callable[[str], None] | None], Awaitable[str]] | None = None
-    run: Callable[[Path, bool], Awaitable[None]] | None = None
+    setup: Callable[[Path, Path, int, Callable[[str], None] | None], Awaitable[str]] | None = None
+    run: Callable[[Path, Path, bool], Awaitable[None]] | None = None
     load_journey_eval_dataset: Callable[[Path], dict[str, Any]] | None = None
     run_journey_eval_dataset: Callable[[Path, Path, Path, float], Awaitable[list[Any]]] | None = None
 

@@ -35,7 +35,7 @@ def test_daemon_process_events_stays_as_detector_orchestrator():
 
 
 def test_project_event_detectors_are_registered_explicitly(tmp_path):
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
 
     assert [detector.__name__ for detector in daemon._project_event_detectors()] == [
         "_detect_git_mutations",
@@ -310,6 +310,10 @@ def test_run_workspace_is_explicit_not_cwd_fallback():
     runs_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "runs.py").read_text(encoding="utf-8")
     execution_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "execution.py").read_text(encoding="utf-8")
     evolution_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "evolution.py").read_text(encoding="utf-8")
+    daemon_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "daemon.py").read_text(encoding="utf-8")
+    connector_runtime_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "connector_runtime.py").read_text(encoding="utf-8")
+    weixin_service_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "weixin" / "service.py").read_text(encoding="utf-8")
+    telegram_service_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "telegram" / "service.py").read_text(encoding="utf-8")
 
     forbidden = (
         "workspace or str(Path.cwd()",
@@ -317,14 +321,29 @@ def test_run_workspace_is_explicit_not_cwd_fallback():
         "Path(task.workspace or",
         "workspace or str(Path.home())",
         "project_dir=project_dir or Path.cwd()",
+        "project_dir: Path | None",
+        "project_dir or Path.cwd()",
+        "run_watch(self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str = \"\"",
     )
     offenders = {
         "runs.py": [token for token in forbidden if token in runs_source],
         "execution.py": [token for token in forbidden if token in execution_source],
         "evolution.py": [token for token in forbidden if token in evolution_source],
+        "daemon.py": [token for token in forbidden if token in daemon_source],
+        "connector_runtime.py": [token for token in forbidden if token in connector_runtime_source],
+        "weixin/service.py": [token for token in forbidden if token in weixin_service_source],
+        "telegram/service.py": [token for token in forbidden if token in telegram_service_source],
     }
 
-    assert offenders == {"runs.py": [], "execution.py": [], "evolution.py": []}
+    assert offenders == {
+        "runs.py": [],
+        "execution.py": [],
+        "evolution.py": [],
+        "daemon.py": [],
+        "connector_runtime.py": [],
+        "weixin/service.py": [],
+        "telegram/service.py": [],
+    }
 
 
 def test_prompt_os_keeps_policy_manifest_and_turn_data_separate(tmp_path):

@@ -56,12 +56,13 @@ EventDetector = Callable[[ProjectEventContext], Awaitable[EventBatch]]
 class SystemDaemon:
     """Background OS primitives, not user-intent workflow."""
 
-    def __init__(self, home: Path):
+    def __init__(self, home: Path, *, project_dir: Path):
         self.home = home
+        self.project_dir = project_dir.resolve()
         self.runs = RunStore(home)
         self.execution = ExecutionService(home)
         self.evolution = EvolutionEngine(home)
-        self.capabilities = CapabilityRegistry(home=home, project_dir=Path.cwd())
+        self.capabilities = CapabilityRegistry(home=home, project_dir=self.project_dir)
         self.graph = GraphStore(home)
 
     async def process_queue_once(self) -> list[Run]:
@@ -221,7 +222,7 @@ class SystemDaemon:
         if primary_projects:
             return sorted(primary_projects, key=lambda project: project.name)[0].name
 
-        cwd = self._canonical_path(str(Path.cwd()))
+        cwd = self._canonical_path(str(self.project_dir))
         for project in sorted(projects, key=lambda project: project.name):
             if self._canonical_path(project.name) == cwd:
                 return project.name
@@ -497,7 +498,7 @@ class SystemDaemon:
         project_data: dict,
         *,
         has_active_task: bool,
-        workspace: str = "",
+        workspace: str,
     ) -> tuple[dict | None, bool]:
         policy_updates = event.suppressed_state_updates if has_active_task else event.state_updates
         if has_active_task:

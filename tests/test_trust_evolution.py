@@ -140,7 +140,7 @@ async def test_execution_failure_waits_for_explicit_follow_up_and_rolls_back(tmp
 @pytest.mark.asyncio
 async def test_proactive_event_watchers(tmp_path):
     # Setup daemon
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     graph = GraphStore(tmp_path)
     
     # Create project in graph database
@@ -200,7 +200,7 @@ async def test_concurrent_trust_matching(tmp_path):
 
 @pytest.mark.asyncio
 async def test_log_rotation_and_chunked_reads(tmp_path):
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     graph = GraphStore(tmp_path)
     
     project_path = tmp_path / "rotation_project"
@@ -416,7 +416,7 @@ async def test_self_healing_retry_accumulation(tmp_path):
 
 
 def test_daemon_primary_project_selection_is_stable(tmp_path):
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     older = GraphStore(tmp_path).upsert("Project", str(tmp_path / "z-project"), {})
     newer = GraphStore(tmp_path).upsert("Project", str(tmp_path / "a-project"), {})
 
@@ -428,7 +428,7 @@ def test_daemon_primary_project_selection_is_stable(tmp_path):
 
 @pytest.mark.asyncio
 async def test_daemon_port_probe_checks_ipv4_and_ipv6(tmp_path, monkeypatch):
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     open_calls = []
 
     class FakeWriter:
@@ -463,7 +463,7 @@ async def test_daemon_port_probe_checks_ipv4_and_ipv6(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_daemon_project_detectors_isolate_failures(tmp_path, caplog):
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     graph = GraphStore(tmp_path)
     project_path = tmp_path / "detector_project"
     project_path.mkdir()
@@ -499,7 +499,7 @@ async def test_daemon_resolves_relative_project_paths(tmp_path, monkeypatch):
     from navi.capabilities import CapabilityResult
 
     monkeypatch.chdir(tmp_path)
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     graph = GraphStore(tmp_path)
     project_path = tmp_path / "relative_project"
     project_path.mkdir()
@@ -525,7 +525,7 @@ async def test_daemon_resolves_relative_project_paths(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_daemon_git_detector_skips_when_git_binary_missing(tmp_path, monkeypatch, caplog):
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     project_path = tmp_path / "gitless"
     (project_path / ".git").mkdir(parents=True)
 
@@ -728,7 +728,7 @@ async def test_daemon_active_task_suppression(tmp_path):
     from navi.runs import RunStore
     from navi.capabilities import CapabilityResult
     
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     graph = GraphStore(tmp_path)
     runs = RunStore(tmp_path)
     
@@ -780,7 +780,7 @@ async def test_daemon_git_suppression_advances_hash(tmp_path):
     from navi.runs import RunStore
     from navi.capabilities import CapabilityResult
 
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     graph = GraphStore(tmp_path)
     runs = RunStore(tmp_path)
 
@@ -820,7 +820,7 @@ async def test_daemon_log_keys_include_relative_path(tmp_path):
     from navi.graph import GraphStore
     from navi.capabilities import CapabilityResult
 
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     graph = GraphStore(tmp_path)
 
     project_path = tmp_path / "collision_project"
@@ -858,7 +858,7 @@ async def test_daemon_fingerprint_spam_protection(tmp_path):
     from navi.graph import GraphStore
     from navi.capabilities import CapabilityResult
     
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     graph = GraphStore(tmp_path)
     
     project_path = tmp_path / "fingerprint_project"

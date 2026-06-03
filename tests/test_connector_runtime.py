@@ -11,7 +11,7 @@ from navi.runtime import AgentRuntime
 @pytest.mark.asyncio
 async def test_connector_ingress_runtime_routes_message_to_agent_session(tmp_path):
     runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=MockProvider()))
-    ingress = ConnectorIngressRuntime(home=tmp_path, runtime=runtime, allow_sources={"action", "core"})
+    ingress = ConnectorIngressRuntime(home=tmp_path, runtime=runtime, project_dir=tmp_path, allow_sources={"action", "core"})
 
     text = await ingress.handle(
         ConnectorMessage(
@@ -31,7 +31,7 @@ async def test_connector_ingress_runtime_routes_message_to_agent_session(tmp_pat
 
 def test_connector_ingress_runtime_uses_remote_tool_allowlist(tmp_path):
     runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=MockProvider()))
-    ingress = ConnectorIngressRuntime(home=tmp_path, runtime=runtime)
+    ingress = ConnectorIngressRuntime(home=tmp_path, runtime=runtime, project_dir=tmp_path)
 
     names = {spec.name for spec in ingress.agent.capabilities.planner_specs()}
 
@@ -59,7 +59,7 @@ def test_connector_ingress_runtime_uses_remote_tool_allowlist(tmp_path):
 @pytest.mark.asyncio
 async def test_tools_list_reflects_connector_allowlist(tmp_path):
     runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=MockProvider()))
-    ingress = ConnectorIngressRuntime(home=tmp_path, runtime=runtime)
+    ingress = ConnectorIngressRuntime(home=tmp_path, runtime=runtime, project_dir=tmp_path)
 
     result = await ingress.agent.capabilities.invoke(
         "tools.list",

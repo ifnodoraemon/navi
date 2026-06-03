@@ -156,7 +156,7 @@ def run(once: bool = False, connector: str | None = None) -> None:
     home = ensure_home()
     write_default_config(home)
     adapter = _select_runnable_connector(connector)
-    asyncio.run(adapter.run(home, once))
+    asyncio.run(adapter.run(home, Path.cwd(), once))
 
 
 @app.command()
@@ -736,7 +736,7 @@ def connector_setup(name: str, timeout_seconds: int = 480) -> None:
         typer.echo("Scan this connector QR URL:")
         typer.echo(url)
 
-    result = asyncio.run(adapter.setup(home, timeout_seconds, show_qr))
+    result = asyncio.run(adapter.setup(home, Path.cwd(), timeout_seconds, show_qr))
     typer.echo(result)
 
 
@@ -747,7 +747,7 @@ def connector_run(name: str, once: bool = False) -> None:
     adapter = _require_connector(name)
     if adapter.run is None:
         raise typer.BadParameter(f"connector does not support run: {name}")
-    asyncio.run(adapter.run(home, once))
+    asyncio.run(adapter.run(home, Path.cwd(), once))
 
 
 @connectors_app.command("status")

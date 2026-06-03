@@ -68,7 +68,7 @@ async def test_task_approval_execution_and_evolution_through_os_primitives(tmp_p
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
     runs = RunStore(tmp_path)
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
 
     planned = await _record_prepare_request(capabilities, tmp_path, "improve the navi project")
 
@@ -584,7 +584,7 @@ async def test_explicit_l3_trust_rule_can_auto_execute(tmp_path, monkeypatch):
     task = RunStore(tmp_path).get(planned.run_id)
     assert task.status == "queued"
     assert task.workspace == workspace
-    completed = await SystemDaemon(tmp_path).process_queue_once()
+    completed = await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
     assert completed[0].status == "completed"
 
 
@@ -612,7 +612,7 @@ async def test_evolution_rollback_restores_graph_event(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
     runs = RunStore(tmp_path)
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     planned = await _record_prepare_request(capabilities, tmp_path, "evolve rollback coverage")
     approval = runs.list_approvals()[0]
     await capabilities.invoke(

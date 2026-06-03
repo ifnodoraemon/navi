@@ -109,22 +109,23 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
     )
 
 
-async def _setup(home: Path, timeout_seconds: int, on_qr: Any | None) -> str:
-    service = _service(home)
+async def _setup(home: Path, project_dir: Path, timeout_seconds: int, on_qr: Any | None) -> str:
+    service = _service(home, project_dir)
     return await service.setup(timeout_seconds=timeout_seconds, on_qr=on_qr)
 
 
-async def _run(home: Path, once: bool) -> None:
-    await _service(home).run(once=once)
+async def _run(home: Path, project_dir: Path, once: bool) -> None:
+    await _service(home, project_dir).run(once=once)
 
 
-def _service(home: Path):
+def _service(home: Path, project_dir: Path):
     from .service import WeixinService
 
     return WeixinService(
         home=home,
         config=load_weixin_config(home),
         runtime=build_runtime_for_connector(home),
+        project_dir=project_dir,
         local_source=SPEC.local_source,
         session_alias_prefix=SPEC.session_alias_prefix,
     )

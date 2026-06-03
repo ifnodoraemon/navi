@@ -76,6 +76,7 @@ async def test_weixin_service_status_and_adaptive_polling(tmp_path, monkeypatch)
         home=tmp_path,
         config=WeixinConfig(dm_policy="open", account_id="dummy", token="dummy"),
         runtime=runtime,
+        project_dir=tmp_path,
     )
     
     # Verify status writing and reading
@@ -159,6 +160,7 @@ async def test_telegram_service_status_and_adaptive_polling(tmp_path, monkeypatc
         home=tmp_path,
         config=TelegramConfig(dm_policy="open", bot_token="dummy"),
         runtime=runtime,
+        project_dir=tmp_path,
     )
     
     # Verify status writing and reading

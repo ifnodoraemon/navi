@@ -122,7 +122,7 @@ async def test_watches_context_propagation_in_daemon(tmp_path, monkeypatch):
         workspace="/home/user/project_workspace"
     )
 
-    daemon = SystemDaemon(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     
     invoked_watches = []
 

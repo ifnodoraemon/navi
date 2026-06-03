@@ -17,6 +17,7 @@ async def test_telegram_handle_update_replies_and_saves_context(tmp_path, monkey
         home=tmp_path,
         config=TelegramConfig(dm_policy="open"),
         runtime=runtime,
+        project_dir=tmp_path,
     )
 
     handled = await service.handle_update(
@@ -44,6 +45,7 @@ async def test_telegram_allowlist_blocks_untrusted_sender(tmp_path, monkeypatch)
         home=tmp_path,
         config=TelegramConfig(dm_policy="allowlist", allowed_users=["trusted"]),
         runtime=runtime,
+        project_dir=tmp_path,
     )
 
     handled = await service.handle_update(

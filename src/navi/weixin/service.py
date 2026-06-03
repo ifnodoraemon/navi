@@ -29,8 +29,10 @@ class WeixinService:
         runtime: AgentRuntime,
         local_source: str = "weixin",
         session_alias_prefix: str = "connector:weixin",
+        project_dir: Path,
     ):
         self.home = home
+        self.project_dir = project_dir.resolve()
         self.config = config
         self.runtime = runtime
         self.local_source = local_source
@@ -40,11 +42,12 @@ class WeixinService:
         self.dedup = MessageDeduplicator()
         self.client = self._build_client()
         self.typing_tickets: dict[str, str] = {}
-        self.daemon = SystemDaemon(home)
+        self.daemon = SystemDaemon(home, project_dir=self.project_dir)
         self.active = self.daemon
         self.ingress = ConnectorIngressRuntime(
             home=home,
             runtime=runtime,
+            project_dir=self.project_dir,
             allow_sources={"action", "core"},
         )
 

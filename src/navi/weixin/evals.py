@@ -81,7 +81,7 @@ async def _run_journey(
 ) -> WeixinJourneyResult:
     model_provider = ModelPool(default=_FailingEvalProvider()) if journey.get("provider") == "failing" else provider
     runtime = AgentRuntime(home=home, provider=model_provider or ModelPool(default=MockProvider()))
-    service = WeixinService(home=home, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=home, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=project_dir)
     service.client = MockWeixinClient()
     account = WeixinAccount(account_id="eval-account", token="eval-token", base_url="mock://ilink")
     runs = RunStore(home)

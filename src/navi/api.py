@@ -108,7 +108,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     task_store = RunStore(home)
     goal_store = GoalStore(home)
     subagent_store = SubagentRunStore(home)
-    daemon = SystemDaemon(home)
+    daemon = SystemDaemon(home, project_dir=project_dir)
     agent = HernessEngine(home=home, runtime=runtime, project_dir=project_dir)
     capabilities = build_capability_registry(home, project_dir=project_dir)
     connector_adapters = load_connector_adapters()

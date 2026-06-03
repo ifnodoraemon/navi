@@ -79,7 +79,7 @@ def _pool(provider=None) -> ModelPool:
 async def test_weixin_handle_update_replies_and_saves_context(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     runtime = AgentRuntime(home=tmp_path, provider=_pool(PlannerThenMockProvider()))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     handled = await service.handle_update(
@@ -105,7 +105,7 @@ async def test_weixin_handle_update_sends_typing_indicator(tmp_path, monkeypatch
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     monkeypatch.setenv("NAVI_WEIXIN_MOCK_TYPING", "true")
     runtime = AgentRuntime(home=tmp_path, provider=_pool(SlowPlannerProvider()))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     handled = await service.handle_update(
@@ -133,7 +133,7 @@ async def test_weixin_handle_update_returns_fallback_on_provider_error(tmp_path,
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     monkeypatch.setenv("NAVI_WEIXIN_MOCK_TYPING", "true")
     runtime = AgentRuntime(home=tmp_path, provider=_pool(FailingProvider()))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     handled = await service.handle_update(
@@ -150,7 +150,7 @@ async def test_weixin_handle_update_returns_fallback_on_provider_error(tmp_path,
 async def test_weixin_session_control_text_routes_as_message(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     runtime = AgentRuntime(home=tmp_path, provider=_pool(PlannerThenMockProvider()))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     await service.handle_update(
@@ -174,7 +174,7 @@ async def test_weixin_session_control_text_routes_as_message(tmp_path, monkeypat
 async def test_weixin_session_current_text_routes_as_message(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     runtime = AgentRuntime(home=tmp_path, provider=_pool(PlannerThenMockProvider()))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     handled = await service.handle_update(
@@ -198,7 +198,7 @@ async def test_weixin_plain_schedule_message_creates_watch(tmp_path, monkeypatch
             ]
         )),
     )
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     handled = await service.handle_update(
@@ -222,7 +222,7 @@ async def test_weixin_plain_schedule_with_vague_period_asks_clarification(tmp_pa
             '{"tool":"clarify.ask","args":{"message":"你希望每天晚上几点上通识课？"},"confidence":0.91,"reason":"vague time"}'
         )),
     )
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     handled = await service.handle_update(
@@ -251,7 +251,7 @@ async def test_weixin_plain_local_action_creates_task(tmp_path, monkeypatch):
             ]
         )),
     )
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     handled = await service.handle_update(
@@ -282,7 +282,7 @@ async def test_weixin_command_like_business_text_routes_through_planner(tmp_path
             ]
         )),
     )
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     handled = await service.handle_update(
@@ -309,7 +309,7 @@ async def test_weixin_plain_approval_queues_task(tmp_path, monkeypatch):
         ]
     )
     runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     await service.handle_update(
@@ -344,7 +344,7 @@ async def test_weixin_remote_delete_rejects_active_task(tmp_path, monkeypatch):
         '{"tool":"delegate.delete","permission":"write","args":{"run_id":"task-delete-me"},"confidence":0.95,"reason":"delete requested"}'
     )
     runtime = AgentRuntime(home=tmp_path, provider=_pool(store_provider))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
     task = service.active.runs.create("remote delete should be blocked", status="awaiting_approval", workspace=str(tmp_path))
     store_provider.response = (
@@ -375,7 +375,7 @@ async def test_weixin_cleanup_failed_delegations_cannot_finish_with_remaining_re
         ]
     )
     runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
     for index in range(3):
         service.active.runs.create(f"failed {index}", status="failed", source="watch", kind="delegation", workspace=str(tmp_path))
@@ -401,7 +401,7 @@ async def test_weixin_plain_run_status_uses_fact_tool(tmp_path, monkeypatch):
         home=tmp_path,
         provider=_pool(provider),
     )
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
     task = service.active.runs.create("check startup", status="preparing", workspace=str(tmp_path))
     provider.response = [
@@ -442,7 +442,7 @@ async def test_weixin_plain_service_status_uses_fact_tool(tmp_path, monkeypatch)
             ]
         )),
     )
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     import navi.core_tools as tools_module
@@ -481,6 +481,7 @@ async def test_weixin_dm_allowlist_blocks_untrusted_sender(tmp_path, monkeypatch
         home=tmp_path,
         config=WeixinConfig(dm_policy="allowlist", allowed_users=["trusted"]),
         runtime=runtime,
+        project_dir=tmp_path,
     )
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
@@ -497,7 +498,7 @@ async def test_weixin_dm_allowlist_blocks_untrusted_sender(tmp_path, monkeypatch
 async def test_weixin_pairing_policy_blocks_unlisted_sender(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     runtime = AgentRuntime(home=tmp_path, provider=_pool())
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="pairing"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="pairing"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     handled = await service.handle_update(
@@ -513,7 +514,7 @@ async def test_weixin_pairing_policy_blocks_unlisted_sender(tmp_path, monkeypatc
 async def test_weixin_planner_parse_failure_returns_os_error(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     runtime = AgentRuntime(home=tmp_path, provider=_pool(ScriptedProvider("not-json")))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     handled = await service.handle_update(
@@ -535,7 +536,7 @@ async def test_weixin_transport_details_do_not_enter_model_prompt(tmp_path, monk
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     planner_provider = PlannerThenMockProvider()
     runtime = AgentRuntime(home=tmp_path, provider=_pool(planner_provider))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     handled = await service.handle_update(
@@ -571,7 +572,7 @@ def test_message_deduplicator_blocks_repeats():
 async def test_weixin_content_dedup_blocks_repeated_text_with_new_message_id(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     runtime = AgentRuntime(home=tmp_path, provider=_pool())
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     first = await service.handle_update(
@@ -593,7 +594,7 @@ async def test_weixin_background_task_notification_uses_model_text(tmp_path, mon
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     provider = ScriptedProvider("任务完成：目录已经列出。")
     runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
     created = service.active.runs.create(
         "list dir",
@@ -624,7 +625,7 @@ async def test_weixin_background_watch_result_sends_visible_message_and_event(tm
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
     provider = ScriptedProvider("pmp")
     runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
-    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
+    service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
     async def due_watch_result():

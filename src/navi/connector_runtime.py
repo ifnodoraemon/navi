@@ -59,13 +59,14 @@ class ConnectorIngressRuntime:
         *,
         home: Path,
         runtime: AgentRuntime,
+        project_dir: Path,
         allow_sources: set[str] | None = None,
         allowed_tools: set[str] | None = None,
     ):
         self.agent = HernessEngine(
             home=home,
             runtime=runtime,
-            project_dir=Path.cwd(),
+            project_dir=project_dir,
             allow_sources=allow_sources,
             allowed_tools=set(CONNECTOR_ALLOWED_TOOLS) if allowed_tools is None else allowed_tools,
         )
