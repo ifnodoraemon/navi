@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from navi.db import connect
 from navi.trace import TraceStore
 
@@ -34,7 +36,7 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
     assert json.loads(events[0].output_json)["approval_code"] == "[redacted]"
 
 
-def test_trace_store_migrates_legacy_event_schema(tmp_path):
+def test_trace_store_rejects_schema_drift(tmp_path):
     with connect(tmp_path / "traces.db") as conn:
         conn.execute(
             """
@@ -54,12 +56,8 @@ def test_trace_store_migrates_legacy_event_schema(tmp_path):
             """
         )
 
-    store = TraceStore(tmp_path)
-    store.add_event(trace_id="legacy", phase="turn.start", run_id="run-1", source="weixin")
-
-    event = store.list_events("legacy")[0]
-    assert event.run_id == "run-1"
-    assert event.source == "weixin"
+    with pytest.raises(RuntimeError, match="trace_events schema mismatch"):
+        TraceStore(tmp_path)
 
 
 def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):

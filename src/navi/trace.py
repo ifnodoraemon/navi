@@ -70,17 +70,7 @@ class TraceStore:
                 )
                 """
             )
-            _ensure_columns(
-                conn,
-                "trace_events",
-                {
-                    "session_id": "TEXT NOT NULL DEFAULT ''",
-                    "run_id": "TEXT NOT NULL DEFAULT ''",
-                    "source": "TEXT NOT NULL DEFAULT ''",
-                    "peer_id": "TEXT NOT NULL DEFAULT ''",
-                    "sender_id": "TEXT NOT NULL DEFAULT ''",
-                },
-            )
+            _assert_schema_exact(conn, "trace_events", _TRACE_EVENT_SCHEMA)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_events_trace ON trace_events(trace_id, created_at)")
             conn.execute(
                 """
@@ -95,6 +85,7 @@ class TraceStore:
                 )
                 """
             )
+            _assert_schema_exact(conn, "trace_evaluations", _TRACE_EVALUATION_SCHEMA)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_evaluations_trace ON trace_evaluations(trace_id)")
 
     @staticmethod
@@ -153,14 +144,9 @@ class TraceStore:
                 "message": event.message,
                 "created_at": event.created_at,
             }
-            columns = _table_columns(conn, "trace_events")
-            if "task_id" in columns:
-                values["task_id"] = event.run_id
-            insert_columns = [name for name in values if name in columns]
-            placeholders = ", ".join("?" for _ in insert_columns)
             conn.execute(
-                f"INSERT INTO trace_events({', '.join(insert_columns)}) VALUES ({placeholders})",
-                tuple(values[name] for name in insert_columns),
+                f"INSERT INTO trace_events({', '.join(_TRACE_EVENT_COLUMNS)}) VALUES ({', '.join('?' for _ in _TRACE_EVENT_COLUMNS)})",
+                tuple(values[name] for name in _TRACE_EVENT_COLUMNS),
             )
         return event
 
@@ -315,15 +301,57 @@ def _redact(value: Any) -> Any:
     return value
 
 
-def _ensure_columns(conn, table: str, columns: dict[str, str]) -> None:
-    existing = _table_columns(conn, table)
-    for name, definition in columns.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+_TRACE_EVENT_SCHEMA = [
+    ("id", "TEXT", 0, 1),
+    ("trace_id", "TEXT", 1, 0),
+    ("session_id", "TEXT", 1, 0),
+    ("run_id", "TEXT", 1, 0),
+    ("phase", "TEXT", 1, 0),
+    ("source", "TEXT", 1, 0),
+    ("peer_id", "TEXT", 1, 0),
+    ("sender_id", "TEXT", 1, 0),
+    ("tool", "TEXT", 1, 0),
+    ("model_role", "TEXT", 1, 0),
+    ("ok", "INTEGER", 1, 0),
+    ("input_json", "TEXT", 1, 0),
+    ("output_json", "TEXT", 1, 0),
+    ("message", "TEXT", 1, 0),
+    ("created_at", "REAL", 1, 0),
+]
+
+_TRACE_EVALUATION_SCHEMA = [
+    ("id", "TEXT", 0, 1),
+    ("trace_id", "TEXT", 1, 0),
+    ("outcome", "TEXT", 1, 0),
+    ("failure_domain", "TEXT", 1, 0),
+    ("recommendation", "TEXT", 1, 0),
+    ("evidence_json", "TEXT", 1, 0),
+    ("created_at", "REAL", 1, 0),
+]
+
+_TRACE_EVENT_COLUMNS = [
+    "id",
+    "trace_id",
+    "session_id",
+    "run_id",
+    "phase",
+    "source",
+    "peer_id",
+    "sender_id",
+    "tool",
+    "model_role",
+    "ok",
+    "input_json",
+    "output_json",
+    "message",
+    "created_at",
+]
 
 
-def _table_columns(conn, table: str) -> set[str]:
-    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+def _assert_schema_exact(conn, table: str, expected: list[tuple[str, str, int, int]]) -> None:
+    schema = [(row[1], str(row[2]).upper(), int(row[3]), int(row[5])) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if schema != expected:
+        raise RuntimeError(f"{table} schema mismatch; expected current Navi schema")
 
 
 def _has_unverified_pending_run_completion(events: list[TraceEvent]) -> bool:

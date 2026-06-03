@@ -209,7 +209,6 @@ def test_regression_journey_eval_dataset_tracks_real_incidents():
         "watch_protocol_verification_must_be_object",
         "watch_created_then_delegate_status_false_failure",
         "one_shot_push_became_daily_recurring_watch",
-        "evolution_legacy_schema_run_id_failure",
         "provider_diagnostics_drift",
         "connector_status_drift",
     } <= incident_ids

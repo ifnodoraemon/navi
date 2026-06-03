@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
 from navi.goals import (
     GOAL_STATUS_ACTIVE,
     GOAL_STATUS_BLOCKED,
@@ -62,7 +64,7 @@ def test_goal_store_tracks_task_lifecycle_with_evidence(tmp_path):
     ]
 
 
-def test_goal_store_migrates_legacy_schema(tmp_path):
+def test_goal_store_rejects_schema_drift(tmp_path):
     with sqlite3.connect(tmp_path / "goals.db") as conn:
         conn.execute(
             """
@@ -86,7 +88,7 @@ def test_goal_store_migrates_legacy_schema(tmp_path):
                 id, objective, status, source, peer_id, sender_id,
                 session_id, workspace, created_at, updated_at
             )
-            VALUES ('legacy-goal', 'legacy objective', 'active', '', '', '', '', '', 1, 1)
+            VALUES ('drift-goal', 'drift objective', 'active', '', '', '', '', '', 1, 1)
             """
         )
         conn.execute(
@@ -101,17 +103,11 @@ def test_goal_store_migrates_legacy_schema(tmp_path):
             """
         )
 
-    store = GoalStore(tmp_path)
-
-    legacy = store.get("legacy-goal")
-    assert legacy is not None
-    assert legacy.run_id == ""
-    assert legacy.trace_id == ""
-    assert json.loads(legacy.evidence_json) == {}
-    assert legacy.completed_at == 0.0
+    with pytest.raises(RuntimeError, match="goals schema mismatch"):
+        GoalStore(tmp_path)
 
 
-def test_goal_store_removes_legacy_task_id_not_null_schema(tmp_path):
+def test_goal_store_rejects_task_id_schema_drift(tmp_path):
     with sqlite3.connect(tmp_path / "goals.db") as conn:
         conn.execute(
             """
@@ -136,7 +132,7 @@ def test_goal_store_removes_legacy_task_id_not_null_schema(tmp_path):
                 id, objective, status, source, peer_id, sender_id,
                 session_id, workspace, task_id, created_at, updated_at
             )
-            VALUES ('legacy-goal', 'legacy objective', 'active', '', '', '', '', '', 'legacy-run', 1, 1)
+            VALUES ('drift-goal', 'drift objective', 'active', '', '', '', '', '', 'drift-run', 1, 1)
             """
         )
         conn.execute(
@@ -152,15 +148,5 @@ def test_goal_store_removes_legacy_task_id_not_null_schema(tmp_path):
             """
         )
 
-    store = GoalStore(tmp_path)
-    legacy = store.get("legacy-goal")
-
-    assert legacy is not None
-    assert legacy.run_id == "legacy-run"
-    created = store.create(objective="new objective")
-    assert created.run_id == ""
-    with sqlite3.connect(tmp_path / "goals.db") as conn:
-        goal_columns = {row[1] for row in conn.execute("PRAGMA table_info(goals)").fetchall()}
-        event_columns = {row[1] for row in conn.execute("PRAGMA table_info(goal_events)").fetchall()}
-    assert "task_id" not in goal_columns
-    assert "task_id" not in event_columns
+    with pytest.raises(RuntimeError, match="goals schema mismatch"):
+        GoalStore(tmp_path)

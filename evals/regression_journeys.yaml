@@ -31,12 +31,6 @@ incidents:
   - id: one_shot_push_became_daily_recurring_watch
     covered_by:
       - one_shot_time_push_creates_once_watch
-  - id: evolution_legacy_schema_run_id_failure
-    covered_by:
-      - tests/test_regression_incidents.py:test_evolution_ledger_uses_latest_run_id_schema
-  - id: goals_legacy_task_id_not_null_blocks_chat
-    covered_by:
-      - tests/test_goals.py:test_goal_store_removes_legacy_task_id_not_null_schema
   - id: watch_notification_only_sent_title
     covered_by:
       - tests/test_execution_protocol.py:test_watch_notification_retries_title_only_output

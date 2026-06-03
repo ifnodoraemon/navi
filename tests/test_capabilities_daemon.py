@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from navi.auth import AuthInspector
@@ -9,6 +11,30 @@ from navi.execution import ExecutionService
 from navi.goals import GOAL_STATUS_ACTIVE, GOAL_STATUS_AWAITING_APPROVAL, GOAL_STATUS_VERIFIED_COMPLETE, GoalStore
 from navi.runs import RunStore
 from navi.trust import TrustStore
+
+
+def test_run_store_rejects_watch_schema_drift(tmp_path):
+    with sqlite3.connect(tmp_path / "runs.db") as conn:
+        conn.execute(
+            """
+            CREATE TABLE watches (
+                id TEXT PRIMARY KEY,
+                cron TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                peer_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                next_run_at REAL NOT NULL,
+                last_run_at REAL NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                workspace TEXT NOT NULL
+            )
+            """
+        )
+
+    with pytest.raises(RuntimeError, match="watches schema mismatch"):
+        RunStore(tmp_path)
 
 
 async def _record_prepare_request(capabilities, tmp_path, prompt, *, context=None):

@@ -269,6 +269,30 @@ def test_principles_require_global_design_before_patch():
     assert "Do not patch a tool description to change routing behavior" in principles
 
 
+def test_principles_reject_historical_compatibility_debt():
+    principles = (Path(__file__).resolve().parents[1] / "docs" / "principles.md").read_text(encoding="utf-8")
+
+    assert "No Historical Compatibility Debt" in principles
+    assert "Do not preserve historical prompt formats" in principles
+    assert "Reject schema drift" in principles
+    assert "require reinitialization" in principles
+
+
+def test_durable_stores_do_not_keep_schema_compatibility_paths():
+    goals_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "goals.py").read_text(encoding="utf-8")
+    runs_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "runs.py").read_text(encoding="utf-8")
+    trace_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "trace.py").read_text(encoding="utf-8")
+
+    forbidden = ("_migrate", "_ensure_columns", "ALTER TABLE", "task_id")
+    offenders = {
+        "goals.py": [token for token in forbidden if token in goals_source],
+        "runs.py": [token for token in forbidden if token in runs_source],
+        "trace.py": [token for token in forbidden if token in trace_source],
+    }
+
+    assert offenders == {"goals.py": [], "runs.py": [], "trace.py": []}
+
+
 def test_prompt_os_keeps_policy_manifest_and_turn_data_separate(tmp_path):
     from navi.capabilities import build_capability_registry
     from navi.prompt_os import assemble_planner_system_prompt, assemble_planner_turn_input

@@ -30,6 +30,17 @@ Navi must not fix local failures by casually adding global prompt or code patche
 - If a temporary workaround is unavoidable, document its scope, risk, removal condition, and owner.
 - Every behavior-affecting patch must be reviewable through tests, evals, traces, or documented evidence.
 
+### 1.2 No Historical Compatibility Debt
+
+Navi is pre-1.0 and must favor the declared current architecture over compatibility with old internal shapes.
+
+- Do not preserve historical prompt formats, DB schemas, task shapes, tool aliases, parser shims, or workflow branches after the architecture has moved.
+- Do not migrate old internal schemas unless the migration is the explicit product feature being built.
+- Reject schema drift and stale internal formats loudly instead of silently adapting them.
+- Removing obsolete compatibility paths is preferred over keeping adapter layers that future code must reason about.
+- User-facing provider compatibility, such as OpenAI-compatible APIs, is a declared capability, not historical compatibility debt.
+- If a change breaks old internal state, document the current contract and require reinitialization rather than carrying hidden legacy behavior.
+
 ### 2. Tools Return Facts Only
 
 Tools are fact sensors and actuators. They must not smuggle policy or advice into results.

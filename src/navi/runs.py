@@ -121,6 +121,7 @@ class RunStore:
                 )
                 """
             )
+            _assert_schema_exact(conn, "runs", _RUN_SCHEMA)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS approvals (
@@ -137,6 +138,7 @@ class RunStore:
                 )
                 """
             )
+            _assert_schema_exact(conn, "approvals", _APPROVAL_SCHEMA)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS watches (
@@ -155,7 +157,7 @@ class RunStore:
                 )
                 """
             )
-            self._ensure_watch_columns(conn)
+            _assert_schema_exact(conn, "watches", _WATCH_SCHEMA)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS execution_logs (
@@ -172,6 +174,7 @@ class RunStore:
                 )
                 """
             )
+            _assert_schema_exact(conn, "execution_logs", _EXECUTION_LOG_SCHEMA)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tool_call_logs (
@@ -186,16 +189,11 @@ class RunStore:
                 )
                 """
             )
+            _assert_schema_exact(conn, "tool_call_logs", _TOOL_CALL_LOG_SCHEMA)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_approvals_code ON approvals(code)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_watches_next ON watches(enabled, next_run_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_call_logs_tool ON tool_call_logs(tool, started_at)")
-
-    @staticmethod
-    def _ensure_watch_columns(conn) -> None:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(watches)").fetchall()}
-        if "kind" not in columns:
-            conn.execute("ALTER TABLE watches ADD COLUMN kind TEXT NOT NULL DEFAULT 'recurring'")
 
     def create(
         self,
@@ -880,6 +878,86 @@ class RunStore:
     @staticmethod
     def _new_code() -> str:
         return f"{secrets.randbelow(1_000_000):06d}"
+
+
+_RUN_SCHEMA = [
+    ("id", "TEXT", 0, 1),
+    ("title", "TEXT", 1, 0),
+    ("status", "TEXT", 1, 0),
+    ("created_at", "REAL", 1, 0),
+    ("updated_at", "REAL", 1, 0),
+    ("kind", "TEXT", 1, 0),
+    ("prompt", "TEXT", 1, 0),
+    ("source", "TEXT", 1, 0),
+    ("peer_id", "TEXT", 1, 0),
+    ("sender_id", "TEXT", 1, 0),
+    ("provider", "TEXT", 1, 0),
+    ("workspace", "TEXT", 1, 0),
+    ("autonomy_level", "TEXT", 1, 0),
+    ("trust_rule_id", "TEXT", 1, 0),
+    ("why_now", "TEXT", 1, 0),
+    ("plan_summary", "TEXT", 1, 0),
+    ("result_summary", "TEXT", 1, 0),
+    ("error", "TEXT", 1, 0),
+]
+
+_APPROVAL_SCHEMA = [
+    ("id", "TEXT", 0, 1),
+    ("run_id", "TEXT", 1, 0),
+    ("code", "TEXT", 1, 0),
+    ("action", "TEXT", 1, 0),
+    ("peer_id", "TEXT", 1, 0),
+    ("sender_id", "TEXT", 1, 0),
+    ("status", "TEXT", 1, 0),
+    ("expires_at", "REAL", 1, 0),
+    ("created_at", "REAL", 1, 0),
+    ("updated_at", "REAL", 1, 0),
+]
+
+_WATCH_SCHEMA = [
+    ("id", "TEXT", 0, 1),
+    ("cron", "TEXT", 1, 0),
+    ("prompt", "TEXT", 1, 0),
+    ("peer_id", "TEXT", 1, 0),
+    ("sender_id", "TEXT", 1, 0),
+    ("enabled", "INTEGER", 1, 0),
+    ("next_run_at", "REAL", 1, 0),
+    ("last_run_at", "REAL", 1, 0),
+    ("created_at", "REAL", 1, 0),
+    ("updated_at", "REAL", 1, 0),
+    ("workspace", "TEXT", 1, 0),
+    ("kind", "TEXT", 1, 0),
+]
+
+_EXECUTION_LOG_SCHEMA = [
+    ("id", "TEXT", 0, 1),
+    ("run_id", "TEXT", 1, 0),
+    ("provider", "TEXT", 1, 0),
+    ("phase", "TEXT", 1, 0),
+    ("command", "TEXT", 1, 0),
+    ("stdout", "TEXT", 1, 0),
+    ("stderr", "TEXT", 1, 0),
+    ("exit_code", "INTEGER", 1, 0),
+    ("started_at", "REAL", 1, 0),
+    ("ended_at", "REAL", 1, 0),
+]
+
+_TOOL_CALL_LOG_SCHEMA = [
+    ("id", "TEXT", 0, 1),
+    ("tool", "TEXT", 1, 0),
+    ("args_json", "TEXT", 1, 0),
+    ("ok", "INTEGER", 1, 0),
+    ("facts_json", "TEXT", 1, 0),
+    ("error", "TEXT", 1, 0),
+    ("started_at", "REAL", 1, 0),
+    ("ended_at", "REAL", 1, 0),
+]
+
+
+def _assert_schema_exact(conn, table: str, expected: list[tuple[str, str, int, int]]) -> None:
+    schema = [(row[1], str(row[2]).upper(), int(row[3]), int(row[5])) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if schema != expected:
+        raise RuntimeError(f"{table} schema mismatch; expected current Navi schema")
 
 
 def _approval_diagnostic_facts(approval: Approval, *, now: float, sender_id: str = "") -> dict:
