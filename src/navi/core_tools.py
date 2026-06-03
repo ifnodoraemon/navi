@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import html
+import httpx
+import re
+import shutil
 import subprocess
 from dataclasses import asdict
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 from typing import Any
 
 from .config import load_config
 from .action_tools import load_action_tool_specs
 from .fact_tools import service_facts, run_facts
+from .memory import MemoryStore
+from .operating_context import permission_allows
 from .runs import Approval, RunStore
 from .skills import SkillStore
 from .tools import ToolRegistry, ToolResult, ToolSpec
@@ -71,12 +79,116 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     )
     registry.register(
         ToolSpec(
+            name="skills.view",
+            description="Return one installed skill's full instructions or a safe supporting file by skill name.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "relative_path": {"type": "string", "default": "SKILL.md"},
+                    "max_bytes": {"type": "integer", "default": 50000},
+                },
+                "required": ["name"],
+            },
+            output_schema={"type": "object"},
+        ),
+        lambda args: _skills_view(home, args, workspace=registry.project_dir),
+    )
+    registry.register(
+        ToolSpec(
             name="tools.list",
             description="Return callable capability facts. Tools are executable syscalls, not procedural skills.",
             input_schema={"type": "object", "properties": {}},
             output_schema={"type": "object"},
         ),
         lambda args: _tools_list(registry),
+    )
+    registry.register(
+        ToolSpec(
+            name="memory.list",
+            description="Return typed memory item facts from Navi's local memory store.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string"},
+                    "status": {"type": "string"},
+                    "limit": {"type": "integer", "default": 20},
+                },
+            },
+            output_schema={"type": "object"},
+        ),
+        lambda args: _memory_list(home, args),
+    )
+    registry.register(
+        ToolSpec(
+            name="memory.recall",
+            description="Recall goal-relevant memory facts from Navi's local memory store.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "default": 8},
+                },
+                "required": ["query"],
+            },
+            output_schema={"type": "object"},
+        ),
+        lambda args: _memory_recall(home, args),
+    )
+    registry.register(
+        ToolSpec(
+            name="web.fetch",
+            description="Fetch one public HTTP(S) page and return bounded text, title, links, and response facts.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "max_bytes": {"type": "integer", "default": 200000},
+                    "timeout_seconds": {"type": "integer", "default": 20},
+                },
+                "required": ["url"],
+            },
+            output_schema={"type": "object"},
+        ),
+        lambda args: _web_fetch(args),
+    )
+    registry.register(
+        ToolSpec(
+            name="web.extract",
+            description="Extract structured fields, headings, links, and readable text from provided HTML or text.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string"},
+                    "base_url": {"type": "string"},
+                    "patterns": {"type": "object"},
+                    "max_items": {"type": "integer", "default": 50},
+                },
+                "required": ["content"],
+            },
+            output_schema={"type": "object"},
+        ),
+        lambda args: _web_extract(args),
+    )
+    registry.register(
+        ToolSpec(
+            name="browser.screenshot",
+            description="Capture a screenshot of an HTTP(S) or localhost page with the Playwright CLI when available.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "path": {"type": "string"},
+                    "timeout_seconds": {"type": "integer", "default": 30},
+                },
+                "required": ["url", "path"],
+            },
+            output_schema={"type": "object"},
+            facts_only=False,
+            mutates=True,
+            permission="write",
+        ),
+        lambda args: _browser_screenshot(args, project_dir=registry.project_dir),
     )
     registry.register(
         ToolSpec(
@@ -293,7 +405,7 @@ def _provider_config(home: Path) -> ToolResult:
 
 
 def _skills_list(home: Path, *, workspace: Path) -> ToolResult:
-    skills = SkillStore(home).list_skills(permission_ceiling="read", workspace=workspace)
+    skills = SkillStore(home).list_skills(permission_ceiling="write", workspace=workspace)
     return ToolResult(
         tool="skills.list",
         ok=True,
@@ -301,6 +413,7 @@ def _skills_list(home: Path, *, workspace: Path) -> ToolResult:
             "category": "skills",
             "definition": "procedural guidance packages loaded into Navi's prompt context",
             "not_tools": True,
+            "prompt_permission_ceiling": "read",
             "skills": [
                 {
                     "name": skill.name,
@@ -308,12 +421,50 @@ def _skills_list(home: Path, *, workspace: Path) -> ToolResult:
                     "source": skill.source,
                     "scope": skill.scope,
                     "permission": skill.permission,
+                    "injectable_with_read_ceiling": permission_allows(skill.permission, "read"),
                     "verified": skill.verified,
                     "tags": list(skill.tags),
                 }
                 for skill in skills
             ],
             "count": len(skills),
+        },
+    )
+
+
+def _skills_view(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolResult:
+    name = str(args.get("name") or "").strip().lower()
+    if not name:
+        return ToolResult(tool="skills.view", ok=False, error="name is required")
+    relative = str(args.get("relative_path") or "SKILL.md").strip() or "SKILL.md"
+    limit = _positive_int(args.get("max_bytes"), default=50000, maximum=200000)
+    store = SkillStore(home)
+    skills = store.list_skills(permission_ceiling="write", workspace=workspace)
+    skill = next((item for item in skills if item.name.lower() == name or item.path.parent.name.lower() == name), None)
+    if skill is None:
+        return ToolResult(tool="skills.view", ok=False, error="skill not found", facts={"name": name})
+    base_dir = skill.path.parent.resolve()
+    target = (base_dir / relative).resolve()
+    if base_dir != target and base_dir not in target.parents:
+        return ToolResult(tool="skills.view", ok=False, error="relative_path must stay inside the skill directory")
+    if not target.exists() or not target.is_file():
+        return ToolResult(tool="skills.view", ok=False, error="skill file not found", facts={"path": str(target)})
+    data = target.read_bytes()
+    truncated = len(data) > limit
+    content = data[:limit].decode("utf-8", errors="replace")
+    return ToolResult(
+        tool="skills.view",
+        ok=True,
+        facts={
+            "name": skill.name,
+            "description": skill.description,
+            "permission": skill.permission,
+            "injectable_with_read_ceiling": permission_allows(skill.permission, "read"),
+            "path": str(target),
+            "relative_path": str(target.relative_to(base_dir)),
+            "size": len(data),
+            "truncated": truncated,
+            "content": content,
         },
     )
 
@@ -345,6 +496,166 @@ def _tools_list(registry: ToolRegistry) -> ToolResult:
     )
 
 
+def _memory_item_facts(item) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "type": item.type,
+        "status": item.status,
+        "scope": item.scope,
+        "content": item.content,
+        "source": item.source,
+        "confidence": item.confidence,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "last_verified_at": item.last_verified_at,
+        "expires_at": item.expires_at,
+        "metadata": item.metadata,
+    }
+
+
+def _memory_list(home: Path, args: dict[str, Any]) -> ToolResult:
+    limit = _positive_int(args.get("limit"), default=20, maximum=100)
+    memory_type = str(args.get("type") or "").strip().lower() or None
+    status = str(args.get("status") or "").strip().lower() or None
+    try:
+        items = MemoryStore(home).list_items(memory_type=memory_type, status=status, limit=limit)
+    except ValueError as exc:
+        return ToolResult(tool="memory.list", ok=False, error=str(exc))
+    return ToolResult(
+        tool="memory.list",
+        ok=True,
+        facts={
+            "items": [_memory_item_facts(item) for item in items],
+            "count": len(items),
+            "limit": limit,
+            "type": memory_type or "",
+            "status": status or "",
+        },
+    )
+
+
+def _memory_recall(home: Path, args: dict[str, Any]) -> ToolResult:
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return ToolResult(tool="memory.recall", ok=False, error="query is required")
+    limit = _positive_int(args.get("limit"), default=8, maximum=50)
+    items = MemoryStore(home).recall(query, limit=limit)
+    return ToolResult(
+        tool="memory.recall",
+        ok=True,
+        facts={
+            "query": query,
+            "items": [_memory_item_facts(item) for item in items],
+            "count": len(items),
+            "limit": limit,
+            "rendered": MemoryStore(home).render_context(query, limit=limit),
+        },
+    )
+
+
+def _web_fetch(args: dict[str, Any]) -> ToolResult:
+    url = str(args.get("url") or "").strip()
+    if not _is_public_http_url(url):
+        return ToolResult(tool="web.fetch", ok=False, error="url must be http(s) and must not target private hosts")
+    limit = _positive_int(args.get("max_bytes"), default=200000, maximum=1000000)
+    timeout = _positive_int(args.get("timeout_seconds"), default=20, maximum=60)
+    try:
+        response = httpx.get(
+            url,
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": "Navi/0.1 web.fetch"},
+        )
+    except Exception as exc:
+        return ToolResult(tool="web.fetch", ok=False, error=str(exc), facts={"url": url})
+    raw = response.content[:limit]
+    content = raw.decode(response.encoding or "utf-8", errors="replace")
+    parsed = _parse_html(content, base_url=str(response.url))
+    return ToolResult(
+        tool="web.fetch",
+        ok=response.status_code < 400,
+        error="" if response.status_code < 400 else f"HTTP {response.status_code}",
+        facts={
+            "url": url,
+            "final_url": str(response.url),
+            "status_code": response.status_code,
+            "content_type": response.headers.get("content-type", ""),
+            "bytes_read": len(raw),
+            "truncated": len(response.content) > limit,
+            "title": parsed["title"],
+            "text": parsed["text"],
+            "links": parsed["links"][:50],
+        },
+    )
+
+
+def _web_extract(args: dict[str, Any]) -> ToolResult:
+    content = str(args.get("content") or "")
+    if not content:
+        return ToolResult(tool="web.extract", ok=False, error="content is required")
+    base_url = str(args.get("base_url") or "").strip()
+    limit = _positive_int(args.get("max_items"), default=50, maximum=200)
+    parsed = _parse_html(content, base_url=base_url)
+    patterns = args.get("patterns") if isinstance(args.get("patterns"), dict) else {}
+    extracted: dict[str, list[str]] = {}
+    for key, pattern in patterns.items():
+        if not isinstance(key, str) or not isinstance(pattern, str):
+            continue
+        try:
+            matches = re.findall(pattern, content, flags=re.IGNORECASE | re.MULTILINE)
+        except re.error as exc:
+            return ToolResult(tool="web.extract", ok=False, error=f"invalid pattern for {key}: {exc}")
+        values = [match if isinstance(match, str) else " ".join(str(part) for part in match) for match in matches]
+        extracted[key] = values[:limit]
+    return ToolResult(
+        tool="web.extract",
+        ok=True,
+        facts={
+            "title": parsed["title"],
+            "headings": parsed["headings"][:limit],
+            "links": parsed["links"][:limit],
+            "text": parsed["text"],
+            "patterns": extracted,
+        },
+    )
+
+
+def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
+    url = str(args.get("url") or "").strip()
+    if not _is_browser_url(url):
+        return ToolResult(tool="browser.screenshot", ok=False, error="url must be http(s) or localhost")
+    output, error = _project_path(args.get("path"), project_dir=project_dir)
+    if error:
+        return ToolResult(tool="browser.screenshot", ok=False, error=error)
+    assert output is not None
+    if output.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+        return ToolResult(tool="browser.screenshot", ok=False, error="path must end with .png, .jpg, or .jpeg")
+    playwright = shutil.which("playwright")
+    if not playwright:
+        return ToolResult(
+            tool="browser.screenshot",
+            ok=False,
+            error="playwright CLI not found",
+            facts={"url": url, "path": str(output)},
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    timeout = _positive_int(args.get("timeout_seconds"), default=30, maximum=120)
+    result = _run_command([playwright, "screenshot", url, str(output)], cwd=project_dir, timeout=timeout)
+    ok = result["exit_code"] == 0 and output.exists()
+    return ToolResult(
+        tool="browser.screenshot",
+        ok=ok,
+        error="" if ok else result["stderr"],
+        facts={
+            **result,
+            "url": url,
+            "path": str(output),
+            "exists": output.exists(),
+            "size": output.stat().st_size if output.exists() else 0,
+        },
+    )
+
+
 def _is_safe_path(path: Path, project_dir: Path) -> bool:
     try:
         resolved_path = path.resolve().absolute()
@@ -352,6 +663,106 @@ def _is_safe_path(path: Path, project_dir: Path) -> bool:
         return resolved_project == resolved_path or resolved_project in resolved_path.parents
     except Exception:
         return False
+
+
+def _is_public_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    host = (parsed.hostname or "").lower()
+    if host in {"localhost"} or host.startswith("127.") or host.startswith("10.") or host.startswith("192.168."):
+        return False
+    if host.startswith("172."):
+        parts = host.split(".")
+        if len(parts) > 1:
+            try:
+                second = int(parts[1])
+            except ValueError:
+                second = -1
+            if 16 <= second <= 31:
+                return False
+    return True
+
+
+def _is_browser_url(value: str) -> bool:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    host = (parsed.hostname or "").lower()
+    return bool(host)
+
+
+class _ReadableHTMLParser(HTMLParser):
+    def __init__(self, *, base_url: str = ""):
+        super().__init__()
+        self.base_url = base_url
+        self.title = ""
+        self.links: list[dict[str, str]] = []
+        self.headings: list[dict[str, str]] = []
+        self._text_parts: list[str] = []
+        self._current_tag = ""
+        self._heading_tag = ""
+        self._heading_parts: list[str] = []
+        self._title_parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._current_tag = tag.lower()
+        if self._current_tag in {"script", "style", "noscript"}:
+            self._skip_depth += 1
+        if self._current_tag == "a":
+            attrs_dict = {key.lower(): value or "" for key, value in attrs}
+            href = attrs_dict.get("href", "").strip()
+            if href:
+                self.links.append({"href": urljoin(self.base_url, href), "text": ""})
+        if self._current_tag in {"h1", "h2", "h3"}:
+            self._heading_tag = self._current_tag
+            self._heading_parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in {"script", "style", "noscript"} and self._skip_depth:
+            self._skip_depth -= 1
+        if tag == "title" and self._title_parts and not self.title:
+            self.title = _clean_text(" ".join(self._title_parts))
+        if tag == self._heading_tag and self._heading_parts:
+            self.headings.append({"level": tag, "text": _clean_text(" ".join(self._heading_parts))})
+            self._heading_tag = ""
+            self._heading_parts = []
+        self._current_tag = ""
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        value = _clean_text(data)
+        if not value:
+            return
+        if self._current_tag == "title":
+            self._title_parts.append(value)
+        if self._heading_tag:
+            self._heading_parts.append(value)
+        if self.links and self._current_tag == "a" and not self.links[-1]["text"]:
+            self.links[-1]["text"] = value
+        self._text_parts.append(value)
+
+    @property
+    def text(self) -> str:
+        return _truncate_output(_clean_text(" ".join(self._text_parts)), limit=12000)
+
+
+def _parse_html(content: str, *, base_url: str = "") -> dict[str, Any]:
+    parser = _ReadableHTMLParser(base_url=base_url)
+    try:
+        parser.feed(content)
+    except Exception:
+        plain = _truncate_output(_clean_text(html.unescape(re.sub(r"<[^>]+>", " ", content))), limit=12000)
+        return {"title": "", "text": plain, "links": [], "headings": []}
+    text = parser.text or _truncate_output(_clean_text(html.unescape(re.sub(r"<[^>]+>", " ", content))), limit=12000)
+    return {"title": parser.title, "text": text, "links": parser.links, "headings": parser.headings}
+
+
+def _clean_text(value: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(str(value or ""))).strip()
 
 
 def _filesystem_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:

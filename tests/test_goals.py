@@ -109,3 +109,58 @@ def test_goal_store_migrates_legacy_schema(tmp_path):
     assert legacy.trace_id == ""
     assert json.loads(legacy.evidence_json) == {}
     assert legacy.completed_at == 0.0
+
+
+def test_goal_store_removes_legacy_task_id_not_null_schema(tmp_path):
+    with sqlite3.connect(tmp_path / "goals.db") as conn:
+        conn.execute(
+            """
+            CREATE TABLE goals (
+                id TEXT PRIMARY KEY,
+                objective TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source TEXT NOT NULL,
+                peer_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                workspace TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO goals(
+                id, objective, status, source, peer_id, sender_id,
+                session_id, workspace, task_id, created_at, updated_at
+            )
+            VALUES ('legacy-goal', 'legacy objective', 'active', '', '', '', '', '', 'legacy-run', 1, 1)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE goal_events (
+                id TEXT PRIMARY KEY,
+                goal_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+
+    store = GoalStore(tmp_path)
+    legacy = store.get("legacy-goal")
+
+    assert legacy is not None
+    assert legacy.run_id == "legacy-run"
+    created = store.create(objective="new objective")
+    assert created.run_id == ""
+    with sqlite3.connect(tmp_path / "goals.db") as conn:
+        goal_columns = {row[1] for row in conn.execute("PRAGMA table_info(goals)").fetchall()}
+        event_columns = {row[1] for row in conn.execute("PRAGMA table_info(goal_events)").fetchall()}
+    assert "task_id" not in goal_columns
+    assert "task_id" not in event_columns

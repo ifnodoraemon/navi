@@ -242,3 +242,90 @@ def test_skill_store_built_in_and_override(tmp_path):
     # Check only-builtin is correctly loaded
     assert skill_map["only-builtin"].path == s2 / "SKILL.md"
 
+
+def test_builtin_general_skills_are_available(tmp_path):
+    from navi.skills import SkillStore
+    from navi.tools import build_tool_gateway
+
+    expected = {
+        "Browser Operator",
+        "GitHub Workflow",
+        "Structured Output",
+        "Systematic Debugging",
+        "Test Driven Development",
+        "Web Research Crawler",
+    }
+
+    store = SkillStore(tmp_path)
+    skill_names = {skill.name for skill in store.list_skills(permission_ceiling="read")}
+
+    assert expected <= skill_names
+
+    gateway = build_tool_gateway(tmp_path, project_dir=tmp_path)
+    result = gateway.call("skills.list")
+
+    assert result.ok
+    listed = {item["name"] for item in result.facts["skills"]}
+    assert expected <= listed
+    assert "Memory Curator" in listed
+    curator = next(item for item in result.facts["skills"] if item["name"] == "Memory Curator")
+    assert curator["permission"] == "write"
+    assert curator["injectable_with_read_ceiling"] is False
+
+
+def test_core_support_tools_expose_skills_memory_web_and_browser(tmp_path, monkeypatch):
+    import httpx
+
+    from navi.memory import MemoryStore
+    from navi.tools import build_tool_gateway
+
+    gateway = build_tool_gateway(tmp_path, project_dir=tmp_path)
+
+    viewed = gateway.call("skills.view", {"name": "Web Research Crawler"})
+    assert viewed.ok
+    assert "Web Research Crawler Skill" in viewed.facts["content"]
+
+    memory = MemoryStore(tmp_path)
+    memory.add_item(
+        "preference",
+        "Prefer regression evals for user-visible Navi failures.",
+        source="test",
+        status="active",
+        confidence=0.9,
+    )
+    listed = gateway.call("memory.list", {"type": "preference", "status": "active"})
+    assert listed.ok
+    assert listed.facts["items"][0]["type"] == "preference"
+    recalled = gateway.call("memory.recall", {"query": "regression evals"})
+    assert recalled.ok
+    assert recalled.facts["count"] == 1
+
+    html = "<html><head><title>Doc</title></head><body><h1>Main</h1><a href='/a'>A</a>Contact: hi@example.com</body></html>"
+    extracted = gateway.call(
+        "web.extract",
+        {"content": html, "base_url": "https://example.com/root", "patterns": {"emails": r"[\w.-]+@[\w.-]+"}},
+    )
+    assert extracted.ok
+    assert extracted.facts["title"] == "Doc"
+    assert extracted.facts["links"][0]["href"] == "https://example.com/a"
+    assert extracted.facts["patterns"]["emails"] == ["hi@example.com"]
+
+    def fake_get(url, **kwargs):
+        assert url == "https://example.com/page"
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<title>Fetched</title><p>Hello</p>",
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr("navi.core_tools.httpx.get", fake_get)
+    fetched = gateway.call("web.fetch", {"url": "https://example.com/page"})
+    assert fetched.ok
+    assert fetched.facts["title"] == "Fetched"
+    assert "Hello" in fetched.facts["text"]
+
+    monkeypatch.setattr("navi.core_tools.shutil.which", lambda name: None)
+    screenshot = gateway.call("browser.screenshot", {"url": "https://example.com", "path": "shot.png"})
+    assert not screenshot.ok
+    assert screenshot.error == "playwright CLI not found"

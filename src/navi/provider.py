@@ -321,6 +321,13 @@ def _mock_planner_syscall(text: str, context: str = "", observations: str = "") 
     is_fix_follow_up = _has(text, "\u4fee\u590d", "\u5982\u4f55\u4fee", "fix")
     mentions_execution_protocol = _has(combined, "execution protocol", "navi_execution")
 
+    if '"capability": "skills.list"' in observations or '"capability": "tools.list"' in observations:
+        return _mock_syscall(
+            "final.answer",
+            "read",
+            {"message": _mock_observation_answer(observations)},
+            "mock inventory facts are sufficient",
+        )
     if run_id and '"status": "awaiting_approval"' in observations:
         return _mock_syscall(
             "final.answer",
@@ -358,8 +365,21 @@ def _mock_planner_syscall(text: str, context: str = "", observations: str = "") 
         return _mock_syscall("clarify.ask", "read", {"message": "Please provide an exact recurring schedule or reminder capability."}, "mock schedule clarification")
     if _looks_like_inventory_query(text) and _has(text.lower(), "skill"):
         return _mock_syscall("skills.list", "read", {}, "mock skills facts route")
+    if _has(text.lower(), "browser operator") and _has(text, "\u8bf4\u660e"):
+        return _mock_syscall("skills.view", "read", {"name": "Browser Operator"}, "mock skill view route")
     if (_looks_like_inventory_query(text) and _has(text, "\u5de5\u5177")) or _has(text, "\u53ef\u4ee5\u505a\u4ec0\u4e48"):
         return _mock_syscall("tools.list", "read", {}, "mock tools facts route")
+    if _has(text, "\u8bb0\u5fc6") and _has(text, "\u5217\u51fa"):
+        return _mock_syscall("memory.list", "read", {"status": "active"}, "mock memory list route")
+    if _has(text, "\u56de\u5fc6") and _has(text, "\u8bb0\u5fc6"):
+        return _mock_syscall("memory.recall", "read", {"query": text}, "mock memory recall route")
+    url = _extract_first_url(text)
+    if url and _has(text, "\u6293\u53d6"):
+        return _mock_syscall("web.fetch", "read", {"url": url}, "mock web fetch route")
+    if _has(text.lower(), "html") and _has(text, "\u63d0\u53d6"):
+        return _mock_syscall("web.extract", "read", {"content": text}, "mock web extract route")
+    if url and _has(text, "\u622a\u56fe", "screenshot"):
+        return _mock_syscall("browser.screenshot", "write", {"url": url, "path": "example.png"}, "mock browser screenshot route")
 
     if mentions_execution_protocol and is_fix_follow_up:
         return _mock_syscall("delegate.spawn", "prepare", {"prompt": combined.strip()}, "mock execution protocol repair route")
@@ -494,6 +514,11 @@ def _extract_any_run_id(text: str) -> str:
         return marked.group(1)
     match = re.search(r"\b[a-f0-9]{32}\b", text)
     return match.group(0) if match else ""
+
+
+def _extract_first_url(text: str) -> str:
+    match = re.search(r"https?://[^\s，。；,;]+", text)
+    return match.group(0).rstrip("'\"）)") if match else ""
 
 
 def _extract_watch_id(text: str) -> str:

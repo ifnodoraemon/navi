@@ -323,6 +323,10 @@ class WeixinService:
             self.record_event("background.sent", peer_id=task.peer_id, background_event="run_execution_finished", text_preview=text[:120])
 
     async def _compose_background_message(self, facts: dict, *, fallback: str) -> str:
+        if facts.get("event") == "watch_result":
+            raw_result = str(facts.get("raw_result") or "").strip()
+            if raw_result:
+                return raw_result
         try:
             text = await self.runtime.complete(
                 [

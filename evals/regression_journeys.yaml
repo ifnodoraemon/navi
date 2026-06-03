@@ -22,6 +22,9 @@ incidents:
     covered_by:
       - tests/test_execution_protocol.py:test_watch_notification_does_not_fail_on_malformed_execution_protocol
       - tests/test_weixin.py:test_weixin_background_watch_result_sends_visible_message_and_event
+  - id: delegated_prepare_protocol_shape_error_recovers_once
+    covered_by:
+      - tests/test_execution_protocol.py:test_execution_protocol_shape_error_gets_one_repair_attempt
   - id: watch_created_then_delegate_status_false_failure
     covered_by:
       - exact_schedule_watch_creation_returns_watch_without_new_run
@@ -31,6 +34,16 @@ incidents:
   - id: evolution_legacy_schema_run_id_failure
     covered_by:
       - tests/test_regression_incidents.py:test_evolution_ledger_uses_latest_run_id_schema
+  - id: goals_legacy_task_id_not_null_blocks_chat
+    covered_by:
+      - tests/test_goals.py:test_goal_store_removes_legacy_task_id_not_null_schema
+  - id: watch_notification_only_sent_title
+    covered_by:
+      - tests/test_execution_protocol.py:test_watch_notification_retries_title_only_output
+      - tests/test_execution_protocol.py:test_watch_notification_protocol_summary_is_logged_without_actuator
+  - id: weixin_watch_result_prefixed_instead_of_raw_push
+    covered_by:
+      - tests/test_weixin.py:test_weixin_background_watch_result_sends_visible_message_and_event
   - id: provider_diagnostics_drift
     covered_by:
       - provider_config_check_does_not_create_task

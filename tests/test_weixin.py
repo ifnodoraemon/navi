@@ -650,6 +650,7 @@ async def test_weixin_background_watch_result_sends_visible_message_and_event(tm
 
     assert service.client.sent[-1]["peer_id"] == "peer"
     assert service.client.sent[-1]["text"] == "pmp"
+    assert provider.messages == []
     events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8")
     assert "background.sent" in events
     assert "watch_result" in events

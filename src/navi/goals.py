@@ -89,6 +89,7 @@ class GoalStore:
                     "completed_at": "REAL NOT NULL DEFAULT 0.0",
                 },
             )
+            _migrate_goals_to_latest_schema(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS goal_events (
@@ -112,6 +113,7 @@ class GoalStore:
                     "evidence_json": "TEXT NOT NULL DEFAULT '{}'",
                 },
             )
+            _migrate_goal_events_to_latest_schema(conn)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status, updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_run ON goals(run_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goal_events_goal ON goal_events(goal_id, created_at)")
@@ -385,3 +387,137 @@ def _ensure_columns(conn, table: str, columns: dict[str, str]) -> None:
     for name, definition in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def _table_columns(conn, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _expr_for_column(columns: set[str], name: str, default: str) -> str:
+    if name == "run_id" and "task_id" in columns:
+        return "COALESCE(NULLIF(run_id, ''), task_id, '')" if "run_id" in columns else "COALESCE(task_id, '')"
+    if name in columns:
+        return name
+    return default
+
+
+def _needs_rebuild(conn, table: str, expected: list[str]) -> bool:
+    columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    return columns != expected
+
+
+def _migrate_goals_to_latest_schema(conn) -> None:
+    expected = [
+        "id",
+        "objective",
+        "status",
+        "source",
+        "peer_id",
+        "sender_id",
+        "session_id",
+        "workspace",
+        "run_id",
+        "trace_id",
+        "evidence_json",
+        "blocked_reason",
+        "created_at",
+        "updated_at",
+        "completed_at",
+    ]
+    if not _needs_rebuild(conn, "goals", expected):
+        return
+    columns = _table_columns(conn, "goals")
+    conn.execute(
+        """
+        CREATE TABLE goals_latest (
+            id TEXT PRIMARY KEY,
+            objective TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source TEXT NOT NULL,
+            peer_id TEXT NOT NULL,
+            sender_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            workspace TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            trace_id TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            blocked_reason TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            completed_at REAL NOT NULL
+        )
+        """
+    )
+    select_exprs = [
+        _expr_for_column(columns, "id", "''"),
+        _expr_for_column(columns, "objective", "''"),
+        _expr_for_column(columns, "status", f"'{GOAL_STATUS_ACTIVE}'"),
+        _expr_for_column(columns, "source", "''"),
+        _expr_for_column(columns, "peer_id", "''"),
+        _expr_for_column(columns, "sender_id", "''"),
+        _expr_for_column(columns, "session_id", "''"),
+        _expr_for_column(columns, "workspace", "''"),
+        _expr_for_column(columns, "run_id", "''"),
+        _expr_for_column(columns, "trace_id", "''"),
+        _expr_for_column(columns, "evidence_json", "'{}'"),
+        _expr_for_column(columns, "blocked_reason", "''"),
+        _expr_for_column(columns, "created_at", "0.0"),
+        _expr_for_column(columns, "updated_at", "0.0"),
+        _expr_for_column(columns, "completed_at", "0.0"),
+    ]
+    conn.execute(
+        f"""
+        INSERT INTO goals_latest({", ".join(expected)})
+        SELECT {", ".join(select_exprs)} FROM goals
+        """
+    )
+    conn.execute("DROP TABLE goals")
+    conn.execute("ALTER TABLE goals_latest RENAME TO goals")
+
+
+def _migrate_goal_events_to_latest_schema(conn) -> None:
+    expected = [
+        "id",
+        "goal_id",
+        "event_type",
+        "status",
+        "run_id",
+        "trace_id",
+        "evidence_json",
+        "created_at",
+    ]
+    if not _needs_rebuild(conn, "goal_events", expected):
+        return
+    columns = _table_columns(conn, "goal_events")
+    conn.execute(
+        """
+        CREATE TABLE goal_events_latest (
+            id TEXT PRIMARY KEY,
+            goal_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            trace_id TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )
+        """
+    )
+    select_exprs = [
+        _expr_for_column(columns, "id", "''"),
+        _expr_for_column(columns, "goal_id", "''"),
+        _expr_for_column(columns, "event_type", "''"),
+        _expr_for_column(columns, "status", "''"),
+        _expr_for_column(columns, "run_id", "''"),
+        _expr_for_column(columns, "trace_id", "''"),
+        _expr_for_column(columns, "evidence_json", "'{}'"),
+        _expr_for_column(columns, "created_at", "0.0"),
+    ]
+    conn.execute(
+        f"""
+        INSERT INTO goal_events_latest({", ".join(expected)})
+        SELECT {", ".join(select_exprs)} FROM goal_events
+        """
+    )
+    conn.execute("DROP TABLE goal_events")
+    conn.execute("ALTER TABLE goal_events_latest RENAME TO goal_events")

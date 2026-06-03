@@ -13,12 +13,14 @@ from navi.subagents import SubagentRunStore
 
 
 class ScriptedProvider:
-    def __init__(self, response: str):
+    def __init__(self, response: str | list[str]):
         self.response = response
         self.messages: list[list[ChatMessage]] = []
 
     async def complete(self, messages: list[ChatMessage]) -> str:
         self.messages.append(messages)
+        if isinstance(self.response, list):
+            return self.response.pop(0)
         return self.response
 
 
@@ -125,7 +127,7 @@ async def test_watch_notification_protocol_summary_is_logged_without_actuator(tm
     )
 
     assert result.exit_code == 0
-    assert result.summary == "今晚的通识知识"
+    assert result.summary == "今晚的通识知识：证据由 Navi actuator 生成。"
     assert result.protocol.steps[0]["actions"][0]["kind"] == "watch_notification"
     assert result.protocol.verification["status"] == "completed"
     logs = RunStore(tmp_path).list_execution_logs()
@@ -153,6 +155,67 @@ async def test_free_form_execution_output_fails_required_protocol(tmp_path):
     recorded = json.loads(protocol_log.stdout)
     assert recorded["completion"]["status"] == "failed"
     assert recorded["verification"]["reason"] == "provider output violated the required execution protocol"
+
+
+@pytest.mark.asyncio
+async def test_execution_protocol_shape_error_gets_one_repair_attempt(tmp_path):
+    runs = RunStore(tmp_path)
+    task = runs.create("Repair protocol task", prompt="prepare a simple answer", workspace=str(tmp_path))
+    repaired = {
+        "navi_execution": {
+            "version": EXECUTION_PROTOCOL_VERSION,
+            "phase": "prepare",
+            "run_id": task.id,
+            "plan_id": "repair-ok",
+            "steps": [
+                {
+                    "id": "answer",
+                    "actions": [{"tool": "final.answer", "permission": "read", "args": {"message": "准备完成。"}}],
+                    "verification": {"checks": [], "reason": "corrected schema"},
+                    "on_failure": "stop",
+                }
+            ],
+            "evidence": [{"kind": "model_repair", "summary": "schema corrected"}],
+            "verification": {"status": "proposed", "checks": [], "reason": "corrected schema"},
+            "completion": {"status": "proposed", "summary": "准备完成。"},
+        }
+    }
+    provider = ScriptedProvider(
+        [
+            json.dumps(
+                {
+                    "navi_execution": {
+                        "version": EXECUTION_PROTOCOL_VERSION,
+                        "phase": "prepare",
+                        "run_id": task.id,
+                        "plan_id": "bad-shape",
+                        "steps": [
+                            {
+                                "id": "bad",
+                                "actions": [{"tool": "final.answer", "permission": "read", "args": {"message": "bad"}}],
+                                "verification": ["bad shape"],
+                            }
+                        ],
+                        "evidence": {"bad": "shape"},
+                        "verification": ["bad shape"],
+                        "completion": {"status": "proposed", "summary": "bad"},
+                    }
+                }
+            ),
+            json.dumps(repaired),
+        ]
+    )
+    execution = ExecutionService(tmp_path)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    updated = await execution.plan_task(task)
+
+    assert updated.status == "prepared"
+    assert updated.plan_summary == "准备完成。"
+    assert len(provider.messages) == 2
+    assert "execution protocol" in provider.messages[1][-1].content
+    prepare_log = next(log for log in runs.list_execution_logs(task.id) if log.phase == "prepare")
+    assert "--protocol-repair" in prepare_log.command
 
 
 @pytest.mark.asyncio
@@ -231,6 +294,29 @@ async def test_watch_notification_extracts_summary_from_valid_protocol():
 
     assert result.exit_code == 0
     assert result.summary == "PMP reminder"
+
+
+@pytest.mark.asyncio
+async def test_watch_notification_retries_title_only_output():
+    provider = ScriptedProvider(
+        [
+            "通识讲解",
+            "通识讲解：今天用一个例子理解沉没成本。已经付出的成本不应该决定下一步选择，关键是继续投入是否还能带来新的价值。日常决策里可以问自己：如果今天才开始，我还会选它吗？",
+        ]
+    )
+    execution = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+
+    result = await execution.run_watch(
+        prompt="通识讲解",
+        source="watch",
+        peer_id="peer",
+        sender_id="sender",
+        workspace="",
+    )
+
+    assert result.exit_code == 0
+    assert result.summary.startswith("通识讲解：今天用一个例子理解沉没成本")
+    assert len(provider.messages) == 2
 
 
 @pytest.mark.asyncio

@@ -102,7 +102,6 @@ async def test_customer_journey_scheduled_watch_sends_message_without_failed_tas
             '{"tool":"watch.create","permission":"prepare","args":{"prompt":"讲解通识知识","cron":"0 20 * * *"},"confidence":0.95,"reason":"customer scheduled watch"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"已创建每天晚上 8 点的通识知识定时任务。"},"confidence":0.95,"reason":"watch created"}',
             _watch_protocol("今晚的通识知识：证据由 Navi actuator 生成。"),
-            "今晚的通识知识：证据由 Navi actuator 生成。",
         ]
     )
     service, account = _service(tmp_path, provider)

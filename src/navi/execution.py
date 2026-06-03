@@ -669,6 +669,9 @@ class NaviExecutionProvider:
                 "system",
                 "You are Navi running a scheduled watch. Complete the scheduled request directly. "
                 "Return the exact notification text to send to the user. "
+                "If the scheduled request is only a topic or title, expand it into a useful, self-contained notification "
+                "with concrete content. Do not merely repeat the scheduled request. "
+                "For learning or briefing requests, include a short title plus 3-5 concise sentences or bullets. "
                 "Do not create a task, ask for approval, call tools, or mention external execution tools.",
             ),
             ChatMessage(
@@ -688,6 +691,23 @@ class NaviExecutionProvider:
                 self.provider.complete_for("notification", messages),
                 timeout=self.timeout_seconds,
             )
+            if _is_title_only_watch_notification(stdout, prompt):
+                retry_messages = [
+                    *messages,
+                    ChatMessage("assistant", stdout.strip()),
+                    ChatMessage(
+                        "user",
+                        (
+                            "The previous watch notification was only a title or repeated the request. "
+                            "Rewrite it as the exact user-facing push message with substantive content. "
+                            "Do not mention this correction."
+                        ),
+                    ),
+                ]
+                stdout = await asyncio.wait_for(
+                    self.provider.complete_for("notification", retry_messages),
+                    timeout=self.timeout_seconds,
+                )
             return self._watch_result(
                 provider=INTERNAL_EXECUTION_PROVIDER,
                 command=["navi", "subagent", SUBAGENT_NOTIFICATION_ROLE, "watch"],
@@ -735,7 +755,7 @@ class NaviExecutionProvider:
                 self.provider.complete_for(role, messages),
                 timeout=self.timeout_seconds,
             )
-            return self._result(
+            result = self._result(
                 run_id=task.id,
                 phase=phase,
                 provider=INTERNAL_EXECUTION_PROVIDER,
@@ -747,6 +767,37 @@ class NaviExecutionProvider:
                 ended_at=time.time(),
                 model_role=role,
             )
+            if _should_retry_execution_protocol_result(result):
+                repair_messages = [
+                    *messages,
+                    ChatMessage("assistant", stdout.strip()),
+                    ChatMessage(
+                        "user",
+                        (
+                            f"The previous response failed Navi's required execution protocol: {result.stderr}. "
+                            "Return only one corrected JSON object with key `navi_execution`. "
+                            "`evidence` must be a list. Top-level `verification` must be an object. "
+                            "Every step `verification` must be an object. `steps` and every `actions` field must be non-empty lists."
+                        ),
+                    ),
+                ]
+                repaired_stdout = await asyncio.wait_for(
+                    self.provider.complete_for(role, repair_messages),
+                    timeout=self.timeout_seconds,
+                )
+                return self._result(
+                    run_id=task.id,
+                    phase=phase,
+                    provider=INTERNAL_EXECUTION_PROVIDER,
+                    command=["navi", "subagent", role, phase, task.id, "--protocol-repair"],
+                    stdout=repaired_stdout,
+                    stderr="",
+                    exit_code=0,
+                    started_at=started,
+                    ended_at=time.time(),
+                    model_role=role,
+                )
+            return result
         except asyncio.TimeoutError:
             return self._result(
                 run_id=task.id,
@@ -944,7 +995,53 @@ def _watch_notification_summary(text: str) -> str:
         protocol = ExecutionProtocol.from_model_output(run_id="", phase="watch", text=raw)
     except ValueError:
         return raw[:1600]
-    return protocol.summary or raw[:1600]
+    return _watch_protocol_notification_text(protocol) or protocol.summary or raw[:1600]
+
+
+def _watch_protocol_notification_text(protocol: ExecutionProtocol) -> str:
+    summary = (protocol.summary or "").strip()
+    final_messages: list[str] = []
+    for step in protocol.steps:
+        actions = step.get("actions") if isinstance(step, dict) else None
+        if not isinstance(actions, list):
+            continue
+        for action in actions:
+            if not isinstance(action, dict) or action.get("tool") != "final.answer":
+                continue
+            args = action.get("args")
+            if not isinstance(args, dict):
+                continue
+            message = str(args.get("message") or "").strip()
+            if message:
+                final_messages.append(message)
+    if not final_messages:
+        return ""
+    best = max(final_messages, key=len)
+    if not summary or len(best) > max(len(summary) + 8, 24):
+        return best[:1600]
+    return summary[:1600]
+
+
+def _is_title_only_watch_notification(output: str, prompt: str) -> bool:
+    summary = _watch_notification_summary(output)
+    normalized_summary = _compact_watch_text(summary)
+    normalized_prompt = _compact_watch_text(prompt)
+    if not normalized_summary:
+        return True
+    if normalized_summary == normalized_prompt:
+        return True
+    visible_chars = [char for char in summary.strip() if not char.isspace()]
+    if len(visible_chars) <= 12 and "\n" not in summary and "。" not in summary and "." not in summary:
+        return True
+    return False
+
+
+def _compact_watch_text(text: str) -> str:
+    return "".join(str(text or "").split()).strip("。.!！?:：")
+
+
+def _should_retry_execution_protocol_result(result: ExecutionResult) -> bool:
+    return result.exit_code != 0 and result.stderr.startswith("execution protocol ")
 
 
 class ExecutionService:

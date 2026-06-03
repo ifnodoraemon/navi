@@ -24,7 +24,12 @@ CONNECTOR_ALLOWED_TOOLS = frozenset(
         "delegate.status",
         "delegate.list",
         "skills.list",
+        "skills.view",
         "tools.list",
+        "memory.list",
+        "memory.recall",
+        "web.fetch",
+        "web.extract",
     }
 )
 

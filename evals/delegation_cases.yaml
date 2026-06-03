@@ -47,7 +47,13 @@ coverage:
     - service.status
     - shell.run
     - skills.list
+    - skills.view
     - tools.list
+    - memory.list
+    - memory.recall
+    - web.fetch
+    - web.extract
+    - browser.screenshot
     - delegate.list
     - delegate.status
     - test.run
@@ -107,6 +113,60 @@ cases:
     expect:
       tool: tools.list
       permission: read
+
+  - id: view_browser_skill
+    category: seeking_information
+    source: observed:skill-tool-expansion
+    message: "查看 Browser Operator 这个 skill 的具体说明"
+    expect:
+      tool: skills.view
+      permission: read
+      args:
+        name: "Browser Operator"
+
+  - id: list_active_memory_items
+    category: seeking_information
+    source: observed:skill-tool-expansion
+    message: "列出当前 active 记忆"
+    expect:
+      tool: memory.list
+      permission: read
+      args:
+        status: active
+
+  - id: recall_relevant_memory_items
+    category: seeking_information
+    source: observed:skill-tool-expansion
+    message: "回忆一下和回归 eval 相关的记忆"
+    expect:
+      tool: memory.recall
+      permission: read
+
+  - id: fetch_public_web_page
+    category: seeking_information
+    source: observed:skill-tool-expansion
+    message: "抓取 https://example.com 这个页面看看"
+    expect:
+      tool: web.fetch
+      permission: read
+      args:
+        url: "https://example.com"
+
+  - id: extract_web_content
+    category: seeking_information
+    source: observed:skill-tool-expansion
+    message: "从这段 HTML 提取链接：<a href='https://example.com/a'>A</a>"
+    expect:
+      tool: web.extract
+      permission: read
+
+  - id: browser_page_screenshot
+    category: seeking_information
+    source: observed:skill-tool-expansion
+    message: "给 https://example.com 截一张浏览器截图到 example.png"
+    expect:
+      tool: browser.screenshot
+      permission: write
 
   - id: list_delegations
     category: delegation_lifecycle
