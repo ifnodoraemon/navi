@@ -260,7 +260,7 @@ def test_cli_trace_commands(tmp_path):
 
 def test_cli_goal_commands(tmp_path):
     env = _env(tmp_path)
-    goal = GoalStore(tmp_path).create(objective="finish cli goal", run_id="task-1")
+    goal = GoalStore(tmp_path).create(objective="finish cli goal", run_id="task-1", workspace=str(tmp_path))
 
     listed = runner.invoke(app, ["goal", "list"], env=env)
     assert listed.exit_code == 0

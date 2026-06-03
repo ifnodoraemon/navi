@@ -19,7 +19,7 @@ def test_goal_store_tracks_task_lifecycle_with_evidence(tmp_path):
     runs = RunStore(tmp_path)
     task = runs.create("durable task", status="pending", workspace=str(tmp_path))
     goals = GoalStore(tmp_path)
-    goal = goals.create(objective=task.prompt, run_id=task.id, evidence={"created_from": "test"})
+    goal = goals.create(objective=task.prompt, run_id=task.id, workspace=task.workspace, evidence={"created_from": "test"})
 
     assert goal.status == GOAL_STATUS_ACTIVE
     assert json.loads(goal.evidence_json)["created_from"] == "test"

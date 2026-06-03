@@ -17,6 +17,13 @@ GOAL_STATUS_BLOCKED = "blocked"
 GOAL_STATUS_REJECTED = "rejected"
 
 
+def _require_workspace(workspace: str) -> str:
+    value = workspace.strip()
+    if not value:
+        raise ValueError("workspace is required")
+    return value
+
+
 @dataclass(frozen=True)
 class Goal:
     id: str
@@ -102,11 +109,11 @@ class GoalStore:
         self,
         *,
         objective: str,
+        workspace: str,
         source: str = "",
         peer_id: str = "",
         sender_id: str = "",
         session_id: str = "",
-        workspace: str = "",
         run_id: str = "",
         trace_id: str = "",
         evidence: dict[str, Any] | None = None,
@@ -120,7 +127,7 @@ class GoalStore:
             peer_id=peer_id,
             sender_id=sender_id,
             session_id=session_id,
-            workspace=workspace,
+            workspace=_require_workspace(workspace),
             run_id=run_id,
             trace_id=trace_id,
             evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),

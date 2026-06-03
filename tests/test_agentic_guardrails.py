@@ -308,6 +308,7 @@ def test_durable_stores_do_not_keep_schema_compatibility_paths():
 
 def test_run_workspace_is_explicit_not_cwd_fallback():
     runs_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "runs.py").read_text(encoding="utf-8")
+    goals_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "goals.py").read_text(encoding="utf-8")
     execution_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "execution.py").read_text(encoding="utf-8")
     evolution_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "evolution.py").read_text(encoding="utf-8")
     daemon_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "daemon.py").read_text(encoding="utf-8")
@@ -327,6 +328,7 @@ def test_run_workspace_is_explicit_not_cwd_fallback():
     )
     offenders = {
         "runs.py": [token for token in forbidden if token in runs_source],
+        "goals.py": [token for token in forbidden if token in goals_source],
         "execution.py": [token for token in forbidden if token in execution_source],
         "evolution.py": [token for token in forbidden if token in evolution_source],
         "daemon.py": [token for token in forbidden if token in daemon_source],
@@ -337,6 +339,7 @@ def test_run_workspace_is_explicit_not_cwd_fallback():
 
     assert offenders == {
         "runs.py": [],
+        "goals.py": [],
         "execution.py": [],
         "evolution.py": [],
         "daemon.py": [],
@@ -344,6 +347,7 @@ def test_run_workspace_is_explicit_not_cwd_fallback():
         "weixin/service.py": [],
         "telegram/service.py": [],
     }
+    assert "workspace: str = \"\"," not in goals_source
 
 
 def test_prompt_os_keeps_policy_manifest_and_turn_data_separate(tmp_path):

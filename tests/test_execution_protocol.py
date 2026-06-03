@@ -364,7 +364,7 @@ async def test_protocol_actions_must_be_capability_calls(tmp_path):
 async def test_protocol_actions_execute_local_file_actuators(tmp_path):
     runs = RunStore(tmp_path)
     task = runs.create("File actuator task", prompt="write a note", workspace=str(tmp_path))
-    goal = GoalStore(tmp_path).create(objective=task.prompt, run_id=task.id)
+    goal = GoalStore(tmp_path).create(objective=task.prompt, run_id=task.id, workspace=task.workspace)
     provider = ScriptedProvider(
         json.dumps(
             {
