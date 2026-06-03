@@ -5,8 +5,7 @@ execution_mock: false
 model_provider: mock
 model_model: mock
 model_timeout_seconds: 60.0
-runtime_web_url: ""
-local_surface: web
+local_surface: local
 agent_step_budget: 8
-web_host: 127.0.0.1
-web_port: 8765
+api_host: 127.0.0.1
+api_port: 8765

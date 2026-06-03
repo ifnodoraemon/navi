@@ -17,7 +17,7 @@ from .capabilities import CapabilityContext, build_capability_registry
 from .config import ModelConfig, load_config, write_default_config
 from .connector_registry import get_connector_adapter, load_connector_adapters
 from .diagnostics import run_diagnostics
-from .defaults import DEFAULT_WEB_HOST, DEFAULT_WEB_PORT
+from .defaults import DEFAULT_API_HOST, DEFAULT_API_PORT
 from .evals import (
     claw_results_to_json,
     load_claw_eval_dataset,
@@ -100,11 +100,11 @@ def chat() -> None:
 
 
 @app.command()
-def web(host: str = DEFAULT_WEB_HOST, port: int = DEFAULT_WEB_PORT) -> None:
-    """Run the local API and Web console."""
+def api(host: str = DEFAULT_API_HOST, port: int = DEFAULT_API_PORT) -> None:
+    """Run the headless local API."""
     home = ensure_home()
     write_default_config(home)
-    typer.echo(f"Navi web: http://{host}:{port}")
+    typer.echo(f"Navi API: http://{host}:{port}")
     uvicorn.run(create_app(home), host=host, port=port)
 
 

@@ -73,12 +73,6 @@ def build_system_prompt(
     workspace = workspace_path.resolve()
     unit_path = systemd_user_unit_path(config.runtime.service_name)
     unit_state = "installed" if unit_path.exists() else "not installed"
-    web_console_fact = (
-        f"- Web console URL: {config.runtime.web_url}"
-        if config.runtime.web_url
-        else "- Web console URL: not configured in runtime context; do not assume a host or port."
-    )
-
     runtime_lines = [
         "Local runtime facts:",
         f"- Current workspace: {workspace}",
@@ -86,7 +80,6 @@ def build_system_prompt(
         f"- Model provider: {config.model.provider}",
         f"- Model name: {config.model.model}",
         f"- User systemd service {config.runtime.service_name}: {unit_state} at {unit_path}",
-        web_console_fact,
         f"- Source: {operating_context.source}",
         f"- Permission ceiling: {operating_context.permission_ceiling}",
         f"- Skill permission ceiling: {operating_context.skill_permission_ceiling}",

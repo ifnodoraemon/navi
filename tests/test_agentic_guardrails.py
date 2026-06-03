@@ -3,6 +3,9 @@ from __future__ import annotations
 import ast
 import inspect
 import textwrap
+from pathlib import Path
+
+import yaml
 
 from navi.daemon import ProactiveEvent, SystemDaemon
 from navi.engine import HernessEngine
@@ -210,3 +213,57 @@ def test_execution_protocol_has_no_free_form_compatibility_path():
     assert "free-form" not in source
     assert "model_response" not in source
     assert "provider output violated the required execution protocol" in source
+
+
+def test_tool_descriptions_do_not_carry_routing_policy(tmp_path):
+    from navi.capabilities import build_capability_registry
+
+    action_specs = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "src" / "navi" / "specs" / "action_tools.yaml").read_text(encoding="utf-8")
+    )
+    capability_specs = build_capability_registry(tmp_path, project_dir=tmp_path).list_specs()
+    descriptions = {
+        item["name"]: str(item.get("description") or "")
+        for item in action_specs
+    }
+    descriptions.update({spec.name: spec.description for spec in capability_specs})
+
+    routing_tokens = (
+        "Use ",
+        "use ",
+        "when ",
+        "When ",
+        "unless ",
+        "Unless ",
+        "only when",
+        "Do not",
+        "do not",
+        "Ask for",
+    )
+    offenders = {
+        name: description
+        for name, description in descriptions.items()
+        if any(token in description for token in routing_tokens)
+    }
+
+    assert offenders == {}
+
+
+def test_planner_prompt_uses_generic_state_transition_invariants():
+    from navi.syscalls import _planner_system_prompt
+
+    system = _planner_system_prompt()
+
+    assert "state_transition" in system
+    assert "turn_scope=current" in system
+    assert "created_this_turn" not in system
+    assert "After a successful watch.create" not in system
+
+
+def test_principles_require_global_design_before_patch():
+    principles = (Path(__file__).resolve().parents[1] / "docs" / "principles.md").read_text(encoding="utf-8")
+
+    assert "Global Design Before Patch" in principles
+    assert "failing layer" in principles
+    assert "Prefer structured facts and state transitions" in principles
+    assert "Do not patch a tool description to change routing behavior" in principles

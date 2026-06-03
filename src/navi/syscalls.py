@@ -121,10 +121,20 @@ class ModelSyscallPlanner:
 def _planner_system_prompt() -> str:
     spec = load_spec("syscall_planner.yaml") or {}
     lines = [str(line) for line in spec.get("system_lines") or []]
+    prompt_boundaries = [str(rule) for rule in spec.get("prompt_boundaries") or []]
+    if prompt_boundaries:
+        lines.append("[PROMPT BOUNDARIES:")
+        lines.extend(f"- {rule}" for rule in prompt_boundaries)
+        lines[-1] = f"{lines[-1]}]"
     routing_rules = [str(rule) for rule in spec.get("routing_rules") or []]
     if routing_rules:
         lines.append("[TASK ROUTING RULES:")
         lines.extend(f"{idx}. {rule}" for idx, rule in enumerate(routing_rules, start=1))
+        lines[-1] = f"{lines[-1]}]"
+    observation_invariants = [str(rule) for rule in spec.get("observation_invariants") or []]
+    if observation_invariants:
+        lines.append("[OBSERVATION INVARIANTS:")
+        lines.extend(f"- {rule}" for rule in observation_invariants)
         lines[-1] = f"{lines[-1]}]"
     security_guidelines = [str(rule) for rule in spec.get("security_guidelines") or []]
     if security_guidelines:

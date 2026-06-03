@@ -8,11 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .engine import HernessEngine
-from .api_paths import API_PATHS, api_path
+from .api_paths import api_path
 from .auth import AuthInspector
 from .app_factory import build_runtime
 from .capabilities import CapabilityContext, CapabilityResult, build_capability_registry
@@ -124,8 +123,6 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        if request.url.path in {"/", "/navi.svg"}:
-            return await call_next(request)
         header_key = request.headers.get("X-API-Key")
         if header_key != api_key:
             return Response(content="Unauthorized", status_code=401)
@@ -409,6 +406,14 @@ def create_app(home: Path | None = None) -> FastAPI:
         spec = capabilities.get(tool_name)
         if spec is None:
             raise HTTPException(status_code=404, detail=f"capability not found: {tool_name}")
+        if spec.permission != "read":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"direct API tool calls are read-only; {tool_name} requires "
+                    f"{spec.permission} and must use managed approval flow"
+                ),
+            )
         result = await capabilities.invoke(
             tool_name,
             request.args,
@@ -519,34 +524,6 @@ def create_app(home: Path | None = None) -> FastAPI:
         if handler is None:
             raise HTTPException(status_code=404, detail="connector not found")
         return handler()
-
-    @app.get(api_path("index"), response_class=HTMLResponse)
-    def index(request: Request) -> str:
-        html = (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
-        is_local = False
-        if request.client and request.client.host in ("127.0.0." + "1", "localhost", "::1"):
-            is_local = True
-
-        bootstrap_data = {
-            "apiPaths": API_PATHS,
-            "connectors": [asdict(adapter.spec) for adapter in connector_adapters],
-            "localSurface": load_config(home).runtime.local_surface,
-        }
-        if is_local:
-            bootstrap_data["apiKey"] = api_key
-
-        return html.replace(
-            "__NAVI_BOOTSTRAP__",
-            json.dumps(
-                bootstrap_data,
-                ensure_ascii=False,
-            ),
-        )
-
-    @app.get("/navi.svg", include_in_schema=False)
-    def navi_icon() -> Response:
-        svg = (Path(__file__).parent / "web" / "navi.svg").read_text(encoding="utf-8")
-        return Response(svg, media_type="image/svg+xml")
 
     return app
 

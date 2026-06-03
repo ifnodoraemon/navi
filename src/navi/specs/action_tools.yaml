@@ -1,6 +1,6 @@
 - name: final.answer
   handler: final_answer
-  description: Return a direct answer to the user when no more tool call is needed.
+  description: Return a final user-facing message.
   input_schema:
     type: object
     properties:
@@ -16,7 +16,7 @@
   source: action
 - name: clarify.ask
   handler: clarify
-  description: Ask one concise clarification question when a user-owned fact is required, or when a recurring schedule has no exact time.
+  description: Return one user-facing clarification question.
   input_schema:
     type: object
     properties:
@@ -32,7 +32,7 @@
   source: action
 - name: delegate.spawn
   handler: delegate_spawn
-  description: Spawn a tracked delegation run for controlled local work, engineering investigation, bug diagnosis, config-to-runtime mapping, performance investigation, or code changes without preparing, approving, or running it.
+  description: Create a tracked delegation run record.
   input_schema:
     type: object
     properties:
@@ -48,7 +48,7 @@
   source: action
 - name: delegate.prepare
   handler: delegate_prepare
-  description: Run one preparation pass for an existing delegation run and return preparation facts.
+  description: Prepare an existing delegation run and return preparation facts.
   input_schema:
     type: object
     properties:
@@ -64,7 +64,7 @@
   source: action
 - name: approval.request
   handler: approval_request
-  description: Request approval for a prepared delegation run without running it.
+  description: Create an approval request for a delegation run.
   input_schema:
     type: object
     properties:
@@ -80,7 +80,7 @@
   source: action
 - name: delegate.run
   handler: delegate_run
-  description: Run a delegation only when it already has an execution grant.
+  description: Queue a delegation run that has an execution grant.
   input_schema:
     type: object
     properties:
@@ -96,7 +96,7 @@
   source: action
 - name: watch.create
   handler: watch_create
-  description: Create a scheduled watch. Use kind=once with run_at for one-off reminders; use kind=recurring with cron only for explicit recurring requests.
+  description: Create a scheduled watch record.
   input_schema:
     type: object
     properties:
@@ -120,7 +120,7 @@
   source: action
 - name: delegate.delete
   handler: delegate_delete
-  description: Delete delegation runs. Use run_id for one explicit failed run, or status=failed with optional source/kind to clean all matching failed run records without touching active runs. Use limit only for an intentionally partial cleanup.
+  description: Delete delegation run records by id or by supported cleanup filters.
   input_schema:
     type: object
     properties:
@@ -159,7 +159,7 @@
   source: action
 - name: approval.resolve
   handler: approval_resolve
-  description: Approve or reject a pending delegation run with an approval code or run id.
+  description: Resolve a pending approval by code or delegation run id.
   input_schema:
     type: object
     properties:
@@ -182,7 +182,7 @@
   source: action
 - name: delegate.retry
   handler: execution_retry
-  description: Run one explicit follow-up execution attempt for an already approved or trusted delegation after observing its current status and logs.
+  description: Execute one follow-up attempt for a delegation run.
   input_schema:
     type: object
     properties:

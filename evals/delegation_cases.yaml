@@ -166,7 +166,7 @@ cases:
     message: "给 https://example.com 截一张浏览器截图到 example.png"
     expect:
       tool: browser.screenshot
-      permission: write
+      permission: read
 
   - id: list_delegations
     category: delegation_lifecycle

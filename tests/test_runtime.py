@@ -99,7 +99,6 @@ async def test_runtime_system_prompt_includes_local_deployment_contract(tmp_path
     assert "Current workspace:" in system
     assert "Navi state home:" in system
     assert "Local execution bridge" in system
-    assert "Web console URL: not configured" in system
     assert "Do not say you have no access to the user's local machine as an absolute statement" in system
     assert "Do not frame local actions as a generic permission failure" in system
     assert "this chat response itself is not a shell" in system
@@ -114,15 +113,14 @@ async def test_runtime_system_prompt_includes_local_deployment_contract(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_runtime_system_prompt_uses_configured_web_url(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAVI_WEB_URL", "http://navi.local")
+async def test_runtime_system_prompt_does_not_advertise_web_surface(tmp_path):
     provider = RecordingProvider()
     runtime = AgentRuntime(home=tmp_path, provider=_pool(provider))
 
     await runtime.chat("hello")
 
     system = provider.messages[0].content
-    assert "Web console URL: http://navi.local" in system
+    assert "console URL" not in system
 
 
 @pytest.mark.asyncio
@@ -320,6 +318,7 @@ def test_core_support_tools_expose_skills_memory_web_and_browser(tmp_path, monke
         )
 
     monkeypatch.setattr("navi.core_tools.httpx.get", fake_get)
+    monkeypatch.setattr("navi.core_tools._host_resolves_to_public_ips", lambda host: True)
     fetched = gateway.call("web.fetch", {"url": "https://example.com/page"})
     assert fetched.ok
     assert fetched.facts["title"] == "Fetched"

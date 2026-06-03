@@ -110,4 +110,8 @@ async def test_core_watch_create_flow(tmp_path, monkeypatch):
 
     assert result.ok is True
     assert result.facts["watch_id"]
+    assert result.facts["entity_type"] == "watch"
+    assert result.facts["entity_id"] == result.facts["watch_id"]
+    assert result.facts["state_transition"] == "created"
+    assert result.facts["turn_scope"] == "current"
     assert result.facts["next_run_at"] > 0

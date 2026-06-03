@@ -17,6 +17,19 @@ Navi must be agentic in the system shape, not just in wording.
 - Learning must happen through explicit memory, graph, trust, and evolution records, not hidden prompt drift.
 - Tool planning must be capability-driven rather than keyword-driven. Keywords can parse narrow structured facts, but they must not define product behavior.
 
+### 1.1 Global Design Before Patch
+
+Navi must not fix local failures by casually adding global prompt or code patches.
+
+- First identify the failing layer: tool semantics, runtime facts, planner policy, responder style, memory, trust, connector context, or execution state.
+- A one-case failure should become a global rule only when it exposes a reusable invariant.
+- Prefer structured facts and state transitions over tool-specific prompt instructions.
+- Prefer boundary fixes over exception lists.
+- Do not patch a tool description to change routing behavior.
+- Do not patch a global prompt with a single tool's postcondition unless the same rule holds across the relevant capability class.
+- If a temporary workaround is unavoidable, document its scope, risk, removal condition, and owner.
+- Every behavior-affecting patch must be reviewable through tests, evals, traces, or documented evidence.
+
 ### 2. Tools Return Facts Only
 
 Tools are fact sensors and actuators. They must not smuggle policy or advice into results.
@@ -35,7 +48,7 @@ Every durable capability should have a headless CLI contract before it becomes a
 
 - CLI is the control plane.
 - Connectors are interaction surfaces.
-- Web is an operator console.
+- The local API is a headless operator surface.
 - Agent reasoning is the decision layer.
 - Anything that cannot be run, tested, logged, or replayed from CLI is not a stable capability yet.
 

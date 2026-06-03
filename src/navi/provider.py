@@ -379,7 +379,7 @@ def _mock_planner_syscall(text: str, context: str = "", observations: str = "") 
     if _has(text.lower(), "html") and _has(text, "\u63d0\u53d6"):
         return _mock_syscall("web.extract", "read", {"content": text}, "mock web extract route")
     if url and _has(text, "\u622a\u56fe", "screenshot"):
-        return _mock_syscall("browser.screenshot", "write", {"url": url, "path": "example.png"}, "mock browser screenshot route")
+        return _mock_syscall("browser.screenshot", "read", {"url": url, "path": "example.png"}, "mock browser screenshot route")
 
     if mentions_execution_protocol and is_fix_follow_up:
         return _mock_syscall("delegate.spawn", "prepare", {"prompt": combined.strip()}, "mock execution protocol repair route")

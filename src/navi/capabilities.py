@@ -550,18 +550,19 @@ class WatchCreateCapability:
             kind=kind,
         )
         graph.upsert("Watch", watch.id, {"cron": cron, "prompt": prompt, "sender_id": context.sender_id, "kind": kind})
-        return _fact_result(
-            "watch",
-            {
-                "watch_id": watch.id,
-                "cron": watch.cron,
-                "kind": watch.kind,
-                "prompt": watch.prompt,
-                "next_run_at": watch.next_run_at,
-                "next_run_text": time.ctime(watch.next_run_at),
-            },
-            run_id=watch.id,
-        )
+        facts = {
+            "entity_type": "watch",
+            "entity_id": watch.id,
+            "state_transition": "created",
+            "turn_scope": "current",
+            "watch_id": watch.id,
+            "cron": watch.cron,
+            "kind": watch.kind,
+            "prompt": watch.prompt,
+            "next_run_at": watch.next_run_at,
+            "next_run_text": time.ctime(watch.next_run_at),
+        }
+        return _fact_result("watch", facts, run_id=watch.id)
 
 
 class DelegateDeleteCapability:

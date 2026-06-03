@@ -38,24 +38,13 @@ class ScriptedProvider(MockProvider):
         return response
 
 
-def test_local_console_api_flow(tmp_path, monkeypatch):
+def test_headless_local_api_flow(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     client = authenticated_client(create_app(tmp_path))
 
     health = client.get("/health")
     assert health.status_code == 200
     assert health.json()["model_provider"] == "mock"
-
-    index = client.get("/")
-    assert index.status_code == 200
-    assert 'href="/navi.svg"' in index.text
-    assert "id=\"sessions\"" in index.text
-    assert "id=\"memory-form\"" in index.text
-    assert "id=\"delegation-form\"" in index.text
-    icon = client.get("/navi.svg")
-    assert icon.status_code == 200
-    assert icon.headers["content-type"].startswith("image/svg+xml")
-    assert "<svg" in icon.text
 
     chat = client.post("/v1/chat", json={"message": "hello"})
     assert chat.status_code == 200
@@ -67,12 +56,12 @@ def test_local_console_api_flow(tmp_path, monkeypatch):
     assert sessions.status_code == 200
     assert chat_data["session_id"] in sessions.json()["sessions"]
 
-    new_session = client.post("/v1/sessions", json={"alias": "web:test"})
+    new_session = client.post("/v1/sessions", json={"alias": "api:test"})
     assert new_session.status_code == 200
     assert new_session.json()["session_id"]
     aliases = client.get("/v1/session-aliases")
     assert aliases.status_code == 200
-    assert aliases.json()["aliases"][0]["alias"] == "web:test"
+    assert aliases.json()["aliases"][0]["alias"] == "api:test"
 
     session = client.get(f"/v1/sessions/{chat_data['session_id']}")
     assert session.status_code == 200
@@ -120,6 +109,13 @@ def test_local_console_api_flow(tmp_path, monkeypatch):
     assert provider.status_code == 200
     assert provider.json()["ok"] is True
     assert provider.json()["facts"]["provider"] == "mock"
+
+    write_tool = client.post(
+        "/v1/tools/file.write/call",
+        json={"args": {"path": "api-write.txt", "content": "blocked"}},
+    )
+    assert write_tool.status_code == 409
+    assert "read-only" in write_tool.json()["detail"]
 
     diagnostics = client.get("/v1/diagnostics")
     assert diagnostics.status_code == 200
@@ -258,7 +254,7 @@ def test_active_api_flow(tmp_path, monkeypatch):
 
     created = client.post(
         "/v1/active/delegations",
-        json={"prompt": "active api task", "peer_id": "web", "sender_id": "web"},
+        json={"prompt": "active api task", "peer_id": "local", "sender_id": "local"},
     )
 
     assert created.status_code == 200
@@ -414,6 +410,5 @@ def test_api_auth_missing_and_invalid(tmp_path):
     response = client_missing.get("/v1/delegations")
     assert response.status_code == 401
 
-    # Test that index path "/" is bypassed
     response = client_missing.get("/")
-    assert response.status_code == 200
+    assert response.status_code == 401

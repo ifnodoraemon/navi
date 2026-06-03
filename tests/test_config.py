@@ -71,7 +71,6 @@ def test_env_file_overrides_runtime_facts(tmp_path):
         "\n".join(
             [
                 "NAVI_SERVICE_NAME=custom.service",
-                "NAVI_WEB_URL=http://navi.example",
                 "NAVI_AGENT_STEP_BUDGET=12",
             ]
         ),
@@ -81,7 +80,6 @@ def test_env_file_overrides_runtime_facts(tmp_path):
     config = load_config(tmp_path)
 
     assert config.runtime.service_name == "custom.service"
-    assert config.runtime.web_url == "http://navi.example"
     assert config.runtime.agent_step_budget == 12
 
 

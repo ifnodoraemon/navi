@@ -29,6 +29,8 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
     assert specs["file.write"].permission == "write"
     assert specs["shell.run"].mutates is True
     assert specs["test.run"].mutates is True
+    assert specs["browser.screenshot"].permission == "read"
+    assert specs["browser.screenshot"].mutates is False
     assert specs["connector.weixin.status"].source == "connector.weixin"
     assert specs["connector.telegram.status"].source == "connector.telegram"
 

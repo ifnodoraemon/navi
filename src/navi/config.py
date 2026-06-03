@@ -16,7 +16,6 @@ from .defaults import (
     DEFAULT_MODEL_TIMEOUT_SECONDS,
     DEFAULT_MODEL_MODEL,
     DEFAULT_MODEL_PROVIDER,
-    DEFAULT_RUNTIME_WEB_URL,
     DEFAULT_SERVICE_NAME,
 )
 from .paths import ensure_home
@@ -39,7 +38,6 @@ class ModelConfig:
 @dataclass
 class RuntimeConfig:
     service_name: str = DEFAULT_SERVICE_NAME
-    web_url: str = DEFAULT_RUNTIME_WEB_URL
     local_surface: str = DEFAULT_LOCAL_SURFACE
     agent_step_budget: int = DEFAULT_AGENT_STEP_BUDGET
 
@@ -101,7 +99,6 @@ def load_config(home: Path | None = None) -> NaviConfig:
 
     runtime = RuntimeConfig(
         service_name=str(env.get("NAVI_SERVICE_NAME", runtime_raw.get("service_name", DEFAULT_SERVICE_NAME))),
-        web_url=str(env.get("NAVI_WEB_URL", runtime_raw.get("web_url", DEFAULT_RUNTIME_WEB_URL))).strip(),
         local_surface=str(env.get("NAVI_LOCAL_SURFACE", runtime_raw.get("local_surface", DEFAULT_LOCAL_SURFACE))).strip(),
         agent_step_budget=_int_env(env.get("NAVI_AGENT_STEP_BUDGET", runtime_raw.get("agent_step_budget", DEFAULT_AGENT_STEP_BUDGET))),
     )
@@ -134,7 +131,6 @@ def write_default_config(home: Path | None = None) -> Path:
                 },
                 "runtime": {
                     "service_name": DEFAULT_SERVICE_NAME,
-                    "web_url": DEFAULT_RUNTIME_WEB_URL,
                     "local_surface": DEFAULT_LOCAL_SURFACE,
                     "agent_step_budget": DEFAULT_AGENT_STEP_BUDGET,
                 },

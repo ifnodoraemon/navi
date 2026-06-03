@@ -14,7 +14,7 @@ Navi is a premium, **local-first personal AI assistant** designed to be your pri
 *   🛡️ **Trust & Autonomy Engine**: A dynamic sandbox governance system that increments/decrements autonomy levels based on historical task successes and failures, safely managing local execution.
 *   🌐 **Multi-Surface Access**:
     *   💻 **CLI Chat**: Real-time interactive terminal chat (`navi chat`).
-    *   🖥️ **Local Web Console**: Web UI and FastAPI server (`navi web`).
+    *   🔧 **Headless Local API**: FastAPI server for machine clients (`navi api`).
     *   💬 **Personal WeChat Connector**: Direct long-poll connection gateway to your personal WeChat account.
 
 ---
@@ -38,10 +38,10 @@ pip install -e ".[dev]"
 navi chat
 ```
 
-### Run the Web Console & API
+### Run the Headless Local API
 
 ```bash
-navi web
+navi api
 ```
 
 ### Setup & Run Weixin Connector

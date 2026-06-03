@@ -12,7 +12,7 @@ Core positioning:
 
 - Personal assistant first, not an enterprise RAG product.
 - Local-first runtime and state.
-- CLI and local Web are the developer/control surfaces.
+- CLI and the headless local API are the developer/control surfaces.
 - Personal Weixin/WeChat is the first remote channel.
 - Do not build a general multi-channel gateway in v1.
 
@@ -28,7 +28,7 @@ The project name is `Navi`.
 v1 should include:
 
 - CLI chat: `navi chat`
-- Local Web/API: `navi web`
+- Headless local API: `navi api`
 - Model provider abstraction, with mock and OpenAI-compatible providers.
 - Persistent local state under `.navi/` or `NAVI_HOME`.
 - Typed memory control system plus SQLite session history.
@@ -88,7 +88,7 @@ Keep the code small and explicit:
 - `navi.action_tools`: planner-visible action/control tool specs such as answer, clarify, task, watch, and approval.
 - `navi.core_tools`: core fact tool specs and handlers.
 - `navi.tools`: tool registry and gateway loading mechanism.
-- `navi.api`: FastAPI local API and Web entry.
+- `navi.api`: FastAPI local API.
 - `navi.cli`: Typer CLI entrypoint.
 - `navi.connector_registry`: loads connector adapters from declarative connector specs.
 - `navi.weixin`: Weixin connector implementation; it must not leak channel details into the core prompt or router.
@@ -97,7 +97,7 @@ Runtime rules:
 
 - Missing real model credentials should fail clearly for real providers.
 - Mock provider is allowed for local development and tests.
-- The browser/local Web should not hold secrets.
+- Browser-based control surfaces are out of scope; local API clients must not expose long-lived secrets.
 - Connector credentials should be persisted with restrictive file permissions when the OS allows it.
 - Any future dangerous tools, especially shell/file write tools, must require an approval policy before being available to remote connector messages.
 - Long-context operation must reload durable constraints, trust state, approvals, and relevant memory from stores before execution; it must not rely only on the current prompt window or a lossy summary.
@@ -120,7 +120,7 @@ Current CLI surface:
 
 ```bash
 navi chat
-navi web
+navi api
 navi run
 navi model
 navi tools list
@@ -181,7 +181,6 @@ GET  /v1/trust-rules
 GET  /v1/evolution-events
 POST /v1/evolution-events/{event_id}/rollback
 GET  /v1/connectors/weixin/status
-GET  /
 ```
 
 Current config shape:
@@ -194,7 +193,8 @@ model:
   api_key: ""
 runtime:
   service_name: navi.service
-  web_url: ""
+  local_surface: local
+  agent_step_budget: 8
 execution:
   provider: navi
   timeout_seconds: 120.0
@@ -210,7 +210,6 @@ NAVI_MODEL
 NAVI_MODEL_API_BASE_URL
 NAVI_MODEL_API_KEY
 NAVI_SERVICE_NAME
-NAVI_WEB_URL
 NAVI_EXECUTION_TIMEOUT_SECONDS
 NAVI_EXECUTION_MOCK
 ```
@@ -236,7 +235,7 @@ NAVI_WEIXIN_MOCK_MESSAGE
 Implemented:
 
 - Python package scaffold and CLI.
-- FastAPI app and simple local Web console.
+- FastAPI app for headless local API clients.
 - Mock and OpenAI-compatible provider shape.
 - Bounded agent loop for observe/plan/read-tool chaining before final response.
 - Tool Gateway abstraction with provider sources, refresh, filtering, and audit logs.
@@ -256,7 +255,7 @@ Known gaps:
 - Remote connector tool visibility is allowlisted; richer per-sender/per-surface policy configuration is still future work.
 - MCP servers are not connected yet; Tool Gateway is ready for an MCP provider. Action/control and gateway tools are exposed through the unified capability registry.
 - Execution protocol is a bounded step plan. Each step contains capability-backed actions and verification checks; Navi enforces a step budget, supports retry-once/continue/stop failure policy, records workspace dirty-state before/after execution, emits rollback hints on failed dirty runs, and can check expected files, file contents, git status, and test results before marking execution complete. Richer remote policy controls are still needed before exposing mutating actuators to connectors.
-- Web UI is intentionally minimal.
+- Browser UI is intentionally removed from this codebase.
 
 ## Next Implementation Steps
 
@@ -267,7 +266,7 @@ Recommended next order:
 3. Add structured logging and visible diagnostics for Weixin connection states.
 4. Add richer verifier policies for structured diffs, command-specific assertions, and automatic rollback proposals.
 5. Add a remote-safe tool policy before enabling shell/file-write tools from Weixin.
-6. Improve local Web to show sessions, Weixin status, memory, and task list.
+6. Improve headless API observability for sessions, connector status, memory, and task list.
 7. Add text chunking for long Weixin responses.
 8. Add optional media handling after text DM is reliable.
 

@@ -446,33 +446,7 @@ class MemoryStore:
                 memories_text = json.dumps(memories_data, ensure_ascii=False, indent=2)
 
                 # 4. Prompts
-                system_prompt = (
-                    "You are Navi's memory consolidator and learning agent.\n"
-                    "Your job is to analyze the recent conversation turn and existing active memories, and decide:\n"
-                    "1. If any new durable facts, user preferences, negative lessons (avoiding repetitive failures), or constraints should be learned.\n"
-                    "2. If any existing active memories are now updated, contradicted, or should be revoked.\n\n"
-                    "Rules:\n"
-                    "- Only extract genuinely durable, useful information. Do NOT extract standard conversational greetings, temporary commands, or trivial details.\n"
-                    "- Avoid adding duplicate memories that already exist in the list.\n"
-                    "- If a new preference or fact contradicts an existing active memory, revoke the old one and add the new one.\n"
-                    "- Output ONLY a valid JSON object matching the schema below. No prose, no markdown fences.\n\n"
-                    "JSON Schema:\n"
-                    "{\n"
-                    "  \"learnings\": [\n"
-                    "    {\n"
-                    "      \"action\": \"add\",\n"
-                    f"      \"type\": \"{'|'.join(LEARNABLE_MEMORY_TYPES)}\",\n"
-                    "      \"content\": \"durable fact, preference, negative lesson, or constraint (in the user's language)\",\n"
-                    "      \"confidence\": 0.8\n"
-                    "    },\n"
-                    "    {\n"
-                    "      \"action\": \"revoke\",\n"
-                    "      \"id\": \"existing_memory_id\",\n"
-                    "      \"reason\": \"explanation of why it is revoked/contradicted\"\n"
-                    "    }\n"
-                    "  ]\n"
-                    "}"
-                )
+                system_prompt = _memory_prompt("memory_consolidator")
                 user_prompt = (
                     f"Existing Active Memories:\n{memories_text}\n\n"
                     "Recent Conversation Turn:\n"
@@ -648,34 +622,7 @@ class MemoryStore:
         memories_text = json.dumps(memories_data, ensure_ascii=False, indent=2)
 
         # 4. Prompts
-        system_prompt = (
-            "You are Navi's memory consolidator and task learning agent.\n"
-            "Your job is to analyze a completed local execution task and its logs, alongside existing active memories, and decide:\n"
-            "1. If any new durable facts, user preferences, negative lessons (e.g. command syntax that failed, directory paths that were missing), or constraints should be learned.\n"
-            "2. If any existing active memories are now updated, contradicted, or should be revoked.\n\n"
-            "Rules:\n"
-            "- Focus heavily on 'negative' memory for failed steps, to prevent future execution tools from repeating the same mistake.\n"
-            "- Only extract genuinely durable, useful technical or user preference facts. Do NOT extract standard task markers or temporary files.\n"
-            "- Avoid adding duplicate memories that already exist in the list.\n"
-            "- If a new learning contradicts an existing active memory, revoke the old one.\n"
-            "- Output ONLY a valid JSON object matching the schema below. No prose, no markdown fences.\n\n"
-            "JSON Schema:\n"
-            "{\n"
-            "  \"learnings\": [\n"
-            "    {\n"
-            "      \"action\": \"add\",\n"
-            f"      \"type\": \"{'|'.join(LEARNABLE_MEMORY_TYPES)}\",\n"
-            "      \"content\": \"durable fact, preference, negative lesson, or constraint (in the user's language)\",\n"
-            "      \"confidence\": 0.8\n"
-            "    },\n"
-            "    {\n"
-            "      \"action\": \"revoke\",\n"
-            "      \"id\": \"existing_memory_id\",\n"
-            "      \"reason\": \"explanation of why it is revoked/contradicted\"\n"
-            "    }\n"
-            "  ]\n"
-            "}"
-        )
+        system_prompt = _memory_prompt("task_memory_consolidator")
         user_prompt = (
             f"Existing Active Memories:\n{memories_text}\n\n"
             "Run Execution Outcome:\n"
@@ -787,3 +734,14 @@ class MemoryStore:
             return 0
         freshness = min(10.0, max(0.0, (item.updated_at - 1_700_000_000) / 10_000_000))
         return priority + (overlap * 12) + (item.confidence * 10) + freshness
+
+
+def _memory_prompt(name: str) -> str:
+    layers = load_spec("prompt_layers.yaml") or {}
+    layer = layers.get(name)
+    if not isinstance(layer, dict):
+        raise ValueError(f"missing memory prompt layer: {name}")
+    content = str(layer.get("content") or "").strip()
+    if not content:
+        raise ValueError(f"empty memory prompt layer: {name}")
+    return content.format(learnable_types="|".join(LEARNABLE_MEMORY_TYPES))

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import html
 import httpx
+import ipaddress
 import re
 import shutil
+import socket
 import subprocess
 from dataclasses import asdict
 from html.parser import HTMLParser
@@ -71,7 +73,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     registry.register(
         ToolSpec(
             name="skills.list",
-            description="Return installed procedural skill facts. Skills are guidance packages, not callable tools.",
+            description="Return installed procedural skill facts.",
             input_schema={"type": "object", "properties": {}},
             output_schema={"type": "object"},
         ),
@@ -97,7 +99,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     registry.register(
         ToolSpec(
             name="tools.list",
-            description="Return callable capability facts. Tools are executable syscalls, not procedural skills.",
+            description="Return callable capability facts.",
             input_schema={"type": "object", "properties": {}},
             output_schema={"type": "object"},
         ),
@@ -138,7 +140,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     registry.register(
         ToolSpec(
             name="web.fetch",
-            description="Fetch one public HTTP(S) page and return bounded text, title, links, and response facts.",
+            description="Fetch one public HTTP(S) page and return bounded response facts.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -173,7 +175,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     registry.register(
         ToolSpec(
             name="browser.screenshot",
-            description="Capture a screenshot of an HTTP(S) or localhost page with the Playwright CLI when available.",
+            description="Capture a screenshot artifact for an HTTP(S) or localhost page.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -184,9 +186,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 "required": ["url", "path"],
             },
             output_schema={"type": "object"},
-            facts_only=False,
-            mutates=True,
-            permission="write",
+            facts_only=True,
+            mutates=False,
+            permission="read",
         ),
         lambda args: _browser_screenshot(args, project_dir=registry.project_dir),
     )
@@ -670,18 +672,38 @@ def _is_public_http_url(value: str) -> bool:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return False
     host = (parsed.hostname or "").lower()
-    if host in {"localhost"} or host.startswith("127.") or host.startswith("10.") or host.startswith("192.168."):
+    if not host or host == "localhost":
         return False
-    if host.startswith("172."):
-        parts = host.split(".")
-        if len(parts) > 1:
-            try:
-                second = int(parts[1])
-            except ValueError:
-                second = -1
-            if 16 <= second <= 31:
-                return False
-    return True
+    return _host_resolves_to_public_ips(host)
+
+
+def _host_resolves_to_public_ips(host: str) -> bool:
+    try:
+        addresses = {
+            result[4][0]
+            for result in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+            if result and result[4]
+        }
+    except socket.gaierror:
+        return False
+    if not addresses:
+        return False
+    return all(_is_public_ip(address) for address in addresses)
+
+
+def _is_public_ip(address: str) -> bool:
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return not (
+        parsed.is_private
+        or parsed.is_loopback
+        or parsed.is_link_local
+        or parsed.is_multicast
+        or parsed.is_reserved
+        or parsed.is_unspecified
+    )
 
 
 def _is_browser_url(value: str) -> bool:

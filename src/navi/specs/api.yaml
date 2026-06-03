@@ -36,4 +36,3 @@ evolution_proposals: /v1/evolution-proposals
 evolution_proposal_apply: /v1/evolution-proposals/{proposal_id}/apply
 evolution_proposal_evaluation: /v1/evolution-proposals/{proposal_id}/evaluation
 connector_status: /v1/connectors/{connector_name}/status
-index: /
