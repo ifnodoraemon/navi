@@ -28,8 +28,6 @@ CONNECTOR_ALLOWED_TOOLS = frozenset(
         "tools.list",
         "memory.list",
         "memory.recall",
-        "web.fetch",
-        "web.extract",
     }
 )
 

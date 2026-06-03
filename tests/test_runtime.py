@@ -273,7 +273,7 @@ def test_builtin_general_skills_are_available(tmp_path):
         "Structured Output",
         "Systematic Debugging",
         "Test Driven Development",
-        "Web Research Crawler",
+        "Code Navigator",
     }
 
     store = SkillStore(tmp_path)
@@ -294,16 +294,14 @@ def test_builtin_general_skills_are_available(tmp_path):
 
 
 def test_core_support_tools_expose_skills_memory_web_and_browser(tmp_path, monkeypatch):
-    import httpx
-
     from navi.memory import MemoryStore
     from navi.tools import build_tool_gateway
 
     gateway = build_tool_gateway(tmp_path, project_dir=tmp_path)
 
-    viewed = gateway.call("skills.view", {"name": "Web Research Crawler"})
+    viewed = gateway.call("skills.view", {"name": "Code Navigator"})
     assert viewed.ok
-    assert "Web Research Crawler Skill" in viewed.facts["content"]
+    assert "Code Navigator Skill" in viewed.facts["content"]
 
     memory = MemoryStore(tmp_path)
     memory.add_item(
@@ -319,32 +317,6 @@ def test_core_support_tools_expose_skills_memory_web_and_browser(tmp_path, monke
     recalled = gateway.call("memory.recall", {"query": "regression evals"})
     assert recalled.ok
     assert recalled.facts["count"] == 1
-
-    html = "<html><head><title>Doc</title></head><body><h1>Main</h1><a href='/a'>A</a>Contact: hi@example.com</body></html>"
-    extracted = gateway.call(
-        "web.extract",
-        {"content": html, "base_url": "https://example.com/root", "patterns": {"emails": r"[\w.-]+@[\w.-]+"}},
-    )
-    assert extracted.ok
-    assert extracted.facts["title"] == "Doc"
-    assert extracted.facts["links"][0]["href"] == "https://example.com/a"
-    assert extracted.facts["patterns"]["emails"] == ["hi@example.com"]
-
-    def fake_get(url, **kwargs):
-        assert url == "https://example.com/page"
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/html"},
-            content=b"<title>Fetched</title><p>Hello</p>",
-            request=httpx.Request("GET", url),
-        )
-
-    monkeypatch.setattr("navi.core_tools.httpx.get", fake_get)
-    monkeypatch.setattr("navi.core_tools._host_resolves_to_public_ips", lambda host: True)
-    fetched = gateway.call("web.fetch", {"url": "https://example.com/page"})
-    assert fetched.ok
-    assert fetched.facts["title"] == "Fetched"
-    assert "Hello" in fetched.facts["text"]
 
     monkeypatch.setattr("navi.core_tools.shutil.which", lambda name: None)
     screenshot = gateway.call("browser.screenshot", {"url": "https://example.com", "path": "shot.png"})

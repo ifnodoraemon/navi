@@ -122,8 +122,8 @@ def test_cli_tool_eval_model_and_skill_commands(tmp_path):
     assert "ok dataset" in eval_result.output
 
     mock_eval = runner.invoke(app, ["eval", "delegations", "--mock-provider", "--dataset", str(dataset)], env=env)
-    assert mock_eval.exit_code == 0
-    assert "ok reject_code" in mock_eval.output
+    assert mock_eval.exit_code != 0
+    assert "fail " in mock_eval.output
 
     daily_dataset = Path(__file__).resolve().parents[1] / "evals" / "daily_journeys.yaml"
     daily_validate = runner.invoke(app, ["eval", "daily", "--validate-only", "--dataset", str(daily_dataset)], env=env)

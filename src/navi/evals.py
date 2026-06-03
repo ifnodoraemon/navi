@@ -12,18 +12,15 @@ import yaml
 
 from .app_factory import build_runtime
 from .capabilities import build_capability_registry
+from .connector_registry import get_connector_adapter
 from .engine import HernessEngine
 from .execution import ExecutionService
 from .goals import GoalStore
-from .provider import ChatMessage, MockProvider, ModelPool
+from .provider import ModelPool
 from .runtime import AgentRuntime
 from .runs import RunStore
 from .syscalls import ModelSyscall, ModelSyscallPlanner
 from .tools import ToolSpec
-from .weixin.config import WeixinConfig
-from .weixin.client import MockWeixinClient
-from .weixin.models import WeixinAccount, WeixinUpdate
-from .weixin.service import WeixinService
 
 
 @dataclass(frozen=True)
@@ -55,19 +52,6 @@ class ClawEvalResult:
     error_domains: list[str]
     errors: list[str]
     attempts_detail: list[dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class WeixinJourneyResult:
-    id: str
-    ok: bool
-    errors: list[str]
-    events: list[dict[str, Any]]
-
-
-class _FailingEvalProvider(MockProvider):
-    async def complete(self, messages: list[ChatMessage]) -> str:
-        raise RuntimeError("eval provider failure")
 
 
 def load_delegation_eval_cases(path: Path) -> list[dict[str, Any]]:
@@ -138,21 +122,33 @@ def load_claw_eval_dataset(path: Path) -> dict[str, Any]:
     return data
 
 
-def load_weixin_journey_eval_dataset(path: Path) -> dict[str, Any]:
+def load_connector_journey_eval_dataset(path: Path) -> dict[str, Any]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     data = {} if loaded is None else loaded
     if not isinstance(data, dict):
-        raise ValueError("weixin journey eval dataset must be a mapping")
-    journeys = data.get("journeys")
-    if not isinstance(journeys, list):
-        raise ValueError("weixin journey eval dataset must contain a journeys list")
-    for index, journey in enumerate(journeys):
-        if not isinstance(journey, dict):
-            raise ValueError(f"journey {index} must be a mapping")
-        steps = journey.get("steps")
-        if not isinstance(steps, list) or not steps:
-            raise ValueError(f"journey {journey.get('id') or index} must contain non-empty steps")
-    return data
+        raise ValueError("connector journey eval dataset must be a mapping")
+    connector = str(data.get("connector") or "").strip()
+    if not connector:
+        raise ValueError("connector journey eval dataset must declare connector")
+    adapter = get_connector_adapter(connector)
+    if adapter is None or adapter.load_journey_eval_dataset is None:
+        raise ValueError(f"connector journey eval is not available for {connector!r}")
+    return adapter.load_journey_eval_dataset(path)
+
+
+async def run_connector_journey_eval_dataset(
+    *,
+    home: Path,
+    project_dir: Path,
+    dataset: Path,
+    timeout_seconds: float = 30.0,
+) -> list[Any]:
+    loaded = load_connector_journey_eval_dataset(dataset)
+    connector = str(loaded.get("connector") or "").strip()
+    adapter = get_connector_adapter(connector)
+    if adapter is None or adapter.run_journey_eval_dataset is None:
+        raise ValueError(f"connector journey eval is not available for {connector!r}")
+    return await adapter.run_journey_eval_dataset(home, project_dir, dataset, timeout_seconds)
 
 
 async def run_daily_journey_eval_dataset(
@@ -161,6 +157,7 @@ async def run_daily_journey_eval_dataset(
     project_dir: Path,
     dataset: Path,
     timeout_seconds: float = 30.0,
+    provider: ModelPool | None = None,
 ) -> list[DailyJourneyResult]:
     loaded = load_daily_journey_eval_dataset(dataset)
     results: list[DailyJourneyResult] = []
@@ -168,27 +165,7 @@ async def run_daily_journey_eval_dataset(
     for journey in loaded["journeys"]:
         journey_home = run_root / _safe_path_name(str(journey.get("id") or "journey"))
         result = await asyncio.wait_for(
-            _run_daily_journey(home=journey_home, project_dir=project_dir, journey=journey),
-            timeout=timeout_seconds,
-        )
-        results.append(result)
-    return results
-
-
-async def run_weixin_journey_eval_dataset(
-    *,
-    home: Path,
-    project_dir: Path,
-    dataset: Path,
-    timeout_seconds: float = 30.0,
-) -> list[WeixinJourneyResult]:
-    loaded = load_weixin_journey_eval_dataset(dataset)
-    results: list[WeixinJourneyResult] = []
-    run_root = home / "weixin_journeys" / _eval_run_id()
-    for journey in loaded["journeys"]:
-        journey_home = run_root / _safe_path_name(str(journey.get("id") or "journey"))
-        result = await asyncio.wait_for(
-            _run_weixin_journey(home=journey_home, project_dir=project_dir, journey=journey),
+            _run_daily_journey(home=journey_home, project_dir=project_dir, journey=journey, provider=provider),
             timeout=timeout_seconds,
         )
         results.append(result)
@@ -202,6 +179,7 @@ async def run_claw_eval_dataset(
     dataset: Path,
     attempts: int = 3,
     timeout_seconds: float = 30.0,
+    provider: ModelPool | None = None,
 ) -> list[ClawEvalResult]:
     loaded = load_claw_eval_dataset(dataset)
     run_attempts = attempts if attempts > 0 else int(loaded.get("pass_at") or 3)
@@ -216,7 +194,7 @@ async def run_claw_eval_dataset(
             journey = _claw_task_to_journey(task)
             try:
                 result = await asyncio.wait_for(
-                    _run_daily_journey(home=attempt_home, project_dir=project_dir, journey=journey),
+                    _run_daily_journey(home=attempt_home, project_dir=project_dir, journey=journey, provider=provider),
                     timeout=timeout_seconds,
                 )
             except TimeoutError:
@@ -256,153 +234,6 @@ async def run_claw_eval_dataset(
     return results
 
 
-async def _run_weixin_journey(*, home: Path, project_dir: Path, journey: dict[str, Any]) -> WeixinJourneyResult:
-    provider = _FailingEvalProvider() if journey.get("provider") == "failing" else MockProvider()
-    runtime = AgentRuntime(home=home, provider=ModelPool(default=provider))
-    service = WeixinService(home=home, config=WeixinConfig(dm_policy="open"), runtime=runtime)
-    service.client = MockWeixinClient()
-    account = WeixinAccount(account_id="eval-account", token="eval-token", base_url="mock://ilink")
-    runs = RunStore(home)
-    errors: list[str] = []
-    events: list[dict[str, Any]] = []
-    message_index = 0
-    for index, step in enumerate(journey["steps"]):
-        if not isinstance(step, dict):
-            errors.append(f"step[{index}]: step must be a mapping")
-            continue
-        before_sent = len(getattr(service.client, "sent", []))
-        before_runs = len(runs.list(limit=500))
-        before_watches = len(runs.list_watches(limit=500))
-        expect = step.get("expect") or {}
-        if "seed_failed_run" in step:
-            seed = step.get("seed_failed_run") or {}
-            run = runs.create(
-                str(seed.get("title") or "failed weixin eval task"),
-                prompt=str(seed.get("prompt") or seed.get("title") or "failed weixin eval task"),
-                status="failed",
-                source=str(seed.get("source") or "watch"),
-                kind=str(seed.get("kind") or "delegation"),
-                peer_id="weixin-eval-peer",
-                sender_id="weixin-eval-sender",
-                workspace=str(project_dir),
-            )
-            event = {"kind": "seed_failed_run", "run_id": run.id}
-        elif "inbound" in step:
-            inbound = step.get("inbound") or {}
-            message_index += 1
-            update = WeixinUpdate(
-                message_id=str(inbound.get("message_id") or f"msg-{message_index}"),
-                peer_id=str(inbound.get("peer_id") or "weixin-eval-peer"),
-                sender_id=str(inbound.get("sender_id") or "weixin-eval-sender"),
-                text=str(inbound.get("text") or ""),
-                context_token=str(inbound.get("context_token") or "eval-context"),
-                is_group=bool(inbound.get("is_group", False)),
-            )
-            handled = await service.handle_update(account, update)
-            event = {"kind": "inbound", "handled": handled, "text": update.text, "sent": list(getattr(service.client, "sent", []))}
-        else:
-            errors.append(f"step[{index}]: missing inbound or seed_failed_run")
-            continue
-        events.append(event)
-        errors.extend(
-            _match_weixin_expectation(
-                f"step[{index}]",
-                expect,
-                event=event,
-                home=home,
-                service=service,
-                runs=runs,
-                before_sent_count=before_sent,
-                before_run_count=before_runs,
-                before_watch_count=before_watches,
-            )
-        )
-    return WeixinJourneyResult(id=str(journey.get("id") or ""), ok=not errors, errors=errors, events=events)
-
-
-def _match_weixin_expectation(
-    prefix: str,
-    expect: dict[str, Any],
-    *,
-    event: dict[str, Any],
-    home: Path,
-    service: WeixinService,
-    runs: RunStore,
-    before_sent_count: int,
-    before_run_count: int,
-    before_watch_count: int,
-) -> list[str]:
-    errors: list[str] = []
-    if not isinstance(expect, dict):
-        return [f"{prefix}: expect must be a mapping"]
-    sent = list(getattr(service.client, "sent", []))
-    if "handled" in expect and bool(event.get("handled")) is not bool(expect["handled"]):
-        errors.append(f"{prefix}: handled expected {expect['handled']!r}, got {event.get('handled')!r}")
-    if "sent_count_delta" in expect:
-        delta = len(sent) - before_sent_count
-        if delta != int(expect["sent_count_delta"]):
-            errors.append(f"{prefix}: sent_count_delta expected {expect['sent_count_delta']!r}, got {delta!r}")
-    if "sent_contains" in expect:
-        text = sent[-1]["text"] if sent else ""
-        if str(expect["sent_contains"]) not in text:
-            errors.append(f"{prefix}: sent text did not contain {expect['sent_contains']!r}")
-    if "sent_contains_any" in expect:
-        text = sent[-1]["text"] if sent else ""
-        expected_any = [str(item) for item in expect["sent_contains_any"]]
-        if not any(item in text for item in expected_any):
-            errors.append(f"{prefix}: sent text did not contain any of {expected_any!r}")
-    if "sent_not_contains_any" in expect:
-        text = sent[-1]["text"] if sent else ""
-        forbidden = [str(item) for item in expect["sent_not_contains_any"]]
-        found = [item for item in forbidden if item in text]
-        if found:
-            errors.append(f"{prefix}: sent text contained forbidden items {found!r}")
-    if "run_count_delta" in expect:
-        delta = len(runs.list(limit=500)) - before_run_count
-        if delta != int(expect["run_count_delta"]):
-            errors.append(f"{prefix}: run_count_delta expected {expect['run_count_delta']!r}, got {delta!r}")
-    if "watch_count_delta" in expect:
-        delta = len(runs.list_watches(limit=500)) - before_watch_count
-        if delta != int(expect["watch_count_delta"]):
-            errors.append(f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}")
-    if "watch_kind" in expect:
-        watches = runs.list_watches(limit=1)
-        actual = watches[0].kind if watches else ""
-        if actual != str(expect["watch_kind"]):
-            errors.append(f"{prefix}: watch_kind expected {expect['watch_kind']!r}, got {actual!r}")
-    if "watch_cron" in expect:
-        watches = runs.list_watches(limit=1)
-        actual = watches[0].cron if watches else ""
-        if actual != str(expect["watch_cron"]):
-            errors.append(f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}")
-    if "failed_run_count" in expect:
-        count = runs.count_runs(status="failed")
-        if count != int(expect["failed_run_count"]):
-            errors.append(f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}")
-    if "event_contains" in expect:
-        event_names = _weixin_event_names(home)
-        expected_events = [str(item) for item in expect["event_contains"]]
-        missing = [name for name in expected_events if name not in event_names]
-        if missing:
-            errors.append(f"{prefix}: missing connector events {missing!r}")
-    return errors
-
-
-def _weixin_event_names(home: Path) -> list[str]:
-    path = home / "weixin" / "events.jsonl"
-    if not path.exists():
-        return []
-    names: list[str] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict):
-            names.append(str(event.get("event") or ""))
-    return names
-
-
 def _claw_task_to_journey(task: dict[str, Any]) -> dict[str, Any]:
     journey = dict(task["journey"])
     journey.setdefault("id", task["task_id"])
@@ -426,8 +257,14 @@ def _claw_error_domains(task: dict[str, Any], errors: list[str]) -> list[str]:
     return sorted(domains)
 
 
-async def _run_daily_journey(*, home: Path, project_dir: Path, journey: dict[str, Any]) -> DailyJourneyResult:
-    runtime = build_runtime(home)
+async def _run_daily_journey(
+    *,
+    home: Path,
+    project_dir: Path,
+    journey: dict[str, Any],
+    provider: ModelPool | None = None,
+) -> DailyJourneyResult:
+    runtime = AgentRuntime(home=home, provider=provider) if provider is not None else build_runtime(home)
     engine = HernessEngine(home=home, runtime=runtime, project_dir=project_dir)
     runs = RunStore(home)
     goals = GoalStore(home)
@@ -747,10 +584,6 @@ def results_to_json(results: list[EvalResult]) -> str:
 
 def claw_results_to_json(results: list[ClawEvalResult]) -> str:
     return json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2)
-
-
-load_connector_journey_eval_dataset = load_weixin_journey_eval_dataset
-run_connector_journey_eval_dataset = run_weixin_journey_eval_dataset
 
 
 def _validate_expected_args(

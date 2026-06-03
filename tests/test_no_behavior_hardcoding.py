@@ -86,13 +86,35 @@ def test_core_runtime_does_not_import_specific_connector_implementation():
         "WeixinStore",
         "navi.weixin",
         ".weixin",
+        "telegram",
+        "Telegram",
+        "navi.telegram",
+        ".telegram",
     )
     offenders: list[str] = []
-    for relative in ("api.py", "cli.py", "config.py", "defaults.py", "tools.py"):
-        text = (root / relative).read_text(encoding="utf-8")
+    for path in root.glob("*.py"):
+        if path.name == "__init__.py":
+            continue
+        text = path.read_text(encoding="utf-8")
         for value in banned:
             if value in text:
-                offenders.append(f"{relative}: {value}")
+                offenders.append(f"{path.name}: {value}")
+
+    assert offenders == []
+
+
+def test_mock_provider_does_not_keyword_route_planner_behavior():
+    source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "provider.py").read_text(encoding="utf-8")
+
+    forbidden = (
+        "_has(",
+        "_looks_like",
+        "\\u",
+        "QUESTION_MARKERS",
+        "ActionRouter",
+        "RoutedAction",
+    )
+    offenders = [token for token in forbidden if token in source]
 
     assert offenders == []
 

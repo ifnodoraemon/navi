@@ -32,6 +32,7 @@ def create_adapter() -> ConnectorAdapter:
         spec=SPEC,
         enabled=_enabled,
         status=_status,
+        diagnostics=_diagnostics,
         register_tools=lambda registry, home: _register_tools(registry, home, SPEC),
         run=_run,
     )
@@ -65,6 +66,22 @@ def _status(home: Path) -> dict[str, Any]:
         except Exception:
             pass
     return facts
+
+
+def _diagnostics(home: Path) -> list[dict[str, str]]:
+    config = load_telegram_config(home)
+    status = "ok" if config.enabled and config.bot_token else "missing"
+    return [
+        {
+            "name": f"connector.{SPEC.name}.config",
+            "status": status,
+            "detail": (
+                f"enabled={config.enabled} "
+                f"token_present={bool(config.bot_token)} "
+                f"home_chat={bool(config.home_chat_id)}"
+            ),
+        }
+    ]
 
 
 def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:

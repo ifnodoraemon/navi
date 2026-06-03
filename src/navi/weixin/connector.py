@@ -29,13 +29,18 @@ SPEC = _load_spec()
 
 
 def create_adapter() -> ConnectorAdapter:
+    from .evals import load_journey_eval_dataset, run_journey_eval_dataset
+
     return ConnectorAdapter(
         spec=SPEC,
         enabled=_enabled,
         status=_status,
+        diagnostics=_diagnostics,
         register_tools=lambda registry, home: _register_tools(registry, home, SPEC),
         setup=_setup,
         run=_run,
+        load_journey_eval_dataset=load_journey_eval_dataset,
+        run_journey_eval_dataset=run_journey_eval_dataset,
     )
 
 
@@ -69,6 +74,24 @@ def _status(home: Path) -> dict[str, Any]:
         except Exception:
             pass
     return facts
+
+
+def _diagnostics(home: Path) -> list[dict[str, str]]:
+    config = load_weixin_config(home)
+    saved_account = WeixinStore(home).load_account(config.account_id) if config.account_id else None
+    token_present = bool(config.token or (saved_account and saved_account.token))
+    ready = config.enabled and config.account_id and token_present
+    return [
+        {
+            "name": f"connector.{SPEC.name}.config",
+            "status": "ok" if ready else "missing",
+            "detail": (
+                f"enabled={config.enabled} "
+                f"account_present={bool(config.account_id)} "
+                f"token_present={token_present}"
+            ),
+        }
+    ]
 
 
 def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:

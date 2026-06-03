@@ -11,14 +11,11 @@ import httpx
 from .auth import AuthInspector
 from .capabilities import build_capability_registry
 from .config import load_config, validate_config
-from .connector_registry import load_connector_adapters
+from .connector_registry import ConnectorAdapter, load_connector_adapters
 from .fact_tools import service_facts
 from .provider import resolve_model_config
 from .provider_specs import get_provider_spec
 from .service import systemd_user_unit_path
-from .telegram.config import load_telegram_config
-from .weixin.config import load_weixin_config
-from .weixin.store import WeixinStore
 
 
 @dataclass(frozen=True)
@@ -50,8 +47,9 @@ def run_diagnostics(
     checks.extend(_external_tool_checks(("git", "rg", "systemctl", "node", "npx")))
     checks.extend(_browser_dependency_checks())
     checks.extend(_computer_use_checks())
-    checks.extend(_connector_status_file_checks(home))
-    checks.extend(_connector_config_checks(home))
+    connector_adapters = load_connector_adapters()
+    checks.extend(_connector_status_file_checks(home, connector_adapters))
+    checks.extend(_connector_config_checks(home, connector_adapters))
     checks.extend(_api_config_checks(config))
     if include_connectivity:
         checks.extend(_api_connectivity_checks(config))
@@ -123,39 +121,26 @@ def _computer_use_checks() -> list[DiagnosticCheck]:
     return checks
 
 
-def _connector_config_checks(home: Path) -> list[DiagnosticCheck]:
+def _connector_config_checks(home: Path, adapters: list[ConnectorAdapter]) -> list[DiagnosticCheck]:
     checks: list[DiagnosticCheck] = []
-    telegram_name = "telegram"
-    telegram = load_telegram_config(home)
-    telegram_status = "ok" if telegram.enabled and telegram.bot_token else "missing"
-    if not telegram.enabled:
-        telegram_status = "missing"
-    checks.append(
-        DiagnosticCheck(
-            f"connector.{telegram_name}.config",
-            telegram_status,
-            f"enabled={telegram.enabled} token_present={bool(telegram.bot_token)} home_chat={bool(telegram.home_chat_id)}",
-        )
-    )
-    weixin_name = "weixin"
-    weixin = load_weixin_config(home)
-    saved_account = WeixinStore(home).load_account(weixin.account_id) if weixin.account_id else None
-    token_present = bool(weixin.token or (saved_account and saved_account.token))
-    weixin_ready = weixin.enabled and weixin.account_id and token_present
-    checks.append(
-        DiagnosticCheck(
-            f"connector.{weixin_name}.config",
-            "ok" if weixin_ready else "missing",
-            f"enabled={weixin.enabled} account_present={bool(weixin.account_id)} token_present={token_present}",
-        )
-    )
+    for adapter in adapters:
+        if adapter.diagnostics is None:
+            continue
+        for item in adapter.diagnostics(home):
+            checks.append(
+                DiagnosticCheck(
+                    str(item.get("name") or f"connector.{adapter.name}.diagnostics"),
+                    str(item.get("status") or "missing"),
+                    str(item.get("detail") or ""),
+                )
+            )
     return checks
 
 
-def _connector_status_file_checks(home: Path) -> list[DiagnosticCheck]:
+def _connector_status_file_checks(home: Path, adapters: list[ConnectorAdapter]) -> list[DiagnosticCheck]:
     return [
         _check_path(f"connector.{adapter.name}.status_file", home / adapter.name / "status.json", required=False)
-        for adapter in load_connector_adapters()
+        for adapter in adapters
     ]
 
 

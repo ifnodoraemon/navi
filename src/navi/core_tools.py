@@ -1,16 +1,10 @@
 from __future__ import annotations
 
-import html
-import httpx
-import ipaddress
-import re
 import shutil
-import socket
 import subprocess
 from dataclasses import asdict
-from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 from typing import Any
 
 from .config import load_config
@@ -139,43 +133,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     )
     registry.register(
         ToolSpec(
-            name="web.fetch",
-            description="Fetch one public HTTP(S) page and return bounded response facts.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string"},
-                    "max_bytes": {"type": "integer", "default": 200000},
-                    "timeout_seconds": {"type": "integer", "default": 20},
-                },
-                "required": ["url"],
-            },
-            output_schema={"type": "object"},
-        ),
-        lambda args: _web_fetch(args),
-    )
-    registry.register(
-        ToolSpec(
-            name="web.extract",
-            description="Extract structured fields, headings, links, and readable text from provided HTML or text.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "content": {"type": "string"},
-                    "base_url": {"type": "string"},
-                    "patterns": {"type": "object"},
-                    "max_items": {"type": "integer", "default": 50},
-                },
-                "required": ["content"],
-            },
-            output_schema={"type": "object"},
-        ),
-        lambda args: _web_extract(args),
-    )
-    registry.register(
-        ToolSpec(
             name="browser.screenshot",
-            description="Capture a screenshot artifact for an HTTP(S) or localhost page.",
+            description="Capture a browser screenshot artifact for a reachable page.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -555,73 +514,6 @@ def _memory_recall(home: Path, args: dict[str, Any]) -> ToolResult:
     )
 
 
-def _web_fetch(args: dict[str, Any]) -> ToolResult:
-    url = str(args.get("url") or "").strip()
-    if not _is_public_http_url(url):
-        return ToolResult(tool="web.fetch", ok=False, error="url must be http(s) and must not target private hosts")
-    limit = _positive_int(args.get("max_bytes"), default=200000, maximum=1000000)
-    timeout = _positive_int(args.get("timeout_seconds"), default=20, maximum=60)
-    try:
-        response = httpx.get(
-            url,
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "Navi/0.1 web.fetch"},
-        )
-    except Exception as exc:
-        return ToolResult(tool="web.fetch", ok=False, error=str(exc), facts={"url": url})
-    raw = response.content[:limit]
-    content = raw.decode(response.encoding or "utf-8", errors="replace")
-    parsed = _parse_html(content, base_url=str(response.url))
-    return ToolResult(
-        tool="web.fetch",
-        ok=response.status_code < 400,
-        error="" if response.status_code < 400 else f"HTTP {response.status_code}",
-        facts={
-            "url": url,
-            "final_url": str(response.url),
-            "status_code": response.status_code,
-            "content_type": response.headers.get("content-type", ""),
-            "bytes_read": len(raw),
-            "truncated": len(response.content) > limit,
-            "title": parsed["title"],
-            "text": parsed["text"],
-            "links": parsed["links"][:50],
-        },
-    )
-
-
-def _web_extract(args: dict[str, Any]) -> ToolResult:
-    content = str(args.get("content") or "")
-    if not content:
-        return ToolResult(tool="web.extract", ok=False, error="content is required")
-    base_url = str(args.get("base_url") or "").strip()
-    limit = _positive_int(args.get("max_items"), default=50, maximum=200)
-    parsed = _parse_html(content, base_url=base_url)
-    patterns = args.get("patterns") if isinstance(args.get("patterns"), dict) else {}
-    extracted: dict[str, list[str]] = {}
-    for key, pattern in patterns.items():
-        if not isinstance(key, str) or not isinstance(pattern, str):
-            continue
-        try:
-            matches = re.findall(pattern, content, flags=re.IGNORECASE | re.MULTILINE)
-        except re.error as exc:
-            return ToolResult(tool="web.extract", ok=False, error=f"invalid pattern for {key}: {exc}")
-        values = [match if isinstance(match, str) else " ".join(str(part) for part in match) for match in matches]
-        extracted[key] = values[:limit]
-    return ToolResult(
-        tool="web.extract",
-        ok=True,
-        facts={
-            "title": parsed["title"],
-            "headings": parsed["headings"][:limit],
-            "links": parsed["links"][:limit],
-            "text": parsed["text"],
-            "patterns": extracted,
-        },
-    )
-
-
 def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     url = str(args.get("url") or "").strip()
     if not _is_browser_url(url):
@@ -667,124 +559,12 @@ def _is_safe_path(path: Path, project_dir: Path) -> bool:
         return False
 
 
-def _is_public_http_url(value: str) -> bool:
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return False
-    host = (parsed.hostname or "").lower()
-    if not host or host == "localhost":
-        return False
-    return _host_resolves_to_public_ips(host)
-
-
-def _host_resolves_to_public_ips(host: str) -> bool:
-    try:
-        addresses = {
-            result[4][0]
-            for result in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-            if result and result[4]
-        }
-    except socket.gaierror:
-        return False
-    if not addresses:
-        return False
-    return all(_is_public_ip(address) for address in addresses)
-
-
-def _is_public_ip(address: str) -> bool:
-    try:
-        parsed = ipaddress.ip_address(address)
-    except ValueError:
-        return False
-    return not (
-        parsed.is_private
-        or parsed.is_loopback
-        or parsed.is_link_local
-        or parsed.is_multicast
-        or parsed.is_reserved
-        or parsed.is_unspecified
-    )
-
-
 def _is_browser_url(value: str) -> bool:
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return False
     host = (parsed.hostname or "").lower()
     return bool(host)
-
-
-class _ReadableHTMLParser(HTMLParser):
-    def __init__(self, *, base_url: str = ""):
-        super().__init__()
-        self.base_url = base_url
-        self.title = ""
-        self.links: list[dict[str, str]] = []
-        self.headings: list[dict[str, str]] = []
-        self._text_parts: list[str] = []
-        self._current_tag = ""
-        self._heading_tag = ""
-        self._heading_parts: list[str] = []
-        self._title_parts: list[str] = []
-        self._skip_depth = 0
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._current_tag = tag.lower()
-        if self._current_tag in {"script", "style", "noscript"}:
-            self._skip_depth += 1
-        if self._current_tag == "a":
-            attrs_dict = {key.lower(): value or "" for key, value in attrs}
-            href = attrs_dict.get("href", "").strip()
-            if href:
-                self.links.append({"href": urljoin(self.base_url, href), "text": ""})
-        if self._current_tag in {"h1", "h2", "h3"}:
-            self._heading_tag = self._current_tag
-            self._heading_parts = []
-
-    def handle_endtag(self, tag: str) -> None:
-        tag = tag.lower()
-        if tag in {"script", "style", "noscript"} and self._skip_depth:
-            self._skip_depth -= 1
-        if tag == "title" and self._title_parts and not self.title:
-            self.title = _clean_text(" ".join(self._title_parts))
-        if tag == self._heading_tag and self._heading_parts:
-            self.headings.append({"level": tag, "text": _clean_text(" ".join(self._heading_parts))})
-            self._heading_tag = ""
-            self._heading_parts = []
-        self._current_tag = ""
-
-    def handle_data(self, data: str) -> None:
-        if self._skip_depth:
-            return
-        value = _clean_text(data)
-        if not value:
-            return
-        if self._current_tag == "title":
-            self._title_parts.append(value)
-        if self._heading_tag:
-            self._heading_parts.append(value)
-        if self.links and self._current_tag == "a" and not self.links[-1]["text"]:
-            self.links[-1]["text"] = value
-        self._text_parts.append(value)
-
-    @property
-    def text(self) -> str:
-        return _truncate_output(_clean_text(" ".join(self._text_parts)), limit=12000)
-
-
-def _parse_html(content: str, *, base_url: str = "") -> dict[str, Any]:
-    parser = _ReadableHTMLParser(base_url=base_url)
-    try:
-        parser.feed(content)
-    except Exception:
-        plain = _truncate_output(_clean_text(html.unescape(re.sub(r"<[^>]+>", " ", content))), limit=12000)
-        return {"title": "", "text": plain, "links": [], "headings": []}
-    text = parser.text or _truncate_output(_clean_text(html.unescape(re.sub(r"<[^>]+>", " ", content))), limit=12000)
-    return {"title": parser.title, "text": text, "links": parser.links, "headings": parser.headings}
-
-
-def _clean_text(value: str) -> str:
-    return re.sub(r"\s+", " ", html.unescape(str(value or ""))).strip()
 
 
 def _filesystem_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 import pytest
@@ -9,16 +11,16 @@ from navi.evals import (
     load_daily_journey_eval_dataset,
     load_delegation_eval_cases,
     load_delegation_eval_dataset,
-    load_weixin_journey_eval_dataset,
     match_delegation_eval_case,
     run_claw_eval_dataset,
     delegation_eval_tools,
     run_daily_journey_eval_dataset,
     run_delegation_eval_dataset,
-    run_weixin_journey_eval_dataset,
     validate_delegation_eval_dataset,
 )
+from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.syscalls import ModelSyscall
+from navi.weixin.evals import load_journey_eval_dataset, run_journey_eval_dataset
 
 
 def _dataset() -> Path:
@@ -47,6 +49,171 @@ def _claw_dataset() -> Path:
 
 def _weixin_dataset() -> Path:
     return Path(__file__).resolve().parents[1] / "evals" / "weixin_journeys.yaml"
+
+
+class ScriptedEvalProvider(MockProvider):
+    def __init__(self, decisions: list[dict]):
+        self.decisions = list(decisions)
+
+    async def complete(self, messages: list[ChatMessage]) -> str:
+        if messages and "model syscall planner" in messages[0].content:
+            user_prompt = next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
+            observations = _tagged(user_prompt, "observed_facts")
+            if observations:
+                if '"capability": "skills.list"' in observations or '"capability": "tools.list"' in observations:
+                    return await super().complete(messages)
+                if not any(token in observations for token in ('"status": "pending"', '"status": "prepared"', '"watch_id":')):
+                    return json.dumps(
+                        _decision("final.answer", "read", {"message": observations}),
+                        ensure_ascii=False,
+                    )
+                return await super().complete(messages)
+            user_text = _tagged(user_prompt, "user_message")
+            decision = self.decisions.pop(0) if self.decisions else _decision("final.answer", "read", {"message": f"Navi received: {user_text}"})
+            decision = _fill_dynamic_args(decision, user_text)
+            return json.dumps(decision, ensure_ascii=False)
+        return await super().complete(messages)
+
+
+def _tagged(text: str, tag: str) -> str:
+    match = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", text, flags=re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
+def _decision(tool: str, permission: str, args: dict | None = None) -> dict:
+    return {
+        "tool": tool,
+        "permission": permission,
+        "args": args or {},
+        "model_role": "responder",
+        "confidence": 1.0,
+        "reason": "scripted eval decision",
+    }
+
+
+def _fill_dynamic_args(decision: dict, user_text: str) -> dict:
+    tool = str(decision.get("tool") or "")
+    args = dict(decision.get("args") or {})
+    if tool == "approval.resolve":
+        code = re.search(r"\b\d{6}\b", user_text)
+        if code:
+            args["code"] = code.group(0)
+    if tool in {"delegate.status", "delegate.delete", "delegate.retry", "delegate.prepare", "delegate.run", "approval.request"}:
+        run_id = re.search(r"\b[a-f0-9]{32}\b", user_text)
+        if run_id:
+            args["run_id"] = run_id.group(0)
+    return {**decision, "args": args}
+
+
+def _scripted_pool(decisions: list[dict]) -> ModelPool:
+    return ModelPool(default=ScriptedEvalProvider(decisions))
+
+
+def _delegation_decisions(path: Path) -> list[dict]:
+    dataset = load_delegation_eval_dataset(path)
+    return [
+        _decision(str(case["expect"]["tool"]), str(case["expect"]["permission"]), dict(case["expect"].get("args") or {}))
+        for case in dataset["cases"]
+    ]
+
+
+def _journey_decisions(path: Path) -> list[dict]:
+    data = load_daily_journey_eval_dataset(path)
+    return _decisions_for_journeys(data["journeys"])
+
+
+def _claw_decisions(path: Path, *, attempts: int) -> list[dict]:
+    data = load_claw_eval_dataset(path)
+    decisions: list[dict] = []
+    for task in data["tasks"]:
+        for _ in range(attempts):
+            decisions.extend(_decisions_for_journeys([task["journey"]]))
+    return decisions
+
+
+def _connector_decisions(path: Path) -> list[dict]:
+    data = load_journey_eval_dataset(path)
+    return _decisions_for_journeys(data["journeys"], inbound_key="inbound")
+
+
+def _decisions_for_journeys(journeys: list[dict], *, inbound_key: str = "user") -> list[dict]:
+    decisions: list[dict] = []
+    for journey in journeys:
+        if journey.get("provider") == "failing":
+            continue
+        for step in journey.get("steps") or []:
+            if inbound_key == "inbound" and "inbound" not in step:
+                continue
+            if inbound_key == "user" and "user" not in step:
+                continue
+            if inbound_key == "inbound" and (step.get("expect") or {}).get("handled") is False:
+                continue
+            text = str((step.get("inbound") or {}).get("text") if inbound_key == "inbound" else step.get("user") or "")
+            decisions.append(_decision_for_expectation(step.get("expect") or {}, text))
+    return decisions
+
+
+def _decision_for_expectation(expect: dict, text: str) -> dict:
+    action = str(expect.get("action") or "")
+    if not action:
+        if "skill" in text.lower() or "工具" in text or "可以做什么" in text:
+            action = "tool"
+        elif "连接器" in text or "微信" in text:
+            action = "tool"
+        elif "哪些任务" in text:
+            action = "tool"
+        elif "清理" in text:
+            action = "delegation"
+        elif "明天" in text:
+            action = "ask"
+        if not action:
+            if "watch_count_delta" in expect and int(expect.get("watch_count_delta") or 0) > 0:
+                action = "watch"
+            elif "run_count_delta" in expect and int(expect.get("run_count_delta") or 0) > 0:
+                action = "approval"
+            elif "failed_run_count" in expect:
+                action = "delegation"
+            else:
+                action = "chat"
+    if action == "approval":
+        if "拒绝" in text:
+            return _decision("approval.resolve", "write", {"decision": "reject"})
+        if "批准" in text or "approve" in text.lower():
+            return _decision("approval.resolve", "write", {"decision": "approve"})
+        return _decision("delegate.spawn", "prepare", {"prompt": text})
+    if action == "watch":
+        if expect.get("watch_kind") == "once" or expect.get("watch_cron") == "once":
+            return _decision("watch.create", "prepare", {"kind": "once", "run_at_text": text, "prompt": text})
+        return _decision("watch.create", "prepare", {"kind": "recurring", "cron": "0 20 * * *", "prompt": text})
+    if action == "ask":
+        return _decision("clarify.ask", "read", {"message": "Please provide the exact recurring schedule or reminder time."})
+    if action == "delegation":
+        return _decision("delegate.delete", "write", {"status": "failed", "source": "watch"})
+    if action == "tool":
+        return _decision(_tool_for_text(text), "read", _tool_args_for_text(text))
+    return _decision("final.answer", "read", {"message": f"Navi received: {text}"})
+
+
+def _tool_for_text(text: str) -> str:
+    lowered = text.lower()
+    if "skill" in lowered:
+        return "skills.list"
+    if "工具" in text or "可以做什么" in text:
+        return "tools.list"
+    if "provider" in lowered or "api key" in lowered or "模型" in text:
+        return "provider.config"
+    if "连接器" in text or "telegram" in lowered or "微信" in text:
+        return "connector.weixin.status"
+    if "为什么" in text or "没执行" in text:
+        return "delegate.status"
+    return "delegate.list"
+
+
+def _tool_args_for_text(text: str) -> dict:
+    if _tool_for_text(text) == "delegate.status":
+        run_id = re.search(r"\b[a-f0-9]{32}\b", text)
+        return {"run_id": run_id.group(0)} if run_id else {}
+    return {}
 
 
 def test_task_eval_dataset_matches_capability_manifest(tmp_path):
@@ -120,6 +287,7 @@ async def test_mock_planner_passes_delegation_eval_dataset(tmp_path, monkeypatch
         project_dir=tmp_path,
         dataset=_dataset(),
         timeout_seconds=1,
+        provider=_scripted_pool(_delegation_decisions(_dataset())),
     )
 
     failures = [result for result in results if not result.ok]
@@ -159,6 +327,7 @@ async def test_mock_runtime_passes_daily_journey_eval_dataset(tmp_path, monkeypa
         project_dir=tmp_path,
         dataset=_daily_dataset(),
         timeout_seconds=5,
+        provider=_scripted_pool(_journey_decisions(_daily_dataset())),
     )
 
     failures = [result for result in results if not result.ok]
@@ -190,6 +359,7 @@ async def test_mock_runtime_passes_user_journey_eval_dataset(tmp_path, monkeypat
         project_dir=tmp_path,
         dataset=_user_dataset(),
         timeout_seconds=5,
+        provider=_scripted_pool(_journey_decisions(_user_dataset())),
     )
 
     failures = [result for result in results if not result.ok]
@@ -234,6 +404,7 @@ async def test_mock_runtime_passes_regression_journey_eval_dataset(tmp_path, mon
         project_dir=tmp_path,
         dataset=_regression_dataset(),
         timeout_seconds=5,
+        provider=_scripted_pool(_journey_decisions(_regression_dataset())),
     )
 
     failures = [result for result in results if not result.ok]
@@ -270,6 +441,7 @@ async def test_mock_runtime_passes_public_agent_journey_eval_dataset(tmp_path, m
         project_dir=tmp_path,
         dataset=_public_agent_dataset(),
         timeout_seconds=5,
+        provider=_scripted_pool(_journey_decisions(_public_agent_dataset())),
     )
 
     failures = [result for result in results if not result.ok]
@@ -317,6 +489,7 @@ async def test_mock_runtime_passes_claw_eval_dataset(tmp_path, monkeypatch):
         dataset=_claw_dataset(),
         attempts=3,
         timeout_seconds=5,
+        provider=_scripted_pool(_claw_decisions(_claw_dataset(), attempts=3)),
     )
 
     failures = [result for result in results if not result.ok]
@@ -325,7 +498,7 @@ async def test_mock_runtime_passes_claw_eval_dataset(tmp_path, monkeypatch):
 
 
 def test_weixin_journey_eval_dataset_is_user_visible():
-    dataset = load_weixin_journey_eval_dataset(_weixin_dataset())
+    dataset = load_journey_eval_dataset(_weixin_dataset())
     ids = {str(journey["id"]) for journey in dataset["journeys"]}
 
     assert {
@@ -347,11 +520,12 @@ def test_weixin_journey_eval_dataset_is_user_visible():
 async def test_mock_runtime_passes_weixin_journey_eval_dataset(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
 
-    results = await run_weixin_journey_eval_dataset(
-        home=tmp_path,
-        project_dir=tmp_path,
-        dataset=_weixin_dataset(),
+    results = await run_journey_eval_dataset(
+        tmp_path,
+        tmp_path,
+        _weixin_dataset(),
         timeout_seconds=5,
+        provider=_scripted_pool(_connector_decisions(_weixin_dataset())),
     )
 
     failures = [result for result in results if not result.ok]

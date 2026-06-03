@@ -51,8 +51,6 @@ coverage:
     - tools.list
     - memory.list
     - memory.recall
-    - web.fetch
-    - web.extract
     - browser.screenshot
     - delegate.list
     - delegate.status
@@ -140,24 +138,6 @@ cases:
     message: "回忆一下和回归 eval 相关的记忆"
     expect:
       tool: memory.recall
-      permission: read
-
-  - id: fetch_public_web_page
-    category: seeking_information
-    source: observed:skill-tool-expansion
-    message: "抓取 https://example.com 这个页面看看"
-    expect:
-      tool: web.fetch
-      permission: read
-      args:
-        url: "https://example.com"
-
-  - id: extract_web_content
-    category: seeking_information
-    source: observed:skill-tool-expansion
-    message: "从这段 HTML 提取链接：<a href='https://example.com/a'>A</a>"
-    expect:
-      tool: web.extract
       permission: read
 
   - id: browser_page_screenshot

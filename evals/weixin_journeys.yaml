@@ -1,4 +1,5 @@
 version: 1
+connector: weixin
 description: Connector-level Weixin journeys that assert user-visible IM behavior, delivery events, and state changes.
 journeys:
   - id: weixin_hello_replies_and_records_events

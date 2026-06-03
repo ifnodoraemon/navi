@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from .action_tools import action_handler_keys, load_action_tool_specs
 from .config import load_config
+from .connector_registry import load_connector_adapters
 from .cron import next_cron_time, validate_cron
 from .execution import ExecutionService
 from .goals import GoalStore
@@ -977,7 +978,13 @@ def _positive_int(value: Any, *, default: int, maximum: int) -> int:
 
 
 def _remote_source(source: str) -> bool:
-    return source.startswith("connector.") or source in {"weixin", "telegram"}
+    raw = source.strip()
+    if not raw:
+        return False
+    connector_sources: set[str] = set()
+    for adapter in load_connector_adapters():
+        connector_sources.update({adapter.name, adapter.spec.surface, adapter.spec.local_source})
+    return raw in connector_sources
 
 
 def _resolve_workspace(workspace: str) -> str:
