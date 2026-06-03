@@ -77,6 +77,41 @@ def test_runtime_source_does_not_embed_declarative_defaults():
     assert offenders == []
 
 
+def test_local_surface_does_not_reintroduce_web_as_default_source():
+    root = Path(__file__).resolve().parents[1]
+    checked = [
+        root / "src" / "navi",
+        root / "tests",
+        root / "docs",
+        root / "README.md",
+    ]
+    banned = (
+        (re.compile(r"source\s*=\s*[\"']web[\"']"), 'source="web"'),
+        (re.compile(r"peer_id\s*=\s*[\"']web[\"']"), 'peer_id="web"'),
+        (re.compile(r"sender_id\s*=\s*[\"']web[\"']"), 'sender_id="web"'),
+        (re.compile(r"\bWeb views\b"), "Web views"),
+        (re.compile(r"\bWeb or connector\b"), "Web or connector"),
+    )
+    offenders: list[str] = []
+    for base in checked:
+        if not base.exists():
+            continue
+        paths = [base] if base.is_file() else list(base.rglob("*"))
+        for path in paths:
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            if path.name == "test_no_behavior_hardcoding.py":
+                continue
+            if path.suffix not in {".py", ".yaml", ".yml", ".md", ".html"}:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for pattern, label in banned:
+                if pattern.search(text):
+                    offenders.append(f"{path.relative_to(root)}: {label}")
+
+    assert offenders == []
+
+
 def test_core_runtime_does_not_import_specific_connector_implementation():
     root = Path(__file__).resolve().parents[1] / "src" / "navi"
     banned = (

@@ -55,7 +55,7 @@ Tools are fact sensors and actuators. They must not smuggle policy or advice int
 
 ### 3. CLI First
 
-Every durable capability should have a headless CLI contract before it becomes a Web or connector feature.
+Every durable capability should have a headless CLI contract before it becomes a local API or connector feature.
 
 - CLI is the control plane.
 - Connectors are interaction surfaces.
@@ -183,7 +183,7 @@ Agentic does not mean broad access by default.
 - Default to read-only or preparation modes for new connectors and providers.
 - Enable write, shell, network, account, and production capabilities explicitly.
 - Prefer allowlists over denylists for dangerous tools.
-- Secrets must be redacted in prompts, logs, Web views, and connector replies.
+- Secrets must be redacted in prompts, logs, local API responses, and connector replies.
 
 ### 14. Tool Calling Must Be Deterministic
 

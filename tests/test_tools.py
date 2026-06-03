@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from navi.action_tools import load_action_tool_specs
 from navi.runs import RunStore
 from navi.tools import build_tool_gateway
 from navi.config import write_default_config
@@ -33,6 +34,8 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
     assert specs["browser.screenshot"].mutates is False
     assert specs["connector.weixin.status"].source == "connector.weixin"
     assert specs["connector.telegram.status"].source == "connector.telegram"
+    assert all(spec.facts_only is True for spec in specs.values())
+    assert all(spec.facts_only is True for spec in load_action_tool_specs())
 
 
 def test_run_status_tool_returns_task_facts(tmp_path):

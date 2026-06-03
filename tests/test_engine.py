@@ -5,6 +5,7 @@ import re
 import pytest
 
 from navi.engine import HernessEngine
+from navi.defaults import DEFAULT_LOCAL_SURFACE
 from navi.fact_tools import ServiceFacts
 from navi.goals import GoalStore
 from navi.provider import ChatMessage, MockProvider, ModelPool
@@ -55,9 +56,9 @@ async def test_engine_can_chain_multiple_read_capabilities_before_answering(tmp_
 
     result = await router.handle(
         "检查当前模型和服务状态",
-        peer_id="web",
-        sender_id="web",
-        source="web",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
     )
 
     assert result.action == "tool"
@@ -83,9 +84,9 @@ async def test_engine_budget_exhausted_with_observations(tmp_path):
 
     result = await router.handle(
         "Hello",
-        peer_id="web",
-        sender_id="web",
-        source="web",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
     )
     assert result.terminal is True
     assert "(注意：已达到步骤预算上限，任务可能未完成。)" in result.text
@@ -108,9 +109,9 @@ async def test_engine_budget_exhausted_without_observations(tmp_path):
 
     result = await router.handle(
         "Hello",
-        peer_id="web",
-        sender_id="web",
-        source="web",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
     )
     assert result.terminal is True
     assert "Fallback chat reply" in result.text
@@ -134,9 +135,9 @@ async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tm
 
     result = await router.handle(
         "列一下我本机的目录",
-        peer_id="web",
-        sender_id="web",
-        source="web",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
     )
 
     task = RunStore(tmp_path).list()[0]
@@ -174,9 +175,9 @@ async def test_engine_blocks_final_answer_after_partial_failed_task_cleanup(tmp_
 
     result = await router.handle(
         "清理失败任务",
-        peer_id="web",
-        sender_id="web",
-        source="web",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
     )
 
     assert store.count_runs(status="failed", source="watch") == 0
@@ -202,9 +203,9 @@ async def test_engine_terminal_empty_text_records_turn(tmp_path):
 
     result = await router.handle(
         "Hello",
-        peer_id="web",
-        sender_id="web",
-        source="web",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
     )
     assert result.text == ""
     assert result.terminal is True
@@ -233,9 +234,9 @@ async def test_engine_shutdown_cancels_background_tasks(tmp_path):
 
     await router.handle(
         "Hello",
-        peer_id="web",
-        sender_id="web",
-        source="web",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
     )
     assert len(router._background_tasks) == 1
     
@@ -253,7 +254,7 @@ def test_approval_prompt_uses_surface_affordance():
     }
 
     telegram = HernessEngine._approval_prompt_from_facts(facts, source="telegram")
-    default = HernessEngine._approval_prompt_from_facts(facts, source="web")
+    default = HernessEngine._approval_prompt_from_facts(facts, source=DEFAULT_LOCAL_SURFACE)
 
     assert "Approval code" in telegram
     assert "Reply `approve 123456`" in telegram
@@ -273,7 +274,12 @@ async def test_engine_records_full_flow_trace_and_evaluation(tmp_path):
     runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
     router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
 
-    result = await router.handle("Hello", peer_id="web", sender_id="web", source="web")
+    result = await router.handle(
+        "Hello",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
+    )
     await router.shutdown(timeout=0.01)
 
     trace = TraceStore(tmp_path)
