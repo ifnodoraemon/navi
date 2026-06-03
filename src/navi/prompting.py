@@ -87,13 +87,13 @@ def build_system_prompt_assembly(
     config = load_config(home)
     prompt_store = PromptLayerStore(home)
     operating_context = operating_context or OperatingContext(home=home)
-    workspace_path = Path(operating_context.workspace) if operating_context.workspace else (workspace or home)
-    workspace = workspace_path.resolve()
+    workspace_path = Path(operating_context.workspace) if operating_context.workspace else workspace
+    workspace_text = str(workspace_path.resolve()) if workspace_path else "unknown"
     unit_path = systemd_user_unit_path(config.runtime.service_name)
     unit_state = "installed" if unit_path.exists() else "not installed"
     runtime_lines = [
         "Local runtime facts:",
-        f"- Current workspace: {workspace}",
+        f"- Current workspace: {workspace_text}",
         f"- Navi state home: {home.resolve()}",
         f"- Model provider: {config.model.provider}",
         f"- Model name: {config.model.model}",

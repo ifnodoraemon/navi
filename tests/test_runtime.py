@@ -128,6 +128,8 @@ async def test_runtime_system_prompt_includes_local_deployment_contract(tmp_path
     system = provider.messages[0].content
     assert "running on their own machine" in system
     assert "Current workspace:" in system
+    assert f"Current workspace: {tmp_path.resolve()}" not in system
+    assert "Current workspace: unknown" in system
     assert "Navi state home:" in system
     assert "Local execution bridge" in system
     assert "Do not say you have no access to the user's local machine as an absolute statement" in system
