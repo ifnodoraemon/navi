@@ -63,7 +63,7 @@ async def test_engine_can_chain_multiple_read_capabilities_before_answering(tmp_
     assert result.action == "tool"
     assert result.text == "当前 provider 是 mock，服务状态是 active。"
     assert len(provider.messages) == 3
-    assert "Observed facts in this turn:" in provider.messages[1][1].content
+    assert "[OBSERVED FACTS]" in provider.messages[1][1].content
     assert "provider" in provider.messages[1][1].content
     assert "service.status" in provider.messages[2][1].content
     logs = RunStore(tmp_path).list_tool_call_logs()

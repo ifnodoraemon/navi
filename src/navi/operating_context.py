@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 from .tools import ToolSpec
 
@@ -63,15 +62,3 @@ def permission_allows(required: str, ceiling: str) -> bool:
 def filter_specs_by_permission(specs: Iterable[ToolSpec], ceiling: str) -> list[ToolSpec]:
     return [spec for spec in specs if permission_allows(spec.permission, ceiling)]
 
-
-def render_prompt_layers(layers: Iterable[PromptLayer], context: OperatingContext) -> str:
-    rendered: list[str] = []
-    for layer in layers:
-        if not context.allows_prompt_layer(layer.name):
-            continue
-        if not permission_allows(layer.minimum_permission, context.permission_ceiling):
-            continue
-        content = layer.content.strip()
-        if content:
-            rendered.append(f"[{layer.name}]\n{content}")
-    return "\n\n".join(rendered)

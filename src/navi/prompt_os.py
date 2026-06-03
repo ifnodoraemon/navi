@@ -119,7 +119,7 @@ def assemble_planner_turn_input(
                 "CONVERSATION HISTORY",
                 "turn_input",
                 "conversation_context",
-                f"Recent conversation:\n<conversation_history>\n{conversation_context.strip()}\n</conversation_history>",
+                f"<conversation_history>\n{conversation_context.strip()}\n</conversation_history>",
                 trusted=False,
                 mutable=True,
             )
@@ -130,7 +130,7 @@ def assemble_planner_turn_input(
                 "OBSERVED FACTS",
                 "turn_input",
                 "capability_observations",
-                f"Observed facts in this turn:\n<observed_facts>\n{chr(10).join(_join_observations(observations))}\n</observed_facts>",
+                f"<observed_facts>\n{chr(10).join(_join_observations(observations))}\n</observed_facts>",
                 trusted=True,
                 mutable=True,
             )
@@ -141,7 +141,7 @@ def assemble_planner_turn_input(
                 "USER MESSAGE",
                 "turn_input",
                 "current_user_message",
-                f"Current user message:\n<user_message>\n{text}\n</user_message>",
+                f"<user_message>\n{text}\n</user_message>",
                 trusted=False,
                 mutable=True,
             ),
@@ -149,25 +149,25 @@ def assemble_planner_turn_input(
                 "PERMISSION CEILING",
                 "turn_input",
                 "operating_context.permission_ceiling",
-                f"Permission ceiling: {permission_ceiling}",
+                permission_ceiling,
             ),
             PromptBlock(
                 "MODEL ROLES",
                 "manifest",
                 "agent_roles",
-                "Available model roles:\n" + json.dumps(model_roles, ensure_ascii=False),
+                json.dumps(model_roles, ensure_ascii=False),
             ),
             PromptBlock(
                 "MODEL ROLE CONTRACTS",
                 "manifest",
                 "agent_roles",
-                "Available model role contracts:\n" + json.dumps(role_contracts, ensure_ascii=False),
+                json.dumps(role_contracts, ensure_ascii=False),
             ),
             PromptBlock(
                 "TOOL MANIFEST",
                 "manifest",
                 "capability_registry",
-                "Available tools:\n" + json.dumps([asdict(tool) for tool in tools], ensure_ascii=False),
+                json.dumps([asdict(tool) for tool in tools], ensure_ascii=False),
             ),
         ]
     )

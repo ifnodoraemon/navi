@@ -250,9 +250,9 @@ def test_tool_descriptions_do_not_carry_routing_policy(tmp_path):
 
 
 def test_planner_prompt_uses_generic_state_transition_invariants():
-    from navi.syscalls import _planner_system_prompt
+    from navi.prompt_os import assemble_planner_system_prompt
 
-    system = _planner_system_prompt()
+    system = assemble_planner_system_prompt().render()
 
     assert "state_transition" in system
     assert "turn_scope=current" in system
@@ -280,10 +280,10 @@ def test_prompt_os_keeps_policy_manifest_and_turn_data_separate(tmp_path):
     system_text = system.render()
     turn_manifest = turn.manifest()
 
-    assert "Available tools:" not in system_text
+    assert "[TOOL MANIFEST]" not in system_text
     assert "hello" not in system_text
     assert all(block["tier"] == "stable" for block in system.manifest()["blocks"])
-    assert "Available tools:" in turn.render()
+    assert "[TOOL MANIFEST]" in turn.render()
     assert "<observed_facts>" in turn.render()
     assert any(block["tier"] == "manifest" and block["source"] == "capability_registry" for block in turn_manifest["blocks"])
     assert all(block["digest"] for block in system.manifest()["blocks"])

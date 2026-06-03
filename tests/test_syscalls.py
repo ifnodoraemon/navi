@@ -4,7 +4,7 @@ import pytest
 
 from navi.capabilities import CapabilityRegistry
 from navi.prompt_os import assemble_planner_system_prompt, assemble_planner_turn_input
-from navi.syscalls import ModelSyscallPlanner, _extract_json_object, _planner_system_prompt
+from navi.syscalls import ModelSyscallPlanner, _extract_json_object
 from navi.provider import ChatMessage, ModelPool
 
 
@@ -23,7 +23,7 @@ def _tools(tmp_path):
 
 
 def test_model_syscall_planner_prompt_loads_routing_rules_from_spec():
-    system = _planner_system_prompt()
+    system = assemble_planner_system_prompt().render()
 
     assert "TASK ROUTING RULES" in system
     assert "PROMPT BOUNDARIES" in system
@@ -49,13 +49,13 @@ async def test_model_syscall_planner_asks_when_schedule_time_is_vague(tmp_path):
     assert "model syscall planner" in system
     assert "capability manifest" in system
     assert "Built-in control tools" not in provider.messages[1].content
-    assert "Permission ceiling: write" in provider.messages[1].content
+    assert "[PERMISSION CEILING]" in provider.messages[1].content
     assert "<user_message>" in provider.messages[1].content
-    assert "Available model roles:" in provider.messages[1].content
-    assert "Available model role contracts:" in provider.messages[1].content
+    assert "[MODEL ROLES]" in provider.messages[1].content
+    assert "[MODEL ROLE CONTRACTS]" in provider.messages[1].content
     assert "critic" in provider.messages[1].content
     assert "executor" in provider.messages[1].content
-    assert "Available tools:" in provider.messages[1].content
+    assert "[TOOL MANIFEST]" in provider.messages[1].content
     assert "clarify.ask" in provider.messages[1].content
 
 
@@ -213,8 +213,8 @@ def test_prompt_os_assembles_planner_policy_and_turn_data_separately(tmp_path):
     assert system_manifest["name"] == "planner_system"
     assert turn_manifest["name"] == "planner_turn_input"
     assert "TASK ROUTING RULES" in system.render()
-    assert "Available tools:" not in system.render()
+    assert "[TOOL MANIFEST]" not in system.render()
     assert "<user_message>" in turn.render()
-    assert "Available tools:" in turn.render()
+    assert "[TOOL MANIFEST]" in turn.render()
     assert any(block["tier"] == "manifest" for block in turn_manifest["blocks"])
     assert any(block["source"] == "capability_registry" for block in turn_manifest["blocks"])

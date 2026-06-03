@@ -48,7 +48,7 @@ class ModelSyscallPlanner:
             [
                 ChatMessage(
                     "system",
-                    _planner_system_prompt(),
+                    assemble_planner_system_prompt().render(),
                 ),
                 ChatMessage("user", turn_input.render()),
             ],
@@ -86,11 +86,6 @@ class ModelSyscallPlanner:
             confidence=_confidence(data.get("confidence")),
             reason=str(data.get("reason") or ""),
         )
-
-
-def _planner_system_prompt() -> str:
-    return assemble_planner_system_prompt().render()
-
 
 def _extract_json_object(text: str) -> str:
     stripped = text.strip()

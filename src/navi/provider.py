@@ -298,9 +298,6 @@ def _extract_planner_user_message(content: str) -> str:
     tagged = re.search(r"<user_message>\s*(.*?)\s*</user_message>", content, re.DOTALL)
     if tagged:
         return tagged.group(1).strip()
-    match = re.search(r"^Current user message:\s*(.*?)(?:\nPermission ceiling:|\nAvailable tools:|\Z)", content, re.DOTALL)
-    if match:
-        return match.group(1).strip()
     return content.strip()
 
 
