@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 import re
-from dataclasses import asdict, dataclass, field
+import json
+from dataclasses import dataclass, field
 from typing import Any
 
-from .agent_roles import list_agent_role_names, list_agent_role_specs
 from .provider import ChatMessage, ModelPool
-from .spec_loader import load_spec
+from .prompt_os import assemble_planner_system_prompt, assemble_planner_turn_input
 from .tools import ToolSpec
 
 
@@ -36,42 +35,13 @@ class ModelSyscallPlanner:
         permission_ceiling: str = "write",
         model_roles: list[str] | None = None,
     ) -> ModelSyscall:
-        model_roles = model_roles or list_agent_role_names(["default", "planner", "responder", "notification"])
-        role_names = set(model_roles)
-        role_contracts = [
-            spec.to_prompt_dict()
-            for spec in list_agent_role_specs(model_roles)
-            if spec.name in role_names
-        ]
-        user_parts = []
-        if conversation_context.strip():
-            user_parts.extend((
-                "Recent conversation:",
-                "<conversation_history>",
-                conversation_context.strip(),
-                "</conversation_history>",
-            ))
-        if observations:
-            user_parts.extend((
-                "Observed facts in this turn:",
-                "<observed_facts>",
-                "\n\n".join(observations),
-                "</observed_facts>",
-            ))
-        user_parts.extend(
-            (
-                "Current user message:",
-                "<user_message>",
-                text,
-                "</user_message>",
-                f"Permission ceiling: {permission_ceiling}",
-                "Available model roles:",
-                json.dumps(model_roles, ensure_ascii=False),
-                "Available model role contracts:",
-                json.dumps(role_contracts, ensure_ascii=False),
-                "Available tools:",
-                json.dumps([asdict(tool) for tool in tools], ensure_ascii=False),
-            )
+        turn_input = assemble_planner_turn_input(
+            text,
+            tools=tools,
+            conversation_context=conversation_context,
+            observations=observations,
+            permission_ceiling=permission_ceiling,
+            model_roles=model_roles,
         )
         response = await self.provider.complete_for(
             "planner",
@@ -80,7 +50,7 @@ class ModelSyscallPlanner:
                     "system",
                     _planner_system_prompt(),
                 ),
-                ChatMessage("user", "\n".join(user_parts)),
+                ChatMessage("user", turn_input.render()),
             ],
         )
         return self._parse_syscall(response)
@@ -119,29 +89,7 @@ class ModelSyscallPlanner:
 
 
 def _planner_system_prompt() -> str:
-    spec = load_spec("syscall_planner.yaml") or {}
-    lines = [str(line) for line in spec.get("system_lines") or []]
-    prompt_boundaries = [str(rule) for rule in spec.get("prompt_boundaries") or []]
-    if prompt_boundaries:
-        lines.append("[PROMPT BOUNDARIES:")
-        lines.extend(f"- {rule}" for rule in prompt_boundaries)
-        lines[-1] = f"{lines[-1]}]"
-    routing_rules = [str(rule) for rule in spec.get("routing_rules") or []]
-    if routing_rules:
-        lines.append("[TASK ROUTING RULES:")
-        lines.extend(f"{idx}. {rule}" for idx, rule in enumerate(routing_rules, start=1))
-        lines[-1] = f"{lines[-1]}]"
-    observation_invariants = [str(rule) for rule in spec.get("observation_invariants") or []]
-    if observation_invariants:
-        lines.append("[OBSERVATION INVARIANTS:")
-        lines.extend(f"- {rule}" for rule in observation_invariants)
-        lines[-1] = f"{lines[-1]}]"
-    security_guidelines = [str(rule) for rule in spec.get("security_guidelines") or []]
-    if security_guidelines:
-        lines.append("[SECURITY GUIDELINE:")
-        lines.extend(f"- {rule}" for rule in security_guidelines)
-        lines[-1] = f"{lines[-1]}]"
-    return "\n".join(lines)
+    return assemble_planner_system_prompt().render()
 
 
 def _extract_json_object(text: str) -> str:

@@ -386,6 +386,7 @@ class DelegateSpawnCapability:
         return _fact_result(
             "delegation",
             {
+                **_transition_facts("delegation_run", task.id, "created"),
                 "goal_id": goal.id,
                 "run_id": task.id,
                 "status": task.status,
@@ -416,7 +417,12 @@ class DelegatePrepareCapability:
         GoalStore(self.home).update_for_run(planned, evidence={"run_id": planned.id, "run_status": planned.status})
         return _fact_result(
             "delegation",
-            {"run_id": planned.id, "status": planned.status, "plan_summary": planned.plan_summary},
+            {
+                **_transition_facts("delegation_run", planned.id, "updated"),
+                "run_id": planned.id,
+                "status": planned.status,
+                "plan_summary": planned.plan_summary,
+            },
             run_id=planned.id,
         )
 
@@ -447,6 +453,7 @@ class ApprovalRequestCapability:
         return _fact_result(
             "approval",
             {
+                **_transition_facts("approval_request", approval.id, "created"),
                 "run_id": awaiting.id,
                 "status": awaiting.status,
                 "approval": {"action": approval.action, "code": approval.code, "expires_at": approval.expires_at},
@@ -477,7 +484,15 @@ class DelegateRunCapability:
             return CapabilityResult(ok=False, action="delegation", observation="execution grant missing", message="execution grant missing", terminal=True)
         queued = runs.update_run(task.id, status="queued") or task
         GoalStore(self.home).update_for_run(queued, evidence={"run_id": queued.id, "run_status": queued.status})
-        return _fact_result("delegation", {"run_id": queued.id, "status": queued.status}, run_id=queued.id)
+        return _fact_result(
+            "delegation",
+            {
+                **_transition_facts("delegation_run", queued.id, "updated"),
+                "run_id": queued.id,
+                "status": queued.status,
+            },
+            run_id=queued.id,
+        )
 
 
 class WatchCreateCapability:
@@ -551,10 +566,7 @@ class WatchCreateCapability:
         )
         graph.upsert("Watch", watch.id, {"cron": cron, "prompt": prompt, "sender_id": context.sender_id, "kind": kind})
         facts = {
-            "entity_type": "watch",
-            "entity_id": watch.id,
-            "state_transition": "created",
-            "turn_scope": "current",
+            **_transition_facts("watch", watch.id, "created"),
             "watch_id": watch.id,
             "cron": watch.cron,
             "kind": watch.kind,
@@ -604,6 +616,7 @@ class DelegateDeleteCapability:
         return _fact_result(
             "delegation",
             {
+                **_transition_facts("delegation_run", deleted.id, "deleted"),
                 "deleted": True,
                 "run_id": deleted.id,
                 "title": deleted.title,
@@ -649,6 +662,8 @@ class DelegateDeleteCapability:
         return _fact_result(
             "delegation",
             {
+                **_transition_facts("delegation_run", "", "deleted"),
+                "entity_count": len(deleted),
                 "before_count": before_count,
                 "deleted_count": len(deleted),
                 "deleted_runs": deleted,
@@ -698,6 +713,7 @@ class WatchDeleteCapability:
         return _fact_result(
             "watch",
             {
+                **_transition_facts("watch", deleted.id, "deleted"),
                 "deleted": True,
                 "watch_id": deleted.id,
                 "cron": deleted.cron,
@@ -761,7 +777,12 @@ class ApprovalResolveCapability:
                 GoalStore(self.home).update_for_run(task, evidence={"run_id": task.id, "run_status": task.status, "approval_status": approval.status})
             return _fact_result(
                 "approval",
-                {"run_id": resolved_run_id, "approval_status": approval.status, "run_status": "queued"},
+                {
+                    **_transition_facts("approval_request", approval.id, "updated"),
+                    "run_id": resolved_run_id,
+                    "approval_status": approval.status,
+                    "run_status": "queued",
+                },
                 run_id=resolved_run_id,
             )
         task = runs.update_run(approval.run_id, status="rejected")
@@ -770,7 +791,12 @@ class ApprovalResolveCapability:
             GoalStore(self.home).update_for_run(task, evidence={"run_id": task.id, "run_status": task.status, "approval_status": approval.status})
         return _fact_result(
             "approval",
-            {"run_id": approval.run_id, "approval_status": approval.status, "run_status": "rejected"},
+            {
+                **_transition_facts("approval_request", approval.id, "updated"),
+                "run_id": approval.run_id,
+                "approval_status": approval.status,
+                "run_status": "rejected",
+            },
             run_id=approval.run_id,
         )
 
@@ -848,6 +874,7 @@ class ExecutionRetryCapability:
         retry_task = replace(task, prompt=f"{task.prompt}\n\nFollow-up execution instruction:\n{follow_up}" if follow_up else task.prompt)
         result = await execution.execute_task(retry_task)
         facts = {
+            **_transition_facts("execution_attempt", result.id, "created"),
             "run_id": result.id,
             "status": result.status,
             "result_summary": result.result_summary,
@@ -883,6 +910,15 @@ def _fact_result(action: str, facts: dict[str, Any], *, run_id: str = "") -> Cap
         run_id=run_id,
         facts=facts,
     )
+
+
+def _transition_facts(entity_type: str, entity_id: str, transition: str) -> dict[str, Any]:
+    return {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "state_transition": transition,
+        "turn_scope": "current",
+    }
 
 
 def _arg_text(args: dict[str, Any], key: str) -> str:

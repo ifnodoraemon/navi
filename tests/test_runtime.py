@@ -87,6 +87,28 @@ def test_session_alias_rotation_preserves_old_messages(tmp_path):
     assert runtime.memory.get_messages(second)[0].content == "new topic"
 
 
+def test_responder_prompt_os_manifest_exposes_layers(tmp_path):
+    from navi.operating_context import PromptLayer
+    from navi.prompt_os import assemble_responder_system_prompt
+
+    assembly = assemble_responder_system_prompt(
+        [
+            PromptLayer("identity", "Navi identity"),
+            PromptLayer("runtime", "Runtime facts"),
+            PromptLayer("memory", "Memory facts"),
+            PromptLayer("skills", "Skill facts"),
+        ],
+        OperatingContext(home=tmp_path),
+    )
+
+    manifest = assembly.manifest()
+
+    assert manifest["name"] == "responder_system"
+    assert [block["name"] for block in manifest["blocks"]] == ["identity", "runtime", "memory", "skills"]
+    assert {block["tier"] for block in manifest["blocks"]} == {"stable", "volatile"}
+    assert all(block["digest"] for block in manifest["blocks"])
+
+
 @pytest.mark.asyncio
 async def test_runtime_system_prompt_includes_local_deployment_contract(tmp_path):
     provider = RecordingProvider()

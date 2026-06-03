@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from navi.capabilities import CapabilityRegistry
+from navi.prompt_os import assemble_planner_system_prompt, assemble_planner_turn_input
 from navi.syscalls import ModelSyscallPlanner, _extract_json_object, _planner_system_prompt
 from navi.provider import ChatMessage, ModelPool
 
@@ -73,7 +74,7 @@ async def test_model_syscall_planner_receives_recent_conversation_context(tmp_pa
 
     assert call.tool == "delegate.spawn"
     assert call.args["prompt"] == "删除上一轮确认要删除的旧任务入口"
-    assert "Recent conversation:" in provider.messages[1].content
+    assert "CONVERSATION HISTORY" in provider.messages[1].content
     assert "旧任务入口可以删除" in provider.messages[1].content
 
 
@@ -194,3 +195,26 @@ def test_extract_json_object_handles_nested_braces_and_fenced_text():
     extracted = _extract_json_object(text)
 
     assert extracted == '{"tool":"final.answer","args":{"message":"a } brace"}}'
+
+
+def test_prompt_os_assembles_planner_policy_and_turn_data_separately(tmp_path):
+    tools = _tools(tmp_path)
+    system = assemble_planner_system_prompt()
+    turn = assemble_planner_turn_input(
+        "创建一个提醒",
+        tools=tools,
+        conversation_context="assistant: 之前没有创建。",
+        observations=['{"state_transition":"created","turn_scope":"current"}'],
+    )
+
+    system_manifest = system.manifest()
+    turn_manifest = turn.manifest()
+
+    assert system_manifest["name"] == "planner_system"
+    assert turn_manifest["name"] == "planner_turn_input"
+    assert "TASK ROUTING RULES" in system.render()
+    assert "Available tools:" not in system.render()
+    assert "<user_message>" in turn.render()
+    assert "Available tools:" in turn.render()
+    assert any(block["tier"] == "manifest" for block in turn_manifest["blocks"])
+    assert any(block["source"] == "capability_registry" for block in turn_manifest["blocks"])

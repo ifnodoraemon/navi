@@ -267,3 +267,33 @@ def test_principles_require_global_design_before_patch():
     assert "failing layer" in principles
     assert "Prefer structured facts and state transitions" in principles
     assert "Do not patch a tool description to change routing behavior" in principles
+
+
+def test_prompt_os_keeps_policy_manifest_and_turn_data_separate(tmp_path):
+    from navi.capabilities import build_capability_registry
+    from navi.prompt_os import assemble_planner_system_prompt, assemble_planner_turn_input
+
+    tools = build_capability_registry(tmp_path, project_dir=tmp_path).list_specs()
+    system = assemble_planner_system_prompt()
+    turn = assemble_planner_turn_input("hello", tools=tools, observations=['{"ok":true}'])
+
+    system_text = system.render()
+    turn_manifest = turn.manifest()
+
+    assert "Available tools:" not in system_text
+    assert "hello" not in system_text
+    assert all(block["tier"] == "stable" for block in system.manifest()["blocks"])
+    assert "Available tools:" in turn.render()
+    assert "<observed_facts>" in turn.render()
+    assert any(block["tier"] == "manifest" and block["source"] == "capability_registry" for block in turn_manifest["blocks"])
+    assert all(block["digest"] for block in system.manifest()["blocks"])
+
+
+def test_prompt_os_documentation_declares_audit_contract():
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "prompt-architecture.md").read_text(encoding="utf-8")
+
+    assert "Prompt Operating System" in doc
+    assert "PromptBlock" in doc
+    assert "PromptAssembly" in doc
+    assert "Audit Contract" in doc
+    assert "state_transition" in doc

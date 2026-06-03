@@ -1,10 +1,24 @@
-# Prompt Architecture
+# Prompt Operating System
 
 Navi prompt content has four separate jobs. Keep them separate.
 
+Navi treats prompts as an operating-system interface, not loose strings. A prompt is assembled from named blocks with explicit tier, source, trust, mutability, and digest metadata. The rendered text is what the model sees; the manifest is what tests, traces, and future evolution systems can inspect.
+
+Implementation: `src/navi/prompt_os.py`
+
+Inspection: `navi prompts inspect planner --json-output` and `navi prompts inspect responder --json-output`
+
+Core objects:
+
+- `PromptBlock`: one named block with tier/source/trust/mutability metadata.
+- `PromptAssembly`: an ordered set of blocks that can render text and expose a digest manifest.
+- `assemble_planner_system_prompt`: stable planner policy.
+- `assemble_planner_turn_input`: turn-scoped data, observations, roles, and tool manifest.
+- `assemble_responder_system_prompt`: user-facing response synthesis layers.
+
 ## Planner System Prompt
 
-Source: `src/navi/specs/syscall_planner.yaml`
+Sources: `src/navi/specs/syscall_planner.yaml`, `src/navi/prompt_os.py`
 
 This prompt owns global planning behavior:
 
@@ -18,7 +32,7 @@ It must not contain one-off fixes for a single tool result. If a rule is needed 
 
 ## Planner Turn Input
 
-Source: `ModelSyscallPlanner.plan`
+Sources: `ModelSyscallPlanner.plan`, `assemble_planner_turn_input`
 
 The user message sent to the planner contains turn-scoped data:
 
@@ -50,11 +64,38 @@ Mutating tools should return structured facts that describe state transitions, f
 
 The planner can reason over these generic facts without tool-specific prompt patches.
 
+All mutating capabilities should return the same minimum transition vocabulary:
+
+- `entity_type`
+- `entity_id`
+- `state_transition`
+- `turn_scope`
+
+Tool-specific fields may still be present, but they must not be the only way to understand whether state changed in the current turn.
+
 ## Runtime Responder Prompt
 
-Source: `src/navi/specs/prompt_layers.yaml`
+Sources: `src/navi/specs/prompt_layers.yaml`, `build_system_prompt`, `assemble_responder_system_prompt`
 
 `build_system_prompt` composes identity, runtime facts, authorization, memory, skills, and style for user-facing response synthesis. It should not duplicate planner routing rules.
+
+Responder layers are not planner policy. They control how Navi explains known facts to the user.
+
+## Audit Contract
+
+Every prompt assembly exposes a manifest containing:
+
+- assembly name
+- block names
+- tiers
+- sources
+- trust and mutability markers
+- per-block digests
+- full assembly digest
+
+This gives prompt evolution and tests an inspectable surface without parsing rendered prose.
+
+The CLI inspection command is the supported headless audit surface for these manifests.
 
 ## Reference Pattern
 

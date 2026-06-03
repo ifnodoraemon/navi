@@ -95,6 +95,18 @@ def test_cli_tool_eval_model_and_skill_commands(tmp_path):
     assert tools.exit_code == 0
     assert '"delegate.list"' in tools.output
 
+    planner_prompt = runner.invoke(app, ["prompts", "inspect", "planner", "--json-output"], env=env)
+    assert planner_prompt.exit_code == 0
+    planner_manifest = json.loads(planner_prompt.output)
+    assert planner_manifest["name"] == "planner_system"
+    assert any(block["name"] == "TASK ROUTING RULES" for block in planner_manifest["blocks"])
+
+    responder_prompt = runner.invoke(app, ["prompts", "inspect", "responder", "--json-output"], env=env)
+    assert responder_prompt.exit_code == 0
+    responder_manifest = json.loads(responder_prompt.output)
+    assert responder_manifest["name"] == "responder_system"
+    assert any(block["name"] == "runtime" for block in responder_manifest["blocks"])
+
     provider = runner.invoke(app, ["tools", "call", "provider.config"], env=env)
     assert provider.exit_code == 0
     assert '"action": "tool"' in provider.output

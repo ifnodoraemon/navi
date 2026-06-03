@@ -37,6 +37,8 @@ from .goals import GoalStore
 from .graph import GraphStore
 from .memory import MemoryStore
 from .paths import ensure_home
+from .prompt_os import assemble_planner_system_prompt
+from .prompting import build_system_prompt_assembly
 from .provider import build_provider
 from .service import build_systemd_user_unit, install_systemd_user_unit
 from .subagents import SubagentRunStore
@@ -56,6 +58,7 @@ service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
 tools_app = typer.Typer(help="Unified capability registry")
+prompts_app = typer.Typer(help="Prompt operating system")
 eval_app = typer.Typer(help="Evaluation datasets")
 app.add_typer(auth_app, name="auth")
 app.add_typer(connectors_app, name="connectors")
@@ -69,6 +72,7 @@ app.add_typer(service_app, name="service")
 app.add_typer(memory_app, name="memory")
 app.add_typer(session_app, name="session")
 app.add_typer(tools_app, name="tools")
+app.add_typer(prompts_app, name="prompts")
 app.add_typer(eval_app, name="eval")
 
 
@@ -323,6 +327,29 @@ def tools_call(name: str, args_json: str = "{}") -> None:
     )
     if not result.ok:
         raise typer.Exit(code=1)
+
+
+@prompts_app.command("inspect")
+def prompts_inspect(target: str = typer.Argument("planner"), json_output: bool = False) -> None:
+    """Inspect prompt OS block manifests."""
+    home = ensure_home()
+    if target == "planner":
+        assembly = assemble_planner_system_prompt()
+    elif target == "responder":
+        assembly = build_system_prompt_assembly(home=home)
+    else:
+        raise typer.BadParameter("target must be planner or responder")
+
+    manifest = assembly.manifest()
+    if json_output:
+        typer.echo(json.dumps(manifest, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"{manifest['name']} digest={manifest['digest']}")
+    for block in manifest["blocks"]:
+        typer.echo(
+            f"{block['name']} tier={block['tier']} source={block['source']} "
+            f"trusted={block['trusted']} mutable={block['mutable']} digest={block['digest']} chars={block['chars']}"
+        )
 
 
 @eval_app.command("delegations")

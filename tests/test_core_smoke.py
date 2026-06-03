@@ -48,6 +48,10 @@ async def test_core_delegation_approval_execution_goal_flow(tmp_path, monkeypatc
     )
     assert spawned.ok is True
     run_id = spawned.run_id
+    assert spawned.facts["entity_type"] == "delegation_run"
+    assert spawned.facts["entity_id"] == run_id
+    assert spawned.facts["state_transition"] == "created"
+    assert spawned.facts["turn_scope"] == "current"
 
     prepared = await registry.invoke(
         "delegate.prepare",
@@ -57,6 +61,9 @@ async def test_core_delegation_approval_execution_goal_flow(tmp_path, monkeypatc
     )
     assert prepared.ok is True
     assert prepared.facts["status"] == "prepared"
+    assert prepared.facts["entity_type"] == "delegation_run"
+    assert prepared.facts["entity_id"] == run_id
+    assert prepared.facts["state_transition"] == "updated"
 
     requested = await registry.invoke(
         "approval.request",
@@ -65,6 +72,8 @@ async def test_core_delegation_approval_execution_goal_flow(tmp_path, monkeypatc
         context=context,
     )
     assert requested.ok is True
+    assert requested.facts["entity_type"] == "approval_request"
+    assert requested.facts["state_transition"] == "created"
 
     approved = await registry.invoke(
         "approval.resolve",
@@ -74,6 +83,8 @@ async def test_core_delegation_approval_execution_goal_flow(tmp_path, monkeypatc
     )
     assert approved.ok is True
     assert approved.facts["run_status"] == "queued"
+    assert approved.facts["entity_type"] == "approval_request"
+    assert approved.facts["state_transition"] == "updated"
 
     queued = await registry.invoke(
         "delegate.run",
@@ -82,6 +93,8 @@ async def test_core_delegation_approval_execution_goal_flow(tmp_path, monkeypatc
         context=context,
     )
     assert queued.ok is True
+    assert queued.facts["entity_type"] == "delegation_run"
+    assert queued.facts["state_transition"] == "updated"
 
     processed = await ExecutionService(tmp_path).process_pending_once(limit=5)
     task = RunStore(tmp_path).get(run_id)

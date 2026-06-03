@@ -349,6 +349,13 @@ def _mock_planner_syscall(text: str, context: str = "", observations: str = "") 
             {"message": "Recurring watch has been created."},
             "mock follow-up reports created watch",
         )
+    if '"cleanup_complete": true' in observations:
+        return _mock_syscall(
+            "final.answer",
+            "read",
+            {"message": "Failed delegation records have been cleaned up."},
+            "mock follow-up reports completed cleanup",
+        )
     if run_id and '"status": "prepared"' in observations:
         return _mock_syscall("approval.request", "prepare", {"run_id": run_id}, "mock follow-up requests approval")
     if run_id and '"status": "pending"' in observations:

@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_config
-from .operating_context import OperatingContext, PromptLayer, render_prompt_layers
+from .operating_context import OperatingContext, PromptLayer
+from .prompt_os import PromptAssembly, assemble_responder_system_prompt
 from .service import systemd_user_unit_path
 from .spec_loader import load_spec
 
@@ -66,6 +67,23 @@ def build_system_prompt(
     workspace: Path | None = None,
     operating_context: OperatingContext | None = None,
 ) -> str:
+    return build_system_prompt_assembly(
+        home=home,
+        memory_context=memory_context,
+        skills_context=skills_context,
+        workspace=workspace,
+        operating_context=operating_context,
+    ).render()
+
+
+def build_system_prompt_assembly(
+    *,
+    home: Path,
+    memory_context: str = "",
+    skills_context: str = "",
+    workspace: Path | None = None,
+    operating_context: OperatingContext | None = None,
+) -> PromptAssembly:
     config = load_config(home)
     prompt_store = PromptLayerStore(home)
     operating_context = operating_context or OperatingContext(home=home)
@@ -101,7 +119,7 @@ def build_system_prompt(
         PromptLayer("skills", f"Installed skills:\n{skills_context}" if skills_context else ""),
         prompt_store.get("style"),
     ]
-    return render_prompt_layers(layers, operating_context)
+    return assemble_responder_system_prompt(layers, operating_context)
 
 
 def _valid_layer_name(name: str) -> bool:
