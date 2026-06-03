@@ -198,7 +198,7 @@ class CapabilityRegistry:
         handlers: dict[str, Capability] = {}
         for provider in self.providers:
             handlers.update(provider.capabilities())
-        return {
+        filtered = {
             name: handler
             for name, handler in handlers.items()
             if (self.allowed_tools is None or name in self.allowed_tools)
@@ -206,6 +206,10 @@ class CapabilityRegistry:
             and (self.allow_sources is None or handler.spec.source in self.allow_sources)
             and permission_allows(handler.spec.permission, self.permission_ceiling)
         }
+        tools_list = filtered.get("tools.list")
+        if tools_list is not None:
+            filtered["tools.list"] = ToolsListCapability(tools_list.spec, registry=self)
+        return filtered
 
     def _audit_action_capability(
         self,
@@ -325,6 +329,51 @@ class ToolCapability:
             observation=observation,
             message=observation if not result.ok else "",
             facts=result.facts,
+        )
+
+
+class ToolsListCapability:
+    def __init__(self, spec: ToolSpec, *, registry: CapabilityRegistry):
+        self.spec = spec
+        self.registry = registry
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        specs = self.registry.planner_specs(permission_ceiling=context.permission_ceiling)
+        facts = {
+            "category": "tools",
+            "definition": "callable capabilities available in the current permission and source context",
+            "not_skills": True,
+            "tools": [
+                {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "permission": spec.permission,
+                    "facts_only": spec.facts_only,
+                    "mutates": spec.mutates,
+                    "source": spec.source,
+                    "input_properties": sorted((spec.input_schema.get("properties") or {}).keys()),
+                    "required": list(spec.input_schema.get("required") or []),
+                }
+                for spec in specs
+            ],
+            "count": len(specs),
+        }
+        return CapabilityResult(
+            ok=True,
+            action="tool",
+            observation=json.dumps(
+                {"capability": self.spec.name, "facts": facts},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+            facts=facts,
         )
 
 
@@ -556,13 +605,14 @@ class WatchCreateCapability:
                 )
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
+        workspace = _resolve_workspace(context.workspace)
         watch = runs.create_watch(
             cron=cron,
             prompt=prompt,
             peer_id=context.peer_id,
             sender_id=context.sender_id,
             next_run_at=next_run,
-            workspace=context.workspace,
+            workspace=workspace,
             kind=kind,
         )
         graph.upsert("Watch", watch.id, {"cron": cron, "prompt": prompt, "sender_id": context.sender_id, "kind": kind})

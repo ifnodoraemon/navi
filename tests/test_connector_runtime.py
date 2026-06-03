@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
+from navi.capabilities import CapabilityContext
 from navi.provider import MockProvider, ModelPool
 from navi.runtime import AgentRuntime
 
@@ -53,3 +54,23 @@ def test_connector_ingress_runtime_uses_remote_tool_allowlist(tmp_path):
     assert "git.status" not in names
     assert "shell.run" not in names
     assert "test.run" not in names
+
+
+@pytest.mark.asyncio
+async def test_tools_list_reflects_connector_allowlist(tmp_path):
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=MockProvider()))
+    ingress = ConnectorIngressRuntime(home=tmp_path, runtime=runtime)
+
+    result = await ingress.agent.capabilities.invoke(
+        "tools.list",
+        {},
+        permission="read",
+        context=CapabilityContext(home=tmp_path, source="connector.test", permission_ceiling="write"),
+    )
+
+    names = {item["name"] for item in result.facts["tools"]}
+    assert "delegate.spawn" in names
+    assert "watch.create" in names
+    assert "watch.delete" not in names
+    assert "file.read" not in names
+    assert "browser.screenshot" not in names

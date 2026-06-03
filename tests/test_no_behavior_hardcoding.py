@@ -112,6 +112,22 @@ def test_local_surface_does_not_reintroduce_web_as_default_source():
     assert offenders == []
 
 
+def test_api_does_not_handcraft_active_surface_messages():
+    source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "api.py").read_text(encoding="utf-8")
+
+    forbidden = (
+        "Approval code:",
+        "Reply with",
+        "prepared for approval",
+        "Watch `",
+        "Next run at",
+        "__import__('time').ctime",
+    )
+    offenders = [token for token in forbidden if token in source]
+
+    assert offenders == []
+
+
 def test_core_runtime_does_not_import_specific_connector_implementation():
     root = Path(__file__).resolve().parents[1] / "src" / "navi"
     banned = (

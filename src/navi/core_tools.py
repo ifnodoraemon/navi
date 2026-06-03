@@ -8,7 +8,6 @@ from urllib.parse import urlparse
 from typing import Any
 
 from .config import load_config
-from .action_tools import load_action_tool_specs
 from .fact_tools import service_facts, run_facts
 from .memory import MemoryStore
 from .operating_context import permission_allows
@@ -146,8 +145,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             },
             output_schema={"type": "object"},
             facts_only=True,
-            mutates=False,
-            permission="read",
+            mutates=True,
+            permission="write",
         ),
         lambda args: _browser_screenshot(args, project_dir=registry.project_dir),
     )
@@ -431,13 +430,13 @@ def _skills_view(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolRe
 
 
 def _tools_list(registry: ToolRegistry) -> ToolResult:
-    specs = sorted([*load_action_tool_specs(), *registry.list_specs()], key=lambda spec: spec.name)
+    specs = registry.list_specs()
     return ToolResult(
         tool="tools.list",
         ok=True,
         facts={
             "category": "tools",
-            "definition": "callable capabilities selected by the model syscall planner",
+            "definition": "callable gateway tools registered in this gateway context",
             "not_skills": True,
             "tools": [
                 {

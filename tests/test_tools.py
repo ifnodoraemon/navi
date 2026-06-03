@@ -30,12 +30,13 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
     assert specs["file.write"].permission == "write"
     assert specs["shell.run"].mutates is True
     assert specs["test.run"].mutates is True
-    assert specs["browser.screenshot"].permission == "read"
-    assert specs["browser.screenshot"].mutates is False
+    assert specs["browser.screenshot"].permission == "write"
+    assert specs["browser.screenshot"].mutates is True
     assert specs["connector.weixin.status"].source == "connector.weixin"
     assert specs["connector.telegram.status"].source == "connector.telegram"
     assert all(spec.facts_only is True for spec in specs.values())
     assert all(spec.facts_only is True for spec in load_action_tool_specs())
+    assert all(spec.permission == "write" for spec in specs.values() if spec.mutates)
 
 
 def test_run_status_tool_returns_task_facts(tmp_path):
@@ -175,6 +176,7 @@ def test_tool_gateway_filters_by_permission_ceiling(tmp_path):
     assert {spec.permission for spec in gateway.list_specs()} == {"read"}
     assert "file.write" not in {spec.name for spec in gateway.list_specs()}
     assert "shell.run" not in {spec.name for spec in gateway.list_specs()}
+    assert "browser.screenshot" not in {spec.name for spec in gateway.list_specs()}
 
 
 def test_provider_config_tool_reports_model_fallbacks(tmp_path):

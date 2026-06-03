@@ -137,6 +137,34 @@ async def test_delegate_spawn_uses_capability_context_workspace(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_watch_create_uses_capability_context_workspace(tmp_path, monkeypatch):
+    process_cwd = tmp_path / "process-cwd"
+    requested_workspace = tmp_path / "requested-workspace"
+    process_cwd.mkdir()
+    requested_workspace.mkdir()
+    monkeypatch.chdir(process_cwd)
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=process_cwd)
+
+    result = await capabilities.invoke(
+        "watch.create",
+        {"cron": "*/5 * * * *", "prompt": "check requested workspace"},
+        permission="prepare",
+        context=CapabilityContext(
+            home=tmp_path,
+            peer_id="peer",
+            sender_id="sender",
+            source="daemon",
+            workspace=str(requested_workspace),
+        ),
+    )
+
+    assert result.ok is True
+    watch = RunStore(tmp_path).list_watches()[0]
+    assert watch.workspace == str(requested_workspace.resolve())
+    assert str(process_cwd.resolve()) != watch.workspace
+
+
+@pytest.mark.asyncio
 async def test_delegation_lifecycle_can_be_model_selected_step_by_step(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
@@ -412,6 +440,24 @@ async def test_capability_manifest_and_execution_respect_permission_ceiling(tmp_
 
     assert result.ok is False
     assert "capability not found" in result.message
+
+
+@pytest.mark.asyncio
+async def test_tools_list_reflects_permission_ceiling(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path, permission_ceiling="read")
+
+    result = await capabilities.invoke(
+        "tools.list",
+        {},
+        permission="read",
+        context=CapabilityContext(home=tmp_path, permission_ceiling="read"),
+    )
+
+    names = {item["name"] for item in result.facts["tools"]}
+    assert "tools.list" in names
+    assert "delegate.spawn" not in names
+    assert "file.write" not in names
+    assert "browser.screenshot" not in names
 
 
 def test_action_capabilities_are_loaded_from_manifest(tmp_path):

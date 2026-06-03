@@ -293,7 +293,7 @@ def test_builtin_general_skills_are_available(tmp_path):
     assert curator["injectable_with_read_ceiling"] is False
 
 
-def test_core_support_tools_expose_skills_memory_web_and_browser(tmp_path, monkeypatch):
+def test_core_support_tools_expose_skills_memory_and_browser(tmp_path, monkeypatch):
     from navi.memory import MemoryStore
     from navi.tools import build_tool_gateway
 

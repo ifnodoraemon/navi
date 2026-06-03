@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 
 os.environ["NAVI_API_KEY"] = "test_key"
 
@@ -259,7 +260,8 @@ def test_active_api_flow(tmp_path, monkeypatch):
 
     assert created.status_code == 200
     created_data = created.json()
-    assert "prepared for approval" in created_data["message"]
+    assert "审批码" in created_data["message"]
+    assert created_data["facts"]["status"] == "awaiting_approval"
     task = created_data["delegation"]
     assert task["status"] == "awaiting_approval"
 
@@ -280,6 +282,23 @@ def test_active_api_flow(tmp_path, monkeypatch):
 
     assert client.get("/v1/graph").json()["nodes"]
     assert client.get("/v1/evolution-events").json()["events"]
+
+
+def test_api_capability_context_keeps_startup_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
+    startup_workspace = tmp_path / "startup-workspace"
+    later_cwd = tmp_path / "later-cwd"
+    startup_workspace.mkdir()
+    later_cwd.mkdir()
+
+    monkeypatch.chdir(startup_workspace)
+    client = authenticated_client(create_app(tmp_path))
+    monkeypatch.chdir(later_cwd)
+
+    created = client.post("/v1/delegations", json={"title": "workspace-sensitive task"})
+
+    assert created.status_code == 200
+    assert Path(created.json()["workspace"]).resolve() == startup_workspace.resolve()
 
 
 def test_task_process_blocks_queued_task_without_execution_grant(tmp_path, monkeypatch):
@@ -307,7 +326,9 @@ def test_active_watch_api(tmp_path):
     )
 
     assert created.status_code == 200
-    assert "Watch" in created.json()["message"]
+    data = created.json()
+    assert data["facts"]["state_transition"] == "created"
+    assert data["watch"]["prompt"] == "check active watches"
     assert client.get("/v1/watches").json()["watches"][0]["prompt"] == "check active watches"
 
 

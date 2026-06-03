@@ -96,14 +96,15 @@ class EvolutionEvaluationRequest(BaseModel):
 
 def create_app(home: Path | None = None) -> FastAPI:
     home = home or ensure_home()
+    project_dir = Path.cwd().resolve()
     write_default_config(home)
     runtime = build_runtime(home)
     task_store = RunStore(home)
     goal_store = GoalStore(home)
     subagent_store = SubagentRunStore(home)
     daemon = SystemDaemon(home)
-    agent = HernessEngine(home=home, runtime=runtime, project_dir=Path.cwd())
-    capabilities = build_capability_registry(home, project_dir=Path.cwd())
+    agent = HernessEngine(home=home, runtime=runtime, project_dir=project_dir)
+    capabilities = build_capability_registry(home, project_dir=project_dir)
     connector_adapters = load_connector_adapters()
     connector_status_handlers = {
         adapter.name: (lambda item=adapter: item.status(home))
@@ -198,21 +199,21 @@ def create_app(home: Path | None = None) -> FastAPI:
             "delegate.spawn",
             {"prompt": request.prompt or request.title},
             permission="prepare",
-            context=_local_capability_context(home),
+            context=_local_capability_context(home, project_dir=project_dir),
         )
         _raise_capability_error(result)
         prepared = await capabilities.invoke(
             "delegate.prepare",
             {"run_id": result.run_id},
             permission="prepare",
-            context=_local_capability_context(home),
+            context=_local_capability_context(home, project_dir=project_dir),
         )
         _raise_capability_error(prepared)
         requested = await capabilities.invoke(
             "approval.request",
             {"run_id": result.run_id},
             permission="prepare",
-            context=_local_capability_context(home),
+            context=_local_capability_context(home, project_dir=project_dir),
         )
         _raise_capability_error(requested)
         task = task_store.get(result.run_id) if result.run_id else None
@@ -233,7 +234,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             "approval.resolve",
             {"decision": decision, "run_id": run_id},
             permission="write",
-            context=_local_capability_context(home),
+            context=_local_capability_context(home, project_dir=project_dir),
         )
         _raise_capability_error(result)
         task = task_store.get(run_id)
@@ -247,7 +248,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             "delegate.delete",
             {"run_id": run_id},
             permission="write",
-            context=_local_capability_context(home),
+            context=_local_capability_context(home, project_dir=project_dir),
         )
         if not result.ok and "not found" in result.message:
             raise HTTPException(status_code=404, detail=result.message)
@@ -268,7 +269,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             "approval.resolve",
             {"decision": "approve", "run_id": run_id},
             permission="write",
-            context=_local_capability_context(home),
+            context=_local_capability_context(home, project_dir=project_dir),
         )
         if not result.ok and "not found" in result.message.lower():
             raise HTTPException(status_code=409, detail=result.message)
@@ -289,6 +290,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             peer_id=request.peer_id,
             sender_id=request.sender_id,
             source=load_config(home).runtime.local_surface,
+            workspace=str(project_dir),
         )
         result = await capabilities.invoke(
             "delegate.spawn",
@@ -310,17 +312,13 @@ def create_app(home: Path | None = None) -> FastAPI:
                 context=context,
             )
         task = task_store.get(result.run_id) if result.run_id else None
-        approval = task_store.pending_approval_for_run(result.run_id, sender_id=request.sender_id) if result.run_id else None
-        message = result.message or result.observation
-        if task and approval:
-            message = (
-                f"Delegation run `{task.id}` is prepared for approval.\n"
-                f"Preparation:\n{task.plan_summary or '(no preparation output)'}\n\n"
-                f"Approval expires in 15 minutes.\n"
-                f"Approval code: `{approval.code}`.\n"
-                f"Reply with `approve {approval.code}` or `reject {approval.code}`."
-            )
-        return {"message": message, "delegation": task.__dict__ if task else None}
+        source = load_config(home).runtime.local_surface
+        return {
+            "message": _local_surface_message(result, source=source),
+            "delegation": task.__dict__ if task else None,
+            "preparation": task.plan_summary if task else "",
+            "facts": result.facts or {},
+        }
 
     @app.post(api_path("active_approve"))
     async def approve_active_delegation(request: ActiveApprovalRequest) -> dict:
@@ -332,10 +330,15 @@ def create_app(home: Path | None = None) -> FastAPI:
                 home=home,
                 sender_id=request.sender_id,
                 source=load_config(home).runtime.local_surface,
+                workspace=str(project_dir),
             ),
         )
         task = task_store.get(result.run_id) if result.run_id else None
-        return {"message": result.message or result.observation, "delegation": task.__dict__ if task else None}
+        return {
+            "message": _local_surface_message(result, source=load_config(home).runtime.local_surface),
+            "delegation": task.__dict__ if task else None,
+            "facts": result.facts or {},
+        }
 
     @app.post(api_path("active_reject"))
     async def reject_active_delegation(request: ActiveApprovalRequest) -> dict:
@@ -347,9 +350,13 @@ def create_app(home: Path | None = None) -> FastAPI:
                 home=home,
                 sender_id=request.sender_id,
                 source=load_config(home).runtime.local_surface,
+                workspace=str(project_dir),
             ),
         )
-        return {"message": result.message or result.observation}
+        return {
+            "message": _local_surface_message(result, source=load_config(home).runtime.local_surface),
+            "facts": result.facts or {},
+        }
 
     @app.post(api_path("active_watches"))
     async def create_active_watch(request: WatchRequest) -> dict:
@@ -362,19 +369,16 @@ def create_app(home: Path | None = None) -> FastAPI:
                 peer_id=request.peer_id,
                 sender_id=request.sender_id,
                 source=load_config(home).runtime.local_surface,
+                workspace=str(project_dir),
             ),
         )
         watch_id = str((result.facts or {}).get("watch_id") or "")
         watch = task_store.get_watch(watch_id) if watch_id else None
-        message = result.message or result.observation
-        if watch:
-            message = (
-                f"Watch `{watch.id}` created.\n"
-                f"Cron: {watch.cron}\n"
-                f"Request: {watch.prompt}\n"
-                f"Next run at {__import__('time').ctime(watch.next_run_at)}."
-            )
-        return {"message": message}
+        return {
+            "message": _local_surface_message(result, source=load_config(home).runtime.local_surface),
+            "watch": watch.__dict__ if watch else None,
+            "facts": result.facts or {},
+        }
 
     @app.post(api_path("active_watches_process"))
     async def process_watches() -> dict:
@@ -389,7 +393,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {
             "checks": [
                 check.__dict__
-                for check in run_diagnostics(home, project_dir=Path.cwd(), include_connectivity=connectivity)
+                for check in run_diagnostics(home, project_dir=project_dir, include_connectivity=connectivity)
             ]
         }
 
@@ -418,7 +422,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             tool_name,
             request.args,
             permission=spec.permission,
-            context=_local_capability_context(home),
+            context=_local_capability_context(home, project_dir=project_dir),
         )
         return _capability_result_dict(result)
 
@@ -543,13 +547,14 @@ def _public_approval(approval) -> dict:
     }
 
 
-def _local_capability_context(home: Path) -> CapabilityContext:
+def _local_capability_context(home: Path, *, project_dir: Path) -> CapabilityContext:
     local_surface = load_config(home).runtime.local_surface
     return CapabilityContext(
         home=home,
         peer_id=local_surface,
         sender_id=local_surface,
         source=local_surface,
+        workspace=str(project_dir),
     )
 
 
@@ -569,3 +574,8 @@ def _capability_result_dict(result: CapabilityResult) -> dict[str, Any]:
         "terminal": result.terminal,
         "facts": result.facts or {},
     }
+
+
+def _local_surface_message(result: CapabilityResult, *, source: str) -> str:
+    approval_prompt = HernessEngine._approval_prompt_from_facts(result.facts, source=source)
+    return approval_prompt or result.message or result.observation
