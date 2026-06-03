@@ -346,7 +346,7 @@ async def test_weixin_remote_delete_rejects_active_task(tmp_path, monkeypatch):
     runtime = AgentRuntime(home=tmp_path, provider=_pool(store_provider))
     service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
-    task = service.active.runs.create("remote delete should be blocked", status="awaiting_approval")
+    task = service.active.runs.create("remote delete should be blocked", status="awaiting_approval", workspace=str(tmp_path))
     store_provider.response = (
         '{"tool":"delegate.delete","permission":"write","args":{"run_id":"'
         + task.id
@@ -378,7 +378,7 @@ async def test_weixin_cleanup_failed_delegations_cannot_finish_with_remaining_re
     service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
     for index in range(3):
-        service.active.runs.create(f"failed {index}", status="failed", source="watch", kind="delegation")
+        service.active.runs.create(f"failed {index}", status="failed", source="watch", kind="delegation", workspace=str(tmp_path))
 
     handled = await service.handle_update(
         account,
@@ -403,7 +403,7 @@ async def test_weixin_plain_run_status_uses_fact_tool(tmp_path, monkeypatch):
     )
     service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
-    task = service.active.runs.create("check startup", status="preparing")
+    task = service.active.runs.create("check startup", status="preparing", workspace=str(tmp_path))
     provider.response = [
         (
             '{"tool":"delegate.status","permission":"read","args":{"run_id":"'
@@ -599,6 +599,7 @@ async def test_weixin_background_task_notification_uses_model_text(tmp_path, mon
         "list dir",
         status="completed",
         peer_id="peer",
+        workspace=str(tmp_path),
     )
     task = service.active.runs.update_run(created.id, result_summary="listed files")
     assert task is not None

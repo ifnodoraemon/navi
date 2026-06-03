@@ -246,7 +246,7 @@ class ActuatorRunner:
         self.home = home
 
     async def run_task(self, task: Run, result: ExecutionResult) -> ExecutionResult:
-        workspace = Path(task.workspace or Path.cwd())
+        workspace = _task_workspace(task)
         before_state = _workspace_state(workspace, label="before")
         protocol = await self._execute_protocol_actions(task, result.protocol, before_state=before_state)
         exit_code = 0 if protocol.completion.get("status") == "completed" else 1
@@ -271,7 +271,7 @@ class ActuatorRunner:
     ) -> ExecutionProtocol:
         from .capabilities import CapabilityContext, CapabilityRegistry
 
-        workspace = Path(task.workspace or Path.cwd())
+        workspace = _task_workspace(task)
         registry = CapabilityRegistry(
             home=self.home,
             project_dir=workspace,
@@ -611,6 +611,12 @@ def _workspace_state(workspace: Path, *, label: str) -> dict[str, Any]:
     }
 
 
+def _task_workspace(task: Run) -> Path:
+    if not task.workspace.strip():
+        raise ValueError(f"Run {task.id} has no workspace")
+    return Path(task.workspace)
+
+
 def _recovery_evidence(step_index: int, policy: str, reason: str) -> dict[str, Any]:
     return {
         "kind": "recovery_decision",
@@ -680,7 +686,7 @@ class NaviExecutionProvider:
                     f"Watch source: {source}\n"
                     f"Peer id: {peer_id}\n"
                     f"Sender id: {sender_id}\n\n"
-                    f"Workspace: {workspace or str(Path.home())}\n\n"
+                    f"Workspace: {workspace.strip() or 'unspecified'}\n\n"
                     f"Scheduled request:\n{prompt}"
                 ),
             ),
@@ -921,7 +927,7 @@ class NaviExecutionProvider:
                 "user",
                 (
                     f"Run id: {task.id}\n"
-                    f"Workspace: {task.workspace or str(Path.home())}\n"
+                    f"Workspace: {_task_workspace(task)}\n"
                     f"Autonomy level: {task.autonomy_level}\n\n"
                     f"Run:\n{task.prompt}"
                 ),
@@ -942,7 +948,7 @@ class NaviExecutionProvider:
                 "user",
                 (
                     f"Run id: {task.id}\n"
-                    f"Workspace: {task.workspace or str(Path.home())}\n"
+                    f"Workspace: {_task_workspace(task)}\n"
                     f"Preparation summary:\n{task.plan_summary or '(none)'}\n\n"
                     f"Run:\n{task.prompt}"
                 ),

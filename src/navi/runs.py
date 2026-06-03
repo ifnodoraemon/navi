@@ -10,6 +10,13 @@ from typing import Any
 from .db import connect
 
 
+def _require_workspace(workspace: str) -> str:
+    value = workspace.strip()
+    if not value:
+        raise ValueError("workspace is required")
+    return value
+
+
 @dataclass(frozen=True)
 class Run:
     id: str
@@ -205,7 +212,7 @@ class RunStore:
         peer_id: str = "",
         sender_id: str = "",
         provider: str = "",
-        workspace: str | None = None,
+        workspace: str,
         autonomy_level: str = "L2",
         trust_rule_id: str = "",
         why_now: str = "",
@@ -224,7 +231,7 @@ class RunStore:
             peer_id=peer_id,
             sender_id=sender_id,
             provider=provider,
-            workspace=workspace or str(Path.cwd().resolve()),
+            workspace=_require_workspace(workspace),
             autonomy_level=autonomy_level,
             trust_rule_id=trust_rule_id,
             why_now=why_now,
@@ -631,7 +638,7 @@ class RunStore:
             ).fetchall()
         return [Approval(*row) for row in rows]
 
-    def create_watch(self, *, cron: str, prompt: str, peer_id: str, sender_id: str, next_run_at: float, workspace: str = "", kind: str = "recurring") -> Watch:
+    def create_watch(self, *, cron: str, prompt: str, peer_id: str, sender_id: str, next_run_at: float, workspace: str, kind: str = "recurring") -> Watch:
         now = time.time()
         watch = Watch(
             id=uuid.uuid4().hex,
@@ -644,7 +651,7 @@ class RunStore:
             last_run_at=0.0,
             created_at=now,
             updated_at=now,
-            workspace=workspace,
+            workspace=_require_workspace(workspace),
             kind=kind,
         )
         with connect(self.db_path) as conn:

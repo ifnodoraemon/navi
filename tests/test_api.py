@@ -68,9 +68,23 @@ def test_headless_local_api_flow(tmp_path, monkeypatch):
     assert session.status_code == 200
     assert [message["role"] for message in session.json()["messages"]] == ["user", "assistant"]
 
-    memory = client.post("/v1/memory", json={"text": "Prefers direct answers"})
+    memory = client.post(
+        "/v1/memory",
+        json={
+            "type": "preference",
+            "content": "Prefers direct answers",
+            "source": "api-test",
+            "status": "active",
+            "confidence": 0.9,
+        },
+    )
     assert memory.status_code == 200
-    assert "Prefers direct answers" in client.get("/v1/memory").json()["memory"]
+    memory_item = memory.json()["item"]
+    assert memory_item["type"] == "preference"
+    assert memory_item["source"] == "api-test"
+    assert memory_item["status"] == "active"
+    memory_items = client.get("/v1/memory", params={"status": "active"}).json()["items"]
+    assert [item["content"] for item in memory_items] == ["Prefers direct answers"]
 
     created = client.post("/v1/delegations", json={"title": "Test the console"})
     assert created.status_code == 200

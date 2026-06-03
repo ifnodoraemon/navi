@@ -39,7 +39,7 @@ class HernessEngine:
         *,
         home: Path,
         runtime: AgentRuntime,
-        project_dir: Path | None = None,
+        project_dir: Path,
         allow_sources: set[str] | None = None,
         allowed_tools: set[str] | None = None,
         disabled_tools: set[str] | None = None,
@@ -52,7 +52,7 @@ class HernessEngine:
         self.step_budget = step_budget if step_budget is not None else load_config(home).runtime.agent_step_budget
         self.capabilities = CapabilityRegistry(
             home=home,
-            project_dir=project_dir or Path.cwd(),
+            project_dir=project_dir,
             allow_sources=allow_sources,
             allowed_tools=allowed_tools,
             disabled_tools=disabled_tools,

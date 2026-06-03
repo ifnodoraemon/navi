@@ -86,7 +86,7 @@ class CapabilityRegistry:
         self,
         *,
         home: Path,
-        project_dir: Path | None = None,
+        project_dir: Path,
         allow_sources: set[str] | None = None,
         allowed_tools: set[str] | None = None,
         disabled_tools: set[str] | None = None,
@@ -106,7 +106,7 @@ class CapabilityRegistry:
             permission_ceiling=permission_ceiling,
         )
         self.providers: tuple[CapabilityProvider, ...] = (
-            ActionCapabilityProvider(home=self.home),
+            ActionCapabilityProvider(home=self.home, project_dir=self.gateway.project_dir),
             ToolGatewayCapabilityProvider(self.gateway),
         )
         self.handlers = self._build_handlers()
@@ -239,19 +239,20 @@ class CapabilityRegistry:
 
 
 class ActionCapabilityProvider:
-    def __init__(self, *, home: Path):
+    def __init__(self, *, home: Path, project_dir: Path):
         self.home = home
+        self.project_dir = project_dir
 
     def capabilities(self) -> Mapping[str, Capability]:
         specs = {spec.name: spec for spec in load_action_tool_specs()}
         factories = {
             "final_answer": lambda spec: FinalAnswerCapability(spec),
             "clarify": lambda spec: ClarifyCapability(spec),
-            "delegate_spawn": lambda spec: DelegateSpawnCapability(spec, home=self.home),
+            "delegate_spawn": lambda spec: DelegateSpawnCapability(spec, home=self.home, project_dir=self.project_dir),
             "delegate_prepare": lambda spec: DelegatePrepareCapability(spec, home=self.home),
             "approval_request": lambda spec: ApprovalRequestCapability(spec, home=self.home),
             "delegate_run": lambda spec: DelegateRunCapability(spec, home=self.home),
-            "watch_create": lambda spec: WatchCreateCapability(spec, home=self.home),
+            "watch_create": lambda spec: WatchCreateCapability(spec, home=self.home, project_dir=self.project_dir),
             "delegate_delete": lambda spec: DelegateDeleteCapability(spec, home=self.home),
             "watch_delete": lambda spec: WatchDeleteCapability(spec, home=self.home),
             "approval_resolve": lambda spec: ApprovalResolveCapability(spec, home=self.home),
@@ -378,9 +379,10 @@ class ToolsListCapability:
 
 
 class DelegateSpawnCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
+    def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path):
         self.spec = spec
         self.home = home
+        self.project_dir = project_dir
 
     async def invoke(
         self,
@@ -401,7 +403,7 @@ class DelegateSpawnCapability:
         config = load_config(self.home)
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
-        workspace = _resolve_workspace(context.workspace)
+        workspace = _resolve_workspace(context.workspace, default=self.project_dir)
         from .provider import build_provider
 
         decision = await GovernanceEngine(self.home).decide_task(
@@ -546,9 +548,10 @@ class DelegateRunCapability:
 
 
 class WatchCreateCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
+    def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path):
         self.spec = spec
         self.home = home
+        self.project_dir = project_dir
 
     async def invoke(
         self,
@@ -605,7 +608,7 @@ class WatchCreateCapability:
                 )
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
-        workspace = _resolve_workspace(context.workspace)
+        workspace = _resolve_workspace(context.workspace, default=self.project_dir)
         watch = runs.create_watch(
             cron=cron,
             prompt=prompt,
@@ -937,7 +940,7 @@ class ExecutionRetryCapability:
 def build_capability_registry(
     home: Path,
     *,
-    project_dir: Path | None = None,
+    project_dir: Path,
     allow_sources: set[str] | None = None,
     allowed_tools: set[str] | None = None,
     disabled_tools: set[str] | None = None,
@@ -1037,6 +1040,6 @@ def _remote_source(source: str) -> bool:
     return raw in connector_sources
 
 
-def _resolve_workspace(workspace: str) -> str:
+def _resolve_workspace(workspace: str, *, default: Path) -> str:
     raw = workspace.strip() if workspace else ""
-    return str(Path(raw or Path.cwd()).expanduser().resolve())
+    return str(Path(raw).expanduser().resolve()) if raw else str(default.resolve())

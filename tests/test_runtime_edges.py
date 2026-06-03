@@ -108,6 +108,7 @@ async def test_daemon_processes_due_watches(tmp_path, monkeypatch):
         peer_id="peer",
         sender_id="sender",
         next_run_at=time.time() - 1,
+        workspace=str(tmp_path),
     )
 
     results = await SystemDaemon(tmp_path).process_watches_once()
@@ -134,6 +135,7 @@ async def test_daemon_disables_one_shot_watch_after_run(tmp_path, monkeypatch):
         peer_id="peer",
         sender_id="sender",
         next_run_at=time.time() - 1,
+        workspace=str(tmp_path),
         kind="once",
     )
 
@@ -156,8 +158,8 @@ async def test_daemon_prunes_excess_failed_watch_delegate_spawns(tmp_path, monke
 
     monkeypatch.setattr(daemon, "process_events_once", no_events)
     for index in range(55):
-        store.create(f"old failed watch {index}", status="failed", source="watch", kind="delegation")
-    local_failed = store.create("keep local failed", status="failed", source="local", kind="delegation")
+        store.create(f"old failed watch {index}", status="failed", source="watch", kind="delegation", workspace=str(tmp_path))
+    local_failed = store.create("keep local failed", status="failed", source="local", kind="delegation", workspace=str(tmp_path))
 
     results = await daemon.process_watches_once()
 

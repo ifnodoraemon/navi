@@ -87,7 +87,7 @@ def build_system_prompt_assembly(
     config = load_config(home)
     prompt_store = PromptLayerStore(home)
     operating_context = operating_context or OperatingContext(home=home)
-    workspace_path = Path(operating_context.workspace) if operating_context.workspace else (workspace or Path.cwd())
+    workspace_path = Path(operating_context.workspace) if operating_context.workspace else (workspace or home)
     workspace = workspace_path.resolve()
     unit_path = systemd_user_unit_path(config.runtime.service_name)
     unit_state = "installed" if unit_path.exists() else "not installed"

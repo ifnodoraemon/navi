@@ -131,19 +131,6 @@ class MemoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_items(status, type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_items(scope)")
 
-    def read_memory(self) -> str:
-        return self.render_context(query="")
-
-    def append_memory(self, text: str) -> None:
-        self.add_item(
-            "fact",
-            text,
-            source="manual",
-            scope="global",
-            status="active",
-            confidence=0.7,
-        )
-
     def add_item(
         self,
         memory_type: str,

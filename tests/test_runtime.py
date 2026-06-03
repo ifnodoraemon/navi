@@ -32,12 +32,21 @@ async def test_runtime_persists_session_messages(tmp_path):
     assert [message.role for message in messages] == ["user", "assistant"]
 
 
-def test_memory_append_and_read(tmp_path):
+def test_memory_items_roundtrip(tmp_path):
     runtime = AgentRuntime(home=tmp_path, provider=_pool())
 
-    runtime.memory.append_memory("Prefers concise replies")
+    item = runtime.memory.add_item(
+        "preference",
+        "Prefers concise replies",
+        source="test",
+        status="active",
+        confidence=0.9,
+    )
 
-    assert "Prefers concise replies" in runtime.memory.read_memory()
+    stored = runtime.memory.get_item(item.id)
+    assert stored is not None
+    assert stored.content == "Prefers concise replies"
+    assert "Prefers concise replies" in runtime.memory.render_context("concise replies")
 
 
 def test_memory_recall_prioritizes_constraints_and_relevance(tmp_path):

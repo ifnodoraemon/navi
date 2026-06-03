@@ -150,6 +150,19 @@ def test_memory_async_extractors_avoid_default_threadpool_shutdown_hangs():
         assert "ledger.record" in source
 
 
+def test_memory_store_has_no_flat_text_memory_api():
+    memory_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "memory.py").read_text(encoding="utf-8")
+    api_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "api.py").read_text(encoding="utf-8")
+
+    forbidden = ("def read_memory", "def append_memory", "runtime.memory.read_memory", "runtime.memory.append_memory")
+    offenders = {
+        "memory.py": [token for token in forbidden if token in memory_source],
+        "api.py": [token for token in forbidden if token in api_source],
+    }
+
+    assert offenders == {"memory.py": [], "api.py": []}
+
+
 def test_daemon_port_probe_uses_explicit_dual_stack_without_runtime_address_literal():
     source = _source(SystemDaemon._detect_port_events)
 
@@ -291,6 +304,27 @@ def test_durable_stores_do_not_keep_schema_compatibility_paths():
     }
 
     assert offenders == {"goals.py": [], "runs.py": [], "trace.py": []}
+
+
+def test_run_workspace_is_explicit_not_cwd_fallback():
+    runs_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "runs.py").read_text(encoding="utf-8")
+    execution_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "execution.py").read_text(encoding="utf-8")
+    evolution_source = (Path(__file__).resolve().parents[1] / "src" / "navi" / "evolution.py").read_text(encoding="utf-8")
+
+    forbidden = (
+        "workspace or str(Path.cwd()",
+        "task.workspace or Path.cwd()",
+        "Path(task.workspace or",
+        "workspace or str(Path.home())",
+        "project_dir=project_dir or Path.cwd()",
+    )
+    offenders = {
+        "runs.py": [token for token in forbidden if token in runs_source],
+        "execution.py": [token for token in forbidden if token in execution_source],
+        "evolution.py": [token for token in forbidden if token in evolution_source],
+    }
+
+    assert offenders == {"runs.py": [], "execution.py": [], "evolution.py": []}
 
 
 def test_prompt_os_keeps_policy_manifest_and_turn_data_separate(tmp_path):

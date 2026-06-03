@@ -494,7 +494,9 @@ class EvolutionEngine:
         return self.ledger.mark_rolled_back(event_id)
 
     def _update_graph(self, task: Run, *, success: bool, reason: str) -> EvolutionEvent:
-        name = task.workspace or str(Path.home())
+        name = task.workspace.strip()
+        if not name:
+            raise ValueError(f"Run {task.id} has no workspace")
         before_node = self.graph.get_by_name("Project", name)
         before = json.dumps(before_node.data if before_node else {}, sort_keys=True)
         node = self.graph.upsert(

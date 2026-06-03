@@ -17,7 +17,7 @@ from navi.runs import RunStore
 
 def test_goal_store_tracks_task_lifecycle_with_evidence(tmp_path):
     runs = RunStore(tmp_path)
-    task = runs.create("durable task", status="pending")
+    task = runs.create("durable task", status="pending", workspace=str(tmp_path))
     goals = GoalStore(tmp_path)
     goal = goals.create(objective=task.prompt, run_id=task.id, evidence={"created_from": "test"})
 

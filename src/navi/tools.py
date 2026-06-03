@@ -125,9 +125,9 @@ class ToolProvider:
 
 
 class ToolRegistry:
-    def __init__(self, *, home: Path, project_dir: Path | None = None):
+    def __init__(self, *, home: Path, project_dir: Path):
         self.home = home
-        self.project_dir = project_dir or Path.cwd()
+        self.project_dir = project_dir
         self._tools: dict[str, RegisteredTool] = {}
 
     def register(self, spec: ToolSpec, handler: ToolHandler) -> None:
@@ -220,7 +220,7 @@ class ToolGateway:
         self,
         *,
         home: Path,
-        project_dir: Path | None = None,
+        project_dir: Path,
         providers: list[ToolProvider] | None = None,
         allow_sources: set[str] | None = None,
         allowed_tools: set[str] | None = None,
@@ -228,7 +228,7 @@ class ToolGateway:
         permission_ceiling: str = "write",
     ):
         self.home = home
-        self.project_dir = project_dir or Path.cwd()
+        self.project_dir = project_dir
         self.providers = providers or load_tool_providers(home, project_dir=self.project_dir)
         self.allow_sources = allow_sources
         self.allowed_tools = allowed_tools
@@ -266,7 +266,7 @@ class ToolGateway:
         return self.registry.call(name, args)
 
 
-def load_tool_providers(home: Path, *, project_dir: Path | None = None) -> list[ToolProvider]:
+def load_tool_providers(home: Path, *, project_dir: Path) -> list[ToolProvider]:
     return [
         ToolProvider(
             name="core-facts",
@@ -284,7 +284,7 @@ def load_tool_providers(home: Path, *, project_dir: Path | None = None) -> list[
 def build_tool_gateway(
     home: Path,
     *,
-    project_dir: Path | None = None,
+    project_dir: Path,
     allow_sources: set[str] | None = None,
     allowed_tools: set[str] | None = None,
     disabled_tools: set[str] | None = None,

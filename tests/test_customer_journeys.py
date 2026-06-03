@@ -74,7 +74,7 @@ async def test_customer_journey_lists_then_cleans_failed_watch_records(tmp_path,
     )
     service, account = _service(tmp_path, provider)
     for index in range(3):
-        service.active.runs.create(f"stale watch {index}", status="failed", source="watch", kind="delegation")
+        service.active.runs.create(f"stale watch {index}", status="failed", source="watch", kind="delegation", workspace=str(tmp_path))
 
     listed = await service.handle_update(
         account,

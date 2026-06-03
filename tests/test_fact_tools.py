@@ -6,7 +6,7 @@ from navi.runs import RunStore
 
 def test_run_facts_reports_status_approvals_and_logs(tmp_path):
     store = RunStore(tmp_path)
-    run = store.create("check service", status="preparing")
+    run = store.create("check service", status="preparing", workspace=str(tmp_path))
     approval = store.create_approval(run_id=run.id, peer_id="peer", sender_id="sender")
     store.add_execution_log(
         run_id=run.id,

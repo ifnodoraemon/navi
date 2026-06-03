@@ -206,7 +206,7 @@ async def test_delegation_lifecycle_can_be_model_selected_step_by_step(tmp_path,
 @pytest.mark.asyncio
 async def test_approval_resolve_reports_missing_task_approval(tmp_path):
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
-    task = RunStore(tmp_path).create("orphan task", status="preparing")
+    task = RunStore(tmp_path).create("orphan task", status="preparing", workspace=str(tmp_path))
 
     result = await capabilities.invoke(
         "approval.resolve",
@@ -225,7 +225,7 @@ async def test_approval_resolve_reports_missing_task_approval(tmp_path):
 async def test_approval_resolve_reports_sender_mismatch(tmp_path):
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
     store = RunStore(tmp_path)
-    task = store.create("owned task")
+    task = store.create("owned task", workspace=str(tmp_path))
     approval = store.create_approval(run_id=task.id, peer_id="peer", sender_id="owner")
 
     result = await capabilities.invoke(
@@ -245,7 +245,7 @@ async def test_approval_resolve_reports_sender_mismatch(tmp_path):
 async def test_approval_resolve_reports_consumed_approval(tmp_path):
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
     store = RunStore(tmp_path)
-    task = store.create("approved task")
+    task = store.create("approved task", workspace=str(tmp_path))
     approval = store.create_approval(run_id=task.id, peer_id="peer", sender_id="sender")
     store.resolve_approval(approval.code, "sender", "approved")
 
@@ -302,7 +302,7 @@ async def test_watch_capability_creates_one_shot_watch(tmp_path):
 async def test_task_and_watch_delete_capabilities_remove_records(tmp_path):
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
     store = RunStore(tmp_path)
-    task = store.create("delete me", status="failed")
+    task = store.create("delete me", status="failed", workspace=str(tmp_path))
     approval = store.create_approval(run_id=task.id, peer_id="peer", sender_id="sender")
     store.add_execution_log(
         run_id=task.id,
@@ -321,6 +321,7 @@ async def test_task_and_watch_delete_capabilities_remove_records(tmp_path):
         peer_id="peer",
         sender_id="sender",
         next_run_at=1,
+        workspace=str(tmp_path),
     )
 
     deleted_task = await capabilities.invoke(
@@ -349,10 +350,10 @@ async def test_task_and_watch_delete_capabilities_remove_records(tmp_path):
 async def test_delegate_delete_can_cleanup_failed_delegations_by_filter(tmp_path):
     store = RunStore(tmp_path)
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
-    failed_watch = store.create("old watch residue", status="failed", kind="watch", source="watch")
-    failed_watch_2 = store.create("old watch residue 2", status="failed", kind="watch", source="watch")
-    failed_manual = store.create("manual failed", status="failed", kind="manual", source="local")
-    queued = store.create("still queued", status="queued", kind="manual", source="local")
+    failed_watch = store.create("old watch residue", status="failed", kind="watch", source="watch", workspace=str(tmp_path))
+    failed_watch_2 = store.create("old watch residue 2", status="failed", kind="watch", source="watch", workspace=str(tmp_path))
+    failed_manual = store.create("manual failed", status="failed", kind="manual", source="local", workspace=str(tmp_path))
+    queued = store.create("still queued", status="queued", kind="manual", source="local", workspace=str(tmp_path))
 
     result = await capabilities.invoke(
         "delegate.delete",
@@ -381,7 +382,7 @@ async def test_delegate_delete_reports_partial_cleanup_when_limited(tmp_path):
     store = RunStore(tmp_path)
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
     for index in range(3):
-        store.create(f"failed {index}", status="failed", kind="delegation", source="watch")
+        store.create(f"failed {index}", status="failed", kind="delegation", source="watch", workspace=str(tmp_path))
 
     result = await capabilities.invoke(
         "delegate.delete",
@@ -401,7 +402,7 @@ async def test_delegate_delete_reports_partial_cleanup_when_limited(tmp_path):
 async def test_remote_delegate_delete_rejects_non_failed_single_task(tmp_path):
     store = RunStore(tmp_path)
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
-    task = store.create("active remote delete should be blocked", status="queued")
+    task = store.create("active remote delete should be blocked", status="queued", workspace=str(tmp_path))
 
     result = await capabilities.invoke(
         "delegate.delete",
@@ -535,6 +536,7 @@ def test_trust_success_does_not_auto_escalate_autonomy(tmp_path, monkeypatch):
         trust_rule_id=rule.id,
         autonomy_level="L2",
         status="completed",
+        workspace=str(tmp_path),
     )
 
     for _ in range(2):
@@ -591,7 +593,7 @@ async def test_internal_plan_timeout_marks_task_failed(tmp_path, monkeypatch):
     monkeypatch.delenv("NAVI_EXECUTION_MOCK", raising=False)
     monkeypatch.setenv("NAVI_EXECUTION_TIMEOUT_SECONDS", "1")
     execution = ExecutionService(tmp_path)
-    task = RunStore(tmp_path).create("timeout", status="pending")
+    task = RunStore(tmp_path).create("timeout", status="pending", workspace=str(tmp_path))
 
     async def slow_plan(task):
         import asyncio

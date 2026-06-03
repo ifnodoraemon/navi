@@ -161,7 +161,7 @@ async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tm
 async def test_engine_blocks_final_answer_after_partial_failed_task_cleanup(tmp_path):
     store = RunStore(tmp_path)
     for index in range(3):
-        store.create(f"failed cleanup {index}", status="failed", source="watch", kind="delegation")
+        store.create(f"failed cleanup {index}", status="failed", source="watch", kind="delegation", workspace=str(tmp_path))
     provider = ScriptedProvider(
         [
             '{"tool":"delegate.delete","permission":"write","args":{"status":"failed","source":"watch","limit":1},"confidence":0.9,"reason":"cleanup failed tasks"}',

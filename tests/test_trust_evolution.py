@@ -646,7 +646,7 @@ async def test_engine_strong_task_references(tmp_path):
     runtime = DummyRuntime()
     runtime.memory = DummyMemory()
     
-    engine = HernessEngine(home=tmp_path, runtime=runtime)
+    engine = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
     assert len(engine._background_tasks) == 0
     
     # Trigger background memory
@@ -682,7 +682,7 @@ async def test_engine_shutdown_cancels_slow_background_memory(tmp_path):
     runtime = DummyRuntime()
     runtime.memory = DummyMemory()
 
-    engine = HernessEngine(home=tmp_path, runtime=runtime)
+    engine = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
     engine._trigger_background_memory(AgentTurnResult(text="hello", session_id="sess-1"))
     await engine.shutdown(timeout=0.01)
 
@@ -710,7 +710,7 @@ async def test_engine_shutdown_waits_for_background_memory(tmp_path):
 
     runtime = DummyRuntime()
     runtime.memory = DummyMemory()
-    engine = HernessEngine(home=tmp_path, runtime=runtime)
+    engine = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
     assert engine._memory_sem is None
 
     engine._trigger_background_memory(AgentTurnResult(text="hello", session_id="sess-1"))

@@ -37,7 +37,13 @@ class ChatRequest(BaseModel):
 
 
 class MemoryRequest(BaseModel):
-    text: str
+    memory_type: str = Field(alias="type")
+    content: str
+    scope: str = "global"
+    source: str = "api"
+    status: str = "proposed"
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SessionRequest(BaseModel):
@@ -177,13 +183,25 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {"messages": [message.__dict__ for message in runtime.memory.get_messages(session_id)]}
 
     @app.get(api_path("memory"))
-    def get_memory() -> dict:
-        return {"memory": runtime.memory.read_memory()}
+    def get_memory(memory_type: str | None = None, status: str | None = None, limit: int = 50) -> dict:
+        items = runtime.memory.list_items(memory_type=memory_type, status=status, limit=limit)
+        return {"items": [asdict(item) for item in items]}
 
     @app.post(api_path("memory"))
     def add_memory(request: MemoryRequest) -> dict:
-        runtime.memory.append_memory(request.text)
-        return {"ok": True}
+        try:
+            item = runtime.memory.add_item(
+                request.memory_type,
+                request.content,
+                source=request.source,
+                scope=request.scope,
+                status=request.status,
+                confidence=request.confidence,
+                metadata=request.metadata,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"item": asdict(item)}
 
     @app.get(api_path("skills"))
     def skills() -> dict:

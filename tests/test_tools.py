@@ -41,7 +41,7 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
 
 def test_run_status_tool_returns_task_facts(tmp_path):
     store = RunStore(tmp_path)
-    task = store.create("tool task", status="preparing")
+    task = store.create("tool task", status="preparing", workspace=str(tmp_path))
     approval = store.create_approval(run_id=task.id, peer_id="peer", sender_id="sender")
     registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
 
@@ -60,14 +60,15 @@ def test_run_status_tool_returns_task_facts(tmp_path):
 
 def test_task_list_tool_returns_tasks_and_watches(tmp_path):
     store = RunStore(tmp_path)
-    task = store.create("tool task", status="preparing")
-    failed = store.create("failed task", status="failed")
+    task = store.create("tool task", status="preparing", workspace=str(tmp_path))
+    failed = store.create("failed task", status="failed", workspace=str(tmp_path))
     watch = store.create_watch(
         cron="0 20 * * *",
         prompt="teach common knowledge",
         peer_id="peer",
         sender_id="sender",
         next_run_at=1,
+        workspace=str(tmp_path),
     )
     registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
 
@@ -212,7 +213,7 @@ def test_provider_config_tool_reports_model_fallbacks(tmp_path):
 
 def test_tool_schema_validation(tmp_path):
     from navi.tools import ToolRegistry, ToolSpec, ToolResult
-    registry = ToolRegistry(home=tmp_path)
+    registry = ToolRegistry(home=tmp_path, project_dir=tmp_path)
     
     spec = ToolSpec(
         name="test.calculator",

@@ -183,6 +183,11 @@ POST /v1/evolution-events/{event_id}/rollback
 GET  /v1/connectors/weixin/status
 ```
 
+`POST /v1/memory` accepts a governed memory item shape: `type`, `content`,
+`scope`, `source`, `status`, `confidence`, and optional `metadata`. `GET
+/v1/memory` returns structured `items`; memory is not exposed as a flat text
+dump.
+
 Current config shape:
 
 ```yaml
