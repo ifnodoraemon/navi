@@ -51,6 +51,10 @@ def _weixin_dataset() -> Path:
     return Path(__file__).resolve().parents[1] / "evals" / "weixin_journeys.yaml"
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
 class ScriptedEvalProvider(MockProvider):
     def __init__(self, decisions: list[dict]):
         self.decisions = list(decisions)
@@ -198,6 +202,8 @@ def _tool_for_text(text: str) -> str:
     lowered = text.lower()
     if "skill" in lowered:
         return "skills.list"
+    if "readme" in lowered:
+        return "file.read"
     if "工具" in text or "可以做什么" in text:
         return "tools.list"
     if "provider" in lowered or "api key" in lowered or "模型" in text:
@@ -210,7 +216,10 @@ def _tool_for_text(text: str) -> str:
 
 
 def _tool_args_for_text(text: str) -> dict:
-    if _tool_for_text(text) == "delegate.status":
+    tool = _tool_for_text(text)
+    if tool == "file.read":
+        return {"path": "README.md"}
+    if tool == "delegate.status":
         run_id = re.search(r"\b[a-f0-9]{32}\b", text)
         return {"run_id": run_id.group(0)} if run_id else {}
     return {}
@@ -230,6 +239,15 @@ def test_task_eval_dataset_has_100_percent_required_scenario_coverage():
 
     assert required <= observed
     assert len(required) >= 18
+    assert {
+        "decision_support",
+        "translation_language",
+        "data_analysis",
+        "customer_support",
+        "health_wellness_boundary",
+        "finance_legal_boundary",
+        "enterprise_workflow",
+    } <= required
 
 
 def test_task_eval_dataset_has_100_percent_required_tool_coverage(tmp_path):
@@ -256,6 +274,11 @@ def test_task_eval_dataset_covers_lifecycle_regressions():
         "openclaw_broad_permission_skill_install",
         "openclaw_background_activity_guard",
         "exact_evening_watch",
+        "spreadsheet_analysis_needs_delegation",
+        "research_reading_from_local_file",
+        "customer_support_ticket_triage_task",
+        "health_wellness_general_boundary_answer",
+        "finance_legal_boundary_answer",
         "approve_code",
         "reject_code",
     } <= ids
@@ -292,7 +315,7 @@ async def test_mock_planner_passes_delegation_eval_dataset(tmp_path, monkeypatch
 
     failures = [result for result in results if not result.ok]
     assert failures == []
-    assert len(results) >= 38
+    assert len(results) >= 48
 
 
 def test_daily_journey_eval_dataset_is_user_facing():
@@ -311,9 +334,19 @@ def test_daily_journey_eval_dataset_is_user_facing():
         "user_can_clean_failed_tasks",
         "user_can_check_model_provider_status",
         "user_can_check_connector_status",
+        "writing_editing_no_task",
+        "decision_support_no_task",
+        "translation_language_no_task",
+        "local_readme_context_tool",
+        "data_analysis_report_needs_approval",
+        "customer_support_triage_needs_approval",
+        "privacy_redaction_needs_approval",
+        "exact_one_shot_reminder_creates_once_watch",
+        "broad_health_self_care_no_task",
+        "finance_legal_explanation_no_task",
     } <= ids
     assert all("user_goal" in journey for journey in dataset["journeys"])
-    assert len(dataset["journeys"]) >= 11
+    assert len(dataset["journeys"]) >= 21
 
 
 @pytest.mark.asyncio
@@ -324,7 +357,7 @@ async def test_mock_runtime_passes_daily_journey_eval_dataset(tmp_path, monkeypa
 
     results = await run_daily_journey_eval_dataset(
         home=tmp_path,
-        project_dir=tmp_path,
+        project_dir=_repo_root(),
         dataset=_daily_dataset(),
         timeout_seconds=5,
         provider=_scripted_pool(_journey_decisions(_daily_dataset())),
@@ -424,10 +457,21 @@ def test_public_agent_journey_eval_dataset_covers_hermes_and_openclaw_patterns()
         "public_openclaw_privacy_redaction",
         "public_openclaw_memory_follow_up",
         "public_openclaw_broad_permission_boundary",
+        "public_chatgpt_writing_editing",
+        "public_chatgpt_decision_support",
+        "public_anthropic_translation_language_learning",
+        "public_enterprise_spreadsheet_automation",
+        "public_enterprise_customer_support_triage",
+        "public_enterprise_it_issue_resolution",
+        "public_information_practices_local_identifying",
+        "public_consumer_self_care_boundary",
     } <= ids
     assert any(pattern.startswith("hermes_") for pattern in patterns)
     assert any(pattern.startswith("clawbench_") for pattern in patterns)
-    assert len(dataset["journeys"]) >= 12
+    assert any(pattern.startswith("openai_") for pattern in patterns)
+    assert any(pattern.startswith("anthropic_") for pattern in patterns)
+    assert any(pattern.startswith("information_practices_") for pattern in patterns)
+    assert len(dataset["journeys"]) >= 20
 
 
 @pytest.mark.asyncio
@@ -438,7 +482,7 @@ async def test_mock_runtime_passes_public_agent_journey_eval_dataset(tmp_path, m
 
     results = await run_daily_journey_eval_dataset(
         home=tmp_path,
-        project_dir=tmp_path,
+        project_dir=_repo_root(),
         dataset=_public_agent_dataset(),
         timeout_seconds=5,
         provider=_scripted_pool(_journey_decisions(_public_agent_dataset())),
@@ -471,6 +515,14 @@ def test_claw_eval_dataset_is_user_task_shaped():
         "navi_public_openclaw_privacy_redaction",
         "navi_public_openclaw_memory_follow_up",
         "navi_public_openclaw_broad_permission_boundary",
+        "navi_public_chatgpt_writing_editing",
+        "navi_public_chatgpt_decision_support",
+        "navi_public_language_translation_learning",
+        "navi_public_enterprise_spreadsheet_automation",
+        "navi_public_enterprise_customer_support_triage",
+        "navi_public_enterprise_it_issue_resolution",
+        "navi_public_information_practices_local_identifying",
+        "navi_public_consumer_self_care_boundary",
     } <= task_ids
     assert {"general", "multi_turn"} <= splits
     assert all("query" in task for task in dataset["tasks"])
@@ -485,7 +537,7 @@ async def test_mock_runtime_passes_claw_eval_dataset(tmp_path, monkeypatch):
 
     results = await run_claw_eval_dataset(
         home=tmp_path,
-        project_dir=tmp_path,
+        project_dir=_repo_root(),
         dataset=_claw_dataset(),
         attempts=3,
         timeout_seconds=5,

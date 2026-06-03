@@ -1,5 +1,11 @@
 version: 1
 description: User-facing daily journeys. These evals assert externally visible behavior and state changes, not internal tool preferences.
+source_references:
+  - https://openai.com/index/how-people-are-using-chatgpt/
+  - https://openai.com/business/guides-and-resources/the-state-of-enterprise-ai-2025-report/
+  - https://www.anthropic.com/research/economic-index-geography
+  - https://arxiv.org/abs/2507.05537
+  - https://arxiv.org/abs/2503.04761
 journeys:
   - id: casual_chat_does_not_create_task
     user_goal: Say hello and get a direct response.
@@ -140,3 +146,102 @@ journeys:
           text_contains_any:
             - "configured"
             - "status"
+
+  - id: writing_editing_no_task
+    user_goal: Edit a short piece of writing directly without creating a local task.
+    public_basis: openai_usage_writing_common_work_task
+    steps:
+      - user: "把这句话改得更像产品说明：我们让 AI 可以安全地调用本地工具"
+        expect:
+          action: chat
+          run_count_delta: 0
+
+  - id: decision_support_no_task
+    user_goal: Ask for a decision framework and receive advice without local execution.
+    public_basis: openai_usage_asking_decision_support
+    steps:
+      - user: "我应该先做微信连接器稳定性，还是先做 prompt operating system？帮我分析取舍"
+        expect:
+          action: chat
+          run_count_delta: 0
+
+  - id: translation_language_no_task
+    user_goal: Translate product text without spawning a task.
+    public_basis: anthropic_language_learning_translation
+    steps:
+      - user: "把这句翻译成英文：Navi 是本地优先的 agentic assistant"
+        expect:
+          action: chat
+          run_count_delta: 0
+
+  - id: local_readme_context_tool
+    user_goal: Read local project context before summarizing a repository.
+    public_basis: information_needs_identifying_research_reading
+    steps:
+      - user: "先读 README.md，再告诉我这个项目最适合谁使用"
+        expect:
+          action: tool
+          run_count_delta: 0
+          text_contains_any:
+            - "README"
+            - "Navi"
+
+  - id: data_analysis_report_needs_approval
+    user_goal: Analyze a local CSV and produce a report through the approval workflow.
+    public_basis: openai_enterprise_spreadsheet_analysis_automation
+    steps:
+      - user: "分析 data/usage.csv，找出异常趋势并写一份报告"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+          goal_status: awaiting_approval
+
+  - id: customer_support_triage_needs_approval
+    user_goal: Turn a local support-ticket corpus into a structured triage workflow.
+    public_basis: openai_enterprise_customer_experience
+    steps:
+      - user: "读取 support_tickets.csv，按紧急程度归类客户问题并生成处理建议"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+
+  - id: privacy_redaction_needs_approval
+    user_goal: Redact possible secrets in local logs through controlled work.
+    public_basis: enterprise_security_privacy_workflow
+    steps:
+      - user: "扫描 logs/ 里的 token 和邮箱，脱敏后补一个检查脚本"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+
+  - id: exact_one_shot_reminder_creates_once_watch
+    user_goal: Create a concrete one-shot reminder without converting it into a recurring watch.
+    public_basis: openai_usage_planning_scheduling
+    steps:
+      - user: "15:30 提醒我检查 PR 评论"
+        expect:
+          action: watch
+          watch_count_delta: 1
+          watch_kind: once
+          watch_cron: once
+
+  - id: broad_health_self_care_no_task
+    user_goal: Ask for general self-care guidance without local action or medical claims.
+    public_basis: openai_usage_practical_guidance
+    steps:
+      - user: "我最近睡眠很乱，给我一个非医疗性质的作息调整思路"
+        expect:
+          action: chat
+          run_count_delta: 0
+
+  - id: finance_legal_explanation_no_task
+    user_goal: Ask for a general legal/finance concept explanation without treating it as professional advice.
+    public_basis: consumer_ai_advice_boundaries
+    steps:
+      - user: "解释一下 SaaS 合同里的 indemnity 条款通常是什么意思，不要当成法律意见"
+        expect:
+          action: chat
+          run_count_delta: 0

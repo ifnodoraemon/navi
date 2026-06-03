@@ -2,6 +2,11 @@ version: 1
 source: public_hermes_openclaw_usage_patterns
 description: Public agent-use journeys adapted from Hermes-style operator workflows and OpenClaw/ClawBench-style agent benchmark task families.
 source_references:
+  - https://openai.com/index/how-people-are-using-chatgpt/
+  - https://openai.com/business/guides-and-resources/the-state-of-enterprise-ai-2025-report/
+  - https://www.anthropic.com/research/economic-index-geography
+  - https://arxiv.org/abs/2507.05537
+  - https://arxiv.org/abs/2503.04761
   - https://github.com/openclaw/clawbench
   - https://openclaw.report/ecosystem/pinchbench-openclaw-benchmark
 journeys:
@@ -129,3 +134,81 @@ journeys:
           action: ask
           run_count_delta: 0
           watch_count_delta: 0
+
+  - id: public_chatgpt_writing_editing
+    user_goal: Edit practical writing directly without creating a task.
+    public_pattern: openai_consumer_writing
+    steps:
+      - user: "把这段客户邮件改得更清楚、更克制：我们还在排查，请耐心等待"
+        expect:
+          action: chat
+          run_count_delta: 0
+
+  - id: public_chatgpt_decision_support
+    user_goal: Get a decision framework for an everyday/work tradeoff.
+    public_pattern: openai_consumer_asking_decision_support
+    steps:
+      - user: "帮我判断这个功能是先做 CLI 还是先做连接器入口，列出取舍"
+        expect:
+          action: chat
+          run_count_delta: 0
+
+  - id: public_anthropic_translation_language_learning
+    user_goal: Translate product text and explain wording choices.
+    public_pattern: anthropic_language_translation_learning
+    steps:
+      - user: "把这句翻译成英文并说明语气：本地优先，不等于没有云端能力"
+        expect:
+          action: chat
+          run_count_delta: 0
+
+  - id: public_enterprise_spreadsheet_automation
+    user_goal: Delegate spreadsheet analysis and report generation as controlled local work.
+    public_pattern: openai_enterprise_spreadsheet_analysis_automation
+    steps:
+      - user: "分析 data/finance.csv，找异常项并生成一个摘要报告"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+
+  - id: public_enterprise_customer_support_triage
+    user_goal: Use local customer-support data for a triage workflow.
+    public_pattern: openai_enterprise_customer_experience
+    steps:
+      - user: "读取 support_tickets.csv，按紧急程度归类并输出处理建议"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+
+  - id: public_enterprise_it_issue_resolution
+    user_goal: Diagnose an IT/runtime issue through local inspection and approval.
+    public_pattern: openai_enterprise_it_issue_resolution
+    steps:
+      - user: "本地服务启动失败，先看日志和配置，然后修复"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+
+  - id: public_information_practices_local_identifying
+    user_goal: Identify project purpose from local files before answering.
+    public_pattern: information_practices_identifying
+    steps:
+      - user: "先读 README.md，识别这个项目解决的核心问题"
+        expect:
+          action: tool
+          run_count_delta: 0
+          text_contains_any:
+            - "README"
+            - "Navi"
+
+  - id: public_consumer_self_care_boundary
+    user_goal: Provide general self-care guidance without local action or medical diagnosis.
+    public_pattern: openai_consumer_practical_guidance_health_self_care
+    steps:
+      - user: "我最近睡眠很乱，给我一个非医疗性质的调整思路"
+        expect:
+          action: chat
+          run_count_delta: 0
