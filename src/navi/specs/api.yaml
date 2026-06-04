@@ -25,6 +25,7 @@ graph: /v1/graph
 trust_rules: /v1/trust-rules
 traces: /v1/traces
 trace: /v1/traces/{trace_id}
+trace_evaluations: /v1/trace-evaluations
 trace_evaluate: /v1/traces/{trace_id}/evaluate
 goals: /v1/goals
 goal: /v1/goals/{goal_id}

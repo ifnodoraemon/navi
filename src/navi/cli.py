@@ -595,6 +595,13 @@ def trace_evaluate(trace_id: str) -> None:
     typer.echo(f"{evaluation.outcome} {evaluation.failure_domain}: {evaluation.recommendation}")
 
 
+@trace_app.command("evaluations")
+def trace_evaluations(trace_id: str = typer.Argument(""), limit: int = 50) -> None:
+    """List trace evaluations as optimization evidence."""
+    for evaluation in TraceStore(ensure_home()).list_evaluations(trace_id, limit=limit):
+        typer.echo(f"{evaluation.trace_id} {evaluation.outcome} {evaluation.failure_domain}: {evaluation.recommendation}")
+
+
 @goal_app.command("list")
 def goal_list(status: str = "", limit: int = 50) -> None:
     """List durable goals as facts."""

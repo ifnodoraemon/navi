@@ -284,6 +284,11 @@ def test_cli_trace_commands(tmp_path):
     assert evaluated.exit_code == 0
     assert "failure prompt_or_provider_parser" in evaluated.output
 
+    evaluations = runner.invoke(app, ["trace", "evaluations", trace_id], env=env)
+    assert evaluations.exit_code == 0
+    assert trace_id in evaluations.output
+    assert "prompt_or_provider_parser" in evaluations.output
+
 
 def test_cli_goal_commands(tmp_path):
     env = _env(tmp_path)

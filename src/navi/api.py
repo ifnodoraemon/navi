@@ -469,6 +469,10 @@ def create_app(home: Path | None = None) -> FastAPI:
     def trace(trace_id: str) -> dict:
         return {"events": [event.__dict__ for event in TraceStore(home).list_events(trace_id)]}
 
+    @app.get(api_path("trace_evaluations"))
+    def trace_evaluations(trace_id: str = "", limit: int = 50) -> dict:
+        return {"evaluations": [item.__dict__ for item in TraceStore(home).list_evaluations(trace_id, limit=limit)]}
+
     @app.post(api_path("trace_evaluate"))
     def trace_evaluate(trace_id: str) -> dict:
         return TraceStore(home).evaluate_trace(trace_id).__dict__

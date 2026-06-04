@@ -179,6 +179,10 @@ GET  /v1/tools
 POST /v1/tools/{tool_name}/call
 GET  /v1/graph
 GET  /v1/trust-rules
+GET  /v1/traces
+GET  /v1/traces/{trace_id}
+GET  /v1/trace-evaluations
+POST /v1/traces/{trace_id}/evaluate
 GET  /v1/evolution-events
 POST /v1/evolution-events/{event_id}/rollback
 GET  /v1/connectors/weixin/status

@@ -174,6 +174,23 @@ class TraceStore:
             ).fetchall()
         return [row[0] for row in rows]
 
+    def list_evaluations(self, trace_id: str = "", *, limit: int = 50) -> list[TraceEvaluation]:
+        if trace_id:
+            query = """
+                SELECT id, trace_id, outcome, failure_domain, recommendation, evidence_json, created_at
+                FROM trace_evaluations WHERE trace_id = ? ORDER BY created_at DESC LIMIT ?
+                """
+            params: tuple[Any, ...] = (trace_id, limit)
+        else:
+            query = """
+                SELECT id, trace_id, outcome, failure_domain, recommendation, evidence_json, created_at
+                FROM trace_evaluations ORDER BY created_at DESC LIMIT ?
+                """
+            params = (limit,)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [TraceEvaluation(*row) for row in rows]
+
     def evaluate_trace(self, trace_id: str) -> TraceEvaluation:
         events = self.list_events(trace_id)
         outcome = "success"

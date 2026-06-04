@@ -387,6 +387,9 @@ def test_trace_api_flow(tmp_path):
     evaluation = client.post(f"/v1/traces/{trace_id}/evaluate")
     assert evaluation.status_code == 200
     assert evaluation.json()["failure_domain"] == "tool_or_capability"
+    evaluations = client.get("/v1/trace-evaluations", params={"trace_id": trace_id})
+    assert evaluations.status_code == 200
+    assert evaluations.json()["evaluations"][0]["id"] == evaluation.json()["id"]
 
 
 def test_evolution_proposal_api_flow(tmp_path):
