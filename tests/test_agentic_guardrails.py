@@ -389,6 +389,34 @@ def test_prompt_os_keeps_policy_manifest_and_turn_data_separate(tmp_path):
     assert all(block["digest"] for block in system.manifest()["blocks"])
 
 
+def test_mutating_action_syscalls_declare_state_transition_facts(tmp_path):
+    from navi.action_tools import load_action_tool_specs
+    from navi.capabilities import build_capability_registry
+
+    action_specs = {spec.name: spec for spec in load_action_tool_specs()}
+    offenders = {
+        name: sorted({"state_transition", "turn_scope"} - set((spec.output_schema.get("properties") or {}).keys()))
+        for name, spec in action_specs.items()
+        if spec.mutates
+    }
+
+    assert offenders == {
+        "delegate.spawn": [],
+        "delegate.prepare": [],
+        "approval.request": [],
+        "delegate.run": [],
+        "watch.create": [],
+        "delegate.delete": [],
+        "watch.delete": [],
+        "approval.resolve": [],
+        "delegate.retry": [],
+    }
+
+    planner_specs = {spec.name: spec for spec in build_capability_registry(tmp_path, project_dir=tmp_path).planner_specs()}
+    assert "watch_id" in planner_specs["watch.create"].output_schema["properties"]
+    assert "cleanup_complete" in planner_specs["delegate.delete"].output_schema["properties"]
+
+
 def test_prompt_os_documentation_declares_audit_contract():
     doc = (Path(__file__).resolve().parents[1] / "docs" / "prompt-architecture.md").read_text(encoding="utf-8")
 

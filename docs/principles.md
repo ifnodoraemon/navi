@@ -46,6 +46,7 @@ Navi is pre-1.0 and must favor the declared current architecture over compatibil
 Tools are fact sensors and actuators. They must not smuggle policy or advice into results.
 
 - Every tool must have an inspectable spec: name, description, input schema, output schema, mutation flag, permission class, and source.
+- Mutating tools must declare their state-transition facts in the output schema, including the entity, transition, and current-turn scope.
 - Tools must be callable from CLI before connectors rely on them.
 - A status tool returns status, not a recommendation.
 - A filesystem tool returns entries and metadata, not cleanup advice.

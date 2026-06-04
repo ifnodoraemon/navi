@@ -10,6 +10,9 @@
       - message
   output_schema:
     type: object
+    properties:
+      message:
+        type: string
   facts_only: true
   mutates: false
   permission: read
@@ -26,6 +29,9 @@
       - message
   output_schema:
     type: object
+    properties:
+      message:
+        type: string
   facts_only: true
   mutates: false
   permission: read
@@ -42,6 +48,23 @@
       - prompt
   output_schema:
     type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      run_id:
+        type: string
+      status:
+        type: string
+      goal_id:
+        type: string
+      workspace:
+        type: string
   facts_only: true
   mutates: true
   permission: prepare
@@ -58,6 +81,21 @@
       - run_id
   output_schema:
     type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      run_id:
+        type: string
+      status:
+        type: string
+      plan_summary:
+        type: string
   facts_only: true
   mutates: true
   permission: prepare
@@ -74,6 +112,21 @@
       - run_id
   output_schema:
     type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      run_id:
+        type: string
+      status:
+        type: string
+      approval:
+        type: object
   facts_only: true
   mutates: true
   permission: prepare
@@ -90,6 +143,19 @@
       - run_id
   output_schema:
     type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      run_id:
+        type: string
+      status:
+        type: string
   facts_only: true
   mutates: true
   permission: write
@@ -114,6 +180,27 @@
       - prompt
   output_schema:
     type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      watch_id:
+        type: string
+      cron:
+        type: string
+      kind:
+        type: string
+      prompt:
+        type: string
+      next_run_at:
+        type: number
+      next_run_text:
+        type: string
   facts_only: true
   mutates: true
   permission: prepare
@@ -137,6 +224,29 @@
     required: []
   output_schema:
     type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      run_id:
+        type: string
+      deleted:
+        type: boolean
+      deleted_count:
+        type: integer
+      remaining_count:
+        type: integer
+      cleanup_complete:
+        type: boolean
+      deleted_runs:
+        type: array
+        items:
+          type: object
   facts_only: true
   mutates: true
   permission: write
@@ -153,6 +263,23 @@
       - watch_id
   output_schema:
     type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      watch_id:
+        type: string
+      deleted:
+        type: boolean
+      cron:
+        type: string
+      prompt:
+        type: string
   facts_only: true
   mutates: true
   permission: write
@@ -176,6 +303,21 @@
       - decision
   output_schema:
     type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      run_id:
+        type: string
+      approval_status:
+        type: string
+      run_status:
+        type: string
   facts_only: true
   mutates: true
   permission: write
@@ -194,6 +336,23 @@
       - run_id
   output_schema:
     type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      run_id:
+        type: string
+      status:
+        type: string
+      result_summary:
+        type: string
+      error:
+        type: string
   facts_only: true
   mutates: true
   permission: write
