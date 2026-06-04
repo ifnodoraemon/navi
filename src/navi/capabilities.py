@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from collections.abc import Mapping
@@ -22,6 +23,8 @@ from .graph import GraphStore
 from .runs import RunStore
 from .tools import ToolSpec, build_tool_gateway
 from .trust import TrustStore
+
+logger = logging.getLogger("navi.capabilities")
 
 
 @dataclass(frozen=True)
@@ -277,8 +280,8 @@ class CapabilityRegistry:
                 started_at=started_at,
                 ended_at=time.time(),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error("action capability audit log failed for %s: %s", spec.name, exc, exc_info=True)
 
 
 def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:

@@ -502,6 +502,28 @@ async def test_mutating_action_capabilities_are_audited_once(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_action_audit_failure_is_logged(tmp_path, monkeypatch, caplog):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+
+    def fail_log(self, **kwargs):
+        raise RuntimeError("audit store unavailable")
+
+    monkeypatch.setattr(RunStore, "add_tool_call_log", fail_log)
+    caplog.set_level("ERROR", logger="navi.capabilities")
+
+    result = await capabilities.invoke(
+        "delegate.spawn",
+        {"prompt": "audit failure recording"},
+        permission="prepare",
+        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender"),
+    )
+
+    assert result.ok is True
+    assert "action capability audit log failed for delegate.spawn" in caplog.text
+    assert "audit store unavailable" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_gateway_capability_audit_is_not_duplicated(tmp_path):
     capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
     store = RunStore(tmp_path)
