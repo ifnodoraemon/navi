@@ -44,4 +44,4 @@ Every stage bump should include:
 
 ## Current Stage
 
-`1.0.0` is the first stable Navi agent OS contract: capability syscall routing, task/watch/goal lifecycle, trust/approval governance, governed memory, declarative safeguards, connector policy, trace evaluation, recovery planning, multi-provider model configuration, CLI/API control surfaces, and eval-backed release validation.
+`1.1.0` is the current v1 stage. It extends the stable Navi agent OS contract with governed dynamic workflows: declarative orchestration plans, subagent step records, dependency-aware execution, explicit approval, resumable workflow state, and verifier-backed completion.

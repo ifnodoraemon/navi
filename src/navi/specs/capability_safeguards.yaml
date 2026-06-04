@@ -153,3 +153,45 @@ tools:
       - scheduled_activity
     confirmation_required: true
     reason: Watch delete removes scheduled work.
+  workflow.propose:
+    risk_class: medium
+    sensitive_contexts:
+      - dynamic_workflow
+      - task_control
+    confirmation_required: false
+    reason: Workflow propose creates a governed orchestration plan but does not execute it.
+  workflow.approve:
+    risk_class: high
+    sensitive_contexts:
+      - dynamic_workflow
+      - approval
+    confirmation_required: true
+    reason: Workflow approval permits a dynamic orchestration to run.
+  workflow.run:
+    risk_class: high
+    sensitive_contexts:
+      - dynamic_workflow
+      - task_control
+      - local_state
+    confirmation_required: true
+    reason: Workflow run executes declared subagent steps through capabilities.
+  workflow.verify:
+    risk_class: high
+    sensitive_contexts:
+      - dynamic_workflow
+      - verification
+    confirmation_required: true
+    reason: Workflow verify marks a completed orchestration as verified or blocked.
+  workflow.resume:
+    risk_class: high
+    sensitive_contexts:
+      - dynamic_workflow
+      - task_control
+    confirmation_required: true
+    reason: Workflow resume continues persisted dynamic orchestration state.
+  workflow.status:
+    risk_class: medium
+    sensitive_contexts:
+      - dynamic_workflow
+    confirmation_required: false
+    reason: Workflow status exposes orchestration state, step evidence, and events.

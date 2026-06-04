@@ -47,6 +47,9 @@ def test_connector_ingress_runtime_uses_remote_tool_allowlist(tmp_path):
         "delegate.delete",
     } <= names
     assert {"provider.config", "service.status", "delegate.status", "delegate.list"} <= names
+    assert {"workflow.propose", "workflow.status"} <= names
+    assert "workflow.run" not in names
+    assert "workflow.approve" not in names
     assert "watch.delete" not in names
     assert "file.read" not in names
     assert "file.write" not in names
@@ -66,6 +69,8 @@ def test_connector_ingress_runtime_exposes_remote_tool_policy(tmp_path):
     assert facts["name"] == "remote_connector_default"
     assert facts["permission_ceiling"] == "write"
     assert "delegate.spawn" in facts["allowed_tools"]
+    assert "workflow.propose" in facts["allowed_tools"]
+    assert "workflow.run" not in facts["allowed_tools"]
     assert "shell" in facts["blocked_capability_classes"]
     assert "browser" in facts["blocked_capability_classes"]
     assert "filesystem" in facts["blocked_capability_classes"]
@@ -94,6 +99,9 @@ async def test_tools_list_reflects_connector_allowlist(tmp_path):
     by_name = {item["name"]: item for item in result.facts["tools"]}
     assert "delegate.spawn" in names
     assert "watch.create" in names
+    assert "workflow.propose" in names
+    assert "workflow.status" in names
+    assert "workflow.run" not in names
     assert "watch.delete" not in names
     assert "file.read" not in names
     assert "browser.screenshot" not in names

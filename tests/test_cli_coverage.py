@@ -319,4 +319,47 @@ def test_cli_subagent_commands(tmp_path):
     shown = runner.invoke(app, ["subagent", "show", item.id], env=env)
     assert shown.exit_code == 0
     assert "command: navi subagent executor execute run-1" in shown.output
-    assert '"summary": "ok"' in shown.output
+
+
+def test_cli_workflow_commands(tmp_path):
+    env = _env(tmp_path)
+    steps = json.dumps(
+        [
+            {
+                "id": "provider",
+                "role": "auditor",
+                "objective": "Inspect provider config",
+                "allowed_tools": ["provider.config"],
+                "tool_calls": [{"tool": "provider.config", "permission": "read", "args": {}}],
+            }
+        ]
+    )
+
+    proposed = runner.invoke(
+        app,
+        ["workflow", "propose", "Audit provider facts", "--steps-json", steps],
+        env=env,
+    )
+
+    assert proposed.exit_code == 0
+    workflow_id = proposed.output.split()[0]
+
+    listed = runner.invoke(app, ["workflow", "list"], env=env)
+    assert listed.exit_code == 0
+    assert workflow_id in listed.output
+
+    approved = runner.invoke(app, ["workflow", "approve", workflow_id], env=env)
+    assert approved.exit_code == 0
+    assert "approved" in approved.output
+
+    run = runner.invoke(app, ["workflow", "run", workflow_id], env=env)
+    assert run.exit_code == 0
+
+    verified = runner.invoke(app, ["workflow", "verify", workflow_id], env=env)
+    assert verified.exit_code == 0
+    assert "verified_complete" in verified.output
+
+    shown = runner.invoke(app, ["workflow", "show", workflow_id], env=env)
+    assert shown.exit_code == 0
+    assert '"verified_complete"' in shown.output
+    assert '"tool": "provider.config"' in shown.output

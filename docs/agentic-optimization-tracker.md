@@ -52,3 +52,14 @@ These items come from OpenAI and Anthropic frontier-agent safety materials revie
 | [ ] | F08 | P1 | memory influence | Expose memory influence records in responses and traces. | Users can see which memories affected a decision or action. | `src/navi/memory.py`, `src/navi/trace.py`, API/CLI |
 | [ ] | F09 | P1 | plugin/MCP policy | Require install-time permission manifests for plugin and MCP providers. | New providers cannot reach connectors or mutating tools before policy audit. | tool gateway, plugin registry |
 | [ ] | F10 | P1 | assistant status | Add a user-visible goal/safety status surface. | A user can inspect active goals, stop conditions, pending approvals, last evidence, memory influence, and safeguard pauses. | CLI/API, `src/navi/goals.py`, `src/navi/trace.py` |
+
+## Dynamic Workflow Stage
+
+| Status | ID | Priority | Area | Optimization | Target Outcome | Primary Files |
+| --- | --- | --- | --- | --- | --- | --- |
+| [x] | W01 | P0 | workflow store | Add durable dynamic workflow, step, and event state. | Orchestration survives turns and can be resumed or audited. | `src/navi/workflows.py` |
+| [x] | W02 | P0 | workflow capabilities | Add `workflow.propose/approve/run/resume/verify/status`. | The planner can propose and inspect workflows, while execution stays governed by capabilities. | `src/navi/specs/action_tools.yaml`, `src/navi/capabilities.py` |
+| [x] | W03 | P0 | workflow safety | Enforce approval, permission ceiling, allowed tools, dependency ordering, and no recursive workflow calls. | Dynamic workflows remain scaffolding, not executable script escape hatches. | `src/navi/capabilities.py`, `src/navi/specs/capability_safeguards.yaml` |
+| [x] | W04 | P1 | surfaces | Expose workflows through CLI/API and remote-safe connector policy. | Users can create, approve, run, resume, verify, and inspect workflows; connectors can only propose/status by default. | `src/navi/cli.py`, `src/navi/api.py`, `src/navi/connector_runtime.py` |
+| [ ] | W05 | P1 | cost telemetry | Add workflow cost and token accounting. | Users can approve workflows with concrete cost telemetry instead of vague estimates. | workflow store, provider usage records |
+| [ ] | W06 | P1 | parallel execution | Add true concurrent step workers once shared-state race rules are mature. | Parallel audits can run faster without racing state mutation. | workflow runner, subagent runtime |

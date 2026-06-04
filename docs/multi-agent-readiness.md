@@ -25,6 +25,7 @@ Use a separate role when one of these is true:
 - A long-running goal is about to become `verified_complete`; completion must carry critic evidence with `passed=true`.
 - A background watch result needs connector-specific notification separate from execution.
 - Parallel review can reduce risk without racing state mutation.
+- A dynamic workflow has an approved declarative plan whose steps can be represented as auditable subagent records with dependency and permission constraints.
 
 Do not split roles when the work is a simple read, a direct clarification, or a single low-risk capability call.
 
@@ -37,6 +38,7 @@ Every role handoff must leave trace evidence:
 - `critic` execution logs record findings, recommendation, and pass/fail evidence for actuator-backed completion.
 - `subagent_runs` records planner, executor, critic, and notification lifecycle status independently from delegation rows.
 - `recovery.plan` records verifier-triggered recovery choices.
+- `workflow_events` and `workflow_steps` record dynamic workflow orchestration state, step evidence, dependencies, and verifier outcome.
 - Execution roles must preserve actuator evidence with a non-empty evidence list and verification status.
 
 This makes future planner/critic/executor separation auditable before Navi introduces true concurrent sub-agent workers. A completed execution is only a completion candidate until the critic gate passes.

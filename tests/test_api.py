@@ -126,6 +126,34 @@ def test_headless_local_api_flow(tmp_path, monkeypatch):
     assert deleted.json()["deleted"] is True
     assert client.get("/v1/delegations").json()["delegations"] == []
 
+    workflow_created = client.post(
+        "/v1/workflows",
+        json={
+            "objective": "Audit provider facts",
+            "permission_ceiling": "read",
+            "steps": [
+                {
+                    "id": "provider",
+                    "role": "auditor",
+                    "objective": "Inspect provider config",
+                    "allowed_tools": ["provider.config"],
+                    "tool_calls": [{"tool": "provider.config", "permission": "read", "args": {}}],
+                }
+            ],
+        },
+    )
+    assert workflow_created.status_code == 200
+    workflow_id = workflow_created.json()["workflow"]["id"]
+    assert workflow_created.json()["workflow"]["status"] == "awaiting_approval"
+    assert client.post(f"/v1/workflows/{workflow_id}/approve").status_code == 200
+    workflow_run = client.post(f"/v1/workflows/{workflow_id}/run")
+    assert workflow_run.status_code == 200
+    assert workflow_run.json()["completed_count"] == 1
+    workflow_verified = client.post(f"/v1/workflows/{workflow_id}/verify")
+    assert workflow_verified.status_code == 200
+    assert workflow_verified.json()["workflow"]["status"] == "verified_complete"
+    assert client.get("/v1/workflows").json()["workflows"][0]["id"] == workflow_id
+
     wx_status = client.get("/v1/connectors/weixin/status")
     assert wx_status.status_code == 200
     assert wx_status.json()["configured"] is False

@@ -357,3 +357,229 @@
   mutates: true
   permission: write
   source: action
+- name: workflow.propose
+  handler: workflow_propose
+  description: Propose a governed dynamic workflow with declared subagent steps and verification strategy.
+  input_schema:
+    type: object
+    properties:
+      objective:
+        type: string
+      permission_ceiling:
+        type: string
+      max_concurrency:
+        type: integer
+      total_subagent_limit:
+        type: integer
+      risk_class:
+        type: string
+      estimated_cost:
+        type: string
+      stop_condition:
+        type: string
+      verification_strategy:
+        type: string
+      plan:
+        type: object
+      steps:
+        type: array
+        items:
+          type: object
+    required:
+      - objective
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      workflow_id:
+        type: string
+      status:
+        type: string
+      confirmation_required:
+        type: boolean
+      permission_ceiling:
+        type: string
+      max_concurrency:
+        type: integer
+      total_subagent_limit:
+        type: integer
+      step_count:
+        type: integer
+  facts_only: true
+  mutates: true
+  permission: prepare
+  source: action
+- name: workflow.approve
+  handler: workflow_approve
+  description: Approve or reject a proposed dynamic workflow before it can run.
+  input_schema:
+    type: object
+    properties:
+      workflow_id:
+        type: string
+      decision:
+        type: string
+        enum:
+          - approve
+          - reject
+    required:
+      - workflow_id
+      - decision
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      workflow_id:
+        type: string
+      status:
+        type: string
+  facts_only: true
+  mutates: true
+  permission: write
+  source: action
+- name: workflow.run
+  handler: workflow_run
+  description: Run the next bounded batch of an approved dynamic workflow through declared capabilities.
+  input_schema:
+    type: object
+    properties:
+      workflow_id:
+        type: string
+    required:
+      - workflow_id
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      workflow_id:
+        type: string
+      status:
+        type: string
+      completed_count:
+        type: integer
+      failed_count:
+        type: integer
+      pending_count:
+        type: integer
+  facts_only: true
+  mutates: true
+  permission: write
+  source: action
+- name: workflow.verify
+  handler: workflow_verify
+  description: Run verifier checks for a completed dynamic workflow and mark it verified or blocked.
+  input_schema:
+    type: object
+    properties:
+      workflow_id:
+        type: string
+    required:
+      - workflow_id
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      workflow_id:
+        type: string
+      status:
+        type: string
+      verifier_passed:
+        type: boolean
+      blocked_reason:
+        type: string
+  facts_only: true
+  mutates: true
+  permission: write
+  source: action
+- name: workflow.resume
+  handler: workflow_resume
+  description: Resume an approved, running, or interrupted dynamic workflow from persisted step state.
+  input_schema:
+    type: object
+    properties:
+      workflow_id:
+        type: string
+    required:
+      - workflow_id
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      workflow_id:
+        type: string
+      status:
+        type: string
+  facts_only: true
+  mutates: true
+  permission: write
+  source: action
+- name: workflow.status
+  handler: workflow_status
+  description: Inspect one dynamic workflow, including step state, evidence, and lifecycle events.
+  input_schema:
+    type: object
+    properties:
+      workflow_id:
+        type: string
+    required:
+      - workflow_id
+  output_schema:
+    type: object
+    properties:
+      workflow:
+        type: object
+      steps:
+        type: array
+        items:
+          type: object
+      events:
+        type: array
+        items:
+          type: object
+      step_count:
+        type: integer
+      pending_count:
+        type: integer
+      completed_count:
+        type: integer
+      failed_count:
+        type: integer
+  facts_only: true
+  mutates: false
+  permission: read
+  source: action

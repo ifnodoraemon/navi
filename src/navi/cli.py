@@ -45,6 +45,7 @@ from .service import build_systemd_user_unit, install_systemd_user_unit
 from .subagents import SubagentRunStore
 from .trace import TraceStore
 from .trust import TrustStore
+from .workflows import WorkflowStore, workflow_facts
 
 app = typer.Typer(help="Navi local-first personal agent OS")
 auth_app = typer.Typer(help="CLI auth and capability checks")
@@ -55,6 +56,7 @@ evolution_app = typer.Typer(help="Evolution ledger")
 trace_app = typer.Typer(help="Full-flow traces and evaluations")
 goal_app = typer.Typer(help="Durable goal lifecycle")
 subagent_app = typer.Typer(help="Sub-agent runtime records")
+workflow_app = typer.Typer(help="Governed dynamic workflows")
 service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
@@ -70,6 +72,7 @@ app.add_typer(evolution_app, name="evolution")
 app.add_typer(trace_app, name="trace")
 app.add_typer(goal_app, name="goal")
 app.add_typer(subagent_app, name="subagent")
+app.add_typer(workflow_app, name="workflow")
 app.add_typer(service_app, name="service")
 app.add_typer(memory_app, name="memory")
 app.add_typer(session_app, name="session")
@@ -645,6 +648,109 @@ def subagent_show(subagent_id: str) -> None:
     if item.error:
         typer.echo(f"error: {item.error}")
     typer.echo(item.output_json)
+
+
+@workflow_app.command("propose")
+def workflow_propose(
+    objective: str,
+    steps_json: str = "[]",
+    permission_ceiling: str = "read",
+    max_concurrency: int = 4,
+    estimated_cost: str = "",
+) -> None:
+    """Propose a governed dynamic workflow from declared step JSON."""
+    try:
+        steps = json.loads(steps_json)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(f"invalid steps_json: {exc}") from exc
+    if not isinstance(steps, list):
+        raise typer.BadParameter("steps_json must be a JSON array")
+    home = ensure_home()
+    capabilities = build_capability_registry(home, project_dir=Path.cwd())
+    result = asyncio.run(
+        capabilities.invoke(
+            "workflow.propose",
+            {
+                "objective": objective,
+                "steps": steps,
+                "permission_ceiling": permission_ceiling,
+                "max_concurrency": max_concurrency,
+                "estimated_cost": estimated_cost,
+            },
+            permission="prepare",
+            context=CapabilityContext(home=home, peer_id="cli", sender_id="cli", source="cli", workspace=str(Path.cwd())),
+        )
+    )
+    if not result.ok:
+        raise typer.BadParameter(result.message or result.observation)
+    facts = result.facts or {}
+    typer.echo(f"{facts.get('workflow_id')} {facts.get('status')} steps={facts.get('step_count')}")
+
+
+@workflow_app.command("list")
+def workflow_list(status: str = "", limit: int = 50) -> None:
+    """List dynamic workflows."""
+    for workflow in WorkflowStore(ensure_home()).list(status=status, limit=limit):
+        typer.echo(f"{workflow.id} {workflow.status} ceiling={workflow.permission_ceiling} {workflow.objective}")
+
+
+@workflow_app.command("show")
+def workflow_show(workflow_id: str) -> None:
+    """Show one dynamic workflow with steps and events."""
+    store = WorkflowStore(ensure_home())
+    workflow = store.get(workflow_id)
+    if workflow is None:
+        raise typer.BadParameter("workflow not found")
+    facts = workflow_facts(store, workflow)
+    typer.echo(json.dumps(facts, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+@workflow_app.command("approve")
+def workflow_approve(workflow_id: str) -> None:
+    """Approve a proposed dynamic workflow."""
+    _workflow_action_cli("workflow.approve", workflow_id, {"decision": "approve"})
+
+
+@workflow_app.command("reject")
+def workflow_reject(workflow_id: str) -> None:
+    """Reject a proposed dynamic workflow."""
+    _workflow_action_cli("workflow.approve", workflow_id, {"decision": "reject"})
+
+
+@workflow_app.command("run")
+def workflow_run(workflow_id: str) -> None:
+    """Run the next bounded batch of an approved dynamic workflow."""
+    _workflow_action_cli("workflow.run", workflow_id)
+
+
+@workflow_app.command("resume")
+def workflow_resume(workflow_id: str) -> None:
+    """Resume a dynamic workflow from persisted state."""
+    _workflow_action_cli("workflow.resume", workflow_id)
+
+
+@workflow_app.command("verify")
+def workflow_verify(workflow_id: str) -> None:
+    """Verify a completed dynamic workflow."""
+    _workflow_action_cli("workflow.verify", workflow_id)
+
+
+def _workflow_action_cli(tool: str, workflow_id: str, extra_args: dict | None = None) -> None:
+    home = ensure_home()
+    capabilities = build_capability_registry(home, project_dir=Path.cwd())
+    result = asyncio.run(
+        capabilities.invoke(
+            tool,
+            {"workflow_id": workflow_id, **(extra_args or {})},
+            permission="write",
+            context=CapabilityContext(home=home, peer_id="cli", sender_id="cli", source="cli", workspace=str(Path.cwd())),
+        )
+    )
+    if not result.ok:
+        raise typer.BadParameter(result.message or result.observation)
+    workflow = WorkflowStore(home).get(workflow_id)
+    status = workflow.status if workflow else str((result.facts or {}).get("status") or "unknown")
+    typer.echo(f"{workflow_id} {status}")
 
 
 @evolution_app.command("list")

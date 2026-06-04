@@ -4,7 +4,7 @@ Navi 是一个**本地优先的个人 AI 助手 Agent OS**。
 
 它的目标不是用关键词和固定流程替 AI 做事，而是给模型提供脚手架：声明式能力、权限上限、信任与审批状态、治理型记忆、连接器上下文、执行 trace、恢复计划和可回滚演进。模型从当前事实和可用能力中选择下一步，运行时负责边界、证据和审计。
 
-`1.0.0` 是 Navi 第一个稳定 agent OS 契约版本。
+`1.1.0` 在稳定 agent OS 契约上加入了受治理动态工作流能力。
 
 [English README](README.md)
 
@@ -15,6 +15,7 @@ Navi 是一个**本地优先的个人 AI 助手 Agent OS**。
 - **信任与审批治理**：用户聊天文本不是执行授权；本地动作必须走明确的审批和信任状态。
 - **治理型记忆**：支持偏好、约束、事实、反例、语义记忆、来源、置信度、召回原因、冲突和撤销。
 - **防御纵深安全**：权限上限、连接器工具策略、声明式能力风险元数据、untrusted observation 边界、trace 评估和 safeguard 归因。
+- **受治理动态工作流**：模型根据普通用户请求自行判断是否需要 workflow，并提出声明式 orchestration plan，包含 subagent 步骤、依赖、allowed tools、审批、断点续跑和独立验证。
 - **可回滚演进账本**：prompt、记忆、技能、信任、工作流和 eval 变化都可审计、可回滚。
 - **多入口访问**：CLI、本地 FastAPI、个人微信/Weixin 连接器 mock 链路。
 
@@ -30,6 +31,8 @@ Navi 1.0.0 稳定以下公开 agent OS 契约：
 - 通过测试、eval、compile check 和文档 trace 支撑的发布验证。
 
 内部兼容债不保留。过时的内部 schema、alias 和 workflow branch 应该删除，而不是静默适配；除非迁移本身就是明确发布的产品功能。
+
+Navi 1.1.0 把 dynamic workflow 作为 v1 系列扩展加入。Workflow plan 是数据，不是可执行脚本：每一步都必须通过运行时调用声明式 capability，并受审批、权限上限、allowed tools、subagent 证据和 verifier 检查约束。
 
 ## 快速开始
 
@@ -84,6 +87,7 @@ navi memory revoke <item_id>
 navi goal list
 navi trace list
 navi subagent list
+navi workflow list
 navi evolution list
 navi evolution show <event_id>
 navi evolution rollback <event_id>
@@ -147,6 +151,7 @@ NAVI_WEIXIN_MOCK=true navi connectors run weixin --once
 ## 发布说明
 
 - [Navi 1.0.0 发布说明](docs/release-notes-1.0.0.md)
+- [Navi 1.1.0 发布说明](docs/release-notes-1.1.0.md)
 - [不可违反原则](docs/principles.md)
 - [前沿 Agent 安全审计](docs/frontier-agent-safety-audit.md)
 - [版本契约](docs/versioning.md)

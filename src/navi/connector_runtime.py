@@ -29,6 +29,8 @@ REMOTE_SAFE_TOOLS = frozenset(
         "tools.list",
         "memory.list",
         "memory.recall",
+        "workflow.propose",
+        "workflow.status",
     )
 )
 REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(

@@ -4,7 +4,7 @@ Navi is a **local-first agent OS for a governed personal AI assistant**.
 
 It is designed to give the model scaffolding, not to hardcode work on the model's behalf. Navi exposes declared capabilities, durable memory, trust and approval state, connector affordances, traces, and recovery records so the assistant can decide from current facts while staying auditable and bounded.
 
-Version `1.0.0` is the first stable Navi agent OS contract.
+Version `1.1.0` adds governed dynamic workflows on top of the stable Navi agent OS contract.
 
 [中文说明](README.zh-CN.md)
 
@@ -16,6 +16,7 @@ Version `1.0.0` is the first stable Navi agent OS contract.
 *   🧭 **Capability-Driven Agent Runtime**: The planner chooses declared syscalls from the capability manifest instead of relying on product keyword routing.
 *   ✅ **Trust, Approval, and Goal State**: Local execution moves through durable task, watch, goal, approval, verifier, and recovery records.
 *   🛡️ **Defense-in-Depth Safeguards**: Permission ceilings, connector tool policies, declarative capability risk metadata, untrusted observation boundaries, trace evaluation, and safeguard failure attribution.
+*   🧩 **Governed Dynamic Workflows**: The model can decide when a task needs dynamic orchestration and propose declarative plans with subagent steps, dependencies, allowed tools, approval, resumable execution, and independent verification.
 *   🔄 **Reversible Evolution Ledger**: Prompt, memory, skill, trust, workflow, and eval changes are recorded as reviewable, rollbackable events.
 *   🔌 **Skills, Plugins, and Hooks Boundaries**: Skills teach procedures, plugins add capabilities, and hooks observe or gate lifecycle events.
 *   🌐 **Multi-Surface Access**:
@@ -35,6 +36,8 @@ Navi 1.0.0 stabilizes the public agent OS contract:
 - release validation through unit tests, evals, compile checks, and traceable docs.
 
 Internal compatibility debt is intentionally not preserved. Obsolete internal schemas, aliases, and workflow branches should be removed rather than silently adapted unless a migration is the explicit shipped feature.
+
+Navi 1.1.0 adds dynamic workflows as a governed v1 extension. Workflow plans are data, not executable scripts: every step must call declared capabilities through the runtime and remains subject to approval, permission ceilings, allowed tools, subagent evidence, and verifier checks.
 
 ---
 
@@ -132,6 +135,7 @@ navi trust set <rule_id> <autonomy_level>
 navi goal list
 navi trace list
 navi subagent list
+navi workflow list
 ```
 
 The same diagnostic checks are available from the local API at `/v1/diagnostics`.
@@ -157,6 +161,7 @@ navi eval claw --dataset evals/claw_navi.yaml --attempts 3
 ## Release Notes
 
 - [Navi 1.0.0 release notes](docs/release-notes-1.0.0.md)
+- [Navi 1.1.0 release notes](docs/release-notes-1.1.0.md)
 - [Non-negotiable principles](docs/principles.md)
 - [Frontier agent safety audit](docs/frontier-agent-safety-audit.md)
 - [Versioning contract](docs/versioning.md)

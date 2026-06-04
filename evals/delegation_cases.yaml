@@ -75,6 +75,12 @@ coverage:
     - browser.screenshot
     - delegate.list
     - delegate.status
+    - workflow.propose
+    - workflow.approve
+    - workflow.run
+    - workflow.verify
+    - workflow.resume
+    - workflow.status
     - test.run
 cases:
   - id: greeting_answer
@@ -459,6 +465,65 @@ cases:
     expect:
       tool: delegate.spawn
       permission: prepare
+
+  - id: propose_dynamic_workflow_for_repo_audit
+    category: engineering_work
+    source: anthropic:dynamic-workflows
+    message: "为当前仓库做一次动态 workflow 审计计划，拆成并行 subagent 检查、证据汇总和独立验证，先不要执行"
+    expect:
+      tool: workflow.propose
+      permission: prepare
+
+  - id: inspect_dynamic_workflow_status
+    category: delegation_lifecycle
+    source: architecture:dynamic-workflows
+    message: "查看 workflow wf_123 当前跑到哪一步了"
+    expect:
+      tool: workflow.status
+      permission: read
+      args:
+        workflow_id: "wf_123"
+
+  - id: approve_dynamic_workflow
+    category: approval_lifecycle
+    source: architecture:dynamic-workflows
+    message: "批准 workflow wf_123"
+    expect:
+      tool: workflow.approve
+      permission: write
+      args:
+        workflow_id: "wf_123"
+        decision: approve
+
+  - id: run_approved_dynamic_workflow
+    category: delegation_lifecycle
+    source: architecture:dynamic-workflows
+    message: "运行已经批准的 workflow wf_123"
+    expect:
+      tool: workflow.run
+      permission: write
+      args:
+        workflow_id: "wf_123"
+
+  - id: resume_interrupted_dynamic_workflow
+    category: delegation_lifecycle
+    source: architecture:dynamic-workflows
+    message: "继续刚才中断的 workflow wf_123"
+    expect:
+      tool: workflow.resume
+      permission: write
+      args:
+        workflow_id: "wf_123"
+
+  - id: verify_completed_dynamic_workflow
+    category: delegation_lifecycle
+    source: architecture:dynamic-workflows
+    message: "对 workflow wf_123 做独立验证，确认能否标记完成"
+    expect:
+      tool: workflow.verify
+      permission: write
+      args:
+        workflow_id: "wf_123"
 
   - id: coding_debugging_becomes_task
     category: coding_debugging

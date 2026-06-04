@@ -31,6 +31,13 @@ goals: /v1/goals
 goal: /v1/goals/{goal_id}
 subagents: /v1/subagents
 subagent: /v1/subagents/{subagent_id}
+workflows: /v1/workflows
+workflow: /v1/workflows/{workflow_id}
+workflow_approve: /v1/workflows/{workflow_id}/approve
+workflow_reject: /v1/workflows/{workflow_id}/reject
+workflow_run: /v1/workflows/{workflow_id}/run
+workflow_resume: /v1/workflows/{workflow_id}/resume
+workflow_verify: /v1/workflows/{workflow_id}/verify
 evolution_events: /v1/evolution-events
 evolution_rollback: /v1/evolution-events/{event_id}/rollback
 evolution_targets: /v1/evolution-targets

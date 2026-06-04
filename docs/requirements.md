@@ -139,6 +139,14 @@ navi auth status
 navi graph list
 navi trust list
 navi trust set RULE_ID LEVEL
+navi workflow propose OBJECTIVE
+navi workflow list
+navi workflow show WORKFLOW_ID
+navi workflow approve WORKFLOW_ID
+navi workflow reject WORKFLOW_ID
+navi workflow run WORKFLOW_ID
+navi workflow resume WORKFLOW_ID
+navi workflow verify WORKFLOW_ID
 navi evolution list
 navi evolution show EVENT_ID
 navi evolution rollback EVENT_ID
@@ -184,8 +192,25 @@ GET  /v1/traces
 GET  /v1/traces/{trace_id}
 GET  /v1/trace-evaluations
 POST /v1/traces/{trace_id}/evaluate
+GET  /v1/goals
+GET  /v1/goals/{goal_id}
+GET  /v1/subagents
+GET  /v1/subagents/{subagent_id}
+GET  /v1/workflows
+POST /v1/workflows
+GET  /v1/workflows/{workflow_id}
+POST /v1/workflows/{workflow_id}/approve
+POST /v1/workflows/{workflow_id}/reject
+POST /v1/workflows/{workflow_id}/run
+POST /v1/workflows/{workflow_id}/resume
+POST /v1/workflows/{workflow_id}/verify
 GET  /v1/evolution-events
 POST /v1/evolution-events/{event_id}/rollback
+GET  /v1/evolution-targets
+GET  /v1/evolution-proposals
+POST /v1/evolution-proposals
+POST /v1/evolution-proposals/{proposal_id}/apply
+POST /v1/evolution-proposals/{proposal_id}/evaluation
 GET  /v1/connectors/weixin/status
 ```
 
@@ -259,6 +284,7 @@ Implemented:
 - Tool Gateway abstraction with provider sources, refresh, filtering, and audit logs.
 - Internal execution requires the structured `navi.actuator.v1` protocol. Protocol actions must be capability calls (`tool`, `permission`, `args`), are executed through `CapabilityRegistry`, and produce actual capability-result evidence; free-form execution output or non-capability actions are failed executions. Completed execution is treated as a completion candidate until the critic gate verifies non-empty actuator evidence, successful verification status, and independent checks for mutating actions.
 - Planner, executor, critic, and notification role executions are recorded as sub-agent runtime records with status and evidence separate from delegation rows. CLI and API consumers can inspect these records through `navi subagent list/show` and `/v1/subagents`.
+- Governed dynamic workflows persist declarative orchestration plans, subagent steps, dependency-aware execution state, approval state, verifier evidence, and lifecycle events in `workflows.db`; they are exposed through `workflow.*` capabilities, `navi workflow ...`, and `/v1/workflows`.
 - Local memory, session, and task stores.
 - Skill discovery.
 - Connector registry plus Weixin account store, context-token store, deduplication, policy checks, mock client, HTTP client skeleton, and inbound-to-agent service flow.
@@ -284,9 +310,10 @@ Recommended next order:
 3. Add structured logging and visible diagnostics for Weixin connection states.
 4. Add richer verifier policies for structured diffs, command-specific assertions, and automatic rollback proposals.
 5. Add per-sender/per-surface remote tool policy configuration before enabling shell/file-write tools from Weixin.
-6. Improve headless API observability for sessions, connector status, memory, and task list.
-7. Add text chunking for long Weixin responses.
-8. Add optional media handling after text DM is reliable.
+6. Add workflow cost telemetry and richer long-running compaction.
+7. Improve headless API observability for sessions, connector status, memory, and task list.
+8. Add text chunking for long Weixin responses.
+9. Add optional media handling after text DM is reliable.
 
 ## Verification Baseline
 

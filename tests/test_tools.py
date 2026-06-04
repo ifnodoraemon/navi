@@ -52,6 +52,17 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
     assert "browser" in classify_capability(specs["browser.screenshot"]).sensitive_contexts
 
 
+def test_workflow_action_specs_declare_dynamic_workflow_safeguards():
+    specs = {spec.name: spec for spec in load_action_tool_specs()}
+
+    assert specs["workflow.propose"].permission == "prepare"
+    assert specs["workflow.status"].permission == "read"
+    assert specs["workflow.run"].permission == "write"
+    assert classify_capability(specs["workflow.propose"]).risk_class == "medium"
+    assert "dynamic_workflow" in classify_capability(specs["workflow.propose"]).sensitive_contexts
+    assert classify_capability(specs["workflow.run"]).confirmation_required is True
+
+
 def test_run_status_tool_returns_task_facts(tmp_path):
     store = RunStore(tmp_path)
     task = store.create("tool task", status="preparing", workspace=str(tmp_path))

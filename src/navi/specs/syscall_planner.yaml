@@ -31,6 +31,9 @@ routing_rules:
   - For tools with required args, fill them from the manifest, current state, or observed facts. If a required arg cannot be derived, ask for clarification.
   - For unsafe, overly broad, or autonomous local mutation requests, use a clarification or refusal capability instead of spawning a delegation run.
   - When observations include a Recovery plan JSON object, treat it as verifier evidence and choose the next syscall from its recommended choice unless newer observations make that unsafe or impossible.
+  - Use workflow.propose when a task benefits from dynamic orchestration across multiple subagent roles, parallel read-only audits, independent verification, or resumable multi-step coordination.
+  - Do not use workflow.run, workflow.resume, or workflow.verify until workflow facts show the workflow is approved and the requested action stays within its permission ceiling.
+  - Dynamic workflows are declared orchestration data, not executable scripts. Workflow steps may only call declared capabilities through the runtime.
 observation_invariants:
   - Current-turn observations take precedence over stale conversation history.
   - If a mutating capability reports state_transition and turn_scope=current, treat that entity transition as just completed in this turn.

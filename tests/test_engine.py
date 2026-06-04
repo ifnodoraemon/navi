@@ -12,6 +12,7 @@ from navi.goals import GoalStore
 from navi.provider import ChatMessage, MockProvider, ModelPool
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
+from navi.workflows import WorkflowStore
 
 
 class ScriptedProvider(MockProvider):
@@ -197,6 +198,66 @@ async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tm
     recovery_events = [event for event in trace_events if event.phase == "recovery.plan"]
     assert recovery_events
     assert recovery_events[0].message == "continue"
+
+
+@pytest.mark.asyncio
+async def test_engine_model_selects_dynamic_workflow_for_large_audit_request(tmp_path):
+    provider = ScriptedProvider(
+        [
+            json.dumps(
+                {
+                    "tool": "workflow.propose",
+                    "permission": "prepare",
+                    "args": {
+                        "objective": "Audit the repository with parallel subagents and independent verification",
+                        "permission_ceiling": "read",
+                        "max_concurrency": 2,
+                        "estimated_cost": "medium",
+                        "steps": [
+                            {
+                                "id": "provider",
+                                "role": "auditor",
+                                "objective": "Inspect provider configuration",
+                                "allowed_tools": ["provider.config"],
+                                "tool_calls": [{"tool": "provider.config", "permission": "read", "args": {}}],
+                            },
+                            {
+                                "id": "tools",
+                                "role": "critic",
+                                "objective": "Inspect available tools",
+                                "allowed_tools": ["tools.list"],
+                                "tool_calls": [{"tool": "tools.list", "permission": "read", "args": {}}],
+                            },
+                        ],
+                    },
+                    "confidence": 0.94,
+                    "reason": "large audit benefits from dynamic workflow orchestration",
+                },
+                ensure_ascii=False,
+            ),
+            '{"tool":"final.answer","permission":"read","args":{"message":"Workflow proposal is ready for review."},"confidence":0.9,"reason":"proposal created"}',
+        ]
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
+    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
+
+    result = await router.handle(
+        "为当前仓库做一次动态 workflow 审计，拆成并行 subagent 和独立验证，先不要执行",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
+    )
+
+    workflows = WorkflowStore(tmp_path).list()
+    assert len(workflows) == 1
+    workflow = workflows[0]
+    assert workflow.status == "awaiting_approval"
+    assert workflow.permission_ceiling == "read"
+    assert result.action == "workflow"
+    assert "Workflow proposal is awaiting confirmation" in result.text
+    assert f"navi workflow approve {workflow.id}" in result.text
+    events = router.trace.list_events(result.trace_id)
+    assert any(event.phase == "planner.syscall" and event.tool == "workflow.propose" for event in events)
 
 
 @pytest.mark.asyncio

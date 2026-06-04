@@ -696,6 +696,26 @@ class HernessEngine:
     def _approval_prompt_from_facts(facts: dict[str, Any] | None, *, source: str = "") -> str:
         if not facts or facts.get("status") != "awaiting_approval":
             return ""
+        workflow_id = str(facts.get("workflow_id") or "").strip()
+        if workflow_id:
+            step_count = facts.get("step_count")
+            risk_class = str(facts.get("risk_class") or "unknown")
+            estimated_cost = str(facts.get("estimated_cost") or "unknown")
+            stop_condition = str(facts.get("stop_condition") or "").strip()
+            details = [
+                f"Workflow ID: `{workflow_id}`",
+                f"步骤数: {step_count}" if step_count is not None else "",
+                f"风险级别: {risk_class}",
+                f"预计成本: {estimated_cost}",
+                f"停止条件: {stop_condition}" if stop_condition else "",
+            ]
+            detail_text = "\n".join(f"- {item}" for item in details if item)
+            return (
+                "Workflow proposal is awaiting confirmation before execution.\n"
+                f"{detail_text}\n"
+                f"Approve: `navi workflow approve {workflow_id}`\n"
+                f"Reject: `navi workflow reject {workflow_id}`"
+            ).strip()
         approval = facts.get("approval")
         if not isinstance(approval, dict):
             return ""

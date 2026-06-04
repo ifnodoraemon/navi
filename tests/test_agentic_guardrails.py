@@ -422,10 +422,15 @@ def test_mutating_action_syscalls_declare_state_transition_facts(tmp_path):
         "delegate.run": [],
         "watch.create": [],
         "delegate.delete": [],
-        "watch.delete": [],
-        "approval.resolve": [],
-        "delegate.retry": [],
-    }
+            "watch.delete": [],
+            "approval.resolve": [],
+            "delegate.retry": [],
+            "workflow.propose": [],
+            "workflow.approve": [],
+            "workflow.run": [],
+            "workflow.verify": [],
+            "workflow.resume": [],
+        }
 
     planner_specs = {spec.name: spec for spec in build_capability_registry(tmp_path, project_dir=tmp_path).planner_specs()}
     assert "watch_id" in planner_specs["watch.create"].output_schema["properties"]
