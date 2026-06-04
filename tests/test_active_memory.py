@@ -243,6 +243,58 @@ def test_memory_recall_is_explainable_scaffolding(tmp_path):
     assert "reason=" in rendered
 
 
+def test_memory_conflicts_are_structured_and_recall_exposes_them(tmp_path):
+    store = MemoryStore(tmp_path)
+    old_item = store.add_item(
+        "preference",
+        "Prefer nose for regression tests.",
+        source="test",
+        status="active",
+        confidence=0.7,
+    )
+    new_item = store.add_item(
+        "preference",
+        "Prefer pytest for regression tests.",
+        source="test",
+        status="active",
+        confidence=0.95,
+        metadata={"contradicts": [old_item.id]},
+    )
+
+    conflicts = store.list_conflicts()
+    recalls = store.recall("regression tests")
+    rendered = store.render_context("regression tests")
+
+    assert len(conflicts) == 1
+    assert conflicts[0].item.id == new_item.id
+    assert conflicts[0].conflicting_item_id == old_item.id
+    assert conflicts[0].conflicting_item.id == old_item.id
+    assert conflicts[0].status == "unresolved"
+    assert conflicts[0].reason == "metadata.contradicts"
+    assert any(recall.conflicts for recall in recalls)
+    assert any("unresolved_memory_conflicts=1" in recall.reasons for recall in recalls)
+    assert f"contradicts:{old_item.id}:unresolved" in rendered
+
+
+def test_memory_conflict_status_tracks_inactive_targets(tmp_path):
+    store = MemoryStore(tmp_path)
+    old_item = store.add_item("preference", "Prefer old packaging.", source="test", status="revoked")
+    store.add_item(
+        "preference",
+        "Prefer current packaging.",
+        source="test",
+        status="active",
+        metadata={"supersedes": old_item.id},
+    )
+
+    conflicts = store.list_conflicts()
+
+    assert len(conflicts) == 1
+    assert conflicts[0].relation == "supersedes"
+    assert conflicts[0].status == "resolved"
+    assert conflicts[0].conflicting_item.id == old_item.id
+
+
 @pytest.mark.asyncio
 async def test_extract_memories_from_run(tmp_path):
     store = MemoryStore(tmp_path)

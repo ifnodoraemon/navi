@@ -40,6 +40,7 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
     assert all(spec.permission == "write" for spec in specs.values() if spec.mutates)
     assert all(spec.output_schema.get("properties") for spec in specs.values())
     assert "items" in specs["memory.recall"].output_schema["properties"]
+    assert "conflicts" in specs["memory.conflicts"].output_schema["properties"]
     assert "exit_code" in specs["shell.run"].output_schema["properties"]
     assert "configured" in specs["connector.weixin.status"].output_schema["properties"]
     assert "configured" in specs["connector.telegram.status"].output_schema["properties"]
@@ -86,6 +87,33 @@ def test_task_list_tool_returns_tasks_and_watches(tmp_path):
     assert result.facts["run_status_counts"] == {"failed": 1, "preparing": 1}
     assert result.facts["returned_run_count"] == 2
     assert result.facts["run_limit"] == 10
+
+
+def test_memory_conflicts_tool_returns_declared_conflict_facts(tmp_path):
+    from navi.memory import MemoryStore
+
+    store = MemoryStore(tmp_path)
+    old_item = store.add_item("preference", "Prefer legacy tests.", source="test", status="active")
+    new_item = store.add_item(
+        "preference",
+        "Prefer current tests.",
+        source="test",
+        status="active",
+        metadata={"contradicts": old_item.id},
+    )
+    registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
+
+    result = registry.call("memory.conflicts", {})
+    recall = registry.call("memory.recall", {"query": "current"})
+
+    assert result.ok is True
+    assert result.facts["count"] == 1
+    assert result.facts["unresolved_count"] == 1
+    conflict = result.facts["conflicts"][0]
+    assert conflict["item"]["id"] == new_item.id
+    assert conflict["conflicting_item_id"] == old_item.id
+    assert conflict["status"] == "unresolved"
+    assert recall.facts["items"][0]["conflicts"]
 
 
 def test_filesystem_list_tool_returns_directory_facts(tmp_path):

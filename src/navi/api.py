@@ -187,6 +187,15 @@ def create_app(home: Path | None = None) -> FastAPI:
         items = runtime.memory.list_items(memory_type=memory_type, status=status, limit=limit)
         return {"items": [asdict(item) for item in items]}
 
+    @app.get(api_path("memory_conflicts"))
+    def get_memory_conflicts(limit: int = 50) -> dict:
+        conflicts = runtime.memory.list_conflicts(limit=limit)
+        return {
+            "conflicts": [asdict(conflict) for conflict in conflicts],
+            "count": len(conflicts),
+            "unresolved_count": len([conflict for conflict in conflicts if conflict.status == "unresolved"]),
+        }
+
     @app.post(api_path("memory"))
     def add_memory(request: MemoryRequest) -> dict:
         try:

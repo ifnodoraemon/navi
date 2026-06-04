@@ -83,8 +83,24 @@ def test_headless_local_api_flow(tmp_path, monkeypatch):
     assert memory_item["type"] == "preference"
     assert memory_item["source"] == "api-test"
     assert memory_item["status"] == "active"
+    conflicting = client.post(
+        "/v1/memory",
+        json={
+            "type": "preference",
+            "content": "Prefers concise direct answers",
+            "source": "api-test",
+            "status": "active",
+            "confidence": 0.95,
+            "metadata": {"contradicts": [memory_item["id"]]},
+        },
+    )
+    assert conflicting.status_code == 200
     memory_items = client.get("/v1/memory", params={"status": "active"}).json()["items"]
-    assert [item["content"] for item in memory_items] == ["Prefers direct answers"]
+    assert {item["content"] for item in memory_items} == {"Prefers direct answers", "Prefers concise direct answers"}
+    memory_conflicts = client.get("/v1/memory/conflicts").json()
+    assert memory_conflicts["count"] == 1
+    assert memory_conflicts["unresolved_count"] == 1
+    assert memory_conflicts["conflicts"][0]["conflicting_item_id"] == memory_item["id"]
 
     created = client.post("/v1/delegations", json={"title": "Test the console"})
     assert created.status_code == 200

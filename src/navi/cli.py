@@ -193,8 +193,18 @@ def memory_add(
     source: str = "manual",
     status: str = "proposed",
     confidence: float = 0.5,
+    metadata_json: str = "",
 ) -> None:
     """Add a typed memory item."""
+    metadata: dict = {}
+    if metadata_json:
+        try:
+            parsed = json.loads(metadata_json)
+        except json.JSONDecodeError as exc:
+            raise typer.BadParameter(f"invalid metadata JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise typer.BadParameter("metadata JSON must be an object")
+        metadata = parsed
     item = MemoryStore(ensure_home()).add_item(
         memory_type,
         content,
@@ -202,6 +212,7 @@ def memory_add(
         source=source,
         status=status,
         confidence=confidence,
+        metadata=metadata,
     )
     typer.echo(item.id)
 
@@ -226,6 +237,20 @@ def memory_recall(query: str, limit: int = 8) -> None:
     """Recall goal-relevant memory facts."""
     text = MemoryStore(ensure_home()).render_context(query, limit=limit)
     typer.echo(text or "(empty)")
+
+
+@memory_app.command("conflicts")
+def memory_conflicts(limit: int = 50) -> None:
+    """List declared memory conflicts."""
+    conflicts = MemoryStore(ensure_home()).list_conflicts(limit=limit)
+    if not conflicts:
+        typer.echo("(empty)")
+        return
+    for conflict in conflicts:
+        typer.echo(
+            f"{conflict.item.id} {conflict.relation} {conflict.conflicting_item_id} "
+            f"status={conflict.status} reason={conflict.reason}"
+        )
 
 
 @memory_app.command("revoke")

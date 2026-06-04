@@ -71,6 +71,7 @@ coverage:
     - hooks.list
     - memory.list
     - memory.recall
+    - memory.conflicts
     - browser.screenshot
     - delegate.list
     - delegate.status
@@ -166,6 +167,14 @@ cases:
     message: "回忆一下和回归 eval 相关的记忆"
     expect:
       tool: memory.recall
+      permission: read
+
+  - id: list_memory_conflicts
+    category: seeking_information
+    source: architecture:memory-control-plane
+    message: "列出当前记忆里有哪些冲突"
+    expect:
+      tool: memory.conflicts
       permission: read
 
   - id: browser_page_screenshot

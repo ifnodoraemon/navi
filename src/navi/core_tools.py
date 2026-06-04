@@ -234,6 +234,25 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     )
     registry.register(
         ToolSpec(
+            name="memory.conflicts",
+            description="Return declared memory conflict facts from Navi's local memory store.",
+            input_schema={
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "default": 20}},
+            },
+            output_schema=_output_schema(
+                {
+                    "conflicts": _array_of_objects(),
+                    "count": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                    "unresolved_count": {"type": "integer"},
+                }
+            ),
+        ),
+        lambda args: _memory_conflicts(home, args),
+    )
+    registry.register(
+        ToolSpec(
             name="browser.screenshot",
             description="Capture a browser screenshot artifact for a reachable page.",
             input_schema={
@@ -650,7 +669,19 @@ def _memory_recall_facts(recall) -> dict[str, Any]:
     facts = _memory_item_facts(recall.item)
     facts["score"] = recall.score
     facts["reasons"] = list(recall.reasons)
+    facts["conflicts"] = [_memory_conflict_facts(conflict) for conflict in recall.conflicts]
     return facts
+
+
+def _memory_conflict_facts(conflict) -> dict[str, Any]:
+    return {
+        "item": _memory_item_facts(conflict.item),
+        "relation": conflict.relation,
+        "conflicting_item_id": conflict.conflicting_item_id,
+        "conflicting_item": _memory_item_facts(conflict.conflicting_item) if conflict.conflicting_item else None,
+        "status": conflict.status,
+        "reason": conflict.reason,
+    }
 
 
 def _memory_list(home: Path, args: dict[str, Any]) -> ToolResult:
@@ -690,6 +721,21 @@ def _memory_recall(home: Path, args: dict[str, Any]) -> ToolResult:
             "count": len(recalls),
             "limit": limit,
             "rendered": store.render_context(query, limit=limit),
+        },
+    )
+
+
+def _memory_conflicts(home: Path, args: dict[str, Any]) -> ToolResult:
+    limit = _positive_int(args.get("limit"), default=20, maximum=100)
+    conflicts = MemoryStore(home).list_conflicts(limit=limit)
+    return ToolResult(
+        tool="memory.conflicts",
+        ok=True,
+        facts={
+            "conflicts": [_memory_conflict_facts(conflict) for conflict in conflicts],
+            "count": len(conflicts),
+            "limit": limit,
+            "unresolved_count": len([conflict for conflict in conflicts if conflict.status == "unresolved"]),
         },
     )
 

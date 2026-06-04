@@ -204,6 +204,8 @@ def _tool_for_text(text: str) -> str:
         return "hooks.list"
     if "skill" in lowered:
         return "skills.list"
+    if "冲突" in text and "记忆" in text:
+        return "memory.conflicts"
     if "readme" in lowered:
         return "file.read"
     if "工具" in text or "可以做什么" in text:

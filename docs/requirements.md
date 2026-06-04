@@ -159,6 +159,7 @@ POST /v1/sessions
 GET  /v1/session-aliases
 GET  /v1/sessions/{session_id}
 GET  /v1/memory
+GET  /v1/memory/conflicts
 POST /v1/memory
 GET  /v1/skills
 GET  /v1/delegations
@@ -186,7 +187,9 @@ GET  /v1/connectors/weixin/status
 `POST /v1/memory` accepts a governed memory item shape: `type`, `content`,
 `scope`, `source`, `status`, `confidence`, and optional `metadata`. `GET
 /v1/memory` returns structured `items`; memory is not exposed as a flat text
-dump.
+dump. `GET /v1/memory/conflicts` returns declared contradiction and
+supersession relationships so stale or competing facts are visible to
+operators and agents.
 
 Current config shape:
 

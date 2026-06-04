@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .db import connect
 from .hooks import HookDecision, HookEvent, HookRegistry
@@ -55,10 +55,21 @@ class MemoryItem:
 
 
 @dataclass(frozen=True)
+class MemoryConflict:
+    item: MemoryItem
+    relation: str
+    conflicting_item_id: str
+    conflicting_item: MemoryItem | None
+    status: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class MemoryRecall:
     item: MemoryItem
     score: float
     reasons: list[str]
+    conflicts: tuple[MemoryConflict, ...] = ()
 
 
 _MEMORY_POLICY = load_spec("memory_policy.yaml")
@@ -247,6 +258,35 @@ class MemoryStore:
             ).fetchall()
         return [self._item_from_row(row) for row in rows]
 
+    def list_conflicts(self, *, limit: int = 50) -> list[MemoryConflict]:
+        items = self.list_items(limit=1000)
+        by_id = {item.id: item for item in items}
+        conflicts: list[MemoryConflict] = []
+        for item in items:
+            for relation in ("contradicts", "supersedes"):
+                for conflicting_item_id in _metadata_id_list(item.metadata.get(relation)):
+                    conflicting_item = by_id.get(conflicting_item_id) or self.get_item(conflicting_item_id)
+                    conflicts.append(
+                        MemoryConflict(
+                            item=item,
+                            relation=relation,
+                            conflicting_item_id=conflicting_item_id,
+                            conflicting_item=conflicting_item,
+                            status=_memory_conflict_status(item, conflicting_item),
+                            reason=f"metadata.{relation}",
+                        )
+                    )
+                    if len(conflicts) >= limit:
+                        return conflicts
+        return conflicts
+
+    def conflicts_for_item(self, item_id: str, *, limit: int = 50) -> list[MemoryConflict]:
+        return [
+            conflict
+            for conflict in self.list_conflicts(limit=1000)
+            if conflict.item.id == item_id or conflict.conflicting_item_id == item_id
+        ][:limit]
+
     def get_item(self, item_id: str) -> MemoryItem | None:
         with connect(self.db_path) as conn:
             row = conn.execute(
@@ -321,7 +361,11 @@ class MemoryStore:
         scored = [self._score_recall(item, query) for item in candidates]
         scored = [recall for recall in scored if recall.score > 0]
         scored.sort(key=lambda recall: (recall.score, recall.item.updated_at), reverse=True)
-        return scored[:limit]
+        selected = scored[:limit]
+        if not selected:
+            return []
+        conflicts = self.list_conflicts(limit=1000)
+        return [self._with_conflict_reasons(recall, conflicts) for recall in selected]
 
     def render_context(self, query: str, *, limit: int = 8) -> str:
         recalls = self.recall(query, limit=limit)
@@ -332,10 +376,12 @@ class MemoryStore:
             item = recall.item
             verified = time.strftime("%Y-%m-%d", time.localtime(item.last_verified_at)) if item.last_verified_at else "unverified"
             reason_text = "; ".join(recall.reasons[:4])
+            conflict_text = _render_conflict_summary(recall.conflicts)
+            conflict_clause = f" conflicts={conflict_text}" if conflict_text else ""
             lines.append(
                 f"- [{item.type} status={item.status} scope={item.scope} confidence={item.confidence:.2f} "
                 f"source={item.source} verified={verified} score={recall.score:.2f} id={item.id} "
-                f"reason={reason_text}] {item.content}"
+                f"reason={reason_text}{conflict_clause}] {item.content}"
             )
         return "\n".join(lines)
 
@@ -762,9 +808,53 @@ class MemoryStore:
         score = priority + (overlap * 12) + (item.confidence * 10) + freshness
         return MemoryRecall(item=item, score=score, reasons=reasons)
 
+    @staticmethod
+    def _with_conflict_reasons(recall: MemoryRecall, conflicts: list[MemoryConflict]) -> MemoryRecall:
+        related = tuple(
+            conflict
+            for conflict in conflicts
+            if conflict.item.id == recall.item.id or conflict.conflicting_item_id == recall.item.id
+        )
+        if not related:
+            return recall
+        reasons = list(recall.reasons)
+        unresolved = [conflict for conflict in related if conflict.status == "unresolved"]
+        if unresolved:
+            reasons.append(f"unresolved_memory_conflicts={len(unresolved)}")
+        else:
+            reasons.append(f"declared_memory_conflicts={len(related)}")
+        return MemoryRecall(item=recall.item, score=recall.score, reasons=reasons, conflicts=related)
+
 
 def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
     return next((decision for decision in decisions if decision.decision == "block"), None)
+
+
+def _metadata_id_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _memory_conflict_status(item: MemoryItem, conflicting_item: MemoryItem | None) -> str:
+    if conflicting_item is None:
+        return "missing_target"
+    if item.status in ACTIVE_STATUSES and conflicting_item.status in ACTIVE_STATUSES:
+        return "unresolved"
+    if item.status in ACTIVE_STATUSES:
+        return "resolved"
+    return "inactive"
+
+
+def _render_conflict_summary(conflicts: tuple[MemoryConflict, ...]) -> str:
+    if not conflicts:
+        return ""
+    return ",".join(
+        f"{conflict.relation}:{conflict.conflicting_item_id}:{conflict.status}"
+        for conflict in conflicts[:3]
+    )
 
 
 def _memory_prompt(name: str) -> str:

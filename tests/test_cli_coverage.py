@@ -40,6 +40,22 @@ def test_cli_memory_and_session_commands(tmp_path):
     assert added.exit_code == 0
     item_id = added.output.strip()
 
+    conflicting = runner.invoke(
+        app,
+        [
+            "memory",
+            "add",
+            "preference",
+            "Prefers plain test output",
+            "--status",
+            "active",
+            "--metadata-json",
+            json.dumps({"contradicts": [item_id]}),
+        ],
+        env=env,
+    )
+    assert conflicting.exit_code == 0
+
     listed = runner.invoke(app, ["memory", "list", "--status", "active"], env=env)
     assert listed.exit_code == 0
     assert "Prefers coverage reports" in listed.output
@@ -47,6 +63,11 @@ def test_cli_memory_and_session_commands(tmp_path):
     recalled = runner.invoke(app, ["memory", "recall", "coverage reports"], env=env)
     assert recalled.exit_code == 0
     assert "Memory recall:" in recalled.output
+
+    conflicts = runner.invoke(app, ["memory", "conflicts"], env=env)
+    assert conflicts.exit_code == 0
+    assert "contradicts" in conflicts.output
+    assert item_id in conflicts.output
 
     revoked = runner.invoke(app, ["memory", "revoke", item_id], env=env)
     assert revoked.exit_code == 0

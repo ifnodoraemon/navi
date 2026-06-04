@@ -4,6 +4,7 @@ sessions: /v1/sessions
 session_aliases: /v1/session-aliases
 session: /v1/sessions/{session_id}
 memory: /v1/memory
+memory_conflicts: /v1/memory/conflicts
 skills: /v1/skills
 delegations: /v1/delegations
 delegation: /v1/delegations/{run_id}
