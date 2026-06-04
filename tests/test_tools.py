@@ -18,6 +18,7 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
         "file.write",
         "filesystem.list",
         "git.status",
+        "hooks.list",
         "provider.config",
         "shell.run",
         "delegate.list",

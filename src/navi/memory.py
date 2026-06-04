@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .db import connect
+from .hooks import HookDecision, HookEvent, HookRegistry
 from .json_utils import parse_first_json_object
 from .spec_loader import load_spec
 from .text_utils import truncate_middle
@@ -157,6 +158,24 @@ class MemoryStore:
             raise ValueError(f"Unsupported memory type: {memory_type}")
         if status not in MEMORY_STATUSES:
             raise ValueError(f"Unsupported memory status: {status}")
+        blocked = _blocking_hook(
+            HookRegistry(self.home).run(
+                HookEvent(
+                    event="before_memory_write",
+                    payload={
+                        "type": memory_type,
+                        "status": status,
+                        "scope": scope.strip() or "global",
+                        "source": source.strip() or "unknown",
+                        "confidence": max(0.0, min(1.0, confidence)),
+                        "content_chars": len(content.strip()),
+                        "metadata_keys": sorted((metadata or {}).keys()),
+                    },
+                )
+            )
+        )
+        if blocked is not None:
+            raise ValueError(blocked.reason or f"hook blocked memory write: {blocked.hook}")
         now = time.time()
         item = MemoryItem(
             id=uuid.uuid4().hex,
@@ -742,6 +761,10 @@ class MemoryStore:
             reasons.append(f"freshness_score={freshness:.2f}")
         score = priority + (overlap * 12) + (item.confidence * 10) + freshness
         return MemoryRecall(item=item, score=score, reasons=reasons)
+
+
+def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
+    return next((decision for decision in decisions if decision.decision == "block"), None)
 
 
 def _memory_prompt(name: str) -> str:

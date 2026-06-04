@@ -95,6 +95,12 @@ def test_cli_tool_eval_model_and_skill_commands(tmp_path):
     assert tools.exit_code == 0
     assert '"delegate.list"' in tools.output
 
+    hooks = runner.invoke(app, ["hooks", "list", "--json-output"], env=env)
+    assert hooks.exit_code == 0
+    hook_facts = json.loads(hooks.output)
+    assert hook_facts["category"] == "hooks"
+    assert any(item["event"] == "before_capability" for item in hook_facts["hooks"])
+
     planner_prompt = runner.invoke(app, ["prompts", "inspect", "planner", "--json-output"], env=env)
     assert planner_prompt.exit_code == 0
     planner_manifest = json.loads(planner_prompt.output)

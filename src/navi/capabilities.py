@@ -4,7 +4,7 @@ import json
 import re
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
@@ -16,6 +16,7 @@ from .cron import next_cron_time, validate_cron
 from .execution import ExecutionService
 from .goals import GoalStore
 from .governance import GovernanceEngine
+from .hooks import HookDecision, HookEvent, HookRegistry
 from .operating_context import permission_allows
 from .graph import GraphStore
 from .runs import RunStore
@@ -109,6 +110,7 @@ class CapabilityRegistry:
             ActionCapabilityProvider(home=self.home, project_dir=self.gateway.project_dir),
             ToolGatewayCapabilityProvider(self.gateway),
         )
+        self.hooks = HookRegistry(home)
         self.handlers = self._build_handlers()
 
     def refresh(self) -> None:
@@ -188,8 +190,49 @@ class CapabilityRegistry:
                 terminal=True,
             )
         call_args = args or {}
+        before_decisions = self.hooks.run(
+            HookEvent(
+                event="before_capability",
+                payload={
+                    "tool": name,
+                    "permission": permission,
+                    "source": context.source,
+                    "sender_id": context.sender_id,
+                    "workspace": context.workspace,
+                    "mutates": handler.spec.mutates,
+                    "args_keys": sorted(call_args),
+                },
+            )
+        )
+        blocked = _blocking_hook(before_decisions)
+        if blocked is not None:
+            facts = {"hook_decision": asdict(blocked)}
+            return CapabilityResult(
+                ok=False,
+                action="capability_error",
+                observation=blocked.reason or f"hook blocked capability: {blocked.hook}",
+                message=blocked.reason or f"hook blocked capability: {blocked.hook}",
+                terminal=True,
+                facts=facts,
+            )
         started_at = time.time()
         result = await handler.invoke(call_args, permission=permission, context=context)
+        self.hooks.run(
+            HookEvent(
+                event="after_capability",
+                payload={
+                    "tool": name,
+                    "permission": permission,
+                    "source": context.source,
+                    "sender_id": context.sender_id,
+                    "workspace": context.workspace,
+                    "ok": result.ok,
+                    "action": result.action,
+                    "run_id": result.run_id,
+                    "fact_keys": sorted((result.facts or {}).keys()),
+                },
+            )
+        )
         if handler.spec.mutates and not isinstance(handler, ToolCapability):
             self._audit_action_capability(handler.spec, call_args, result, started_at=started_at)
         return result
@@ -236,6 +279,10 @@ class CapabilityRegistry:
             )
         except Exception:
             pass
+
+
+def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
+    return next((decision for decision in decisions if decision.decision == "block"), None)
 
 
 class ActionCapabilityProvider:

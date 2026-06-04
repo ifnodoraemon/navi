@@ -1,0 +1,36 @@
+- name: capability.before
+  event: before_capability
+  description: Observe or gate a capability syscall before execution.
+  decision_schema:
+    type: object
+    properties:
+      decision:
+        type: string
+      reason:
+        type: string
+      facts:
+        type: object
+- name: capability.after
+  event: after_capability
+  description: Observe capability syscall results after execution.
+  decision_schema:
+    type: object
+    properties:
+      decision:
+        type: string
+      reason:
+        type: string
+      facts:
+        type: object
+- name: memory.before_write
+  event: before_memory_write
+  description: Observe or gate durable memory writes before persistence.
+  decision_schema:
+    type: object
+    properties:
+      decision:
+        type: string
+      reason:
+        type: string
+      facts:
+        type: object

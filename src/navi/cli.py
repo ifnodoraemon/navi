@@ -35,6 +35,7 @@ from .evals import (
 from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
 from .graph import GraphStore
+from .hooks import HookRegistry
 from .memory import MemoryStore
 from .paths import ensure_home
 from .prompt_os import assemble_planner_system_prompt
@@ -58,6 +59,7 @@ service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
 tools_app = typer.Typer(help="Unified capability registry")
+hooks_app = typer.Typer(help="Lifecycle hooks")
 prompts_app = typer.Typer(help="Prompt operating system")
 eval_app = typer.Typer(help="Evaluation datasets")
 app.add_typer(auth_app, name="auth")
@@ -72,6 +74,7 @@ app.add_typer(service_app, name="service")
 app.add_typer(memory_app, name="memory")
 app.add_typer(session_app, name="session")
 app.add_typer(tools_app, name="tools")
+app.add_typer(hooks_app, name="hooks")
 app.add_typer(prompts_app, name="prompts")
 app.add_typer(eval_app, name="eval")
 
@@ -327,6 +330,17 @@ def tools_call(name: str, args_json: str = "{}") -> None:
     )
     if not result.ok:
         raise typer.Exit(code=1)
+
+
+@hooks_app.command("list")
+def hooks_list(json_output: bool = False) -> None:
+    """List lifecycle hooks as facts."""
+    facts = HookRegistry(ensure_home()).list_facts()
+    if json_output:
+        typer.echo(json.dumps(facts, ensure_ascii=False, indent=2))
+        return
+    for hook in facts["hooks"]:
+        typer.echo(f"{hook['name']} event={hook['event']} source={hook['source']}")
 
 
 @prompts_app.command("inspect")

@@ -200,6 +200,8 @@ def _decision_for_expectation(expect: dict, text: str) -> dict:
 
 def _tool_for_text(text: str) -> str:
     lowered = text.lower()
+    if "hook" in lowered or "hooks" in lowered:
+        return "hooks.list"
     if "skill" in lowered:
         return "skills.list"
     if "readme" in lowered:

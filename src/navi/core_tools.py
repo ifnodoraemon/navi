@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import load_config
 from .fact_tools import service_facts, run_facts
+from .hooks import HookRegistry
 from .memory import MemoryStore
 from .operating_context import permission_allows
 from .runs import Approval, RunStore
@@ -166,6 +167,22 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             ),
         ),
         lambda args: _tools_list(registry),
+    )
+    registry.register(
+        ToolSpec(
+            name="hooks.list",
+            description="Return lifecycle hook facts.",
+            input_schema={"type": "object", "properties": {}},
+            output_schema=_output_schema(
+                {
+                    "category": {"type": "string"},
+                    "definition": {"type": "string"},
+                    "hooks": _array_of_objects(),
+                    "count": {"type": "integer"},
+                }
+            ),
+        ),
+        lambda args: _hooks_list(home),
     )
     registry.register(
         ToolSpec(
@@ -606,6 +623,10 @@ def _tools_list(registry: ToolRegistry) -> ToolResult:
             "count": len(specs),
         },
     )
+
+
+def _hooks_list(home: Path) -> ToolResult:
+    return ToolResult(tool="hooks.list", ok=True, facts=HookRegistry(home).list_facts())
 
 
 def _memory_item_facts(item) -> dict[str, Any]:

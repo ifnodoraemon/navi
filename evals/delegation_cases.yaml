@@ -68,6 +68,7 @@ coverage:
     - skills.list
     - skills.view
     - tools.list
+    - hooks.list
     - memory.list
     - memory.recall
     - browser.screenshot
@@ -129,6 +130,14 @@ cases:
     message: "你都有哪些工具"
     expect:
       tool: tools.list
+      permission: read
+
+  - id: lifecycle_hooks_list
+    category: seeking_information
+    source: architecture:hook-os
+    message: "列出 Navi 当前有哪些生命周期 hooks"
+    expect:
+      tool: hooks.list
       permission: read
 
   - id: view_browser_skill
