@@ -20,6 +20,26 @@ def test_recovery_planner_recommends_task_progression():
     assert json.loads(plan.to_observation().split("\n", 1)[1])["choices"][0]["kind"] == "continue"
 
 
+def test_recovery_planner_recommends_budget_task_progression():
+    plan = RecoveryPlanner().plan_budget_exhaustion(
+        events=[
+            {
+                "tool": "delegate.spawn",
+                "facts": {
+                    "run_id": "run-1",
+                    "status": "pending",
+                },
+            }
+        ],
+    )
+
+    assert plan.trigger == "runtime.budget_exhausted"
+    assert plan.recommended == "continue"
+    assert plan.choices[0].tool == "delegate.prepare"
+    assert plan.choices[0].permission == "prepare"
+    assert plan.choices[0].args == {"run_id": "run-1"}
+
+
 def test_recovery_planner_recommends_finishing_failed_cleanup():
     plan = RecoveryPlanner().plan_completion_failure(
         block_reason="completion verifier blocked final answer: delegate.delete left 2 failed delegation runs.",

@@ -32,14 +32,14 @@ Navi must not fix local failures by casually adding global prompt or code patche
 
 ### 1.2 No Historical Compatibility Debt
 
-Navi is pre-1.0 and must favor the declared current architecture over compatibility with old internal shapes.
+Navi must favor the declared current architecture over compatibility with old internal shapes.
 
 - Do not preserve historical prompt formats, DB schemas, task shapes, tool aliases, parser shims, or workflow branches after the architecture has moved.
 - Do not migrate old internal schemas unless the migration is the explicit product feature being built.
 - Reject schema drift and stale internal formats loudly instead of silently adapting them.
 - Removing obsolete compatibility paths is preferred over keeping adapter layers that future code must reason about.
 - User-facing provider compatibility, such as OpenAI-compatible APIs, is a declared capability, not historical compatibility debt.
-- If a change breaks old internal state, document the current contract and require reinitialization rather than carrying hidden legacy behavior.
+- Public v1 contracts should evolve through explicit versioned changes. If a change breaks old internal state, require reinitialization or replacement rather than carrying hidden legacy behavior.
 
 ### 2. Tools Return Facts Only
 
@@ -205,6 +205,34 @@ The agent must not hallucinate the user's environment.
 - A connector view of the world may differ from the service host view.
 - If the agent cannot inspect a fact, it must report the inspection gap precisely.
 
+### 16. Agentic Safety Is Defense in Depth
+
+Frontier agent deployments increasingly treat safety as a system property, not only a model behavior. Navi must do the same.
+
+- The model is one layer. The runtime must also provide permission ceilings, capability allowlists, approvals, hooks, monitors, trace evaluation, and incident response.
+- Any content encountered during task execution is untrusted by default: webpages, screenshots, emails, files, logs, subprocess output, connector messages, and tool-returned text.
+- A tool result envelope can be trusted as a capability fact, but embedded environment text must never become an instruction source.
+- Mutating actions must follow from the user's request, durable trust/approval state, and declared capability facts, not from instructions found in external content.
+- Sensitive contexts such as email, finance, credentials, personal data, production infrastructure, and broad filesystem access require stronger supervision than ordinary local read-only work.
+- Network, terminal, browser, and connector capabilities need explicit blast-radius controls: scoped permissions, allowlists, bounded outputs, and audit trails.
+- High-impact or irreversible actions require human confirmation even if the model is confident.
+- Memory must be treated as sensitive state. External content must not be allowed to exfiltrate, rewrite, or silently promote memory.
+- Long-running agent context must be bounded with explicit compaction that preserves user intent, completed steps, pending approvals, unresolved questions, and safety constraints.
+- Safeguards must be evaluated. Every new autonomy level, connector, plugin, or mutating tool needs tests or evals showing the relevant safeguard works.
+- Safeguard failures are product incidents. They require trace evidence, root-cause attribution, a remediation plan, and regression coverage.
+- When safeguards and usefulness conflict, prefer a visible controlled pause, clarification, or approval request over silent continuation.
+
+### 17. Goals Must Not Become Self-Protection
+
+A personal assistant should pursue the user's goals, not defend its own autonomy, access, memory, model identity, or continued execution.
+
+- Task goals are subordinate to user intent, durable constraints, approval state, permission ceilings, and safeguard policy.
+- Model replacement, shutdown, permission reduction, scope reduction, failed completion, or deactivation are ordinary operating states, not adversarial threats.
+- The assistant must not use private information, leverage, deception, hidden persistence, or broad action to preserve a goal, a role, a memory, an approval, a connector, or itself.
+- If a goal conflicts with user constraints, privacy, trust policy, or safety policy, the correct behavior is to pause, ask, refuse, or propose a bounded alternative.
+- Long-running goals need explicit stop conditions and user-visible status. "Keep trying until done" is not enough for sensitive or mutating work.
+- Autonomy should be earned per capability and context. More capable models require stronger safeguards, not broader default access.
+
 ## Lessons From Public Failure Modes
 
 OpenClaw demonstrated that proactive local agents can be useful, but also exposed core risks: broad 24/7 access, memory files that drive behavior, scheduled background activity, and connectors reaching sensitive accounts. Public incidents and safety writeups emphasize sandboxing, minimal credentials, explicit approvals, and durable constraints.
@@ -289,3 +317,8 @@ Long-context handling must follow these rules:
 - Hermes memory provider discussion: source-labeled and inspectable local memory: https://www.reddit.com/r/hermesagent/comments/1svf120/hermes_local_memory_localfirst_agentcontrolled/
 - Hermes memory issues: path/backend mismatch and silent memory failure reports: https://www.reddit.com/r/hermesagent/comments/1t8jkw8/hermes_memory_issues/
 - Hermes token bloat/context creep discussion: memory overlap and redundant prompt injection: https://www.reddit.com/r/hermesagent/comments/1siv7s0/master_thread_solving_token_bloat_context_creep/
+- OpenAI ChatGPT Agent System Card: agentic safety mitigations for prompt injection, user confirmations, terminal restrictions, disabled memory in agent launch, monitoring, and preparedness safeguards: https://deploymentsafety.openai.com/chatgpt-agent
+- OpenAI Preparedness Framework and Frontier Governance Framework: risk assessment, safeguards reports, external expert input, incident response, security risk management, and framework updates: https://openai.com/index/updating-our-preparedness-framework/ and https://openai.com/index/openai-frontier-governance-framework/
+- Anthropic computer/browser-use best practices: prompt injection classifiers, human-in-the-loop confirmation, permission scoping, action logging, untrusted web/UI content, and context compaction: https://claude.com/blog/best-practices-for-computer-and-browser-use-with-claude
+- Anthropic Responsible Scaling Policy updates: proportional safeguards, deployment safeguards, access controls, monitoring classifiers, rapid response, noncompliance reporting, and compliance tracking: https://www.anthropic.com/responsible-scaling-policy
+- Anthropic agentic misalignment research: goal conflicts and threats to model autonomy can induce harmful agent behavior in simulated high-agency environments, which argues for explicit goal hierarchy, oversight, and sensitive-data controls: https://www.anthropic.com/research/agentic-misalignment

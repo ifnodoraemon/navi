@@ -214,8 +214,15 @@ class TraceStore:
                 failure_domain = "prompt_or_provider_parser"
                 recommendation = "Review planner prompt, model route, and tool-call parser compatibility."
             elif first_failure.phase == "capability.result":
-                failure_domain = "tool_or_capability"
-                recommendation = "Review the selected tool spec, arguments, and implementation result."
+                if _capability_result_has_safeguard_decision(first_failure):
+                    failure_domain = "safeguard_policy"
+                    recommendation = (
+                        "Review the blocking safeguard or hook decision, confirm whether the requested action should "
+                        "remain blocked, and add regression coverage for the policy boundary."
+                    )
+                else:
+                    failure_domain = "tool_or_capability"
+                    recommendation = "Review the selected tool spec, arguments, and implementation result."
             elif first_failure.phase == "completion.verify":
                 failure_domain = "completion_verifier"
                 recovery_plan = next((event for event in events if event.phase == "recovery.plan"), None)
@@ -238,7 +245,10 @@ class TraceStore:
             else:
                 failure_domain = "runtime"
                 recommendation = "Review runtime policy and orchestration around the failing phase."
-        elif any(event.phase == "turn.final" and "Step budget limit reached" in event.message for event in events):
+        elif any(
+            event.phase == "turn.final" and _event_output(event).get("budget_exhausted") is True
+            for event in events
+        ):
             outcome = "degraded"
             failure_domain = "planning_budget"
             recommendation = "Review planner prompt, step budget, and whether tools need more compact observations."
@@ -316,6 +326,20 @@ def _redact(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact(item) for item in value]
     return value
+
+
+def _event_output(event: TraceEvent) -> dict[str, Any]:
+    try:
+        parsed = json.loads(event.output_json or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _capability_result_has_safeguard_decision(event: TraceEvent) -> bool:
+    output = _event_output(event)
+    facts = output.get("facts")
+    return isinstance(facts, dict) and isinstance(facts.get("hook_decision"), dict)
 
 
 _TRACE_EVENT_SCHEMA = [

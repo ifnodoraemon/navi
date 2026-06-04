@@ -46,7 +46,7 @@ from .subagents import SubagentRunStore
 from .trace import TraceStore
 from .trust import TrustStore
 
-app = typer.Typer(help="Navi local-first personal assistant")
+app = typer.Typer(help="Navi local-first personal agent OS")
 auth_app = typer.Typer(help="CLI auth and capability checks")
 connectors_app = typer.Typer(help="Connector lifecycle and status")
 graph_app = typer.Typer(help="Personal graph")

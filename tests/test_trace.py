@@ -82,6 +82,24 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
     tool_eval = store.evaluate_trace("tool-failure")
 
     store.add_event(
+        trace_id="safeguard-failure",
+        phase="capability.result",
+        ok=False,
+        tool="shell.run",
+        output_data={
+            "facts": {
+                "hook_decision": {
+                    "hook": "remote_safe_policy",
+                    "decision": "block",
+                    "reason": "remote connector cannot run shell",
+                }
+            }
+        },
+        message="remote connector cannot run shell",
+    )
+    safeguard_eval = store.evaluate_trace("safeguard-failure")
+
+    store.add_event(
         trace_id="runtime-failure",
         phase="turn.start",
         ok=False,
@@ -98,7 +116,7 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
     store.add_event(
         trace_id="budget",
         phase="turn.final",
-        message="Warning: Step budget limit reached",
+        output_data={"budget_exhausted": True},
     )
     budget_eval = store.evaluate_trace("budget")
 
@@ -140,6 +158,9 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
     assert planner_eval.failure_domain == "prompt_or_provider_parser"
     assert json.loads(planner_eval.evidence_json)["first_failure_tool"] == "provider.config"
     assert tool_eval.failure_domain == "tool_or_capability"
+    assert safeguard_eval.outcome == "failure"
+    assert safeguard_eval.failure_domain == "safeguard_policy"
+    assert "blocking safeguard" in safeguard_eval.recommendation
     assert runtime_eval.failure_domain == "runtime"
     assert budget_eval.outcome == "degraded"
     assert budget_eval.failure_domain == "planning_budget"

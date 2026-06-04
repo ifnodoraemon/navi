@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
@@ -89,12 +90,17 @@ async def test_engine_budget_exhausted_with_observations(tmp_path):
         source=DEFAULT_LOCAL_SURFACE,
     )
     assert result.terminal is True
-    assert "(注意：已达到步骤预算上限，任务可能未完成。)" in result.text
-    assert "Warning: Step budget limit reached" in result.text
+    assert result.text == "Final answer content"
+    assert result.budget_exhausted is True
+    assert "步骤预算" not in result.text
+    assert "Step budget" not in result.text
     events = router.trace.list_events(result.trace_id)
     role_events = [event for event in events if event.phase == "agent.role_result"]
     assert role_events
     assert role_events[0].model_role == "responder"
+    final_events = [event for event in events if event.phase == "turn.final"]
+    assert final_events
+    assert json.loads(final_events[0].output_json)["budget_exhausted"] is True
 
 
 @pytest.mark.asyncio
@@ -114,8 +120,44 @@ async def test_engine_budget_exhausted_without_observations(tmp_path):
         source=DEFAULT_LOCAL_SURFACE,
     )
     assert result.terminal is True
-    assert "Fallback chat reply" in result.text
-    assert "(注意：已达到步骤预算上限，任务可能未完成。)" in result.text
+    assert result.text == "Fallback chat reply"
+    assert result.budget_exhausted is True
+    assert "步骤预算" not in result.text
+    assert "Step budget" not in result.text
+
+
+@pytest.mark.asyncio
+async def test_engine_budget_recovery_prepares_and_requests_approval(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
+    provider = ScriptedProvider(
+        [
+            '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"列一下本机目录"},"confidence":0.9,"reason":"local work"}',
+            "任务已准备好，等待审批。",
+        ]
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
+    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path, step_budget=1)
+
+    result = await router.handle(
+        "列一下本机目录",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
+    )
+
+    task = RunStore(tmp_path).list()[0]
+    assert task.status == "awaiting_approval"
+    assert result.budget_exhausted is True
+    assert result.text.startswith("任务已准备好，等待审批。")
+    assert "审批码:" in result.text
+    events = router.trace.list_events(result.trace_id)
+    assert any(event.phase == "runtime.budget_exhausted" for event in events)
+    recovered_tools = [
+        event.tool
+        for event in events
+        if event.phase == "capability.result" and event.model_role == "runtime"
+    ]
+    assert recovered_tools == ["delegate.prepare", "approval.request"]
 
 
 @pytest.mark.asyncio

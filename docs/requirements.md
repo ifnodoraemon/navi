@@ -110,6 +110,7 @@ Runtime rules:
 - Source code must not define ordinary natural-language behavior with keyword lists such as question markers, action verbs, time-of-day words, or channel-specific phrasing. Natural language interpretation belongs to the model with declared tools.
 - Deterministic routing must not invent missing facts such as default times, paths, service names, task ids, or permissions. If a capability can be used but required slots are missing, the agent should ask a concise clarification.
 - Command-like text from users is ordinary model input unless a specific management CLI/API endpoint handles it. User-facing task, watch, approval, and session behavior must be decided from natural language plus declared tools.
+- Task goals must be subordinate to user intent, durable constraints, approval state, permission ceilings, and safeguard policy. Model replacement, shutdown, scope reduction, and failed goal completion are operating states, not threats to resist.
 - Extension boundaries must be explicit: skills provide promptable procedures, plugins provide installed capabilities/integrations, and hooks observe or gate lifecycle events.
 - Anything with credentials, network calls, filesystem mutation, daemon behavior, providers, or connector surfaces must be a plugin rather than a skill.
 - Anything that runs at task/message/tool/approval/memory lifecycle boundaries must be a hook rather than hidden inline logic.
@@ -269,9 +270,9 @@ Known gaps:
 - `navi connectors setup weixin` currently polls QR status once; a production setup should loop with timeout and clearer scan/confirm states.
 - Weixin media support is not implemented.
 - Weixin typing indicators are not implemented.
-- Remote connector tool visibility is allowlisted; richer per-sender/per-surface policy configuration is still future work.
+- Remote connector tool visibility uses an inspectable connector tool policy with a permission ceiling, allowed tools, blocked capability classes, and audit facts. Richer per-sender/per-surface policy configuration is still future work.
 - MCP servers are not connected yet; Tool Gateway is ready for an MCP provider. Action/control and gateway tools are exposed through the unified capability registry.
-- Execution protocol is a bounded step plan. Each step contains capability-backed actions and verification checks; Navi enforces a step budget, supports retry-once/continue/stop failure policy, records workspace dirty-state before/after execution, emits rollback hints on failed dirty runs, and can check expected files, file contents, git status, and test results before marking execution complete. Richer remote policy controls are still needed before exposing mutating actuators to connectors.
+- Execution protocol is a bounded step plan. Each step contains capability-backed actions and verification checks; Navi keeps runtime budgets internal, can trigger bounded recovery for prepare-level follow-up work, supports retry-once/continue/stop failure policy, records workspace dirty-state before/after execution, emits rollback hints on failed dirty runs, and can check expected files, file contents, git status, and test results before marking execution complete. Richer remote policy controls are still needed before exposing mutating actuators to connectors.
 - Browser UI is intentionally removed from this codebase.
 
 ## Next Implementation Steps
@@ -282,7 +283,7 @@ Recommended next order:
 2. Run `navi connectors run weixin` with a test DM and adjust `getupdates`/`sendmessage` payload parsing.
 3. Add structured logging and visible diagnostics for Weixin connection states.
 4. Add richer verifier policies for structured diffs, command-specific assertions, and automatic rollback proposals.
-5. Add a remote-safe tool policy before enabling shell/file-write tools from Weixin.
+5. Add per-sender/per-surface remote tool policy configuration before enabling shell/file-write tools from Weixin.
 6. Improve headless API observability for sessions, connector status, memory, and task list.
 7. Add text chunking for long Weixin responses.
 8. Add optional media handling after text DM is reliable.

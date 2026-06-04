@@ -21,6 +21,7 @@ from .hooks import HookDecision, HookEvent, HookRegistry
 from .operating_context import permission_allows
 from .graph import GraphStore
 from .runs import RunStore
+from .safeguards import capability_safeguard_facts
 from .tools import ToolSpec, build_tool_gateway
 from .trust import TrustStore
 
@@ -410,6 +411,7 @@ class ToolsListCapability:
                     "source": spec.source,
                     "input_properties": sorted((spec.input_schema.get("properties") or {}).keys()),
                     "required": list(spec.input_schema.get("required") or []),
+                    "safeguards": capability_safeguard_facts(spec),
                 }
                 for spec in specs
             ],

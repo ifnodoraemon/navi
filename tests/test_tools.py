@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from navi.action_tools import load_action_tool_specs
 from navi.runs import RunStore
+from navi.safeguards import classify_capability
 from navi.tools import build_tool_gateway
 from navi.config import write_default_config
 
@@ -44,6 +45,11 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
     assert "exit_code" in specs["shell.run"].output_schema["properties"]
     assert "configured" in specs["connector.weixin.status"].output_schema["properties"]
     assert "configured" in specs["connector.telegram.status"].output_schema["properties"]
+    assert classify_capability(specs["shell.run"]).risk_class == "high"
+    assert classify_capability(specs["shell.run"]).confirmation_required is True
+    assert "terminal" in classify_capability(specs["shell.run"]).sensitive_contexts
+    assert "filesystem" in classify_capability(specs["file.write"]).sensitive_contexts
+    assert "browser" in classify_capability(specs["browser.screenshot"]).sensitive_contexts
 
 
 def test_run_status_tool_returns_task_facts(tmp_path):

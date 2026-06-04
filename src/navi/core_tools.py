@@ -13,6 +13,7 @@ from .hooks import HookRegistry
 from .memory import MemoryStore
 from .operating_context import permission_allows
 from .runs import Approval, RunStore
+from .safeguards import capability_safeguard_facts
 from .skills import SkillStore
 from .tools import ToolRegistry, ToolResult, ToolSpec
 
@@ -636,6 +637,7 @@ def _tools_list(registry: ToolRegistry) -> ToolResult:
                     "source": spec.source,
                     "input_properties": sorted((spec.input_schema.get("properties") or {}).keys()),
                     "required": list(spec.input_schema.get("required") or []),
+                    "safeguards": capability_safeguard_facts(spec),
                 }
                 for spec in specs
             ],

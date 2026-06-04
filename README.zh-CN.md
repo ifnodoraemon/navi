@@ -1,17 +1,35 @@
-# Navi（本地优先个人 AI 助手）
+# Navi
 
-Navi 是一个面向开发者和高频电脑用户的本地优先个人 AI 助手。它把对话、任务、审批、记忆、连接器和可回滚演进放在同一个本地运行时里，目标是让 AI 能帮你处理真实工作，同时把权限、执行记录和本地状态留在你自己的机器上。
+Navi 是一个**本地优先的个人 AI 助手 Agent OS**。
+
+它的目标不是用关键词和固定流程替 AI 做事，而是给模型提供脚手架：声明式能力、权限上限、信任与审批状态、治理型记忆、连接器上下文、执行 trace、恢复计划和可回滚演进。模型从当前事实和可用能力中选择下一步，运行时负责边界、证据和审计。
+
+`1.0.0` 是 Navi 第一个稳定 agent OS 契约版本。
 
 [English README](README.md)
 
 ## 核心能力
 
-- **受控本地任务**：通过 `task.create` 先准备任务和执行计划，再生成审批码；只有在你批准后，任务才会进入执行队列。
-- **审批与信任治理**：默认未知任务走 L2 审批，只有命中明确的信任规则和项目范围时才允许更高自治。
-- **主动记忆**：支持偏好、约束、事实、反例和语义记忆，并从对话和任务日志中提取可复用上下文。
-- **可回滚演进账本**：记忆整理、技能添加、信任规则变化和自演进事件都会写入本地账本，便于审计和回滚。
-- **多入口访问**：支持 CLI、无界面的本地 FastAPI，以及个人微信连接器的基础运行链路。
-- **技能发现**：从 `.navi/skills/*/SKILL.md` 加载本地技能说明，并按权限上限注入上下文。
+- **能力驱动运行时**：planner 从 capability manifest 选择 syscall，而不是靠产品关键词路由。
+- **受控本地执行**：任务、watch、goal、审批、执行、验证和恢复都有持久记录。
+- **信任与审批治理**：用户聊天文本不是执行授权；本地动作必须走明确的审批和信任状态。
+- **治理型记忆**：支持偏好、约束、事实、反例、语义记忆、来源、置信度、召回原因、冲突和撤销。
+- **防御纵深安全**：权限上限、连接器工具策略、声明式能力风险元数据、untrusted observation 边界、trace 评估和 safeguard 归因。
+- **可回滚演进账本**：prompt、记忆、技能、信任、工作流和 eval 变化都可审计、可回滚。
+- **多入口访问**：CLI、本地 FastAPI、个人微信/Weixin 连接器 mock 链路。
+
+## v1 契约
+
+Navi 1.0.0 稳定以下公开 agent OS 契约：
+
+- capability spec、权限和工具调用执行；
+- task、watch、goal、approval、recovery、sub-agent 和 trace 记录；
+- 治理型 memory item shape 和冲突可见性；
+- CLI 与本地 API 控制面；
+- 通过 remote tool policy 保护的连接器入口；
+- 通过测试、eval、compile check 和文档 trace 支撑的发布验证。
+
+内部兼容债不保留。过时的内部 schema、alias 和 workflow branch 应该删除，而不是静默适配；除非迁移本身就是明确发布的产品功能。
 
 ## 快速开始
 
@@ -63,6 +81,9 @@ navi memory recall "开发偏好"
 navi memory revoke <item_id>
 
 # 任务与演进
+navi goal list
+navi trace list
+navi subagent list
 navi evolution list
 navi evolution show <event_id>
 navi evolution rollback <event_id>
@@ -104,9 +125,12 @@ Navi 默认把状态写入 `.navi/` 或自定义的 `NAVI_HOME`：
 ├── config.yaml
 ├── env
 ├── evolution.db
+├── goals.db
 ├── graph.db
 ├── memory.db
-├── tasks.db
+├── runs.db
+├── subagents.db
+├── traces.db
 ├── trust.db
 └── skills/
 ```
@@ -119,3 +143,10 @@ NAVI_WEIXIN_MOCK=true navi connectors run weixin --once
 ```
 
 真实微信/iLink 接入仍需要按现场 payload 做校准；本地 mock 用于验证运行链路和策略行为。
+
+## 发布说明
+
+- [Navi 1.0.0 发布说明](docs/release-notes-1.0.0.md)
+- [不可违反原则](docs/principles.md)
+- [前沿 Agent 安全审计](docs/frontier-agent-safety-audit.md)
+- [版本契约](docs/versioning.md)

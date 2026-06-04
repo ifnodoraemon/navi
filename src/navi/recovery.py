@@ -27,6 +27,45 @@ class RecoveryPlan:
 
 
 class RecoveryPlanner:
+    def plan_budget_exhaustion(self, *, events: list[dict[str, Any]]) -> RecoveryPlan:
+        run_id, run_status = _latest_run_state(events)
+        if run_status == "pending":
+            return RecoveryPlan(
+                trigger="runtime.budget_exhausted",
+                reason=f"Step budget ended after creating delegation run {run_id}; preparation is still pending.",
+                recommended="continue",
+                choices=[
+                    RecoveryChoice(
+                        kind="continue",
+                        reason="Prepare the tracked delegation run before synthesizing a user response.",
+                        tool="delegate.prepare",
+                        permission="prepare",
+                        args={"run_id": run_id},
+                    )
+                ],
+            )
+        if run_status == "prepared":
+            return RecoveryPlan(
+                trigger="runtime.budget_exhausted",
+                reason=f"Step budget ended after preparing delegation run {run_id}; approval has not been requested.",
+                recommended="continue",
+                choices=[
+                    RecoveryChoice(
+                        kind="continue",
+                        reason="Create the approval request so the user receives a concrete approval affordance.",
+                        tool="approval.request",
+                        permission="prepare",
+                        args={"run_id": run_id},
+                    )
+                ],
+            )
+        return RecoveryPlan(
+            trigger="runtime.budget_exhausted",
+            reason="Step budget ended without a deterministic safe recovery action.",
+            recommended="respond_from_observations",
+            choices=[],
+        )
+
     def plan_completion_failure(
         self,
         *,
@@ -176,3 +215,15 @@ def _last_cleanup_facts(events: list[dict[str, Any]]) -> dict[str, Any]:
         if isinstance(facts, dict) and facts.get("cleanup_complete") is False:
             return facts
     return {}
+
+
+def _latest_run_state(events: list[dict[str, Any]]) -> tuple[str, str]:
+    for event in reversed(events):
+        facts = event.get("facts")
+        if not isinstance(facts, dict):
+            continue
+        run_id = str(facts.get("run_id") or "").strip()
+        status = str(facts.get("status") or facts.get("run_status") or "").strip()
+        if run_id and status:
+            return run_id, status
+    return "", ""

@@ -29,6 +29,7 @@ class AgentTurnResult:
     model_role: str = "responder"
     terminal: bool = False
     trace_id: str = ""
+    budget_exhausted: bool = False
 
 
 class HernessEngine:
@@ -176,6 +177,7 @@ class HernessEngine:
                     observation="\n\n".join(observations),
                     model_role=last_result.model_role,
                     terminal=True,
+                    budget_exhausted=last_result.budget_exhausted,
                 )
                 result = self._ensure_pending_approval_prompt(result, pending_approval_prompt)
             last_result = result
@@ -227,6 +229,21 @@ class HernessEngine:
         else:
             budget_exhausted = True
 
+        if budget_exhausted:
+            pending_approval_prompt, last_result = await self._recover_budget_exhaustion(
+                trace_id=trace_id,
+                session_id=resolved_session_id or "",
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+                context=context,
+                completion_events=completion_events,
+                observations=observations,
+                goal_ids=goal_ids,
+                pending_approval_prompt=pending_approval_prompt,
+                last_result=last_result,
+            )
+
         if observations:
             turn_res = await self._finalize_observations(
                 text,
@@ -265,10 +282,15 @@ class HernessEngine:
                 ),
             )
             answer = await self.runtime.complete(messages, role="responder")
-            warning = "\n\n(注意：已达到步骤预算上限，任务可能未完成。) / (Warning: Step budget limit reached, the task may not be completed.)"
-            answer_with_warning = f"{answer}{warning}"
-            self.runtime.memory.add_message(resolved_session_id, "assistant", answer_with_warning)
-            turn_res = AgentTurnResult(text=answer_with_warning, session_id=resolved_session_id, action="chat", terminal=True, trace_id=trace_id)
+            self.runtime.memory.add_message(resolved_session_id, "assistant", answer)
+            turn_res = AgentTurnResult(
+                text=answer,
+                session_id=resolved_session_id,
+                action="chat",
+                terminal=True,
+                trace_id=trace_id,
+                budget_exhausted=True,
+            )
             self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
             self._trigger_background_memory(turn_res)
             return turn_res
@@ -297,6 +319,106 @@ class HernessEngine:
         goals = GoalStore(self.home)
         for goal_id in sorted(goal_ids):
             goals.attach_trace(goal_id, trace_id=trace_id, session_id=session_id, evidence=evidence)
+
+    async def _recover_budget_exhaustion(
+        self,
+        *,
+        trace_id: str,
+        session_id: str,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+        context: CapabilityContext,
+        completion_events: list[dict[str, Any]],
+        observations: list[str],
+        goal_ids: set[str],
+        pending_approval_prompt: str,
+        last_result: AgentTurnResult | None,
+    ) -> tuple[str, AgentTurnResult | None]:
+        self.trace.add_event(
+            trace_id=trace_id,
+            phase="runtime.budget_exhausted",
+            session_id=session_id,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            model_role="runtime",
+            ok=True,
+            output_data={
+                "observations_count": len(observations),
+                "last_action": last_result.action if last_result else "",
+                "last_run_id": last_result.run_id if last_result else "",
+            },
+            message="internal step budget exhausted",
+        )
+        for _ in range(2):
+            recovery_plan = self.recovery.plan_budget_exhaustion(events=completion_events)
+            choice = _safe_budget_recovery_choice(recovery_plan)
+            self.trace.add_event(
+                trace_id=trace_id,
+                phase="recovery.plan",
+                session_id=session_id,
+                run_id=last_result.run_id if last_result else "",
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+                model_role="runtime",
+                ok=True,
+                input_data={"trigger": recovery_plan.trigger},
+                output_data=asdict(recovery_plan),
+                message=recovery_plan.recommended,
+            )
+            if choice is None:
+                return pending_approval_prompt, last_result
+            invoked = await self.capabilities.invoke(
+                choice.tool,
+                choice.args,
+                permission=choice.permission,
+                context=context,
+            )
+            completion_events.append(
+                {
+                    "tool": choice.tool,
+                    "ok": invoked.ok,
+                    "facts": invoked.facts or {},
+                    "action": invoked.action,
+                }
+            )
+            goal_id = str((invoked.facts or {}).get("goal_id") or "").strip()
+            if goal_id:
+                goal_ids.add(goal_id)
+            self.trace.add_event(
+                trace_id=trace_id,
+                phase="capability.result",
+                session_id=session_id,
+                run_id=invoked.run_id,
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+                tool=choice.tool,
+                model_role="runtime",
+                ok=invoked.ok,
+                input_data={"args": choice.args, "permission": choice.permission, "budget_recovery": True},
+                output_data={"action": invoked.action, "facts": invoked.facts or {}, "terminal": invoked.terminal},
+                message=invoked.message or invoked.observation,
+            )
+            observations.append(invoked.observation or invoked.message)
+            approval_prompt = self._approval_prompt_from_facts(invoked.facts, source=source)
+            if approval_prompt:
+                pending_approval_prompt = approval_prompt
+            last_result = AgentTurnResult(
+                text=invoked.message or invoked.observation,
+                run_id=invoked.run_id,
+                action=invoked.action,
+                observation=invoked.observation,
+                model_role="runtime",
+                terminal=invoked.terminal,
+                budget_exhausted=True,
+            )
+            facts = invoked.facts or {}
+            if not invoked.ok or facts.get("status") == "awaiting_approval":
+                return pending_approval_prompt, last_result
+        return pending_approval_prompt, last_result
 
     @staticmethod
     def _completion_block_reason(events: list[dict[str, Any]]) -> str:
@@ -401,6 +523,7 @@ class HernessEngine:
             model_role=result.model_role,
             terminal=result.terminal,
             trace_id=result.trace_id,
+            budget_exhausted=result.budget_exhausted,
         )
 
     @staticmethod
@@ -414,6 +537,7 @@ class HernessEngine:
             model_role=result.model_role,
             terminal=result.terminal,
             trace_id=trace_id,
+            budget_exhausted=result.budget_exhausted,
         )
 
     def _record_trace_final(
@@ -435,7 +559,11 @@ class HernessEngine:
             sender_id=sender_id,
             model_role=result.model_role,
             ok=True,
-            output_data={"action": result.action, "terminal": result.terminal},
+            output_data={
+                "action": result.action,
+                "terminal": result.terminal,
+                "budget_exhausted": result.budget_exhausted,
+            },
             message=result.text,
         )
         self.trace.evaluate_trace(trace_id)
@@ -515,9 +643,6 @@ class HernessEngine:
             pending_approval_prompt,
         ):
             answer = self._append_pending_approval_prompt(answer, pending_approval_prompt)
-        if budget_exhausted:
-            warning = "\n\n(注意：已达到步骤预算上限，任务可能未完成。) / (Warning: Step budget limit reached, the task may not be completed.)"
-            answer = f"{answer}{warning}"
         self.runtime.memory.add_message(session_id, "assistant", answer)
         return AgentTurnResult(
             text=answer,
@@ -527,6 +652,7 @@ class HernessEngine:
             observation=observation,
             model_role=model_role,
             terminal=True,
+            budget_exhausted=budget_exhausted,
         )
 
     def _ensure_pending_approval_prompt(
@@ -548,6 +674,7 @@ class HernessEngine:
             model_role=result.model_role,
             terminal=result.terminal,
             trace_id=result.trace_id,
+            budget_exhausted=result.budget_exhausted,
         )
 
     @staticmethod
@@ -603,3 +730,16 @@ def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:
     if isinstance(raw, list) and raw:
         return str(raw[0])
     return fallback
+
+
+def _safe_budget_recovery_choice(recovery_plan):
+    if recovery_plan.recommended != "continue":
+        return None
+    allowed = {
+        ("delegate.prepare", "prepare"),
+        ("approval.request", "prepare"),
+    }
+    for choice in recovery_plan.choices:
+        if choice.kind == "continue" and (choice.tool, choice.permission) in allowed:
+            return choice
+    return None

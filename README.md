@@ -1,6 +1,10 @@
-# 🧭 Navi (Navi Assistant)
+# 🧭 Navi
 
-Navi is a premium, **local-first personal AI assistant** designed to be your private "Jarvis". Built for developers and power users, Navi runs fully on your local machine, utilizing a lightweight, zero-configuration stack with model-driven intelligence, progressive capabilities, and an active cognitive memory engine.
+Navi is a **local-first agent OS for a governed personal AI assistant**.
+
+It is designed to give the model scaffolding, not to hardcode work on the model's behalf. Navi exposes declared capabilities, durable memory, trust and approval state, connector affordances, traces, and recovery records so the assistant can decide from current facts while staying auditable and bounded.
+
+Version `1.0.0` is the first stable Navi agent OS contract.
 
 [中文说明](README.zh-CN.md)
 
@@ -8,14 +12,29 @@ Navi is a premium, **local-first personal AI assistant** designed to be your pri
 
 ## ✨ Core Features
 
-*   🧠 **Cognitive Active Memory (Jarvis Memory)**: Supports typed, scoped, and provenance-bearing memory stores (`preference`, `constraint`, `negative`, `fact`, `semantic`). It automatically extracts facts and user preferences from live conversations and background task logs, and performs natural-language active consolidation (updating and revoking contradictory memories) on the fly.
-*   🔄 **Reversible Evolution Ledger**: Every self-evolution step, memory consolidation, skill addition, or trust engine mutation is recorded as a fully auditable ledger event. Any change can be completely rolled back at any time via the CLI or API.
-*   🔌 **progressive Skill Discovery**: Seamlessly loads custom skills and procedural guides from standard markdown files (`.navi/skills/*/SKILL.md`) directly into the prompt context based on current permission ceilings.
-*   🛡️ **Trust & Autonomy Engine**: A dynamic sandbox governance system that increments/decrements autonomy levels based on historical task successes and failures, safely managing local execution.
+*   🧠 **Governed Memory**: Typed, scoped, provenance-bearing memory for preferences, constraints, negative learnings, facts, semantic records, conflicts, and revocation.
+*   🧭 **Capability-Driven Agent Runtime**: The planner chooses declared syscalls from the capability manifest instead of relying on product keyword routing.
+*   ✅ **Trust, Approval, and Goal State**: Local execution moves through durable task, watch, goal, approval, verifier, and recovery records.
+*   🛡️ **Defense-in-Depth Safeguards**: Permission ceilings, connector tool policies, declarative capability risk metadata, untrusted observation boundaries, trace evaluation, and safeguard failure attribution.
+*   🔄 **Reversible Evolution Ledger**: Prompt, memory, skill, trust, workflow, and eval changes are recorded as reviewable, rollbackable events.
+*   🔌 **Skills, Plugins, and Hooks Boundaries**: Skills teach procedures, plugins add capabilities, and hooks observe or gate lifecycle events.
 *   🌐 **Multi-Surface Access**:
-    *   💻 **CLI Chat**: Real-time interactive terminal chat (`navi chat`).
-    *   🔧 **Headless Local API**: FastAPI server for machine clients (`navi api`).
-    *   💬 **Personal WeChat Connector**: Direct long-poll connection gateway to your personal WeChat account.
+    *   💻 **CLI Chat and Control Plane**: Interactive local chat plus memory, trust, evolution, trace, goal, diagnostic, and connector commands.
+    *   🔧 **Headless Local API**: FastAPI server for local clients (`navi api`).
+    *   💬 **Personal Weixin Connector**: Mock-tested long-poll connector shape for personal Weixin/iLink integration.
+
+## v1 Contract
+
+Navi 1.0.0 stabilizes the public agent OS contract:
+
+- capability specs, permissions, and tool-call execution;
+- task, watch, goal, approval, recovery, sub-agent, and trace records;
+- governed memory item shape and conflict visibility;
+- CLI and local API control surfaces;
+- connector-safe ingress through explicit remote tool policy;
+- release validation through unit tests, evals, compile checks, and traceable docs.
+
+Internal compatibility debt is intentionally not preserved. Obsolete internal schemas, aliases, and workflow branches should be removed rather than silently adapted unless a migration is the explicit shipped feature.
 
 ---
 
@@ -54,7 +73,7 @@ NAVI_WEIXIN_MOCK=true navi connectors run weixin --once
 
 ---
 
-## ⚙️ Architecture & Local-First Database
+## ⚙️ Architecture & Local-First State
 
 Navi uses **SQLite** as its default local database core. This decision is strictly aligned with our **local-first, developer-frictionless** philosophy:
 1.  **Zero Configuration**: No database servers to install, configure, or maintain.
@@ -70,7 +89,10 @@ All local state is structured under `.navi/` or a custom `NAVI_HOME` directory:
 ├── evolution.db      # Evolution Ledger logs
 ├── graph.db          # Project dependency and context graph
 ├── memory.db         # Active cognitive memory & session stores
-├── runs.db          # Scheduled and queued background tasks
+├── runs.db           # Tasks, watches, approvals, and execution state
+├── goals.db          # Durable goal lifecycle state
+├── traces.db         # Turn and capability trace records
+├── subagents.db      # Planner/executor/critic/notification role records
 ├── trust.db          # Trust engine states
 └── skills/           # Custom procedural guides (SKILL.md)
 ```
@@ -105,6 +127,11 @@ navi session show <session_id>
 navi skills
 navi trust list
 navi trust set <rule_id> <autonomy_level>
+
+# Goals, traces, and sub-agent evidence
+navi goal list
+navi trace list
+navi subagent list
 ```
 
 The same diagnostic checks are available from the local API at `/v1/diagnostics`.
@@ -126,3 +153,10 @@ navi eval claw --dataset evals/claw_navi.yaml --attempts 3
 ```
 
 `evals/claw_navi.yaml` is a repository-local Claw-Eval compatible subset. It preserves the task/split/rubric/Pass^3 shape while avoiding large external fixtures in the repo.
+
+## Release Notes
+
+- [Navi 1.0.0 release notes](docs/release-notes-1.0.0.md)
+- [Non-negotiable principles](docs/principles.md)
+- [Frontier agent safety audit](docs/frontier-agent-safety-audit.md)
+- [Versioning contract](docs/versioning.md)

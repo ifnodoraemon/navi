@@ -10,6 +10,7 @@ import yaml
 from navi.daemon import ProactiveEvent, SystemDaemon
 from navi.engine import HernessEngine
 from navi.memory import MemoryStore
+from navi.safeguards import classify_capability
 from navi.trust import TrustStore
 
 
@@ -112,6 +113,20 @@ def test_asyncio_primitives_are_lazily_initialized():
     assert "def _memory_semaphore" in _source(HernessEngine)
     assert "def _session_lock_guard" in _source(MemoryStore)
     assert "def _semantic_semaphore" in _source(TrustStore)
+
+
+def test_capability_safeguards_are_declarative_not_keyword_inferred():
+    source = _source(classify_capability)
+
+    forbidden = (
+        "startswith(",
+        " in spec.name",
+        " in name",
+        "split(",
+    )
+    offenders = [token for token in forbidden if token in source]
+
+    assert offenders == []
 
 
 def test_memory_provider_failures_are_logged_before_fallback():
