@@ -191,6 +191,11 @@ dump. `GET /v1/memory/conflicts` returns declared contradiction and
 supersession relationships so stale or competing facts are visible to
 operators and agents.
 
+Lifecycle hooks are declared control-plane artifacts. Built-in hooks are loaded
+from `src/navi/specs/hooks.yaml`; local hooks can be added as YAML files under
+`NAVI_HOME/hooks/*.yaml` with `event`, optional `match`, `decision`, `reason`,
+and structured `facts`. Local hooks do not execute arbitrary code.
+
 Current config shape:
 
 ```yaml

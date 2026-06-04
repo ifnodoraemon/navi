@@ -18,6 +18,34 @@ def test_hook_registry_lists_lifecycle_specs(tmp_path):
     }
 
 
+def test_hook_registry_loads_local_declarative_specs(tmp_path):
+    hook_dir = tmp_path / "hooks"
+    hook_dir.mkdir()
+    (hook_dir / "local.yaml").write_text(
+        """
+hooks:
+  - name: local.provider_observer
+    event: before_capability
+    description: Observe provider config calls.
+    match:
+      tool: provider.config
+    facts:
+      policy: local
+""".strip(),
+        encoding="utf-8",
+    )
+
+    registry = HookRegistry(tmp_path)
+    facts = registry.list_facts()
+    decisions = registry.run(HookEvent(event="before_capability", payload={"tool": "provider.config"}))
+
+    assert any(item["name"] == "local.provider_observer" for item in facts["hooks"])
+    assert decisions[-1].hook == "local.provider_observer"
+    assert decisions[-1].decision == "observe"
+    assert decisions[-1].facts["policy"] == "local"
+    assert decisions[-1].facts["source"] == "local:hooks/local.yaml"
+
+
 @pytest.mark.asyncio
 async def test_capability_invocation_runs_before_and_after_hooks(tmp_path):
     capabilities = build_capability_registry(tmp_path, project_dir=tmp_path)
@@ -76,6 +104,42 @@ async def test_before_capability_hook_can_block_call(tmp_path):
     assert result.ok is False
     assert result.message == "blocked by test hook"
     assert result.facts["hook_decision"]["hook"] == "test.block"
+
+
+@pytest.mark.asyncio
+async def test_local_declarative_hook_can_block_matching_capability(tmp_path):
+    hook_dir = tmp_path / "hooks"
+    hook_dir.mkdir()
+    (hook_dir / "block.yaml").write_text(
+        """
+- name: local.block_shell
+  event: before_capability
+  decision: block
+  reason: shell is disabled by local policy
+  match:
+    tool: shell.run
+""".strip(),
+        encoding="utf-8",
+    )
+    capabilities = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    blocked = await capabilities.invoke(
+        "shell.run",
+        {"command": "pwd"},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, workspace=str(tmp_path)),
+    )
+    allowed = await capabilities.invoke(
+        "provider.config",
+        {},
+        permission="read",
+        context=CapabilityContext(home=tmp_path, workspace=str(tmp_path)),
+    )
+
+    assert blocked.ok is False
+    assert blocked.message == "shell is disabled by local policy"
+    assert blocked.facts["hook_decision"]["hook"] == "local.block_shell"
+    assert allowed.ok is True
 
 
 def test_hooks_list_tool_returns_hook_facts(tmp_path):
