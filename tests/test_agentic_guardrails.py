@@ -163,6 +163,25 @@ def test_memory_store_has_no_flat_text_memory_api():
     assert offenders == {"memory.py": [], "api.py": []}
 
 
+def test_memory_recall_returns_structured_explanations(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.add_item(
+        "constraint",
+        "Never run destructive git commands without explicit approval.",
+        source="test",
+        status="active",
+        confidence=1.0,
+    )
+
+    recalls = store.recall("git commands")
+
+    assert len(recalls) == 1
+    assert recalls[0].item.type == "constraint"
+    assert recalls[0].score > 0
+    assert recalls[0].reasons
+    assert any(reason.startswith("matched_query_tokens:") for reason in recalls[0].reasons)
+
+
 def test_daemon_port_probe_uses_explicit_dual_stack_without_runtime_address_literal():
     source = _source(SystemDaemon._detect_port_events)
 

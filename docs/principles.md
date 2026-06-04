@@ -251,6 +251,8 @@ Memory promotion should follow a pipeline:
 
 The key innovation is not vector search. It is memory governance plus agentic use: the assistant should know what it knows, why it knows it, when it last verified it, and whether it is allowed to act on it.
 
+Recall is part of the control plane. It must return structured recall facts, including item status, source, confidence, score, and reasons for retrieval, so the model can decide whether to use the memory instead of blindly following hidden prompt text.
+
 ## Memory Control System
 
 Navi should implement memory as a control system rather than a passive store:

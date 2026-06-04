@@ -328,6 +328,8 @@ def test_core_support_tools_expose_skills_memory_and_browser(tmp_path, monkeypat
     recalled = gateway.call("memory.recall", {"query": "regression evals"})
     assert recalled.ok
     assert recalled.facts["count"] == 1
+    assert recalled.facts["items"][0]["score"] > 0
+    assert any(reason.startswith("matched_query_tokens:") for reason in recalled.facts["items"][0]["reasons"])
 
     monkeypatch.setattr("navi.core_tools.shutil.which", lambda name: None)
     screenshot = gateway.call("browser.screenshot", {"url": "https://example.com", "path": "shot.png"})

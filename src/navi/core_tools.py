@@ -473,6 +473,13 @@ def _memory_item_facts(item) -> dict[str, Any]:
     }
 
 
+def _memory_recall_facts(recall) -> dict[str, Any]:
+    facts = _memory_item_facts(recall.item)
+    facts["score"] = recall.score
+    facts["reasons"] = list(recall.reasons)
+    return facts
+
+
 def _memory_list(home: Path, args: dict[str, Any]) -> ToolResult:
     limit = _positive_int(args.get("limit"), default=20, maximum=100)
     memory_type = str(args.get("type") or "").strip().lower() or None
@@ -499,16 +506,17 @@ def _memory_recall(home: Path, args: dict[str, Any]) -> ToolResult:
     if not query:
         return ToolResult(tool="memory.recall", ok=False, error="query is required")
     limit = _positive_int(args.get("limit"), default=8, maximum=50)
-    items = MemoryStore(home).recall(query, limit=limit)
+    store = MemoryStore(home)
+    recalls = store.recall(query, limit=limit)
     return ToolResult(
         tool="memory.recall",
         ok=True,
         facts={
             "query": query,
-            "items": [_memory_item_facts(item) for item in items],
-            "count": len(items),
+            "items": [_memory_recall_facts(recall) for recall in recalls],
+            "count": len(recalls),
             "limit": limit,
-            "rendered": MemoryStore(home).render_context(query, limit=limit),
+            "rendered": store.render_context(query, limit=limit),
         },
     )
 

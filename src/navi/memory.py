@@ -53,6 +53,13 @@ class MemoryItem:
     metadata: dict
 
 
+@dataclass(frozen=True)
+class MemoryRecall:
+    item: MemoryItem
+    score: float
+    reasons: list[str]
+
+
 _MEMORY_POLICY = load_spec("memory_policy.yaml")
 MEMORY_TYPES = {str(item) for item in _MEMORY_POLICY["types"]}
 LEARNABLE_MEMORY_TYPES = tuple(str(item) for item in _MEMORY_POLICY["learnable_types"])
@@ -285,28 +292,31 @@ class MemoryStore:
         return learnings
 
 
-    def recall(self, query: str, *, limit: int = 8) -> list[MemoryItem]:
+    def recall(self, query: str, *, limit: int = 8) -> list[MemoryRecall]:
         now = time.time()
         candidates = [
             item
             for item in self.list_items(limit=500)
             if item.status in ACTIVE_STATUSES and (not item.expires_at or item.expires_at > now)
         ]
-        scored = [(self._score(item, query), item) for item in candidates]
-        scored = [(score, item) for score, item in scored if score > 0]
-        scored.sort(key=lambda pair: (pair[0], pair[1].updated_at), reverse=True)
-        return [item for _, item in scored[:limit]]
+        scored = [self._score_recall(item, query) for item in candidates]
+        scored = [recall for recall in scored if recall.score > 0]
+        scored.sort(key=lambda recall: (recall.score, recall.item.updated_at), reverse=True)
+        return scored[:limit]
 
     def render_context(self, query: str, *, limit: int = 8) -> str:
-        items = self.recall(query, limit=limit)
-        if not items:
+        recalls = self.recall(query, limit=limit)
+        if not recalls:
             return ""
         lines = ["Memory recall:"]
-        for item in items:
+        for recall in recalls:
+            item = recall.item
             verified = time.strftime("%Y-%m-%d", time.localtime(item.last_verified_at)) if item.last_verified_at else "unverified"
+            reason_text = "; ".join(recall.reasons[:4])
             lines.append(
                 f"- [{item.type} status={item.status} scope={item.scope} confidence={item.confidence:.2f} "
-                f"source={item.source} verified={verified} id={item.id}] {item.content}"
+                f"source={item.source} verified={verified} score={recall.score:.2f} id={item.id} "
+                f"reason={reason_text}] {item.content}"
             )
         return "\n".join(lines)
 
@@ -710,17 +720,28 @@ class MemoryStore:
         return {part.lower() for part in text.replace("/", " ").replace("_", " ").split() if len(part) >= 2}
 
     @classmethod
-    def _score(cls, item: MemoryItem, query: str) -> float:
+    def _score_recall(cls, item: MemoryItem, query: str) -> MemoryRecall:
         priority = TYPE_PRIORITY.get(item.type, 10)
+        reasons = [f"type_priority:{item.type}={priority}"]
         if item.type == "constraint":
             priority += 50
+            reasons.append("constraint memory receives guardrail priority")
         query_tokens = cls._tokens(query)
         content_tokens = cls._tokens(f"{item.scope} {item.content}")
-        overlap = len(query_tokens & content_tokens)
+        matches = sorted(query_tokens & content_tokens)
+        overlap = len(matches)
         if query_tokens and not overlap and item.type not in {"constraint", "working"}:
-            return 0
+            return MemoryRecall(item=item, score=0.0, reasons=["not relevant to query tokens"])
+        if matches:
+            reasons.append(f"matched_query_tokens:{','.join(matches[:8])}")
+        elif query_tokens:
+            reasons.append(f"included_by_type:{item.type}")
+        reasons.append(f"confidence={item.confidence:.2f}")
         freshness = min(10.0, max(0.0, (item.updated_at - 1_700_000_000) / 10_000_000))
-        return priority + (overlap * 12) + (item.confidence * 10) + freshness
+        if freshness:
+            reasons.append(f"freshness_score={freshness:.2f}")
+        score = priority + (overlap * 12) + (item.confidence * 10) + freshness
+        return MemoryRecall(item=item, score=score, reasons=reasons)
 
 
 def _memory_prompt(name: str) -> str:

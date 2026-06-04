@@ -220,6 +220,29 @@ def test_memory_policy_is_declared_and_used():
     assert policy["type_priority"]["constraint"] == TYPE_PRIORITY["constraint"] == 100
 
 
+def test_memory_recall_is_explainable_scaffolding(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.add_item(
+        "preference",
+        "Prefer regression evals for user-visible failures.",
+        source="test",
+        status="active",
+        confidence=0.9,
+    )
+
+    recalls = store.recall("regression evals")
+    rendered = store.render_context("regression evals")
+
+    assert len(recalls) == 1
+    recall = recalls[0]
+    assert recall.item.content == "Prefer regression evals for user-visible failures."
+    assert recall.score > 0
+    assert any(reason.startswith("matched_query_tokens:") for reason in recall.reasons)
+    assert any(reason == "confidence=0.90" for reason in recall.reasons)
+    assert "score=" in rendered
+    assert "reason=" in rendered
+
+
 @pytest.mark.asyncio
 async def test_extract_memories_from_run(tmp_path):
     store = MemoryStore(tmp_path)
