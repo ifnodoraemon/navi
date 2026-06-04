@@ -16,6 +16,14 @@ from .skills import SkillStore
 from .tools import ToolRegistry, ToolResult, ToolSpec
 
 
+def _output_schema(properties: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "object", "properties": properties}
+
+
+def _array_of_objects() -> dict[str, Any]:
+    return {"type": "array", "items": {"type": "object"}}
+
+
 def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     config = load_config(home)
     registry.register(
@@ -26,7 +34,14 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 "type": "object",
                 "properties": {"name": {"type": "string", "default": config.runtime.service_name}},
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "name": {"type": "string"},
+                    "properties": {"type": "object"},
+                    "exit_code": {"type": "integer"},
+                    "stderr": {"type": "string"},
+                }
+            ),
         ),
         lambda args: _service_status(args, default_name=config.runtime.service_name),
     )
@@ -38,7 +53,13 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 "type": "object",
                 "properties": {"run_id": {"type": "string"}},
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "run": {"type": "object"},
+                    "approvals": _array_of_objects(),
+                    "logs": _array_of_objects(),
+                }
+            ),
         ),
         lambda args: _run_status(home, args),
     )
@@ -50,7 +71,15 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 "type": "object",
                 "properties": {"limit": {"type": "integer", "default": 20}},
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "runs": _array_of_objects(),
+                    "watches": _array_of_objects(),
+                    "run_status_counts": {"type": "object"},
+                    "returned_run_count": {"type": "integer"},
+                    "run_limit": {"type": "integer"},
+                }
+            ),
         ),
         lambda args: _run_list(home, args),
     )
@@ -59,7 +88,18 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="provider.config",
             description="Return configured model provider facts without secrets.",
             input_schema={"type": "object", "properties": {}},
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "provider": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "model": {"type": "string"},
+                    "api_base_url": {"type": "string"},
+                    "has_api_key": {"type": "boolean"},
+                    "fallbacks": _array_of_objects(),
+                    "routes": {"type": "object"},
+                    "validation_errors": {"type": "array", "items": {"type": "string"}},
+                }
+            ),
         ),
         lambda args: _provider_config(home),
     )
@@ -68,7 +108,16 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="skills.list",
             description="Return installed procedural skill facts.",
             input_schema={"type": "object", "properties": {}},
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "category": {"type": "string"},
+                    "definition": {"type": "string"},
+                    "not_tools": {"type": "boolean"},
+                    "prompt_permission_ceiling": {"type": "string"},
+                    "skills": _array_of_objects(),
+                    "count": {"type": "integer"},
+                }
+            ),
         ),
         lambda args: _skills_list(home, workspace=registry.project_dir),
     )
@@ -85,7 +134,19 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 },
                 "required": ["name"],
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "permission": {"type": "string"},
+                    "injectable_with_read_ceiling": {"type": "boolean"},
+                    "path": {"type": "string"},
+                    "relative_path": {"type": "string"},
+                    "size": {"type": "integer"},
+                    "truncated": {"type": "boolean"},
+                    "content": {"type": "string"},
+                }
+            ),
         ),
         lambda args: _skills_view(home, args, workspace=registry.project_dir),
     )
@@ -94,7 +155,15 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="tools.list",
             description="Return callable capability facts.",
             input_schema={"type": "object", "properties": {}},
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "category": {"type": "string"},
+                    "definition": {"type": "string"},
+                    "not_skills": {"type": "boolean"},
+                    "tools": _array_of_objects(),
+                    "count": {"type": "integer"},
+                }
+            ),
         ),
         lambda args: _tools_list(registry),
     )
@@ -110,7 +179,15 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "limit": {"type": "integer", "default": 20},
                 },
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "items": _array_of_objects(),
+                    "count": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                    "type": {"type": "string"},
+                    "status": {"type": "string"},
+                }
+            ),
         ),
         lambda args: _memory_list(home, args),
     )
@@ -126,7 +203,15 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 },
                 "required": ["query"],
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "query": {"type": "string"},
+                    "items": _array_of_objects(),
+                    "count": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                    "rendered": {"type": "string"},
+                }
+            ),
         ),
         lambda args: _memory_recall(home, args),
     )
@@ -143,7 +228,18 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 },
                 "required": ["url", "path"],
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "stdout": {"type": "string"},
+                    "stderr": {"type": "string"},
+                    "exit_code": {"type": "integer"},
+                    "timed_out": {"type": "boolean"},
+                    "url": {"type": "string"},
+                    "path": {"type": "string"},
+                    "exists": {"type": "boolean"},
+                    "size": {"type": "integer"},
+                }
+            ),
             facts_only=True,
             mutates=True,
             permission="write",
@@ -161,7 +257,18 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "limit": {"type": "integer", "default": 50},
                 },
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "path": {"type": "string"},
+                    "exists": {"type": "boolean"},
+                    "is_dir": {"type": "boolean"},
+                    "is_file": {"type": "boolean"},
+                    "size": {"type": "integer"},
+                    "entries": _array_of_objects(),
+                    "entry_count": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                }
+            ),
         ),
         lambda args: _filesystem_list(args, project_dir=registry.project_dir),
     )
@@ -177,7 +284,15 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 },
                 "required": ["path"],
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "path": {"type": "string"},
+                    "max_bytes": {"type": "integer"},
+                    "size": {"type": "integer"},
+                    "truncated": {"type": "boolean"},
+                    "content": {"type": "string"},
+                }
+            ),
         ),
         lambda args: _file_read(args, project_dir=registry.project_dir),
     )
@@ -195,7 +310,15 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 },
                 "required": ["path", "content"],
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "path": {"type": "string"},
+                    "mode": {"type": "string"},
+                    "bytes_written": {"type": "integer"},
+                    "before_size": {"type": "integer"},
+                    "after_size": {"type": "integer"},
+                }
+            ),
             facts_only=True,
             mutates=True,
             permission="write",
@@ -210,7 +333,16 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 "type": "object",
                 "properties": {"path": {"type": "string", "default": str(registry.project_dir)}},
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "path": {"type": "string"},
+                    "root": {"type": "string"},
+                    "head": {"type": "string"},
+                    "status": {"type": "array", "items": {"type": "string"}},
+                    "exit_code": {"type": "integer"},
+                    "stderr": {"type": "string"},
+                }
+            ),
         ),
         lambda args: _git_status(args, project_dir=registry.project_dir),
     )
@@ -227,7 +359,17 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 },
                 "required": ["command"],
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "stdout": {"type": "string"},
+                    "stderr": {"type": "string"},
+                    "exit_code": {"type": "integer"},
+                    "timed_out": {"type": "boolean"},
+                    "command": {"type": "array", "items": {"type": "string"}},
+                    "cwd": {"type": "string"},
+                    "timeout_seconds": {"type": "integer"},
+                }
+            ),
             facts_only=True,
             mutates=True,
             permission="write",
@@ -246,7 +388,17 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "timeout_seconds": {"type": "integer", "default": 60},
                 },
             },
-            output_schema={"type": "object"},
+            output_schema=_output_schema(
+                {
+                    "stdout": {"type": "string"},
+                    "stderr": {"type": "string"},
+                    "exit_code": {"type": "integer"},
+                    "timed_out": {"type": "boolean"},
+                    "command": {"type": "array", "items": {"type": "string"}},
+                    "cwd": {"type": "string"},
+                    "timeout_seconds": {"type": "integer"},
+                }
+            ),
             facts_only=True,
             mutates=True,
             permission="write",

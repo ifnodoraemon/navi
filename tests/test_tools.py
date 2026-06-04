@@ -37,6 +37,11 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
     assert all(spec.facts_only is True for spec in specs.values())
     assert all(spec.facts_only is True for spec in load_action_tool_specs())
     assert all(spec.permission == "write" for spec in specs.values() if spec.mutates)
+    assert all(spec.output_schema.get("properties") for spec in specs.values())
+    assert "items" in specs["memory.recall"].output_schema["properties"]
+    assert "exit_code" in specs["shell.run"].output_schema["properties"]
+    assert "configured" in specs["connector.weixin.status"].output_schema["properties"]
+    assert "configured" in specs["connector.telegram.status"].output_schema["properties"]
 
 
 def test_run_status_tool_returns_task_facts(tmp_path):
