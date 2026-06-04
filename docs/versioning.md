@@ -44,4 +44,4 @@ Every stage bump should include:
 
 ## Current Stage
 
-`1.1.0` is the current v1 stage. It extends the stable Navi agent OS contract with governed dynamic workflows: declarative orchestration plans, subagent step records, dependency-aware execution, explicit approval, resumable workflow state, and verifier-backed completion.
+`1.1.1` is the current v1 stage. It extends the stable Navi agent OS contract with governed dynamic workflows: declarative orchestration plans, subagent step records, dependency-aware execution, explicit approval, resumable workflow state, verifier-backed completion, and service startup hardening for current-contract trace store reinitialization.

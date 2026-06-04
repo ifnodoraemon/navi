@@ -4,7 +4,7 @@ Navi 是一个**本地优先的个人 AI 助手 Agent OS**。
 
 它的目标不是用关键词和固定流程替 AI 做事，而是给模型提供脚手架：声明式能力、权限上限、信任与审批状态、治理型记忆、连接器上下文、执行 trace、恢复计划和可回滚演进。模型从当前事实和可用能力中选择下一步，运行时负责边界、证据和审计。
 
-`1.1.0` 在稳定 agent OS 契约上加入了受治理动态工作流能力。
+`1.1.1` 在稳定 agent OS 契约上加入了受治理动态工作流能力，并强化了当前契约 store 重建后的服务启动体验。
 
 [English README](README.md)
 
@@ -152,6 +152,7 @@ NAVI_WEIXIN_MOCK=true navi connectors run weixin --once
 
 - [Navi 1.0.0 发布说明](docs/release-notes-1.0.0.md)
 - [Navi 1.1.0 发布说明](docs/release-notes-1.1.0.md)
+- [Navi 1.1.1 发布说明](docs/release-notes-1.1.1.md)
 - [不可违反原则](docs/principles.md)
 - [前沿 Agent 安全审计](docs/frontier-agent-safety-audit.md)
 - [版本契约](docs/versioning.md)

@@ -4,7 +4,7 @@ Navi is a **local-first agent OS for a governed personal AI assistant**.
 
 It is designed to give the model scaffolding, not to hardcode work on the model's behalf. Navi exposes declared capabilities, durable memory, trust and approval state, connector affordances, traces, and recovery records so the assistant can decide from current facts while staying auditable and bounded.
 
-Version `1.1.0` adds governed dynamic workflows on top of the stable Navi agent OS contract.
+Version `1.1.1` adds governed dynamic workflows on top of the stable Navi agent OS contract and hardens service startup across current-contract store reinitialization.
 
 [中文说明](README.zh-CN.md)
 
@@ -162,6 +162,7 @@ navi eval claw --dataset evals/claw_navi.yaml --attempts 3
 
 - [Navi 1.0.0 release notes](docs/release-notes-1.0.0.md)
 - [Navi 1.1.0 release notes](docs/release-notes-1.1.0.md)
+- [Navi 1.1.1 release notes](docs/release-notes-1.1.1.md)
 - [Non-negotiable principles](docs/principles.md)
 - [Frontier agent safety audit](docs/frontier-agent-safety-audit.md)
 - [Versioning contract](docs/versioning.md)

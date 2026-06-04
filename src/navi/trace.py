@@ -49,8 +49,7 @@ class TraceStore:
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
-            conn.execute(
-                """
+            trace_events_sql = """
                 CREATE TABLE IF NOT EXISTS trace_events (
                     id TEXT PRIMARY KEY,
                     trace_id TEXT NOT NULL,
@@ -69,11 +68,10 @@ class TraceStore:
                     created_at REAL NOT NULL
                 )
                 """
-            )
-            _assert_schema_exact(conn, "trace_events", _TRACE_EVENT_SCHEMA)
+            conn.execute(trace_events_sql)
+            _ensure_schema_current(conn, "trace_events", _TRACE_EVENT_SCHEMA, trace_events_sql)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_events_trace ON trace_events(trace_id, created_at)")
-            conn.execute(
-                """
+            trace_evaluations_sql = """
                 CREATE TABLE IF NOT EXISTS trace_evaluations (
                     id TEXT PRIMARY KEY,
                     trace_id TEXT NOT NULL,
@@ -84,8 +82,8 @@ class TraceStore:
                     created_at REAL NOT NULL
                 )
                 """
-            )
-            _assert_schema_exact(conn, "trace_evaluations", _TRACE_EVALUATION_SCHEMA)
+            conn.execute(trace_evaluations_sql)
+            _ensure_schema_current(conn, "trace_evaluations", _TRACE_EVALUATION_SCHEMA, trace_evaluations_sql)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_evaluations_trace ON trace_evaluations(trace_id)")
 
     @staticmethod
@@ -389,10 +387,17 @@ _TRACE_EVENT_COLUMNS = [
 ]
 
 
-def _assert_schema_exact(conn, table: str, expected: list[tuple[str, str, int, int]]) -> None:
-    schema = [(row[1], str(row[2]).upper(), int(row[3]), int(row[5])) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-    if schema != expected:
+def _ensure_schema_current(conn, table: str, expected: list[tuple[str, str, int, int]], create_sql: str) -> None:
+    if _table_schema(conn, table) == expected:
+        return
+    conn.execute(f"DROP TABLE IF EXISTS {table}")
+    conn.execute(create_sql)
+    if _table_schema(conn, table) != expected:
         raise RuntimeError(f"{table} schema mismatch; expected current Navi schema")
+
+
+def _table_schema(conn, table: str) -> list[tuple[str, str, int, int]]:
+    return [(row[1], str(row[2]).upper(), int(row[3]), int(row[5])) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
 
 
 def _has_unverified_pending_run_completion(events: list[TraceEvent]) -> bool:

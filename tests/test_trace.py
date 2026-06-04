@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from navi.db import connect
 from navi.trace import TraceStore
 
@@ -36,7 +34,7 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
     assert json.loads(events[0].output_json)["approval_code"] == "[redacted]"
 
 
-def test_trace_store_rejects_schema_drift(tmp_path):
+def test_trace_store_reinitializes_schema_drift(tmp_path):
     with connect(tmp_path / "traces.db") as conn:
         conn.execute(
             """
@@ -56,8 +54,14 @@ def test_trace_store_rejects_schema_drift(tmp_path):
             """
         )
 
-    with pytest.raises(RuntimeError, match="trace_events schema mismatch"):
-        TraceStore(tmp_path)
+    store = TraceStore(tmp_path)
+    event = store.add_event(trace_id="trace-current", phase="turn.start")
+
+    assert event.trace_id == "trace-current"
+    with connect(tmp_path / "traces.db") as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(trace_events)").fetchall()]
+    assert "session_id" in columns
+    assert "task_id" not in columns
 
 
 def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
