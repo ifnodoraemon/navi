@@ -20,7 +20,7 @@ class ChatMessage:
 
 
 class ChatProvider(Protocol):
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None) -> str:
         ...
 
 
@@ -34,7 +34,7 @@ class ProviderAdapter:
 
 
 class MockProvider:
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None) -> str:
         if messages and "model syscall planner" in messages[0].content:
             user_prompt = next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
             text = _extract_planner_user_message(user_prompt)
@@ -43,8 +43,11 @@ class MockProvider:
             return json.dumps(_mock_planner_syscall(text, context, observations), ensure_ascii=False)
         last = next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
         system = messages[0].content if messages else ""
-        if "navi_execution" in system:
-            phase = _extract_required_execution_phase(system)
+        execution_phase = _execution_phase_from_output_schema(output_schema) or (
+            _extract_required_execution_phase(system) if "navi_execution" in system else ""
+        )
+        if execution_phase:
+            phase = execution_phase
             run_id = _extract_run_id(last)
             return json.dumps(
                 {
@@ -105,7 +108,7 @@ class OpenAICompatibleProvider:
         self.spec = spec
         self.transport = transport
 
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None) -> str:
         if not self.config.api_key:
             env_hint = " or ".join(self.spec.api_key_env) or "NAVI_MODEL_API_KEY"
             raise RuntimeError(f"{env_hint} is required for {self.config.provider} provider")
@@ -114,6 +117,11 @@ class OpenAICompatibleProvider:
             "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
             "temperature": 0,
         }
+        structured_format = _structured_response_format(self.spec, output_schema)
+        if structured_format:
+            payload["response_format"] = structured_format
+        outbound_messages = _messages_for_response_format(messages, structured_format)
+        payload["messages"] = [{"role": msg.role, "content": msg.content} for msg in outbound_messages]
         headers = {"Authorization": f"Bearer {self.config.api_key}"}
         async with httpx.AsyncClient(timeout=self.config.timeout_seconds, transport=self.transport) as client:
             response = await client.post(
@@ -138,7 +146,7 @@ class AnthropicCompatibleProvider:
         self.spec = spec
         self.transport = transport
 
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None) -> str:
         if not self.config.api_key:
             env_hint = " or ".join(self.spec.api_key_env) or "ANTHROPIC_API_KEY"
             raise RuntimeError(f"{env_hint} is required for {self.config.provider} provider")
@@ -163,11 +171,11 @@ class FallbackProvider:
     def __init__(self, providers: list[ChatProvider]):
         self.providers = providers
 
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None) -> str:
         errors: list[str] = []
         for provider in self.providers:
             try:
-                return await provider.complete(messages)
+                return await _complete_with_optional_schema(provider, messages, output_schema=output_schema)
             except Exception as exc:
                 errors.append(f"{provider.__class__.__name__}: {exc}")
         raise RuntimeError("all model providers failed: " + "; ".join(errors))
@@ -178,8 +186,15 @@ class ModelPool:
         self.default = default
         self.routes = routes or {}
 
-    async def complete_for(self, role: str, messages: list[ChatMessage]) -> str:
-        return await self.routes.get(role, self.default).complete(messages)
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict[str, Any] | None = None,
+    ) -> str:
+        provider = self.routes.get(role, self.default)
+        return await _complete_with_optional_schema(provider, messages, output_schema=output_schema)
 
     def list_roles(self) -> list[str]:
         return sorted({"default", "planner", "responder", "notification", *self.routes})
@@ -247,6 +262,7 @@ def _provider_spec(config: ModelConfig) -> ProviderSpec:
             default_model=config.model,
             default_base_url=config.api_base_url,
             api_key_env=("NAVI_MODEL_API_KEY",),
+            structured_output="json_schema" if config.kind == "openai-compatible" else "none",
         )
 
 
@@ -258,6 +274,22 @@ def _first_env(names: tuple[str, ...]) -> str:
     return ""
 
 
+async def _complete_with_optional_schema(
+    provider: ChatProvider,
+    messages: list[ChatMessage],
+    *,
+    output_schema: dict[str, Any] | None,
+) -> str:
+    if output_schema is None:
+        return await provider.complete(messages)
+    try:
+        return await provider.complete(messages, output_schema=output_schema)
+    except TypeError as exc:
+        if "output_schema" not in str(exc) and "unexpected keyword" not in str(exc):
+            raise
+        return await provider.complete(messages)
+
+
 def _extract_openai_content(data: dict[str, Any]) -> str:
     choices = data.get("choices") or []
     if not choices:
@@ -267,6 +299,41 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
     if content is None:
         raise RuntimeError(f"Provider response did not include message content: {data}")
     return str(content)
+
+
+def _structured_response_format(spec: ProviderSpec, output_schema: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not output_schema:
+        return None
+    mode = spec.structured_output
+    if mode == "json_schema":
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": str(output_schema.get("name") or "navi_output")[:64],
+                "strict": bool(output_schema.get("strict", False)),
+                "schema": output_schema.get("schema") or {},
+            },
+        }
+    if mode == "json_object":
+        return {"type": "json_object"}
+    return None
+
+
+def _messages_for_response_format(
+    messages: list[ChatMessage],
+    response_format: dict[str, Any] | None,
+) -> list[ChatMessage]:
+    if not response_format or response_format.get("type") != "json_object":
+        return messages
+    if any("json" in message.content.lower() for message in messages):
+        return messages
+    return [
+        ChatMessage(
+            "system",
+            "JSON mode is enabled for this API request.",
+        ),
+        *messages,
+    ]
 
 
 def _anthropic_payload(model: str, messages: list[ChatMessage]) -> dict[str, Any]:
@@ -410,6 +477,25 @@ def _extract_any_run_id(text: str) -> str:
 def _extract_required_execution_phase(system: str) -> str:
     match = re.search(r"`navi_execution\.phase` must be `([^`]+)`", system)
     return match.group(1) if match else "execute"
+
+
+def _execution_phase_from_output_schema(output_schema: dict[str, Any] | None) -> str:
+    if not output_schema:
+        return ""
+    name = str(output_schema.get("name") or "")
+    match = re.fullmatch(r"navi_(prepare|execute)_execution", name)
+    if match:
+        return match.group(1)
+    schema = output_schema.get("schema")
+    if not isinstance(schema, dict):
+        return ""
+    navi_execution = (schema.get("properties") or {}).get("navi_execution")
+    if not isinstance(navi_execution, dict):
+        return ""
+    phase = ((navi_execution.get("properties") or {}).get("phase") or {}).get("enum")
+    if isinstance(phase, list) and phase:
+        return str(phase[0])
+    return ""
 
 
 def _extract_run_id(user: str) -> str:

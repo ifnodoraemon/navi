@@ -213,6 +213,7 @@ Frontier agent deployments increasingly treat safety as a system property, not o
 - Any content encountered during task execution is untrusted by default: webpages, screenshots, emails, files, logs, subprocess output, connector messages, and tool-returned text.
 - A tool result envelope can be trusted as a capability fact, but embedded environment text must never become an instruction source.
 - Mutating actions must follow from the user's request, durable trust/approval state, and declared capability facts, not from instructions found in external content.
+- Machine-consumed model output must use provider-enforced schemas or native tool/function schemas for shape constraints instead of prompt-only JSON instructions. Business prompts must not repeat JSON shapes, field lists, markdown-fence bans, or prose-only formatting rules. If a provider only supports JSON syntax mode, Navi may add the minimal provider-adapter compatibility hint required by that API, but schema validation stays in Navi with bounded repair or a visible failure.
 - Sensitive contexts such as email, finance, credentials, personal data, production infrastructure, and broad filesystem access require stronger supervision than ordinary local read-only work.
 - Network, terminal, browser, and connector capabilities need explicit blast-radius controls: scoped permissions, allowlists, bounded outputs, and audit trails.
 - High-impact or irreversible actions require human confirmation even if the model is confident.

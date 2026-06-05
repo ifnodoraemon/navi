@@ -14,9 +14,11 @@ class ScriptedProvider(MockProvider):
     def __init__(self, responses: list[str]):
         self.responses = responses
         self.messages: list[list[ChatMessage]] = []
+        self.output_schemas: list[dict | None] = []
 
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], *, output_schema=None) -> str:
         self.messages.append(messages)
+        self.output_schemas.append(output_schema)
         return self.responses.pop(0)
 
 
@@ -64,6 +66,7 @@ async def test_extract_and_consolidate_memories_add_and_revoke(tmp_path):
         session_id=session_id,
         provider=pool,
     )
+    assert provider.output_schemas[0]["name"] == "navi_memory_learnings"
     
     # Verify the affected items returned
     assert len(affected_items) == 2
@@ -343,6 +346,7 @@ async def test_extract_memories_from_run(tmp_path):
     pool = ModelPool(default=provider)
     
     affected = await store.extract_memories_from_run(task, logs, pool)
+    assert provider.output_schemas[0]["name"] == "navi_task_memory_learnings"
     
     assert len(affected) == 1
     assert affected[0].content == "The package can be compiled using pip install ."

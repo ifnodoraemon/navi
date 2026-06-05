@@ -52,6 +52,7 @@ class ModelSyscallPlanner:
                 ),
                 ChatMessage("user", turn_input.render()),
             ],
+            output_schema=_syscall_output_schema(),
         )
         return self._parse_syscall(response)
 
@@ -125,6 +126,26 @@ def _extract_json_object(text: str) -> str:
     if start_outer >= 0 and end_outer > start_outer:
         return text[start_outer : end_outer + 1]
     return ""
+
+
+def _syscall_output_schema() -> dict[str, Any]:
+    return {
+        "name": "navi_syscall",
+        "strict": False,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string", "description": "Capability name from the manifest."},
+                "permission": {"type": "string", "enum": ["read", "prepare", "write"]},
+                "args": {"type": "object", "description": "Arguments for the selected capability."},
+                "model_role": {"type": "string", "description": "Role for follow-up response synthesis."},
+                "confidence": {"type": "number"},
+                "reason": {"type": "string"},
+            },
+            "required": ["tool", "permission", "args", "model_role", "confidence", "reason"],
+            "additionalProperties": False,
+        },
+    }
 
 
 def _confidence(value: object) -> float:

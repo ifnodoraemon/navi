@@ -21,9 +21,11 @@ class ScriptedProvider(MockProvider):
     def __init__(self, responses: list[str]):
         self.responses = responses
         self.messages: list[list[ChatMessage]] = []
+        self.output_schemas: list[dict | None] = []
 
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], *, output_schema=None) -> str:
         self.messages.append(messages)
+        self.output_schemas.append(output_schema)
         return self.responses.pop(0)
 
 
@@ -61,6 +63,7 @@ async def test_semantic_trust_matching(tmp_path):
         provider=pool,
     )
     assert decision_semantic.level == "L3"
+    assert provider.output_schemas[0]["name"] == "navi_trust_match"
     
     # Case C: Semantic intent mismatch (LLM returns matches: false)
     provider_false = ScriptedProvider([json.dumps({"matches": False, "reason": "Mismatch"})])

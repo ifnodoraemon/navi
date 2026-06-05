@@ -7,6 +7,7 @@
   kind: openai-compatible
   default_model: gpt-4o-mini
   default_base_url: https://api.openai.com/v1
+  structured_output: json_schema
   api_key_env:
     - NAVI_MODEL_API_KEY
     - OPENAI_API_KEY
@@ -14,6 +15,7 @@
   kind: openai-compatible
   default_model: deepseek-v4-pro
   default_base_url: https://api.deepseek.com
+  structured_output: json_object
   api_key_env:
     - DEEPSEEK_API_KEY
     - NAVI_MODEL_API_KEY
@@ -21,6 +23,7 @@
   kind: anthropic-compatible
   default_model: claude-sonnet-4-20250514
   default_base_url: https://api.anthropic.com/v1
+  structured_output: none
   api_key_env:
     - ANTHROPIC_API_KEY
     - NAVI_MODEL_API_KEY

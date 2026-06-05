@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -23,6 +25,7 @@ def test_provider_registry_exposes_deepseek_defaults():
     assert spec.kind == "openai-compatible"
     assert spec.default_model == "deepseek-v4-pro"
     assert spec.default_base_url == "https://api.deepseek.com"
+    assert spec.structured_output == "json_object"
     assert "DEEPSEEK_API_KEY" in spec.api_key_env
 
 
@@ -198,6 +201,69 @@ async def test_openai_compatible_provider_posts_chat_completion():
     assert '"model":"deepseek-v4-pro"' in requests[0].content.decode()
     assert requests[0].extensions["timeout"]["connect"] == 13
     assert provider.config.timeout_seconds == 13
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_sends_json_schema_response_format():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok":true}'}}]})
+
+    provider = OpenAICompatibleProvider(
+        ModelConfig(
+            provider="openai-compatible",
+            model="gpt-test",
+            api_base_url="https://api.openai.com/v1",
+            api_key="sk-test",
+        ),
+        get_provider_spec("openai-compatible"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    await provider.complete(
+        [ChatMessage("user", "return json")],
+        output_schema={
+            "name": "navi_test",
+            "strict": False,
+            "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+        },
+    )
+
+    body = json.loads(requests[0].content)
+    assert body["response_format"]["type"] == "json_schema"
+    assert body["response_format"]["json_schema"]["name"] == "navi_test"
+    assert body["response_format"]["json_schema"]["schema"]["properties"]["ok"]["type"] == "boolean"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_provider_sends_json_object_response_format():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok":true}'}}]})
+
+    provider = OpenAICompatibleProvider(
+        ModelConfig(
+            provider="deepseek",
+            model="deepseek-v4-pro",
+            api_base_url="https://api.deepseek.com",
+            api_key="sk-test",
+        ),
+        get_provider_spec("deepseek"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    await provider.complete(
+        [ChatMessage("user", "hello")],
+        output_schema={"name": "navi_test", "schema": {"type": "object"}},
+    )
+
+    body = json.loads(requests[0].content)
+    assert body["response_format"] == {"type": "json_object"}
+    assert "JSON mode" in body["messages"][0]["content"]
 
 
 @pytest.mark.asyncio

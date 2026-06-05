@@ -12,9 +12,11 @@ class ScriptedProvider:
     def __init__(self, response: str):
         self.response = response
         self.messages: list[ChatMessage] = []
+        self.output_schema = None
 
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], *, output_schema=None) -> str:
         self.messages = messages
+        self.output_schema = output_schema
         return self.response
 
 
@@ -57,6 +59,7 @@ async def test_model_syscall_planner_asks_when_schedule_time_is_vague(tmp_path):
     assert "executor" in provider.messages[1].content
     assert "[TOOL MANIFEST]" in provider.messages[1].content
     assert "clarify.ask" in provider.messages[1].content
+    assert provider.output_schema["name"] == "navi_syscall"
 
 
 @pytest.mark.asyncio

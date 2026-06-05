@@ -187,12 +187,7 @@ class TrustStore:
                 content=(
                     "You are Navi's Trust Engine classifier.\n"
                     "Your task is to determine whether a given user task prompt semantically matches a specific trust rule pattern.\n\n"
-                    "Evaluate if the user's intent is conceptually/semantically covered by the trust rule pattern.\n"
-                    "Respond ONLY with a JSON object:\n"
-                    "{\n"
-                    '  "matches": true or false,\n'
-                    '  "reason": "a brief explanation"\n'
-                    "}"
+                    "Evaluate if the user's intent is conceptually/semantically covered by the trust rule pattern."
                 )
             ),
             ChatMessage(
@@ -201,7 +196,11 @@ class TrustStore:
             )
         ]
         try:
-            response_text = await provider.complete_for(role="planner", messages=messages)
+            response_text = await provider.complete_for(
+                role="planner",
+                messages=messages,
+                output_schema=_trust_match_output_schema(),
+            )
             data = parse_first_json_object(response_text)
             if data:
                 return bool(data.get("matches", False))
@@ -529,3 +528,19 @@ class TrustStore:
         if not path:
             return ""
         return str(Path(path).expanduser().resolve())
+
+
+def _trust_match_output_schema() -> dict[str, Any]:
+    return {
+        "name": "navi_trust_match",
+        "strict": False,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "matches": {"type": "boolean"},
+                "reason": {"type": "string"},
+            },
+            "required": ["matches", "reason"],
+            "additionalProperties": False,
+        },
+    }

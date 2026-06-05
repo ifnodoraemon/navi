@@ -16,9 +16,11 @@ class ScriptedProvider:
     def __init__(self, response: str | list[str]):
         self.response = response
         self.messages: list[list[ChatMessage]] = []
+        self.output_schemas: list[dict | None] = []
 
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], *, output_schema=None) -> str:
         self.messages.append(messages)
+        self.output_schemas.append(output_schema)
         if isinstance(self.response, list):
             return self.response.pop(0)
         return self.response
@@ -61,11 +63,11 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
     execution_logs = [log for log in runs.list_execution_logs(task.id) if log.phase == "execute"]
     assert execution_logs[0].command.startswith(f"navi subagent {SUBAGENT_EXECUTOR_ROLE} execute")
     system_prompt = provider.messages[0][0].content
-    assert "navi_execution" in system_prompt
-    assert "actions" in system_prompt
-    assert "evidence" in system_prompt
-    assert "verification" in system_prompt
     assert "executor sub-agent" in system_prompt
+    schema = provider.output_schemas[0]["schema"]["properties"]["navi_execution"]
+    assert schema["properties"]["steps"]["items"]["properties"]["actions"]
+    assert schema["properties"]["evidence"]
+    assert schema["properties"]["verification"]
 
     protocol_logs = [log for log in runs.list_execution_logs(task.id) if log.phase == "execute_protocol"]
     assert len(protocol_logs) == 1
@@ -198,7 +200,7 @@ async def test_execution_protocol_shape_error_gets_one_repair_attempt(tmp_path):
                         ],
                         "evidence": {"bad": "shape"},
                         "verification": ["bad shape"],
-                        "completion": {"status": "proposed", "summary": "bad"},
+                        "completion": {"status": "proposed"},
                     }
                 }
             ),
@@ -213,6 +215,7 @@ async def test_execution_protocol_shape_error_gets_one_repair_attempt(tmp_path):
     assert updated.status == "prepared"
     assert updated.plan_summary == "准备完成。"
     assert len(provider.messages) == 2
+    assert provider.output_schemas[0]["name"] == "navi_prepare_execution"
     assert "execution protocol" in provider.messages[1][-1].content
     prepare_log = next(log for log in runs.list_execution_logs(task.id) if log.phase == "prepare")
     assert "--protocol-repair" in prepare_log.command
@@ -253,7 +256,7 @@ async def test_watch_notification_does_not_fail_on_malformed_execution_protocol(
 
     assert result.exit_code == 0
     assert result.stderr == ""
-    assert result.summary.startswith("{")
+    assert result.summary == "pmp"
     assert result.protocol.phase == "watch"
     assert result.protocol.completion["status"] == "completed"
     assert "navi_execution" not in provider.messages[0][0].content

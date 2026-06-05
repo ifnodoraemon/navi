@@ -81,6 +81,7 @@ class ExecutionProtocol:
         payload_run_id = str(payload.get("run_id") or run_id)
         if run_id and payload_run_id != run_id:
             raise ValueError("execution protocol run_id does not match task")
+        payload = _normalize_execution_protocol_payload(payload, phase=phase)
         steps = _required_steps(payload)
         evidence = _optional_dict_list(payload, "evidence")
         verification = _required_dict(payload, "verification")
@@ -153,6 +154,92 @@ def _required_dict(payload: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
+def _normalize_execution_protocol_payload(payload: dict[str, Any], *, phase: str) -> dict[str, Any]:
+    normalized = dict(payload)
+    normalized["evidence"] = _normalize_evidence(normalized.get("evidence"))
+    normalized["verification"] = _normalize_verification(normalized.get("verification"), reason="top-level verification")
+    normalized["completion"] = _normalize_completion(normalized.get("completion"))
+
+    raw_steps = normalized.get("steps")
+    if isinstance(raw_steps, list):
+        steps: list[Any] = []
+        for index, raw_step in enumerate(raw_steps):
+            if not isinstance(raw_step, dict):
+                steps.append(raw_step)
+                continue
+            step = dict(raw_step)
+            actions = step.get("actions")
+            if isinstance(actions, dict):
+                step["actions"] = [actions]
+            step["verification"] = _normalize_verification(
+                step.get("verification"),
+                reason=f"step {index + 1} verification",
+                include_status=False,
+            )
+            steps.append(step)
+        normalized["steps"] = steps
+
+    if phase == "prepare":
+        completion = normalized.get("completion")
+        if isinstance(completion, dict) and not str(completion.get("status") or "").strip():
+            completion["status"] = "proposed"
+    return normalized
+
+
+def _normalize_evidence(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return [_normalize_evidence_item(value)]
+    if isinstance(value, list):
+        return [_normalize_evidence_item(item) for item in value[:20]]
+    text = str(value).strip()
+    return [{"kind": "model_context", "summary": text}] if text else []
+
+
+def _normalize_evidence_item(item: Any) -> dict[str, Any]:
+    if isinstance(item, dict):
+        normalized = dict(item)
+        normalized.setdefault("kind", "model_context")
+        if not str(normalized.get("summary") or "").strip():
+            normalized["summary"] = json.dumps(item, ensure_ascii=False, sort_keys=True)[:1600]
+        return normalized
+    return {"kind": "model_context", "summary": str(item)[:1600]}
+
+
+def _normalize_verification(value: Any, *, reason: str, include_status: bool = True) -> dict[str, Any]:
+    if isinstance(value, dict):
+        normalized = dict(value)
+        checks = normalized.get("checks")
+        if checks is None:
+            normalized["checks"] = []
+        elif not isinstance(checks, list):
+            normalized["checks"] = [checks]
+        if include_status and not str(normalized.get("status") or "").strip():
+            normalized["status"] = "proposed"
+        normalized.setdefault("reason", reason)
+        return normalized
+    if isinstance(value, list):
+        normalized = {"checks": value, "reason": f"{reason} normalized from list"}
+        if include_status:
+            normalized["status"] = "proposed"
+        return normalized
+    text = str(value or "").strip()
+    normalized = {"checks": [text] if text else [], "reason": text or f"{reason} omitted"}
+    if include_status:
+        normalized["status"] = "proposed"
+    return normalized
+
+
+def _normalize_completion(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    return {"status": "proposed", "summary": text}
+
+
 def _required_dict_list(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
     value = payload.get(key)
     if not isinstance(value, list) or not value:
@@ -203,21 +290,98 @@ def _required_steps(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _execution_protocol_instruction(phase: str) -> str:
     return (
-        "Return one JSON object with key `navi_execution`. "
-        f"`navi_execution.phase` must be `{phase}` and `version` must be `{EXECUTION_PROTOCOL_VERSION}`. "
-        f"Use a step plan: include `plan_id` and `steps`, with at most {EXECUTION_STEP_BUDGET} steps. "
-        "Each step must include `actions`, `verification`, and optional `on_failure` (`stop`, `continue`, or `retry_once`). "
-        "Each step action must be a capability call object with `tool`, `permission`, and `args`; "
+        f"Produce a {phase} step plan with at most {EXECUTION_STEP_BUDGET} steps. "
+        "Each step action must be a capability call with a declared tool, permission, and args; "
         "examples include `final.answer`, `provider.config`, `filesystem.list`, `file.read`, `file.write`, "
         "`shell.run`, `test.run`, `git.status`, `delegate.status`, "
         "`delegate.spawn`, `approval.request`, `approval.resolve`, `watch.create`, `delegate.delete`, and `watch.delete`. "
         "Do not describe an action that is not a capability call. "
         "Include `evidence` only as proposed context; Navi will replace it with actual capability results. "
-        "Each step `verification.checks` must state expected checks. Supported object checks: "
+        "Verification checks should state expected checks. Supported object checks: "
         "`{\"type\":\"file.exists\",\"path\":\"...\"}`, `{\"type\":\"file.contains\",\"path\":\"...\",\"text\":\"...\"}`, "
         "`{\"type\":\"git.diff\",\"expected\":\"changed|clean\"}`, and `{\"type\":\"test.passed\"}`. "
-        "`completion` may include a proposed summary, but final success is decided by capability execution."
+        "Final success is decided by capability execution."
     )
+
+
+def _execution_output_schema(phase: str) -> dict[str, Any]:
+    schema = {
+        "type": "object",
+        "properties": {
+            "navi_execution": {
+                "type": "object",
+                "properties": {
+                    "version": {"type": "string", "enum": [EXECUTION_PROTOCOL_VERSION]},
+                    "phase": {"type": "string", "enum": [phase]},
+                    "run_id": {"type": "string"},
+                    "plan_id": {"type": "string"},
+                    "steps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": EXECUTION_STEP_BUDGET,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "description": {"type": "string"},
+                                "actions": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "tool": {"type": "string"},
+                                            "permission": {"type": "string", "enum": ["read", "prepare", "write"]},
+                                            "args": {"type": "object"},
+                                        },
+                                        "required": ["tool", "permission", "args"],
+                                        "additionalProperties": True,
+                                    },
+                                },
+                                "verification": {
+                                    "type": "object",
+                                    "properties": {
+                                        "checks": {"type": "array"},
+                                        "reason": {"type": "string"},
+                                    },
+                                    "required": ["checks", "reason"],
+                                    "additionalProperties": True,
+                                },
+                                "on_failure": {"type": "string", "enum": ["stop", "continue", "retry_once"]},
+                            },
+                            "required": ["id", "actions", "verification"],
+                            "additionalProperties": True,
+                        },
+                    },
+                    "evidence": {"type": "array", "items": {"type": "object"}},
+                    "verification": {
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string"},
+                            "checks": {"type": "array"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["status", "checks", "reason"],
+                        "additionalProperties": True,
+                    },
+                    "completion": {
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string"},
+                            "summary": {"type": "string"},
+                        },
+                        "required": ["status", "summary"],
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["version", "phase", "run_id", "plan_id", "steps", "evidence", "verification", "completion"],
+                "additionalProperties": False,
+            }
+        },
+        "required": ["navi_execution"],
+        "additionalProperties": False,
+    }
+    return {"name": f"navi_{phase}_execution", "strict": False, "schema": schema}
 
 
 @dataclass(frozen=True)
@@ -765,7 +929,7 @@ class NaviExecutionProvider:
         started = time.time()
         try:
             stdout = await asyncio.wait_for(
-                self.provider.complete_for(role, messages),
+                self.provider.complete_for(role, messages, output_schema=_execution_output_schema(phase)),
                 timeout=self.timeout_seconds,
             )
             result = self._result(
@@ -788,14 +952,12 @@ class NaviExecutionProvider:
                         "user",
                         (
                             f"The previous response failed Navi's required execution protocol: {result.stderr}. "
-                            "Return only one corrected JSON object with key `navi_execution`. "
-                            "`evidence` must be a list. Top-level `verification` must be an object. "
-                            "Every step `verification` must be an object. `steps` and every `actions` field must be non-empty lists."
+                            "Revise it so the plan satisfies the same task and does not repeat that validation error."
                         ),
                     ),
                 ]
                 repaired_stdout = await asyncio.wait_for(
-                    self.provider.complete_for(role, repair_messages),
+                    self.provider.complete_for(role, repair_messages, output_schema=_execution_output_schema(phase)),
                     timeout=self.timeout_seconds,
                 )
                 return self._result(

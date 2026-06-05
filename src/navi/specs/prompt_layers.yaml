@@ -50,24 +50,6 @@ memory_consolidator:
     - Only extract genuinely durable, useful information. Do NOT extract standard conversational greetings, temporary commands, or trivial details.
     - Avoid adding duplicate memories that already exist in the list.
     - If a new preference or fact contradicts an existing active memory, revoke the old one and add the new one.
-    - Output ONLY a valid JSON object matching the schema below. No prose, no markdown fences.
-
-    JSON Schema:
-    {{
-      "learnings": [
-        {{
-          "action": "add",
-          "type": "{learnable_types}",
-          "content": "durable fact, preference, negative lesson, or constraint (in the user's language)",
-          "confidence": 0.8
-        }},
-        {{
-          "action": "revoke",
-          "id": "existing_memory_id",
-          "reason": "explanation of why it is revoked/contradicted"
-        }}
-      ]
-    }}
 task_memory_consolidator:
   version: 1
   minimum_permission: read
@@ -82,21 +64,3 @@ task_memory_consolidator:
     - Only extract genuinely durable, useful technical or user preference facts. Do NOT extract standard task markers or temporary files.
     - Avoid adding duplicate memories that already exist in the list.
     - If a new learning contradicts an existing active memory, revoke the old one.
-    - Output ONLY a valid JSON object matching the schema below. No prose, no markdown fences.
-
-    JSON Schema:
-    {{
-      "learnings": [
-        {{
-          "action": "add",
-          "type": "{learnable_types}",
-          "content": "durable fact, preference, negative lesson, or constraint (in the user's language)",
-          "confidence": 0.8
-        }},
-        {{
-          "action": "revoke",
-          "id": "existing_memory_id",
-          "reason": "explanation of why it is revoked/contradicted"
-        }}
-      ]
-    }}

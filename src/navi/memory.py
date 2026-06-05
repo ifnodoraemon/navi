@@ -516,7 +516,7 @@ class MemoryStore:
                     "----------------------------------------\n"
                     f"{conversation_text}\n"
                     "----------------------------------------\n\n"
-                    "Analyze and output the JSON learnings:"
+                    "Analyze the turn and return memory learnings."
                 )
 
                 chat_messages = [
@@ -525,7 +525,11 @@ class MemoryStore:
                 ]
 
                 try:
-                    response_raw = await provider.complete_for("planner", chat_messages)
+                    response_raw = await provider.complete_for(
+                        "planner",
+                        chat_messages,
+                        output_schema=_memory_learnings_output_schema("navi_memory_learnings"),
+                    )
                 except Exception as e:
                     logger.warning(
                         "Memory consolidation LLM call failed for session %s: %s",
@@ -535,7 +539,7 @@ class MemoryStore:
                     )
                     return []
 
-                # 5. Extract JSON object
+                # 5. Parse structured response
                 learnings = self._parse_json_learnings(response_raw)
 
                 ledger = EvolutionLedger(self.home)
@@ -692,7 +696,7 @@ class MemoryStore:
             "----------------------------------------\n"
             f"{task_context}\n"
             "----------------------------------------\n\n"
-            "Analyze and output the JSON learnings:"
+            "Analyze the run outcome and return memory learnings."
         )
 
         chat_messages = [
@@ -701,7 +705,11 @@ class MemoryStore:
         ]
 
         try:
-            response_raw = await provider.complete_for("planner", chat_messages)
+            response_raw = await provider.complete_for(
+                "planner",
+                chat_messages,
+                output_schema=_memory_learnings_output_schema("navi_task_memory_learnings"),
+            )
         except Exception as e:
             logger.warning(
                 "Run memory extraction LLM call failed for task %s: %s",
@@ -711,7 +719,7 @@ class MemoryStore:
             )
             return []
 
-        # 5. Extract JSON object
+        # 5. Parse structured response
         learnings = self._parse_json_learnings(response_raw)
 
         ledger = EvolutionLedger(self.home)
@@ -866,3 +874,45 @@ def _memory_prompt(name: str) -> str:
     if not content:
         raise ValueError(f"empty memory prompt layer: {name}")
     return content.format(learnable_types="|".join(LEARNABLE_MEMORY_TYPES))
+
+
+def _memory_learnings_output_schema(name: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "strict": False,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "learnings": {
+                    "type": "array",
+                    "items": {
+                        "anyOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "action": {"type": "string", "enum": ["add"]},
+                                    "type": {"type": "string", "enum": list(LEARNABLE_MEMORY_TYPES)},
+                                    "content": {"type": "string"},
+                                    "confidence": {"type": "number"},
+                                },
+                                "required": ["action", "type", "content", "confidence"],
+                                "additionalProperties": False,
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "action": {"type": "string", "enum": ["revoke"]},
+                                    "id": {"type": "string"},
+                                    "reason": {"type": "string"},
+                                },
+                                "required": ["action", "id", "reason"],
+                                "additionalProperties": False,
+                            },
+                        ],
+                    },
+                }
+            },
+            "required": ["learnings"],
+            "additionalProperties": False,
+        },
+    }
