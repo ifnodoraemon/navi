@@ -513,7 +513,7 @@ async def test_weixin_pairing_policy_blocks_unlisted_sender(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_weixin_planner_parse_failure_returns_os_error(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_WEIXIN_MOCK", "true")
-    runtime = AgentRuntime(home=tmp_path, provider=_pool(ScriptedProvider("not-json")))
+    runtime = AgentRuntime(home=tmp_path, provider=_pool(ScriptedProvider(["not-json", "兜底回答"])))
     service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
     account = WeixinAccount(account_id="acct", token="token", base_url="mock://ilink")
 
@@ -523,7 +523,9 @@ async def test_weixin_planner_parse_failure_returns_os_error(tmp_path, monkeypat
     )
 
     assert handled is True
-    assert "system.planner_error" in service.client.sent[-1]["text"]
+    assert service.client.sent[-1]["text"] == "兜底回答"
+    assert "system.planner_error" not in service.client.sent[-1]["text"]
+    assert "capability not found" not in service.client.sent[-1]["text"]
     assert runtime.memory.list_sessions()
 
 

@@ -151,6 +151,10 @@ class AnthropicCompatibleProvider:
             env_hint = " or ".join(self.spec.api_key_env) or "ANTHROPIC_API_KEY"
             raise RuntimeError(f"{env_hint} is required for {self.config.provider} provider")
         payload = _anthropic_payload(self.config.model, messages)
+        structured_tool = _anthropic_structured_tool(self.spec, output_schema)
+        if structured_tool:
+            payload["tools"] = [structured_tool]
+            payload["tool_choice"] = {"type": "tool", "name": structured_tool["name"]}
         headers = {
             "x-api-key": self.config.api_key,
             "anthropic-version": "2023-06-01",
@@ -164,7 +168,10 @@ class AnthropicCompatibleProvider:
             )
             response.raise_for_status()
             data = response.json()
-        return _extract_anthropic_content(data)
+        return _extract_anthropic_content(
+            data,
+            tool_name=structured_tool["name"] if structured_tool else "",
+        )
 
 
 class FallbackProvider:
@@ -262,7 +269,7 @@ def _provider_spec(config: ModelConfig) -> ProviderSpec:
             default_model=config.model,
             default_base_url=config.api_base_url,
             api_key_env=("NAVI_MODEL_API_KEY",),
-            structured_output="json_schema" if config.kind == "openai-compatible" else "none",
+            structured_output=_default_structured_output(config.kind),
         )
 
 
@@ -319,6 +326,38 @@ def _structured_response_format(spec: ProviderSpec, output_schema: dict[str, Any
     return None
 
 
+def _default_structured_output(kind: str) -> str:
+    if kind == "openai-compatible":
+        return "json_schema"
+    if kind == "anthropic-compatible":
+        return "tool_schema"
+    return "none"
+
+
+def _schema_name(output_schema: dict[str, Any] | None, *, default: str = "navi_output") -> str:
+    if not output_schema:
+        return default
+    raw_name = str(output_schema.get("name") or default)
+    name = re.sub(r"[^a-zA-Z0-9_-]", "_", raw_name)[:64].strip("_")
+    return name or default
+
+
+def _anthropic_structured_tool(
+    spec: ProviderSpec,
+    output_schema: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not output_schema or spec.structured_output != "tool_schema":
+        return None
+    schema = output_schema.get("schema")
+    if not isinstance(schema, dict):
+        schema = {"type": "object", "properties": {}}
+    return {
+        "name": _schema_name(output_schema),
+        "description": "Return Navi machine-readable output.",
+        "input_schema": schema,
+    }
+
+
 def _messages_for_response_format(
     messages: list[ChatMessage],
     response_format: dict[str, Any] | None,
@@ -353,8 +392,15 @@ def _anthropic_payload(model: str, messages: list[ChatMessage]) -> dict[str, Any
     }
 
 
-def _extract_anthropic_content(data: dict[str, Any]) -> str:
+def _extract_anthropic_content(data: dict[str, Any], *, tool_name: str = "") -> str:
     blocks = data.get("content") or []
+    if tool_name:
+        for block in blocks:
+            if block.get("type") == "tool_use" and block.get("name") == tool_name:
+                tool_input = block.get("input")
+                if isinstance(tool_input, dict):
+                    return json.dumps(tool_input, ensure_ascii=False)
+        raise RuntimeError(f"Provider response did not include tool output {tool_name}: {data}")
     text = "\n".join(str(block.get("text") or "") for block in blocks if block.get("type") == "text").strip()
     if not text:
         raise RuntimeError(f"Provider response did not include text content: {data}")

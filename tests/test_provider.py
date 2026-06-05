@@ -29,6 +29,13 @@ def test_provider_registry_exposes_deepseek_defaults():
     assert "DEEPSEEK_API_KEY" in spec.api_key_env
 
 
+def test_provider_registry_exposes_anthropic_tool_schema_output():
+    spec = get_provider_spec("anthropic")
+
+    assert spec.kind == "anthropic-compatible"
+    assert spec.structured_output == "tool_schema"
+
+
 def test_resolve_deepseek_config_uses_provider_defaults_when_empty():
     config = resolve_model_config(
         ModelConfig(
@@ -296,3 +303,57 @@ async def test_anthropic_provider_posts_messages_request():
     body = requests[0].content.decode()
     assert '"system":"sys"' in body
     assert '"messages":[{"role":"user","content":"hello"}]' in body
+
+
+@pytest.mark.asyncio
+async def test_anthropic_provider_sends_tool_schema_and_extracts_tool_input():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_test",
+                        "name": "navi_test",
+                        "input": {"ok": True, "reason": "schema matched"},
+                    }
+                ]
+            },
+        )
+
+    provider = AnthropicCompatibleProvider(
+        ModelConfig(
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            api_base_url="https://api.anthropic.com/v1",
+            api_key="sk-test",
+        ),
+        get_provider_spec("anthropic"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await provider.complete(
+        [ChatMessage("user", "hello")],
+        output_schema={
+            "name": "navi_test",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "ok": {"type": "boolean"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["ok", "reason"],
+                "additionalProperties": False,
+            },
+        },
+    )
+
+    body = json.loads(requests[0].content)
+    assert body["tools"][0]["name"] == "navi_test"
+    assert body["tools"][0]["input_schema"]["properties"]["ok"]["type"] == "boolean"
+    assert body["tool_choice"] == {"type": "tool", "name": "navi_test"}
+    assert json.loads(result) == {"ok": True, "reason": "schema matched"}

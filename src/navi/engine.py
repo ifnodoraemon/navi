@@ -104,14 +104,20 @@ class HernessEngine:
         last_result: AgentTurnResult | None = None
         budget_exhausted = False
         for _ in range(self.step_budget):
+            planner_specs = self.capabilities.planner_specs(permission_ceiling=context.permission_ceiling)
+            valid_tools = {spec.name for spec in planner_specs}
             syscall = await self.planner.plan(
                 text,
-                tools=self.capabilities.planner_specs(permission_ceiling=context.permission_ceiling),
+                tools=planner_specs,
                 conversation_context=self._conversation_context(resolved_session_id),
                 observations=observations,
                 permission_ceiling=context.permission_ceiling,
                 model_roles=self.runtime.model_roles(),
             )
+            planner_ok = syscall.tool != "system.planner_error" and syscall.tool in valid_tools
+            planner_message = syscall.reason
+            if syscall.tool not in {"", "system.planner_error"} and syscall.tool not in valid_tools:
+                planner_message = f"planner selected unavailable capability: {syscall.tool}"
             self.trace.add_event(
                 trace_id=trace_id,
                 phase="planner.syscall",
@@ -121,11 +127,13 @@ class HernessEngine:
                 sender_id=sender_id,
                 tool=syscall.tool,
                 model_role="planner",
-                ok=syscall.tool != "system.planner_error",
+                ok=planner_ok,
                 input_data={"observations_count": len(observations), "permission_ceiling": context.permission_ceiling},
                 output_data=asdict(syscall),
-                message=syscall.reason,
+                message=planner_message,
             )
+            if not planner_ok:
+                break
             invoked = await self.capabilities.invoke(
                 syscall.tool,
                 syscall.args,

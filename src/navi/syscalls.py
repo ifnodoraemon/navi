@@ -76,6 +76,12 @@ class ModelSyscallPlanner:
         if not isinstance(data, dict):
             return ModelSyscall(tool="system.planner_error", reason="planner JSON was not an object")
         tool = str(data.get("tool") or "").strip()
+        if not tool:
+            return ModelSyscall(
+                tool="system.planner_error",
+                args={"raw_response": response.strip()},
+                reason="planner did not select a capability",
+            )
         args = _parse_args(data.get("args"))
         message = str(args.get("message") or "")
         return ModelSyscall(
@@ -135,7 +141,7 @@ def _syscall_output_schema() -> dict[str, Any]:
         "schema": {
             "type": "object",
             "properties": {
-                "tool": {"type": "string", "description": "Capability name from the manifest."},
+                "tool": {"type": "string", "minLength": 1, "description": "Capability name from the manifest."},
                 "permission": {"type": "string", "enum": ["read", "prepare", "write"]},
                 "args": {"type": "object", "description": "Arguments for the selected capability."},
                 "model_role": {"type": "string", "description": "Role for follow-up response synthesis."},

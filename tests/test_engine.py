@@ -32,6 +32,63 @@ class ScriptedProvider(MockProvider):
 
 
 @pytest.mark.asyncio
+async def test_engine_falls_back_to_chat_when_planner_returns_empty_tool(tmp_path):
+    provider = ScriptedProvider(
+        [
+            '{"tool":"","permission":"read","args":{},"model_role":"responder","confidence":0,"reason":""}',
+            "这是兜底回答。",
+        ]
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
+    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
+
+    result = await router.handle(
+        "最新情况是什么样子的",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
+    )
+
+    assert result.action == "chat"
+    assert result.text == "这是兜底回答。"
+    assert "capability not found" not in result.text
+    events = router.trace.list_events(result.trace_id)
+    planner_events = [event for event in events if event.phase == "planner.syscall"]
+    assert planner_events
+    assert planner_events[0].ok is False
+    assert planner_events[0].tool == "system.planner_error"
+
+
+@pytest.mark.asyncio
+async def test_engine_falls_back_to_chat_when_planner_selects_unknown_tool(tmp_path):
+    provider = ScriptedProvider(
+        [
+            '{"tool":"missing.tool","permission":"read","args":{},"model_role":"responder","confidence":0.5,"reason":"bad route"}',
+            "正常回答。",
+        ]
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
+    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
+
+    result = await router.handle(
+        "查一下状态",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
+    )
+
+    assert result.action == "chat"
+    assert result.text == "正常回答。"
+    assert "capability not found" not in result.text
+    events = router.trace.list_events(result.trace_id)
+    planner_events = [event for event in events if event.phase == "planner.syscall"]
+    assert planner_events
+    assert planner_events[0].ok is False
+    assert planner_events[0].tool == "missing.tool"
+    assert "unavailable capability" in planner_events[0].message
+
+
+@pytest.mark.asyncio
 async def test_engine_can_chain_multiple_read_capabilities_before_answering(tmp_path, monkeypatch):
     provider = ScriptedProvider(
         [
