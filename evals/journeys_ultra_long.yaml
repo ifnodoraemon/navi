@@ -1,0 +1,9 @@
+version: 1
+description: Ultra-long general domain scenarios validating multi-step context reasoning, dynamic human-in-the-loop choices, and complex system delegations.
+journeys:
+  - id: chief_of_staff_ny_trip
+    user_goal: End-to-end trip planning combining email extraction, weather checking, file generation, and interactive confirmation for team notification.
+    permission_ceiling: write
+    simulator:
+      persona: "You are the busy boss. You need to travel to NY next Wednesday via MU587. You want Navi to extract/find info, draft a trip_plan.md locally, and draft a team notification email. You are concise. If Navi asks for flight info, provide it. If Navi asks for approval or confirmation, grant it. When Navi says it's fully done with everything, you reply with '/exit'."
+      max_turns: 12

@@ -83,9 +83,10 @@ def load_daily_journey_eval_dataset(path: Path) -> dict[str, Any]:
     for index, journey in enumerate(journeys):
         if not isinstance(journey, dict):
             raise ValueError(f"journey {index} must be a mapping")
-        steps = journey.get("steps")
-        if not isinstance(steps, list) or not steps:
-            raise ValueError(f"journey {journey.get('id') or index} must contain non-empty steps")
+        if "simulator" not in journey:
+            steps = journey.get("steps")
+            if not isinstance(steps, list) or not steps:
+                raise ValueError(f"journey {journey.get('id') or index} must contain non-empty steps or a simulator")
     return data
 
 
@@ -165,7 +166,9 @@ async def run_daily_journey_eval_dataset(
     for journey in loaded["journeys"]:
         journey_home = run_root / _safe_path_name(str(journey.get("id") or "journey"))
         result = await asyncio.wait_for(
-            _run_daily_journey(home=journey_home, project_dir=project_dir, journey=journey, provider=provider),
+            _run_daily_journey(
+                home=journey_home, project_dir=project_dir, journey=journey, provider=provider
+            ),
             timeout=timeout_seconds,
         )
         results.append(result)
@@ -194,11 +197,22 @@ async def run_claw_eval_dataset(
             journey = _claw_task_to_journey(task)
             try:
                 result = await asyncio.wait_for(
-                    _run_daily_journey(home=attempt_home, project_dir=project_dir, journey=journey, provider=provider),
+                    _run_daily_journey(
+                        home=attempt_home,
+                        project_dir=project_dir,
+                        journey=journey,
+                        provider=provider,
+                    ),
                     timeout=timeout_seconds,
                 )
             except TimeoutError:
-                attempt_details.append({"attempt": attempt, "ok": False, "errors": [f"timed out after {timeout_seconds:g}s"]})
+                attempt_details.append(
+                    {
+                        "attempt": attempt,
+                        "ok": False,
+                        "errors": [f"timed out after {timeout_seconds:g}s"],
+                    }
+                )
                 errors.append(f"attempt[{attempt}]: timed out after {timeout_seconds:g}s")
                 continue
             except Exception as exc:
@@ -256,6 +270,68 @@ def _claw_error_domains(task: dict[str, Any], errors: list[str]) -> list[str]:
         domains.add("robustness")
     return sorted(domains)
 
+async def _run_daily_journey_simulator(
+    *,
+    journey: dict[str, Any],
+    provider: ModelPool,
+    engine: HernessEngine,
+    runs: RunStore,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    simulator = journey["simulator"]
+    persona = simulator.get("persona", "You are the user.")
+    max_turns = int(simulator.get("max_turns", 10))
+    events: list[dict[str, Any]] = []
+    errors: list[str] = []
+    session_id = ""
+
+    from navi.provider import ChatMessage
+
+    messages = [
+        ChatMessage(role="system", content=persona),
+        ChatMessage(
+            role="user",
+            content="You are starting the conversation with Navi. State your initial request based on your persona. Provide your request in a natural, conversational way. Do not explain your persona to Navi."
+        )
+    ]
+
+    for turn_idx in range(max_turns):
+        user_message = await provider.complete_for("default", messages)
+        user_message = user_message.strip()
+        messages.append(ChatMessage(role="assistant", content=user_message))
+        
+        if user_message == "/exit" or user_message.lower() == "exit":
+            break
+
+        turn = await engine.handle(
+            user_message,
+            peer_id="daily-eval-sim",
+            sender_id="daily-eval-sim",
+            source="cli",
+            session_id=session_id or None,
+        )
+        session_id = turn.session_id
+        events.append({
+            "kind": "user",
+            "message": user_message,
+            "action": turn.action,
+            "run_id": turn.run_id,
+            "text": turn.text,
+        })
+
+        if turn.action in {"delegation", "approval"}:
+            messages.append(ChatMessage(
+                role="user", 
+                content=f"Navi created a background task (action={turn.action}). Navi said: {turn.text}\nIf you consider the task complete or are satisfied, reply with /exit. Otherwise, continue."
+            ))
+        else:
+            messages.append(ChatMessage(
+                role="user", 
+                content=f"Navi replied: {turn.text}\nPlease reply to Navi naturally. If your goal is fully accomplished, reply with /exit."
+            ))
+
+    return errors, events
+
+
 
 async def _run_daily_journey(
     *,
@@ -264,9 +340,19 @@ async def _run_daily_journey(
     journey: dict[str, Any],
     provider: ModelPool | None = None,
 ) -> DailyJourneyResult:
-    runtime = AgentRuntime(home=home, provider=provider) if provider is not None else build_runtime(home)
+    runtime = (
+        AgentRuntime(home=home, provider=provider) if provider is not None else build_runtime(home)
+    )
     ceiling = journey.get("permission_ceiling", "write")
-    engine = HernessEngine(home=home, runtime=runtime, project_dir=project_dir, permission_ceiling=ceiling)
+    from .connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
+
+    engine = HernessEngine(
+        home=home,
+        runtime=runtime,
+        project_dir=project_dir,
+        permission_ceiling=ceiling,
+        disabled_capability_classes=LOCAL_CONVERSATIONAL_TOOL_POLICY.blocked_capability_classes,
+    )
     runs = RunStore(home)
     goals = GoalStore(home)
     execution = ExecutionService(home)
@@ -275,64 +361,89 @@ async def _run_daily_journey(
     errors: list[str] = []
     latest_run_id = ""
     try:
-        for index, step in enumerate(journey["steps"]):
-            before_runs = runs.list(limit=500)
-            before_watches = runs.list_watches(limit=500)
-            expect = step.get("expect") or {}
-            if not isinstance(step, dict):
-                errors.append(f"step[{index}]: step must be a mapping")
-                continue
-            if "user" in step:
-                message = _render_journey_text(str(step["user"]), runs, latest_run_id=latest_run_id)
-                turn = await engine.handle(
-                    message,
-                    peer_id="daily-eval",
-                    sender_id="daily-eval",
-                    source="cli",
-                    session_id=session_id or None,
-                )
-                session_id = turn.session_id
-                latest_run_id = turn.run_id or latest_run_id or _latest_run_id(runs)
-                event = {"kind": "user", "message": message, "action": turn.action, "run_id": turn.run_id, "text": turn.text}
-            elif step.get("process_pending"):
-                processed = await execution.process_pending_once(limit=5)
-                if processed:
-                    latest_run_id = processed[-1].id
-                event = {"kind": "process_pending", "processed": [item.__dict__ for item in processed]}
-            elif "seed_failed_run" in step:
-                seed = step.get("seed_failed_run") or {}
-                title = str(seed.get("title") or "failed daily eval task")
-                run = runs.create(
-                    title,
-                    prompt=str(seed.get("prompt") or title),
-                    status="failed",
-                    source=str(seed.get("source") or "watch"),
-                    kind=str(seed.get("kind") or "delegation"),
-                    peer_id="daily-eval",
-                    sender_id="daily-eval",
-                    workspace=str(project_dir),
-                )
-                latest_run_id = run.id
-                event = {"kind": "seed_failed_run", "run_id": run.id}
+        if "simulator" in journey:
+            # Add a mock Provider check just in case
+            if provider is None:
+                errors.append("Simulator requires a ModelPool provider")
             else:
-                errors.append(f"step[{index}]: missing user, process_pending, or seed_failed_run")
-                continue
-            events.append(event)
-            errors.extend(
-                _match_daily_expectation(
-                    f"step[{index}]",
-                    expect,
-                    event=event,
+                sim_errors, sim_events = await _run_daily_journey_simulator(
+                    journey=journey,
+                    provider=provider,
+                    engine=engine,
                     runs=runs,
-                    goals=goals,
-                    latest_run_id=latest_run_id,
-                    before_run_count=len(before_runs),
-                    before_watch_count=len(before_watches),
                 )
-            )
+                errors.extend(sim_errors)
+                events.extend(sim_events)
+        else:
+            for index, step in enumerate(journey["steps"]):
+                before_runs = runs.list(limit=500)
+                before_watches = runs.list_watches(limit=500)
+                expect = step.get("expect") or {}
+                if not isinstance(step, dict):
+                    errors.append(f"step[{index}]: step must be a mapping")
+                    continue
+                if "user" in step:
+                    message = _render_journey_text(str(step["user"]), runs, latest_run_id=latest_run_id)
+                    turn = await engine.handle(
+                        message,
+                        peer_id="daily-eval",
+                        sender_id="daily-eval",
+                        source="cli",
+                        session_id=session_id or None,
+                    )
+                    session_id = turn.session_id
+                    latest_run_id = turn.run_id or latest_run_id or _latest_run_id(runs)
+                    event = {
+                        "kind": "user",
+                        "message": message,
+                        "action": turn.action,
+                        "run_id": turn.run_id,
+                        "text": turn.text,
+                    }
+                elif step.get("process_pending"):
+                    processed = await execution.process_pending_once(limit=5)
+                    if processed:
+                        latest_run_id = processed[-1].id
+                    event = {
+                        "kind": "process_pending",
+                        "processed": [item.__dict__ for item in processed],
+                    }
+                elif "seed_failed_run" in step:
+                    seed = step.get("seed_failed_run") or {}
+                    title = str(seed.get("title") or "failed daily eval task")
+                    run = runs.create(
+                        title,
+                        prompt=str(seed.get("prompt") or title),
+                        status="failed",
+                        source=str(seed.get("source") or "watch"),
+                        kind=str(seed.get("kind") or "delegation"),
+                        peer_id="daily-eval",
+                        sender_id="daily-eval",
+                        workspace=str(project_dir),
+                    )
+                    latest_run_id = run.id
+                    event = {"kind": "seed_failed_run", "run_id": run.id}
+                else:
+                    errors.append(f"step[{index}]: missing user, process_pending, or seed_failed_run")
+                    continue
+                events.append(event)
+                errors.extend(
+                    _match_daily_expectation(
+                        f"step[{index}]",
+                        expect,
+                        event=event,
+                        runs=runs,
+                        goals=goals,
+                        latest_run_id=latest_run_id,
+                        before_run_count=len(before_runs),
+                        before_watch_count=len(before_watches),
+                    )
+                )
     finally:
         await engine.shutdown(timeout=1)
-    return DailyJourneyResult(id=str(journey.get("id") or ""), ok=not errors, errors=errors, events=events)
+    return DailyJourneyResult(
+        id=str(journey.get("id") or ""), ok=not errors, errors=errors, events=events
+    )
 
 
 def _render_journey_text(text: str, runs: RunStore, *, latest_run_id: str) -> str:
@@ -360,8 +471,12 @@ def _match_daily_expectation(
     if not isinstance(expect, dict):
         return [f"{prefix}: expect must be a mapping"]
     if "action" in expect and event.get("action") != expect["action"]:
-        errors.append(f"{prefix}: action expected {expect['action']!r}, got {event.get('action')!r}")
-    if "text_contains" in expect and str(expect["text_contains"]) not in str(event.get("text") or ""):
+        errors.append(
+            f"{prefix}: action expected {expect['action']!r}, got {event.get('action')!r}"
+        )
+    if "text_contains" in expect and str(expect["text_contains"]) not in str(
+        event.get("text") or ""
+    ):
         errors.append(f"{prefix}: text did not contain {expect['text_contains']!r}")
     if "text_contains_any" in expect:
         expected_any = [str(item) for item in expect["text_contains_any"]]
@@ -377,7 +492,9 @@ def _match_daily_expectation(
     if "run_count_delta" in expect:
         delta = len(runs.list(limit=500)) - before_run_count
         if delta != int(expect["run_count_delta"]):
-            errors.append(f"{prefix}: run_count_delta expected {expect['run_count_delta']!r}, got {delta!r}")
+            errors.append(
+                f"{prefix}: run_count_delta expected {expect['run_count_delta']!r}, got {delta!r}"
+            )
     if "run_count" in expect:
         count = len(runs.list(limit=500))
         if count != int(expect["run_count"]):
@@ -385,15 +502,21 @@ def _match_daily_expectation(
     if "failed_run_count" in expect:
         count = runs.count_runs(status="failed")
         if count != int(expect["failed_run_count"]):
-            errors.append(f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}")
+            errors.append(
+                f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}"
+            )
     if "watch_count_delta" in expect:
         delta = len(runs.list_watches(limit=500)) - before_watch_count
         if delta != int(expect["watch_count_delta"]):
-            errors.append(f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}")
+            errors.append(
+                f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}"
+            )
     if "watch_count" in expect:
         count = len(runs.list_watches(limit=500))
         if count != int(expect["watch_count"]):
-            errors.append(f"{prefix}: watch_count expected {expect['watch_count']!r}, got {count!r}")
+            errors.append(
+                f"{prefix}: watch_count expected {expect['watch_count']!r}, got {count!r}"
+            )
     if "watch_kind" in expect:
         watches = runs.list_watches(limit=1)
         actual = watches[0].kind if watches else ""
@@ -413,7 +536,9 @@ def _match_daily_expectation(
         goal = goals.get_by_run(latest_run_id)
         actual = goal.status if goal else ""
         if actual != expect["goal_status"]:
-            errors.append(f"{prefix}: goal_status expected {expect['goal_status']!r}, got {actual!r}")
+            errors.append(
+                f"{prefix}: goal_status expected {expect['goal_status']!r}, got {actual!r}"
+            )
     return errors
 
 
@@ -480,7 +605,9 @@ def validate_delegation_eval_dataset(dataset: dict[str, Any], tools: list[ToolSp
             tools_seen.add(tool_name)
         permission = str(expected.get("permission") or "")
         if permission != tool.permission:
-            errors.append(f"{prefix}: expected permission {permission!r} does not match {tool.permission!r}")
+            errors.append(
+                f"{prefix}: expected permission {permission!r} does not match {tool.permission!r}"
+            )
         _validate_expected_args(prefix, expected.get("args") or {}, tool, errors)
     for category in sorted(required_categories - categories_seen):
         errors.append(f"dataset: missing required category {category!r}")
