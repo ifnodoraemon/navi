@@ -615,15 +615,18 @@ class SessionRequestElevationCapability:
         
         approval = runs.create_approval(run_id=task.id, peer_id=context.peer_id, sender_id=context.sender_id)
         
-        return _fact_result(
-            "session_elevation",
-            {
+        return CapabilityResult(
+            ok=True,
+            action="approval",
+            observation="",
+            run_id=task.id,
+            facts={
                 "status": "awaiting_approval",
                 "message": f"Requested {target_permission} permission. Please approve.",
-                "approval_code": approval.code,
+                "approval": {"action": "execute", "code": approval.code, "expires_at": approval.expires_at},
                 "run_id": task.id,
             },
-            run_id=task.id,
+            terminal=True,
         )
 
 

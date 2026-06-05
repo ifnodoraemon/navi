@@ -586,7 +586,7 @@
   source: action
 - name: session.request_elevation
   handler: session_request_elevation
-  description: "Request temporary elevation of the session's permission ceiling (e.g., from read to prepare or write). Required before calling capabilities that demand permissions above the current ceiling."
+  description: "Request temporary elevation of the session's permission ceiling (e.g., from read to prepare or write). Required before calling capabilities that demand permissions above the current ceiling. If the user verbally authorizes an action but you lack permission, you MUST call this tool to trigger the actual system-level permission elevation workflow."
   input_schema:
     type: object
     properties:
