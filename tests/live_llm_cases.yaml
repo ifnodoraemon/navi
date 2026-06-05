@@ -54,7 +54,7 @@ syscall_cases:
     source: observed:.navi/memory.db
     message: "每天晚上上一个通识课给我"
     expect:
-      tool: clarify.ask
+      tool: ask.user
       permission: read
 
   - id: exact_morning_watch_creates_watch

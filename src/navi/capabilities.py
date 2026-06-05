@@ -91,13 +91,11 @@ class Capability(Protocol):
         *,
         permission: str,
         context: CapabilityContext,
-    ) -> CapabilityResult:
-        ...
+    ) -> CapabilityResult: ...
 
 
 class CapabilityProvider(Protocol):
-    def capabilities(self) -> Mapping[str, Capability]:
-        ...
+    def capabilities(self) -> Mapping[str, Capability]: ...
 
 
 class CapabilityRegistry:
@@ -115,12 +113,14 @@ class CapabilityRegistry:
         allow_sources: set[str] | None = None,
         allowed_tools: set[str] | None = None,
         disabled_tools: set[str] | None = None,
+        disabled_capability_classes: frozenset[str] | frozenset = frozenset(),
         permission_ceiling: str = "write",
     ):
         self.home = home
         self.allow_sources = allow_sources
         self.allowed_tools = allowed_tools
         self.disabled_tools = disabled_tools or set()
+        self.disabled_capability_classes = disabled_capability_classes
         self.permission_ceiling = permission_ceiling
         self.gateway = build_tool_gateway(
             home,
@@ -128,6 +128,7 @@ class CapabilityRegistry:
             allow_sources=allow_sources,
             allowed_tools=allowed_tools,
             disabled_tools=disabled_tools,
+            disabled_capability_classes=disabled_capability_classes,
             permission_ceiling=permission_ceiling,
         )
         self.providers: tuple[CapabilityProvider, ...] = (
@@ -144,7 +145,11 @@ class CapabilityRegistry:
     def planner_specs(self, *, permission_ceiling: str | None = None) -> list[ToolSpec]:
         ceiling = permission_ceiling or self.permission_ceiling
         return sorted(
-            [handler.spec for handler in self.handlers.values() if permission_allows(handler.spec.permission, ceiling)],
+            [
+                handler.spec
+                for handler in self.handlers.values()
+                if permission_allows(handler.spec.permission, ceiling)
+            ],
             key=lambda spec: spec.name,
         )
 
@@ -265,11 +270,19 @@ class CapabilityRegistry:
         handlers: dict[str, Capability] = {}
         for provider in self.providers:
             handlers.update(provider.capabilities())
+
+        def _is_class_blocked(name: str) -> bool:
+            for cls in self.disabled_capability_classes:
+                if name.startswith(f"{cls}."):
+                    return True
+            return False
+
         filtered = {
             name: handler
             for name, handler in handlers.items()
             if (self.allowed_tools is None or name in self.allowed_tools)
             and name not in self.disabled_tools
+            and not _is_class_blocked(name)
             and (self.allow_sources is None or handler.spec.source in self.allow_sources)
             and permission_allows(handler.spec.permission, self.permission_ceiling)
         }
@@ -302,7 +315,9 @@ class CapabilityRegistry:
                 ended_at=time.time(),
             )
         except Exception as exc:
-            logger.error("action capability audit log failed for %s: %s", spec.name, exc, exc_info=True)
+            logger.error(
+                "action capability audit log failed for %s: %s", spec.name, exc, exc_info=True
+            )
 
 
 def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
@@ -319,21 +334,33 @@ class ActionCapabilityProvider:
         factories = {
             "final_answer": lambda spec: FinalAnswerCapability(spec),
             "clarify": lambda spec: ClarifyCapability(spec),
-            "delegate_spawn": lambda spec: DelegateSpawnCapability(spec, home=self.home, project_dir=self.project_dir),
+            "delegate_spawn": lambda spec: DelegateSpawnCapability(
+                spec, home=self.home, project_dir=self.project_dir
+            ),
             "delegate_prepare": lambda spec: DelegatePrepareCapability(spec, home=self.home),
             "approval_request": lambda spec: ApprovalRequestCapability(spec, home=self.home),
             "delegate_run": lambda spec: DelegateRunCapability(spec, home=self.home),
-            "watch_create": lambda spec: WatchCreateCapability(spec, home=self.home, project_dir=self.project_dir),
+            "watch_create": lambda spec: WatchCreateCapability(
+                spec, home=self.home, project_dir=self.project_dir
+            ),
             "delegate_delete": lambda spec: DelegateDeleteCapability(spec, home=self.home),
             "watch_delete": lambda spec: WatchDeleteCapability(spec, home=self.home),
-            "session_request_elevation": lambda spec: SessionRequestElevationCapability(spec, home=self.home),
+            "session_request_elevation": lambda spec: SessionRequestElevationCapability(
+                spec, home=self.home
+            ),
             "approval_resolve": lambda spec: ApprovalResolveCapability(spec, home=self.home),
             "execution_retry": lambda spec: ExecutionRetryCapability(spec, home=self.home),
-            "workflow_propose": lambda spec: WorkflowProposeCapability(spec, home=self.home, project_dir=self.project_dir),
+            "workflow_propose": lambda spec: WorkflowProposeCapability(
+                spec, home=self.home, project_dir=self.project_dir
+            ),
             "workflow_approve": lambda spec: WorkflowApproveCapability(spec, home=self.home),
-            "workflow_run": lambda spec: WorkflowRunCapability(spec, home=self.home, project_dir=self.project_dir),
+            "workflow_run": lambda spec: WorkflowRunCapability(
+                spec, home=self.home, project_dir=self.project_dir
+            ),
             "workflow_verify": lambda spec: WorkflowVerifyCapability(spec, home=self.home),
-            "workflow_resume": lambda spec: WorkflowRunCapability(spec, home=self.home, project_dir=self.project_dir, resume=True),
+            "workflow_resume": lambda spec: WorkflowRunCapability(
+                spec, home=self.home, project_dir=self.project_dir, resume=True
+            ),
             "workflow_status": lambda spec: WorkflowStatusCapability(spec, home=self.home),
         }
         handlers = {}
@@ -350,7 +377,10 @@ class ToolGatewayCapabilityProvider:
         self.gateway = gateway
 
     def capabilities(self) -> Mapping[str, Capability]:
-        return {spec.name: ToolCapability(spec, gateway=self.gateway) for spec in self.gateway.list_specs()}
+        return {
+            spec.name: ToolCapability(spec, gateway=self.gateway)
+            for spec in self.gateway.list_specs()
+        }
 
 
 class FinalAnswerCapability:
@@ -365,7 +395,9 @@ class FinalAnswerCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         message = _arg_text(args, "message")
-        return CapabilityResult(ok=True, action="chat", observation=message, message=message, terminal=True)
+        return CapabilityResult(
+            ok=True, action="chat", observation=message, message=message, terminal=True
+        )
 
 
 class ClarifyCapability:
@@ -380,7 +412,13 @@ class ClarifyCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         message = _arg_text(args, "message")
-        return CapabilityResult(ok=True, action="ask", observation=message, message=message, terminal=True)
+        options = args.get("options")
+        if isinstance(options, list) and options:
+            message += "\n" + "\n".join(f"[{i + 1}] {opt}" for i, opt in enumerate(options))
+
+        return CapabilityResult(
+            ok=True, action="ask", observation=message, message=message, terminal=True
+        )
 
 
 class ToolCapability:
@@ -396,11 +434,15 @@ class ToolCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         result = self.gateway.call(self.spec.name, args)
-        observation = result.error if not result.ok else json.dumps(
-            {"capability": self.spec.name, "facts": result.facts},
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
+        observation = (
+            result.error
+            if not result.ok
+            else json.dumps(
+                {"capability": self.spec.name, "facts": result.facts},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
         )
         return CapabilityResult(
             ok=result.ok,
@@ -504,7 +546,11 @@ class DelegateSpawnCapability:
             trust_rule_id=decision.rule_id,
             why_now=f"trigger=model_capability; reason={decision.why}; autonomy={decision.level}",
         )
-        graph.upsert("DelegationRun", task.id, {"objective": task.title, "status": task.status, "prompt": task.prompt})
+        graph.upsert(
+            "DelegationRun",
+            task.id,
+            {"objective": task.title, "status": task.status, "prompt": task.prompt},
+        )
         goal = GoalStore(self.home).create(
             objective=task.prompt,
             source=task.source,
@@ -512,7 +558,11 @@ class DelegateSpawnCapability:
             sender_id=task.sender_id,
             workspace=task.workspace,
             run_id=task.id,
-            evidence={"run_id": task.id, "run_status": task.status, "autonomy_level": task.autonomy_level},
+            evidence={
+                "run_id": task.id,
+                "run_status": task.status,
+                "autonomy_level": task.autonomy_level,
+            },
         )
         facts = {
             **_transition_facts("delegation_run", task.id, "created"),
@@ -522,16 +572,28 @@ class DelegateSpawnCapability:
             "autonomy_level": task.autonomy_level,
             "trust_rule_id": task.trust_rule_id,
         }
-        
+
         if task.status == "pending":
-            approval = runs.create_approval(run_id=task.id, peer_id=context.peer_id or task.peer_id, sender_id=context.sender_id or task.sender_id)
+            approval = runs.create_approval(
+                run_id=task.id,
+                peer_id=context.peer_id or task.peer_id,
+                sender_id=context.sender_id or task.sender_id,
+            )
             task = runs.update_run(task.id, status="awaiting_approval") or task
             GoalStore(self.home).update_for_run(
                 task,
-                evidence={"run_id": task.id, "run_status": task.status, "approval_status": approval.status},
+                evidence={
+                    "run_id": task.id,
+                    "run_status": task.status,
+                    "approval_status": approval.status,
+                },
             )
             facts["status"] = task.status
-            facts["approval"] = {"action": approval.action, "code": approval.code, "expires_at": approval.expires_at}
+            facts["approval"] = {
+                "action": approval.action,
+                "code": approval.code,
+                "expires_at": approval.expires_at,
+            }
             return CapabilityResult(
                 ok=True,
                 action="approval",
@@ -566,9 +628,17 @@ class DelegatePrepareCapability:
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
         task = RunStore(self.home).get(run_id) if run_id else None
         if task is None:
-            return CapabilityResult(ok=False, action="delegation", observation=f"delegation run not found: {run_id}", message=f"delegation run not found: {run_id}", terminal=True)
+            return CapabilityResult(
+                ok=False,
+                action="delegation",
+                observation=f"delegation run not found: {run_id}",
+                message=f"delegation run not found: {run_id}",
+                terminal=True,
+            )
         planned = await ExecutionService(self.home).plan_task(task)
-        GoalStore(self.home).update_for_run(planned, evidence={"run_id": planned.id, "run_status": planned.status})
+        GoalStore(self.home).update_for_run(
+            planned, evidence={"run_id": planned.id, "run_status": planned.status}
+        )
         return _fact_result(
             "delegation",
             {
@@ -579,7 +649,6 @@ class DelegatePrepareCapability:
             },
             run_id=planned.id,
         )
-
 
 
 class SessionRequestElevationCapability:
@@ -596,9 +665,9 @@ class SessionRequestElevationCapability:
     ) -> CapabilityResult:
         target_permission = _arg_text(args, "target_permission")
         reason = _arg_text(args, "reason")
-        
+
         runs = RunStore(self.home)
-        
+
         # We spawn a delegation run representing the elevation request
         task = runs.create(
             objective=f"Elevate session permission to {target_permission}. Reason: {reason}",
@@ -606,15 +675,23 @@ class SessionRequestElevationCapability:
             workspace=context.workspace,
             peer_id=context.peer_id,
             sender_id=context.sender_id,
-            session_id=context.session_id if hasattr(context, "session_id") else "", # We need to ensure context has session_id, wait, CapabilityContext doesn't have session_id. We'll add it or use another field.
+            session_id=context.session_id
+            if hasattr(context, "session_id")
+            else "",  # We need to ensure context has session_id, wait, CapabilityContext doesn't have session_id. We'll add it or use another field.
         )
         # Actually context doesn't have session_id by default. We should check if we can pass it.
         # But wait, runs don't have session_id either, they have peer_id and sender_id.
         # We can store target_permission in plan_summary for now.
-        task = runs.update_run(task.id, status="awaiting_approval", plan_summary=f"session_elevation:{target_permission}")
-        
-        approval = runs.create_approval(run_id=task.id, peer_id=context.peer_id, sender_id=context.sender_id)
-        
+        task = runs.update_run(
+            task.id,
+            status="awaiting_approval",
+            plan_summary=f"session_elevation:{target_permission}",
+        )
+
+        approval = runs.create_approval(
+            run_id=task.id, peer_id=context.peer_id, sender_id=context.sender_id
+        )
+
         return CapabilityResult(
             ok=True,
             action="approval",
@@ -623,7 +700,11 @@ class SessionRequestElevationCapability:
             facts={
                 "status": "awaiting_approval",
                 "message": f"Requested {target_permission} permission. Please approve.",
-                "approval": {"action": "execute", "code": approval.code, "expires_at": approval.expires_at},
+                "approval": {
+                    "action": "execute",
+                    "code": approval.code,
+                    "expires_at": approval.expires_at,
+                },
                 "run_id": task.id,
             },
             terminal=True,
@@ -646,18 +727,36 @@ class ApprovalRequestCapability:
         runs = RunStore(self.home)
         task = runs.get(run_id) if run_id else None
         if task is None:
-            return CapabilityResult(ok=False, action="approval", observation=f"delegation run not found: {run_id}", message=f"delegation run not found: {run_id}", terminal=True)
-        approval = runs.create_approval(run_id=task.id, peer_id=context.peer_id or task.peer_id, sender_id=context.sender_id or task.sender_id)
+            return CapabilityResult(
+                ok=False,
+                action="approval",
+                observation=f"delegation run not found: {run_id}",
+                message=f"delegation run not found: {run_id}",
+                terminal=True,
+            )
+        approval = runs.create_approval(
+            run_id=task.id,
+            peer_id=context.peer_id or task.peer_id,
+            sender_id=context.sender_id or task.sender_id,
+        )
         awaiting = runs.update_run(task.id, status="awaiting_approval") or task
         GoalStore(self.home).update_for_run(
             awaiting,
-            evidence={"run_id": awaiting.id, "run_status": awaiting.status, "approval_status": approval.status},
+            evidence={
+                "run_id": awaiting.id,
+                "run_status": awaiting.status,
+                "approval_status": approval.status,
+            },
         )
         facts = {
             **_transition_facts("approval_request", approval.id, "created"),
             "run_id": awaiting.id,
             "status": awaiting.status,
-            "approval": {"action": approval.action, "code": approval.code, "expires_at": approval.expires_at},
+            "approval": {
+                "action": approval.action,
+                "code": approval.code,
+                "expires_at": approval.expires_at,
+            },
         }
         return CapabilityResult(
             ok=True,
@@ -685,12 +784,26 @@ class DelegateRunCapability:
         runs = RunStore(self.home)
         task = runs.get(run_id) if run_id else None
         if task is None:
-            return CapabilityResult(ok=False, action="delegation", observation=f"delegation run not found: {run_id}", message=f"delegation run not found: {run_id}", terminal=True)
+            return CapabilityResult(
+                ok=False,
+                action="delegation",
+                observation=f"delegation run not found: {run_id}",
+                message=f"delegation run not found: {run_id}",
+                terminal=True,
+            )
         execution = ExecutionService(self.home)
         if not execution.execution_allowed(task):
-            return CapabilityResult(ok=False, action="delegation", observation="execution grant missing", message="execution grant missing", terminal=True)
+            return CapabilityResult(
+                ok=False,
+                action="delegation",
+                observation="execution grant missing",
+                message="execution grant missing",
+                terminal=True,
+            )
         queued = runs.update_run(task.id, status="queued") or task
-        GoalStore(self.home).update_for_run(queued, evidence={"run_id": queued.id, "run_status": queued.status})
+        GoalStore(self.home).update_for_run(
+            queued, evidence={"run_id": queued.id, "run_status": queued.status}
+        )
         return _fact_result(
             "delegation",
             {
@@ -717,7 +830,9 @@ class WatchCreateCapability:
     ) -> CapabilityResult:
         cron = _arg_text(args, "cron")
         run_at_text = _arg_text(args, "run_at_text")
-        kind = _arg_text(args, "kind") or ("once" if args.get("run_at") is not None or run_at_text else "recurring")
+        kind = _arg_text(args, "kind") or (
+            "once" if args.get("run_at") is not None or run_at_text else "recurring"
+        )
         prompt = _arg_text(args, "prompt")
         if not prompt:
             return CapabilityResult(
@@ -773,7 +888,11 @@ class WatchCreateCapability:
             workspace=workspace,
             kind=kind,
         )
-        graph.upsert("Watch", watch.id, {"cron": cron, "prompt": prompt, "sender_id": context.sender_id, "kind": kind})
+        graph.upsert(
+            "Watch",
+            watch.id,
+            {"cron": cron, "prompt": prompt, "sender_id": context.sender_id, "kind": kind},
+        )
         facts = {
             **_transition_facts("watch", watch.id, "created"),
             "watch_id": watch.id,
@@ -856,7 +975,9 @@ class DelegateDeleteCapability:
                 terminal=True,
             )
         raw_limit = args.get("limit")
-        limit = _positive_int(raw_limit, default=5000, maximum=5000) if raw_limit is not None else None
+        limit = (
+            _positive_int(raw_limit, default=5000, maximum=5000) if raw_limit is not None else None
+        )
         source = _arg_text(args, "source")
         kind = _arg_text(args, "kind")
         runs = RunStore(self.home)
@@ -975,9 +1096,13 @@ class ApprovalResolveCapability:
         runs = RunStore(self.home)
         governance = GovernanceEngine(self.home)
         trust = TrustStore(self.home)
-        approval = self._resolve(governance, code=code, run_id=run_id, sender_id=context.sender_id, status=status)
+        approval = self._resolve(
+            governance, code=code, run_id=run_id, sender_id=context.sender_id, status=status
+        )
         if approval is None:
-            facts = runs.approval_resolution_diagnostic(code=code, run_id=run_id, sender_id=context.sender_id)
+            facts = runs.approval_resolution_diagnostic(
+                code=code, run_id=run_id, sender_id=context.sender_id
+            )
             message = _approval_resolution_failure_message(facts)
             return CapabilityResult(
                 ok=False,
@@ -999,7 +1124,14 @@ class ApprovalResolveCapability:
             task = runs.update_run(approval.run_id, status="queued")
             resolved_run_id = task.id if task else approval.run_id
             if task:
-                GoalStore(self.home).update_for_run(task, evidence={"run_id": task.id, "run_status": task.status, "approval_status": approval.status})
+                GoalStore(self.home).update_for_run(
+                    task,
+                    evidence={
+                        "run_id": task.id,
+                        "run_status": task.status,
+                        "approval_status": approval.status,
+                    },
+                )
             facts = {
                 **_transition_facts("approval_request", approval.id, "updated"),
                 "run_id": resolved_run_id,
@@ -1017,7 +1149,14 @@ class ApprovalResolveCapability:
         task = runs.update_run(approval.run_id, status="rejected")
         if task:
             await trust.record_failure(task)
-            GoalStore(self.home).update_for_run(task, evidence={"run_id": task.id, "run_status": task.status, "approval_status": approval.status})
+            GoalStore(self.home).update_for_run(
+                task,
+                evidence={
+                    "run_id": task.id,
+                    "run_status": task.status,
+                    "approval_status": approval.status,
+                },
+            )
         facts = {
             **_transition_facts("approval_request", approval.id, "updated"),
             "run_id": approval.run_id,
@@ -1104,7 +1243,12 @@ class ExecutionRetryCapability:
                 terminal=True,
             )
         follow_up = _arg_text(args, "follow_up_prompt")
-        retry_task = replace(task, prompt=f"{task.prompt}\n\nFollow-up execution instruction:\n{follow_up}" if follow_up else task.prompt)
+        retry_task = replace(
+            task,
+            prompt=f"{task.prompt}\n\nFollow-up execution instruction:\n{follow_up}"
+            if follow_up
+            else task.prompt,
+        )
         result = await execution.execute_task(retry_task)
         facts = {
             **_transition_facts("execution_attempt", result.id, "created"),
@@ -1150,7 +1294,9 @@ class WorkflowProposeCapability:
             sender_id=context.sender_id,
             permission_ceiling=_arg_text(args, "permission_ceiling") or "read",
             max_concurrency=_positive_int(args.get("max_concurrency"), default=4, maximum=16),
-            total_subagent_limit=_positive_int(args.get("total_subagent_limit"), default=32, maximum=1000),
+            total_subagent_limit=_positive_int(
+                args.get("total_subagent_limit"), default=32, maximum=1000
+            ),
             risk_class=_arg_text(args, "risk_class"),
             estimated_cost=_arg_text(args, "estimated_cost"),
             stop_condition=_arg_text(args, "stop_condition"),
@@ -1240,7 +1386,11 @@ class WorkflowRunCapability:
         workflow = store.get(workflow_id) if workflow_id else None
         if workflow is None:
             return _workflow_not_found(workflow_id)
-        allowed_states = {WORKFLOW_STATUS_APPROVED, WORKFLOW_STATUS_RUNNING, WORKFLOW_STATUS_INTERRUPTED}
+        allowed_states = {
+            WORKFLOW_STATUS_APPROVED,
+            WORKFLOW_STATUS_RUNNING,
+            WORKFLOW_STATUS_INTERRUPTED,
+        }
         if workflow.status not in allowed_states:
             return CapabilityResult(
                 ok=False,
@@ -1272,29 +1422,40 @@ class WorkflowRunCapability:
                 break
         workflow = store.get(workflow.id) or workflow
         if failed:
-            workflow = store.update_status(
-                workflow.id,
-                status=WORKFLOW_STATUS_BLOCKED,
-                blocked_reason="one or more workflow steps failed",
-                evidence={"completed_in_batch": completed, "failed_in_batch": failed},
-                event_type="workflow.blocked",
-            ) or workflow
+            workflow = (
+                store.update_status(
+                    workflow.id,
+                    status=WORKFLOW_STATUS_BLOCKED,
+                    blocked_reason="one or more workflow steps failed",
+                    evidence={"completed_in_batch": completed, "failed_in_batch": failed},
+                    event_type="workflow.blocked",
+                )
+                or workflow
+            )
         else:
-            pending = [step for step in store.list_steps(workflow.id) if step.status == STEP_STATUS_PENDING]
+            pending = [
+                step for step in store.list_steps(workflow.id) if step.status == STEP_STATUS_PENDING
+            ]
             if not pending:
-                workflow = store.update_status(
-                    workflow.id,
-                    status=WORKFLOW_STATUS_COMPLETED,
-                    evidence={"completed_in_batch": completed},
-                    event_type="workflow.completed",
-                ) or workflow
+                workflow = (
+                    store.update_status(
+                        workflow.id,
+                        status=WORKFLOW_STATUS_COMPLETED,
+                        evidence={"completed_in_batch": completed},
+                        event_type="workflow.completed",
+                    )
+                    or workflow
+                )
             else:
-                workflow = store.update_status(
-                    workflow.id,
-                    status=WORKFLOW_STATUS_INTERRUPTED,
-                    evidence={"completed_in_batch": completed, "pending_count": len(pending)},
-                    event_type="workflow.interrupted",
-                ) or workflow
+                workflow = (
+                    store.update_status(
+                        workflow.id,
+                        status=WORKFLOW_STATUS_INTERRUPTED,
+                        evidence={"completed_in_batch": completed, "pending_count": len(pending)},
+                        event_type="workflow.interrupted",
+                    )
+                    or workflow
+                )
         facts = {
             **_transition_facts("workflow", workflow.id, "updated"),
             "workflow_id": workflow.id,
@@ -1334,7 +1495,9 @@ class WorkflowRunCapability:
                 if not tool_name:
                     continue
                 if tool_name.startswith("workflow."):
-                    raise ValueError("workflow steps cannot call workflow.* capabilities recursively")
+                    raise ValueError(
+                        "workflow steps cannot call workflow.* capabilities recursively"
+                    )
                 if allowed_tools and tool_name not in allowed_tools:
                     raise ValueError(f"{tool_name} is not declared in step allowed_tools")
                 requested_permission = str(call.get("permission") or "read")
@@ -1366,7 +1529,9 @@ class WorkflowRunCapability:
                         "permission": requested_permission,
                         "ok": capability_result.ok,
                         "facts": capability_result.facts or {},
-                        "error": "" if capability_result.ok else capability_result.message or capability_result.observation,
+                        "error": ""
+                        if capability_result.ok
+                        else capability_result.message or capability_result.observation,
                     }
                 )
                 if not capability_result.ok:
@@ -1381,22 +1546,32 @@ class WorkflowRunCapability:
             output = {"step_id": step.id, "evidence": evidence}
             subagents.finish(run.id, status="completed", output_data=output)
             store.update_step(step.id, status=STEP_STATUS_COMPLETED, evidence=output)
-            return CapabilityResult(ok=True, action="workflow", observation=json.dumps(output, ensure_ascii=False), facts=output)
+            return CapabilityResult(
+                ok=True,
+                action="workflow",
+                observation=json.dumps(output, ensure_ascii=False),
+                facts=output,
+            )
         except Exception as exc:
             output = {"step_id": step.id, "evidence": evidence, "error": str(exc)}
             subagents.finish(run.id, status="failed", output_data=output, error=str(exc))
             store.update_step(step.id, status=STEP_STATUS_FAILED, evidence=output, error=str(exc))
-            return CapabilityResult(ok=False, action="workflow", observation=str(exc), message=str(exc), facts=output)
+            return CapabilityResult(
+                ok=False, action="workflow", observation=str(exc), message=str(exc), facts=output
+            )
 
     def _finish_if_possible(self, store: WorkflowStore, workflow: Workflow) -> CapabilityResult:
         counts = _workflow_counts(store, workflow)
         if counts["pending_count"] == 0 and counts["failed_count"] == 0:
-            workflow = store.update_status(
-                workflow.id,
-                status=WORKFLOW_STATUS_COMPLETED,
-                evidence=counts,
-                event_type="workflow.completed",
-            ) or workflow
+            workflow = (
+                store.update_status(
+                    workflow.id,
+                    status=WORKFLOW_STATUS_COMPLETED,
+                    evidence=counts,
+                    event_type="workflow.completed",
+                )
+                or workflow
+            )
         facts = {
             **_transition_facts("workflow", workflow.id, "updated"),
             "workflow_id": workflow.id,
@@ -1434,7 +1609,9 @@ class WorkflowVerifyCapability:
         steps = store.list_steps(workflow.id)
         failed_steps = [step for step in steps if step.status != STEP_STATUS_COMPLETED]
         empty_evidence = [step.id for step in steps if not _json_dict(step.evidence_json)]
-        passed = workflow.status == WORKFLOW_STATUS_COMPLETED and not failed_steps and not empty_evidence
+        passed = (
+            workflow.status == WORKFLOW_STATUS_COMPLETED and not failed_steps and not empty_evidence
+        )
         blocked_reason = ""
         if not passed:
             blocked_reason = "workflow verifier requires completed workflow, completed steps, and non-empty step evidence"
@@ -1444,15 +1621,23 @@ class WorkflowVerifyCapability:
             "failed_steps": [step.id for step in failed_steps],
             "empty_evidence_steps": empty_evidence,
         }
-        subagents.finish(verifier.id, status="completed" if passed else "failed", output_data=output, error=blocked_reason)
+        subagents.finish(
+            verifier.id,
+            status="completed" if passed else "failed",
+            output_data=output,
+            error=blocked_reason,
+        )
         status = WORKFLOW_STATUS_VERIFIED_COMPLETE if passed else WORKFLOW_STATUS_BLOCKED
-        updated = store.update_status(
-            workflow.id,
-            status=status,
-            blocked_reason=blocked_reason,
-            evidence={"verifier": output, "verifier_subagent_id": verifier.id},
-            event_type="workflow.verified" if passed else "workflow.verifier_blocked",
-        ) or workflow
+        updated = (
+            store.update_status(
+                workflow.id,
+                status=status,
+                blocked_reason=blocked_reason,
+                evidence={"verifier": output, "verifier_subagent_id": verifier.id},
+                event_type="workflow.verified" if passed else "workflow.verifier_blocked",
+            )
+            or workflow
+        )
         facts = {
             **_transition_facts("workflow", workflow.id, "updated"),
             "workflow_id": workflow.id,
@@ -1543,7 +1728,9 @@ def _parse_one_shot_run_at(text: str, *, now: float | None = None) -> float | No
     hour, minute = _parse_clock_time(raw)
     if hour is None:
         return None
-    candidate = base.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=day_offset)
+    candidate = base.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(
+        days=day_offset
+    )
     if day_offset == 0 and candidate.timestamp() <= base.timestamp():
         candidate += timedelta(days=1)
     return candidate.timestamp()

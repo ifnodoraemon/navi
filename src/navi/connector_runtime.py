@@ -12,7 +12,7 @@ from .runtime import AgentRuntime
 REMOTE_SAFE_TOOLS = frozenset(
     (
         "final.answer",
-        "clarify.ask",
+        "ask.user",
         "delegate.spawn",
         "delegate.prepare",
         "approval.request",
@@ -20,6 +20,7 @@ REMOTE_SAFE_TOOLS = frozenset(
         "watch.create",
         "approval.resolve",
         "delegate.delete",
+        "session.request_elevation",
         "provider.config",
         "service.status",
         "delegate.status",
@@ -56,7 +57,9 @@ class ConnectorToolPolicy:
     blocked_capability_classes: FrozenSet[str]
     reason: str
 
-    def allowed_tool_names(self) -> set[str]:
+    def allowed_tool_names(self) -> set[str] | None:
+        if not self.allowed_tools:
+            return None
         return set(self.allowed_tools)
 
     def facts(self) -> dict:
@@ -79,6 +82,14 @@ REMOTE_CONNECTOR_TOOL_POLICY = ConnectorToolPolicy(
         "and resolve explicit approvals, but it must not expose direct filesystem, shell, browser, "
         "git, test, or destructive watch deletion capabilities."
     ),
+)
+
+LOCAL_CONVERSATIONAL_TOOL_POLICY = ConnectorToolPolicy(
+    name="local_conversational_default",
+    permission_ceiling="write",
+    allowed_tools=frozenset(),  # empty means allow all
+    blocked_capability_classes=frozenset(("shell", "file.write", "filesystem")),
+    reason="Local conversational loop must use delegation for shell execution and complex file mutations.",
 )
 
 
@@ -120,7 +131,10 @@ class ConnectorIngressRuntime:
             runtime=runtime,
             project_dir=project_dir,
             allow_sources=allow_sources,
-            allowed_tools=tool_policy.allowed_tool_names() if allowed_tools is None else allowed_tools,
+            allowed_tools=tool_policy.allowed_tool_names()
+            if allowed_tools is None
+            else allowed_tools,
+            disabled_capability_classes=tool_policy.blocked_capability_classes,
             permission_ceiling=tool_policy.permission_ceiling,
         )
 
