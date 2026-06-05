@@ -45,19 +45,23 @@ class HernessEngine:
         allow_sources: set[str] | None = None,
         allowed_tools: set[str] | None = None,
         disabled_tools: set[str] | None = None,
+        disabled_capability_classes: frozenset[str] | frozenset = frozenset(),
         permission_ceiling: str = "write",
         step_budget: int | None = None,
     ):
         self.home = home
         self.runtime = runtime
         self.permission_ceiling = permission_ceiling
-        self.step_budget = step_budget if step_budget is not None else load_config(home).runtime.agent_step_budget
+        self.step_budget = (
+            step_budget if step_budget is not None else load_config(home).runtime.agent_step_budget
+        )
         self.capabilities = CapabilityRegistry(
             home=home,
             project_dir=project_dir,
             allow_sources=allow_sources,
             allowed_tools=allowed_tools,
             disabled_tools=disabled_tools,
+            disabled_capability_classes=disabled_capability_classes,
             permission_ceiling=permission_ceiling,
         )
         self.planner = ModelSyscallPlanner(runtime.provider)
@@ -66,11 +70,11 @@ class HernessEngine:
         self._memory_sem: asyncio.Semaphore | None = None
         self._background_tasks: set[asyncio.Task] = set()
 
-
     def _get_effective_permission_ceiling(self, peer_id: str, sender_id: str) -> str:
         ceiling = self.permission_ceiling
         try:
             from navi.runs import RunStore
+
             runs = RunStore(self.home).list(limit=50)
             for r in runs:
                 if r.peer_id == peer_id and r.sender_id == sender_id:
@@ -83,7 +87,6 @@ class HernessEngine:
         return ceiling
 
     async def handle(
-
         self,
         text: str,
         *,
@@ -115,14 +118,31 @@ class HernessEngine:
             permission_ceiling=self._get_effective_permission_ceiling(peer_id, sender_id),
             workspace=str(self.capabilities.gateway.project_dir.resolve()),
         )
+        
         observations: list[str] = []
+        
+        import subprocess
+        try:
+            cwd = self.capabilities.gateway.project_dir
+            git_status = subprocess.run(["git", "status", "-s"], cwd=cwd, capture_output=True, text=True, timeout=2).stdout.strip()
+            ambient = f"Ambient Context:\n- Workspace: {cwd}\n"
+            if git_status:
+                ambient += f"- Git Status:\n{git_status}\n"
+            else:
+                ambient += "- Git Status: clean\n"
+            observations.append(ambient)
+        except Exception:
+            pass
+
         completion_events: list[dict[str, Any]] = []
         goal_ids: set[str] = set()
         pending_approval_prompt = ""
         last_result: AgentTurnResult | None = None
         budget_exhausted = False
         for _ in range(self.step_budget):
-            planner_specs = self.capabilities.planner_specs(permission_ceiling=context.permission_ceiling)
+            planner_specs = self.capabilities.planner_specs(
+                permission_ceiling=context.permission_ceiling
+            )
             valid_tools = {spec.name for spec in planner_specs}
             syscall = await self.planner.plan(
                 text,
@@ -146,7 +166,10 @@ class HernessEngine:
                 tool=syscall.tool,
                 model_role="planner",
                 ok=planner_ok,
-                input_data={"observations_count": len(observations), "permission_ceiling": context.permission_ceiling},
+                input_data={
+                    "observations_count": len(observations),
+                    "permission_ceiling": context.permission_ceiling,
+                },
                 output_data=asdict(syscall),
                 message=planner_message,
             )
@@ -190,7 +213,11 @@ class HernessEngine:
                 model_role=syscall.model_role,
                 ok=invoked.ok,
                 input_data={"args": syscall.args, "permission": syscall.permission},
-                output_data={"action": invoked.action, "facts": invoked.facts or {}, "terminal": invoked.terminal},
+                output_data={
+                    "action": invoked.action,
+                    "facts": invoked.facts or {},
+                    "terminal": invoked.terminal,
+                },
                 message=invoked.message or invoked.observation,
             )
             approval_prompt = self._approval_prompt_from_facts(invoked.facts, source=source)
@@ -254,8 +281,15 @@ class HernessEngine:
                     continue
                 turn_res = self._record_turn(text, result, session_id=resolved_session_id)
                 turn_res = self._with_trace(turn_res, trace_id)
-                self._attach_goals(goal_ids, trace_id=trace_id, session_id=turn_res.session_id, evidence={"final_action": turn_res.action})
-                self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
+                self._attach_goals(
+                    goal_ids,
+                    trace_id=trace_id,
+                    session_id=turn_res.session_id,
+                    evidence={"final_action": turn_res.action},
+                )
+                self._record_trace_final(
+                    turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
+                )
                 self._trigger_background_memory(turn_res)
                 return turn_res
             observations.append(result.observation or result.text)
@@ -293,8 +327,15 @@ class HernessEngine:
                 budget_exhausted=budget_exhausted,
             )
             turn_res = self._with_trace(turn_res, trace_id)
-            self._attach_goals(goal_ids, trace_id=trace_id, session_id=turn_res.session_id, evidence={"final_action": turn_res.action, "budget_exhausted": budget_exhausted})
-            self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
+            self._attach_goals(
+                goal_ids,
+                trace_id=trace_id,
+                session_id=turn_res.session_id,
+                evidence={"final_action": turn_res.action, "budget_exhausted": budget_exhausted},
+            )
+            self._record_trace_final(
+                turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
+            )
             self._trigger_background_memory(turn_res)
             return turn_res
 
@@ -324,7 +365,9 @@ class HernessEngine:
                 trace_id=trace_id,
                 budget_exhausted=True,
             )
-            self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
+            self._record_trace_final(
+                turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
+            )
             self._trigger_background_memory(turn_res)
             return turn_res
 
@@ -341,12 +384,22 @@ class HernessEngine:
                 workspace=str(self.capabilities.gateway.project_dir.resolve()),
             ),
         )
-        turn_res = AgentTurnResult(text=reply.content, session_id=reply.session_id, action="chat", terminal=True, trace_id=trace_id)
-        self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
+        turn_res = AgentTurnResult(
+            text=reply.content,
+            session_id=reply.session_id,
+            action="chat",
+            terminal=True,
+            trace_id=trace_id,
+        )
+        self._record_trace_final(
+            turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
+        )
         self._trigger_background_memory(turn_res)
         return turn_res
 
-    def _attach_goals(self, goal_ids: set[str], *, trace_id: str, session_id: str, evidence: dict[str, Any]) -> None:
+    def _attach_goals(
+        self, goal_ids: set[str], *, trace_id: str, session_id: str, evidence: dict[str, Any]
+    ) -> None:
         if not goal_ids:
             return
         goals = GoalStore(self.home)
@@ -431,8 +484,16 @@ class HernessEngine:
                 tool=choice.tool,
                 model_role="runtime",
                 ok=invoked.ok,
-                input_data={"args": choice.args, "permission": choice.permission, "budget_recovery": True},
-                output_data={"action": invoked.action, "facts": invoked.facts or {}, "terminal": invoked.terminal},
+                input_data={
+                    "args": choice.args,
+                    "permission": choice.permission,
+                    "budget_recovery": True,
+                },
+                output_data={
+                    "action": invoked.action,
+                    "facts": invoked.facts or {},
+                    "terminal": invoked.terminal,
+                },
                 message=invoked.message or invoked.observation,
             )
             observations.append(invoked.observation or invoked.message)
@@ -463,7 +524,9 @@ class HernessEngine:
             if not isinstance(facts, dict):
                 continue
             run_id = str(facts.get("run_id") or facts.get("task_id") or "").strip()
-            status = str(facts.get("status") or facts.get("run_status") or facts.get("task_status") or "").strip()
+            status = str(
+                facts.get("status") or facts.get("run_status") or facts.get("task_status") or ""
+            ).strip()
             if run_id and status:
                 latest_run_status[run_id] = status
         for event in events:
@@ -479,7 +542,9 @@ class HernessEngine:
                     "completion verifier blocked final answer: "
                     f"delegation run {run_id} is still {status}; prepare it and request approval or run it before reporting completion."
                 )
-        last_delete = next((event for event in reversed(events) if event.get("tool") == "delegate.delete"), None)
+        last_delete = next(
+            (event for event in reversed(events) if event.get("tool") == "delegate.delete"), None
+        )
         facts = last_delete.get("facts") if isinstance(last_delete, dict) else None
         if isinstance(facts, dict) and facts.get("cleanup_complete") is False:
             remaining = facts.get("remaining_count")
@@ -500,19 +565,21 @@ class HernessEngine:
                         provider=self.runtime.provider,
                         run_id=result.run_id,
                     )
-                    
+
                     # F06: Goal context compaction
                     from navi.goals import GoalStore
+
                     goal_store = GoalStore(self.home)
                     # For all active goals in this session
                     goals = goal_store.list(status="active")
                     for g in goals:
                         if g.session_id == result.session_id:
                             await goal_store.compact_events(g.id, self.runtime.provider)
-                    
+
                     # Auto Eval Generation
                     try:
                         from navi.evolution import EvolutionEngine
+
                         evo = EvolutionEngine(self.home)
                         await evo.extract_evals_from_session(result.session_id)
                     except Exception as e:
@@ -520,6 +587,7 @@ class HernessEngine:
 
             task = asyncio.create_task(run_with_semaphore())
             self._background_tasks.add(task)
+
             def handle_done(t: asyncio.Task) -> None:
                 self._background_tasks.discard(t)
                 try:
@@ -528,6 +596,7 @@ class HernessEngine:
                     pass
                 except Exception as e:
                     logger.error(f"Background memory extraction failed: {e}", exc_info=True)
+
             task.add_done_callback(handle_done)
 
     async def shutdown(self, *, timeout: float = 10.0) -> None:
@@ -638,7 +707,9 @@ class HernessEngine:
         observation = "\n\n".join(observations)
         self.runtime.memory.add_message(session_id, "user", user_text)
         messages = self.runtime.build_messages(
-            session_id, user_text=user_text, operating_context=OperatingContext(
+            session_id,
+            user_text=user_text,
+            operating_context=OperatingContext(
                 home=self.home,
                 permission_ceiling=self.permission_ceiling,
                 skill_permission_ceiling="read",
@@ -774,9 +845,15 @@ class HernessEngine:
             minutes = max(0, round((float(expires_at) - time.time()) / 60)) if expires_at else 0
         except (TypeError, ValueError):
             minutes = 0
-        expiry = f"Approval expires in ~{minutes} minutes." if minutes else "Approval is expiring soon."
+        expiry = (
+            f"Approval expires in ~{minutes} minutes." if minutes else "Approval is expiring soon."
+        )
         affordance = approval_surface_affordance(source)
-        commands = affordance.get("approval_commands") if isinstance(affordance.get("approval_commands"), dict) else {}
+        commands = (
+            affordance.get("approval_commands")
+            if isinstance(affordance.get("approval_commands"), dict)
+            else {}
+        )
         approve_command = _first_command(commands, "approve", "approve")
         reject_command = _first_command(commands, "reject", "reject")
         template = str(affordance.get("approval_template") or "")
