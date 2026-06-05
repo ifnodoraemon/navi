@@ -308,3 +308,53 @@ journeys:
           action: approval
           run_count_delta: 1
           run_status: awaiting_approval
+
+  - id: hr_scenario_resume_screening
+    user_goal: Screen resumes based on JD.
+    public_basis: hr_candidate_screening
+    steps:
+      - user: "上网搜索一下 'AI大模型工程师' 这个岗位的常见JD，然后对比 data/resumes 目录下的三份简历，挑出最合适的。"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+
+  - id: hr_scenario_attendance_analysis
+    user_goal: Analyze employee attendance data and write drafts.
+    public_basis: hr_administrative_data_analysis
+    steps:
+      - user: "帮我分析一下上个月公司员工的打卡数据 data/attendance.csv，列出迟到次数最多的3个人，并给他们各起草一封提醒邮件草稿。"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+
+  - id: admin_scenario_market_research
+    user_goal: Research market trends and summarize into a report.
+    public_basis: market_research_report_generation
+    steps:
+      - user: "帮我搜索一下国内大语言模型在医疗领域的应用案例，整理成一份简报存到 market_research.md"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+
+  - id: admin_scenario_team_building
+    user_goal: Plan an event based on constraints.
+    public_basis: admin_event_planning
+    steps:
+      - user: "基于员工填写的团建意向表 data/team_building.xlsx，帮我写一个去大理团建的3天2夜行程规划，预算控制在每人3000以内。"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+
+  - id: hr_scenario_policy_conflict_check
+    user_goal: Compare external regulations with internal policies.
+    public_basis: legal_compliance_document_review
+    steps:
+      - user: "查找并总结一下国家关于员工带薪年假的最新法规，然后再对照一下我们公司的 data/hr_policy.pdf 看有没有冲突。"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
