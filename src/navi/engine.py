@@ -152,7 +152,14 @@ class HernessEngine:
             )
             if not planner_ok:
                 if syscall.tool == "system.planner_error":
-                    raise ValueError(f"failed to parse planner output: {syscall.reason}")
+                    return AgentTurnResult(
+                        text=f"Internal Error: Failed to parse planner output - {syscall.reason}",
+                        run_id="",
+                        action="chat",
+                        observation="",
+                        model_role="planner",
+                        terminal=True,
+                    )
                 break
             invoked = await self.capabilities.invoke(
                 syscall.tool,

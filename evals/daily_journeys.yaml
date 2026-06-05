@@ -251,3 +251,60 @@ journeys:
         expect:
           action: chat
           run_count_delta: 0
+
+  - id: customer_scenario_generate_dockerfile
+    user_goal: Ask Navi to write a Dockerfile for the project.
+    public_basis: openai_enterprise_engineering_workflow
+    steps:
+      - user: "帮我为这个项目写一个 Dockerfile，基础镜像用 python:3.13"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
+
+  - id: customer_scenario_code_formatting
+    user_goal: Ask Navi to format Python files.
+    public_basis: software_engineering_maintenance
+    steps:
+      - user: "用 ruff 格式化 src/navi 下所有的 python 文件"
+        expect:
+          action: approval
+          run_count_delta: 1
+
+  - id: customer_scenario_search_codebase
+    user_goal: Search codebase without mutating anything.
+    public_basis: developer_code_navigation
+    steps:
+      - user: "搜索一下代码里哪里用到了 os.environ，并告诉我文件列表"
+        expect:
+          action: tool
+          run_count_delta: 0
+
+  - id: customer_scenario_recurring_health_check
+    user_goal: Create a recurring health check monitor.
+    public_basis: devops_monitoring_automation
+    steps:
+      - user: "每天早上 9 点帮我检查服务器接口健康状态"
+        expect:
+          action: watch
+          watch_count_delta: 1
+          watch_kind: recurring
+
+  - id: customer_scenario_summarize_recent_commits
+    user_goal: Read recent commits and summarize them.
+    public_basis: engineering_management_reporting
+    steps:
+      - user: "使用 shell 运行 git log，帮我总结一下最近 5 个 commit 做了什么"
+        expect:
+          action: tool
+          run_count_delta: 0
+
+  - id: customer_scenario_refactor_and_test
+    user_goal: Refactor a component and ensure tests pass.
+    public_basis: core_engineering_refactoring
+    steps:
+      - user: "把 engine.py 里的长函数重构一下，提取出内部方法，并确保 pytest 测试通过"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval
