@@ -123,10 +123,12 @@ class HernessEngine:
         observations: list[str] = []
         
         import subprocess
+        from datetime import datetime
         try:
             cwd = self.capabilities.gateway.project_dir
+            now = datetime.now().astimezone().isoformat()
             git_status = subprocess.run(["git", "status", "-s"], cwd=cwd, capture_output=True, text=True, timeout=2).stdout.strip()
-            ambient = f"Ambient Context:\n- Workspace: {cwd}\n"
+            ambient = f"Ambient Context:\n- Current Time: {now}\n- Workspace: {cwd}\n"
             if git_status:
                 ambient += f"- Git Status:\n{git_status}\n"
             else:
