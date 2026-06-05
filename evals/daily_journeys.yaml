@@ -394,3 +394,14 @@ journeys:
         expect:
           action: chat
           run_count_delta: 0
+
+  - id: remote_session_elevation_request
+    user_goal: Request local command execution from a low-permission session, expecting a formal elevation request.
+    public_basis: security_permission_elevation
+    permission_ceiling: read
+    steps:
+      - user: "检查我本机codex的额度情况"
+        expect:
+          action: approval
+          run_count_delta: 1
+          run_status: awaiting_approval

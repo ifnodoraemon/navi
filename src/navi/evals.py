@@ -265,7 +265,8 @@ async def _run_daily_journey(
     provider: ModelPool | None = None,
 ) -> DailyJourneyResult:
     runtime = AgentRuntime(home=home, provider=provider) if provider is not None else build_runtime(home)
-    engine = HernessEngine(home=home, runtime=runtime, project_dir=project_dir)
+    ceiling = journey.get("permission_ceiling", "write")
+    engine = HernessEngine(home=home, runtime=runtime, project_dir=project_dir, permission_ceiling=ceiling)
     runs = RunStore(home)
     goals = GoalStore(home)
     execution = ExecutionService(home)
