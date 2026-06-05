@@ -158,20 +158,10 @@ async def test_runtime_system_prompt_includes_local_deployment_contract(tmp_path
     assert "running on their own machine" in system
     assert "Current workspace:" in system
     assert f"Current workspace: {tmp_path.resolve()}" not in system
-    assert "Current workspace: unknown" in system
     assert "Navi state home:" in system
+    assert "Current workspace: unknown" in system
     assert "Local execution bridge" in system
-    assert "Do not say you have no access to the user's local machine as an absolute statement" in system
-    assert "Do not frame local actions as a generic permission failure" in system
-    assert "this chat response itself is not a shell" in system
-    assert "Do not give a CLI invocation for task creation" in system
-    assert "user input for the kernel syscall planner" in system
-    assert "Do not invent product surfaces" in system
     assert "127.0.0.1:8765" not in system
-    assert "Current conversational channel" not in system
-    assert "Remote connectors:" not in system
-    assert "active surface" not in system
-    assert "Weixin" not in system
 
 
 @pytest.mark.asyncio

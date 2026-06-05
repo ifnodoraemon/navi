@@ -430,6 +430,7 @@ def test_mutating_action_syscalls_declare_state_transition_facts(tmp_path):
             "workflow.run": [],
             "workflow.verify": [],
             "workflow.resume": [],
+            "session.request_elevation": [],
         }
 
     planner_specs = {spec.name: spec for spec in build_capability_registry(tmp_path, project_dir=tmp_path).planner_specs()}

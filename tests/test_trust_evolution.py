@@ -287,6 +287,7 @@ def test_evolution_proposals_are_reviewable_before_apply(tmp_path):
     assert ledger.list() == []
     assert ledger.get_proposal(proposal.id).target_type == "prompt_layer"
 
+    ledger.record_proposal_evaluation(proposal.id, "approved")
     event = ledger.apply_proposal(proposal.id)
 
     assert event is not None
@@ -951,15 +952,15 @@ async def test_trust_success_consecutive_upgrades_and_failure_resets(tmp_path):
     assert rule.autonomy_level == "L2"
     assert rule.data.get("consecutive_successes") == 2
 
-    # Third success -> Promotes to L3, resets consecutive successes to 0, sets project_path
+    # Third success -> No longer promotes to L3 automatically due to P8
     rule = store.record_success(task)
     assert rule.success_count == 3
-    assert rule.autonomy_level == "L3"
-    assert rule.data.get("consecutive_successes") == 0
-    assert rule.project_path == "/tmp/workspace"
+    assert rule.autonomy_level == "L2"
+    assert rule.data.get("consecutive_successes") == 3
+    # project_path is no longer set automatically since we don't promote to L3
 
-    # 3. Record a failure -> Downgrades to L2, resets consecutive successes to 0
+    # 3. Record a failure -> Downgrades to L1, resets consecutive successes to 0
     rule = await store.record_failure(task)
     assert rule.failure_count == 1
-    assert rule.autonomy_level == "L2"
+    assert rule.autonomy_level == "L1"
     assert rule.data.get("consecutive_successes") == 0

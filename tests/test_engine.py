@@ -56,7 +56,7 @@ async def test_engine_falls_back_to_chat_when_planner_returns_empty_tool(tmp_pat
     planner_events = [event for event in events if event.phase == "planner.syscall"]
     assert planner_events
     assert planner_events[0].ok is False
-    assert planner_events[0].tool == "system.planner_error"
+    assert planner_events[0].tool == ""
 
 
 @pytest.mark.asyncio

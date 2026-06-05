@@ -105,8 +105,9 @@ class WeixinService:
                 }, ensure_ascii=False),
                 encoding="utf-8",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("navi.weixin").warning("Failed to update status: %s", e)
 
     def record_event(self, event: str, **facts) -> None:
         event_dir = self.home / "weixin"
@@ -120,8 +121,9 @@ class WeixinService:
             with (event_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
                 handle.write("\n")
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("navi.weixin").warning("Failed to record event: %s", e)
 
     async def run(self, *, once: bool = False) -> None:
         import time
@@ -281,9 +283,10 @@ class WeixinService:
                 timeout=1.5,
             )
             self.record_event("typing.sent", peer_id=peer_id, status=status)
-        except Exception:
+        except Exception as e:
             self.record_event("typing.error", peer_id=peer_id, status=status)
-            pass
+            import logging
+            logging.getLogger("navi.weixin").warning("Failed to send typing: %s", e)
 
     async def process_background(self, account: WeixinAccount) -> None:
         for result in await self.daemon.process_watches_once():

@@ -71,8 +71,9 @@ def _status(home: Path) -> dict[str, Any]:
                 "error": data.get("error", ""),
                 "last_update": data.get("last_update", 0.0),
             })
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("navi.weixin").warning("Failed to read status: %s", e)
     return facts
 
 

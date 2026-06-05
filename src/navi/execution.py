@@ -810,7 +810,6 @@ def _rollback_evidence(before_state: dict[str, Any], after_state: dict[str, Any]
         "reason": "workspace changed during failed execution",
         "before_git_status": before_status,
         "after_git_status": after_status,
-        "suggested_action": "inspect git diff and revert or repair changed files before retrying",
     }
 
 

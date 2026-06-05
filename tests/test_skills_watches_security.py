@@ -243,6 +243,7 @@ def test_prompt_layer_override_can_be_applied_and_rolled_back(tmp_path):
         after="Response style:\n- Use terse test wording.",
         rollback_plan="restore previous style layer",
     )
+    engine.ledger.record_proposal_evaluation(proposal.id, "approved")
 
     event = engine.apply_proposal(proposal.id)
     prompt = build_system_prompt(home=tmp_path)

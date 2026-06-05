@@ -331,6 +331,50 @@ class EvolutionLedger:
             )
         return self.get_proposal(proposal_id)
 
+
+    async def extract_evals_from_session(self, session_id: str) -> None:
+        try:
+            from navi.trace import TraceStore
+            from navi.evals import load_daily_journey_eval_dataset
+            import yaml
+            
+            traces = TraceStore(self.home)
+            events = traces.list_events(session_id)
+            if not events:
+                return
+
+            # Construct summary
+            summary_parts = []
+            for e in events:
+                if e.phase == "turn.start":
+                    summary_parts.append(f"User: {e.input_json}")
+                elif e.phase == "turn.end":
+                    summary_parts.append(f"Action: {e.tool}, Output: {e.output_json}")
+
+            text = "\n".join(summary_parts)
+            prompt = f"Analyze the following user journey and extract a daily eval YAML structure for it, containing 'id', 'user_goal', and a 'steps' array matching the format of daily_journeys.yaml. Return ONLY valid YAML.\n\n{text}"
+            
+            # Use provider
+            response = await self.provider.complete(prompt, max_tokens=1500)
+            if not response.text:
+                return
+            
+            extracted = yaml.safe_load(response.text.replace("```yaml", "").replace("```", "").strip())
+            if isinstance(extracted, dict) and "steps" in extracted:
+                evals_path = self.home.parent / "evals" / "auto_captured_journeys.yaml"
+                if evals_path.exists():
+                    data = load_daily_journey_eval_dataset(evals_path)
+                else:
+                    data = {"version": 1, "journeys": []}
+                
+                data["journeys"].append(extracted)
+                
+                with open(evals_path, "w") as f:
+                    yaml.dump(data, f, allow_unicode=True, sort_keys=False)
+
+        except Exception as e:
+            print(f"Eval extraction failed: {e}")
+
     def apply_proposal(self, proposal_id: str) -> EvolutionEvent | None:
         proposal = self.get_proposal(proposal_id)
         if proposal is None:
@@ -339,6 +383,15 @@ class EvolutionLedger:
             return self.get(proposal.applied_event_id)
         if proposal.status != "proposed":
             raise ValueError(f"cannot apply proposal in status: {proposal.status}")
+
+        target = next((t for t in EVOLUTION_TARGETS if t.target_type == proposal.target_type), None)
+        if target and target.permissions_can_expand:
+            if proposal.required_approval_level not in ("L3", "L4"):
+                raise ValueError("permission-expanding proposals require L3/L4 approval level")
+        
+        if proposal.required_approval_level != "L0" and proposal.evaluation_result != "approved":
+            raise ValueError(f"proposal requires {proposal.required_approval_level} approval but is not approved")
+
         event = self.record(
             run_id=proposal.source_run_id,
             target_type=proposal.target_type,
@@ -423,6 +476,50 @@ class EvolutionEngine:
 
         return self.ledger.list_for_task(task.id)
 
+
+    async def extract_evals_from_session(self, session_id: str) -> None:
+        try:
+            from navi.trace import TraceStore
+            from navi.evals import load_daily_journey_eval_dataset
+            import yaml
+            
+            traces = TraceStore(self.home)
+            events = traces.list_events(session_id)
+            if not events:
+                return
+
+            # Construct summary
+            summary_parts = []
+            for e in events:
+                if e.phase == "turn.start":
+                    summary_parts.append(f"User: {e.input_json}")
+                elif e.phase == "turn.end":
+                    summary_parts.append(f"Action: {e.tool}, Output: {e.output_json}")
+
+            text = "\n".join(summary_parts)
+            prompt = f"Analyze the following user journey and extract a daily eval YAML structure for it, containing 'id', 'user_goal', and a 'steps' array matching the format of daily_journeys.yaml. Return ONLY valid YAML.\n\n{text}"
+            
+            # Use provider
+            response = await self.provider.complete(prompt, max_tokens=1500)
+            if not response.text:
+                return
+            
+            extracted = yaml.safe_load(response.text.replace("```yaml", "").replace("```", "").strip())
+            if isinstance(extracted, dict) and "steps" in extracted:
+                evals_path = self.home.parent / "evals" / "auto_captured_journeys.yaml"
+                if evals_path.exists():
+                    data = load_daily_journey_eval_dataset(evals_path)
+                else:
+                    data = {"version": 1, "journeys": []}
+                
+                data["journeys"].append(extracted)
+                
+                with open(evals_path, "w") as f:
+                    yaml.dump(data, f, allow_unicode=True, sort_keys=False)
+
+        except Exception as e:
+            print(f"Eval extraction failed: {e}")
+
     def apply_proposal(self, proposal_id: str) -> EvolutionEvent | None:
         proposal = self.ledger.get_proposal(proposal_id)
         if proposal is None:
@@ -431,10 +528,27 @@ class EvolutionEngine:
             return self.ledger.get(proposal.applied_event_id)
         if proposal.status != "proposed":
             raise ValueError(f"cannot apply proposal in status: {proposal.status}")
+
+        target = next((t for t in EVOLUTION_TARGETS if t.target_type == proposal.target_type), None)
+        if target and target.permissions_can_expand:
+            if proposal.required_approval_level not in ("L3", "L4"):
+                raise ValueError("permission-expanding proposals require L3/L4 approval level")
+        
+        if proposal.required_approval_level != "L0" and proposal.evaluation_result != "approved":
+            raise ValueError(f"proposal requires {proposal.required_approval_level} approval but is not approved")
+
         if proposal.target_type == "prompt_layer":
             from .prompting import PromptLayerStore
 
             PromptLayerStore(self.home).write_override(proposal.target_id, proposal.after)
+        elif proposal.target_type in ("tool_spec", "connector_spec", "trust_policy", "workflow_policy", "memory_schema"):
+            spec_path = self.home / "specs" / f"{proposal.target_id}.yaml"
+            spec_path.parent.mkdir(parents=True, exist_ok=True)
+            spec_path.write_text(proposal.after, encoding="utf-8")
+        elif proposal.target_type == "eval_case":
+            spec_path = self.home / "evals" / f"{proposal.target_id}.json"
+            spec_path.parent.mkdir(parents=True, exist_ok=True)
+            spec_path.write_text(proposal.after, encoding="utf-8")
         return self.ledger.apply_proposal(proposal_id)
 
     def rollback(self, event_id: str) -> EvolutionEvent | None:
@@ -491,6 +605,15 @@ class EvolutionEngine:
                 store.write_override(event.target_id, event.before)
             else:
                 store.delete_override(event.target_id)
+        elif event.target_type in ("tool_spec", "connector_spec", "trust_policy", "workflow_policy", "memory_schema", "eval_case"):
+            ext = "json" if event.target_type == "eval_case" else "yaml"
+            folder = "evals" if event.target_type == "eval_case" else "specs"
+            spec_path = self.home / folder / f"{event.target_id}.{ext}"
+            if event.before:
+                spec_path.parent.mkdir(parents=True, exist_ok=True)
+                spec_path.write_text(event.before, encoding="utf-8")
+            elif spec_path.exists():
+                spec_path.unlink()
         return self.ledger.mark_rolled_back(event_id)
 
     def _update_graph(self, task: Run, *, success: bool, reason: str) -> EvolutionEvent:

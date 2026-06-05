@@ -38,9 +38,14 @@ class Goal:
     trace_id: str
     evidence_json: str
     blocked_reason: str
+    stop_condition: str
+    timeout: float
+    max_retries: int
     created_at: float
     updated_at: float
     completed_at: float
+
+GOAL_STATUSES = {"active", "completed", "failed", "blocked", "abandoned", "awaiting_approval", "verified_complete", "rejected"}
 
 
 @dataclass(frozen=True)
@@ -79,6 +84,9 @@ class GoalStore:
                     trace_id TEXT NOT NULL,
                     evidence_json TEXT NOT NULL,
                     blocked_reason TEXT NOT NULL,
+                    stop_condition TEXT NOT NULL,
+                    timeout REAL NOT NULL,
+                    max_retries INTEGER NOT NULL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     completed_at REAL NOT NULL
@@ -132,6 +140,9 @@ class GoalStore:
             trace_id=trace_id,
             evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
             blocked_reason="",
+            stop_condition="",
+            timeout=0.0,
+            max_retries=0,
             created_at=now,
             updated_at=now,
             completed_at=0.0,
@@ -142,9 +153,10 @@ class GoalStore:
                 INSERT INTO goals(
                     id, objective, status, source, peer_id, sender_id, session_id,
                     workspace, run_id, trace_id, evidence_json, blocked_reason,
+                    stop_condition, timeout, max_retries,
                     created_at, updated_at, completed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     goal.id,
@@ -159,6 +171,9 @@ class GoalStore:
                     goal.trace_id,
                     goal.evidence_json,
                     goal.blocked_reason,
+                    goal.stop_condition,
+                    goal.timeout,
+                    goal.max_retries,
                     goal.created_at,
                     goal.updated_at,
                     goal.completed_at,
@@ -173,6 +188,7 @@ class GoalStore:
                 """
                 SELECT id, objective, status, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
+                       stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at
                 FROM goals WHERE id = ?
                 """,
@@ -186,6 +202,7 @@ class GoalStore:
                 """
                 SELECT id, objective, status, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
+                       stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at
                 FROM goals WHERE run_id = ? ORDER BY updated_at DESC LIMIT 1
                 """,
@@ -198,6 +215,7 @@ class GoalStore:
             query = """
                 SELECT id, objective, status, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
+                       stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at
                 FROM goals WHERE status = ? ORDER BY updated_at DESC LIMIT ?
                 """
@@ -206,6 +224,7 @@ class GoalStore:
             query = """
                 SELECT id, objective, status, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
+                       stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at
                 FROM goals ORDER BY updated_at DESC LIMIT ?
                 """
@@ -213,6 +232,52 @@ class GoalStore:
         with connect(self.db_path) as conn:
             rows = conn.execute(query, params).fetchall()
         return [Goal(*row) for row in rows]
+
+    
+    async def compact_events(self, goal_id: str, provider, *, threshold: int = 20) -> bool:
+        events = self.list_events(goal_id, limit=1000)
+        events.sort(key=lambda x: x.created_at)
+        if len(events) <= threshold:
+            return False
+
+        # Summarize events
+        from navi.provider import ChatMessage
+        lines = []
+        for e in events:
+            lines.append(f"[{e.created_at}] {e.event_type} {e.status} {e.evidence_json}")
+        
+        prompt = (
+            "Summarize the following goal events to preserve intent, completed steps, pending approvals, "
+            "unresolved questions, and safety constraints. Do not lose any constraints or pending approvals.\n\n"
+            + "\n".join(lines)
+        )
+        summary = await provider.complete_for("planner", [ChatMessage("user", prompt)])
+        
+        # Create compaction event
+        event = GoalEvent(
+            id=uuid.uuid4().hex,
+            goal_id=goal_id,
+            event_type="goal.compaction",
+            status="active",
+            run_id="",
+            trace_id="",
+            evidence_json=json.dumps({"summary": summary}, ensure_ascii=False, sort_keys=True),
+            created_at=time.time(),
+        )
+        
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO goal_events(id, goal_id, event_type, status, run_id, trace_id, evidence_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (event.id, event.goal_id, event.event_type, event.status, event.run_id, event.trace_id, event.evidence_json, event.created_at),
+            )
+            # Delete old events except the compaction one
+            for e in events:
+                conn.execute("DELETE FROM goal_events WHERE id = ?", (e.id,))
+                
+        return True
 
     def list_events(self, goal_id: str, *, limit: int = 100) -> list[GoalEvent]:
         with connect(self.db_path) as conn:
@@ -247,15 +312,9 @@ class GoalStore:
         self.record_event(goal_id, "goal.trace_attached", status=goal.status, run_id=goal.run_id, trace_id=trace_id, evidence=evidence or {})
         return self.get(goal_id)
 
-    def update_status(
-        self,
-        goal_id: str,
-        *,
-        status: str,
-        blocked_reason: str = "",
-        evidence: dict[str, Any] | None = None,
-        event_type: str = "goal.status",
-    ) -> Goal | None:
+    def update_status(self, goal_id: str, status: str, *, blocked_reason: str = "", evidence: dict[str, Any] | None = None, event_type: str = "goal.status") -> Goal | None:
+        if status not in GOAL_STATUSES:
+            raise ValueError(f"Invalid goal status: {status}")
         goal = self.get(goal_id)
         if goal is None:
             return None
@@ -382,6 +441,9 @@ _GOAL_SCHEMA = [
     ("trace_id", "TEXT", 1, 0),
     ("evidence_json", "TEXT", 1, 0),
     ("blocked_reason", "TEXT", 1, 0),
+    ("stop_condition", "TEXT", 1, 0),
+    ("timeout", "REAL", 1, 0),
+    ("max_retries", "INTEGER", 1, 0),
     ("created_at", "REAL", 1, 0),
     ("updated_at", "REAL", 1, 0),
     ("completed_at", "REAL", 1, 0),

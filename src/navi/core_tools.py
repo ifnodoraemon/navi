@@ -792,7 +792,17 @@ def _is_browser_url(value: str) -> bool:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return False
     host = (parsed.hostname or "").lower()
-    return bool(host)
+    if not host:
+        return False
+    try:
+        import ipaddress
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            return False
+    except ValueError:
+        if host in {"localhost", "host.docker.internal"}:
+            return False
+    return True
 
 
 def _filesystem_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
@@ -947,7 +957,9 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
 
 
 def _test_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
-    command = _command_list(args.get("command")) or ["pytest", "-q"]
+    command = _command_list(args.get("command"))
+    if not command:
+        return ToolResult(tool="test.run", ok=False, error="command must be a non-empty string array")
     cwd, error = _project_path(args.get("cwd") or str(project_dir), project_dir=project_dir)
     if error:
         return ToolResult(tool="test.run", ok=False, error=error)

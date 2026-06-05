@@ -38,7 +38,7 @@
   source: action
 - name: delegate.spawn
   handler: delegate_spawn
-  description: Create a tracked delegation run record.
+  description: "Create a tracked delegation run record to execute complex local shell commands, apply codebase changes, or perform background engineering diagnosis."
   input_schema:
     type: object
     properties:
@@ -176,6 +176,7 @@
         type: string
       kind:
         type: string
+        enum: ["once", "recurring"]
     required:
       - prompt
   output_schema:
@@ -581,5 +582,36 @@
         type: integer
   facts_only: true
   mutates: false
+  permission: read
+  source: action
+- name: session.request_elevation
+  handler: session_request_elevation
+  description: "Request temporary elevation of the session's permission ceiling (e.g., from read to prepare or write). Required before calling capabilities that demand permissions above the current ceiling."
+  input_schema:
+    type: object
+    properties:
+      target_permission:
+        type: string
+        enum: [prepare, write, execute]
+      reason:
+        type: string
+    required:
+      - target_permission
+      - reason
+  output_schema:
+    type: object
+    properties:
+      status:
+        type: string
+      message:
+        type: string
+      approval_code:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+  facts_only: true
+  mutates: true
   permission: read
   source: action

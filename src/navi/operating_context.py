@@ -25,6 +25,7 @@ class OperatingContext:
     skill_permission_ceiling: str = "read"
     workspace: str = ""
     role: str = ""
+    objective: str = ""
     prompt_layers: tuple[str, ...] = (
         "identity",
         "runtime",

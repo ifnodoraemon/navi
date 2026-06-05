@@ -455,12 +455,14 @@ def eval_daily(
         else:
             typer.echo("ok dataset")
         return
+    home_path = ensure_home()
     results = asyncio.run(
         run_daily_journey_eval_dataset(
-            home=ensure_home(),
+            home=home_path,
             project_dir=Path.cwd(),
             dataset=dataset,
             timeout_seconds=timeout_seconds,
+            provider=build_provider(load_config(home_path).model),
         )
     )
     if json_output:
@@ -491,13 +493,15 @@ def eval_claw(
         else:
             typer.echo(f"ok dataset tasks={len(loaded['tasks'])}")
         return
+    home_path = ensure_home()
     results = asyncio.run(
         run_claw_eval_dataset(
-            home=ensure_home(),
+            home=home_path,
             project_dir=Path.cwd(),
             dataset=dataset,
             attempts=attempts,
             timeout_seconds=timeout_seconds,
+            provider=build_provider(load_config(home_path).model),
         )
     )
     if json_output:

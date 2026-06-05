@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .db import connect
 from .hooks import HookDecision, HookEvent, HookRegistry
@@ -94,17 +94,24 @@ def memory_policy_facts() -> dict:
     }
 
 
-class MemoryStore:
-    def __init__(self, home: Path):
-        self.home = home
-        self.memory_dir = home / "memory"
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = home / "memory.db"
-        self._init_db()
-        self._session_locks = {}
-        self._session_lock_refs = {}
-        self._session_locks_guard: asyncio.Lock | None = None
 
+class MemoryProvider(Protocol):
+    def store_item(self, item: MemoryItem) -> None: ...
+    def get_items(self, *, memory_type: str | None = None, status: str | None = None, limit: int = 50) -> list[MemoryItem]: ...
+    def get_item(self, item_id: str) -> MemoryItem | None: ...
+    def update_item(self, item_id: str, *, status: str | None = None, last_verified_at: float | None = None, updated_at: float | None = None) -> None: ...
+    def delete_item(self, item_id: str) -> None: ...
+    def add_message(self, session_id: str, role: str, content: str, created_at: float) -> None: ...
+    def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]: ...
+    def list_sessions(self) -> list[str]: ...
+    def set_session_alias(self, alias: str, session_id: str, created_at: float, updated_at: float) -> None: ...
+    def get_session_alias(self, alias: str) -> SessionAlias | None: ...
+    def list_session_aliases(self, limit: int = 50) -> list[SessionAlias]: ...
+
+class SQLiteMemoryProvider:
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self._init_db()
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
             conn.execute(
@@ -149,6 +156,179 @@ class MemoryStore:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_items(status, type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_items(scope)")
+    def _item_from_row(self, row: tuple) -> MemoryItem:
+        return MemoryItem(
+            id=row[0],
+            type=row[1],
+            status=row[2],
+            scope=row[3],
+            content=row[4],
+            source=row[5],
+            confidence=row[6],
+            created_at=row[7],
+            updated_at=row[8],
+            last_verified_at=row[9],
+            expires_at=row[10],
+            metadata=json.loads(row[11]),
+        )
+
+    def store_item(self, item: MemoryItem) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_items(
+                    id, type, status, scope, content, source, confidence,
+                    created_at, updated_at, last_verified_at, expires_at, metadata
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.id,
+                    item.type,
+                    item.status,
+                    item.scope,
+                    item.content,
+                    item.source,
+                    item.confidence,
+                    item.created_at,
+                    item.updated_at,
+                    item.last_verified_at,
+                    item.expires_at,
+                    json.dumps(item.metadata, sort_keys=True),
+                ),
+            )
+
+    def get_items(self, *, memory_type: str | None = None, status: str | None = None, limit: int = 50) -> list[MemoryItem]:
+        clauses = []
+        values: list[object] = []
+        if memory_type:
+            clauses.append("type = ?")
+            values.append(memory_type)
+        if status:
+            clauses.append("status = ?")
+            values.append(status)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(limit)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, type, status, scope, content, source, confidence,
+                       created_at, updated_at, last_verified_at, expires_at, metadata
+                FROM memory_items
+                {where}
+                ORDER BY updated_at DESC LIMIT ?
+                """,
+                values,
+            ).fetchall()
+        return [self._item_from_row(row) for row in rows]
+
+    def get_item(self, item_id: str) -> MemoryItem | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT id, type, status, scope, content, source, confidence,
+                       created_at, updated_at, last_verified_at, expires_at, metadata
+                FROM memory_items WHERE id = ?
+                """,
+                (item_id,),
+            ).fetchone()
+        return self._item_from_row(row) if row else None
+
+    def update_item(self, item_id: str, *, status: str | None = None, last_verified_at: float | None = None, updated_at: float | None = None) -> None:
+        sets = []
+        values: list[object] = []
+        if status is not None:
+            sets.append("status = ?")
+            values.append(status)
+        if last_verified_at is not None:
+            sets.append("last_verified_at = ?")
+            values.append(last_verified_at)
+        if updated_at is not None:
+            sets.append("updated_at = ?")
+            values.append(updated_at)
+        if not sets:
+            return
+        values.append(item_id)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE memory_items SET " + ", ".join(sets) + " WHERE id = ?",
+                values,
+            )
+
+    def delete_item(self, item_id: str) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
+
+    def add_message(self, session_id: str, role: str, content: str, created_at: float) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO messages(session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                (session_id, role, content, created_at),
+            )
+
+    def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT session_id, role, content, created_at
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [StoredMessage(*row) for row in reversed(rows)]
+
+    def list_sessions(self) -> list[str]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT session_id FROM messages GROUP BY session_id ORDER BY MAX(created_at) DESC"
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def set_session_alias(self, alias: str, session_id: str, created_at: float, updated_at: float) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO session_aliases(alias, session_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(alias) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at
+                """,
+                (alias, session_id, created_at, updated_at),
+            )
+
+    def get_session_alias(self, alias: str) -> SessionAlias | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT alias, session_id, created_at, updated_at
+                FROM session_aliases WHERE alias = ?
+                """,
+                (alias,),
+            ).fetchone()
+        return SessionAlias(*row) if row else None
+
+    def list_session_aliases(self, limit: int = 50) -> list[SessionAlias]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT alias, session_id, created_at, updated_at
+                FROM session_aliases ORDER BY updated_at DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [SessionAlias(*row) for row in rows]
+
+class MemoryStore:
+    def __init__(self, home: Path, provider: MemoryProvider | None = None):
+        self.home = home
+        self.memory_dir = home / "memory"
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self.provider = provider or SQLiteMemoryProvider(home / "memory.db")
+        self._session_locks = {}
+        self._session_lock_refs = {}
+        self._session_locks_guard: asyncio.Lock | None = None
 
     def add_item(
         self,
@@ -188,6 +368,21 @@ class MemoryStore:
         if blocked is not None:
             raise ValueError(blocked.reason or f"hook blocked memory write: {blocked.hook}")
         now = time.time()
+        
+        # Simple automatic contradiction/overlap detection
+        import difflib
+        resolved_scope = scope.strip() or "global"
+        existing_items = self.list_items(memory_type=memory_type, status="active")
+        metadata = metadata or {}
+        contradicts = set(metadata.get("contradicts", []))
+        for existing in existing_items:
+            if existing.scope == resolved_scope:
+                ratio = difflib.SequenceMatcher(None, existing.content.lower(), content.strip().lower()).ratio()
+                if ratio > 0.85 and existing.content.lower() != content.strip().lower():
+                    contradicts.add(existing.id)
+        if contradicts:
+            metadata["contradicts"] = list(contradicts)
+            
         item = MemoryItem(
             id=uuid.uuid4().hex,
             type=memory_type,
@@ -202,30 +397,7 @@ class MemoryStore:
             expires_at=expires_at,
             metadata=metadata or {},
         )
-        with connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO memory_items(
-                    id, type, status, scope, content, source, confidence,
-                    created_at, updated_at, last_verified_at, expires_at, metadata
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    item.id,
-                    item.type,
-                    item.status,
-                    item.scope,
-                    item.content,
-                    item.source,
-                    item.confidence,
-                    item.created_at,
-                    item.updated_at,
-                    item.last_verified_at,
-                    item.expires_at,
-                    json.dumps(item.metadata, sort_keys=True),
-                ),
-            )
+        self.provider.store_item(item)
         return item
 
     def list_items(
@@ -235,28 +407,7 @@ class MemoryStore:
         status: str | None = None,
         limit: int = 50,
     ) -> list[MemoryItem]:
-        clauses = []
-        values: list[object] = []
-        if memory_type:
-            clauses.append("type = ?")
-            values.append(memory_type)
-        if status:
-            clauses.append("status = ?")
-            values.append(status)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        values.append(limit)
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                f"""
-                SELECT id, type, status, scope, content, source, confidence,
-                       created_at, updated_at, last_verified_at, expires_at, metadata
-                FROM memory_items
-                {where}
-                ORDER BY updated_at DESC LIMIT ?
-                """,
-                values,
-            ).fetchall()
-        return [self._item_from_row(row) for row in rows]
+        return self.provider.get_items(memory_type=memory_type, status=status, limit=limit)
 
     def list_conflicts(self, *, limit: int = 50) -> list[MemoryConflict]:
         items = self.list_items(limit=1000)
@@ -288,57 +439,27 @@ class MemoryStore:
         ][:limit]
 
     def get_item(self, item_id: str) -> MemoryItem | None:
-        with connect(self.db_path) as conn:
-            row = conn.execute(
-                """
-                SELECT id, type, status, scope, content, source, confidence,
-                       created_at, updated_at, last_verified_at, expires_at, metadata
-                FROM memory_items WHERE id = ?
-                """,
-                (item_id,),
-            ).fetchone()
-        return self._item_from_row(row) if row else None
+        return self.provider.get_item(item_id)
 
     def set_status(self, item_id: str, status: str) -> MemoryItem | None:
         status = status.strip().lower()
         if status not in MEMORY_STATUSES:
             raise ValueError(f"Unsupported memory status: {status}")
-        with connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE memory_items SET status = ?, updated_at = ? WHERE id = ?",
-                (status, time.time(), item_id),
-            )
+        self.provider.update_item(item_id, status=status, updated_at=time.time())
+        return self.get_item(item_id)
+
+    def verify_item(self, item_id: str) -> MemoryItem | None:
+        self.provider.update_item(item_id, last_verified_at=time.time(), updated_at=time.time())
         return self.get_item(item_id)
 
     def delete_item(self, item_id: str) -> None:
-        with connect(self.db_path) as conn:
-            conn.execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
+        self.provider.delete_item(item_id)
 
     def restore_item(self, item_dict: dict) -> None:
-        with connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO memory_items(
-                    id, type, status, scope, content, source, confidence,
-                    created_at, updated_at, last_verified_at, expires_at, metadata
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    item_dict["id"],
-                    item_dict["type"],
-                    item_dict["status"],
-                    item_dict["scope"],
-                    item_dict["content"],
-                    item_dict["source"],
-                    item_dict["confidence"],
-                    item_dict["created_at"],
-                    item_dict["updated_at"],
-                    item_dict["last_verified_at"],
-                    item_dict["expires_at"],
-                    json.dumps(item_dict["metadata"], sort_keys=True) if isinstance(item_dict["metadata"], dict) else item_dict["metadata"],
-                ),
-            )
+        if isinstance(item_dict.get("metadata"), str):
+            item_dict["metadata"] = json.loads(item_dict["metadata"])
+        item = MemoryItem(**item_dict)
+        self.provider.store_item(item)
 
     def _parse_json_learnings(self, response_raw: str) -> list[dict]:
         data = parse_first_json_object(response_raw)
@@ -398,27 +519,11 @@ class MemoryStore:
         now = time.time()
         existing = self.get_session_alias(alias)
         created_at = existing.created_at if existing else now
-        with connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO session_aliases(alias, session_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(alias) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at
-                """,
-                (alias, session_id, created_at, now),
-            )
+        self.provider.set_session_alias(alias, session_id, created_at, now)
         return self.get_session_alias(alias) or SessionAlias(alias, session_id, created_at, now)
 
     def get_session_alias(self, alias: str) -> SessionAlias | None:
-        with connect(self.db_path) as conn:
-            row = conn.execute(
-                """
-                SELECT alias, session_id, created_at, updated_at
-                FROM session_aliases WHERE alias = ?
-                """,
-                (alias,),
-            ).fetchone()
-        return SessionAlias(*row) if row else None
+        return self.provider.get_session_alias(alias)
 
     def current_session_id(self, alias: str) -> str:
         current = self.get_session_alias(alias)
@@ -430,43 +535,16 @@ class MemoryStore:
         return self.set_session_alias(alias, self.new_session_id())
 
     def list_session_aliases(self, *, limit: int = 50) -> list[SessionAlias]:
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT alias, session_id, created_at, updated_at
-                FROM session_aliases ORDER BY updated_at DESC LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [SessionAlias(*row) for row in rows]
+        return self.provider.list_session_aliases(limit)
 
     def add_message(self, session_id: str, role: str, content: str) -> None:
-        with connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT INTO messages(session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (session_id, role, content, time.time()),
-            )
+        self.provider.add_message(session_id, role, content, time.time())
 
     def list_sessions(self) -> list[str]:
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT session_id FROM messages GROUP BY session_id ORDER BY MAX(created_at) DESC"
-            ).fetchall()
-        return [row[0] for row in rows]
+        return self.provider.list_sessions()
 
     def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]:
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT session_id, role, content, created_at
-                FROM messages
-                WHERE session_id = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (session_id, limit),
-            ).fetchall()
-        return [StoredMessage(*row) for row in reversed(rows)]
+        return self.provider.get_messages(session_id, limit)
 
     async def extract_and_consolidate_memories(
         self,
@@ -569,8 +647,8 @@ class MemoryStore:
                         new_item = self.add_item(
                             memory_type=m_type,
                             content=content,
-                            source="evolution",
-                            status="active",
+                            source="conversation_consolidation",
+                            status="proposed",
                             confidence=conf_val,
                         )
                         seen_memory_keys.add(memory_key)
@@ -749,8 +827,8 @@ class MemoryStore:
                 new_item = self.add_item(
                     memory_type=m_type,
                     content=content,
-                    source="evolution",
-                    status="active",
+                    source="task_reflection",
+                    status="proposed",
                     confidence=conf_val,
                 )
                 seen_memory_keys.add(memory_key)

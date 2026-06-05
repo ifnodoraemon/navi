@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,7 @@ class AgentTurnResult:
     terminal: bool = False
     trace_id: str = ""
     budget_exhausted: bool = False
+    memory_influence: tuple[str, ...] = ()
 
 
 class HernessEngine:
@@ -65,7 +66,24 @@ class HernessEngine:
         self._memory_sem: asyncio.Semaphore | None = None
         self._background_tasks: set[asyncio.Task] = set()
 
+
+    def _get_effective_permission_ceiling(self, peer_id: str, sender_id: str) -> str:
+        ceiling = self.permission_ceiling
+        try:
+            from navi.runs import RunStore
+            runs = RunStore(self.home).list(limit=50)
+            for r in runs:
+                if r.peer_id == peer_id and r.sender_id == sender_id:
+                    if r.plan_summary.startswith("session_elevation:"):
+                        if r.status in ("queued", "completed", "active"):
+                            elevated = r.plan_summary.split(":")[1]
+                            return elevated
+        except Exception:
+            pass
+        return ceiling
+
     async def handle(
+
         self,
         text: str,
         *,
@@ -94,7 +112,7 @@ class HernessEngine:
             peer_id=peer_id,
             sender_id=sender_id,
             source=source,
-            permission_ceiling=self.permission_ceiling,
+            permission_ceiling=self._get_effective_permission_ceiling(peer_id, sender_id),
             workspace=str(self.capabilities.gateway.project_dir.resolve()),
         )
         observations: list[str] = []
@@ -133,6 +151,8 @@ class HernessEngine:
                 message=planner_message,
             )
             if not planner_ok:
+                if syscall.tool == "system.planner_error":
+                    raise ValueError(f"failed to parse planner output: {syscall.reason}")
                 break
             invoked = await self.capabilities.invoke(
                 syscall.tool,
@@ -178,14 +198,11 @@ class HernessEngine:
                 terminal=invoked.terminal,
             )
             if result.terminal and observations and result.action == "chat" and last_result:
-                result = AgentTurnResult(
+                result = replace(
+                    last_result,
                     text=result.text,
-                    run_id=last_result.run_id,
-                    action=last_result.action,
                     observation="\n\n".join(observations),
-                    model_role=last_result.model_role,
                     terminal=True,
-                    budget_exhausted=last_result.budget_exhausted,
                 )
                 result = self._ensure_pending_approval_prompt(result, pending_approval_prompt)
             last_result = result
@@ -276,7 +293,7 @@ class HernessEngine:
         if budget_exhausted:
             resolved_session_id = resolved_session_id or self.runtime.memory.new_session_id()
             self.runtime.memory.add_message(resolved_session_id, "user", text)
-            messages = self.runtime._build_messages(
+            messages = self.runtime.build_messages(
                 resolved_session_id,
                 user_text=text,
                 operating_context=OperatingContext(
@@ -437,8 +454,8 @@ class HernessEngine:
             facts = event.get("facts")
             if not isinstance(facts, dict):
                 continue
-            run_id = str(facts.get("run_id") or facts.get("run_id") or "").strip()
-            status = str(facts.get("status") or facts.get("run_status") or facts.get("run_status") or "").strip()
+            run_id = str(facts.get("run_id") or facts.get("task_id") or "").strip()
+            status = str(facts.get("status") or facts.get("run_status") or facts.get("task_status") or "").strip()
             if run_id and status:
                 latest_run_status[run_id] = status
         for event in events:
@@ -447,7 +464,7 @@ class HernessEngine:
             facts = event.get("facts")
             if not isinstance(facts, dict):
                 continue
-            run_id = str(facts.get("run_id") or facts.get("run_id") or "").strip()
+            run_id = str(facts.get("run_id") or facts.get("task_id") or "").strip()
             status = latest_run_status.get(run_id) or str(facts.get("status") or "").strip()
             if run_id and status in {"pending", "prepared"}:
                 return (
@@ -475,10 +492,27 @@ class HernessEngine:
                         provider=self.runtime.provider,
                         run_id=result.run_id,
                     )
+                    
+                    # F06: Goal context compaction
+                    from navi.goals import GoalStore
+                    goal_store = GoalStore(self.home)
+                    # For all active goals in this session
+                    goals = goal_store.list(status="active")
+                    for g in goals:
+                        if g.session_id == result.session_id:
+                            await goal_store.compact_events(g.id, self.runtime.provider)
+                    
+                    # Auto Eval Generation
+                    try:
+                        from navi.evolution import EvolutionEngine
+                        evo = EvolutionEngine(self.home)
+                        await evo.extract_evals_from_session(result.session_id)
+                    except Exception as e:
+                        logger.error(f"Background eval extraction failed: {e}", exc_info=True)
 
             task = asyncio.create_task(run_with_semaphore())
             self._background_tasks.add(task)
-            def handle_done(t: asyncio.Run) -> None:
+            def handle_done(t: asyncio.Task) -> None:
                 self._background_tasks.discard(t)
                 try:
                     t.result()
@@ -595,10 +629,8 @@ class HernessEngine:
         session_id = session_id or self.runtime.memory.new_session_id()
         observation = "\n\n".join(observations)
         self.runtime.memory.add_message(session_id, "user", user_text)
-        messages = self.runtime._build_messages(
-            session_id,
-            user_text=user_text,
-            operating_context=OperatingContext(
+        messages = self.runtime.build_messages(
+            session_id, user_text=user_text, operating_context=OperatingContext(
                 home=self.home,
                 permission_ceiling=self.permission_ceiling,
                 skill_permission_ceiling="read",
@@ -612,9 +644,7 @@ class HernessEngine:
                     (
                         "Navi's operating system has produced capability observations.",
                         "Use only the observations as the source of truth.",
-                        "Speak directly to the user in the user's language.",
-                        "Do not mention hidden routers, JSON schemas, or internal planning decisions.",
-                        "Preserve task ids, approval codes, service names, and error messages exactly when relevant.",
+                        "Answer the user based on these facts, following your prompt layer rules.",
                     )
                 ),
             )
@@ -694,7 +724,7 @@ class HernessEngine:
     def _text_mentions_pending_approval(text: str, pending_approval_prompt: str) -> bool:
         if pending_approval_prompt in text:
             return True
-        marker = "审批码: `"
+        marker = "Approval code: `"
         if marker not in pending_approval_prompt:
             return False
         code = pending_approval_prompt.split(marker, 1)[1].split("`", 1)[0]
@@ -712,10 +742,10 @@ class HernessEngine:
             stop_condition = str(facts.get("stop_condition") or "").strip()
             details = [
                 f"Workflow ID: `{workflow_id}`",
-                f"步骤数: {step_count}" if step_count is not None else "",
-                f"风险级别: {risk_class}",
-                f"预计成本: {estimated_cost}",
-                f"停止条件: {stop_condition}" if stop_condition else "",
+                f"Steps: {step_count}" if step_count is not None else "",
+                f"Risk class: {risk_class}",
+                f"Estimated cost: {estimated_cost}",
+                f"Stop condition: {stop_condition}" if stop_condition else "",
             ]
             detail_text = "\n".join(f"- {item}" for item in details if item)
             return (
@@ -736,7 +766,7 @@ class HernessEngine:
             minutes = max(0, round((float(expires_at) - time.time()) / 60)) if expires_at else 0
         except (TypeError, ValueError):
             minutes = 0
-        expiry = f"审批将在约 {minutes} 分钟后过期。" if minutes else "审批有过期时间，请尽快处理。"
+        expiry = f"Approval expires in ~{minutes} minutes." if minutes else "Approval is expiring soon."
         affordance = approval_surface_affordance(source)
         commands = affordance.get("approval_commands") if isinstance(affordance.get("approval_commands"), dict) else {}
         approve_command = _first_command(commands, "approve", "approve")
@@ -745,7 +775,7 @@ class HernessEngine:
         if not template:
             return ""
         return template.format(
-            task_line=f"任务 ID: `{run_id}`" if run_id else "",
+            task_line=f"Task ID: `{run_id}`" if run_id else "",
             code=code,
             expiry=expiry,
             approve_command=approve_command,

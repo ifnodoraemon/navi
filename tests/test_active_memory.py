@@ -72,7 +72,7 @@ async def test_extract_and_consolidate_memories_add_and_revoke(tmp_path):
     assert len(affected_items) == 2
     
     # Verify newly added preference
-    new_items = store.list_items(memory_type="preference", status="active")
+    new_items = store.list_items(memory_type="preference", status="proposed")
     assert len(new_items) == 1
     assert new_items[0].content == "I prefer compiling with the current project interpreter"
     assert new_items[0].confidence == 0.95
@@ -111,7 +111,7 @@ async def test_extract_and_consolidate_memories_deduplicates_batch(tmp_path):
     affected_items = await store.extract_and_consolidate_memories(session_id, pool)
 
     assert len(affected_items) == 1
-    assert len(store.list_items(memory_type="preference", status="active")) == 1
+    assert len(store.list_items(memory_type="preference", status="proposed")) == 1
 
 
 @pytest.mark.asyncio
@@ -351,7 +351,7 @@ async def test_extract_memories_from_run(tmp_path):
     assert len(affected) == 1
     assert affected[0].content == "The package can be compiled using pip install ."
     assert affected[0].type == "fact"
-    assert affected[0].status == "active"
+    assert affected[0].status == "proposed"
     
     # Verify ledger
     ledger = EvolutionLedger(tmp_path)

@@ -51,3 +51,21 @@ def _declared_safeguard(spec: ToolSpec) -> dict:
         "confirmation_required": bool(spec.mutates),
         "reason": "Fallback safeguard for capability without declared metadata.",
     }
+
+
+import re
+
+_SECRET_PATTERNS = [
+    r"(?i)(bearer\s+)[A-Za-z0-9\-\._~+/]+",
+    r"(?i)(api[_-]?key[\"'\s:=]+)[A-Za-z0-9\-\._~+/]+",
+    r"(?i)(password[\"'\s:=]+)[^\s&\"']+",
+    r"(?i)(secret[\"'\s:=]+)[^\s&\"']+",
+    r"(?i)(token[\"'\s:=]+)[A-Za-z0-9\-\._~+/]+",
+]
+
+def redact_secrets(text: str) -> str:
+    if not isinstance(text, str):
+        return text
+    for pattern in _SECRET_PATTERNS:
+        text = re.sub(pattern, r"\1[REDACTED]", text)
+    return text

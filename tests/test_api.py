@@ -461,10 +461,10 @@ def test_evolution_proposal_api_flow(tmp_path):
 
     recorded = client.post(
         f"/v1/evolution-proposals/{proposal_id}/evaluation",
-        json={"evaluation_result": "passed targeted evals"},
+        json={"evaluation_result": "approved"},
     )
     assert recorded.status_code == 200
-    assert recorded.json()["evaluation_result"] == "passed targeted evals"
+    assert recorded.json()["evaluation_result"] == "approved"
 
     applied = client.post(f"/v1/evolution-proposals/{proposal_id}/apply")
     assert applied.status_code == 200

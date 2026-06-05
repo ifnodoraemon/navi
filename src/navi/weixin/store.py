@@ -36,8 +36,9 @@ class WeixinStore:
         _atomic_json_write(path, payload)
         try:
             path.chmod(0o600)
-        except OSError:
-            pass
+        except OSError as e:
+            import logging
+            logging.getLogger("navi.weixin").warning("Failed to chmod account file: %s", e)
 
     def load_account(self, account_id: str) -> WeixinAccount | None:
         path = self.account_path(account_id)
@@ -191,6 +192,7 @@ def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
     except Exception:
         try:
             os.unlink(tmp_name)
-        except OSError:
-            pass
+        except OSError as e:
+            import logging
+            logging.getLogger("navi.weixin").warning("Failed to unlink tmp file: %s", e)
         raise

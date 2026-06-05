@@ -209,7 +209,7 @@ def test_cli_graph_trust_evolution_and_connector_status(tmp_path):
 
     recorded = runner.invoke(
         app,
-        ["evolution", "record-evaluation", proposal_id, "passed targeted evals"],
+        ["evolution", "record-evaluation", proposal_id, "approved"],
         env=env,
     )
     assert recorded.exit_code == 0
@@ -231,12 +231,13 @@ def test_cli_graph_trust_evolution_and_connector_status(tmp_path):
         rollback_plan="restore",
     )
     EvolutionLedger(tmp_path).record_proposal_evaluation(locked.id, "failed")
-    applied_once = EvolutionLedger(tmp_path).apply_proposal(locked.id)
-    assert applied_once is not None
-    assert (
-        runner.invoke(app, ["evolution", "apply-proposal", locked.id], env=env).output.strip()
-        == applied_once.id
-    )
+    import pytest
+    with pytest.raises(ValueError, match="proposal requires"):
+        EvolutionLedger(tmp_path).apply_proposal(locked.id)
+
+    applied = runner.invoke(app, ["evolution", "apply-proposal", locked.id], env=env)
+    assert applied.exit_code != 0
+    assert "proposal requires" in applied.output
     missing_proposal = runner.invoke(app, ["evolution", "apply-proposal", "missing"], env=env)
     assert missing_proposal.exit_code != 0
     assert "proposal not found" in missing_proposal.output

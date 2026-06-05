@@ -68,8 +68,9 @@ class TelegramService:
                 }, ensure_ascii=False),
                 encoding="utf-8",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("navi.telegram").warning("Failed to update status: %s", e)
 
     async def run(self, *, once: bool = False) -> None:
         import time

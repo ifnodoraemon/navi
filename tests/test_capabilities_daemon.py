@@ -563,10 +563,10 @@ def test_trust_success_does_not_auto_escalate_autonomy(tmp_path, monkeypatch):
 
     for _ in range(2):
         trust.record_success(task)
-    assert trust.get(rule.id).autonomy_level == "L2"
+        assert trust.get(rule.id).autonomy_level == "L2"
 
     trust.record_success(task)
-    assert trust.get(rule.id).autonomy_level == "L3"
+    assert trust.get(rule.id).autonomy_level == "L2"
 
 
 @pytest.mark.asyncio

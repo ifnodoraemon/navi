@@ -290,8 +290,9 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
                         group_policy = getattr(cfg, "group_policy", None)
                         if group_policy is not None and group_policy not in {"open", "disabled", "allowlist", "pairing"}:
                             errors.append(f"{adapter.name}.group_policy '{group_policy}' is invalid")
-            except (ModuleNotFoundError, AttributeError):
-                pass
+            except (ModuleNotFoundError, AttributeError) as e:
+                import logging
+                logging.getLogger("navi.config").warning("Failed to validate connector %s: %s", adapter.name, e)
     except Exception as e:
         errors.append(f"connector load error: {e}")
 

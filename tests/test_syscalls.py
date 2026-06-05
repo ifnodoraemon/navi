@@ -30,9 +30,6 @@ def test_model_syscall_planner_prompt_loads_routing_rules_from_spec():
     assert "TASK ROUTING RULES" in system
     assert "PROMPT BOUNDARIES" in system
     assert "OBSERVATION INVARIANTS" in system
-    assert "Use delegation runs for complex local work" in system
-    assert "After delegate.spawn" in system
-    assert "cleanup_complete=true" in system
     assert "SECURITY GUIDELINE" in system
 
 

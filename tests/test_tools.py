@@ -116,7 +116,7 @@ def test_memory_conflicts_tool_returns_declared_conflict_facts(tmp_path):
         "Prefer current tests.",
         source="test",
         status="active",
-        metadata={"contradicts": old_item.id},
+        metadata={"contradicts": [old_item.id]},
     )
     registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
 

@@ -225,12 +225,11 @@ class TrustStore:
         project_path = rule.project_path
         if consecutive_successes >= PROMOTION_SUCCESSES:
             current_index = LEVELS.index(rule.autonomy_level)
-            if current_index < LEVELS.index(MAX_AUTO_PROMOTION_LEVEL):
-                if (current_index + 1) < LEVELS.index(MAX_AUTO_PROMOTION_LEVEL) or (task.workspace or project_path):
+            max_index = min(LEVELS.index(MAX_AUTO_PROMOTION_LEVEL), LEVELS.index(AUTO_EXECUTE_LEVEL) - 1)
+            if current_index < max_index:
+                if (current_index + 1) < max_index or (task.workspace or project_path):
                     new_level = LEVELS[current_index + 1]
                     consecutive_successes = 0
-                    if new_level == AUTO_EXECUTE_LEVEL and not project_path:
-                        project_path = task.workspace
         updated_data = {"consecutive_successes": consecutive_successes}
         return self._update_counts(
             rule.id,

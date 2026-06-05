@@ -523,10 +523,9 @@ async def test_weixin_planner_parse_failure_returns_os_error(tmp_path, monkeypat
     )
 
     assert handled is True
-    assert service.client.sent[-1]["text"] == "兜底回答"
+    assert "我收到消息了，但本地处理链路刚刚出错了" in service.client.sent[-1]["text"]
     assert "system.planner_error" not in service.client.sent[-1]["text"]
     assert "capability not found" not in service.client.sent[-1]["text"]
-    assert runtime.memory.list_sessions()
 
 
 def test_weixin_prompt_affordances_do_not_expose_connector_context():

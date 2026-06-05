@@ -78,7 +78,7 @@ class ModelSyscallPlanner:
         tool = str(data.get("tool") or "").strip()
         if not tool:
             return ModelSyscall(
-                tool="system.planner_error",
+                tool="",
                 args={"raw_response": response.strip()},
                 reason="planner did not select a capability",
             )

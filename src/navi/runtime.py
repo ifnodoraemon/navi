@@ -33,7 +33,7 @@ class AgentRuntime:
         session_id = session_id or self.memory.new_session_id()
         self.memory.add_message(session_id, "user", user_text)
 
-        messages = self._build_messages(session_id, user_text=user_text, operating_context=operating_context)
+        messages = self.build_messages(session_id, user_text=user_text, operating_context=operating_context)
         answer = await self.complete(messages, role="responder")
         self.memory.add_message(session_id, "assistant", answer)
         return AssistantReply(session_id=session_id, content=answer)
@@ -44,7 +44,7 @@ class AgentRuntime:
     def model_roles(self) -> list[str]:
         return list_agent_role_names(self.provider.list_roles())
 
-    def _build_messages(
+    def build_messages(
         self,
         session_id: str,
         *,
@@ -52,7 +52,10 @@ class AgentRuntime:
         operating_context: OperatingContext | None = None,
     ) -> list[ChatMessage]:
         operating_context = operating_context or OperatingContext(home=self.home)
-        memory_context = self.memory.render_context(user_text)
+        memory_query = user_text
+        if operating_context.objective:
+            memory_query = f"{user_text} {operating_context.objective}".strip()
+        memory_context = self.memory.render_context(memory_query)
         skills_context = self.skills.render_prompt(
             permission_ceiling=operating_context.skill_permission_ceiling,
             workspace=operating_context.workspace,

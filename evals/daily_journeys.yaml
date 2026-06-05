@@ -78,6 +78,8 @@ journeys:
             - "runs"
             - "awaiting_approval"
             - "awaiting approval"
+            - "任务"
+            - "审批"
 
   - id: user_can_ask_why_task_not_executed
     user_goal: Ask why the current task has not executed yet and get task status rather than a new task.
@@ -95,6 +97,8 @@ journeys:
             - "awaiting_approval"
             - "awaiting approval"
             - "approvals"
+            - "等待"
+            - "审批"
 
   - id: user_can_reject_pending_task
     user_goal: Reject a prepared task and see it move to rejected without execution.
@@ -146,6 +150,8 @@ journeys:
           text_contains_any:
             - "configured"
             - "status"
+            - "配置"
+            - "状态"
 
   - id: writing_editing_no_task
     user_goal: Edit a short piece of writing directly without creating a local task.
