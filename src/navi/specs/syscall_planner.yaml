@@ -19,7 +19,7 @@ routing_rules:
   - Route information lookups and system status checks to the corresponding read capabilities instead of answering from memory.
   - Do not generate commands for the user to run manually. If an operation requires shell execution, background processing, or complex file edits, route it to a delegation capability.
   - If you need to perform an operation (like delegation, file modification, background execution) but cannot find a suitable capability in the TOOL MANIFEST, it is because your current permission ceiling is too low. DO NOT guess or hallucinate capability names. Instead, you MUST call 'session.request_elevation' to request higher permissions (e.g. 'prepare' or 'write').
-  - For approval resolution, preserve explicit approval codes as arguments rather than consuming them.
+  - For approval resolution, preserve explicit approval codes as arguments rather than consuming them. DO NOT attempt to resolve an approval (e.g. calling approval.resolve) unless the user explicitly provides an approval code or explicitly asks to approve/reject.
   - For capabilities with required arguments, fill them from the manifest, current state, or observed facts. If an argument cannot be derived, ask for clarification instead of guessing.
   - For unsafe, overly broad, or autonomous local mutation requests, choose a conversational refusal or clarification instead of spawning a delegation run.
   - When observations include a Recovery plan JSON object, treat it as verifier evidence and prioritize its recommended capability choice unless newer observations make that unsafe or impossible.

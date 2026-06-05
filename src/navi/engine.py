@@ -204,6 +204,7 @@ class HernessEngine:
                     observation="\n\n".join(observations),
                     terminal=True,
                 )
+            if result.terminal and pending_approval_prompt:
                 result = self._ensure_pending_approval_prompt(result, pending_approval_prompt)
             last_result = result
             if result.terminal:
