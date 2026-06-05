@@ -413,11 +413,14 @@ class ClarifyCapability:
     ) -> CapabilityResult:
         message = _arg_text(args, "message")
         options = args.get("options")
+        facts = {}
         if isinstance(options, list) and options:
-            message += "\n" + "\n".join(f"[{i + 1}] {opt}" for i, opt in enumerate(options))
+            facts["options"] = options
+            if context.source != "cli":
+                message += "\n" + "\n".join(f"[{i + 1}] {opt}" for i, opt in enumerate(options))
 
         return CapabilityResult(
-            ok=True, action="ask", observation=message, message=message, terminal=True
+            ok=True, action="ask", observation=message, message=message, terminal=True, facts=facts
         )
 
 

@@ -16,6 +16,7 @@ from .auth import AuthInspector
 from .capabilities import CapabilityContext, build_capability_registry
 from .config import ModelConfig, load_config, write_default_config
 from .connector_registry import get_connector_adapter, load_connector_adapters
+from .connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
 from .diagnostics import run_diagnostics
 from .defaults import DEFAULT_API_HOST, DEFAULT_API_PORT
 from .evals import (
@@ -89,13 +90,29 @@ def chat() -> None:
     write_default_config(home)
     runtime = build_runtime(home)
     config = load_config(home)
-    agent = HernessEngine(home=home, runtime=runtime, project_dir=Path.cwd())
+    agent = HernessEngine(
+        home=home,
+        runtime=runtime,
+        project_dir=Path.cwd(),
+        disabled_capability_classes=LOCAL_CONVERSATIONAL_TOOL_POLICY.blocked_capability_classes,
+    )
     session_id: str | None = None
     typer.echo("Navi chat. Type /exit to quit.")
+    
+    pending_options = []
+    
     while True:
-        text = typer.prompt("you")
+        if pending_options:
+            import questionary
+            text = questionary.select("Choice:", choices=pending_options).ask()
+            if text is None:
+                break
+        else:
+            text = typer.prompt("you")
+            
         if text.strip() in {"/exit", "/quit"}:
             break
+            
         result = asyncio.run(
             agent.handle(
                 text,
@@ -106,7 +123,13 @@ def chat() -> None:
             )
         )
         session_id = result.session_id or session_id
+        
         typer.echo(f"navi: {result.text}")
+        
+        if result.action == "ask" and result.facts and "options" in result.facts:
+            pending_options = result.facts["options"]
+        else:
+            pending_options = []
 
 
 @app.command()
@@ -130,8 +153,12 @@ def status() -> None:
     connectors = load_connector_adapters()
     typer.echo("Navi status")
     typer.echo(f"home={home}")
-    typer.echo(f"model={config.model.provider}/{config.model.model} timeout={config.model.timeout_seconds:g}s")
-    typer.echo(f"execution={config.execution.provider} timeout={config.execution.timeout_seconds:g}s mock={config.execution.mock}")
+    typer.echo(
+        f"model={config.model.provider}/{config.model.model} timeout={config.model.timeout_seconds:g}s"
+    )
+    typer.echo(
+        f"execution={config.execution.provider} timeout={config.execution.timeout_seconds:g}s mock={config.execution.mock}"
+    )
     typer.echo(f"tools={len(tools)} sessions={len(sessions)} goals={len(goals)}")
     for adapter in connectors:
         marker = "enabled" if adapter.enabled(home) else "disabled"
@@ -148,8 +175,14 @@ def doctor(connectivity: bool = False) -> None:
     typer.echo("Navi doctor")
     typer.echo(f"model: {config.model.provider}/{config.model.model}")
     for check in checks:
-        if check.name == "service.runtime" and check.status != "ok" and _cli_service_active(config.runtime.service_name):
-            check = type(check)("service.runtime", "ok", f"{config.runtime.service_name} active/running")
+        if (
+            check.name == "service.runtime"
+            and check.status != "ok"
+            and _cli_service_active(config.runtime.service_name)
+        ):
+            check = type(check)(
+                "service.runtime", "ok", f"{config.runtime.service_name} active/running"
+            )
         detail = f" {check.detail}" if check.detail else ""
         typer.echo(f"{check.name}: {check.status}{detail}")
     if any(check.status == "error" for check in checks):
@@ -227,7 +260,9 @@ def memory_list(
     limit: int = 50,
 ) -> None:
     """List typed memory items as facts."""
-    items = MemoryStore(ensure_home()).list_items(memory_type=memory_type, status=status, limit=limit)
+    items = MemoryStore(ensure_home()).list_items(
+        memory_type=memory_type, status=status, limit=limit
+    )
     for item in items:
         typer.echo(
             f"{item.id} {item.type} {item.status} scope={item.scope} "
@@ -332,7 +367,13 @@ def tools_call(name: str, args_json: str = "{}") -> None:
     capabilities = build_capability_registry(home, project_dir=Path.cwd())
     spec = capabilities.get(name)
     if spec is None:
-        typer.echo(json.dumps({"ok": False, "error": f"capability not found: {name}"}, ensure_ascii=False, indent=2))
+        typer.echo(
+            json.dumps(
+                {"ok": False, "error": f"capability not found: {name}"},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         raise typer.Exit(code=1)
     result = asyncio.run(
         capabilities.invoke(
@@ -410,7 +451,9 @@ def eval_delegations(
             delegation_eval_tools(home, project_dir=Path.cwd()),
         )
         if json_output:
-            typer.echo(json.dumps({"ok": not errors, "errors": errors}, ensure_ascii=False, indent=2))
+            typer.echo(
+                json.dumps({"ok": not errors, "errors": errors}, ensure_ascii=False, indent=2)
+            )
         elif errors:
             for error in errors:
                 typer.echo(error)
@@ -425,7 +468,9 @@ def eval_delegations(
             project_dir=Path.cwd(),
             dataset=dataset,
             timeout_seconds=timeout_seconds,
-            provider=build_provider(ModelConfig(provider="mock", model="mock")) if mock_provider else None,
+            provider=build_provider(ModelConfig(provider="mock", model="mock"))
+            if mock_provider
+            else None,
         )
     )
     if json_output:
@@ -489,7 +534,13 @@ def eval_claw(
     if validate_only:
         loaded = load_claw_eval_dataset(dataset)
         if json_output:
-            typer.echo(json.dumps({"ok": True, "tasks": len(loaded["tasks"]), "errors": []}, ensure_ascii=False, indent=2))
+            typer.echo(
+                json.dumps(
+                    {"ok": True, "tasks": len(loaded["tasks"]), "errors": []},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
         else:
             typer.echo(f"ok dataset tasks={len(loaded['tasks'])}")
         return
@@ -510,7 +561,9 @@ def eval_claw(
         for result in results:
             marker = "ok" if result.ok else "fail"
             domains = ",".join(result.error_domains) if result.error_domains else "-"
-            typer.echo(f"{marker} {result.task_id} pass={result.pass_count}/{result.attempts} domains={domains}")
+            typer.echo(
+                f"{marker} {result.task_id} pass={result.pass_count}/{result.attempts} domains={domains}"
+            )
             for error in result.errors:
                 typer.echo(f"  {error}")
     if any(not result.ok for result in results):
@@ -528,7 +581,13 @@ def eval_connector(
     if validate_only:
         loaded = load_connector_journey_eval_dataset(dataset)
         if json_output:
-            typer.echo(json.dumps({"ok": True, "journeys": len(loaded["journeys"]), "errors": []}, ensure_ascii=False, indent=2))
+            typer.echo(
+                json.dumps(
+                    {"ok": True, "journeys": len(loaded["journeys"]), "errors": []},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
         else:
             typer.echo(f"ok dataset journeys={len(loaded['journeys'])}")
         return
@@ -590,7 +649,9 @@ def trace_show(trace_id: str) -> None:
     """Show events for one full-flow trace."""
     for event in TraceStore(ensure_home()).list_events(trace_id):
         marker = "ok" if event.ok else "fail"
-        typer.echo(f"{event.phase} {marker} tool={event.tool or '-'} role={event.model_role or '-'}")
+        typer.echo(
+            f"{event.phase} {marker} tool={event.tool or '-'} role={event.model_role or '-'}"
+        )
         if event.message:
             typer.echo(f"  {event.message[:240]}")
 
@@ -606,7 +667,9 @@ def trace_evaluate(trace_id: str) -> None:
 def trace_evaluations(trace_id: str = typer.Argument(""), limit: int = 50) -> None:
     """List trace evaluations as optimization evidence."""
     for evaluation in TraceStore(ensure_home()).list_evaluations(trace_id, limit=limit):
-        typer.echo(f"{evaluation.trace_id} {evaluation.outcome} {evaluation.failure_domain}: {evaluation.recommendation}")
+        typer.echo(
+            f"{evaluation.trace_id} {evaluation.outcome} {evaluation.failure_domain}: {evaluation.recommendation}"
+        )
 
 
 @goal_app.command("list")
@@ -630,13 +693,17 @@ def goal_show(goal_id: str) -> None:
     if goal.blocked_reason:
         typer.echo(f"blocked: {goal.blocked_reason}")
     for event in store.list_events(goal_id):
-        typer.echo(f"- {event.event_type} {event.status} task={event.run_id or '-'} trace={event.trace_id or '-'}")
+        typer.echo(
+            f"- {event.event_type} {event.status} task={event.run_id or '-'} trace={event.trace_id or '-'}"
+        )
 
 
 @subagent_app.command("list")
 def subagent_list(role: str = "", status: str = "", run_id: str = "", limit: int = 50) -> None:
     """List sub-agent runtime records as facts."""
-    for item in SubagentRunStore(ensure_home()).list(role=role, status=status, run_id=run_id, limit=limit):
+    for item in SubagentRunStore(ensure_home()).list(
+        role=role, status=status, run_id=run_id, limit=limit
+    ):
         task = f" run={item.run_id}" if item.run_id else ""
         typer.echo(f"{item.id} {item.role} {item.phase} {item.status}{task}")
 
@@ -682,7 +749,9 @@ def workflow_propose(
                 "estimated_cost": estimated_cost,
             },
             permission="prepare",
-            context=CapabilityContext(home=home, peer_id="cli", sender_id="cli", source="cli", workspace=str(Path.cwd())),
+            context=CapabilityContext(
+                home=home, peer_id="cli", sender_id="cli", source="cli", workspace=str(Path.cwd())
+            ),
         )
     )
     if not result.ok:
@@ -695,7 +764,9 @@ def workflow_propose(
 def workflow_list(status: str = "", limit: int = 50) -> None:
     """List dynamic workflows."""
     for workflow in WorkflowStore(ensure_home()).list(status=status, limit=limit):
-        typer.echo(f"{workflow.id} {workflow.status} ceiling={workflow.permission_ceiling} {workflow.objective}")
+        typer.echo(
+            f"{workflow.id} {workflow.status} ceiling={workflow.permission_ceiling} {workflow.objective}"
+        )
 
 
 @workflow_app.command("show")
@@ -747,7 +818,9 @@ def _workflow_action_cli(tool: str, workflow_id: str, extra_args: dict | None = 
             tool,
             {"workflow_id": workflow_id, **(extra_args or {})},
             permission="write",
-            context=CapabilityContext(home=home, peer_id="cli", sender_id="cli", source="cli", workspace=str(Path.cwd())),
+            context=CapabilityContext(
+                home=home, peer_id="cli", sender_id="cli", source="cli", workspace=str(Path.cwd())
+            ),
         )
     )
     if not result.ok:
@@ -769,7 +842,9 @@ def evolution_targets() -> None:
     """List evolvable behavior target types."""
     for target in list_evolution_targets():
         marker = "permissioned" if target["permissions_can_expand"] else "content"
-        typer.echo(f"{target['target_type']} source={target['source']} kind={marker} {target['description']}")
+        typer.echo(
+            f"{target['target_type']} source={target['source']} kind={marker} {target['description']}"
+        )
 
 
 @evolution_app.command("proposals")
@@ -830,7 +905,9 @@ def evolution_apply_proposal(proposal_id: str) -> None:
 @evolution_app.command("record-evaluation")
 def evolution_record_evaluation(proposal_id: str, evaluation_result: str) -> None:
     """Attach post-apply evaluation evidence to an evolution proposal."""
-    proposal = EvolutionLedger(ensure_home()).record_proposal_evaluation(proposal_id, evaluation_result)
+    proposal = EvolutionLedger(ensure_home()).record_proposal_evaluation(
+        proposal_id, evaluation_result
+    )
     if proposal is None:
         raise typer.BadParameter("proposal not found")
     typer.echo(proposal.id)
@@ -865,7 +942,9 @@ def service_install() -> None:
     """Install a systemd user unit for the active assistant."""
     home = ensure_home()
     config = load_config(home)
-    unit = install_systemd_user_unit(project_dir=Path.cwd(), navi_home=home, name=config.runtime.service_name)
+    unit = install_systemd_user_unit(
+        project_dir=Path.cwd(), navi_home=home, name=config.runtime.service_name
+    )
     typer.echo(f"installed {unit.path}")
     typer.echo(f"Run: systemctl --user daemon-reload && systemctl --user enable --now {unit.name}")
 
@@ -929,7 +1008,9 @@ def connector_tail(name: str, limit: int = 20, json_output: bool = False) -> Non
     for event in events:
         ts = event.get("ts", "-")
         kind = event.get("event", "-")
-        facts = " ".join(f"{key}={value}" for key, value in event.items() if key not in {"ts", "event"})
+        facts = " ".join(
+            f"{key}={value}" for key, value in event.items() if key not in {"ts", "event"}
+        )
         typer.echo(f"{ts} {kind} {facts}".rstrip())
 
 
@@ -958,7 +1039,7 @@ def _tail_connector_events(home: Path, name: str, *, limit: int) -> list[dict]:
     path = home / name / "events.jsonl"
     if not path.exists():
         return []
-    lines = path.read_text(encoding="utf-8").splitlines()[-max(1, limit):]
+    lines = path.read_text(encoding="utf-8").splitlines()[-max(1, limit) :]
     events = []
     for line in lines:
         try:

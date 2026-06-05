@@ -31,6 +31,7 @@ class AgentTurnResult:
     trace_id: str = ""
     budget_exhausted: bool = False
     memory_influence: tuple[str, ...] = ()
+    facts: dict[str, Any] | None = None
 
 
 class HernessEngine:
@@ -230,6 +231,7 @@ class HernessEngine:
                 observation=invoked.observation,
                 model_role=syscall.model_role,
                 terminal=invoked.terminal,
+                facts=invoked.facts,
             )
             if result.terminal and observations and result.action == "chat" and last_result:
                 result = replace(
