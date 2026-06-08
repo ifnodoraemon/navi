@@ -56,6 +56,7 @@ class CapabilityContext:
     permission_ceiling: str = "write"
     workspace: str = ""
     session_id: str | None = None
+    input_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -1104,14 +1105,21 @@ class ApprovalResolveCapability:
             )
         status = "approved" if decision == "approve" else "rejected"
         code = _arg_text(args, "code")
-        if context.session_id and code:
-            from navi.memory import MemoryStore
-            memory = MemoryStore(self.home)
-            user_messages = [
-                msg.content for msg in memory.get_messages(context.session_id)
-                if msg.role == "user"
-            ]
-            if not any(code in content for content in user_messages[-2:]):
+        has_code = False
+        if code:
+            if not context.input_text and not context.session_id:
+                has_code = True
+            else:
+                has_code = code in context.input_text
+                if not has_code and context.session_id:
+                    from navi.memory import MemoryStore
+                    memory = MemoryStore(self.home)
+                    user_messages = [
+                        msg.content for msg in memory.get_messages(context.session_id)
+                        if msg.role == "user"
+                    ]
+                    has_code = any(code in content for content in user_messages[-2:])
+            if not has_code:
                 return CapabilityResult(
                     ok=False,
                     action="approval",
