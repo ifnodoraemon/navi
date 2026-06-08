@@ -118,6 +118,7 @@ class HernessEngine:
             source=source,
             permission_ceiling=self._get_effective_permission_ceiling(peer_id, sender_id),
             workspace=str(self.capabilities.gateway.project_dir.resolve()),
+            session_id=resolved_session_id,
         )
         
         observations: list[str] = []

@@ -55,6 +55,7 @@ class CapabilityContext:
     source: str = "local"
     permission_ceiling: str = "write"
     workspace: str = ""
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1103,6 +1104,22 @@ class ApprovalResolveCapability:
             )
         status = "approved" if decision == "approve" else "rejected"
         code = _arg_text(args, "code")
+        if context.session_id and code:
+            from navi.memory import MemoryStore
+            memory = MemoryStore(self.home)
+            user_messages = [
+                msg.content for msg in memory.get_messages(context.session_id)
+                if msg.role == "user"
+            ]
+            if not any(code in content for content in user_messages[-2:]):
+                return CapabilityResult(
+                    ok=False,
+                    action="approval",
+                    observation="User did not provide this approval code. Do not hallucinate approvals.",
+                    message="User did not provide this approval code. Do not hallucinate approvals.",
+                    terminal=True,
+                )
+
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
         runs = RunStore(self.home)
         governance = GovernanceEngine(self.home)
@@ -1149,11 +1166,15 @@ class ApprovalResolveCapability:
                 "approval_status": approval.status,
                 "run_status": "queued",
             }
-            return _fact_result(
-            "approval",
-            facts,
-            run_id=resolved_run_id,
-        )
+            return CapabilityResult(
+                ok=True,
+                action="approval",
+                observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+                message=f"已收到您的批准，任务 {resolved_run_id} 将在后台继续执行。",
+                terminal=True,
+                run_id=resolved_run_id,
+                facts=facts,
+            )
         task = runs.update_run(approval.run_id, status="rejected")
         if task:
             await trust.record_failure(task)
@@ -1171,10 +1192,14 @@ class ApprovalResolveCapability:
             "approval_status": approval.status,
             "run_status": "rejected",
         }
-        return _fact_result(
-            "approval",
-            facts,
+        return CapabilityResult(
+            ok=True,
+            action="approval",
+            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            message=f"已拒绝任务 {approval.run_id} 的执行。",
+            terminal=True,
             run_id=approval.run_id,
+            facts=facts,
         )
 
     @staticmethod
