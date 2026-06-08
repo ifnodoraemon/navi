@@ -33,7 +33,9 @@ class AgentRuntime:
         session_id = session_id or self.memory.new_session_id()
         self.memory.add_message(session_id, "user", user_text)
 
-        messages = self.build_messages(session_id, user_text=user_text, operating_context=operating_context)
+        messages = self.build_messages(
+            session_id, user_text=user_text, operating_context=operating_context
+        )
         answer = await self.complete(messages, role="responder")
         self.memory.add_message(session_id, "assistant", answer)
         return AssistantReply(session_id=session_id, content=answer)

@@ -33,7 +33,9 @@ def list_agent_role_specs(configured_routes: Iterable[str] = ()) -> list[AgentRo
                 name=role_name,
                 purpose=str(item.get("purpose") or ""),
                 when_to_use=tuple(str(value) for value in item.get("when_to_use") or ()),
-                evidence_required=tuple(str(value) for value in item.get("evidence_required") or ()),
+                evidence_required=tuple(
+                    str(value) for value in item.get("evidence_required") or ()
+                ),
                 parallel_safe=bool(item.get("parallel_safe", False)),
                 configured_route=role_name in configured,
             )

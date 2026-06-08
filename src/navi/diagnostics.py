@@ -57,7 +57,9 @@ def run_diagnostics(
     checks.append(_check_path("service.unit", unit, required=False))
     checks.append(_service_runtime_check(config.runtime.service_name))
     tools = build_capability_registry(home, project_dir=project_dir).list_specs()
-    checks.append(DiagnosticCheck("capabilities", "ok" if tools else "error", f"{len(tools)} registered"))
+    checks.append(
+        DiagnosticCheck("capabilities", "ok" if tools else "error", f"{len(tools)} registered")
+    )
     for item in AuthInspector().status():
         status = "ok" if item.installed and item.authenticated else "warn"
         if not item.installed:
@@ -86,14 +88,20 @@ def _external_tool_checks(names: tuple[str, ...]) -> list[DiagnosticCheck]:
     checks: list[DiagnosticCheck] = []
     for name in names:
         path = shutil.which(name)
-        checks.append(DiagnosticCheck(f"tool.{name}", "ok" if path else "missing", path or "not found"))
+        checks.append(
+            DiagnosticCheck(f"tool.{name}", "ok" if path else "missing", path or "not found")
+        )
     return checks
 
 
 def _browser_dependency_checks() -> list[DiagnosticCheck]:
     checks = []
     playwright = shutil.which("playwright")
-    checks.append(DiagnosticCheck("browser.playwright", "ok" if playwright else "missing", playwright or "not found"))
+    checks.append(
+        DiagnosticCheck(
+            "browser.playwright", "ok" if playwright else "missing", playwright or "not found"
+        )
+    )
     chromium = _first_existing_path(
         (
             Path.home() / ".cache" / "ms-playwright",
@@ -113,11 +121,19 @@ def _browser_dependency_checks() -> list[DiagnosticCheck]:
 def _computer_use_checks() -> list[DiagnosticCheck]:
     display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
     checks = [
-        DiagnosticCheck("computer.display", "ok" if display else "missing", display or "DISPLAY/WAYLAND_DISPLAY not set")
+        DiagnosticCheck(
+            "computer.display",
+            "ok" if display else "missing",
+            display or "DISPLAY/WAYLAND_DISPLAY not set",
+        )
     ]
     for name in ("xdotool", "scrot", "gnome-screenshot"):
         path = shutil.which(name)
-        checks.append(DiagnosticCheck(f"computer.tool.{name}", "ok" if path else "missing", path or "not found"))
+        checks.append(
+            DiagnosticCheck(
+                f"computer.tool.{name}", "ok" if path else "missing", path or "not found"
+            )
+        )
     return checks
 
 
@@ -137,9 +153,15 @@ def _connector_config_checks(home: Path, adapters: list[ConnectorAdapter]) -> li
     return checks
 
 
-def _connector_status_file_checks(home: Path, adapters: list[ConnectorAdapter]) -> list[DiagnosticCheck]:
+def _connector_status_file_checks(
+    home: Path, adapters: list[ConnectorAdapter]
+) -> list[DiagnosticCheck]:
     return [
-        _check_path(f"connector.{adapter.name}.status_file", home / adapter.name / "status.json", required=False)
+        _check_path(
+            f"connector.{adapter.name}.status_file",
+            home / adapter.name / "status.json",
+            required=False,
+        )
         for adapter in adapters
     ]
 
@@ -168,7 +190,11 @@ def _api_connectivity_checks(config) -> list[DiagnosticCheck]:
     if config.model.kind == "mock":
         return [DiagnosticCheck("api.model.connectivity", "ok", "mock provider")]
     if not config.model.api_base_url or not config.model.api_key:
-        return [DiagnosticCheck("api.model.connectivity", "warn", "skipped: model API config incomplete")]
+        return [
+            DiagnosticCheck(
+                "api.model.connectivity", "warn", "skipped: model API config incomplete"
+            )
+        ]
     try:
         resolved = resolve_model_config(config.model)
         spec = get_provider_spec(resolved.provider)
@@ -224,7 +250,9 @@ def _service_runtime_check(name: str) -> DiagnosticCheck:
     fallback = _systemd_is_active(name)
     if fallback:
         return DiagnosticCheck("service.runtime", "ok", f"{name} {fallback}/running")
-    return DiagnosticCheck("service.runtime", "warn", f"{name} {active}/{substate} exit_code={facts.exit_code}")
+    return DiagnosticCheck(
+        "service.runtime", "warn", f"{name} {active}/{substate} exit_code={facts.exit_code}"
+    )
 
 
 def _systemd_is_active(name: str) -> str:

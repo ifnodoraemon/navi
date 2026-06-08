@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from dataclasses import asdict
@@ -364,6 +365,23 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     )
     registry.register(
         ToolSpec(
+            name="codebase.search",
+            description="Perform a fast, semantic-like search across the entire project codebase.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The concept or code to search for."},
+                    "limit": {"type": "integer", "description": "Max results to return.", "default": 5},
+                },
+                "required": ["query"],
+            },
+            output_schema=_array_of_objects(),
+        ),
+        lambda args: _codebase_search(args, project_dir=registry.project_dir),
+    )
+
+    registry.register(
+        ToolSpec(
             name="git.status",
             description="Return git repository status facts.",
             input_schema={
@@ -447,7 +465,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
 def _service_status(args: dict[str, Any], *, default_name: str) -> ToolResult:
     name = str(args.get("name") or default_name)
     facts = service_facts(name)
-    return ToolResult(tool="service.status", ok=facts.exit_code == 0, facts=asdict(facts), error=facts.stderr)
+    return ToolResult(
+        tool="service.status", ok=facts.exit_code == 0, facts=asdict(facts), error=facts.stderr
+    )
 
 
 def _run_status(home: Path, args: dict[str, Any]) -> ToolResult:
@@ -499,6 +519,7 @@ def _approval_facts(approval: Approval) -> dict[str, Any]:
 
 def _provider_config(home: Path) -> ToolResult:
     from .config import validate_config, load_config
+
     try:
         config = load_config(home)
         errors = validate_config(config, home)
@@ -589,15 +610,28 @@ def _skills_view(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolRe
     limit = _positive_int(args.get("max_bytes"), default=50000, maximum=200000)
     store = SkillStore(home)
     skills = store.list_skills(permission_ceiling="write", workspace=workspace)
-    skill = next((item for item in skills if item.name.lower() == name or item.path.parent.name.lower() == name), None)
+    skill = next(
+        (
+            item
+            for item in skills
+            if item.name.lower() == name or item.path.parent.name.lower() == name
+        ),
+        None,
+    )
     if skill is None:
-        return ToolResult(tool="skills.view", ok=False, error="skill not found", facts={"name": name})
+        return ToolResult(
+            tool="skills.view", ok=False, error="skill not found", facts={"name": name}
+        )
     base_dir = skill.path.parent.resolve()
     target = (base_dir / relative).resolve()
     if base_dir != target and base_dir not in target.parents:
-        return ToolResult(tool="skills.view", ok=False, error="relative_path must stay inside the skill directory")
+        return ToolResult(
+            tool="skills.view", ok=False, error="relative_path must stay inside the skill directory"
+        )
     if not target.exists() or not target.is_file():
-        return ToolResult(tool="skills.view", ok=False, error="skill file not found", facts={"path": str(target)})
+        return ToolResult(
+            tool="skills.view", ok=False, error="skill file not found", facts={"path": str(target)}
+        )
     data = target.read_bytes()
     truncated = len(data) > limit
     content = data[:limit].decode("utf-8", errors="replace")
@@ -680,7 +714,9 @@ def _memory_conflict_facts(conflict) -> dict[str, Any]:
         "item": _memory_item_facts(conflict.item),
         "relation": conflict.relation,
         "conflicting_item_id": conflict.conflicting_item_id,
-        "conflicting_item": _memory_item_facts(conflict.conflicting_item) if conflict.conflicting_item else None,
+        "conflicting_item": _memory_item_facts(conflict.conflicting_item)
+        if conflict.conflicting_item
+        else None,
         "status": conflict.status,
         "reason": conflict.reason,
     }
@@ -737,7 +773,9 @@ def _memory_conflicts(home: Path, args: dict[str, Any]) -> ToolResult:
             "conflicts": [_memory_conflict_facts(conflict) for conflict in conflicts],
             "count": len(conflicts),
             "limit": limit,
-            "unresolved_count": len([conflict for conflict in conflicts if conflict.status == "unresolved"]),
+            "unresolved_count": len(
+                [conflict for conflict in conflicts if conflict.status == "unresolved"]
+            ),
         },
     )
 
@@ -745,13 +783,17 @@ def _memory_conflicts(home: Path, args: dict[str, Any]) -> ToolResult:
 def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     url = str(args.get("url") or "").strip()
     if not _is_browser_url(url):
-        return ToolResult(tool="browser.screenshot", ok=False, error="url must be http(s) or localhost")
+        return ToolResult(
+            tool="browser.screenshot", ok=False, error="url must be http(s) or localhost"
+        )
     output, error = _project_path(args.get("path"), project_dir=project_dir)
     if error:
         return ToolResult(tool="browser.screenshot", ok=False, error=error)
     assert output is not None
     if output.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
-        return ToolResult(tool="browser.screenshot", ok=False, error="path must end with .png, .jpg, or .jpeg")
+        return ToolResult(
+            tool="browser.screenshot", ok=False, error="path must end with .png, .jpg, or .jpeg"
+        )
     playwright = shutil.which("playwright")
     if not playwright:
         return ToolResult(
@@ -762,7 +804,9 @@ def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResul
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     timeout = _positive_int(args.get("timeout_seconds"), default=30, maximum=120)
-    result = _run_command([playwright, "screenshot", url, str(output)], cwd=project_dir, timeout=timeout)
+    result = _run_command(
+        [playwright, "screenshot", url, str(output)], cwd=project_dir, timeout=timeout
+    )
     ok = result["exit_code"] == 0 and output.exists()
     return ToolResult(
         tool="browser.screenshot",
@@ -796,6 +840,7 @@ def _is_browser_url(value: str) -> bool:
         return False
     try:
         import ipaddress
+
         ip = ipaddress.ip_address(host)
         if ip.is_private or ip.is_loopback or ip.is_link_local:
             return False
@@ -811,7 +856,9 @@ def _filesystem_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     path = Path(raw_path).expanduser()
 
     if not _is_safe_path(path, project_dir):
-        return ToolResult(tool="filesystem.list", ok=False, error="path must be within the project directory")
+        return ToolResult(
+            tool="filesystem.list", ok=False, error="path must be within the project directory"
+        )
 
     fact_path = path.resolve() if path.exists() else path
     facts: dict[str, Any] = {
@@ -826,7 +873,9 @@ def _filesystem_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     if not path.is_dir():
         facts["is_file"] = path.is_file()
         facts["size"] = path.stat().st_size
-        return ToolResult(tool="filesystem.list", ok=False, facts=facts, error="path is not a directory")
+        return ToolResult(
+            tool="filesystem.list", ok=False, facts=facts, error="path is not a directory"
+        )
     entries = []
     for child in sorted(path.iterdir(), key=lambda item: item.name)[:limit]:
         try:
@@ -841,7 +890,9 @@ def _filesystem_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
                 }
             )
         except OSError as exc:
-            entries.append({"name": child.name, "path": str(child), "type": "unknown", "error": str(exc)})
+            entries.append(
+                {"name": child.name, "path": str(child), "type": "unknown", "error": str(exc)}
+            )
     facts["entries"] = entries
     facts["entry_count"] = len(entries)
     return ToolResult(tool="filesystem.list", ok=True, facts=facts)
@@ -920,7 +971,9 @@ def _file_write(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
 def _git_status(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     path = Path(str(args.get("path") or project_dir)).expanduser()
     if not _is_safe_path(path, project_dir):
-        return ToolResult(tool="git.status", ok=False, error="path must be within the project directory")
+        return ToolResult(
+            tool="git.status", ok=False, error="path must be within the project directory"
+        )
 
     branch = _run_git(path, "status", "--short", "--branch")
     root = _run_git(path, "rev-parse", "--show-toplevel")
@@ -933,13 +986,17 @@ def _git_status(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
         "exit_code": branch["exit_code"],
         "stderr": branch["stderr"],
     }
-    return ToolResult(tool="git.status", ok=branch["exit_code"] == 0, facts=facts, error=branch["stderr"])
+    return ToolResult(
+        tool="git.status", ok=branch["exit_code"] == 0, facts=facts, error=branch["stderr"]
+    )
 
 
 def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     command = _command_list(args.get("command"))
     if not command:
-        return ToolResult(tool="shell.run", ok=False, error="command must be a non-empty string array")
+        return ToolResult(
+            tool="shell.run", ok=False, error="command must be a non-empty string array"
+        )
     cwd, error = _project_path(args.get("cwd") or str(project_dir), project_dir=project_dir)
     if error:
         return ToolResult(tool="shell.run", ok=False, error=error)
@@ -959,7 +1016,9 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
 def _test_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     command = _command_list(args.get("command"))
     if not command:
-        return ToolResult(tool="test.run", ok=False, error="command must be a non-empty string array")
+        return ToolResult(
+            tool="test.run", ok=False, error="command must be a non-empty string array"
+        )
     cwd, error = _project_path(args.get("cwd") or str(project_dir), project_dir=project_dir)
     if error:
         return ToolResult(tool="test.run", ok=False, error=error)
@@ -995,11 +1054,44 @@ def _command_list(value: Any) -> list[str]:
     return command[:32]
 
 
+def _codebase_search(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
+    query = str(args.get("query") or "")
+    limit = int(args.get("limit") or 5)
+    if not query:
+        return ToolResult(tool="codebase.search", ok=False, error="query is required")
+        
+    try:
+        from .rag import CodebaseRAG
+        rag = CodebaseRAG(project_dir)
+        results = rag.search(query, limit=limit)
+        return ToolResult(
+            tool="codebase.search",
+            ok=True,
+            data=[{"path": r.path, "snippet": r.content, "rank": r.rank} for r in results]
+        )
+    except Exception as exc:
+        return ToolResult(tool="codebase.search", ok=False, error=str(exc))
+
 def _run_command(command: list[str], *, cwd: Path, timeout: int) -> dict[str, Any]:
+    env = os.environ.copy()
+    # Ensure common bin paths are in PATH
+    home_dir = str(Path.home())
+    current_path = env.get("PATH", "")
+    import glob
+    nvm_paths = glob.glob(f"{home_dir}/.nvm/versions/node/*/bin")
+    extra_paths = [
+        f"{home_dir}/.local/bin",
+        f"{home_dir}/bin",
+        *nvm_paths,
+    ]
+    env["PATH"] = os.pathsep.join(extra_paths + [current_path])
+
     try:
         result = subprocess.run(
             command,
             cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
             check=False,
             capture_output=True,
             text=True,
@@ -1034,7 +1126,11 @@ def _run_git(path: Path, *args: str) -> dict[str, Any]:
         )
     except OSError as exc:
         return {"stdout": "", "stderr": str(exc), "exit_code": 127}
-    return {"stdout": result.stdout, "stderr": result.stderr.strip(), "exit_code": result.returncode}
+    return {
+        "stdout": result.stdout,
+        "stderr": result.stderr.strip(),
+        "exit_code": result.returncode,
+    }
 
 
 def _truncate_output(value: str, *, limit: int = 12000) -> str:

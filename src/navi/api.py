@@ -128,8 +128,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     capabilities = build_capability_registry(home, project_dir=project_dir)
     connector_adapters = load_connector_adapters()
     connector_status_handlers = {
-        adapter.name: (lambda item=adapter: item.status(home))
-        for adapter in connector_adapters
+        adapter.name: (lambda item=adapter: item.status(home)) for adapter in connector_adapters
     }
     app = FastAPI(title="Navi", version=__version__)
 
@@ -158,8 +157,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             "home": str(home),
             "model_provider": config.model.provider,
             "connectors": {
-                adapter.name: {"enabled": adapter.enabled(home)}
-                for adapter in connector_adapters
+                adapter.name: {"enabled": adapter.enabled(home)} for adapter in connector_adapters
             },
         }
 
@@ -195,10 +193,14 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get(api_path("session"))
     def session(session_id: str) -> dict:
-        return {"messages": [message.__dict__ for message in runtime.memory.get_messages(session_id)]}
+        return {
+            "messages": [message.__dict__ for message in runtime.memory.get_messages(session_id)]
+        }
 
     @app.get(api_path("memory"))
-    def get_memory(memory_type: str | None = None, status: str | None = None, limit: int = 50) -> dict:
+    def get_memory(
+        memory_type: str | None = None, status: str | None = None, limit: int = 50
+    ) -> dict:
         items = runtime.memory.list_items(memory_type=memory_type, status=status, limit=limit)
         return {"items": [asdict(item) for item in items]}
 
@@ -208,7 +210,9 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {
             "conflicts": [asdict(conflict) for conflict in conflicts],
             "count": len(conflicts),
-            "unresolved_count": len([conflict for conflict in conflicts if conflict.status == "unresolved"]),
+            "unresolved_count": len(
+                [conflict for conflict in conflicts if conflict.status == "unresolved"]
+            ),
         }
 
     @app.post(api_path("memory"))
@@ -229,7 +233,11 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get(api_path("skills"))
     def skills() -> dict:
-        return {"skills": [skill.__dict__ | {"path": str(skill.path)} for skill in runtime.skills.list_skills()]}
+        return {
+            "skills": [
+                skill.__dict__ | {"path": str(skill.path)} for skill in runtime.skills.list_skills()
+            ]
+        }
 
     @app.get(api_path("delegations"))
     def list_delegations() -> dict:
@@ -260,7 +268,9 @@ def create_app(home: Path | None = None) -> FastAPI:
         _raise_capability_error(requested)
         task = task_store.get(result.run_id) if result.run_id else None
         if task is None:
-            raise HTTPException(status_code=500, detail="delegate.spawn did not return a delegation run")
+            raise HTTPException(
+                status_code=500, detail="delegate.spawn did not return a delegation run"
+            )
         return task.__dict__
 
     @app.patch(api_path("delegation"))
@@ -299,7 +309,9 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get(api_path("approvals"))
     def list_approvals() -> dict:
-        return {"approvals": [_public_approval(approval) for approval in task_store.list_approvals()]}
+        return {
+            "approvals": [_public_approval(approval) for approval in task_store.list_approvals()]
+        }
 
     @app.get(api_path("watches"))
     def list_watches() -> dict:
@@ -377,7 +389,9 @@ def create_app(home: Path | None = None) -> FastAPI:
         )
         task = task_store.get(result.run_id) if result.run_id else None
         return {
-            "message": _local_surface_message(result, source=load_config(home).runtime.local_surface),
+            "message": _local_surface_message(
+                result, source=load_config(home).runtime.local_surface
+            ),
             "delegation": task.__dict__ if task else None,
             "facts": result.facts or {},
         }
@@ -396,7 +410,9 @@ def create_app(home: Path | None = None) -> FastAPI:
             ),
         )
         return {
-            "message": _local_surface_message(result, source=load_config(home).runtime.local_surface),
+            "message": _local_surface_message(
+                result, source=load_config(home).runtime.local_surface
+            ),
             "facts": result.facts or {},
         }
 
@@ -417,7 +433,9 @@ def create_app(home: Path | None = None) -> FastAPI:
         watch_id = str((result.facts or {}).get("watch_id") or "")
         watch = task_store.get_watch(watch_id) if watch_id else None
         return {
-            "message": _local_surface_message(result, source=load_config(home).runtime.local_surface),
+            "message": _local_surface_message(
+                result, source=load_config(home).runtime.local_surface
+            ),
             "watch": watch.__dict__ if watch else None,
             "facts": result.facts or {},
         }
@@ -435,7 +453,9 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {
             "checks": [
                 check.__dict__
-                for check in run_diagnostics(home, project_dir=project_dir, include_connectivity=connectivity)
+                for check in run_diagnostics(
+                    home, project_dir=project_dir, include_connectivity=connectivity
+                )
             ]
         }
 
@@ -486,7 +506,11 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get(api_path("trace_evaluations"))
     def trace_evaluations(trace_id: str = "", limit: int = 50) -> dict:
-        return {"evaluations": [item.__dict__ for item in TraceStore(home).list_evaluations(trace_id, limit=limit)]}
+        return {
+            "evaluations": [
+                item.__dict__ for item in TraceStore(home).list_evaluations(trace_id, limit=limit)
+            ]
+        }
 
     @app.post(api_path("trace_evaluate"))
     def trace_evaluate(trace_id: str) -> dict:
@@ -511,7 +535,9 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {
             "subagents": [
                 subagent.__dict__
-                for subagent in subagent_store.list(role=role, status=status, run_id=run_id, limit=limit)
+                for subagent in subagent_store.list(
+                    role=role, status=status, run_id=run_id, limit=limit
+                )
             ]
         }
 
@@ -524,7 +550,11 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get(api_path("workflows"))
     def list_workflows(status: str = "", limit: int = 50) -> dict:
-        return {"workflows": [workflow.__dict__ for workflow in workflow_store.list(status=status, limit=limit)]}
+        return {
+            "workflows": [
+                workflow.__dict__ for workflow in workflow_store.list(status=status, limit=limit)
+            ]
+        }
 
     @app.post(api_path("workflows"))
     async def create_workflow(request: WorkflowRequest) -> dict:
@@ -538,7 +568,9 @@ def create_app(home: Path | None = None) -> FastAPI:
         workflow_id = str((result.facts or {}).get("workflow_id") or result.run_id)
         workflow = workflow_store.get(workflow_id)
         if workflow is None:
-            raise HTTPException(status_code=500, detail="workflow.propose did not create a workflow")
+            raise HTTPException(
+                status_code=500, detail="workflow.propose did not create a workflow"
+            )
         return workflow_facts(workflow_store, workflow)
 
     @app.get(api_path("workflow"))
@@ -568,7 +600,9 @@ def create_app(home: Path | None = None) -> FastAPI:
     async def verify_workflow(workflow_id: str) -> dict:
         return await _workflow_action("workflow.verify", workflow_id)
 
-    async def _workflow_action(tool: str, workflow_id: str, extra_args: dict[str, Any] | None = None) -> dict:
+    async def _workflow_action(
+        tool: str, workflow_id: str, extra_args: dict[str, Any] | None = None
+    ) -> dict:
         result = await capabilities.invoke(
             tool,
             {"workflow_id": workflow_id, **(extra_args or {})},
@@ -593,7 +627,12 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get(api_path("evolution_proposals"))
     def evolution_proposals(status: str | None = None) -> dict:
-        return {"proposals": [proposal.__dict__ for proposal in EvolutionLedger(home).list_proposals(status=status)]}
+        return {
+            "proposals": [
+                proposal.__dict__
+                for proposal in EvolutionLedger(home).list_proposals(status=status)
+            ]
+        }
 
     @app.post(api_path("evolution_proposals"))
     def create_evolution_proposal(request: EvolutionProposalRequest) -> dict:
@@ -616,8 +655,12 @@ def create_app(home: Path | None = None) -> FastAPI:
         return event.__dict__
 
     @app.post(api_path("evolution_proposal_evaluation"))
-    def record_evolution_proposal_evaluation(proposal_id: str, request: EvolutionEvaluationRequest) -> dict:
-        proposal = EvolutionLedger(home).record_proposal_evaluation(proposal_id, request.evaluation_result)
+    def record_evolution_proposal_evaluation(
+        proposal_id: str, request: EvolutionEvaluationRequest
+    ) -> dict:
+        proposal = EvolutionLedger(home).record_proposal_evaluation(
+            proposal_id, request.evaluation_result
+        )
         if proposal is None:
             raise HTTPException(status_code=404, detail="proposal not found")
         return proposal.__dict__

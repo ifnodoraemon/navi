@@ -128,7 +128,6 @@ class CapabilityRegistry:
             allow_sources=allow_sources,
             allowed_tools=allowed_tools,
             disabled_tools=disabled_tools,
-            disabled_capability_classes=disabled_capability_classes,
             permission_ceiling=permission_ceiling,
         )
         self.providers: tuple[CapabilityProvider, ...] = (
@@ -554,7 +553,8 @@ class DelegateSpawnCapability:
             task.id,
             {"objective": task.title, "status": task.status, "prompt": task.prompt},
         )
-        goal = GoalStore(self.home).create(
+        goals = GoalStore(self.home)
+        goal = goals.create(
             objective=task.prompt,
             source=task.source,
             peer_id=task.peer_id,
@@ -567,6 +567,48 @@ class DelegateSpawnCapability:
                 "autonomy_level": task.autonomy_level,
             },
         )
+
+        # For non-auto_execute decisions (L2 approval flow), atomically create
+        # an approval request so the user can approve in the same turn without
+        # needing an extra LLM round-trip to call approval.request separately.
+        if decision.action != "auto_execute":
+            approval = runs.create_approval(
+                run_id=task.id,
+                peer_id=context.peer_id,
+                sender_id=context.sender_id,
+            )
+            task = runs.update_run(task.id, status="awaiting_approval") or task
+            goals.update_for_run(
+                task,
+                evidence={
+                    "run_id": task.id,
+                    "run_status": task.status,
+                    "approval_status": approval.status,
+                },
+            )
+            facts = {
+                **_transition_facts("delegation_run", task.id, "created"),
+                "goal_id": goal.id,
+                "run_id": task.id,
+                "status": task.status,
+                "autonomy_level": task.autonomy_level,
+                "trust_rule_id": task.trust_rule_id,
+                "approval": {
+                    "action": approval.action,
+                    "code": approval.code,
+                    "expires_at": approval.expires_at,
+                },
+            }
+            observation = json.dumps(facts, ensure_ascii=False, sort_keys=True)
+            return CapabilityResult(
+                ok=True,
+                action="approval",
+                observation=observation,
+                run_id=task.id,
+                facts=facts,
+                terminal=True,
+            )
+
         facts = {
             **_transition_facts("delegation_run", task.id, "created"),
             "goal_id": goal.id,
@@ -576,43 +618,10 @@ class DelegateSpawnCapability:
             "trust_rule_id": task.trust_rule_id,
         }
 
-        if task.status == "pending":
-            approval = runs.create_approval(
-                run_id=task.id,
-                peer_id=context.peer_id or task.peer_id,
-                sender_id=context.sender_id or task.sender_id,
-            )
-            task = runs.update_run(task.id, status="awaiting_approval") or task
-            GoalStore(self.home).update_for_run(
-                task,
-                evidence={
-                    "run_id": task.id,
-                    "run_status": task.status,
-                    "approval_status": approval.status,
-                },
-            )
-            facts["status"] = task.status
-            facts["approval"] = {
-                "action": approval.action,
-                "code": approval.code,
-                "expires_at": approval.expires_at,
-            }
-            return CapabilityResult(
-                ok=True,
-                action="approval",
-                observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
-                run_id=task.id,
-                facts=facts,
-                terminal=True,
-            )
-
-        return CapabilityResult(
-            ok=True,
-            action="delegation",
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+        return _fact_result(
+            "delegation",
+            facts,
             run_id=task.id,
-            facts=facts,
-            terminal=True,
         )
 
 
@@ -671,23 +680,17 @@ class SessionRequestElevationCapability:
 
         runs = RunStore(self.home)
 
-        # We spawn a delegation run representing the elevation request
+        # Spawn a delegation run representing the elevation request
         task = runs.create(
-            objective=f"Elevate session permission to {target_permission}. Reason: {reason}",
-            turn_scope="persistent",
+            f"Elevate session permission to {target_permission}. Reason: {reason}",
+            kind="elevation",
             workspace=context.workspace,
             peer_id=context.peer_id,
             sender_id=context.sender_id,
-            session_id=context.session_id
-            if hasattr(context, "session_id")
-            else "",  # We need to ensure context has session_id, wait, CapabilityContext doesn't have session_id. We'll add it or use another field.
+            status="awaiting_approval",
         )
-        # Actually context doesn't have session_id by default. We should check if we can pass it.
-        # But wait, runs don't have session_id either, they have peer_id and sender_id.
-        # We can store target_permission in plan_summary for now.
         task = runs.update_run(
             task.id,
-            status="awaiting_approval",
             plan_summary=f"session_elevation:{target_permission}",
         )
 
@@ -751,6 +754,22 @@ class ApprovalRequestCapability:
                 "approval_status": approval.status,
             },
         )
+        diff = ""
+        if task and task.workspace:
+            try:
+                import subprocess
+                res = subprocess.run(
+                    ["git", "diff", "HEAD"],
+                    cwd=task.workspace,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if res.returncode == 0:
+                    diff = res.stdout.strip()
+            except Exception:
+                pass
+
         facts = {
             **_transition_facts("approval_request", approval.id, "created"),
             "run_id": awaiting.id,
@@ -759,15 +778,13 @@ class ApprovalRequestCapability:
                 "action": approval.action,
                 "code": approval.code,
                 "expires_at": approval.expires_at,
+                "diff": diff,
             },
         }
-        return CapabilityResult(
-            ok=True,
-            action="approval",
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+        return _fact_result(
+            "approval",
+            facts,
             run_id=awaiting.id,
-            facts=facts,
-            terminal=True,
         )
 
 
@@ -905,13 +922,10 @@ class WatchCreateCapability:
             "next_run_at": watch.next_run_at,
             "next_run_text": time.ctime(watch.next_run_at),
         }
-        return CapabilityResult(
-            ok=True,
-            action="watch",
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+        return _fact_result(
+            "watch",
+            facts,
             run_id=watch.id,
-            facts=facts,
-            terminal=True,
         )
 
 
@@ -958,13 +972,10 @@ class DelegateDeleteCapability:
             "title": deleted.title,
             "status": deleted.status,
         }
-        return CapabilityResult(
-            ok=True,
-            action="delegation",
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+        return _fact_result(
+            "delegation",
+            facts,
             run_id=deleted.id,
-            facts=facts,
-            terminal=True,
         )
 
     def _delete_by_filter(self, args: dict[str, Any]) -> CapabilityResult:
@@ -1005,7 +1016,10 @@ class DelegateDeleteCapability:
         remaining_count = runs.count_runs(status="failed", source=source, kind=kind)
         facts = {
             **_transition_facts("bulk_delete", "runs", "completed"),
+            "entity_count": len(deleted),
+            "before_count": before_count,
             "deleted_count": len(deleted),
+            "deleted_runs": deleted,
             "remaining_count": remaining_count,
             "cleanup_complete": remaining_count == 0,
             "status_filter": "failed",
@@ -1013,12 +1027,9 @@ class DelegateDeleteCapability:
             "kind_filter": kind,
             "limit_filter": limit,
         }
-        return CapabilityResult(
-            ok=True,
-            action="delegation",
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
-            facts=facts,
-            terminal=True,
+        return _fact_result(
+            "delegation",
+            facts
         )
 
 
@@ -1062,13 +1073,10 @@ class WatchDeleteCapability:
             "cron": deleted.cron,
             "prompt": deleted.prompt,
         }
-        return CapabilityResult(
-            ok=True,
-            action="watch",
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+        return _fact_result(
+            "watch",
+            facts,
             run_id=deleted.id,
-            facts=facts,
-            terminal=True,
         )
 
 
@@ -1141,14 +1149,11 @@ class ApprovalResolveCapability:
                 "approval_status": approval.status,
                 "run_status": "queued",
             }
-            return CapabilityResult(
-                ok=True,
-                action="approval",
-                observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
-                run_id=resolved_run_id,
-                facts=facts,
-                terminal=True,
-            )
+            return _fact_result(
+            "approval",
+            facts,
+            run_id=resolved_run_id,
+        )
         task = runs.update_run(approval.run_id, status="rejected")
         if task:
             await trust.record_failure(task)
@@ -1166,13 +1171,10 @@ class ApprovalResolveCapability:
             "approval_status": approval.status,
             "run_status": "rejected",
         }
-        return CapabilityResult(
-            ok=True,
-            action="approval",
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+        return _fact_result(
+            "approval",
+            facts,
             run_id=approval.run_id,
-            facts=facts,
-            terminal=True,
         )
 
     @staticmethod

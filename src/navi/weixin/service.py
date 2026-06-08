@@ -98,15 +98,19 @@ class WeixinService:
         status_file = status_dir / "status.json"
         try:
             status_file.write_text(
-                json.dumps({
-                    "status": status,
-                    "error": error,
-                    "last_update": time.time(),
-                }, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "status": status,
+                        "error": error,
+                        "last_update": time.time(),
+                    },
+                    ensure_ascii=False,
+                ),
                 encoding="utf-8",
             )
         except Exception as e:
             import logging
+
             logging.getLogger("navi.weixin").warning("Failed to update status: %s", e)
 
     def record_event(self, event: str, **facts) -> None:
@@ -123,10 +127,12 @@ class WeixinService:
                 handle.write("\n")
         except Exception as e:
             import logging
+
             logging.getLogger("navi.weixin").warning("Failed to record event: %s", e)
 
     async def run(self, *, once: bool = False) -> None:
         import time
+
         account = self._resolve_account()
         sync_buf = self.store.load_sync_buf(account.account_id)
         sleep_time = 1.0
@@ -143,17 +149,19 @@ class WeixinService:
                     self.store.save_sync_buf(account.account_id, sync_buf)
                 for update in batch.updates:
                     await self.handle_update(account, update)
-                
+
                 # Throttle background processing to at most once per second,
                 # unless there is incoming user activity in the current batch.
                 now = time.time()
                 if len(batch.updates) > 0 or (now - last_bg_check >= 1.0):
                     await self.process_background(account)
                     last_bg_check = now
-                
+
                 # Check for activity to adapt sleep time
                 if now - last_tasks_check >= 2.0:
-                    active_runs = self.daemon.runs.list_by_statuses(["queued", "running", "preparing"])
+                    active_runs = self.daemon.runs.list_by_statuses(
+                        ["queued", "running", "preparing"]
+                    )
                     has_active_runs = len(active_runs) > 0
                     last_tasks_check = now
 
@@ -162,31 +170,33 @@ class WeixinService:
                     sleep_time = 0.05
                 else:
                     sleep_time = min(1.0, sleep_time + 0.1)
-                
+
                 retry_count = 0
                 self.update_status("healthy")
-                
+
             except Exception as e:
                 retry_count += 1
                 error_msg = str(e)
                 self.record_event("poll.error", retry_count=retry_count, error=error_msg)
                 if retry_count <= 5:
                     status = "retrying"
-                    err_sleep = min(16.0, 1.5 ** retry_count)
+                    err_sleep = min(16.0, 1.5**retry_count)
                     self.update_status(status, error_msg)
                     sleep_time = err_sleep
                 else:
                     status = "degraded"
                     sleep_time = min(60.0, 5.0 * retry_count)
                     self.update_status(status, error_msg)
-            
+
             if once:
                 return
             await asyncio.sleep(sleep_time)
 
     async def handle_update(self, account: WeixinAccount, update: WeixinUpdate) -> bool:
         if self.dedup.seen(update.message_id):
-            self.record_event("message.duplicate", message_id=update.message_id, peer_id=update.peer_id)
+            self.record_event(
+                "message.duplicate", message_id=update.message_id, peer_id=update.peer_id
+            )
             return False
         message = ConnectorMessage(
             message_id=update.message_id,
@@ -197,10 +207,17 @@ class WeixinService:
             session_alias_prefix=self.session_alias_prefix,
         )
         if self.dedup.seen(message.content_key):
-            self.record_event("message.duplicate_content", message_id=update.message_id, peer_id=update.peer_id)
+            self.record_event(
+                "message.duplicate_content", message_id=update.message_id, peer_id=update.peer_id
+            )
             return False
         if not self._allowed(update):
-            self.record_event("message.blocked", message_id=update.message_id, peer_id=update.peer_id, sender_id=update.sender_id)
+            self.record_event(
+                "message.blocked",
+                message_id=update.message_id,
+                peer_id=update.peer_id,
+                sender_id=update.sender_id,
+            )
             return False
         self.record_event(
             "message.received",
@@ -222,12 +239,16 @@ class WeixinService:
                 context_token=context_token,
             )
         except Exception as exc:
-            self.record_event("reply.error", peer_id=update.peer_id, error=f"{type(exc).__name__}: {exc}")
+            self.record_event(
+                "reply.error", peer_id=update.peer_id, error=f"{type(exc).__name__}: {exc}"
+            )
             raise
         self.record_event("reply.sent", peer_id=update.peer_id, text_preview=text[:120])
         return True
 
-    async def _handle_with_typing(self, update: WeixinUpdate, message: ConnectorMessage, *, context_token: str) -> str:
+    async def _handle_with_typing(
+        self, update: WeixinUpdate, message: ConnectorMessage, *, context_token: str
+    ) -> str:
         typing_ticket = await self._typing_ticket(update.sender_id, context_token=context_token)
         stop_typing = asyncio.Event()
         typing_task = (
@@ -239,7 +260,12 @@ class WeixinService:
             return await self.ingress.handle(message)
         except Exception as exc:
             self.update_status("degraded", f"message handler failed: {type(exc).__name__}: {exc}")
-            self.record_event("handler.error", peer_id=update.peer_id, sender_id=update.sender_id, error=f"{type(exc).__name__}: {exc}")
+            self.record_event(
+                "handler.error",
+                peer_id=update.peer_id,
+                sender_id=update.sender_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
             return "我收到消息了，但本地处理链路刚刚出错了。请稍后再试，或让我诊断 provider / service 状态。"
         finally:
             stop_typing.set()
@@ -253,7 +279,9 @@ class WeixinService:
         if cached:
             return cached
         try:
-            ticket = await self.client.get_typing_ticket(user_id=sender_id, context_token=context_token)
+            ticket = await self.client.get_typing_ticket(
+                user_id=sender_id, context_token=context_token
+            )
         except Exception:
             return ""
         if ticket:
@@ -261,7 +289,9 @@ class WeixinService:
             self.record_event("typing.ticket", sender_id=sender_id)
         return ticket
 
-    async def _keep_typing(self, peer_id: str, typing_ticket: str, stop_event: asyncio.Event) -> None:
+    async def _keep_typing(
+        self, peer_id: str, typing_ticket: str, stop_event: asyncio.Event
+    ) -> None:
         try:
             while not stop_event.is_set():
                 await self._send_typing_safely(peer_id, typing_ticket, TYPING_START)
@@ -275,24 +305,31 @@ class WeixinService:
     async def _send_typing_safely(self, peer_id: str, typing_ticket: str, status: int) -> None:
         try:
             if isinstance(self.client, MockWeixinClient):
-                await self.client.send_typing(peer_id=peer_id, typing_ticket=typing_ticket, status=status)
+                await self.client.send_typing(
+                    peer_id=peer_id, typing_ticket=typing_ticket, status=status
+                )
                 self.record_event("typing.sent", peer_id=peer_id, status=status)
                 return
             await asyncio.wait_for(
-                self.client.send_typing(peer_id=peer_id, typing_ticket=typing_ticket, status=status),
+                self.client.send_typing(
+                    peer_id=peer_id, typing_ticket=typing_ticket, status=status
+                ),
                 timeout=1.5,
             )
             self.record_event("typing.sent", peer_id=peer_id, status=status)
         except Exception as e:
             self.record_event("typing.error", peer_id=peer_id, status=status)
             import logging
+
             logging.getLogger("navi.weixin").warning("Failed to send typing: %s", e)
 
     async def process_background(self, account: WeixinAccount) -> None:
         for result in await self.daemon.process_watches_once():
             run_id = str(result.get("run_id") or "")
             task = self.daemon.runs.get(run_id) if run_id else None
-            peer_id = str(result.get("peer_id") or "") or (task.peer_id if task else self.config.home_channel)
+            peer_id = str(result.get("peer_id") or "") or (
+                task.peer_id if task else self.config.home_channel
+            )
             if not peer_id:
                 continue
             text = await self._compose_background_message(
@@ -309,7 +346,12 @@ class WeixinService:
                 text=text,
                 context_token=self.context_tokens.get(account.account_id, peer_id),
             )
-            self.record_event("background.sent", peer_id=peer_id, background_event="watch_result" if not task else "watch_task_prepared", text_preview=text[:120])
+            self.record_event(
+                "background.sent",
+                peer_id=peer_id,
+                background_event="watch_result" if not task else "watch_task_prepared",
+                text_preview=text[:120],
+            )
         for task in await self.daemon.process_queue_once():
             if not task.peer_id:
                 continue
@@ -326,7 +368,12 @@ class WeixinService:
                 text=text,
                 context_token=self.context_tokens.get(account.account_id, task.peer_id),
             )
-            self.record_event("background.sent", peer_id=task.peer_id, background_event="run_execution_finished", text_preview=text[:120])
+            self.record_event(
+                "background.sent",
+                peer_id=task.peer_id,
+                background_event="run_execution_finished",
+                text_preview=text[:120],
+            )
 
     async def _compose_background_message(self, facts: dict, *, fallback: str) -> str:
         if facts.get("event") == "watch_result":

@@ -61,17 +61,49 @@ class EvolutionTarget:
 
 
 EVOLUTION_TARGETS: tuple[EvolutionTarget, ...] = (
-    EvolutionTarget("prompt_layer", "Versioned prompt layer content that shapes model behavior.", "prompting"),
-    EvolutionTarget("skill", "Promptable skill content, metadata, provenance, and trust state.", "skills"),
-    EvolutionTarget("memory_item", "Typed durable memory item content and lifecycle state.", "memory"),
-    EvolutionTarget("memory_schema", "Memory types, priority, expiry, contradiction, and recall policy.", "memory"),
-    EvolutionTarget("tool_spec", "Capability/tool manifest schema, permissions, and descriptions.", "tools", True),
-    EvolutionTarget("connector_spec", "Connector affordances, surface commands, and status facts.", "connectors", True),
+    EvolutionTarget(
+        "prompt_layer", "Versioned prompt layer content that shapes model behavior.", "prompting"
+    ),
+    EvolutionTarget(
+        "skill", "Promptable skill content, metadata, provenance, and trust state.", "skills"
+    ),
+    EvolutionTarget(
+        "memory_item", "Typed durable memory item content and lifecycle state.", "memory"
+    ),
+    EvolutionTarget(
+        "memory_schema",
+        "Memory types, priority, expiry, contradiction, and recall policy.",
+        "memory",
+    ),
+    EvolutionTarget(
+        "tool_spec",
+        "Capability/tool manifest schema, permissions, and descriptions.",
+        "tools",
+        True,
+    ),
+    EvolutionTarget(
+        "connector_spec",
+        "Connector affordances, surface commands, and status facts.",
+        "connectors",
+        True,
+    ),
     EvolutionTarget("trust_rule", "Sender/project scoped autonomy rule.", "trust", True),
-    EvolutionTarget("trust_policy", "Autonomy level meanings, promotion, demotion, and approval policy.", "trust", True),
-    EvolutionTarget("workflow_policy", "Daemon, execution, approval, and lifecycle decision policy.", "runtime", True),
+    EvolutionTarget(
+        "trust_policy",
+        "Autonomy level meanings, promotion, demotion, and approval policy.",
+        "trust",
+        True,
+    ),
+    EvolutionTarget(
+        "workflow_policy",
+        "Daemon, execution, approval, and lifecycle decision policy.",
+        "runtime",
+        True,
+    ),
     EvolutionTarget("eval_case", "Evaluation dataset case and expected behavior.", "evals"),
-    EvolutionTarget("graph_node", "Personal graph project, person, and task relationship facts.", "graph"),
+    EvolutionTarget(
+        "graph_node", "Personal graph project, person, and task relationship facts.", "graph"
+    ),
     EvolutionTarget("run_execution", "Recorded run execution outcome state.", "execution"),
 )
 
@@ -109,7 +141,9 @@ class EvolutionLedger:
                 )
                 """
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_evolution_task ON evolution_events(run_id)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_evolution_task ON evolution_events(run_id)"
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS evolution_proposals (
@@ -135,7 +169,9 @@ class EvolutionLedger:
                 )
                 """
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_evolution_proposal_status ON evolution_proposals(status)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_evolution_proposal_status ON evolution_proposals(status)"
+            )
 
     def record(
         self,
@@ -281,7 +317,9 @@ class EvolutionLedger:
             )
         return proposal
 
-    def list_proposals(self, *, status: str | None = None, limit: int = 100) -> list[EvolutionProposal]:
+    def list_proposals(
+        self, *, status: str | None = None, limit: int = 100
+    ) -> list[EvolutionProposal]:
         with connect(self.db_path) as conn:
             if status:
                 rows = conn.execute(
@@ -321,7 +359,9 @@ class EvolutionLedger:
             ).fetchone()
         return EvolutionProposal(*row) if row else None
 
-    def record_proposal_evaluation(self, proposal_id: str, evaluation_result: str) -> EvolutionProposal | None:
+    def record_proposal_evaluation(
+        self, proposal_id: str, evaluation_result: str
+    ) -> EvolutionProposal | None:
         if self.get_proposal(proposal_id) is None:
             return None
         with connect(self.db_path) as conn:
@@ -331,13 +371,12 @@ class EvolutionLedger:
             )
         return self.get_proposal(proposal_id)
 
-
     async def extract_evals_from_session(self, session_id: str) -> None:
         try:
             from navi.trace import TraceStore
             from navi.evals import load_daily_journey_eval_dataset
             import yaml
-            
+
             traces = TraceStore(self.home)
             events = traces.list_events(session_id)
             if not events:
@@ -353,22 +392,24 @@ class EvolutionLedger:
 
             text = "\n".join(summary_parts)
             prompt = f"Analyze the following user journey and extract a daily eval YAML structure for it, containing 'id', 'user_goal', and a 'steps' array matching the format of daily_journeys.yaml. Return ONLY valid YAML.\n\n{text}"
-            
+
             # Use provider
             response = await self.provider.complete(prompt, max_tokens=1500)
             if not response.text:
                 return
-            
-            extracted = yaml.safe_load(response.text.replace("```yaml", "").replace("```", "").strip())
+
+            extracted = yaml.safe_load(
+                response.text.replace("```yaml", "").replace("```", "").strip()
+            )
             if isinstance(extracted, dict) and "steps" in extracted:
                 evals_path = self.home.parent / "evals" / "auto_captured_journeys.yaml"
                 if evals_path.exists():
                     data = load_daily_journey_eval_dataset(evals_path)
                 else:
                     data = {"version": 1, "journeys": []}
-                
+
                 data["journeys"].append(extracted)
-                
+
                 with open(evals_path, "w") as f:
                     yaml.dump(data, f, allow_unicode=True, sort_keys=False)
 
@@ -388,9 +429,11 @@ class EvolutionLedger:
         if target and target.permissions_can_expand:
             if proposal.required_approval_level not in ("L3", "L4"):
                 raise ValueError("permission-expanding proposals require L3/L4 approval level")
-        
+
         if proposal.required_approval_level != "L0" and proposal.evaluation_result != "approved":
-            raise ValueError(f"proposal requires {proposal.required_approval_level} approval but is not approved")
+            raise ValueError(
+                f"proposal requires {proposal.required_approval_level} approval but is not approved"
+            )
 
         event = self.record(
             run_id=proposal.source_run_id,
@@ -445,7 +488,9 @@ class EvolutionEngine:
         reason = "successful task reflection" if success else "failed task reflection"
         events.append(self._update_graph(task, success=success, reason=reason))
         previous_rule = self.trust.get(task.trust_rule_id) if task.trust_rule_id else None
-        before = json.dumps(self._trust_payload(previous_rule) if previous_rule else {}, sort_keys=True)
+        before = json.dumps(
+            self._trust_payload(previous_rule) if previous_rule else {}, sort_keys=True
+        )
         trust_rule = None
         if previous_rule is not None:
             if success:
@@ -476,13 +521,12 @@ class EvolutionEngine:
 
         return self.ledger.list_for_task(task.id)
 
-
     async def extract_evals_from_session(self, session_id: str) -> None:
         try:
             from navi.trace import TraceStore
             from navi.evals import load_daily_journey_eval_dataset
             import yaml
-            
+
             traces = TraceStore(self.home)
             events = traces.list_events(session_id)
             if not events:
@@ -498,22 +542,24 @@ class EvolutionEngine:
 
             text = "\n".join(summary_parts)
             prompt = f"Analyze the following user journey and extract a daily eval YAML structure for it, containing 'id', 'user_goal', and a 'steps' array matching the format of daily_journeys.yaml. Return ONLY valid YAML.\n\n{text}"
-            
+
             # Use provider
             response = await self.provider.complete(prompt, max_tokens=1500)
             if not response.text:
                 return
-            
-            extracted = yaml.safe_load(response.text.replace("```yaml", "").replace("```", "").strip())
+
+            extracted = yaml.safe_load(
+                response.text.replace("```yaml", "").replace("```", "").strip()
+            )
             if isinstance(extracted, dict) and "steps" in extracted:
                 evals_path = self.home.parent / "evals" / "auto_captured_journeys.yaml"
                 if evals_path.exists():
                     data = load_daily_journey_eval_dataset(evals_path)
                 else:
                     data = {"version": 1, "journeys": []}
-                
+
                 data["journeys"].append(extracted)
-                
+
                 with open(evals_path, "w") as f:
                     yaml.dump(data, f, allow_unicode=True, sort_keys=False)
 
@@ -533,15 +579,23 @@ class EvolutionEngine:
         if target and target.permissions_can_expand:
             if proposal.required_approval_level not in ("L3", "L4"):
                 raise ValueError("permission-expanding proposals require L3/L4 approval level")
-        
+
         if proposal.required_approval_level != "L0" and proposal.evaluation_result != "approved":
-            raise ValueError(f"proposal requires {proposal.required_approval_level} approval but is not approved")
+            raise ValueError(
+                f"proposal requires {proposal.required_approval_level} approval but is not approved"
+            )
 
         if proposal.target_type == "prompt_layer":
             from .prompting import PromptLayerStore
 
             PromptLayerStore(self.home).write_override(proposal.target_id, proposal.after)
-        elif proposal.target_type in ("tool_spec", "connector_spec", "trust_policy", "workflow_policy", "memory_schema"):
+        elif proposal.target_type in (
+            "tool_spec",
+            "connector_spec",
+            "trust_policy",
+            "workflow_policy",
+            "memory_schema",
+        ):
             spec_path = self.home / "specs" / f"{proposal.target_id}.yaml"
             spec_path.parent.mkdir(parents=True, exist_ok=True)
             spec_path.write_text(proposal.after, encoding="utf-8")
@@ -605,7 +659,14 @@ class EvolutionEngine:
                 store.write_override(event.target_id, event.before)
             else:
                 store.delete_override(event.target_id)
-        elif event.target_type in ("tool_spec", "connector_spec", "trust_policy", "workflow_policy", "memory_schema", "eval_case"):
+        elif event.target_type in (
+            "tool_spec",
+            "connector_spec",
+            "trust_policy",
+            "workflow_policy",
+            "memory_schema",
+            "eval_case",
+        ):
             ext = "json" if event.target_type == "eval_case" else "yaml"
             folder = "evals" if event.target_type == "eval_case" else "specs"
             spec_path = self.home / folder / f"{event.target_id}.{ext}"

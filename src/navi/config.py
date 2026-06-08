@@ -98,9 +98,18 @@ def load_config(home: Path | None = None) -> NaviConfig:
     model = _model_config(model_raw, env=env, allow_env_override=True)
 
     runtime = RuntimeConfig(
-        service_name=str(env.get("NAVI_SERVICE_NAME", runtime_raw.get("service_name", DEFAULT_SERVICE_NAME))),
-        local_surface=str(env.get("NAVI_LOCAL_SURFACE", runtime_raw.get("local_surface", DEFAULT_LOCAL_SURFACE))).strip(),
-        agent_step_budget=_int_env(env.get("NAVI_AGENT_STEP_BUDGET", runtime_raw.get("agent_step_budget", DEFAULT_AGENT_STEP_BUDGET))),
+        service_name=str(
+            env.get("NAVI_SERVICE_NAME", runtime_raw.get("service_name", DEFAULT_SERVICE_NAME))
+        ),
+        local_surface=str(
+            env.get("NAVI_LOCAL_SURFACE", runtime_raw.get("local_surface", DEFAULT_LOCAL_SURFACE))
+        ).strip(),
+        agent_step_budget=_int_env(
+            env.get(
+                "NAVI_AGENT_STEP_BUDGET",
+                runtime_raw.get("agent_step_budget", DEFAULT_AGENT_STEP_BUDGET),
+            )
+        ),
     )
     execution = ExecutionConfig(
         provider=DEFAULT_EXECUTION_PROVIDER,
@@ -111,7 +120,10 @@ def load_config(home: Path | None = None) -> NaviConfig:
             ),
             default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
         ),
-        mock=str(env.get("NAVI_EXECUTION_MOCK", execution_raw.get("mock", DEFAULT_EXECUTION_MOCK))).lower() in {"1", "true", "yes", "on"},
+        mock=str(
+            env.get("NAVI_EXECUTION_MOCK", execution_raw.get("mock", DEFAULT_EXECUTION_MOCK))
+        ).lower()
+        in {"1", "true", "yes", "on"},
     )
     return NaviConfig(model=model, runtime=runtime, execution=execution)
 
@@ -173,7 +185,9 @@ def _provider_spec(provider: str, model_raw: dict, env: dict[str, str]) -> Provi
             name=provider,
             kind=kind,
             default_model=str(env.get("NAVI_MODEL", model_raw.get("model", ""))),
-            default_base_url=str(env.get("NAVI_MODEL_API_BASE_URL", model_raw.get("api_base_url", ""))).rstrip("/"),
+            default_base_url=str(
+                env.get("NAVI_MODEL_API_BASE_URL", model_raw.get("api_base_url", ""))
+            ).rstrip("/"),
             api_key_env=api_key_env,
         )
 
@@ -256,7 +270,9 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
 
         if kind != "mock" and not m.api_key:
             env_hint = " or ".join(api_key_env)
-            errors.append(f"{path}.api_key is empty and no environment override ({env_hint}) is set")
+            errors.append(
+                f"{path}.api_key is empty and no environment override ({env_hint}) is set"
+            )
 
     validate_model(config.model, "model")
     for idx, fb in enumerate(config.model.fallbacks):
@@ -266,6 +282,7 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
 
     # Validate Connector Specs and configuration
     from .connector_registry import load_connector_adapters
+
     try:
         adapters = load_connector_adapters()
         for adapter in adapters:
@@ -278,6 +295,7 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
                 errors.append(f"connector spec '{spec.name}' has empty status_tool")
 
             import importlib
+
             try:
                 config_module = importlib.import_module(f"navi.{adapter.name}.config")
                 load_cfg = getattr(config_module, f"load_{adapter.name}_config", None)
@@ -288,11 +306,21 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
                         if dm_policy not in {"open", "disabled", "allowlist", "pairing"}:
                             errors.append(f"{adapter.name}.dm_policy '{dm_policy}' is invalid")
                         group_policy = getattr(cfg, "group_policy", None)
-                        if group_policy is not None and group_policy not in {"open", "disabled", "allowlist", "pairing"}:
-                            errors.append(f"{adapter.name}.group_policy '{group_policy}' is invalid")
+                        if group_policy is not None and group_policy not in {
+                            "open",
+                            "disabled",
+                            "allowlist",
+                            "pairing",
+                        }:
+                            errors.append(
+                                f"{adapter.name}.group_policy '{group_policy}' is invalid"
+                            )
             except (ModuleNotFoundError, AttributeError) as e:
                 import logging
-                logging.getLogger("navi.config").warning("Failed to validate connector %s: %s", adapter.name, e)
+
+                logging.getLogger("navi.config").warning(
+                    "Failed to validate connector %s: %s", adapter.name, e
+                )
     except Exception as e:
         errors.append(f"connector load error: {e}")
 

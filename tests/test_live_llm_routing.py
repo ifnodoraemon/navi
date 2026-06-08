@@ -116,7 +116,7 @@ async def test_live_llm_responses_do_not_regress_to_command_instructions(case: d
 async def test_live_llm_watch_notification_does_not_regress(case: dict[str, Any]) -> None:
     home = _require_live_provider()
     runtime = build_runtime(home)
-    execution = NaviExecutionProvider(provider=runtime.provider, timeout_seconds=75)
+    execution = NaviExecutionProvider(provider=runtime.provider, timeout_seconds=75, home=home)
 
     result = await asyncio.wait_for(
         execution.run_watch(

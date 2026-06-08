@@ -146,4 +146,5 @@ class ConnectorIngressRuntime:
             source=message.source,
             session_alias=message.session_alias,
         )
-        return result.text
+        from .safeguards import redact_secrets
+        return redact_secrets(result.text)

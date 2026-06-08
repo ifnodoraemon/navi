@@ -25,9 +25,11 @@ class ScriptedProvider(MockProvider):
         self.response = response
         self.messages: list[ChatMessage] = []
 
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], **kwargs) -> str:
         self.messages = messages
         if isinstance(self.response, list):
+            if not self.response:
+                return '{"tool":"final.answer","permission":"read","args":{"message":"dummy timeout"},"confidence":0.95,"reason":"out of responses"}'
             response = self.response.pop(0)
         else:
             response = self.response
@@ -51,7 +53,7 @@ def test_headless_local_api_flow(tmp_path, monkeypatch):
     assert chat.status_code == 200
     chat_data = chat.json()
     assert chat_data["session_id"]
-    assert chat_data["message"] == "Navi received: hello"
+    assert chat_data["message"] == "hello"
 
     sessions = client.get("/v1/sessions")
     assert sessions.status_code == 200

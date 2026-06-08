@@ -50,12 +50,20 @@ class SkillStore:
                 return True
             return s_role.strip().lower() == role.strip().lower()
 
-        def build_skill(path: Path, metadata: dict[str, Any], *, source: str, verified: bool, default_scope: str) -> Skill:
+        def build_skill(
+            path: Path, metadata: dict[str, Any], *, source: str, verified: bool, default_scope: str
+        ) -> Skill:
             name = str(metadata.get("name") or path.parent.name)
             s_role = str(metadata.get("role") or "").strip().lower()
             content = path.read_bytes()
-            trust_level = str(metadata.get("trust_level") or ("verified" if verified else "unverified")).strip().lower()
-            evaluation = metadata.get("evaluation") if isinstance(metadata.get("evaluation"), dict) else {}
+            trust_level = (
+                str(metadata.get("trust_level") or ("verified" if verified else "unverified"))
+                .strip()
+                .lower()
+            )
+            evaluation = (
+                metadata.get("evaluation") if isinstance(metadata.get("evaluation"), dict) else {}
+            )
             return Skill(
                 name=name,
                 description=str(metadata.get("description") or ""),

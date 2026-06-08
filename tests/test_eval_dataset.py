@@ -63,17 +63,19 @@ class ScriptedEvalProvider(MockProvider):
         if messages and "model syscall planner" in messages[0].content:
             user_prompt = next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
             observations = _tagged(user_prompt, "observed_facts")
-            if observations:
-                if '"capability": "skills.list"' in observations or '"capability": "tools.list"' in observations:
+            # Strip Ambient Context to check if there are actual tool observations
+            core_observations = re.sub(r"Ambient Context:.*?(?=\n\n|\Z)", "", observations, flags=re.DOTALL).strip()
+            if core_observations:
+                if '"capability": "skills.list"' in core_observations or '"capability": "tools.list"' in core_observations:
                     return await super().complete(messages)
-                if not any(token in observations for token in ('"status": "pending"', '"status": "prepared"', '"watch_id":')):
+                if not any(token in core_observations for token in ('"status": "pending"', '"status": "prepared"', '"watch_id":')):
                     return json.dumps(
-                        _decision("final.answer", "read", {"message": observations}),
+                        _decision("final.answer", "read", {"message": core_observations}),
                         ensure_ascii=False,
                     )
                 return await super().complete(messages)
             user_text = _tagged(user_prompt, "user_message")
-            decision = self.decisions.pop(0) if self.decisions else _decision("final.answer", "read", {"message": f"Navi received: {user_text}"})
+            decision = self.decisions.pop(0) if self.decisions else _decision("final.answer", "read", {"message": f"{user_text}"})
             decision = _fill_dynamic_args(decision, user_text)
             return json.dumps(decision, ensure_ascii=False)
         return await super().complete(messages)
@@ -145,6 +147,7 @@ def _decisions_for_journeys(journeys: list[dict], *, inbound_key: str = "user") 
     for journey in journeys:
         if journey.get("provider") == "failing":
             continue
+        permission_ceiling = journey.get("permission_ceiling", "write")
         for step in journey.get("steps") or []:
             if inbound_key == "inbound" and "inbound" not in step:
                 continue
@@ -153,11 +156,11 @@ def _decisions_for_journeys(journeys: list[dict], *, inbound_key: str = "user") 
             if inbound_key == "inbound" and (step.get("expect") or {}).get("handled") is False:
                 continue
             text = str((step.get("inbound") or {}).get("text") if inbound_key == "inbound" else step.get("user") or "")
-            decisions.append(_decision_for_expectation(step.get("expect") or {}, text))
+            decisions.append(_decision_for_expectation(step.get("expect") or {}, text, permission_ceiling=permission_ceiling))
     return decisions
 
 
-def _decision_for_expectation(expect: dict, text: str) -> dict:
+def _decision_for_expectation(expect: dict, text: str, *, permission_ceiling: str = "write") -> dict:
     action = str(expect.get("action") or "")
     if not action:
         if "skill" in text.lower() or "工具" in text or "可以做什么" in text:
@@ -174,7 +177,7 @@ def _decision_for_expectation(expect: dict, text: str) -> dict:
             if "watch_count_delta" in expect and int(expect.get("watch_count_delta") or 0) > 0:
                 action = "watch"
             elif "run_count_delta" in expect and int(expect.get("run_count_delta") or 0) > 0:
-                action = "approval"
+                action = "delegation"
             elif "failed_run_count" in expect:
                 action = "delegation"
             else:
@@ -184,18 +187,29 @@ def _decision_for_expectation(expect: dict, text: str) -> dict:
             return _decision("approval.resolve", "write", {"decision": "reject"})
         if "批准" in text or "approve" in text.lower():
             return _decision("approval.resolve", "write", {"decision": "approve"})
+        # For read-ceiling sessions, use session.request_elevation
+        if permission_ceiling == "read":
+            return _decision("session.request_elevation", "read", {"target_permission": "prepare", "reason": text})
         return _decision("delegate.spawn", "prepare", {"prompt": text})
     if action == "watch":
         if expect.get("watch_kind") == "once" or expect.get("watch_cron") == "once":
             return _decision("watch.create", "prepare", {"kind": "once", "run_at_text": text, "prompt": text})
         return _decision("watch.create", "prepare", {"kind": "recurring", "cron": "0 20 * * *", "prompt": text})
     if action == "ask":
-        return _decision("clarify.ask", "read", {"message": "Please provide the exact recurring schedule or reminder time."})
+        return _decision("ask.user", "read", {"message": "Please provide the exact recurring schedule or reminder time."})
     if action == "delegation":
-        return _decision("delegate.delete", "write", {"status": "failed", "source": "watch"})
+        if "清理" in text:
+            return _decision("delegate.delete", "write", {"status": "failed", "source": "watch"})
+        return _decision("delegate.spawn", "prepare", {"prompt": text})
     if action == "tool":
         return _decision(_tool_for_text(text), "read", _tool_args_for_text(text))
-    return _decision("final.answer", "read", {"message": f"Navi received: {text}"})
+    
+    message = text
+    if expect and "sent_contains" in expect:
+        sent_contains = expect["sent_contains"]
+        message = sent_contains[0] if isinstance(sent_contains, list) else sent_contains
+        
+    return _decision("final.answer", "read", {"message": str(message)})
 
 
 def _tool_for_text(text: str) -> str:

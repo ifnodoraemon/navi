@@ -10,7 +10,9 @@ class TelegramClient:
         self.api_base_url = api_base_url.rstrip("/")
         self.bot_token = bot_token
 
-    async def get_updates(self, *, offset: int | None = None, timeout: int = 25) -> list[TelegramUpdate]:
+    async def get_updates(
+        self, *, offset: int | None = None, timeout: int = 25
+    ) -> list[TelegramUpdate]:
         data: dict[str, object] = {"timeout": timeout}
         if offset is not None:
             data["offset"] = offset
@@ -27,7 +29,9 @@ class TelegramClient:
 
     async def send_message(self, *, chat_id: str, text: str) -> None:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(self._url("sendMessage"), json={"chat_id": chat_id, "text": text})
+            response = await client.post(
+                self._url("sendMessage"), json={"chat_id": chat_id, "text": text}
+            )
             response.raise_for_status()
 
     def _url(self, method: str) -> str:
@@ -39,7 +43,9 @@ class MockTelegramClient:
         self.updates: list[TelegramUpdate] = []
         self.sent: list[dict[str, str]] = []
 
-    async def get_updates(self, *, offset: int | None = None, timeout: int = 25) -> list[TelegramUpdate]:
+    async def get_updates(
+        self, *, offset: int | None = None, timeout: int = 25
+    ) -> list[TelegramUpdate]:
         if offset is None:
             return list(self.updates)
         return [update for update in self.updates if update.update_id >= offset]

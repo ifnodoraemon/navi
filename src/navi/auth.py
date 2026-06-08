@@ -37,8 +37,12 @@ class AuthInspector:
         authenticated = any(Path(path).expanduser().exists() for path in spec.auth_files)
         detail = spec.auth_detail
         if spec.auth_status_args:
-            auth_result = _command_output([binary_path, *spec.auth_status_args], include_returncode=True)
-            negative = any(marker.lower() in auth_result.lower() for marker in spec.auth_negative_markers)
+            auth_result = _command_output(
+                [binary_path, *spec.auth_status_args], include_returncode=True
+            )
+            negative = any(
+                marker.lower() in auth_result.lower() for marker in spec.auth_negative_markers
+            )
             authenticated = authenticated or ("returncode=0" in auth_result and not negative)
         if not authenticated and not detail:
             detail = "authentication not detected"

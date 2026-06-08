@@ -32,7 +32,7 @@ async def test_telegram_handle_update_replies_and_saves_context(tmp_path, monkey
 
     assert handled is True
     assert service.client.sent[-1]["chat_id"] == "chat"
-    assert service.client.sent[-1]["text"] == "Navi received: hello"
+    assert service.client.sent[-1]["text"] == "hello"
     session_id = runtime.memory.current_session_id("connector:telegram:chat")
     assert runtime.memory.get_messages(session_id)[0].content == "hello"
 

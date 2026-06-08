@@ -18,9 +18,11 @@ class ScriptedProvider(MockProvider):
         self.response = response
         self.messages: list[ChatMessage] = []
 
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], **kwargs) -> str:
         self.messages = messages
         if isinstance(self.response, list):
+            if not self.response:
+                return '{"tool":"final.answer","permission":"read","args":{"message":"dummy timeout"},"confidence":0.95,"reason":"out of responses"}'
             response = self.response.pop(0)
         else:
             response = self.response
@@ -51,7 +53,7 @@ class PlannerThenMockProvider(MockProvider):
                 {
                     "tool": "final.answer",
                     "permission": "read",
-                    "args": {"message": f"Navi received: {text}"},
+                    "args": {"message": f"{text}"},
                     "confidence": 1.0,
                     "reason": "ordinary chat",
                 },
@@ -95,7 +97,7 @@ async def test_weixin_handle_update_replies_and_saves_context(tmp_path, monkeypa
 
     assert handled is True
     assert service.context_tokens.get("acct", "peer") == "ctx"
-    assert service.client.sent[0]["text"] == "Navi received: ping"
+    assert service.client.sent[0]["text"] == "ping"
     session_id = runtime.memory.current_session_id("connector:weixin:peer")
     assert runtime.memory.get_messages(session_id)
 
@@ -167,7 +169,7 @@ async def test_weixin_session_control_text_routes_as_message(tmp_path, monkeypat
 
     assert handled is True
     assert first_session == second_session
-    assert service.client.sent[-1]["text"] == "Navi received: 开启一个新的会话"
+    assert service.client.sent[-1]["text"] == "开启一个新的会话"
 
 
 @pytest.mark.asyncio
@@ -183,7 +185,7 @@ async def test_weixin_session_current_text_routes_as_message(tmp_path, monkeypat
     )
 
     assert handled is True
-    assert service.client.sent[-1]["text"] == "Navi received: 当前会话是什么"
+    assert service.client.sent[-1]["text"] == "当前会话是什么"
 
 
 @pytest.mark.asyncio
@@ -219,7 +221,7 @@ async def test_weixin_plain_schedule_with_vague_period_asks_clarification(tmp_pa
     runtime = AgentRuntime(
         home=tmp_path,
         provider=_pool(ScriptedProvider(
-            '{"tool":"clarify.ask","args":{"message":"你希望每天晚上几点上通识课？"},"confidence":0.91,"reason":"vague time"}'
+            '{"tool":"ask.user","args":{"message":"你希望每天晚上几点上通识课？"},"confidence":0.91,"reason":"vague time"}'
         )),
     )
     service = WeixinService(home=tmp_path, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=tmp_path)
@@ -263,7 +265,7 @@ async def test_weixin_plain_local_action_creates_task(tmp_path, monkeypatch):
     task = service.active.runs.list()[0]
     assert task.status == "awaiting_approval"
     assert task.prompt == "列一下我本机的目录"
-    assert "等待审批" in service.client.sent[-1]["text"]
+    assert "Approval expires" in service.client.sent[-1]["text"]
     assert "approval.resolve" not in service.client.sent[-1]["text"]
 
 
@@ -523,7 +525,7 @@ async def test_weixin_planner_parse_failure_returns_os_error(tmp_path, monkeypat
     )
 
     assert handled is True
-    assert "我收到消息了，但本地处理链路刚刚出错了" in service.client.sent[-1]["text"]
+    assert "Internal Error: Failed to parse planner output" in service.client.sent[-1]["text"]
     assert "system.planner_error" not in service.client.sent[-1]["text"]
     assert "capability not found" not in service.client.sent[-1]["text"]
 

@@ -58,8 +58,12 @@ def service_facts(name: str | None = None) -> ServiceFacts:
         if fallback.returncode == 0 and active_state:
             properties["ActiveState"] = active_state
             properties.setdefault("SubState", active_state)
-            return ServiceFacts(name=name, properties=properties, exit_code=0, stderr=result.stderr.strip())
-    return ServiceFacts(name=name, properties=properties, exit_code=result.returncode, stderr=result.stderr.strip())
+            return ServiceFacts(
+                name=name, properties=properties, exit_code=0, stderr=result.stderr.strip()
+            )
+    return ServiceFacts(
+        name=name, properties=properties, exit_code=result.returncode, stderr=result.stderr.strip()
+    )
 
 
 def render_service_facts(facts: ServiceFacts) -> str:
@@ -77,7 +81,9 @@ def run_facts(home: Path, run_id: str | None = None) -> RunFacts:
     run = store.get(run_id) if run_id else (store.list(limit=1)[0] if store.list(limit=1) else None)
     if run is None:
         return RunFacts(run=None, approvals=[], logs=[])
-    approvals = [approval for approval in store.list_approvals(limit=100) if approval.run_id == run.id]
+    approvals = [
+        approval for approval in store.list_approvals(limit=100) if approval.run_id == run.id
+    ]
     logs = store.list_execution_logs(run.id, limit=20)
     return RunFacts(run=run, approvals=approvals, logs=logs)
 

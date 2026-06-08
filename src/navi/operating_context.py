@@ -62,4 +62,3 @@ def permission_allows(required: str, ceiling: str) -> bool:
 
 def filter_specs_by_permission(specs: Iterable[ToolSpec], ceiling: str) -> list[ToolSpec]:
     return [spec for spec in specs if permission_allows(spec.permission, ceiling)]
-

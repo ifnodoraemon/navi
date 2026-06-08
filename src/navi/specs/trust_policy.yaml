@@ -13,5 +13,5 @@ labels:
 default_level: L2
 default_action: approval
 auto_execute_level: L3
-max_auto_promotion_level: L3
+max_auto_promotion_level: L2
 promotion_successes: 3

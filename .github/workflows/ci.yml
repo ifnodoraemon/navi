@@ -41,7 +41,7 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Validate task eval dataset
-        run: navi eval tasks --validate-only --dataset evals/task_cases.yaml
+        run: navi eval claw --validate-only --dataset evals/claw_navi.yaml
 
       - name: Test with coverage gate
         run: pytest --cov=src/navi --cov-report=term-missing -q -W error::pytest.PytestUnraisableExceptionWarning

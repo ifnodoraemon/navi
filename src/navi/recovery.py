@@ -148,7 +148,9 @@ class RecoveryPlanner:
                     reason="Ask the user how to proceed if approval context is missing.",
                     tool="final.answer",
                     permission="read",
-                    args={"message": "The delegation run is not verified complete yet. Please approve or clarify next steps."},
+                    args={
+                        "message": "The delegation run is not verified complete yet. Please approve or clarify next steps."
+                    },
                 ),
                 RecoveryChoice(
                     kind="alternate_capability",
@@ -201,7 +203,9 @@ class RecoveryPlanner:
 
 
 def _blocked_run(block_reason: str) -> tuple[str, str]:
-    match = re.search(r"(?:delegation run|run)\s+([A-Za-z0-9_-]+)\s+is still\s+([A-Za-z0-9_-]+)", block_reason)
+    match = re.search(
+        r"(?:delegation run|run)\s+([A-Za-z0-9_-]+)\s+is still\s+([A-Za-z0-9_-]+)", block_reason
+    )
     if not match:
         return "", ""
     return match.group(1), match.group(2)

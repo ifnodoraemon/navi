@@ -121,7 +121,7 @@ async def test_model_pool_routes_by_role_with_fallback():
     result = await provider.complete_for("planner", [ChatMessage("user", "route me")])
 
     assert provider.__class__.__name__ == "ModelPool"
-    assert result == "Navi received: route me"
+    assert result == "route me"
 
 
 @pytest.mark.asyncio
@@ -146,7 +146,7 @@ async def test_herness_engine_uses_planner_route(tmp_path):
 
     result = await agent.handle("hello", peer_id="peer", sender_id="sender", source="test")
 
-    assert result.text == "Navi received: hello"
+    assert result.text == "hello"
     assert provider.__class__.__name__ == "ModelPool"
 
 
@@ -165,7 +165,7 @@ async def test_fallback_provider_tries_next_model_when_primary_fails():
     result = await provider.complete_for("default", [ChatMessage("user", "hello")])
 
     assert provider.default.__class__.__name__ == "FallbackProvider"
-    assert result == "Navi received: hello"
+    assert result == "hello"
 
 
 @pytest.mark.asyncio

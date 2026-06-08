@@ -34,4 +34,5 @@ def _tool_spec(item: dict[str, Any]) -> ToolSpec:
         mutates=bool(item.get("mutates", False)),
         permission=str(item.get("permission", "read")),
         source=str(item.get("source", "action")),
+        routing_hints=list(item.get("routing_hints") or []),
     )

@@ -65,7 +65,9 @@ async def run_journey_eval_dataset(
     for journey in loaded["journeys"]:
         journey_home = run_root / _safe_path_name(str(journey.get("id") or "journey"))
         result = await asyncio.wait_for(
-            _run_journey(home=journey_home, project_dir=project_dir, journey=journey, provider=provider),
+            _run_journey(
+                home=journey_home, project_dir=project_dir, journey=journey, provider=provider
+            ),
             timeout=timeout_seconds,
         )
         results.append(result)
@@ -79,9 +81,15 @@ async def _run_journey(
     journey: dict[str, Any],
     provider: ModelPool | None = None,
 ) -> WeixinJourneyResult:
-    model_provider = ModelPool(default=_FailingEvalProvider()) if journey.get("provider") == "failing" else provider
+    model_provider = (
+        ModelPool(default=_FailingEvalProvider())
+        if journey.get("provider") == "failing"
+        else provider
+    )
     runtime = AgentRuntime(home=home, provider=model_provider or ModelPool(default=MockProvider()))
-    service = WeixinService(home=home, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=project_dir)
+    service = WeixinService(
+        home=home, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=project_dir
+    )
     service.client = MockWeixinClient()
     account = WeixinAccount(account_id="eval-account", token="eval-token", base_url="mock://ilink")
     runs = RunStore(home)
@@ -121,7 +129,12 @@ async def _run_journey(
                 is_group=bool(inbound.get("is_group", False)),
             )
             handled = await service.handle_update(account, update)
-            event = {"kind": "inbound", "handled": handled, "text": update.text, "sent": list(getattr(service.client, "sent", []))}
+            event = {
+                "kind": "inbound",
+                "handled": handled,
+                "text": update.text,
+                "sent": list(getattr(service.client, "sent", [])),
+            }
         else:
             errors.append(f"step[{index}]: missing inbound or seed_failed_run")
             continue
@@ -139,7 +152,9 @@ async def _run_journey(
                 before_watch_count=before_watches,
             )
         )
-    return WeixinJourneyResult(id=str(journey.get("id") or ""), ok=not errors, errors=errors, events=events)
+    return WeixinJourneyResult(
+        id=str(journey.get("id") or ""), ok=not errors, errors=errors, events=events
+    )
 
 
 def _match_expectation(
@@ -159,11 +174,15 @@ def _match_expectation(
         return [f"{prefix}: expect must be a mapping"]
     sent = list(getattr(service.client, "sent", []))
     if "handled" in expect and bool(event.get("handled")) is not bool(expect["handled"]):
-        errors.append(f"{prefix}: handled expected {expect['handled']!r}, got {event.get('handled')!r}")
+        errors.append(
+            f"{prefix}: handled expected {expect['handled']!r}, got {event.get('handled')!r}"
+        )
     if "sent_count_delta" in expect:
         delta = len(sent) - before_sent_count
         if delta != int(expect["sent_count_delta"]):
-            errors.append(f"{prefix}: sent_count_delta expected {expect['sent_count_delta']!r}, got {delta!r}")
+            errors.append(
+                f"{prefix}: sent_count_delta expected {expect['sent_count_delta']!r}, got {delta!r}"
+            )
     if "sent_contains" in expect:
         text = sent[-1]["text"] if sent else ""
         if str(expect["sent_contains"]) not in text:
@@ -182,11 +201,15 @@ def _match_expectation(
     if "run_count_delta" in expect:
         delta = len(runs.list(limit=500)) - before_run_count
         if delta != int(expect["run_count_delta"]):
-            errors.append(f"{prefix}: run_count_delta expected {expect['run_count_delta']!r}, got {delta!r}")
+            errors.append(
+                f"{prefix}: run_count_delta expected {expect['run_count_delta']!r}, got {delta!r}"
+            )
     if "watch_count_delta" in expect:
         delta = len(runs.list_watches(limit=500)) - before_watch_count
         if delta != int(expect["watch_count_delta"]):
-            errors.append(f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}")
+            errors.append(
+                f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}"
+            )
     if "watch_kind" in expect:
         watches = runs.list_watches(limit=1)
         actual = watches[0].kind if watches else ""
@@ -200,7 +223,9 @@ def _match_expectation(
     if "failed_run_count" in expect:
         count = runs.count_runs(status="failed")
         if count != int(expect["failed_run_count"]):
-            errors.append(f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}")
+            errors.append(
+                f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}"
+            )
     if "event_contains" in expect:
         event_names = _event_names(home)
         expected_events = [str(item) for item in expect["event_contains"]]

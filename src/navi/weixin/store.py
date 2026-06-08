@@ -38,6 +38,7 @@ class WeixinStore:
             path.chmod(0o600)
         except OSError as e:
             import logging
+
             logging.getLogger("navi.weixin").warning("Failed to chmod account file: %s", e)
 
     def load_account(self, account_id: str) -> WeixinAccount | None:
@@ -53,7 +54,11 @@ class WeixinStore:
         )
 
     def list_accounts(self) -> list[str]:
-        return [path.stem for path in sorted(self.dir.glob("*.json")) if not path.name.endswith(".context-tokens.json")]
+        return [
+            path.stem
+            for path in sorted(self.dir.glob("*.json"))
+            if not path.name.endswith(".context-tokens.json")
+        ]
 
     def sync_path(self, account_id: str) -> Path:
         return self.dir / f"{account_id}.sync.json"
@@ -159,7 +164,9 @@ def split_text_for_weixin(content: str, max_length: int = 2000) -> list[str]:
     content = content.strip()
     if len(content) <= max_length:
         lines = content.splitlines()
-        if 1 < len(lines) <= 3 and all(line.strip() and not line.startswith(("#", "-", "|", "```")) for line in lines):
+        if 1 < len(lines) <= 3 and all(
+            line.strip() and not line.startswith(("#", "-", "|", "```")) for line in lines
+        ):
             return [line.strip() for line in lines]
         return [content]
     chunks: list[str] = []
@@ -194,5 +201,6 @@ def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
             os.unlink(tmp_name)
         except OSError as e:
             import logging
+
             logging.getLogger("navi.weixin").warning("Failed to unlink tmp file: %s", e)
         raise

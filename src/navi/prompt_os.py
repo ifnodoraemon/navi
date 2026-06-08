@@ -64,7 +64,9 @@ class PromptAssembly:
         }
 
     def digest(self) -> str:
-        payload = json.dumps([block.to_manifest() for block in self.blocks], ensure_ascii=False, sort_keys=True)
+        payload = json.dumps(
+            [block.to_manifest() for block in self.blocks], ensure_ascii=False, sort_keys=True
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -93,12 +95,34 @@ def assemble_planner_system_prompt() -> PromptAssembly:
             "syscall_planner.system_lines",
             "\n".join(str(line) for line in spec.get("system_lines") or []),
         ),
-        _list_block("PROMPT BOUNDARIES", "stable", "syscall_planner.prompt_boundaries", spec.get("prompt_boundaries")),
-        _numbered_block("TASK ROUTING RULES", "stable", "syscall_planner.routing_rules", spec.get("routing_rules")),
-        _list_block("OBSERVATION INVARIANTS", "stable", "syscall_planner.observation_invariants", spec.get("observation_invariants")),
-        _list_block("SECURITY GUIDELINE", "stable", "syscall_planner.security_guidelines", spec.get("security_guidelines")),
+        _list_block(
+            "PROMPT BOUNDARIES",
+            "stable",
+            "syscall_planner.prompt_boundaries",
+            spec.get("prompt_boundaries"),
+        ),
+        _numbered_block(
+            "TASK ROUTING RULES",
+            "stable",
+            "syscall_planner.routing_rules",
+            spec.get("routing_rules"),
+        ),
+        _list_block(
+            "OBSERVATION INVARIANTS",
+            "stable",
+            "syscall_planner.observation_invariants",
+            spec.get("observation_invariants"),
+        ),
+        _list_block(
+            "SECURITY GUIDELINE",
+            "stable",
+            "syscall_planner.security_guidelines",
+            spec.get("security_guidelines"),
+        ),
     ]
-    return PromptAssembly("planner_system", tuple(block for block in blocks if block.content.strip()))
+    return PromptAssembly(
+        "planner_system", tuple(block for block in blocks if block.content.strip())
+    )
 
 
 def assemble_planner_turn_input(
@@ -110,7 +134,9 @@ def assemble_planner_turn_input(
     permission_ceiling: str = "write",
     model_roles: list[str] | None = None,
 ) -> PromptAssembly:
-    model_roles = model_roles or list_agent_role_names(["default", "planner", "responder", "notification"])
+    model_roles = model_roles or list_agent_role_names(
+        ["default", "planner", "responder", "notification"]
+    )
     role_names = set(model_roles)
     role_contracts = [
         spec.to_prompt_dict()
@@ -157,6 +183,26 @@ def assemble_planner_turn_input(
                 "operating_context.permission_ceiling",
                 permission_ceiling,
             ),
+        ]
+    )
+
+    routing_hints = []
+    for tool in tools:
+        if getattr(tool, "routing_hints", None):
+            routing_hints.extend(tool.routing_hints)
+
+    if routing_hints:
+        blocks.append(
+            PromptBlock(
+                "CAPABILITY ROUTING HINTS",
+                "manifest",
+                "capability_routing_hints",
+                "\n".join(f"- {hint}" for hint in routing_hints),
+            )
+        )
+
+    blocks.extend(
+        [
             PromptBlock(
                 "MODEL ROLES",
                 "manifest",
@@ -209,7 +255,9 @@ def _list_block(name: str, tier: str, source: str, values: object) -> PromptBloc
 
 def _numbered_block(name: str, tier: str, source: str, values: object) -> PromptBlock:
     items = [str(item) for item in values or []]
-    return PromptBlock(name, tier, source, "\n".join(f"{idx}. {item}" for idx, item in enumerate(items, start=1)))
+    return PromptBlock(
+        name, tier, source, "\n".join(f"{idx}. {item}" for idx, item in enumerate(items, start=1))
+    )
 
 
 def _join_observations(observations: list[str]) -> list[str]:

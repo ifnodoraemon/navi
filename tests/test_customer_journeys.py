@@ -105,7 +105,7 @@ async def test_customer_journey_scheduled_watch_sends_message_without_failed_tas
         ]
     )
     service, account = _service(tmp_path, provider)
-    service.daemon.execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    service.daemon.execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     created = await service.handle_update(
         account,

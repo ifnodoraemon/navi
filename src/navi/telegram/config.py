@@ -37,12 +37,19 @@ def load_telegram_config(home: Path) -> TelegramConfig:
     env_file = _load_env_file(home / "env")
     env = {**env_file, **os.environ}
     return TelegramConfig(
-        enabled=str(env.get("NAVI_TELEGRAM_ENABLED", raw.get("enabled", DEFAULT_TELEGRAM_ENABLED))).lower()
+        enabled=str(
+            env.get("NAVI_TELEGRAM_ENABLED", raw.get("enabled", DEFAULT_TELEGRAM_ENABLED))
+        ).lower()
         in {"1", "true", "yes", "on"},
         bot_token=str(env.get("TELEGRAM_BOT_TOKEN", raw.get("bot_token", ""))),
-        api_base_url=str(env.get("TELEGRAM_API_BASE_URL", raw.get("api_base_url", DEFAULT_TELEGRAM_API_BASE_URL))).rstrip("/"),
-        dm_policy=str(env.get("TELEGRAM_DM_POLICY", raw.get("dm_policy", DEFAULT_TELEGRAM_DM_POLICY))),
-        allowed_users=_split_csv(env.get("TELEGRAM_ALLOWED_USERS")) or list(raw.get("allowed_users", []) or []),
+        api_base_url=str(
+            env.get("TELEGRAM_API_BASE_URL", raw.get("api_base_url", DEFAULT_TELEGRAM_API_BASE_URL))
+        ).rstrip("/"),
+        dm_policy=str(
+            env.get("TELEGRAM_DM_POLICY", raw.get("dm_policy", DEFAULT_TELEGRAM_DM_POLICY))
+        ),
+        allowed_users=_split_csv(env.get("TELEGRAM_ALLOWED_USERS"))
+        or list(raw.get("allowed_users", []) or []),
         home_chat_id=str(env.get("TELEGRAM_HOME_CHAT_ID", raw.get("home_chat_id", ""))),
     )
 

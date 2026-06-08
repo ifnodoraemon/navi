@@ -83,7 +83,15 @@ coverage:
   - workflow.status
   - test.run
   - session.request_elevation
+  - codebase.search
 cases:
+- id: codebase_search_query
+  category: seeking_information
+  source: synthetic:codebase_search
+  message: "在代码库里找一下哪里用到了 delegate.spawn"
+  expect:
+    tool: codebase.search
+    permission: read
 - id: greeting_answer
   category: greeting
   source: observed

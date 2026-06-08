@@ -33,7 +33,9 @@ class ConnectorAdapter:
     setup: Callable[[Path, Path, int, Callable[[str], None] | None], Awaitable[str]] | None = None
     run: Callable[[Path, Path, bool], Awaitable[None]] | None = None
     load_journey_eval_dataset: Callable[[Path], dict[str, Any]] | None = None
-    run_journey_eval_dataset: Callable[[Path, Path, Path, float], Awaitable[list[Any]]] | None = None
+    run_journey_eval_dataset: Callable[[Path, Path, Path, float], Awaitable[list[Any]]] | None = (
+        None
+    )
 
     @property
     def name(self) -> str:

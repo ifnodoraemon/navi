@@ -25,7 +25,7 @@ async def test_connector_ingress_runtime_routes_message_to_agent_session(tmp_pat
     )
 
     session_id = runtime.memory.current_session_id("connector:test:peer")
-    assert text == "Navi received: hello"
+    assert text == "hello"
     assert runtime.memory.get_messages(session_id)[0].content == "hello"
 
 
@@ -37,7 +37,7 @@ def test_connector_ingress_runtime_uses_remote_tool_allowlist(tmp_path):
 
     assert {
         "final.answer",
-        "clarify.ask",
+        "ask.user",
         "delegate.spawn",
         "delegate.prepare",
         "approval.request",

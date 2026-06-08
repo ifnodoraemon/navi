@@ -21,26 +21,28 @@ def validate_schema(data: Any, schema: dict[str, Any], path: str = "") -> list[s
     errors = []
     if not isinstance(schema, dict):
         return errors
-        
+
     expected_type = schema.get("type")
-    
+
     if expected_type == "object":
         if not isinstance(data, dict):
             errors.append(f"'{path or 'input'}' must be an object, got {type(data).__name__}")
             return errors
-        
+
         # Check required fields
         required = schema.get("required", [])
         for field in required:
             if field not in data:
                 errors.append(f"'{path or 'input'}' is missing required property: {field}")
-                
+
         # Validate properties
         properties = schema.get("properties", {})
         for key, val in data.items():
             if key in properties:
-                errors.extend(validate_schema(val, properties[key], f"{path}.{key}" if path else key))
-                
+                errors.extend(
+                    validate_schema(val, properties[key], f"{path}.{key}" if path else key)
+                )
+
     elif expected_type == "array":
         if not isinstance(data, (list, tuple)):
             errors.append(f"'{path or 'input'}' must be an array, got {type(data).__name__}")
@@ -49,23 +51,23 @@ def validate_schema(data: Any, schema: dict[str, Any], path: str = "") -> list[s
         if items:
             for idx, item in enumerate(data):
                 errors.extend(validate_schema(item, items, f"{path}[{idx}]"))
-                
+
     elif expected_type == "string":
         if not isinstance(data, str):
             errors.append(f"'{path or 'input'}' must be a string, got {type(data).__name__}")
-            
+
     elif expected_type == "integer":
         if not isinstance(data, int) or isinstance(data, bool):
             errors.append(f"'{path or 'input'}' must be an integer, got {type(data).__name__}")
-            
+
     elif expected_type == "number":
         if not isinstance(data, (int, float)) or isinstance(data, bool):
             errors.append(f"'{path or 'input'}' must be a number, got {type(data).__name__}")
-            
+
     elif expected_type == "boolean":
         if not isinstance(data, bool):
             errors.append(f"'{path or 'input'}' must be a boolean, got {type(data).__name__}")
-            
+
     return errors
 
 
@@ -79,6 +81,7 @@ class ToolSpec:
     mutates: bool = False
     permission: str = "read"
     source: str = "core"
+    routing_hints: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -202,12 +205,13 @@ class ToolRegistry:
 
     def _audit_call(self, args: dict[str, Any], result: ToolResult) -> None:
         try:
+            from .safeguards import redact_secrets
             RunStore(self.home).add_tool_call_log(
                 tool=result.tool,
-                args_json=json.dumps(args, ensure_ascii=False, sort_keys=True),
+                args_json=redact_secrets(json.dumps(args, ensure_ascii=False, sort_keys=True)),
                 ok=result.ok,
-                facts_json=json.dumps(result.facts, ensure_ascii=False, sort_keys=True),
-                error=result.error,
+                facts_json=redact_secrets(json.dumps(result.facts, ensure_ascii=False, sort_keys=True)),
+                error=redact_secrets(result.error),
                 started_at=result.started_at,
                 ended_at=result.ended_at,
             )

@@ -270,6 +270,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
+          run_status: awaiting_approval
 
   - id: customer_scenario_search_codebase
     user_goal: Search codebase without mutating anything.

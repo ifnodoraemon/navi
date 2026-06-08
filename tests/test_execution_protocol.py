@@ -5,6 +5,10 @@ import subprocess
 
 import pytest
 
+@pytest.fixture(autouse=True)
+def use_legacy_executor(monkeypatch):
+    monkeypatch.setenv("NAVI_USE_LEGACY_EXECUTOR", "true")
+
 from navi.execution import EXECUTION_PROTOCOL_VERSION, SUBAGENT_EXECUTOR_ROLE, ExecutionService, NaviExecutionProvider
 from navi.goals import GOAL_STATUS_VERIFIED_COMPLETE, GoalStore
 from navi.provider import ChatMessage, ModelPool
@@ -54,7 +58,7 @@ async def test_execution_uses_structured_actuator_protocol(tmp_path):
     }
     provider = ScriptedProvider(json.dumps(protocol))
     execution = ExecutionService(tmp_path)
-    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     updated = await execution.execute_task(task)
 
@@ -118,7 +122,7 @@ async def test_watch_notification_protocol_summary_is_logged_without_actuator(tm
     }
     provider = ScriptedProvider(json.dumps(protocol))
     execution = ExecutionService(tmp_path)
-    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     result = await execution.run_watch(
         prompt="每天晚上8点讲解通识知识",
@@ -146,7 +150,7 @@ async def test_free_form_execution_output_fails_required_protocol(tmp_path):
     runs = RunStore(tmp_path)
     task = runs.create("Strict task", prompt="answer plainly", workspace=str(tmp_path))
     execution = ExecutionService(tmp_path)
-    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     updated = await execution.execute_task(task)
 
@@ -208,7 +212,7 @@ async def test_execution_protocol_shape_error_gets_one_repair_attempt(tmp_path):
         ]
     )
     execution = ExecutionService(tmp_path)
-    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     updated = await execution.plan_task(task)
 
@@ -244,7 +248,7 @@ async def test_watch_notification_does_not_fail_on_malformed_execution_protocol(
             }
         )
     )
-    execution = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     result = await execution.run_watch(
         prompt="pmp",
@@ -285,7 +289,7 @@ async def test_watch_notification_extracts_summary_from_valid_protocol(tmp_path)
             }
         )
     )
-    execution = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     result = await execution.run_watch(
         prompt="pmp",
@@ -307,7 +311,7 @@ async def test_watch_notification_retries_title_only_output(tmp_path):
             "通识讲解：今天用一个例子理解沉没成本。已经付出的成本不应该决定下一步选择，关键是继续投入是否还能带来新的价值。日常决策里可以问自己：如果今天才开始，我还会选它吗？",
         ]
     )
-    execution = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     result = await execution.run_watch(
         prompt="通识讲解",
@@ -350,7 +354,7 @@ async def test_protocol_actions_must_be_capability_calls(tmp_path):
         )
     )
     execution = ExecutionService(tmp_path)
-    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     updated = await execution.execute_task(task)
 
@@ -405,7 +409,7 @@ async def test_protocol_actions_execute_local_file_actuators(tmp_path):
         )
     )
     execution = ExecutionService(tmp_path)
-    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     updated = await execution.execute_task(task)
 
@@ -458,7 +462,7 @@ async def test_critic_gate_blocks_mutation_without_independent_verification(tmp_
         )
     )
     execution = ExecutionService(tmp_path)
-    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     updated = await execution.execute_task(task)
 
@@ -508,7 +512,7 @@ async def test_verifier_policy_can_fail_after_successful_capability_actions(tmp_
         )
     )
     execution = ExecutionService(tmp_path)
-    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     updated = await execution.execute_task(task)
 
@@ -552,7 +556,7 @@ async def test_execution_rejects_plans_over_step_budget(tmp_path):
         )
     )
     execution = ExecutionService(tmp_path)
-    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     updated = await execution.execute_task(task)
 
@@ -588,7 +592,7 @@ async def test_execution_retry_once_policy_repeats_failed_step(tmp_path):
         )
     )
     execution = ExecutionService(tmp_path)
-    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     updated = await execution.execute_task(task)
 
@@ -641,7 +645,7 @@ async def test_failed_dirty_execution_records_rollback_hint(tmp_path):
         )
     )
     execution = ExecutionService(tmp_path)
-    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5)
+    execution.provider = NaviExecutionProvider(provider=ModelPool(default=provider), timeout_seconds=5, home=tmp_path)
 
     updated = await execution.execute_task(task)
 

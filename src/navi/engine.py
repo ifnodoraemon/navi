@@ -324,7 +324,7 @@ class HernessEngine:
                 source=source,
                 peer_id=peer_id,
                 sender_id=sender_id,
-                action=last_result.action if last_result else "capability",
+                action=last_result.action if last_result else "chat",
                 run_id=last_result.run_id if last_result else "",
                 model_role=last_result.model_role if last_result else "responder",
                 pending_approval_prompt=pending_approval_prompt,
@@ -863,13 +863,15 @@ class HernessEngine:
         template = str(affordance.get("approval_template") or "")
         if not template:
             return ""
+        diff = str(approval.get("diff") or "").strip()
+        diff_text = f"\n\nProposed Changes:\n```diff\n{diff}\n```" if diff else ""
         return template.format(
             task_line=f"Task ID: `{run_id}`" if run_id else "",
             code=code,
             expiry=expiry,
             approve_command=approve_command,
             reject_command=reject_command,
-        ).strip()
+        ).strip() + diff_text
 
 
 def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:

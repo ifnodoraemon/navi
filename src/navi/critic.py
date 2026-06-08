@@ -41,8 +41,16 @@ def review_execution_protocol(protocol: Any) -> CriticDecision:
     if not evidence:
         findings.append("execution protocol evidence is empty")
 
-    capability_results = [item for item in evidence if isinstance(item, dict) and item.get("kind") == "capability_result"]
-    verification_results = [item for item in evidence if isinstance(item, dict) and item.get("kind") == "verification_result"]
+    capability_results = [
+        item
+        for item in evidence
+        if isinstance(item, dict) and item.get("kind") == "capability_result"
+    ]
+    verification_results = [
+        item
+        for item in evidence
+        if isinstance(item, dict) and item.get("kind") == "verification_result"
+    ]
     failed_capabilities = [item for item in capability_results if not item.get("ok")]
     failed_checks = [item for item in verification_results if not item.get("ok")]
     if not capability_results:
@@ -58,13 +66,18 @@ def review_execution_protocol(protocol: Any) -> CriticDecision:
         action
         for action in actions
         if isinstance(action, dict)
-        and (str(action.get("permission") or "").lower() == "write" or str(action.get("tool") or "") in MUTATING_TOOLS)
+        and (
+            str(action.get("permission") or "").lower() == "write"
+            or str(action.get("tool") or "") in MUTATING_TOOLS
+        )
     ]
     if mutating_actions and not verification_results:
         findings.append("mutating execution lacks independent verification checks")
 
     passed = not findings
-    recommendation = "complete" if passed else "block completion and repair or retry with stronger verification"
+    recommendation = (
+        "complete" if passed else "block completion and repair or retry with stronger verification"
+    )
     return CriticDecision(
         passed=passed,
         findings=findings,

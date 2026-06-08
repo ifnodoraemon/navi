@@ -63,6 +63,7 @@ _SECRET_PATTERNS = [
     r"(?i)(token[\"'\s:=]+)[A-Za-z0-9\-\._~+/]+",
 ]
 
+
 def redact_secrets(text: str) -> str:
     if not isinstance(text, str):
         return text

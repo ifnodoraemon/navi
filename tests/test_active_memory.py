@@ -16,9 +16,11 @@ class ScriptedProvider(MockProvider):
         self.messages: list[list[ChatMessage]] = []
         self.output_schemas: list[dict | None] = []
 
-    async def complete(self, messages: list[ChatMessage], *, output_schema=None) -> str:
+    async def complete(self, messages: list[ChatMessage], **kwargs) -> str:
         self.messages.append(messages)
-        self.output_schemas.append(output_schema)
+        self.output_schemas.append(kwargs.get("output_schema"))
+        if not self.responses:
+            return '{"tool":"final.answer","permission":"read","args":{"message":"dummy timeout"},"confidence":0.95,"reason":"out of responses"}'
         return self.responses.pop(0)
 
 

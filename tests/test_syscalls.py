@@ -14,9 +14,9 @@ class ScriptedProvider:
         self.messages: list[ChatMessage] = []
         self.output_schema = None
 
-    async def complete(self, messages: list[ChatMessage], *, output_schema=None) -> str:
+    async def complete(self, messages: list[ChatMessage], **kwargs) -> str:
         self.messages = messages
-        self.output_schema = output_schema
+        self.output_schema = kwargs.get("output_schema")
         return self.response
 
 
@@ -36,13 +36,13 @@ def test_model_syscall_planner_prompt_loads_routing_rules_from_spec():
 @pytest.mark.asyncio
 async def test_model_syscall_planner_asks_when_schedule_time_is_vague(tmp_path):
     provider = ScriptedProvider(
-        '{"tool":"clarify.ask","args":{"message":"你希望每天晚上几点上通识课？"},"confidence":0.92,"reason":"recurring request has vague time"}'
+        '{"tool":"ask.user","args":{"message":"你希望每天晚上几点上通识课？"},"confidence":0.92,"reason":"recurring request has vague time"}'
     )
     planner = ModelSyscallPlanner(ModelPool(default=provider))
 
     call = await planner.plan("每天晚上上一个通识课给我", tools=_tools(tmp_path))
 
-    assert call.tool == "clarify.ask"
+    assert call.tool == "ask.user"
     assert "几点" in call.message
     system = provider.messages[0].content
     assert "model syscall planner" in system
@@ -55,7 +55,7 @@ async def test_model_syscall_planner_asks_when_schedule_time_is_vague(tmp_path):
     assert "critic" in provider.messages[1].content
     assert "executor" in provider.messages[1].content
     assert "[TOOL MANIFEST]" in provider.messages[1].content
-    assert "clarify.ask" in provider.messages[1].content
+    assert "ask.user" in provider.messages[1].content
     assert provider.output_schema["name"] == "navi_syscall"
 
 
@@ -130,7 +130,7 @@ async def test_model_syscall_planner_prompt_routes_engineering_investigation_to_
     call = await planner.plan("配置项写了但运行时好像没消费，帮我检查配置到运行时的映射问题", tools=_tools(tmp_path))
 
     assert call.tool == "delegate.spawn"
-    assert "configuration-to-runtime mapping" in provider.messages[0].content
+    assert "TASK ROUTING RULES" in provider.messages[0].content
 
 
 @pytest.mark.asyncio

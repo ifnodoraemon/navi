@@ -74,13 +74,13 @@ class SystemDaemon:
     async def process_watches_once(self) -> list[dict]:
         now = time.time()
         created: list[dict] = []
-        
+
         # 1. Run proactive event-driven checks
         events = await self.process_events_once()
         created.extend(events)
 
         self._prune_failed_watch_delegate_spawns()
-        
+
         # 2. Run static cron watches
         for watch in self.runs.due_watches(now):
             result = await self.execution.run_watch(
@@ -105,16 +105,22 @@ class SystemDaemon:
             if watch.kind == "once":
                 self.runs.mark_watch_completed_once(watch.id, last_run_at=now)
             else:
-                self.runs.mark_watch_run(watch.id, last_run_at=now, next_run_at=next_cron_time(watch.cron, now=now))
+                self.runs.mark_watch_run(
+                    watch.id, last_run_at=now, next_run_at=next_cron_time(watch.cron, now=now)
+                )
         return created
 
-    def _prune_failed_watch_delegate_spawns(self, *, keep_latest: int = MAX_FAILED_WATCH_RUN_RECORDS) -> int:
+    def _prune_failed_watch_delegate_spawns(
+        self, *, keep_latest: int = MAX_FAILED_WATCH_RUN_RECORDS
+    ) -> int:
         keep_latest = max(0, keep_latest)
         total = self.runs.count_runs(status="failed", source="watch", kind="delegation")
         excess = max(0, total - keep_latest)
         if excess == 0:
             return 0
-        stale = self.runs.list_by_status_filtered("failed", source="watch", kind="delegation", limit=excess)
+        stale = self.runs.list_by_status_filtered(
+            "failed", source="watch", kind="delegation", limit=excess
+        )
         pruned = 0
         for task in stale:
             removed = self.runs.delete_run(task.id)
@@ -129,7 +135,7 @@ class SystemDaemon:
         projects = self.graph.list("Project")
         if not projects:
             return created
-        
+
         active_workspaces = self._active_workspaces()
         primary_project = self._primary_project_name(projects)
 
@@ -274,7 +280,9 @@ class SystemDaemon:
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "git", "status", "--porcelain",
+                "git",
+                "status",
+                "--porcelain",
                 cwd=project_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -382,7 +390,9 @@ class SystemDaemon:
         return events, state_updates
 
     @staticmethod
-    def _read_log_diff(file_path: Path, last_size: int, read_end: int) -> tuple[str, list[str], int]:
+    def _read_log_diff(
+        file_path: Path, last_size: int, read_end: int
+    ) -> tuple[str, list[str], int]:
         chunks: list[str] = []
         error_lines: list[str] = []
         total_chars = 0

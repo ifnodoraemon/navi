@@ -94,24 +94,36 @@ def memory_policy_facts() -> dict:
     }
 
 
-
 class MemoryProvider(Protocol):
     def store_item(self, item: MemoryItem) -> None: ...
-    def get_items(self, *, memory_type: str | None = None, status: str | None = None, limit: int = 50) -> list[MemoryItem]: ...
+    def get_items(
+        self, *, memory_type: str | None = None, status: str | None = None, limit: int = 50
+    ) -> list[MemoryItem]: ...
     def get_item(self, item_id: str) -> MemoryItem | None: ...
-    def update_item(self, item_id: str, *, status: str | None = None, last_verified_at: float | None = None, updated_at: float | None = None) -> None: ...
+    def update_item(
+        self,
+        item_id: str,
+        *,
+        status: str | None = None,
+        last_verified_at: float | None = None,
+        updated_at: float | None = None,
+    ) -> None: ...
     def delete_item(self, item_id: str) -> None: ...
     def add_message(self, session_id: str, role: str, content: str, created_at: float) -> None: ...
     def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]: ...
     def list_sessions(self) -> list[str]: ...
-    def set_session_alias(self, alias: str, session_id: str, created_at: float, updated_at: float) -> None: ...
+    def set_session_alias(
+        self, alias: str, session_id: str, created_at: float, updated_at: float
+    ) -> None: ...
     def get_session_alias(self, alias: str) -> SessionAlias | None: ...
     def list_session_aliases(self, limit: int = 50) -> list[SessionAlias]: ...
+
 
 class SQLiteMemoryProvider:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self._init_db()
+
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
             conn.execute(
@@ -125,7 +137,9 @@ class SQLiteMemoryProvider:
                 )
                 """
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)"
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS session_aliases (
@@ -154,8 +168,11 @@ class SQLiteMemoryProvider:
                 )
                 """
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_items(status, type)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_items(status, type)"
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_items(scope)")
+
     def _item_from_row(self, row: tuple) -> MemoryItem:
         return MemoryItem(
             id=row[0],
@@ -198,7 +215,9 @@ class SQLiteMemoryProvider:
                 ),
             )
 
-    def get_items(self, *, memory_type: str | None = None, status: str | None = None, limit: int = 50) -> list[MemoryItem]:
+    def get_items(
+        self, *, memory_type: str | None = None, status: str | None = None, limit: int = 50
+    ) -> list[MemoryItem]:
         clauses = []
         values: list[object] = []
         if memory_type:
@@ -234,7 +253,14 @@ class SQLiteMemoryProvider:
             ).fetchone()
         return self._item_from_row(row) if row else None
 
-    def update_item(self, item_id: str, *, status: str | None = None, last_verified_at: float | None = None, updated_at: float | None = None) -> None:
+    def update_item(
+        self,
+        item_id: str,
+        *,
+        status: str | None = None,
+        last_verified_at: float | None = None,
+        updated_at: float | None = None,
+    ) -> None:
         sets = []
         values: list[object] = []
         if status is not None:
@@ -287,7 +313,9 @@ class SQLiteMemoryProvider:
             ).fetchall()
         return [row[0] for row in rows]
 
-    def set_session_alias(self, alias: str, session_id: str, created_at: float, updated_at: float) -> None:
+    def set_session_alias(
+        self, alias: str, session_id: str, created_at: float, updated_at: float
+    ) -> None:
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -319,6 +347,7 @@ class SQLiteMemoryProvider:
                 (limit,),
             ).fetchall()
         return [SessionAlias(*row) for row in rows]
+
 
 class MemoryStore:
     def __init__(self, home: Path, provider: MemoryProvider | None = None):
@@ -368,21 +397,24 @@ class MemoryStore:
         if blocked is not None:
             raise ValueError(blocked.reason or f"hook blocked memory write: {blocked.hook}")
         now = time.time()
-        
+
         # Simple automatic contradiction/overlap detection
         import difflib
+
         resolved_scope = scope.strip() or "global"
         existing_items = self.list_items(memory_type=memory_type, status="active")
         metadata = metadata or {}
         contradicts = set(metadata.get("contradicts", []))
         for existing in existing_items:
             if existing.scope == resolved_scope:
-                ratio = difflib.SequenceMatcher(None, existing.content.lower(), content.strip().lower()).ratio()
+                ratio = difflib.SequenceMatcher(
+                    None, existing.content.lower(), content.strip().lower()
+                ).ratio()
                 if ratio > 0.85 and existing.content.lower() != content.strip().lower():
                     contradicts.add(existing.id)
         if contradicts:
             metadata["contradicts"] = list(contradicts)
-            
+
         item = MemoryItem(
             id=uuid.uuid4().hex,
             type=memory_type,
@@ -416,7 +448,9 @@ class MemoryStore:
         for item in items:
             for relation in ("contradicts", "supersedes"):
                 for conflicting_item_id in _metadata_id_list(item.metadata.get(relation)):
-                    conflicting_item = by_id.get(conflicting_item_id) or self.get_item(conflicting_item_id)
+                    conflicting_item = by_id.get(conflicting_item_id) or self.get_item(
+                        conflicting_item_id
+                    )
                     conflicts.append(
                         MemoryConflict(
                             item=item,
@@ -471,7 +505,6 @@ class MemoryStore:
             return []
         return learnings
 
-
     def recall(self, query: str, *, limit: int = 8) -> list[MemoryRecall]:
         now = time.time()
         candidates = [
@@ -495,7 +528,11 @@ class MemoryStore:
         lines = ["Memory recall:"]
         for recall in recalls:
             item = recall.item
-            verified = time.strftime("%Y-%m-%d", time.localtime(item.last_verified_at)) if item.last_verified_at else "unverified"
+            verified = (
+                time.strftime("%Y-%m-%d", time.localtime(item.last_verified_at))
+                if item.last_verified_at
+                else "unverified"
+            )
             reason_text = "; ".join(recall.reasons[:4])
             conflict_text = _render_conflict_summary(recall.conflicts)
             conflict_clause = f" conflicts={conflict_text}" if conflict_text else ""
@@ -623,8 +660,7 @@ class MemoryStore:
                 ledger = EvolutionLedger(self.home)
                 affected_items = []
                 seen_memory_keys = {
-                    (item.type, item.content.strip().lower())
-                    for item in active_items
+                    (item.type, item.content.strip().lower()) for item in active_items
                 }
                 for learning in learnings:
                     if not isinstance(learning, dict):
@@ -644,12 +680,18 @@ class MemoryStore:
                         except (ValueError, TypeError):
                             conf_val = 0.7
 
+                        contradicts = learning.get("contradicts", [])
+                        if not isinstance(contradicts, list):
+                            contradicts = []
+
                         new_item = self.add_item(
                             memory_type=m_type,
                             content=content,
                             source="conversation_consolidation",
+                            scope="global",
                             status="proposed",
                             confidence=conf_val,
+                            metadata={"contradicts": contradicts} if contradicts else {},
                         )
                         seen_memory_keys.add(memory_key)
                         affected_items.append(new_item)
@@ -802,10 +844,7 @@ class MemoryStore:
 
         ledger = EvolutionLedger(self.home)
         affected_items = []
-        seen_memory_keys = {
-            (item.type, item.content.strip().lower())
-            for item in active_items
-        }
+        seen_memory_keys = {(item.type, item.content.strip().lower()) for item in active_items}
         for learning in learnings:
             if not isinstance(learning, dict):
                 continue
@@ -824,12 +863,17 @@ class MemoryStore:
                 except (ValueError, TypeError):
                     conf_val = 0.7
 
+                contradicts = learning.get("contradicts", [])
+                if not isinstance(contradicts, list):
+                    contradicts = []
+
                 new_item = self.add_item(
                     memory_type=m_type,
                     content=content,
                     source="task_reflection",
                     status="proposed",
                     confidence=conf_val,
+                    metadata={"contradicts": contradicts} if contradicts else {},
                 )
                 seen_memory_keys.add(memory_key)
                 affected_items.append(new_item)
@@ -868,7 +912,11 @@ class MemoryStore:
 
     @staticmethod
     def _tokens(text: str) -> set[str]:
-        return {part.lower() for part in text.replace("/", " ").replace("_", " ").split() if len(part) >= 2}
+        return {
+            part.lower()
+            for part in text.replace("/", " ").replace("_", " ").split()
+            if len(part) >= 2
+        }
 
     @classmethod
     def _score_recall(cls, item: MemoryItem, query: str) -> MemoryRecall:
@@ -888,14 +936,19 @@ class MemoryStore:
         elif query_tokens:
             reasons.append(f"included_by_type:{item.type}")
         reasons.append(f"confidence={item.confidence:.2f}")
-        freshness = min(10.0, max(0.0, (item.updated_at - 1_700_000_000) / 10_000_000))
-        if freshness:
+        import time
+        now = time.time()
+        # Scale freshness so that recent updates score higher (up to 10 points), fading over ~115 days (10M seconds)
+        freshness = min(10.0, max(0.0, 10.0 - ((now - item.updated_at) / 1_000_000)))
+        if freshness > 0:
             reasons.append(f"freshness_score={freshness:.2f}")
         score = priority + (overlap * 12) + (item.confidence * 10) + freshness
         return MemoryRecall(item=item, score=score, reasons=reasons)
 
     @staticmethod
-    def _with_conflict_reasons(recall: MemoryRecall, conflicts: list[MemoryConflict]) -> MemoryRecall:
+    def _with_conflict_reasons(
+        recall: MemoryRecall, conflicts: list[MemoryConflict]
+    ) -> MemoryRecall:
         related = tuple(
             conflict
             for conflict in conflicts
@@ -909,7 +962,9 @@ class MemoryStore:
             reasons.append(f"unresolved_memory_conflicts={len(unresolved)}")
         else:
             reasons.append(f"declared_memory_conflicts={len(related)}")
-        return MemoryRecall(item=recall.item, score=recall.score, reasons=reasons, conflicts=related)
+        return MemoryRecall(
+            item=recall.item, score=recall.score, reasons=reasons, conflicts=related
+        )
 
 
 def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
@@ -969,9 +1024,17 @@ def _memory_learnings_output_schema(name: str) -> dict[str, Any]:
                                 "type": "object",
                                 "properties": {
                                     "action": {"type": "string", "enum": ["add"]},
-                                    "type": {"type": "string", "enum": list(LEARNABLE_MEMORY_TYPES)},
+                                    "type": {
+                                        "type": "string",
+                                        "enum": list(LEARNABLE_MEMORY_TYPES),
+                                    },
                                     "content": {"type": "string"},
                                     "confidence": {"type": "number"},
+                                    "contradicts": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "IDs of existing active memories that this new memory contradicts.",
+                                    },
                                 },
                                 "required": ["action", "type", "content", "confidence"],
                                 "additionalProperties": False,

@@ -27,7 +27,7 @@ async def test_runtime_persists_session_messages(tmp_path):
     reply = await runtime.chat("hello")
 
     assert reply.session_id
-    assert reply.content == "Navi received: hello"
+    assert reply.content == "hello"
     messages = runtime.memory.get_messages(reply.session_id)
     assert [message.role for message in messages] == ["user", "assistant"]
 

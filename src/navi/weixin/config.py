@@ -41,14 +41,21 @@ def load_weixin_config(home: Path) -> WeixinConfig:
     env_file = _load_env_file(home / "env")
     env = {**env_file, **os.environ}
     return WeixinConfig(
-        enabled=str(env.get("NAVI_WEIXIN_ENABLED", raw.get("enabled", DEFAULT_WEIXIN_ENABLED))).lower()
+        enabled=str(
+            env.get("NAVI_WEIXIN_ENABLED", raw.get("enabled", DEFAULT_WEIXIN_ENABLED))
+        ).lower()
         in {"1", "true", "yes", "on"},
         account_id=str(env.get("WEIXIN_ACCOUNT_ID", raw.get("account_id", ""))),
         token=str(env.get("WEIXIN_TOKEN", raw.get("token", ""))),
-        base_url=str(env.get("WEIXIN_BASE_URL", raw.get("base_url", DEFAULT_WEIXIN_BASE_URL))).rstrip("/"),
+        base_url=str(
+            env.get("WEIXIN_BASE_URL", raw.get("base_url", DEFAULT_WEIXIN_BASE_URL))
+        ).rstrip("/"),
         dm_policy=str(env.get("WEIXIN_DM_POLICY", raw.get("dm_policy", DEFAULT_WEIXIN_DM_POLICY))),
-        allowed_users=_split_csv(env.get("WEIXIN_ALLOWED_USERS")) or list(raw.get("allowed_users", []) or []),
-        group_policy=str(env.get("WEIXIN_GROUP_POLICY", raw.get("group_policy", DEFAULT_WEIXIN_GROUP_POLICY))),
+        allowed_users=_split_csv(env.get("WEIXIN_ALLOWED_USERS"))
+        or list(raw.get("allowed_users", []) or []),
+        group_policy=str(
+            env.get("WEIXIN_GROUP_POLICY", raw.get("group_policy", DEFAULT_WEIXIN_GROUP_POLICY))
+        ),
         group_allowed_users=_split_csv(env.get("WEIXIN_GROUP_ALLOWED_USERS"))
         or list(raw.get("group_allowed_users", []) or []),
         home_channel=str(env.get("WEIXIN_HOME_CHANNEL", raw.get("home_channel", ""))),

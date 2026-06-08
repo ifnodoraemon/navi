@@ -646,7 +646,7 @@ async def test_evolution_rollback_restores_graph_event(tmp_path, monkeypatch):
     completed = (await daemon.process_queue_once())[0]
 
     events = daemon.evolution.ledger.list()
-    assert {event.target_type for event in events}.issubset({"graph_node", "run_execution"})
+    assert {event.target_type for event in events}.issubset({"graph_node", "run_execution", "approval", "execution_grant", "trust_decision"})
 
     for event in events:
         rolled_back = daemon.evolution.rollback(event.id)

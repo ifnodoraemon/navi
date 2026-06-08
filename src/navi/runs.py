@@ -199,8 +199,12 @@ class RunStore:
             _assert_schema_exact(conn, "tool_call_logs", _TOOL_CALL_LOG_SCHEMA)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_approvals_code ON approvals(code)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_watches_next ON watches(enabled, next_run_at)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_call_logs_tool ON tool_call_logs(tool, started_at)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_watches_next ON watches(enabled, next_run_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tool_call_logs_tool ON tool_call_logs(tool, started_at)"
+            )
 
     def create(
         self,
@@ -568,7 +572,9 @@ class RunStore:
             ).fetchone()
         return Approval(*row) if row else None
 
-    def approval_resolution_diagnostic(self, *, code: str = "", run_id: str = "", sender_id: str = "") -> dict:
+    def approval_resolution_diagnostic(
+        self, *, code: str = "", run_id: str = "", sender_id: str = ""
+    ) -> dict:
         now = time.time()
         if code:
             approval = self.get_approval(code)
@@ -586,16 +592,29 @@ class RunStore:
             run = self.get(run_id)
             approvals = self._approvals_for_run(run_id)
             if run is None:
-                return {"reason": "run_not_found", "run_id": run_id, "approval_count": len(approvals)}
+                return {
+                    "reason": "run_not_found",
+                    "run_id": run_id,
+                    "approval_count": len(approvals),
+                }
             if not approvals:
-                return {"reason": "run_has_no_approval", "run_id": run_id, "run_status": run.status, "approval_count": 0}
+                return {
+                    "reason": "run_has_no_approval",
+                    "run_id": run_id,
+                    "run_status": run.status,
+                    "approval_count": 0,
+                }
             pending = [approval for approval in approvals if approval.status == "pending"]
             if sender_id:
-                sender_pending = [approval for approval in pending if approval.sender_id == sender_id]
+                sender_pending = [
+                    approval for approval in pending if approval.sender_id == sender_id
+                ]
                 if sender_pending:
                     latest = sender_pending[0]
                     return _approval_diagnostic_facts(latest, now=now, sender_id=sender_id) | {
-                        "reason": "approval_expired" if latest.expires_at < now else "approval_pending",
+                        "reason": "approval_expired"
+                        if latest.expires_at < now
+                        else "approval_pending",
                     }
                 if pending:
                     latest = pending[0]
@@ -605,7 +624,11 @@ class RunStore:
                         "approval_count": len(approvals),
                     }
             latest = approvals[0]
-            reason = "approval_expired" if latest.status == "pending" and latest.expires_at < now else "approval_not_pending"
+            reason = (
+                "approval_expired"
+                if latest.status == "pending" and latest.expires_at < now
+                else "approval_not_pending"
+            )
             return _approval_diagnostic_facts(latest, now=now, sender_id=sender_id) | {
                 "reason": reason,
                 "run_status": run.status,
@@ -638,7 +661,17 @@ class RunStore:
             ).fetchall()
         return [Approval(*row) for row in rows]
 
-    def create_watch(self, *, cron: str, prompt: str, peer_id: str, sender_id: str, next_run_at: float, workspace: str, kind: str = "recurring") -> Watch:
+    def create_watch(
+        self,
+        *,
+        cron: str,
+        prompt: str,
+        peer_id: str,
+        sender_id: str,
+        next_run_at: float,
+        workspace: str,
+        kind: str = "recurring",
+    ) -> Watch:
         now = time.time()
         watch = Watch(
             id=uuid.uuid4().hex,
@@ -716,7 +749,9 @@ class RunStore:
             ).fetchall()
         return [self._watch_from_row(row) for row in rows]
 
-    def mark_watch_run(self, watch_id: str, *, last_run_at: float, next_run_at: float) -> Watch | None:
+    def mark_watch_run(
+        self, watch_id: str, *, last_run_at: float, next_run_at: float
+    ) -> Watch | None:
         now = time.time()
         with connect(self.db_path) as conn:
             conn.execute(
@@ -833,7 +868,9 @@ class RunStore:
             )
         return log
 
-    def list_execution_logs(self, run_id: str | None = None, *, limit: int = 50) -> list[ExecutionLog]:
+    def list_execution_logs(
+        self, run_id: str | None = None, *, limit: int = 50
+    ) -> list[ExecutionLog]:
         with connect(self.db_path) as conn:
             if run_id:
                 rows = conn.execute(
@@ -962,7 +999,10 @@ _TOOL_CALL_LOG_SCHEMA = [
 
 
 def _assert_schema_exact(conn, table: str, expected: list[tuple[str, str, int, int]]) -> None:
-    schema = [(row[1], str(row[2]).upper(), int(row[3]), int(row[5])) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    schema = [
+        (row[1], str(row[2]).upper(), int(row[3]), int(row[5]))
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    ]
     if schema != expected:
         raise RuntimeError(f"{table} schema mismatch; expected current Navi schema")
 

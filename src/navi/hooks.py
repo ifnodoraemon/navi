@@ -70,7 +70,8 @@ class HookRegistry:
                     event=event.event,
                     decision=spec.decision,
                     reason=spec.reason,
-                    facts={"payload_keys": payload_keys, "source": spec.source} | (spec.facts or {}),
+                    facts={"payload_keys": payload_keys, "source": spec.source}
+                    | (spec.facts or {}),
                 )
             )
         return decisions

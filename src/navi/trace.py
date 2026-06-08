@@ -70,7 +70,9 @@ class TraceStore:
                 """
             conn.execute(trace_events_sql)
             _ensure_schema_current(conn, "trace_events", _TRACE_EVENT_SCHEMA, trace_events_sql)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_events_trace ON trace_events(trace_id, created_at)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trace_events_trace ON trace_events(trace_id, created_at)"
+            )
             trace_evaluations_sql = """
                 CREATE TABLE IF NOT EXISTS trace_evaluations (
                     id TEXT PRIMARY KEY,
@@ -83,8 +85,12 @@ class TraceStore:
                 )
                 """
             conn.execute(trace_evaluations_sql)
-            _ensure_schema_current(conn, "trace_evaluations", _TRACE_EVALUATION_SCHEMA, trace_evaluations_sql)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_evaluations_trace ON trace_evaluations(trace_id)")
+            _ensure_schema_current(
+                conn, "trace_evaluations", _TRACE_EVALUATION_SCHEMA, trace_evaluations_sql
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trace_evaluations_trace ON trace_evaluations(trace_id)"
+            )
 
     @staticmethod
     def new_trace_id() -> str:
@@ -198,8 +204,7 @@ class TraceStore:
         role_events = [event for event in events if event.phase == "agent.role_result"]
         if role_events:
             evidence["agent_role_results"] = [
-                {"model_role": event.model_role, "message": event.message}
-                for event in role_events
+                {"model_role": event.model_role, "message": event.message} for event in role_events
             ]
 
         first_failure = next((event for event in events if not event.ok), None)
@@ -210,7 +215,9 @@ class TraceStore:
             evidence["first_failure_message"] = first_failure.message
             if first_failure.phase == "planner.syscall":
                 failure_domain = "prompt_or_provider_parser"
-                recommendation = "Review planner prompt, model route, and tool-call parser compatibility."
+                recommendation = (
+                    "Review planner prompt, model route, and tool-call parser compatibility."
+                )
             elif first_failure.phase == "capability.result":
                 if _capability_result_has_safeguard_decision(first_failure):
                     failure_domain = "safeguard_policy"
@@ -220,10 +227,14 @@ class TraceStore:
                     )
                 else:
                     failure_domain = "tool_or_capability"
-                    recommendation = "Review the selected tool spec, arguments, and implementation result."
+                    recommendation = (
+                        "Review the selected tool spec, arguments, and implementation result."
+                    )
             elif first_failure.phase == "completion.verify":
                 failure_domain = "completion_verifier"
-                recovery_plan = next((event for event in events if event.phase == "recovery.plan"), None)
+                recovery_plan = next(
+                    (event for event in events if event.phase == "recovery.plan"), None
+                )
                 if recovery_plan:
                     evidence["recovery_plan_recorded"] = True
                     try:
@@ -231,9 +242,7 @@ class TraceStore:
                     except json.JSONDecodeError:
                         recovery_output = {}
                     evidence["recovery_recommended"] = recovery_output.get("recommended", "")
-                    recommendation = (
-                        "Review whether the recorded recovery plan led to a successful follow-up action."
-                    )
+                    recommendation = "Review whether the recorded recovery plan led to a successful follow-up action."
                 else:
                     evidence["recovery_plan_recorded"] = False
                     recommendation = (
@@ -312,6 +321,8 @@ class TraceStore:
 
 
 def _redact(value: Any) -> Any:
+    from .safeguards import redact_secrets
+    
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
@@ -323,6 +334,8 @@ def _redact(value: Any) -> Any:
         return redacted
     if isinstance(value, list):
         return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return redact_secrets(value)
     return value
 
 
@@ -387,7 +400,9 @@ _TRACE_EVENT_COLUMNS = [
 ]
 
 
-def _ensure_schema_current(conn, table: str, expected: list[tuple[str, str, int, int]], create_sql: str) -> None:
+def _ensure_schema_current(
+    conn, table: str, expected: list[tuple[str, str, int, int]], create_sql: str
+) -> None:
     if _table_schema(conn, table) == expected:
         return
     conn.execute(f"DROP TABLE IF EXISTS {table}")
@@ -397,7 +412,10 @@ def _ensure_schema_current(conn, table: str, expected: list[tuple[str, str, int,
 
 
 def _table_schema(conn, table: str) -> list[tuple[str, str, int, int]]:
-    return [(row[1], str(row[2]).upper(), int(row[3]), int(row[5])) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    return [
+        (row[1], str(row[2]).upper(), int(row[3]), int(row[5]))
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    ]
 
 
 def _has_unverified_pending_run_completion(events: list[TraceEvent]) -> bool:

@@ -53,9 +53,15 @@ class SubagentRunStore:
                 )
                 """
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_subagent_runs_role ON subagent_runs(role, updated_at)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_subagent_runs_status ON subagent_runs(status, updated_at)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_subagent_runs_run ON subagent_runs(run_id, updated_at)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subagent_runs_role ON subagent_runs(role, updated_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subagent_runs_status ON subagent_runs(status, updated_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subagent_runs_run ON subagent_runs(run_id, updated_at)"
+            )
 
     def start(
         self,

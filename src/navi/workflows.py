@@ -168,9 +168,15 @@ class WorkflowStore:
                 """
             )
             _assert_schema_exact(conn, "workflow_events", _WORKFLOW_EVENT_SCHEMA)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status, updated_at)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow ON workflow_steps(workflow_id, seq)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_workflow_events_workflow ON workflow_events(workflow_id, created_at)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status, updated_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow ON workflow_steps(workflow_id, seq)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workflow_events_workflow ON workflow_events(workflow_id, created_at)"
+            )
 
     def create(
         self,
@@ -194,10 +200,19 @@ class WorkflowStore:
         now = time.time()
         workflow_id = uuid.uuid4().hex
         permission_ceiling = _permission_ceiling(permission_ceiling)
-        normalized_steps = _normalize_steps(steps or [], workflow_id=workflow_id, total_limit=total_subagent_limit)
+        normalized_steps = _normalize_steps(
+            steps or [], workflow_id=workflow_id, total_limit=total_subagent_limit
+        )
         if not normalized_steps:
             normalized_steps = _normalize_steps(
-                [{"role": "planner", "objective": objective, "allowed_tools": [], "tool_calls": []}],
+                [
+                    {
+                        "role": "planner",
+                        "objective": objective,
+                        "allowed_tools": [],
+                        "tool_calls": [],
+                    }
+                ],
                 workflow_id=workflow_id,
                 total_limit=total_subagent_limit,
             )
@@ -230,7 +245,8 @@ class WorkflowStore:
             risk_class=risk_class or _risk_class(permission_ceiling),
             estimated_cost=estimated_cost or "unknown",
             stop_condition=stop_condition or "all declared steps complete and verifier passes",
-            verification_strategy=verification_strategy or "independent verifier checks every step has evidence and no failed capability result",
+            verification_strategy=verification_strategy
+            or "independent verifier checks every step has evidence and no failed capability result",
             plan_json=json.dumps(plan_data, ensure_ascii=False, sort_keys=True),
             evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
             blocked_reason="",
@@ -299,7 +315,9 @@ class WorkflowStore:
                         step.completed_at,
                     ),
                 )
-        self.record_event(workflow.id, "workflow.proposed", status=workflow.status, evidence=evidence or {})
+        self.record_event(
+            workflow.id, "workflow.proposed", status=workflow.status, evidence=evidence or {}
+        )
         return workflow
 
     def get(self, workflow_id: str) -> Workflow | None:
@@ -320,7 +338,9 @@ class WorkflowStore:
 
     def list_steps(self, workflow_id: str) -> list[WorkflowStep]:
         with connect(self.db_path) as conn:
-            rows = conn.execute(_SELECT_STEP + " WHERE workflow_id = ? ORDER BY seq ASC", (workflow_id,)).fetchall()
+            rows = conn.execute(
+                _SELECT_STEP + " WHERE workflow_id = ? ORDER BY seq ASC", (workflow_id,)
+            ).fetchall()
         return [WorkflowStep(*row) for row in rows]
 
     def list_events(self, workflow_id: str, *, limit: int = 200) -> list[WorkflowEvent]:
@@ -347,7 +367,16 @@ class WorkflowStore:
             return None
         merged = _merge_evidence(workflow.evidence_json, evidence)
         now = time.time()
-        completed_at = now if status in {WORKFLOW_STATUS_VERIFIED_COMPLETE, WORKFLOW_STATUS_BLOCKED, WORKFLOW_STATUS_REJECTED} else workflow.completed_at
+        completed_at = (
+            now
+            if status
+            in {
+                WORKFLOW_STATUS_VERIFIED_COMPLETE,
+                WORKFLOW_STATUS_BLOCKED,
+                WORKFLOW_STATUS_REJECTED,
+            }
+            else workflow.completed_at
+        )
         if status == WORKFLOW_STATUS_COMPLETED and not completed_at:
             completed_at = now
         with connect(self.db_path) as conn:
@@ -384,8 +413,14 @@ class WorkflowStore:
             return None
         merged = _merge_evidence(step.evidence_json, evidence)
         now = time.time()
-        started_at = now if step.started_at == 0.0 and status == STEP_STATUS_RUNNING else step.started_at
-        completed_at = now if status in {STEP_STATUS_COMPLETED, STEP_STATUS_FAILED, STEP_STATUS_BLOCKED} else step.completed_at
+        started_at = (
+            now if step.started_at == 0.0 and status == STEP_STATUS_RUNNING else step.started_at
+        )
+        completed_at = (
+            now
+            if status in {STEP_STATUS_COMPLETED, STEP_STATUS_FAILED, STEP_STATUS_BLOCKED}
+            else step.completed_at
+        )
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -403,7 +438,13 @@ class WorkflowStore:
                     step_id,
                 ),
             )
-        self.record_event(step.workflow_id, f"workflow.step.{status}", status=status, step_id=step_id, evidence=evidence or {})
+        self.record_event(
+            step.workflow_id,
+            f"workflow.step.{status}",
+            status=status,
+            step_id=step_id,
+            evidence=evidence or {},
+        )
         return self.get_step(step_id)
 
     def get_step(self, step_id: str) -> WorkflowStep | None:
@@ -458,7 +499,9 @@ def workflow_facts(store: WorkflowStore, workflow: Workflow) -> dict[str, Any]:
         "step_count": len(steps),
         "pending_count": len([step for step in steps if step.status == STEP_STATUS_PENDING]),
         "completed_count": len([step for step in steps if step.status == STEP_STATUS_COMPLETED]),
-        "failed_count": len([step for step in steps if step.status in {STEP_STATUS_FAILED, STEP_STATUS_BLOCKED}]),
+        "failed_count": len(
+            [step for step in steps if step.status in {STEP_STATUS_FAILED, STEP_STATUS_BLOCKED}]
+        ),
     }
 
 
@@ -484,7 +527,9 @@ def _event_dict(event: WorkflowEvent) -> dict[str, Any]:
     return data
 
 
-def _normalize_steps(raw_steps: list[dict[str, Any]], *, workflow_id: str, total_limit: int) -> list[WorkflowStep]:
+def _normalize_steps(
+    raw_steps: list[dict[str, Any]], *, workflow_id: str, total_limit: int
+) -> list[WorkflowStep]:
     steps: list[WorkflowStep] = []
     now = time.time()
     for index, raw in enumerate(raw_steps[: max(1, min(int(total_limit or 32), 1000))], start=1):
@@ -495,7 +540,9 @@ def _normalize_steps(raw_steps: list[dict[str, Any]], *, workflow_id: str, total
             continue
         role = str(raw.get("role") or "worker").strip() or "worker"
         depends_on = raw.get("depends_on") if isinstance(raw.get("depends_on"), list) else []
-        allowed_tools = raw.get("allowed_tools") if isinstance(raw.get("allowed_tools"), list) else []
+        allowed_tools = (
+            raw.get("allowed_tools") if isinstance(raw.get("allowed_tools"), list) else []
+        )
         tool_calls = raw.get("tool_calls") if isinstance(raw.get("tool_calls"), list) else []
         steps.append(
             WorkflowStep(
@@ -505,9 +552,17 @@ def _normalize_steps(raw_steps: list[dict[str, Any]], *, workflow_id: str, total
                 role=role[:64],
                 objective=objective,
                 status=STEP_STATUS_PENDING,
-                depends_on_json=json.dumps([str(item) for item in depends_on], ensure_ascii=False, sort_keys=True),
-                allowed_tools_json=json.dumps([str(item) for item in allowed_tools], ensure_ascii=False, sort_keys=True),
-                tool_calls_json=json.dumps([item for item in tool_calls if isinstance(item, dict)], ensure_ascii=False, sort_keys=True),
+                depends_on_json=json.dumps(
+                    [str(item) for item in depends_on], ensure_ascii=False, sort_keys=True
+                ),
+                allowed_tools_json=json.dumps(
+                    [str(item) for item in allowed_tools], ensure_ascii=False, sort_keys=True
+                ),
+                tool_calls_json=json.dumps(
+                    [item for item in tool_calls if isinstance(item, dict)],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
                 evidence_json="{}",
                 error="",
                 started_at=0.0,

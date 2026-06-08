@@ -74,7 +74,9 @@ class ModelSyscallPlanner:
                 reason="planner returned invalid JSON",
             )
         if not isinstance(data, dict):
-            return ModelSyscall(tool="system.planner_error", reason="planner JSON was not an object")
+            return ModelSyscall(
+                tool="system.planner_error", reason="planner JSON was not an object"
+            )
         tool = str(data.get("tool") or "").strip()
         if not tool:
             return ModelSyscall(
@@ -93,6 +95,7 @@ class ModelSyscallPlanner:
             confidence=_confidence(data.get("confidence")),
             reason=str(data.get("reason") or ""),
         )
+
 
 def _extract_json_object(text: str) -> str:
     stripped = text.strip()
@@ -141,10 +144,17 @@ def _syscall_output_schema() -> dict[str, Any]:
         "schema": {
             "type": "object",
             "properties": {
-                "tool": {"type": "string", "minLength": 1, "description": "Capability name from the manifest."},
+                "tool": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Capability name from the manifest.",
+                },
                 "permission": {"type": "string", "enum": ["read", "prepare", "write"]},
                 "args": {"type": "object", "description": "Arguments for the selected capability."},
-                "model_role": {"type": "string", "description": "Role for follow-up response synthesis."},
+                "model_role": {
+                    "type": "string",
+                    "description": "Role for follow-up response synthesis.",
+                },
                 "confidence": {"type": "number"},
                 "reason": {"type": "string"},
             },

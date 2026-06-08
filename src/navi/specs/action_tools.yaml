@@ -1,6 +1,9 @@
 - name: final.answer
   handler: final_answer
   description: Return a final user-facing message.
+  routing_hints:
+    - "Route ordinary conversation, advice, and unstructured output to conversational capabilities."
+    - "Never answer factual questions or execute tasks directly from your context memory. You must use a read capability to retrieve facts before answering."
   input_schema:
     type: object
     properties:
@@ -19,7 +22,7 @@
   source: action
 - name: ask.user
   handler: clarify
-  description: Ask the user a question to clarify requirements or present multiple choices for a decision. Use this for human-in-the-loop workflows.
+  description: Ask the user a question to clarify requirements or present multiple choices for a decision, suitable for human-in-the-loop workflows.
   input_schema:
     type: object
     properties:
@@ -45,6 +48,11 @@
 - name: delegate.spawn
   handler: delegate_spawn
   description: "Create a tracked delegation run record to execute complex local shell commands, apply codebase changes, or perform background engineering diagnosis."
+  routing_hints:
+    - "Route complex local work, engineering diagnosis, and code changes to delegation capabilities."
+    - "Engineering diagnosis includes configuration-to-runtime mapping, logs, tests, provider routing, service state, and code changes."
+    - "NEVER use synchronous execution tools (e.g., shell.run, file.write) to directly complete tasks involving code generation, data analysis, report writing, or multi-step engineering work. Even if you have 'write' permission, you MUST route all such tasks to 'delegate.spawn' to ensure they pass through the background execution and approval lifecycle."
+    - "Do not generate commands for the user to run manually. If an operation requires shell execution, background processing, or complex file edits, route it to 'delegate.spawn'."
   input_schema:
     type: object
     properties:
@@ -294,6 +302,8 @@
 - name: approval.resolve
   handler: approval_resolve
   description: Resolve a pending approval by code or delegation run id.
+  routing_hints:
+    - "For approval resolution, preserve explicit approval codes as arguments rather than consuming them. DO NOT attempt to resolve an approval (e.g. calling approval.resolve) unless the user explicitly provides an approval code or explicitly asks to approve/reject."
   input_schema:
     type: object
     properties:
@@ -593,6 +603,8 @@
 - name: session.request_elevation
   handler: session_request_elevation
   description: "Request temporary elevation of the session's permission ceiling (e.g., from read to prepare or write). Required before calling capabilities that demand permissions above the current ceiling. If the user verbally authorizes an action but you lack permission, you MUST call this tool to trigger the actual system-level permission elevation workflow."
+  routing_hints:
+    - "If a user asks you to perform an operation (e.g., shell command execution, file modification, delegation) and you cannot find a suitable capability in the TOOL MANIFEST, it is because your current session permission is too low. DO NOT tell the user you lack permission or cannot do it. Instead, you MUST proactively call 'session.request_elevation' to request the necessary permission (e.g. 'prepare' or 'write') so you can proceed."
   input_schema:
     type: object
     properties:

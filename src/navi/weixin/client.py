@@ -38,7 +38,9 @@ class WeixinClient:
     async def request_qr(self) -> WeixinQr:
         data = await self._get("/ilink/bot/get_bot_qrcode?bot_type=3", timeout=35)
         ticket = str(data.get("qrcode") or data.get("ticket") or "")
-        qrcode_url = str(data.get("qrcode_img_content") or data.get("qrcode_url") or data.get("url") or ticket)
+        qrcode_url = str(
+            data.get("qrcode_img_content") or data.get("qrcode_url") or data.get("url") or ticket
+        )
         if not ticket:
             raise RuntimeError(f"iLink QR response did not include qrcode: {data}")
         return WeixinQr(qrcode_url=qrcode_url, ticket=ticket)
@@ -50,7 +52,9 @@ class WeixinClient:
             return None
         if status not in {"confirmed", "success", "authorized", "logged_in"}:
             return None
-        account_id = str(data.get("ilink_bot_id") or data.get("account_id") or data.get("bot_account_id") or "")
+        account_id = str(
+            data.get("ilink_bot_id") or data.get("account_id") or data.get("bot_account_id") or ""
+        )
         token = str(data.get("bot_token") or data.get("token") or data.get("access_token") or "")
         base_url = str(data.get("baseurl") or self.base_url).rstrip("/")
         user_id = str(data.get("ilink_user_id") or data.get("user_id") or "")
@@ -73,7 +77,9 @@ class WeixinClient:
             if not text:
                 continue
             peer_id, is_group = self._peer_id(raw, account_id)
-            sender_id = str(raw.get("from_user_id") or raw.get("sender_id") or raw.get("from_user") or peer_id)
+            sender_id = str(
+                raw.get("from_user_id") or raw.get("sender_id") or raw.get("from_user") or peer_id
+            )
             updates.append(
                 WeixinUpdate(
                     message_id=str(raw.get("message_id") or raw.get("id") or uuid.uuid4().hex),
@@ -143,14 +149,20 @@ class WeixinClient:
                 errcode = response.get("errcode")
                 if ret in (None, 0) and errcode in (None, 0):
                     return
-                if _is_session_expired(ret, errcode, response.get("errmsg")) and context_token and not retried_without_context:
+                if (
+                    _is_session_expired(ret, errcode, response.get("errmsg"))
+                    and context_token
+                    and not retried_without_context
+                ):
                     context_token = ""
                     retried_without_context = True
                     continue
                 if _is_rate_limited(ret, errcode) and attempt < SEND_CHUNK_RETRIES:
                     await self._sleep(SEND_CHUNK_RETRY_DELAY_SECONDS * 3)
                     continue
-                raise RuntimeError(f"iLink sendmessage error ret={ret} errcode={errcode}: {response}")
+                raise RuntimeError(
+                    f"iLink sendmessage error ret={ret} errcode={errcode}: {response}"
+                )
             except Exception as exc:
                 last_error = exc
                 if attempt >= SEND_CHUNK_RETRIES:
@@ -160,7 +172,9 @@ class WeixinClient:
             raise last_error
 
     @staticmethod
-    def _message_payload(*, peer_id: str, text: str, context_token: str, client_id: str) -> dict[str, Any]:
+    def _message_payload(
+        *, peer_id: str, text: str, context_token: str, client_id: str
+    ) -> dict[str, Any]:
         message: dict[str, Any] = {
             "from_user_id": "",
             "to_user_id": peer_id,
@@ -181,9 +195,15 @@ class WeixinClient:
         return self._unwrap(data)
 
     async def _post(self, path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
-        body = json.dumps({**payload, "base_info": {"channel_version": CHANNEL_VERSION}}, ensure_ascii=False, separators=(",", ":"))
+        body = json.dumps(
+            {**payload, "base_info": {"channel_version": CHANNEL_VERSION}},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         async with httpx.AsyncClient(timeout=timeout, trust_env=True) as client:
-            response = await client.post(f"{self.base_url}{path}", content=body, headers=self._headers(body))
+            response = await client.post(
+                f"{self.base_url}{path}", content=body, headers=self._headers(body)
+            )
             response.raise_for_status()
             data = response.json()
         return self._unwrap(data)
@@ -215,8 +235,16 @@ class WeixinClient:
         to_user_id = str(raw.get("to_user_id") or "").strip()
         is_group = bool(room_id) or bool(raw.get("is_group")) or to_user_id.endswith("@chatroom")
         if is_group:
-            return room_id or to_user_id or str(raw.get("peer_id") or raw.get("chat_id") or ""), True
-        return str(raw.get("peer_id") or raw.get("chat_id") or raw.get("from_user_id") or raw.get("from_user") or ""), False
+            return room_id or to_user_id or str(
+                raw.get("peer_id") or raw.get("chat_id") or ""
+            ), True
+        return str(
+            raw.get("peer_id")
+            or raw.get("chat_id")
+            or raw.get("from_user_id")
+            or raw.get("from_user")
+            or ""
+        ), False
 
     async def _sleep_between_chunks(self) -> None:
         await self._sleep(0.3)

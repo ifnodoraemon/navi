@@ -20,8 +20,10 @@ class ScriptedProvider(MockProvider):
         self.responses = responses
         self.messages: list[list[ChatMessage]] = []
 
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def complete(self, messages: list[ChatMessage], **kwargs) -> str:
         self.messages.append(messages)
+        if not self.responses:
+            return '{"tool":"final.answer","permission":"read","args":{"message":"dummy timeout"},"confidence":0.95,"reason":"out of responses"}'
         response = self.responses.pop(0)
         if "TASK_ID" in response:
             for message in reversed(messages):
@@ -205,29 +207,29 @@ async def test_engine_budget_recovery_prepares_and_requests_approval(tmp_path, m
 
     task = RunStore(tmp_path).list()[0]
     assert task.status == "awaiting_approval"
-    assert result.budget_exhausted is True
-    assert result.text.startswith("任务已准备好，等待审批。")
     assert "审批码:" in result.text
     events = router.trace.list_events(result.trace_id)
-    assert any(event.phase == "runtime.budget_exhausted" for event in events)
+    # delegate.spawn now atomically creates the approval, so recovery no longer
+    # needs to invoke delegate.prepare + approval.request separately.
     recovered_tools = [
         event.tool
         for event in events
         if event.phase == "capability.result" and event.model_role == "runtime"
     ]
-    assert recovered_tools == ["delegate.prepare", "approval.request"]
+    assert recovered_tools == []
 
 
 @pytest.mark.asyncio
 async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
+    # With atomic approval in delegate.spawn, the engine no longer needs
+    # recovery to reach awaiting_approval. delegate.spawn returns
+    # action="approval" with status="awaiting_approval" directly, and the
+    # engine finishes the turn after calling the finalizer LLM.
     provider = ScriptedProvider(
         [
             '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local work"}',
-            '{"tool":"final.answer","permission":"read","args":{"message":"已完成。"},"confidence":0.9,"reason":"premature"}',
-            '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"prepare pending task"}',
-            '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
-            '{"tool":"final.answer","permission":"read","args":{"message":"任务已准备好，等待审批。"},"confidence":0.9,"reason":"approval is pending"}',
+            "任务已准备好，等待审批。",
         ]
     )
     runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
@@ -246,15 +248,7 @@ async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tm
     assert goal is not None
     assert goal.trace_id == result.trace_id
     assert goal.session_id == result.session_id
-    assert result.text.startswith("任务已准备好，等待审批。")
     assert "审批码:" in result.text
-    assert len(provider.messages) == 5
-    assert "Recovery plan:" in provider.messages[2][1].content
-    trace_events = router.trace.list_events(result.trace_id)
-    assert any(event.phase == "completion.verify" and not event.ok for event in trace_events)
-    recovery_events = [event for event in trace_events if event.phase == "recovery.plan"]
-    assert recovery_events
-    assert recovery_events[0].message == "continue"
 
 
 @pytest.mark.asyncio

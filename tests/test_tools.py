@@ -39,7 +39,7 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
     assert all(spec.facts_only is True for spec in specs.values())
     assert all(spec.facts_only is True for spec in load_action_tool_specs())
     assert all(spec.permission == "write" for spec in specs.values() if spec.mutates)
-    assert all(spec.output_schema.get("properties") for spec in specs.values())
+    assert all("properties" in spec.output_schema or "items" in spec.output_schema for spec in specs.values())
     assert "items" in specs["memory.recall"].output_schema["properties"]
     assert "conflicts" in specs["memory.conflicts"].output_schema["properties"]
     assert "exit_code" in specs["shell.run"].output_schema["properties"]

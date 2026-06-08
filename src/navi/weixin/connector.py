@@ -12,7 +12,9 @@ from .store import WeixinStore
 
 
 def _load_spec() -> ConnectorSpec:
-    raw = yaml.safe_load((Path(__file__).with_name("specs") / "connector.yaml").read_text(encoding="utf-8"))
+    raw = yaml.safe_load(
+        (Path(__file__).with_name("specs") / "connector.yaml").read_text(encoding="utf-8")
+    )
     return ConnectorSpec(
         name=str(raw["name"]),
         surface=str(raw["surface"]),
@@ -50,6 +52,7 @@ def _enabled(home: Path) -> bool:
 
 def _status(home: Path) -> dict[str, Any]:
     import json
+
     config = load_weixin_config(home)
     store = WeixinStore(home)
     facts = {
@@ -66,13 +69,16 @@ def _status(home: Path) -> dict[str, Any]:
     if status_file.exists():
         try:
             data = json.loads(status_file.read_text(encoding="utf-8"))
-            facts.update({
-                "status": data.get("status", "unknown"),
-                "error": data.get("error", ""),
-                "last_update": data.get("last_update", 0.0),
-            })
+            facts.update(
+                {
+                    "status": data.get("status", "unknown"),
+                    "error": data.get("error", ""),
+                    "last_update": data.get("last_update", 0.0),
+                }
+            )
         except Exception as e:
             import logging
+
             logging.getLogger("navi.weixin").warning("Failed to read status: %s", e)
     return facts
 

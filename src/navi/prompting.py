@@ -18,7 +18,9 @@ class PromptLayerStore:
     def get(self, name: str) -> PromptLayer:
         override = self.override_path(name)
         if override.exists():
-            return PromptLayer(name, override.read_text(encoding="utf-8"), self._default_permission(name))
+            return PromptLayer(
+                name, override.read_text(encoding="utf-8"), self._default_permission(name)
+            )
         spec = self._default_spec(name)
         return PromptLayer(
             name,

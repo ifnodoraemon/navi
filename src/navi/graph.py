@@ -41,7 +41,9 @@ class GraphStore:
                 )
                 """
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_graph_type ON graph_nodes(type, updated_at)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_graph_type ON graph_nodes(type, updated_at)"
+            )
 
     def upsert(self, node_type: str, name: str, data: dict[str, Any]) -> GraphNode:
         now = time.time()

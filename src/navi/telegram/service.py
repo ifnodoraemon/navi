@@ -43,7 +43,9 @@ class TelegramService:
             return MockTelegramClient()
         if not self.config.bot_token:
             raise RuntimeError("Telegram is not configured. Set TELEGRAM_BOT_TOKEN first.")
-        return TelegramClient(api_base_url=self.config.api_base_url, bot_token=self.config.bot_token)
+        return TelegramClient(
+            api_base_url=self.config.api_base_url, bot_token=self.config.bot_token
+        )
 
     def status(self) -> dict:
         return {
@@ -56,25 +58,31 @@ class TelegramService:
     def update_status(self, status: str, error: str = "") -> None:
         import time
         import json
+
         status_dir = self.home / "telegram"
         status_dir.mkdir(parents=True, exist_ok=True)
         status_file = status_dir / "status.json"
         try:
             status_file.write_text(
-                json.dumps({
-                    "status": status,
-                    "error": error,
-                    "last_update": time.time(),
-                }, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "status": status,
+                        "error": error,
+                        "last_update": time.time(),
+                    },
+                    ensure_ascii=False,
+                ),
                 encoding="utf-8",
             )
         except Exception as e:
             import logging
+
             logging.getLogger("navi.telegram").warning("Failed to update status: %s", e)
 
     async def run(self, *, once: bool = False) -> None:
         import time
         from navi.runs import RunStore
+
         runs = RunStore(self.home)
         offset: int | None = None
         sleep_time = 1.0
@@ -88,7 +96,7 @@ class TelegramService:
                 for update in updates:
                     offset = max(offset or 0, update.update_id + 1)
                     await self.handle_update(update)
-                
+
                 # Check for activity to adapt sleep time
                 now = time.time()
                 if now - last_tasks_check >= 2.0:
@@ -101,23 +109,23 @@ class TelegramService:
                     sleep_time = 0.05
                 else:
                     sleep_time = min(1.0, sleep_time + 0.1)
-                
+
                 retry_count = 0
                 self.update_status("healthy")
-                
+
             except Exception as e:
                 retry_count += 1
                 error_msg = str(e)
                 if retry_count <= 5:
                     status = "retrying"
-                    err_sleep = min(16.0, 1.5 ** retry_count)
+                    err_sleep = min(16.0, 1.5**retry_count)
                     self.update_status(status, error_msg)
                     sleep_time = err_sleep
                 else:
                     status = "fatal"
                     self.update_status(status, error_msg)
                     raise e
-            
+
             if once:
                 return
             await asyncio.sleep(sleep_time)
