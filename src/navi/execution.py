@@ -1655,30 +1655,7 @@ class ExecutionService:
             return result
         started = time.time()
         try:
-            result = await asyncio.wait_for(
-                self._provider_call(task, phase, previous_result=previous_result), timeout=self.config.timeout_seconds + 1
-            )
-            self._finish_provider_subagent(subagent_run.id, result)
-            return result
-        except asyncio.TimeoutError:
-            result = ExecutionResult(
-                provider=INTERNAL_EXECUTION_PROVIDER,
-                phase=phase,
-                command=["navi", "internal", "--timeout", phase, task.id],
-                stdout="",
-                stderr=f"navi {phase} timed out after {self.config.timeout_seconds} seconds",
-                exit_code=124,
-                started_at=started,
-                ended_at=time.time(),
-                protocol=ExecutionProtocol.internal_status(
-                    run_id=task.id,
-                    phase=phase,
-                    status="failed",
-                    summary=f"navi {phase} timed out after {self.config.timeout_seconds} seconds",
-                    reason="execution provider timed out",
-                    action_kind="execution_timeout",
-                ),
-            )
+            result = await self._provider_call(task, phase, previous_result=previous_result)
             self._finish_provider_subagent(subagent_run.id, result)
             return result
         except Exception as exc:

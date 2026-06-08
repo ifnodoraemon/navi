@@ -606,6 +606,7 @@ class DelegateSpawnCapability:
                 ok=True,
                 action="approval",
                 observation=observation,
+                message=f"已创建后台任务 {task.id}。请审批以允许其执行。审批代码：{approval.code}",
                 run_id=task.id,
                 facts=facts,
                 terminal=True,

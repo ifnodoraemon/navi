@@ -11,7 +11,13 @@ from .provider import build_provider, ChatMessage
 from .runs import Run
 from .syscalls import ModelSyscallPlanner
 
-REACT_DISABLED_TOOLS = frozenset({"delegate.prepare", "delegate.run", "delegate.retry"})
+REACT_DISABLED_TOOLS = frozenset({
+    "delegate.prepare", "delegate.run", "delegate.retry", "delegate.spawn",
+    "delegate.status", "delegate.delete", "approval.request", "approval.resolve",
+    "watch.create", "watch.delete", "workflow.propose", "workflow.approve",
+    "workflow.run", "workflow.verify", "workflow.resume", "workflow.status",
+    "session.request_elevation", "ask.user"
+})
 
 from .provider import build_provider, ChatMessage, ChatProvider
 
@@ -44,12 +50,10 @@ class ReActRunner:
         
         observations: list[str] = []
         steps_taken: list[dict[str, Any]] = []
-        max_budget = 15
-        
         final_summary = ""
         exit_code = 1
         
-        for step in range(max_budget):
+        while True:
             planner_specs = registry.planner_specs(permission_ceiling=context.permission_ceiling)
             # Fake a conversation context with the task prompt
             conv_context = f"Task objective:\n{task.prompt}\n\nPreparation summary:\n{task.plan_summary or '(none)'}"
@@ -95,10 +99,7 @@ class ReActRunner:
                 final_summary = invoked.observation
                 exit_code = 0 if invoked.ok else 1
                 break
-                
-        if not final_summary and len(steps_taken) == max_budget:
-            final_summary = "Budget exhausted before completion."
-            
+
         protocol = ExecutionProtocol.internal_status(
             run_id=task.id,
             phase="execute",
