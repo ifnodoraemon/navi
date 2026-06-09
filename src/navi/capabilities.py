@@ -449,21 +449,17 @@ class ToolCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         result = self.gateway.call(self.spec.name, args)
-        observation = (
-            result.error
-            if not result.ok
-            else json.dumps(
-                {"capability": self.spec.name, "facts": result.facts},
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
+        observation = json.dumps(
+            {"capability": self.spec.name, "ok": result.ok, "facts": result.facts, "error": result.error},
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
         )
         return CapabilityResult(
             ok=result.ok,
             action="tool",
             observation=observation,
-            message=observation if not result.ok else "",
+            message=result.error if not result.ok else "",
             facts=result.facts,
         )
 
