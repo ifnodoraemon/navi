@@ -530,7 +530,7 @@ class DelegateSpawnCapability:
                 action="delegation",
                 observation="delegate.spawn requires an objective.",
                 message="delegate.spawn requires an objective.",
-                terminal=True,
+                terminal=False,
             )
         config = load_config(self.home)
         runs = RunStore(self.home)
@@ -648,7 +648,7 @@ class DelegatePrepareCapability:
                 action="delegation",
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
-                terminal=True,
+                terminal=False,
             )
         planned = await ExecutionService(self.home).plan_task(task)
         GoalStore(self.home).update_for_run(
@@ -741,7 +741,7 @@ class ApprovalRequestCapability:
                 action="approval",
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
-                terminal=True,
+                terminal=False,
             )
         approval = runs.create_approval(
             run_id=task.id,
@@ -812,7 +812,7 @@ class DelegateRunCapability:
                 action="delegation",
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
-                terminal=True,
+                terminal=False,
             )
         execution = ExecutionService(self.home)
         if not execution.execution_allowed(task):
@@ -821,7 +821,7 @@ class DelegateRunCapability:
                 action="delegation",
                 observation="execution grant missing",
                 message="execution grant missing",
-                terminal=True,
+                terminal=False,
             )
         queued = runs.update_run(task.id, status="queued") or task
         GoalStore(self.home).update_for_run(
@@ -863,7 +863,7 @@ class WatchCreateCapability:
                 action="watch",
                 observation="watch.create requires prompt.",
                 message="watch.create requires prompt.",
-                terminal=True,
+                terminal=False,
             )
         if kind == "once":
             next_run = _float_or_none(args.get("run_at"))
@@ -875,7 +875,7 @@ class WatchCreateCapability:
                     action="watch",
                     observation="watch.create kind=once requires run_at or run_at_text.",
                     message="watch.create kind=once requires run_at or run_at_text.",
-                    terminal=True,
+                    terminal=False,
                 )
             cron = "once"
         else:
@@ -886,7 +886,7 @@ class WatchCreateCapability:
                     action="watch",
                     observation="watch.create kind=recurring requires cron.",
                     message="watch.create kind=recurring requires cron.",
-                    terminal=True,
+                    terminal=False,
                 )
             try:
                 validate_cron(cron)
@@ -897,7 +897,7 @@ class WatchCreateCapability:
                     action="watch",
                     observation=f"Invalid cron: {exc}",
                     message=f"Invalid cron: {exc}",
-                    terminal=True,
+                    terminal=False,
                 )
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
@@ -956,7 +956,7 @@ class DelegateDeleteCapability:
                 action="delegation",
                 observation="remote delegate.delete can only delete failed delegation runs.",
                 message="remote delegate.delete can only delete failed delegation runs.",
-                terminal=True,
+                terminal=False,
             )
         deleted = runs.delete_run(run_id)
         if deleted is None:
@@ -965,7 +965,7 @@ class DelegateDeleteCapability:
                 action="delegation",
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
-                terminal=True,
+                terminal=False,
             )
         graph.delete(deleted.id)
         facts = {
@@ -989,7 +989,7 @@ class DelegateDeleteCapability:
                 action="delegation",
                 observation="delegate.delete bulk cleanup only supports status=failed.",
                 message="delegate.delete bulk cleanup only supports status=failed.",
-                terminal=True,
+                terminal=False,
             )
         raw_limit = args.get("limit")
         limit = (
@@ -1055,7 +1055,7 @@ class WatchDeleteCapability:
                 action="watch",
                 observation="watch.delete requires watch_id.",
                 message="watch.delete requires watch_id.",
-                terminal=True,
+                terminal=False,
             )
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
@@ -1066,7 +1066,7 @@ class WatchDeleteCapability:
                 action="watch",
                 observation=f"watch not found: {watch_id}",
                 message=f"watch not found: {watch_id}",
-                terminal=True,
+                terminal=False,
             )
         graph.delete(deleted.id)
         facts = {
@@ -1102,7 +1102,7 @@ class ApprovalResolveCapability:
                 action="approval",
                 observation="approval.resolve requires decision approve or reject.",
                 message="approval.resolve requires decision approve or reject.",
-                terminal=True,
+                terminal=False,
             )
         status = "approved" if decision == "approve" else "rejected"
         code = _arg_text(args, "code")
@@ -1145,7 +1145,7 @@ class ApprovalResolveCapability:
                 action="approval",
                 observation=message,
                 message=message,
-                terminal=True,
+                terminal=False,
                 facts={"approval_resolution": facts},
             )
         if approval.status == "expired":
@@ -1154,7 +1154,7 @@ class ApprovalResolveCapability:
                 action="approval",
                 observation="Approval code expired. Create a new delegation run.",
                 message="Approval code expired. Create a new delegation run.",
-                terminal=True,
+                terminal=False,
             )
         if status == "approved":
             task = runs.update_run(approval.run_id, status="queued")
@@ -1259,7 +1259,7 @@ class ExecutionRetryCapability:
                 action="execution",
                 observation="delegate.retry requires run_id.",
                 message="delegate.retry requires run_id.",
-                terminal=True,
+                terminal=False,
             )
         runs = RunStore(self.home)
         task = runs.get(run_id)
@@ -1269,7 +1269,7 @@ class ExecutionRetryCapability:
                 action="execution",
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
-                terminal=True,
+                terminal=False,
             )
         execution = ExecutionService(self.home)
         if not execution.execution_allowed(task):
@@ -1278,7 +1278,7 @@ class ExecutionRetryCapability:
                 action="execution",
                 observation="execution grant missing: approved approval or explicit L3 trust rule required",
                 message="execution grant missing: approved approval or explicit L3 trust rule required",
-                terminal=True,
+                terminal=False,
             )
         follow_up = _arg_text(args, "follow_up_prompt")
         retry_task = replace(
@@ -1318,7 +1318,7 @@ class WorkflowProposeCapability:
                 action="workflow",
                 observation="workflow.propose requires objective.",
                 message="workflow.propose requires objective.",
-                terminal=True,
+                terminal=False,
             )
         store = WorkflowStore(self.home)
         workspace = _resolve_workspace(context.workspace, default=self.project_dir)
@@ -1382,7 +1382,7 @@ class WorkflowApproveCapability:
                 action="workflow",
                 observation="workflow.approve requires decision approve or reject.",
                 message="workflow.approve requires decision approve or reject.",
-                terminal=True,
+                terminal=False,
             )
         store = WorkflowStore(self.home)
         workflow = store.get(workflow_id) if workflow_id else None
@@ -1430,7 +1430,7 @@ class WorkflowRunCapability:
                 action="workflow",
                 observation=f"workflow {workflow.id} is {workflow.status}; approve or resume only supported running states.",
                 message=f"workflow {workflow.id} is {workflow.status}; approve or resume only supported running states.",
-                terminal=True,
+                terminal=False,
                 facts={"workflow_id": workflow.id, "status": workflow.status},
             )
         store.update_status(
@@ -1779,7 +1779,7 @@ def _workflow_not_found(workflow_id: str) -> CapabilityResult:
         action="workflow",
         observation=f"workflow not found: {workflow_id}",
         message=f"workflow not found: {workflow_id}",
-        terminal=True,
+        terminal=False,
         facts={"workflow_id": workflow_id, "reason": "workflow_not_found"},
     )
 

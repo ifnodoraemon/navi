@@ -87,7 +87,7 @@ class ReActRunner:
             }
             steps_taken.append(step_record)
             
-            obs_text = f"Action: {syscall.tool}({json.dumps(syscall.args)})\nResult: {'SUCCESS' if invoked.ok else 'FAILED'}\nObservation: {invoked.observation}"
+            obs_text = f"Action: {syscall.tool}({json.dumps(syscall.args)})\nok: {invoked.ok}\nObservation: {invoked.observation}"
             observations.append(obs_text)
             
             if invoked.terminal:
