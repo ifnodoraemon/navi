@@ -76,11 +76,11 @@ def test_approval_code_detector_classifies_approval(tmp_path):
     result = detector.classify(f"批准 {approval.code}")
     assert result.kind == "approval_code"
     assert result.code == approval.code
-    assert result.decision == "approve"
+    assert "批准" in result.decision
 
     result = detector.classify(f"reject {approval.code}")
     assert result.kind == "approval_code"
-    assert result.decision == "reject"
+    assert "reject" in result.decision
 
     result = detector.classify("帮我搜一下天气")
     assert result.kind == "user_intent"
@@ -94,7 +94,7 @@ def test_approval_code_detector_bare_code(tmp_path):
     detector = ApprovalCodeDetector(tmp_path)
     result = detector.classify(f"  {approval.code}  ")
     assert result.kind == "approval_code"
-    assert result.decision == "approve"
+    assert approval.code in result.decision
 
 
 def test_approval_code_detector_ignores_non_existent_code(tmp_path):

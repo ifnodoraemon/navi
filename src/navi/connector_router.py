@@ -40,14 +40,13 @@ class ApprovalCodeDetector:
         if m:
             code = m.group(1)
             if self.runs.get_approval(code):
-                decision = "reject" if any(w in text.lower() for w in ("拒绝", "reject")) else "approve"
-                return Classification(kind="approval_code", code=code, decision=decision)
+                return Classification(kind="approval_code", code=code, decision=text)
 
         m = _BARE_CODE_RE.match(text)
         if m:
             code = m.group(1)
             if self.runs.get_approval(code):
-                return Classification(kind="approval_code", code=code, decision="approve")
+                return Classification(kind="approval_code", code=code, decision=text)
 
         return Classification(kind="user_intent")
 

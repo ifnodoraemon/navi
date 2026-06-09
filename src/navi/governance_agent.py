@@ -80,7 +80,8 @@ class GovernanceAgent:
             ))
 
     async def _on_approval_code(self, event: ApprovalCodeEvent) -> None:
-        status = "approved" if event.decision == "approve" else "rejected"
+        raw_text = event.decision.lower()
+        status = "rejected" if any(w in raw_text for w in ("拒绝", "reject", "deny", "no")) else "approved"
         approval = self.governance.resolve_code(
             code=event.code,
             sender_id=event.sender_id,

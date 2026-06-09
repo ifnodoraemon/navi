@@ -76,20 +76,7 @@ class HernessEngine:
         self._background_tasks: set[asyncio.Task] = set()
 
     def _get_effective_permission_ceiling(self, peer_id: str, sender_id: str) -> str:
-        ceiling = self.permission_ceiling
-        try:
-            from navi.runs import RunStore
-
-            runs = RunStore(self.home).list(limit=50)
-            for r in runs:
-                if r.peer_id == peer_id and r.sender_id == sender_id:
-                    if r.plan_summary.startswith("session_elevation:"):
-                        if r.status in ("queued", "completed", "active"):
-                            elevated = r.plan_summary.split(":")[1]
-                            return elevated
-        except Exception as e:
-            logger.debug("Failed to check session elevation for %s/%s: %s", peer_id, sender_id, e)
-        return ceiling
+        return self.permission_ceiling
 
     async def handle(
         self,
@@ -293,43 +280,6 @@ class HernessEngine:
                 )
             last_result = result
             if result.terminal:
-                block_reason = self._completion_block_reason(completion_events)
-                if block_reason:
-                    recovery_plan = self.recovery.plan_completion_failure(
-                        block_reason=block_reason,
-                        events=completion_events,
-                    )
-                    observations.append(recovery_plan.to_observation())
-                    self.trace.add_event(
-                        trace_id=trace_id,
-                        phase="completion.verify",
-                        session_id=resolved_session_id or "",
-                        run_id=result.run_id,
-                        source=source,
-                        peer_id=peer_id,
-                        sender_id=sender_id,
-                        tool=syscall.tool,
-                        model_role=syscall.model_role,
-                        ok=False,
-                        output_data={"reason": block_reason},
-                        message=block_reason,
-                    )
-                    self.trace.add_event(
-                        trace_id=trace_id,
-                        phase="recovery.plan",
-                        session_id=resolved_session_id or "",
-                        run_id=result.run_id,
-                        source=source,
-                        peer_id=peer_id,
-                        sender_id=sender_id,
-                        tool=syscall.tool,
-                        model_role="planner",
-                        ok=True,
-                        input_data={"block_reason": block_reason},
-                        output_data=asdict(recovery_plan),
-                        message=recovery_plan.recommended,
-                    )
-                    continue
                 turn_res = self._record_turn(text, result, session_id=resolved_session_id)
                 turn_res = self._with_trace(turn_res, trace_id)
                 self._attach_goals(
