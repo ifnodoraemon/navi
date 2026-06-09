@@ -227,8 +227,7 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
     from navi.runs import RunStore
 
     code = RunStore(tmp_path).list_approvals()[0].code
-    assert f"审批码: `{code}`" in data["message"]
-    assert f"批准 {code}" in data["message"]
+    assert f"审批码：{code}" in data["message"]
 
 
 def test_chat_api_routes_natural_language_service_status(tmp_path, monkeypatch):

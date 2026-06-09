@@ -570,9 +570,6 @@ class DelegateSpawnCapability:
             },
         )
 
-        # For non-auto_execute decisions (L2 approval flow), atomically create
-        # an approval request so the user can approve in the same turn without
-        # needing an extra LLM round-trip to call approval.request separately.
         if task.autonomy_level != "L3":
             approval = runs.create_approval(
                 run_id=task.id,
@@ -601,12 +598,11 @@ class DelegateSpawnCapability:
                     "expires_at": approval.expires_at,
                 },
             }
-            observation = json.dumps(facts, ensure_ascii=False, sort_keys=True)
             return CapabilityResult(
                 ok=True,
                 action="approval",
-                observation=observation,
-                message=f"后台任务已准备就绪 {task.id}。请审批以允许其执行。审批代码：{approval.code}",
+                observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+                message=f"后台任务已准备就绪 {task.id}。请审批以允许其执行。审批码：{approval.code}",
                 run_id=task.id,
                 facts=facts,
                 terminal=True,

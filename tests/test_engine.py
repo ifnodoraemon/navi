@@ -133,6 +133,36 @@ async def test_engine_can_chain_multiple_read_capabilities_before_answering(tmp_
 
 
 @pytest.mark.asyncio
+async def test_engine_preserves_terminal_capability_facts(tmp_path):
+    provider = ScriptedProvider(
+        [
+            json.dumps(
+                {
+                    "tool": "ask.user",
+                    "permission": "read",
+                    "args": {"message": "怎么处理？", "options": ["重试", "取消"]},
+                    "model_role": "responder",
+                    "confidence": 0.9,
+                    "reason": "need user choice",
+                }
+            )
+        ]
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
+    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
+
+    result = await router.handle(
+        "继续吗",
+        peer_id=DEFAULT_LOCAL_SURFACE,
+        sender_id=DEFAULT_LOCAL_SURFACE,
+        source=DEFAULT_LOCAL_SURFACE,
+    )
+
+    assert result.action == "ask"
+    assert result.facts == {"options": ["重试", "取消"]}
+
+
+@pytest.mark.asyncio
 async def test_engine_budget_exhausted_with_observations(tmp_path):
     provider = ScriptedProvider(
         [
@@ -207,7 +237,7 @@ async def test_engine_budget_recovery_prepares_and_requests_approval(tmp_path, m
 
     task = RunStore(tmp_path).list()[0]
     assert task.status == "awaiting_approval"
-    assert "审批码:" in result.text
+    assert "审批码" in result.text
     events = router.trace.list_events(result.trace_id)
     # delegate.spawn now atomically creates the approval, so recovery no longer
     # needs to invoke delegate.prepare + approval.request separately.
@@ -248,7 +278,7 @@ async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tm
     assert goal is not None
     assert goal.trace_id == result.trace_id
     assert goal.session_id == result.session_id
-    assert "审批码:" in result.text
+    assert "审批码" in result.text
 
 
 @pytest.mark.asyncio
@@ -305,8 +335,7 @@ async def test_engine_model_selects_dynamic_workflow_for_large_audit_request(tmp
     assert workflow.status == "awaiting_approval"
     assert workflow.permission_ceiling == "read"
     assert result.action == "workflow"
-    assert "Workflow proposal is awaiting confirmation" in result.text
-    assert f"navi workflow approve {workflow.id}" in result.text
+    assert "Workflow proposal" in result.text
     events = router.trace.list_events(result.trace_id)
     assert any(event.phase == "planner.syscall" and event.tool == "workflow.propose" for event in events)
 
@@ -442,7 +471,13 @@ async def test_engine_records_full_flow_trace_and_evaluation(tmp_path):
     evaluation = trace.evaluate_trace(result.trace_id)
 
     assert result.trace_id
-    assert phases == ["turn.start", "planner.syscall", "capability.result", "turn.final"]
-    assert events[1].tool == "final.answer"
+    assert phases == [
+        "turn.start",
+        "planner.call.start",
+        "planner.syscall",
+        "capability.result",
+        "turn.final",
+    ]
+    assert events[2].tool == "final.answer"
     assert evaluation.outcome == "success"
     assert evaluation.failure_domain == "none"

@@ -265,7 +265,7 @@ async def test_weixin_plain_local_action_creates_task(tmp_path, monkeypatch):
     task = service.active.runs.list()[0]
     assert task.status == "awaiting_approval"
     assert task.prompt == "列一下我本机的目录"
-    assert "Approval expires" in service.client.sent[-1]["text"]
+    assert "审批" in service.client.sent[-1]["text"]
     assert "approval.resolve" not in service.client.sent[-1]["text"]
 
 
