@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import secrets
 from dataclasses import asdict
@@ -27,7 +26,6 @@ from .paths import ensure_home
 from .runs import RunStore
 from .subagents import SubagentRunStore
 from .trace import TraceStore
-from .trust import TrustStore
 from .workflows import WorkflowStore, workflow_facts
 from . import __version__
 
@@ -176,6 +174,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             "message": result.text,
             "action": result.action,
             "run_id": result.run_id,
+            "facts": result.facts or {},
         }
 
     @app.get(api_path("sessions"))
@@ -492,9 +491,6 @@ def create_app(home: Path | None = None) -> FastAPI:
     def graph() -> dict:
         return {"nodes": [node.__dict__ for node in GraphStore(home).list()]}
 
-    @app.get(api_path("trust_rules"))
-    def trust_rules() -> dict:
-        return {"trust_rules": [rule.__dict__ for rule in TrustStore(home).list()]}
 
     @app.get(api_path("traces"))
     def traces() -> dict:

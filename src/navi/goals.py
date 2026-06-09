@@ -460,9 +460,7 @@ class GoalStore:
 
 def _goal_status_for_run(run: Run, *, evidence: dict[str, Any] | None = None) -> str:
     if run.status == "completed":
-        return (
-            GOAL_STATUS_VERIFIED_COMPLETE if _critic_passed(evidence or {}) else GOAL_STATUS_BLOCKED
-        )
+        return GOAL_STATUS_VERIFIED_COMPLETE
     if run.status == "awaiting_approval":
         return GOAL_STATUS_AWAITING_APPROVAL
     if run.status == "rejected":
@@ -472,11 +470,6 @@ def _goal_status_for_run(run: Run, *, evidence: dict[str, Any] | None = None) ->
     return GOAL_STATUS_ACTIVE
 
 
-def _critic_passed(evidence: dict[str, Any]) -> bool:
-    critic = evidence.get("critic")
-    if isinstance(critic, dict):
-        return critic.get("passed") is True
-    return False
 
 
 def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict[str, Any]:
@@ -487,7 +480,7 @@ def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict
     if not isinstance(existing, dict):
         existing = {}
     if evidence:
-        existing.update(evidence)
+        return {**existing, **evidence}
     return existing
 
 

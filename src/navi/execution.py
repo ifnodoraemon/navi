@@ -6,27 +6,29 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import load_config
-from .critic import CriticDecision, review_execution_protocol
 from .governance import GovernanceEngine
 from .evolution import EvolutionLedger
 from .goals import GoalStore
 from .json_utils import parse_first_json_object
+from .lifecycle import (
+    RUN_STATUS_BLOCKED,
+    RUN_STATUS_PREPARING,
+    RUN_STATUS_QUEUED,
+    RUN_STATUS_RUNNING,
+    execute_finalize_decision,
+    execution_ledger_reason,
+    prepare_run_status,
+)
 from .provider import ChatMessage, ModelPool, build_provider
 from .runs import Run, RunStore
 from .subagents import SubagentRunStore
+from .tools import ACTUATOR_CONTEXT
 
 INTERNAL_EXECUTION_PROVIDER = "navi"
 EXECUTION_PROTOCOL_VERSION = "navi.actuator.v1"
-ACTUATOR_DISABLED_TOOLS = frozenset({
-    "delegate.prepare", "delegate.run", "delegate.retry", "delegate.spawn",
-    "delegate.status", "delegate.delete", "approval.request", "approval.resolve",
-    "watch.create", "watch.delete", "workflow.propose", "workflow.approve",
-    "workflow.run", "workflow.verify", "workflow.resume", "workflow.status",
-    "session.request_elevation"
-})
 EXECUTION_STEP_BUDGET = 5
 SUBAGENT_PLANNER_ROLE = "planner"
 SUBAGENT_EXECUTOR_ROLE = "executor"
@@ -302,7 +304,7 @@ def _execution_protocol_instruction(phase: str) -> str:
     return (
         f"Produce a {phase} step plan with at most {EXECUTION_STEP_BUDGET} steps. "
         "Each step action must be a capability call with a declared tool, permission, and args; "
-        "examples include `final.answer`, `provider.config`, `filesystem.list`, `file.read`, `file.write`, "
+        "examples include `final.answer`, `provider.config`, `directory.list`, `file.read`, `file.write`, "
         "`shell.run`, `test.run`, `git.status`, `delegate.status`, "
         "`delegate.spawn`, `approval.request`, `approval.resolve`, `watch.create`, `delegate.delete`, and `watch.delete`. "
         "Do not describe an action that is not a capability call. "
@@ -460,14 +462,14 @@ class ActuatorRunner:
         *,
         before_state: dict[str, Any],
     ) -> ExecutionProtocol:
-        from .capabilities import CapabilityContext, CapabilityRegistry
+        from .capabilities import CapabilityContext, build_capability_registry
 
         workspace = _task_workspace(task)
-        registry = CapabilityRegistry(
+        registry = build_capability_registry(
             home=self.home,
             project_dir=workspace,
-            disabled_tools=set(ACTUATOR_DISABLED_TOOLS),
             permission_ceiling="write",
+            execution_context=ACTUATOR_CONTEXT,
         )
         context = CapabilityContext(
             home=self.home,
@@ -711,64 +713,14 @@ def _run_verification_check(
     attempt: int,
 ) -> dict[str, Any]:
     check_type = str(check.get("type") or "").strip()
-    if check_type == "file.exists":
-        path, error = _verified_workspace_path(check.get("path"), workspace=workspace)
-        ok = bool(path and path.exists() and path.is_file())
-        return _verification_evidence(
-            step_index,
-            index,
-            check_type,
-            ok=ok,
-            facts={"path": str(path) if path else ""},
-            error=error or ("" if ok else "file does not exist"),
-            attempt=attempt,
-        )
-    if check_type == "file.contains":
-        path, error = _verified_workspace_path(check.get("path"), workspace=workspace)
-        expected = str(check.get("text") or "")
-        content = ""
-        if path and path.exists() and path.is_file():
-            try:
-                content = path.read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                error = str(exc)
-        ok = bool(path and expected and expected in content and not error)
-        return _verification_evidence(
-            step_index,
-            index,
-            check_type,
-            ok=ok,
-            facts={
-                "path": str(path) if path else "",
-                "text_present": expected in content if expected else False,
-            },
-            error=error or ("" if ok else "expected text not found"),
-            attempt=attempt,
-        )
-    if check_type == "git.diff":
-        expected = str(check.get("expected") or "changed").strip().lower()
-        status = _git_porcelain_status(workspace)
-        changed = bool(status["stdout"].strip())
-        ok = (expected == "changed" and changed) or (expected == "clean" and not changed)
-        return _verification_evidence(
-            step_index,
-            index,
-            check_type,
-            ok=ok and status["exit_code"] == 0,
-            facts={"expected": expected, "changed": changed, **status},
-            error=status["stderr"] or ("" if ok else f"git diff expectation not met: {expected}"),
-            attempt=attempt,
-        )
-    if check_type == "test.passed":
-        test_results = [item for item in evidence if item.get("tool") == "test.run"]
-        ok = bool(test_results) and bool(test_results[-1].get("ok"))
-        return _verification_evidence(
-            step_index,
-            index,
-            check_type,
-            ok=ok,
-            facts={"test_result_count": len(test_results)},
-            error="" if ok else "no passing test.run result found",
+    handler = VERIFICATION_CHECK_HANDLERS.get(check_type)
+    if handler is not None:
+        return handler(
+            check=check,
+            evidence=evidence,
+            workspace=workspace,
+            step_index=step_index,
+            index=index,
             attempt=attempt,
         )
     return _verification_evidence(
@@ -779,6 +731,124 @@ def _run_verification_check(
         error=f"unsupported verification check: {check_type or 'missing'}",
         attempt=attempt,
     )
+
+
+VerificationCheckHandler = Callable[
+    ...,
+    dict[str, Any],
+]
+
+
+def _verify_file_exists(
+    *,
+    check: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    workspace: Path,
+    step_index: int,
+    index: int,
+    attempt: int,
+) -> dict[str, Any]:
+    del evidence
+    path, error = _verified_workspace_path(check.get("path"), workspace=workspace)
+    ok = bool(path and path.exists() and path.is_file())
+    return _verification_evidence(
+        step_index,
+        index,
+        "file.exists",
+        ok=ok,
+        facts={"path": str(path) if path else ""},
+        error=error or ("" if ok else "file does not exist"),
+        attempt=attempt,
+    )
+
+
+def _verify_file_contains(
+    *,
+    check: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    workspace: Path,
+    step_index: int,
+    index: int,
+    attempt: int,
+) -> dict[str, Any]:
+    del evidence
+    path, error = _verified_workspace_path(check.get("path"), workspace=workspace)
+    expected = str(check.get("text") or "")
+    content = ""
+    if path and path.exists() and path.is_file():
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            error = str(exc)
+    ok = bool(path and expected and expected in content and not error)
+    return _verification_evidence(
+        step_index,
+        index,
+        "file.contains",
+        ok=ok,
+        facts={
+            "path": str(path) if path else "",
+            "text_present": expected in content if expected else False,
+        },
+        error=error or ("" if ok else "expected text not found"),
+        attempt=attempt,
+    )
+
+
+def _verify_git_diff(
+    *,
+    check: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    workspace: Path,
+    step_index: int,
+    index: int,
+    attempt: int,
+) -> dict[str, Any]:
+    del evidence
+    expected = str(check.get("expected") or "changed").strip().lower()
+    status = _git_porcelain_status(workspace)
+    changed = bool(status["stdout"].strip())
+    ok = (expected == "changed" and changed) or (expected == "clean" and not changed)
+    return _verification_evidence(
+        step_index,
+        index,
+        "git.diff",
+        ok=ok and status["exit_code"] == 0,
+        facts={"expected": expected, "changed": changed, **status},
+        error=status["stderr"] or ("" if ok else f"git diff expectation not met: {expected}"),
+        attempt=attempt,
+    )
+
+
+def _verify_test_passed(
+    *,
+    check: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    workspace: Path,
+    step_index: int,
+    index: int,
+    attempt: int,
+) -> dict[str, Any]:
+    del check, workspace
+    test_results = [item for item in evidence if item.get("tool") == "test.run"]
+    ok = bool(test_results) and bool(test_results[-1].get("ok"))
+    return _verification_evidence(
+        step_index,
+        index,
+        "test.passed",
+        ok=ok,
+        facts={"test_result_count": len(test_results)},
+        error="" if ok else "no passing test.run result found",
+        attempt=attempt,
+    )
+
+
+VERIFICATION_CHECK_HANDLERS: dict[str, VerificationCheckHandler] = {
+    "file.exists": _verify_file_exists,
+    "file.contains": _verify_file_contains,
+    "git.diff": _verify_git_diff,
+    "test.passed": _verify_test_passed,
+}
 
 
 def _verification_evidence(
@@ -1188,8 +1258,8 @@ class NaviExecutionProvider:
         registry = CapabilityRegistry(
             home=self.home,
             project_dir=_task_workspace(task),
-            disabled_tools=set(ACTUATOR_DISABLED_TOOLS),
             permission_ceiling="write",
+            execution_context=ACTUATOR_CONTEXT,
         )
         tools = registry.planner_specs(permission_ceiling="write")
         manifest_json = json.dumps([asdict(t) for t in tools], ensure_ascii=False)
@@ -1222,8 +1292,8 @@ class NaviExecutionProvider:
         registry = CapabilityRegistry(
             home=self.home,
             project_dir=_task_workspace(task),
-            disabled_tools=set(ACTUATOR_DISABLED_TOOLS),
             permission_ceiling="write",
+            execution_context=ACTUATOR_CONTEXT,
         )
         tools = registry.planner_specs(permission_ceiling="write")
         manifest_json = json.dumps([asdict(t) for t in tools], ensure_ascii=False)
@@ -1381,16 +1451,16 @@ class ExecutionService:
         )
 
     async def plan_task(self, task: Run) -> Run:
-        self.runs.update_run(task.id, status="preparing")
+        self.runs.update_run(task.id, status=RUN_STATUS_PREPARING)
         result = await self._provider_call_with_timeout(task, "prepare")
         if result.exit_code == 0:
             result = await self.actuator.run_task(task, result)
         self._log(task, result)
         task_after_actuator = self.runs.get(task.id)
-        if task_after_actuator and task_after_actuator.status == "awaiting_approval":
-            status = "awaiting_approval"
-        else:
-            status = "prepared" if result.exit_code == 0 else "failed"
+        status = prepare_run_status(
+            exit_code=result.exit_code,
+            current_status=task_after_actuator.status if task_after_actuator else "",
+        )
         updated = (
             self.runs.update_run(
                 task.id,
@@ -1407,9 +1477,34 @@ class ExecutionService:
         return updated
 
     async def execute_task(self, task: Run) -> Run:
-        # Record before state for rollback support
+        before_state = self._execution_before_state(task)
+        self.runs.update_run(task.id, status=RUN_STATUS_RUNNING)
+        result = await self._provider_call_with_timeout(task, "execute")
+        return self._finalize_execution_result(
+            task,
+            result,
+            before_state=before_state,
+            reason_exit_code=result.exit_code,
+        )
+
+    async def execute_actuator_protocol(self, task: Run, provider_result: ExecutionResult) -> Run:
+        before_state = self._execution_before_state(task)
+        self.runs.update_run(task.id, status=RUN_STATUS_RUNNING)
+        result = (
+            await self.actuator.run_task(task, provider_result)
+            if provider_result.exit_code == 0
+            else provider_result
+        )
+        return self._finalize_execution_result(
+            task,
+            result,
+            before_state=before_state,
+            reason_exit_code=result.exit_code,
+        )
+
+    def _execution_before_state(self, task: Run) -> str:
         task_before = self.runs.get(task.id)
-        before_state = json.dumps(
+        return json.dumps(
             {
                 "status": task_before.status if task_before else "queued",
                 "result_summary": task_before.result_summary if task_before else "",
@@ -1418,49 +1513,26 @@ class ExecutionService:
             sort_keys=True,
         )
 
-        self.runs.update_run(task.id, status="running")
-
-        result = await self._provider_call_with_timeout(task, "execute")
-        
-        import os
-        if result.exit_code == 0 and os.environ.get("NAVI_USE_LEGACY_EXECUTOR") == "true":
-            result = await self.actuator.run_task(task, result)
-
+    def _finalize_execution_result(
+        self,
+        task: Run,
+        result: ExecutionResult,
+        *,
+        before_state: str,
+        reason_exit_code: int,
+    ) -> Run:
         self._log(task, result)
 
-        critic_run = self.subagents.start(
-            role="critic",
-            phase="verify",
-            run_id=task.id,
-            command=["navi", "subagent", "critic", "verify", task.id],
-            input_data={
-                "protocol_phase": result.protocol.phase,
-                "protocol_plan_id": result.protocol.plan_id,
-            },
+        finalize = execute_finalize_decision(
+            exit_code=result.exit_code,
+            stderr=result.stderr,
         )
-        critic = review_execution_protocol(result.protocol)
-        self.subagents.finish(
-            critic_run.id,
-            status="completed" if critic.passed else "failed",
-            output_data={
-                "findings": critic.findings,
-                "recommendation": critic.recommendation,
-                "evidence": critic.evidence,
-            },
-            error="" if critic.passed else "; ".join(critic.findings),
-        )
-        self._log_critic_decision(task, critic)
-
-        status = "completed" if result.exit_code == 0 and critic.passed else "failed"
-        error = "" if status == "completed" else result.stderr
-        if result.exit_code == 0 and not critic.passed:
-            error = "critic gate blocked completion: " + "; ".join(critic.findings)
         updated_task = (
             self.runs.update_run(
                 task.id,
-                status=status,
+                status=finalize.status,
                 result_summary=result.summary,
-                error=error,
+                error=finalize.error,
             )
             or task
         )
@@ -1479,7 +1551,7 @@ class ExecutionService:
             run_id=task.id,
             target_type="run_execution",
             target_id=task.id,
-            reason=f"run execution {'completed' if result.exit_code == 0 else 'failed'}",
+            reason=execution_ledger_reason(reason_exit_code),
             before=before_state,
             after=after_state,
         )
@@ -1490,8 +1562,6 @@ class ExecutionService:
                 "run_status": updated_task.status,
                 "phase": "execute",
                 "summary": updated_task.result_summary,
-                "critic": critic.evidence,
-                "critic_findings": critic.findings,
             },
         )
 
@@ -1504,7 +1574,7 @@ class ExecutionService:
         watch_task = Run(
             id="",
             title=prompt[:120],
-            status="running",
+            status=RUN_STATUS_RUNNING,
             created_at=time.time(),
             updated_at=time.time(),
             kind="watch",
@@ -1550,11 +1620,11 @@ class ExecutionService:
 
     async def process_pending_once(self, *, limit: int = 3) -> list[Run]:
         completed: list[Run] = []
-        for task in self.runs.list_by_status("queued", limit=limit):
+        for task in self.runs.list_by_status(RUN_STATUS_QUEUED, limit=limit):
             if not self._execution_allowed(task):
                 blocked = self.runs.update_run(
                     task.id,
-                    status="blocked",
+                    status=RUN_STATUS_BLOCKED,
                     error="execution grant missing: approved approval or explicit L3 trust rule required",
                 )
                 if blocked:
@@ -1597,28 +1667,7 @@ class ExecutionService:
             ended_at=result.ended_at,
         )
 
-    def _log_critic_decision(self, task: Run, decision: CriticDecision) -> None:
-        now = time.time()
-        self.runs.add_execution_log(
-            run_id=task.id,
-            provider=INTERNAL_EXECUTION_PROVIDER,
-            phase="critic",
-            command=" ".join(["navi", "subagent", "critic", "verify", task.id]),
-            stdout=json.dumps(
-                {
-                    "passed": decision.passed,
-                    "findings": decision.findings,
-                    "recommendation": decision.recommendation,
-                    "evidence": decision.evidence,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-            stderr="" if decision.passed else "; ".join(decision.findings),
-            exit_code=0 if decision.passed else 1,
-            started_at=now,
-            ended_at=now,
-        )
+
 
     async def _provider_call(self, task: Run, phase: str, previous_result: ExecutionResult | None = None) -> ExecutionResult:
         if self.config.mock and getattr(self, "_force_mock_result", True) and not getattr(self, "_test_disable_provider_mock", False):
@@ -1631,11 +1680,7 @@ class ExecutionService:
             return NaviExecutionProvider.mock_result(task, phase, text)
         if phase == "prepare":
             return await self.provider.plan(task)
-        
-        import os
-        if os.environ.get("NAVI_USE_LEGACY_EXECUTOR") == "true":
-            return await self.provider.execute(task, previous_result=previous_result)
-            
+
         from .react_runner import ReActRunner
         react_runner = ReActRunner(home=self.home, provider=self.provider.provider)
         return await react_runner.run_task(task)
@@ -1664,7 +1709,7 @@ class ExecutionService:
                 phase=phase,
                 command=["navi", "internal", "--error", phase, task.id],
                 stdout="",
-                stderr=str(exc),
+                stderr=repr(exc),
                 exit_code=1,
                 started_at=started,
                 ended_at=time.time(),
@@ -1672,7 +1717,7 @@ class ExecutionService:
                     run_id=task.id,
                     phase=phase,
                     status="failed",
-                    summary=str(exc),
+                    summary=repr(exc),
                     reason="execution provider raised an unexpected error",
                     action_kind="execution_error",
                 ),

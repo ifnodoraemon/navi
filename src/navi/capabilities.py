@@ -23,8 +23,7 @@ from .graph import GraphStore
 from .runs import RunStore
 from .safeguards import capability_safeguard_facts
 from .subagents import SubagentRunStore
-from .tools import ToolSpec, build_tool_gateway
-from .trust import TrustStore
+from .tools import TURN_CONTEXT, WORKFLOW_STEP_CONTEXT, ToolSpec, build_tool_gateway
 from .workflows import (
     STEP_STATUS_COMPLETED,
     STEP_STATUS_FAILED,
@@ -32,16 +31,17 @@ from .workflows import (
     STEP_STATUS_RUNNING,
     WORKFLOW_STATUS_APPROVED,
     WORKFLOW_STATUS_AWAITING_APPROVAL,
-    WORKFLOW_STATUS_BLOCKED,
-    WORKFLOW_STATUS_COMPLETED,
-    WORKFLOW_STATUS_INTERRUPTED,
     WORKFLOW_STATUS_REJECTED,
     WORKFLOW_STATUS_RUNNING,
     WORKFLOW_STATUS_VERIFIED_COMPLETE,
     Workflow,
     WorkflowStep,
     WorkflowStore,
+    workflow_batch_transition,
+    workflow_can_run,
     workflow_facts,
+    workflow_idle_transition,
+    workflow_verification_decision,
 )
 
 logger = logging.getLogger("navi.capabilities")
@@ -117,6 +117,7 @@ class CapabilityRegistry:
         disabled_tools: set[str] | None = None,
         disabled_capability_classes: frozenset[str] | frozenset = frozenset(),
         permission_ceiling: str = "write",
+        execution_context: str = TURN_CONTEXT,
     ):
         self.home = home
         self.allow_sources = allow_sources
@@ -124,6 +125,7 @@ class CapabilityRegistry:
         self.disabled_tools = disabled_tools or set()
         self.disabled_capability_classes = disabled_capability_classes
         self.permission_ceiling = permission_ceiling
+        self.execution_context = execution_context
         self.gateway = build_tool_gateway(
             home,
             project_dir=project_dir,
@@ -203,6 +205,14 @@ class CapabilityRegistry:
                 message=f"capability not found: {name}",
                 terminal=True,
             )
+        if not handler.spec.available_in(self.execution_context):
+            return CapabilityResult(
+                ok=False,
+                action="capability_error",
+                observation=f"capability {name} is not available in execution context {self.execution_context}",
+                message=f"capability {name} is not available in execution context {self.execution_context}",
+                terminal=True,
+            )
         if not permission_allows(permission, context.permission_ceiling):
             return CapabilityResult(
                 ok=False,
@@ -273,9 +283,9 @@ class CapabilityRegistry:
             handlers.update(provider.capabilities())
 
         def _is_class_blocked(name: str) -> bool:
-            for cls in self.disabled_capability_classes:
-                if name.startswith(f"{cls}."):
-                    return True
+            spec = handlers[name].spec
+            if spec.capability_class in self.disabled_capability_classes:
+                return True
             return False
 
         filtered = {
@@ -286,6 +296,7 @@ class CapabilityRegistry:
             and not _is_class_blocked(name)
             and (self.allow_sources is None or handler.spec.source in self.allow_sources)
             and permission_allows(handler.spec.permission, self.permission_ceiling)
+            and handler.spec.available_in(self.execution_context)
         }
         tools_list = filtered.get("tools.list")
         if tools_list is not None:
@@ -529,14 +540,7 @@ class DelegateSpawnCapability:
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         workspace = _resolve_workspace(context.workspace, default=self.project_dir)
-        from .provider import build_provider
 
-        decision = await GovernanceEngine(self.home).decide_task(
-            prompt=prompt,
-            sender_id=context.sender_id,
-            workspace=workspace,
-            provider=build_provider(config.model),
-        )
         task = runs.create(
             title=prompt[:120],
             prompt=prompt,
@@ -546,9 +550,9 @@ class DelegateSpawnCapability:
             sender_id=context.sender_id,
             provider=config.execution.provider,
             workspace=workspace,
-            autonomy_level=decision.level,
-            trust_rule_id=decision.rule_id,
-            why_now=f"trigger=model_capability; reason={decision.why}; autonomy={decision.level}",
+            autonomy_level="L2",
+            trust_rule_id="",
+            why_now="trigger=model_capability",
         )
         graph.upsert(
             "DelegationRun",
@@ -573,7 +577,7 @@ class DelegateSpawnCapability:
         # For non-auto_execute decisions (L2 approval flow), atomically create
         # an approval request so the user can approve in the same turn without
         # needing an extra LLM round-trip to call approval.request separately.
-        if decision.action != "auto_execute":
+        if task.autonomy_level != "L3":
             approval = runs.create_approval(
                 run_id=task.id,
                 peer_id=context.peer_id,
@@ -606,7 +610,7 @@ class DelegateSpawnCapability:
                 ok=True,
                 action="approval",
                 observation=observation,
-                message=f"已创建后台任务 {task.id}。请审批以允许其执行。审批代码：{approval.code}",
+                message=f"后台任务已准备就绪 {task.id}。请审批以允许其执行。审批代码：{approval.code}",
                 run_id=task.id,
                 facts=facts,
                 terminal=True,
@@ -1132,7 +1136,6 @@ class ApprovalResolveCapability:
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
         runs = RunStore(self.home)
         governance = GovernanceEngine(self.home)
-        trust = TrustStore(self.home)
         approval = self._resolve(
             governance, code=code, run_id=run_id, sender_id=context.sender_id, status=status
         )
@@ -1186,7 +1189,7 @@ class ApprovalResolveCapability:
             )
         task = runs.update_run(approval.run_id, status="rejected")
         if task:
-            await trust.record_failure(task)
+            # trust.record_failure was removed
             GoalStore(self.home).update_for_run(
                 task,
                 evidence={
@@ -1425,12 +1428,7 @@ class WorkflowRunCapability:
         workflow = store.get(workflow_id) if workflow_id else None
         if workflow is None:
             return _workflow_not_found(workflow_id)
-        allowed_states = {
-            WORKFLOW_STATUS_APPROVED,
-            WORKFLOW_STATUS_RUNNING,
-            WORKFLOW_STATUS_INTERRUPTED,
-        }
-        if workflow.status not in allowed_states:
+        if not workflow_can_run(workflow.status):
             return CapabilityResult(
                 ok=False,
                 action="workflow",
@@ -1460,41 +1458,24 @@ class WorkflowRunCapability:
                 failed += 1
                 break
         workflow = store.get(workflow.id) or workflow
-        if failed:
-            workflow = (
-                store.update_status(
-                    workflow.id,
-                    status=WORKFLOW_STATUS_BLOCKED,
-                    blocked_reason="one or more workflow steps failed",
-                    evidence={"completed_in_batch": completed, "failed_in_batch": failed},
-                    event_type="workflow.blocked",
-                )
-                or workflow
+        pending_count = len(
+            [step for step in store.list_steps(workflow.id) if step.status == STEP_STATUS_PENDING]
+        )
+        transition = workflow_batch_transition(
+            completed=completed,
+            failed=failed,
+            pending_count=pending_count,
+        )
+        workflow = (
+            store.update_status(
+                workflow.id,
+                status=transition.status,
+                blocked_reason=transition.blocked_reason,
+                evidence=transition.evidence,
+                event_type=transition.event_type,
             )
-        else:
-            pending = [
-                step for step in store.list_steps(workflow.id) if step.status == STEP_STATUS_PENDING
-            ]
-            if not pending:
-                workflow = (
-                    store.update_status(
-                        workflow.id,
-                        status=WORKFLOW_STATUS_COMPLETED,
-                        evidence={"completed_in_batch": completed},
-                        event_type="workflow.completed",
-                    )
-                    or workflow
-                )
-            else:
-                workflow = (
-                    store.update_status(
-                        workflow.id,
-                        status=WORKFLOW_STATUS_INTERRUPTED,
-                        evidence={"completed_in_batch": completed, "pending_count": len(pending)},
-                        event_type="workflow.interrupted",
-                    )
-                    or workflow
-                )
+            or workflow
+        )
         facts = {
             **_transition_facts("workflow", workflow.id, "updated"),
             "workflow_id": workflow.id,
@@ -1533,10 +1514,6 @@ class WorkflowRunCapability:
                 tool_name = str(call.get("tool") or "").strip()
                 if not tool_name:
                     continue
-                if tool_name.startswith("workflow."):
-                    raise ValueError(
-                        "workflow steps cannot call workflow.* capabilities recursively"
-                    )
                 if allowed_tools and tool_name not in allowed_tools:
                     raise ValueError(f"{tool_name} is not declared in step allowed_tools")
                 requested_permission = str(call.get("permission") or "read")
@@ -1548,7 +1525,13 @@ class WorkflowRunCapability:
                     self.home,
                     project_dir=Path(workflow.workspace),
                     permission_ceiling=workflow.permission_ceiling,
+                    execution_context=WORKFLOW_STEP_CONTEXT,
                 )
+                spec = registry.get(tool_name)
+                if spec is None:
+                    raise ValueError(
+                        f"{tool_name} is not available in execution context {WORKFLOW_STEP_CONTEXT}"
+                    )
                 capability_result = await registry.invoke(
                     tool_name,
                     call.get("args") if isinstance(call.get("args"), dict) else {},
@@ -1601,13 +1584,14 @@ class WorkflowRunCapability:
 
     def _finish_if_possible(self, store: WorkflowStore, workflow: Workflow) -> CapabilityResult:
         counts = _workflow_counts(store, workflow)
-        if counts["pending_count"] == 0 and counts["failed_count"] == 0:
+        transition = workflow_idle_transition(counts)
+        if transition is not None:
             workflow = (
                 store.update_status(
                     workflow.id,
-                    status=WORKFLOW_STATUS_COMPLETED,
-                    evidence=counts,
-                    event_type="workflow.completed",
+                    status=transition.status,
+                    evidence=transition.evidence,
+                    event_type=transition.event_type,
                 )
                 or workflow
             )
@@ -1645,35 +1629,23 @@ class WorkflowVerifyCapability:
             command=["navi", "workflow", "verify", workflow.id],
             input_data={"workflow_id": workflow.id, "strategy": workflow.verification_strategy},
         )
-        steps = store.list_steps(workflow.id)
-        failed_steps = [step for step in steps if step.status != STEP_STATUS_COMPLETED]
-        empty_evidence = [step.id for step in steps if not _json_dict(step.evidence_json)]
-        passed = (
-            workflow.status == WORKFLOW_STATUS_COMPLETED and not failed_steps and not empty_evidence
+        decision = workflow_verification_decision(
+            workflow=workflow,
+            steps=store.list_steps(workflow.id),
         )
-        blocked_reason = ""
-        if not passed:
-            blocked_reason = "workflow verifier requires completed workflow, completed steps, and non-empty step evidence"
-        output = {
-            "workflow_id": workflow.id,
-            "passed": passed,
-            "failed_steps": [step.id for step in failed_steps],
-            "empty_evidence_steps": empty_evidence,
-        }
         subagents.finish(
             verifier.id,
-            status="completed" if passed else "failed",
-            output_data=output,
-            error=blocked_reason,
+            status="completed" if decision.passed else "failed",
+            output_data=decision.output,
+            error=decision.blocked_reason,
         )
-        status = WORKFLOW_STATUS_VERIFIED_COMPLETE if passed else WORKFLOW_STATUS_BLOCKED
         updated = (
             store.update_status(
                 workflow.id,
-                status=status,
-                blocked_reason=blocked_reason,
-                evidence={"verifier": output, "verifier_subagent_id": verifier.id},
-                event_type="workflow.verified" if passed else "workflow.verifier_blocked",
+                status=decision.status,
+                blocked_reason=decision.blocked_reason,
+                evidence={"verifier": decision.output, "verifier_subagent_id": verifier.id},
+                event_type=decision.event_type,
             )
             or workflow
         )
@@ -1681,8 +1653,8 @@ class WorkflowVerifyCapability:
             **_transition_facts("workflow", workflow.id, "updated"),
             "workflow_id": workflow.id,
             "status": updated.status,
-            "verifier_passed": passed,
-            "blocked_reason": blocked_reason,
+            "verifier_passed": decision.passed,
+            "blocked_reason": decision.blocked_reason,
         }
         return _fact_result("workflow", facts, run_id=workflow.id)
 
@@ -1716,6 +1688,7 @@ def build_capability_registry(
     allowed_tools: set[str] | None = None,
     disabled_tools: set[str] | None = None,
     permission_ceiling: str = "write",
+    execution_context: str = TURN_CONTEXT,
 ) -> CapabilityRegistry:
     return CapabilityRegistry(
         home=home,
@@ -1724,6 +1697,7 @@ def build_capability_registry(
         allowed_tools=allowed_tools,
         disabled_tools=disabled_tools,
         permission_ceiling=permission_ceiling,
+        execution_context=execution_context,
     )
 
 

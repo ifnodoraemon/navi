@@ -2,13 +2,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from .runs import Approval, Run, RunStore
-from .trust import TrustDecision, TrustStore
-
-if TYPE_CHECKING:
-    from .provider import ModelPool
 
 
 logger = logging.getLogger("navi.governance")
@@ -20,28 +15,6 @@ class GovernanceEngine:
     def __init__(self, home: Path):
         self.home = home
         self.runs = RunStore(home)
-        self.trust = TrustStore(home)
-
-    async def decide_task(
-        self, *, prompt: str, sender_id: str, workspace: str, provider: ModelPool | None = None
-    ) -> TrustDecision:
-        decision = await self.trust.decide(
-            prompt=prompt, sender_id=sender_id, workspace=workspace, provider=provider
-        )
-        logger.info(
-            f"Trust decision for sender {sender_id} in workspace {workspace}: {decision.level}"
-        )
-        from .evolution import EvolutionLedger
-        import json
-        EvolutionLedger(self.home).record(
-            run_id=f"trust:{sender_id}",
-            target_type="trust_decision",
-            target_id=sender_id,
-            reason=f"Trust evaluation for prompt '{prompt[:50]}...'",
-            before="unknown",
-            after=json.dumps({"level": decision.level, "why": decision.why}, default=str),
-        )
-        return decision
 
     def execution_allowed(self, task: Run) -> bool:
         from .evolution import EvolutionLedger
@@ -79,7 +52,7 @@ class GovernanceEngine:
                     for action in (step.get("actions") or []):
                         tool_name = action.get("tool")
                         if tool_name:
-                            spec = registry.get_spec(tool_name)
+                            spec = registry.get(tool_name)
                             if spec:
                                 sg = classify_capability(spec)
                                 if sg.risk_class == "high":
@@ -93,75 +66,26 @@ class GovernanceEngine:
         else:
             high_risk = True
 
-        required_autonomy = "L3" if high_risk else "L2"
-        level_values = {"L1": 1, "L2": 2, "L3": 3}
-        task_level = level_values.get(task.autonomy_level, 0)
-        req_level = level_values.get(required_autonomy, 3)
-        
-        if task_level < req_level:
+        if high_risk:
             logger.info(
-                f"Execution blocked for task {task.id}: autonomy level {task.autonomy_level} < required {required_autonomy} (high_risk={high_risk})"
+                f"Execution blocked for task {task.id}: high risk task requires explicit approval"
             )
             ledger.record(
                 run_id=task.id,
                 target_type="execution_grant",
                 target_id=task.id,
-                reason=f"Blocked: autonomy {task.autonomy_level} < required {required_autonomy}",
+                reason="Blocked: high risk task requires explicit approval",
                 before="denied",
                 after="denied",
             )
             return False
-            
-        if required_autonomy == "L3":
-            if not task.trust_rule_id:
-                logger.info(f"Execution blocked for task {task.id}: L3 required but no trust rule")
-                ledger.record(
-                    run_id=task.id,
-                    target_type="execution_grant",
-                    target_id=task.id,
-                    reason="Blocked: L3 required but no trust rule",
-                    before="denied",
-                    after="denied",
-                )
-                return False
-                
-            rule = self.trust.get(task.trust_rule_id)
-            allowed = bool(
-                rule
-                and rule.autonomy_level == "L3"
-                and rule.project_path
-                and rule.project_path == task.workspace
-            )
-            
-            if allowed:
-                logger.info(f"Execution allowed for task {task.id}: covered by L3 trust rule {rule.id}")
-                ledger.record(
-                    run_id=task.id,
-                    target_type="execution_grant",
-                    target_id=task.id,
-                    reason=f"Covered by L3 trust rule {rule.id}",
-                    before="denied",
-                    after="allowed",
-                )
-                return True
-            else:
-                logger.info(f"Execution blocked for task {task.id}: not covered by L3 trust rule")
-                ledger.record(
-                    run_id=task.id,
-                    target_type="execution_grant",
-                    target_id=task.id,
-                    reason="Not covered by L3 trust rule",
-                    before="denied",
-                    after="denied",
-                )
-                return False
         else:
-            logger.info(f"Execution allowed for task {task.id}: {required_autonomy} sufficient for low risk")
+            logger.info(f"Execution allowed for task {task.id}: low risk task")
             ledger.record(
                 run_id=task.id,
                 target_type="execution_grant",
                 target_id=task.id,
-                reason=f"Allowed: {required_autonomy} sufficient for low risk",
+                reason="Allowed: low risk task",
                 before="denied",
                 after="allowed",
             )

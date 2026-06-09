@@ -1,4 +1,3 @@
-import asyncio
 import json
 import time
 from pathlib import Path
@@ -7,22 +6,15 @@ from typing import Any
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .config import load_config
 from .execution import ExecutionResult, ExecutionProtocol, INTERNAL_EXECUTION_PROVIDER
-from .provider import build_provider, ChatMessage
+from .provider import build_provider, ModelPool
 from .runs import Run
 from .syscalls import ModelSyscallPlanner
+from .tools import REACT_CONTEXT
 
-REACT_DISABLED_TOOLS = frozenset({
-    "delegate.prepare", "delegate.run", "delegate.retry", "delegate.spawn",
-    "delegate.status", "delegate.delete", "approval.request", "approval.resolve",
-    "watch.create", "watch.delete", "workflow.propose", "workflow.approve",
-    "workflow.run", "workflow.verify", "workflow.resume", "workflow.status",
-    "session.request_elevation", "ask.user"
-})
-
-from .provider import build_provider, ChatMessage, ChatProvider
+MODEL_TERMINAL_SYSCALLS = frozenset({"completion", "chat"})
 
 class ReActRunner:
-    def __init__(self, *, home: Path, provider: ChatProvider | None = None):
+    def __init__(self, *, home: Path, provider: ModelPool | None = None):
         self.home = home
         self.config = load_config(home)
         self.provider = provider if provider is not None else build_provider(self.config.model)
@@ -36,8 +28,8 @@ class ReActRunner:
         registry = CapabilityRegistry(
             home=self.home,
             project_dir=workspace,
-            disabled_tools=set(REACT_DISABLED_TOOLS),
             permission_ceiling="write",
+            execution_context=REACT_CONTEXT,
         )
         context = CapabilityContext(
             home=self.home,
@@ -71,7 +63,7 @@ class ReActRunner:
                 final_summary = f"Planner error: {syscall.reason}"
                 break
                 
-            if syscall.tool in {"completion", "delegate.resolve", "final.answer", "chat"}:
+            if syscall.tool in MODEL_TERMINAL_SYSCALLS:
                 final_summary = syscall.reason or str(syscall.args)
                 exit_code = 0
                 break
@@ -85,9 +77,12 @@ class ReActRunner:
             
             step_record = {
                 "tool": syscall.tool,
+                "permission": syscall.permission,
                 "args": syscall.args,
                 "ok": invoked.ok,
                 "observation": invoked.observation,
+                "message": invoked.message,
+                "facts": invoked.facts or {},
                 "terminal": invoked.terminal,
             }
             steps_taken.append(step_record)
@@ -99,7 +94,6 @@ class ReActRunner:
                 final_summary = invoked.observation
                 exit_code = 0 if invoked.ok else 1
                 break
-
         protocol = ExecutionProtocol.internal_status(
             run_id=task.id,
             phase="execute",
@@ -108,19 +102,38 @@ class ReActRunner:
             reason="ReAct execution finished",
             action_kind="react_loop",
         )
-        # Fake the steps so critic won't crash
+        evidence = _react_evidence(steps_taken)
+        if not evidence and exit_code == 0:
+            evidence.append(
+                {
+                    "kind": "capability_result",
+                    "tool": "final.answer",
+                    "ok": True,
+                    "summary": final_summary,
+                    "attempt": 1,
+                }
+            )
+        verified = exit_code == 0
         protocol = ExecutionProtocol(
             version=protocol.version,
             phase=protocol.phase,
             run_id=protocol.run_id,
             plan_id=protocol.plan_id,
             steps=[{"actions": steps_taken}],
-            completion={"status": "completed" if exit_code == 0 else "failed", "summary": final_summary},
-            evidence=[
-                {"kind": "capability_result", "tool": "react.loop", "ok": True, "summary": "ReAct execution completed", "attempt": 1},
-                {"kind": "verification_result", "check": "react_runner_implicit", "ok": True, "summary": "Implicitly verified"}
-            ],
-            verification={"status": "verified", "reason": "ReAct execution completed", "checks": ["ReAct loop completed"]}
+            completion={
+                "status": "completed" if verified else "failed",
+                "summary": final_summary,
+            },
+            evidence=evidence,
+            verification={
+                "status": "verified" if verified else "failed",
+                "reason": (
+                    "ReAct execution completed"
+                    if verified
+                    else "ReAct execution has failed capability evidence"
+                ),
+                "checks": ["ReAct loop completed"] if verified else [],
+            }
         )
             
         return ExecutionResult(
@@ -128,9 +141,25 @@ class ReActRunner:
             phase="execute",
             command=["navi", "react", task.id],
             stdout=final_summary,
-            stderr="" if exit_code == 0 else final_summary,
-            exit_code=exit_code,
+            stderr="" if verified else final_summary,
+            exit_code=0 if verified else 1,
             started_at=started_at,
             ended_at=time.time(),
             protocol=protocol,
         )
+
+
+def _react_evidence(steps_taken: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for index, step in enumerate(steps_taken):
+        evidence.append(
+            {
+                "kind": "capability_result",
+                "tool": step.get("tool", ""),
+                "ok": bool(step.get("ok")),
+                "summary": str(step.get("observation") or step.get("message") or "")[:1600],
+                "attempt": index + 1,
+                "facts": step.get("facts") if isinstance(step.get("facts"), dict) else {},
+            }
+        )
+    return evidence

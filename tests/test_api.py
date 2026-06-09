@@ -219,6 +219,8 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
     data = response.json()
     assert data["action"] == "approval"
     assert data["run_id"]
+    assert data["facts"]["status"] == "awaiting_approval"
+    assert data["facts"]["run_id"] == data["run_id"]
     task = client.get("/v1/delegations").json()["delegations"][0]
     assert task["prompt"] == "检查本地服务状态"
     assert task["status"] == "awaiting_approval"
@@ -335,7 +337,7 @@ def test_active_api_flow(tmp_path, monkeypatch):
     subagents = client.get("/v1/subagents", params={"run_id": task["id"]})
     assert subagents.status_code == 200
     roles = {item["role"] for item in subagents.json()["subagents"]}
-    assert {"executor", "critic"} <= roles
+    assert {"executor", "planner"} <= roles
     shown = client.get(f"/v1/subagents/{subagents.json()['subagents'][0]['id']}")
     assert shown.status_code == 200
     assert shown.json()["subagent"]["status"] in {"completed", "failed"}
@@ -365,11 +367,11 @@ def test_task_process_blocks_queued_task_without_execution_grant(tmp_path, monke
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     client = authenticated_client(create_app(tmp_path))
 
-    created = client.post("/v1/delegations", json={"title": "manual task"})
-    task = created.json()
     from navi.runs import RunStore
 
-    RunStore(tmp_path).update_run(task["id"], status="queued")
+    runs = RunStore(tmp_path)
+    task = runs.create("manual task", prompt="manual task", workspace=str(tmp_path))
+    runs.update_run(task.id, status="queued")
 
     processed = client.post("/v1/delegations/process")
 

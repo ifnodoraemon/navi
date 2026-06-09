@@ -16,7 +16,11 @@ from .operating_context import permission_allows
 from .runs import Approval, RunStore
 from .safeguards import capability_safeguard_facts
 from .skills import SkillStore
-from .tools import ToolRegistry, ToolResult, ToolSpec
+from .tools import ALL_EXECUTION_CONTEXTS, ToolRegistry, ToolResult, ToolSpec
+
+
+def _core_tool_spec(**kwargs: Any) -> ToolSpec:
+    return ToolSpec(execution_contexts=ALL_EXECUTION_CONTEXTS, **kwargs)
 
 
 def _output_schema(properties: dict[str, Any]) -> dict[str, Any]:
@@ -30,8 +34,9 @@ def _array_of_objects() -> dict[str, Any]:
 def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     config = load_config(home)
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="service.status",
+            capability_class="service",
             description="Return systemd user service facts.",
             input_schema={
                 "type": "object",
@@ -49,8 +54,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _service_status(args, default_name=config.runtime.service_name),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="delegate.status",
+            capability_class="delegation",
             description="Return delegation run, approval, and execution log facts.",
             input_schema={
                 "type": "object",
@@ -67,8 +73,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _run_status(home, args),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="delegate.list",
+            capability_class="delegation",
             description="Return delegation runs and recurring watches as delegation-management facts.",
             input_schema={
                 "type": "object",
@@ -87,8 +94,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _run_list(home, args),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="provider.config",
+            capability_class="provider",
             description="Return configured model provider facts without secrets.",
             input_schema={"type": "object", "properties": {}},
             output_schema=_output_schema(
@@ -107,8 +115,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _provider_config(home),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="skills.list",
+            capability_class="skills",
             description="Return installed procedural skill facts.",
             input_schema={"type": "object", "properties": {}},
             output_schema=_output_schema(
@@ -125,8 +134,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _skills_list(home, workspace=registry.project_dir),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="skills.view",
+            capability_class="skills",
             description="Return one installed skill's full instructions or a safe supporting file by skill name.",
             input_schema={
                 "type": "object",
@@ -154,8 +164,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _skills_view(home, args, workspace=registry.project_dir),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="tools.list",
+            capability_class="tools",
             description="Return callable capability facts.",
             input_schema={"type": "object", "properties": {}},
             output_schema=_output_schema(
@@ -171,8 +182,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _tools_list(registry),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="hooks.list",
+            capability_class="hooks",
             description="Return lifecycle hook facts.",
             input_schema={"type": "object", "properties": {}},
             output_schema=_output_schema(
@@ -187,8 +199,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _hooks_list(home),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="memory.list",
+            capability_class="memory",
             description="Return typed memory item facts from Navi's local memory store.",
             input_schema={
                 "type": "object",
@@ -211,8 +224,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _memory_list(home, args),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="memory.recall",
+            capability_class="memory",
             description="Recall goal-relevant memory facts from Navi's local memory store.",
             input_schema={
                 "type": "object",
@@ -235,8 +249,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _memory_recall(home, args),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="memory.conflicts",
+            capability_class="memory",
             description="Return declared memory conflict facts from Navi's local memory store.",
             input_schema={
                 "type": "object",
@@ -254,8 +269,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _memory_conflicts(home, args),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="browser.screenshot",
+            capability_class="browser",
             description="Capture a browser screenshot artifact for a reachable page.",
             input_schema={
                 "type": "object",
@@ -285,8 +301,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _browser_screenshot(args, project_dir=registry.project_dir),
     )
     registry.register(
-        ToolSpec(
-            name="filesystem.list",
+        _core_tool_spec(
+            name="directory.list",
+            capability_class="directory",
             description="Return directory entry facts.",
             input_schema={
                 "type": "object",
@@ -308,11 +325,12 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 }
             ),
         ),
-        lambda args: _filesystem_list(args, project_dir=registry.project_dir),
+        lambda args: _directory_list(args, project_dir=registry.project_dir),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="file.read",
+            capability_class="file.read",
             description="Read a UTF-8 text file inside the current project workspace.",
             input_schema={
                 "type": "object",
@@ -335,8 +353,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _file_read(args, project_dir=registry.project_dir),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="file.write",
+            capability_class="file.write",
             description="Write UTF-8 text to a file inside the current project workspace.",
             input_schema={
                 "type": "object",
@@ -364,8 +383,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _file_write(args, project_dir=registry.project_dir),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="codebase.search",
+            capability_class="codebase",
             description="Perform a fast, semantic-like search across the entire project codebase.",
             input_schema={
                 "type": "object",
@@ -381,8 +401,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     )
 
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="git.status",
+            capability_class="git",
             description="Return git repository status facts.",
             input_schema={
                 "type": "object",
@@ -402,15 +423,17 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _git_status(args, project_dir=registry.project_dir),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="shell.run",
-            description="Run a non-shell command in the project workspace and return bounded stdout/stderr facts.",
+            capability_class="shell",
+            description="Run a non-shell command in the project workspace and return bounded stdout/stderr facts. Set allocate_pty to true if the command strictly requires a terminal (e.g. complains about stdin not being a tty), but note that stdout may contain ANSI escape codes and stderr will be merged into stdout.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "command": {"type": "array", "items": {"type": "string"}},
                     "cwd": {"type": "string", "default": str(registry.project_dir)},
                     "timeout_seconds": {"type": "integer", "default": 20},
+                    "allocate_pty": {"type": "boolean", "default": False},
                 },
                 "required": ["command"],
             },
@@ -432,8 +455,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         lambda args: _shell_run(args, project_dir=registry.project_dir),
     )
     registry.register(
-        ToolSpec(
+        _core_tool_spec(
             name="test.run",
+            capability_class="test",
             description="Run a project test command and return bounded stdout/stderr facts.",
             input_schema={
                 "type": "object",
@@ -441,6 +465,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "command": {"type": "array", "items": {"type": "string"}},
                     "cwd": {"type": "string", "default": str(registry.project_dir)},
                     "timeout_seconds": {"type": "integer", "default": 60},
+                    "allocate_pty": {"type": "boolean", "default": False},
                 },
             },
             output_schema=_output_schema(
@@ -850,14 +875,14 @@ def _is_browser_url(value: str) -> bool:
     return True
 
 
-def _filesystem_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
+def _directory_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     raw_path = str(args.get("path") or str(project_dir))
     limit = _positive_int(args.get("limit"), default=50, maximum=200)
     path = Path(raw_path).expanduser()
 
     if not _is_safe_path(path, project_dir):
         return ToolResult(
-            tool="filesystem.list", ok=False, error="path must be within the project directory"
+            tool="directory.list", ok=False, error="path must be within the project directory"
         )
 
     fact_path = path.resolve() if path.exists() else path
@@ -869,12 +894,10 @@ def _filesystem_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
         "limit": limit,
     }
     if not path.exists():
-        return ToolResult(tool="filesystem.list", ok=False, facts=facts, error="path not found")
+        return ToolResult(tool="directory.list", ok=False, facts=facts, error="path not found")
     if not path.is_dir():
-        facts["is_file"] = path.is_file()
-        facts["size"] = path.stat().st_size
         return ToolResult(
-            tool="filesystem.list", ok=False, facts=facts, error="path is not a directory"
+            tool="directory.list", ok=False, facts=facts, error="path is not a directory"
         )
     entries = []
     for child in sorted(path.iterdir(), key=lambda item: item.name)[:limit]:
@@ -895,7 +918,7 @@ def _filesystem_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
             )
     facts["entries"] = entries
     facts["entry_count"] = len(entries)
-    return ToolResult(tool="filesystem.list", ok=True, facts=facts)
+    return ToolResult(tool="directory.list", ok=True, facts=facts)
 
 
 def _file_read(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
@@ -1004,7 +1027,8 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     if not cwd.exists() or not cwd.is_dir():
         return ToolResult(tool="shell.run", ok=False, error="cwd must be an existing directory")
     timeout = _positive_int(args.get("timeout_seconds"), default=20, maximum=120)
-    result = _run_command(command, cwd=cwd, timeout=timeout)
+    allocate_pty = bool(args.get("allocate_pty"))
+    result = _run_command(command, cwd=cwd, timeout=timeout, allocate_pty=allocate_pty)
     return ToolResult(
         tool="shell.run",
         ok=result["exit_code"] == 0,
@@ -1026,7 +1050,8 @@ def _test_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     if not cwd.exists() or not cwd.is_dir():
         return ToolResult(tool="test.run", ok=False, error="cwd must be an existing directory")
     timeout = _positive_int(args.get("timeout_seconds"), default=60, maximum=300)
-    result = _run_command(command, cwd=cwd, timeout=timeout)
+    allocate_pty = bool(args.get("allocate_pty"))
+    result = _run_command(command, cwd=cwd, timeout=timeout, allocate_pty=allocate_pty)
     return ToolResult(
         tool="test.run",
         ok=result["exit_code"] == 0,
@@ -1067,12 +1092,12 @@ def _codebase_search(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
         return ToolResult(
             tool="codebase.search",
             ok=True,
-            data=[{"path": r.path, "snippet": r.content, "rank": r.rank} for r in results]
+            facts={"results": [{"path": r.path, "snippet": r.content, "rank": r.rank} for r in results]},
         )
     except Exception as exc:
         return ToolResult(tool="codebase.search", ok=False, error=str(exc))
 
-def _run_command(command: list[str], *, cwd: Path, timeout: int) -> dict[str, Any]:
+def _run_command(command: list[str], *, cwd: Path, timeout: int, allocate_pty: bool = False) -> dict[str, Any]:
     env = os.environ.copy()
     # Ensure common bin paths are in PATH
     home_dir = str(Path.home())
@@ -1085,6 +1110,90 @@ def _run_command(command: list[str], *, cwd: Path, timeout: int) -> dict[str, An
         *nvm_paths,
     ]
     env["PATH"] = os.pathsep.join(extra_paths + [current_path])
+
+    if allocate_pty:
+        import pty
+        import select
+        import time
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=env,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                text=False,
+            )
+            os.close(slave_fd)
+            
+            output = b""
+            start_time = time.time()
+            timed_out = False
+            
+            while proc.poll() is None:
+                time_left = timeout - (time.time() - start_time)
+                if time_left <= 0:
+                    proc.kill()
+                    timed_out = True
+                    break
+                
+                r, _, _ = select.select([master_fd], [], [], min(0.1, time_left))
+                if r:
+                    try:
+                        data = os.read(master_fd, 4096)
+                        if not data:
+                            break
+                        output += data
+                    except OSError:
+                        break
+                        
+            while True:
+                r, _, _ = select.select([master_fd], [], [], 0)
+                if r:
+                    try:
+                        data = os.read(master_fd, 4096)
+                        if not data:
+                            break
+                        output += data
+                    except OSError:
+                        break
+                else:
+                    break
+                    
+            if not timed_out:
+                proc.wait(timeout=1)
+            os.close(master_fd)
+            
+            text_output = output.decode("utf-8", errors="replace")
+            
+            if timed_out:
+                return {
+                    "stdout": _truncate_output(text_output),
+                    "stderr": _truncate_output(f"command timed out after {timeout} seconds"),
+                    "exit_code": 124,
+                    "timed_out": True,
+                }
+                
+            return {
+                "stdout": _truncate_output(text_output),
+                "stderr": "",
+                "exit_code": proc.returncode,
+                "timed_out": False,
+            }
+        except OSError as exc:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+            return {"stdout": "", "stderr": str(exc), "exit_code": 127, "timed_out": False}
+        except Exception:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+            raise
 
     try:
         result = subprocess.run(

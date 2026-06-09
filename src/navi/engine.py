@@ -5,7 +5,9 @@ import logging
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+logger = logging.getLogger("navi.engine")
 
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .config import load_config
@@ -83,8 +85,8 @@ class HernessEngine:
                         if r.status in ("queued", "completed", "active"):
                             elevated = r.plan_summary.split(":")[1]
                             return elevated
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to check session elevation for %s/%s: %s", peer_id, sender_id, e)
         return ceiling
 
     async def handle(
@@ -126,8 +128,8 @@ class HernessEngine:
         
         import subprocess
         from datetime import datetime
+        cwd = self.capabilities.gateway.project_dir
         try:
-            cwd = self.capabilities.gateway.project_dir
             now = datetime.now().astimezone().isoformat()
             git_status = subprocess.run(["git", "status", "-s"], cwd=cwd, capture_output=True, text=True, timeout=2).stdout.strip()
             ambient = f"Ambient Context:\n- Current Time: {now}\n- Workspace: {cwd}\n"
@@ -136,8 +138,10 @@ class HernessEngine:
             else:
                 ambient += "- Git Status: clean\n"
             observations.append(ambient)
-        except Exception:
-            pass
+        except subprocess.TimeoutExpired:
+            logger.debug("git status timed out in %s", cwd)
+        except OSError as e:
+            logger.debug("Failed to collect ambient context: %s", e)
 
         completion_events: list[dict[str, Any]] = []
         goal_ids: set[str] = set()
@@ -149,14 +153,54 @@ class HernessEngine:
                 permission_ceiling=context.permission_ceiling
             )
             valid_tools = {spec.name for spec in planner_specs}
-            syscall = await self.planner.plan(
-                text,
-                tools=planner_specs,
-                conversation_context=self._conversation_context(resolved_session_id),
-                observations=observations,
-                permission_ceiling=context.permission_ceiling,
-                model_roles=self.runtime.model_roles(),
+            self.trace.add_event(
+                trace_id=trace_id,
+                phase="planner.call.start",
+                session_id=resolved_session_id or "",
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+                model_role="planner",
+                input_data={
+                    "observations_count": len(observations),
+                    "permission_ceiling": context.permission_ceiling,
+                    "tool_count": len(planner_specs),
+                },
+                message="planner provider call started",
             )
+            try:
+                syscall = await self.planner.plan(
+                    text,
+                    tools=planner_specs,
+                    conversation_context=self._conversation_context(resolved_session_id),
+                    observations=observations,
+                    permission_ceiling=context.permission_ceiling,
+                    model_roles=self.runtime.model_roles(),
+                )
+            except Exception as exc:
+                self.trace.add_event(
+                    trace_id=trace_id,
+                    phase="planner.call.error",
+                    session_id=resolved_session_id or "",
+                    source=source,
+                    peer_id=peer_id,
+                    sender_id=sender_id,
+                    model_role="planner",
+                    ok=False,
+                    output_data={"error": repr(exc)},
+                    message=repr(exc),
+                )
+                result = AgentTurnResult(
+                    text=f"Planner provider failed: {exc!r}",
+                    action="chat",
+                    model_role="planner",
+                    terminal=True,
+                    trace_id=trace_id,
+                )
+                self._record_trace_final(
+                    result, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
+                )
+                return result
             planner_ok = syscall.tool != "system.planner_error" and syscall.tool in valid_tools
             planner_message = syscall.reason
             if syscall.tool not in {"", "system.planner_error"} and syscall.tool not in valid_tools:
@@ -445,7 +489,7 @@ class HernessEngine:
         )
         for _ in range(2):
             recovery_plan = self.recovery.plan_budget_exhaustion(events=completion_events)
-            choice = _safe_budget_recovery_choice(recovery_plan)
+            choice = recovery_plan.choices[0] if recovery_plan.choices else None
             self.trace.add_event(
                 trace_id=trace_id,
                 phase="recovery.plan",
@@ -536,27 +580,32 @@ class HernessEngine:
             if run_id and status:
                 latest_run_status[run_id] = status
         for event in events:
-            if event.get("tool") != "delegate.spawn":
-                continue
             facts = event.get("facts")
             if not isinstance(facts, dict):
+                continue
+            if str(facts.get("entity_type") or "") != "delegation_run":
                 continue
             run_id = str(facts.get("run_id") or facts.get("task_id") or "").strip()
             status = latest_run_status.get(run_id) or str(facts.get("status") or "").strip()
             if run_id and status in {"pending", "prepared"}:
                 return (
                     "completion verifier blocked final answer: "
-                    f"delegation run {run_id} is still {status}; prepare it and request approval or run it before reporting completion."
+                    f"delegation run {run_id} is still {status}."
                 )
-        last_delete = next(
-            (event for event in reversed(events) if event.get("tool") == "delegate.delete"), None
+        latest_cleanup_facts = next(
+            (
+                event.get("facts")
+                for event in reversed(events)
+                if isinstance(event.get("facts"), dict)
+                and "cleanup_complete" in event.get("facts", {})
+            ),
+            None,
         )
-        facts = last_delete.get("facts") if isinstance(last_delete, dict) else None
-        if isinstance(facts, dict) and facts.get("cleanup_complete") is False:
-            remaining = facts.get("remaining_count")
+        if isinstance(latest_cleanup_facts, dict) and latest_cleanup_facts.get("cleanup_complete") is False:
+            remaining = latest_cleanup_facts.get("remaining_count")
             return (
                 "completion verifier blocked final answer: "
-                f"delegate.delete left {remaining} failed delegation runs; continue cleanup or report the remaining count explicitly."
+                f"cleanup_complete=false with remaining_count={remaining}."
             )
         return ""
 
@@ -649,6 +698,8 @@ class HernessEngine:
             terminal=result.terminal,
             trace_id=result.trace_id,
             budget_exhausted=result.budget_exhausted,
+            memory_influence=result.memory_influence,
+            facts=result.facts,
         )
 
     @staticmethod
@@ -663,6 +714,8 @@ class HernessEngine:
             terminal=result.terminal,
             trace_id=trace_id,
             budget_exhausted=result.budget_exhausted,
+            memory_influence=result.memory_influence,
+            facts=result.facts,
         )
 
     def _record_trace_final(
@@ -798,6 +851,8 @@ class HernessEngine:
             terminal=result.terminal,
             trace_id=result.trace_id,
             budget_exhausted=result.budget_exhausted,
+            memory_influence=result.memory_influence,
+            facts=result.facts,
         )
 
     @staticmethod
@@ -817,63 +872,87 @@ class HernessEngine:
 
     @staticmethod
     def _approval_prompt_from_facts(facts: dict[str, Any] | None, *, source: str = "") -> str:
-        if not facts or facts.get("status") != "awaiting_approval":
-            return ""
-        workflow_id = str(facts.get("workflow_id") or "").strip()
-        if workflow_id:
-            step_count = facts.get("step_count")
-            risk_class = str(facts.get("risk_class") or "unknown")
-            estimated_cost = str(facts.get("estimated_cost") or "unknown")
-            stop_condition = str(facts.get("stop_condition") or "").strip()
-            details = [
-                f"Workflow ID: `{workflow_id}`",
-                f"Steps: {step_count}" if step_count is not None else "",
-                f"Risk class: {risk_class}",
-                f"Estimated cost: {estimated_cost}",
-                f"Stop condition: {stop_condition}" if stop_condition else "",
-            ]
-            detail_text = "\n".join(f"- {item}" for item in details if item)
-            return (
-                "Workflow proposal is awaiting confirmation before execution.\n"
-                f"{detail_text}\n"
-                f"Approve: `navi workflow approve {workflow_id}`\n"
-                f"Reject: `navi workflow reject {workflow_id}`"
-            ).strip()
-        approval = facts.get("approval")
-        if not isinstance(approval, dict):
-            return ""
-        code = str(approval.get("code") or "").strip()
-        if not code:
-            return ""
-        run_id = str(facts.get("run_id") or "").strip()
-        expires_at = approval.get("expires_at")
-        try:
-            minutes = max(0, round((float(expires_at) - time.time()) / 60)) if expires_at else 0
-        except (TypeError, ValueError):
-            minutes = 0
-        expiry = (
-            f"Approval expires in ~{minutes} minutes." if minutes else "Approval is expiring soon."
-        )
-        affordance = approval_surface_affordance(source)
-        commands = (
-            affordance.get("approval_commands")
-            if isinstance(affordance.get("approval_commands"), dict)
-            else {}
-        )
-        approve_command = _first_command(commands, "approve", "approve")
-        reject_command = _first_command(commands, "reject", "reject")
-        template = str(affordance.get("approval_template") or "")
-        if not template:
-            return ""
-        diff = str(approval.get("diff") or "").strip()
-        diff_text = f"\n\nProposed Changes:\n```diff\n{diff}\n```" if diff else ""
-        return template.format(
-            task_line=f"Task ID: `{run_id}`" if run_id else "",
-            code=code,
-            expiry=expiry,
-            approve_command=approve_command,
-            reject_command=reject_command,
-        ).strip() + diff_text
+        return _render_approval_prompt(facts, source=source)
+
+
+ApprovalPromptRenderer = Callable[[dict[str, Any], str], str]
+
+
+def _render_approval_prompt(facts: dict[str, Any] | None, *, source: str = "") -> str:
+    if not facts or facts.get("status") != "awaiting_approval":
+        return ""
+    for renderer in APPROVAL_PROMPT_RENDERERS:
+        rendered = renderer(facts, source)
+        if rendered:
+            return rendered
+    return ""
+
+
+def _workflow_approval_prompt(facts: dict[str, Any], source: str) -> str:
+    del source
+    workflow_id = str(facts.get("workflow_id") or "").strip()
+    if not workflow_id:
+        return ""
+    step_count = facts.get("step_count")
+    risk_class = str(facts.get("risk_class") or "unknown")
+    estimated_cost = str(facts.get("estimated_cost") or "unknown")
+    stop_condition = str(facts.get("stop_condition") or "").strip()
+    details = [
+        f"Workflow ID: `{workflow_id}`",
+        f"Steps: {step_count}" if step_count is not None else "",
+        f"Risk class: {risk_class}",
+        f"Estimated cost: {estimated_cost}",
+        f"Stop condition: {stop_condition}" if stop_condition else "",
+    ]
+    detail_text = "\n".join(f"- {item}" for item in details if item)
+    return (
+        "Workflow proposal is awaiting confirmation before execution.\n"
+        f"{detail_text}\n"
+        f"Approve: `navi workflow approve {workflow_id}`\n"
+        f"Reject: `navi workflow reject {workflow_id}`"
+    ).strip()
+
+
+def _run_approval_prompt(facts: dict[str, Any], source: str) -> str:
+    approval = facts.get("approval")
+    if not isinstance(approval, dict):
+        return ""
+    code = str(approval.get("code") or "").strip()
+    if not code:
+        return ""
+    run_id = str(facts.get("run_id") or "").strip()
+    expires_at = approval.get("expires_at")
+    try:
+        minutes = max(0, round((float(expires_at) - time.time()) / 60)) if expires_at else 0
+    except (TypeError, ValueError):
+        minutes = 0
+    expiry = f"Approval expires in ~{minutes} minutes." if minutes else "Approval is expiring soon."
+    affordance = approval_surface_affordance(source)
+    commands = (
+        affordance.get("approval_commands")
+        if isinstance(affordance.get("approval_commands"), dict)
+        else {}
+    )
+    approve_command = _first_command(commands, "approve", "approve")
+    reject_command = _first_command(commands, "reject", "reject")
+    template = str(affordance.get("approval_template") or "")
+    if not template:
+        return ""
+    diff = str(approval.get("diff") or "").strip()
+    diff_text = f"\n\nProposed Changes:\n```diff\n{diff}\n```" if diff else ""
+    return template.format(
+        task_line=f"Task ID: `{run_id}`" if run_id else "",
+        code=code,
+        expiry=expiry,
+        approve_command=approve_command,
+        reject_command=reject_command,
+    ).strip() + diff_text
+
+
+APPROVAL_PROMPT_RENDERERS: tuple[ApprovalPromptRenderer, ...] = (
+    _workflow_approval_prompt,
+    _run_approval_prompt,
+)
 
 
 def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:
@@ -882,15 +961,3 @@ def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:
         return str(raw[0])
     return fallback
 
-
-def _safe_budget_recovery_choice(recovery_plan):
-    if recovery_plan.recommended != "continue":
-        return None
-    allowed = {
-        ("delegate.prepare", "prepare"),
-        ("approval.request", "prepare"),
-    }
-    for choice in recovery_plan.choices:
-        if choice.kind == "continue" and (choice.tool, choice.permission) in allowed:
-            return choice
-    return None

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -45,8 +47,6 @@ def _enabled(home: Path) -> bool:
 
 
 def _status(home: Path) -> dict[str, Any]:
-    import json
-
     config = load_telegram_config(home)
     facts = {
         "configured": bool(config.bot_token),
@@ -61,17 +61,22 @@ def _status(home: Path) -> dict[str, Any]:
     if status_file.exists():
         try:
             data = json.loads(status_file.read_text(encoding="utf-8"))
-            facts.update(
-                {
-                    "status": data.get("status", "unknown"),
-                    "error": data.get("error", ""),
-                    "last_update": data.get("last_update", 0.0),
-                }
-            )
-        except Exception as e:
-            import logging
-
-            logging.getLogger("navi.telegram").warning("Failed to read status: %s", e)
+            if not isinstance(data, dict):
+                logging.getLogger("navi.telegram").warning(
+                    "status.json must be a JSON object, got %s", type(data).__name__
+                )
+            else:
+                facts.update(
+                    {
+                        "status": data.get("status", "unknown"),
+                        "error": data.get("error", ""),
+                        "last_update": data.get("last_update", 0.0),
+                    }
+                )
+        except json.JSONDecodeError as e:
+            logging.getLogger("navi.telegram").warning("Corrupted status.json: %s", e)
+        except OSError as e:
+            logging.getLogger("navi.telegram").warning("Failed to read status file: %s", e)
     return facts
 
 
@@ -92,11 +97,13 @@ def _diagnostics(home: Path) -> list[dict[str, str]]:
 
 
 def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
-    from navi.tools import ToolResult, ToolSpec
+    from navi.tools import ALL_EXECUTION_CONTEXTS, ToolResult, ToolSpec
 
     registry.register(
         ToolSpec(
             name=spec.status_tool,
+            capability_class="connector",
+            execution_contexts=ALL_EXECUTION_CONTEXTS,
             description=spec.status_description,
             input_schema={"type": "object", "properties": {}},
             output_schema={
