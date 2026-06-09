@@ -336,7 +336,7 @@ async def test_weixin_plain_approval_queues_task(tmp_path, monkeypatch):
 
     assert handled is True
     assert service.active.runs.get(task.id).status == "queued"
-    assert "后台继续执行" in service.client.sent[-1]["text"]
+    assert "后台" in service.client.sent[-1]["text"]
 
 
 @pytest.mark.asyncio

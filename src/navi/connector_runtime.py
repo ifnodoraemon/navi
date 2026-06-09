@@ -117,7 +117,7 @@ class ConnectorMessage:
 
 
 class ConnectorIngressRuntime:
-    """Shared IM ingress path into the agent kernel."""
+    """Shared IM ingress path into the agent kernel via event bus."""
 
     def __init__(
         self,
@@ -130,15 +130,12 @@ class ConnectorIngressRuntime:
         tool_policy: ConnectorToolPolicy = REMOTE_CONNECTOR_TOOL_POLICY,
         event_bus: "EventBus | None" = None,
     ):
+        from .connector_router import ConnectorRouter
+        from .event_bus import EventBus as _EventBus
+
         self.tool_policy = tool_policy
-        self.event_bus = event_bus
-
-        if event_bus:
-            from .connector_router import ConnectorRouter
-            self.router = ConnectorRouter(home, event_bus)
-        else:
-            self.router = None
-
+        self.event_bus = event_bus or _EventBus()
+        self.router = ConnectorRouter(home, self.event_bus)
         self.agent = HernessEngine(
             home=home,
             runtime=runtime,
@@ -149,20 +146,36 @@ class ConnectorIngressRuntime:
             else allowed_tools,
             disabled_capability_classes=tool_policy.blocked_capability_classes,
             permission_ceiling=tool_policy.permission_ceiling,
-            event_bus=event_bus,
+            event_bus=self.event_bus,
         )
+        self._setup_event_subscriptions()
+
+    def _setup_event_subscriptions(self) -> None:
+        from .event_bus import ResponseReadyEvent, UserIntentEvent
+        from .governance_agent import GovernanceAgent
+
+        self._governance = GovernanceAgent(self.agent.home, self.event_bus)
+
+        async def on_user_intent(event: UserIntentEvent) -> None:
+            result = await self.agent.handle(
+                event.text,
+                peer_id=event.peer_id,
+                sender_id=event.sender_id,
+                source=event.source,
+                session_alias=event.session_alias,
+            )
+            await self.event_bus.send_response(ResponseReadyEvent(
+                source_agent="main_agent",
+                correlation_id=event.correlation_id,
+                peer_id=event.peer_id,
+                sender_id=event.sender_id,
+                text=result.text,
+                source=event.source,
+            ))
+
+        self.event_bus.subscribe("user_intent", on_user_intent)
 
     async def handle(self, message: ConnectorMessage) -> str:
-        if self.router:
-            text = await self.router.route(message)
-        else:
-            result = await self.agent.handle(
-                message.text,
-                peer_id=message.peer_id,
-                sender_id=message.sender_id,
-                source=message.source,
-                session_alias=message.session_alias,
-            )
-            text = result.text
+        text = await self.router.route(message)
         from .safeguards import redact_secrets
         return redact_secrets(text)

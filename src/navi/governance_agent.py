@@ -98,6 +98,7 @@ class GovernanceAgent:
             return
 
         if status == "approved":
+            self.runs.update_run(approval.run_id, status="queued")
             await self.event_bus.publish(ApprovalResolvedEvent(
                 source_agent="governance_agent",
                 run_id=approval.run_id,
