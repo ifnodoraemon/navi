@@ -3,10 +3,13 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import FrozenSet
+from typing import TYPE_CHECKING, FrozenSet
 
 from .engine import HernessEngine
 from .runtime import AgentRuntime
+
+if TYPE_CHECKING:
+    from .event_bus import EventBus
 
 
 REMOTE_SAFE_TOOLS = frozenset(
@@ -125,8 +128,17 @@ class ConnectorIngressRuntime:
         allow_sources: set[str] | None = None,
         allowed_tools: set[str] | None = None,
         tool_policy: ConnectorToolPolicy = REMOTE_CONNECTOR_TOOL_POLICY,
+        event_bus: "EventBus | None" = None,
     ):
         self.tool_policy = tool_policy
+        self.event_bus = event_bus
+
+        if event_bus:
+            from .connector_router import ConnectorRouter
+            self.router = ConnectorRouter(home, event_bus)
+        else:
+            self.router = None
+
         self.agent = HernessEngine(
             home=home,
             runtime=runtime,
@@ -137,15 +149,20 @@ class ConnectorIngressRuntime:
             else allowed_tools,
             disabled_capability_classes=tool_policy.blocked_capability_classes,
             permission_ceiling=tool_policy.permission_ceiling,
+            event_bus=event_bus,
         )
 
     async def handle(self, message: ConnectorMessage) -> str:
-        result = await self.agent.handle(
-            message.text,
-            peer_id=message.peer_id,
-            sender_id=message.sender_id,
-            source=message.source,
-            session_alias=message.session_alias,
-        )
+        if self.router:
+            text = await self.router.route(message)
+        else:
+            result = await self.agent.handle(
+                message.text,
+                peer_id=message.peer_id,
+                sender_id=message.sender_id,
+                source=message.source,
+                session_alias=message.session_alias,
+            )
+            text = result.text
         from .safeguards import redact_secrets
-        return redact_secrets(result.text)
+        return redact_secrets(text)

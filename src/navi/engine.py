@@ -51,10 +51,12 @@ class HernessEngine:
         disabled_capability_classes: frozenset[str] | frozenset = frozenset(),
         permission_ceiling: str = "write",
         step_budget: int | None = None,
+        event_bus: Any | None = None,
     ):
         self.home = home
         self.runtime = runtime
         self.permission_ceiling = permission_ceiling
+        self.event_bus = event_bus
         self.step_budget = (
             step_budget if step_budget is not None else load_config(home).runtime.agent_step_budget
         )
