@@ -60,7 +60,7 @@ coverage:
   - connector.weixin.status
   - file.read
   - file.write
-  - filesystem.list
+  - directory.list
   - git.status
   - provider.config
   - service.status
@@ -84,7 +84,31 @@ coverage:
   - test.run
   - session.request_elevation
   - codebase.search
+  - web.search
+  - http.fetch
+  - system.info
 cases:
+- id: web_search_query
+  category: seeking_information
+  source: synthetic:web_search
+  message: "帮我搜一下最近的AI新闻"
+  expect:
+    tool: web.search
+    permission: read
+- id: http_fetch_url
+  category: seeking_information
+  source: synthetic:http_fetch
+  message: "帮我看一下 https://httpbin.org/get 返回什么"
+  expect:
+    tool: http.fetch
+    permission: read
+- id: system_info_check
+  category: seeking_information
+  source: synthetic:system_info
+  message: "看看我机器现在磁盘和内存还剩多少"
+  expect:
+    tool: system.info
+    permission: read
 - id: codebase_search_query
   category: seeking_information
   source: synthetic:codebase_search
@@ -324,7 +348,7 @@ cases:
   source: observed
   message: "\u5217\u4E00\u4E0B\u6211\u672C\u673A\u7684\u76EE\u5F55"
   expect:
-    tool: filesystem.list
+    tool: directory.list
     permission: read
 - id: read_project_file
   category: local_file_context

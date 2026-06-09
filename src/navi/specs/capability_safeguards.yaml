@@ -25,12 +25,12 @@ tools:
       - artifact_write
     confirmation_required: true
     reason: Browser capture reads untrusted web content and writes an artifact.
-  filesystem.list:
+  directory.list:
     risk_class: medium
     sensitive_contexts:
-      - filesystem
+      - directory
     confirmation_required: false
-    reason: Filesystem listing exposes local path metadata.
+    reason: Directory listing exposes local directory metadata.
   file.read:
     risk_class: medium
     sensitive_contexts:
@@ -195,3 +195,21 @@ tools:
       - dynamic_workflow
     confirmation_required: false
     reason: Workflow status exposes orchestration state, step evidence, and events.
+  web.search:
+    risk_class: low
+    sensitive_contexts:
+      - web
+    confirmation_required: false
+    reason: Web search queries a public search API with no local state mutation.
+  http.fetch:
+    risk_class: medium
+    sensitive_contexts:
+      - web
+      - untrusted_web
+    confirmation_required: false
+    reason: HTTP fetch retrieves external content that must be treated as untrusted data.
+  system.info:
+    risk_class: low
+    sensitive_contexts: []
+    confirmation_required: false
+    reason: System info reads local hardware and OS state with no side effects.

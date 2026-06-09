@@ -485,6 +485,83 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         ),
         lambda args: _test_run(args, project_dir=registry.project_dir),
     )
+    registry.register(
+        _core_tool_spec(
+            name="web.search",
+            capability_class="web",
+            description="Search the web via DuckDuckGo Instant Answer API. Returns structured JSON with abstract, related topics, and answer.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query."},
+                },
+                "required": ["query"],
+            },
+            output_schema=_output_schema(
+                {"query": {"type": "string"}, "response": {"type": "object"}}
+            ),
+            permission="read",
+        ),
+        _web_search,
+    )
+    registry.register(
+        _core_tool_spec(
+            name="http.fetch",
+            capability_class="web",
+            description="Make an HTTP request and return the response. Supports GET/POST with custom headers.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "method": {"type": "string", "default": "GET"},
+                    "headers": {"type": "object", "default": {}},
+                    "body": {"type": "string"},
+                    "max_bytes": {"type": "integer", "default": 524288},
+                },
+                "required": ["url"],
+            },
+            output_schema=_output_schema(
+                {
+                    "url": {"type": "string"},
+                    "method": {"type": "string"},
+                    "status_code": {"type": "integer"},
+                    "headers": {"type": "object"},
+                    "body": {"type": "string"},
+                    "truncated": {"type": "boolean"},
+                }
+            ),
+            permission="read",
+        ),
+        _http_fetch,
+    )
+    registry.register(
+        _core_tool_spec(
+            name="system.info",
+            capability_class="system",
+            description="Return system information: OS, memory, disk, load, uptime. Pass category='processes' for running process list.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "description": "Optional: 'processes' to include ps aux output."},
+                },
+            },
+            output_schema=_output_schema(
+                {
+                    "os": {"type": "string"},
+                    "hostname": {"type": "string"},
+                    "mem_total_kb": {"type": "integer"},
+                    "mem_available_kb": {"type": "integer"},
+                    "disk_total_gb": {"type": "number"},
+                    "disk_free_gb": {"type": "number"},
+                    "disk_used_pct": {"type": "number"},
+                    "load_avg": {"type": "object"},
+                    "uptime_seconds": {"type": "number"},
+                }
+            ),
+            permission="read",
+        ),
+        _system_info,
+    )
 
 
 def _service_status(args: dict[str, Any], *, default_name: str) -> ToolResult:
@@ -851,7 +928,12 @@ def _is_safe_path(path: Path, project_dir: Path) -> bool:
     try:
         resolved_path = path.resolve().absolute()
         resolved_project = project_dir.resolve().absolute()
-        return resolved_project == resolved_path or resolved_project in resolved_path.parents
+        resolved_home = Path.home().resolve().absolute()
+        if resolved_project == resolved_path or resolved_project in resolved_path.parents:
+            return True
+        if resolved_home == resolved_path or resolved_home in resolved_path.parents:
+            return True
+        return False
     except Exception:
         return False
 
@@ -1255,3 +1337,111 @@ def _positive_int(value: Any, *, default: int, maximum: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, min(parsed, maximum))
+
+
+def _web_search(args: dict[str, Any]) -> ToolResult:
+    import urllib.request
+    import urllib.parse
+    import json as _json
+
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return ToolResult(tool="web.search", ok=False, error="query is required")
+    encoded = urllib.parse.urlencode({"q": query, "format": "json", "no_html": "1"})
+    url = f"https://duckduckgo.com/?{encoded}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Navi/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode("utf-8", errors="replace"))
+        return ToolResult(tool="web.search", ok=True, facts={"query": query, "response": data})
+    except Exception as exc:
+        return ToolResult(tool="web.search", ok=False, error=str(exc), facts={"query": query})
+
+
+def _http_fetch(args: dict[str, Any]) -> ToolResult:
+    import urllib.request
+    import json as _json
+
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return ToolResult(tool="http.fetch", ok=False, error="url is required")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return ToolResult(tool="http.fetch", ok=False, error="only http/https URLs allowed")
+    method = str(args.get("method") or "GET").upper()
+    headers = args.get("headers") or {}
+    body = args.get("body")
+    max_bytes = _positive_int(args.get("max_bytes"), default=524288, maximum=2097152)
+
+    try:
+        data = body.encode("utf-8") if body else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("User-Agent", "Navi/1.0")
+        for k, v in headers.items():
+            req.add_header(str(k), str(v))
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            content = resp.read(max_bytes).decode("utf-8", errors="replace")
+            resp_headers = dict(resp.headers.items())
+            return ToolResult(
+                tool="http.fetch",
+                ok=True,
+                facts={
+                    "url": url,
+                    "method": method,
+                    "status_code": resp.status,
+                    "headers": resp_headers,
+                    "body": content,
+                    "truncated": len(content) >= max_bytes,
+                },
+            )
+    except Exception as exc:
+        return ToolResult(tool="http.fetch", ok=False, error=str(exc), facts={"url": url, "method": method})
+
+
+def _system_info(args: dict[str, Any]) -> ToolResult:
+    import platform
+    import shutil as _shutil
+
+    facts: dict[str, Any] = {
+        "os": platform.platform(),
+        "python": platform.python_version(),
+        "arch": platform.machine(),
+        "hostname": platform.node(),
+    }
+    try:
+        with open("/proc/uptime") as f:
+            facts["uptime_seconds"] = float(f.read().split()[0])
+    except Exception:
+        pass
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    facts["mem_total_kb"] = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    facts["mem_available_kb"] = int(line.split()[1])
+    except Exception:
+        pass
+    try:
+        usage = _shutil.disk_usage(Path.home())
+        facts["disk_total_gb"] = round(usage.total / (1024**3), 1)
+        facts["disk_free_gb"] = round(usage.free / (1024**3), 1)
+        facts["disk_used_pct"] = round((usage.used / usage.total) * 100, 1)
+    except Exception:
+        pass
+    try:
+        load = os.getloadavg()
+        facts["load_avg"] = {"1m": load[0], "5m": load[1], "15m": load[2]}
+    except Exception:
+        pass
+    category = str(args.get("category") or "").strip()
+    if category == "processes":
+        try:
+            ps = subprocess.run(
+                ["ps", "aux", "--sort=-%mem"], capture_output=True, text=True, timeout=5
+            )
+            facts["processes"] = ps.stdout[:8000]
+        except Exception as e:
+            facts["processes_error"] = str(e)
+    return ToolResult(tool="system.info", ok=True, facts=facts)
+
