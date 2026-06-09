@@ -87,29 +87,28 @@ class RecoveryPlanner:
         return RecoveryPlan(
             trigger="completion.verify",
             reason=block_reason,
-            recommended="ask_user",
+            recommended="retry_capability",
             choices=[
                 RecoveryChoice(
-                    kind="ask_user",
-                    reason="The verifier blocked completion but no deterministic recovery tool was derived.",
-                    tool="final.answer",
-                    permission="read",
-                    args={
-                        "message": (
-                            "I could not verify completion yet. Please clarify whether to retry, use another "
-                            "capability, or stop."
-                        )
-                    },
-                ),
-                RecoveryChoice(
                     kind="retry_capability",
-                    reason="Retry the last capability if the failure may be transient.",
+                    reason="Retry the last capability or try an alternative approach.",
                 ),
                 RecoveryChoice(
                     kind="rollback_proposal",
                     reason="Create a rollback proposal if the failed work changed local state.",
                     tool="evolution.propose",
                     permission="prepare",
+                ),
+                RecoveryChoice(
+                    kind="report_status",
+                    reason="Report current status to user if all retry options are exhausted.",
+                    tool="final.answer",
+                    permission="read",
+                    args={
+                        "message": (
+                            "Verification incomplete. Attempted alternatives exhausted."
+                        )
+                    },
                 ),
             ],
         )
@@ -144,19 +143,19 @@ class RecoveryPlanner:
             choices=[
                 first,
                 RecoveryChoice(
-                    kind="ask_user",
-                    reason="Ask the user how to proceed if approval context is missing.",
-                    tool="final.answer",
-                    permission="read",
-                    args={
-                        "message": "The delegation run is not verified complete yet. Please approve or clarify next steps."
-                    },
-                ),
-                RecoveryChoice(
                     kind="alternate_capability",
                     reason="Inspect delegation state before choosing another action.",
                     tool="delegate.list",
                     permission="read",
+                ),
+                RecoveryChoice(
+                    kind="report_status",
+                    reason="Report delegation status to user if no other option is viable.",
+                    tool="final.answer",
+                    permission="read",
+                    args={
+                        "message": "Delegation run is in progress. Awaiting next actionable state."
+                    },
                 ),
             ],
         )

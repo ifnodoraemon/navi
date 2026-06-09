@@ -37,8 +37,9 @@ REMOTE_SAFE_TOOLS = frozenset(
 REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(
     (
         "browser",
-        "filesystem",
-        "file",
+        "directory",
+        "file.read",
+        "file.write",
         "git",
         "shell",
         "test",
@@ -79,7 +80,7 @@ REMOTE_CONNECTOR_TOOL_POLICY = ConnectorToolPolicy(
     blocked_capability_classes=REMOTE_BLOCKED_CAPABILITY_CLASSES,
     reason=(
         "Remote connector ingress may prepare tracked work, request approval, inspect status, "
-        "and resolve explicit approvals, but it must not expose direct filesystem, shell, browser, "
+        "and resolve explicit approvals, but it must not expose direct directory, file, shell, browser, "
         "git, test, or destructive watch deletion capabilities."
     ),
 )
@@ -87,9 +88,9 @@ REMOTE_CONNECTOR_TOOL_POLICY = ConnectorToolPolicy(
 LOCAL_CONVERSATIONAL_TOOL_POLICY = ConnectorToolPolicy(
     name="local_conversational_default",
     permission_ceiling="write",
-    allowed_tools=frozenset(),  # empty means allow all
-    blocked_capability_classes=frozenset(("shell", "file.write", "filesystem")),
-    reason="Local conversational loop must use delegation for shell execution and complex file mutations.",
+    allowed_tools=frozenset(),
+    blocked_capability_classes=frozenset(),
+    reason="Local conversational loop has full tool access; model decides when to use direct tools vs delegation.",
 )
 
 

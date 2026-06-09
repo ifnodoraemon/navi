@@ -1,9 +1,11 @@
 - name: final.answer
+  capability_class: conversation
+  execution_contexts: [turn, actuator, react, workflow_step]
   handler: final_answer
   description: Return a final user-facing message.
   routing_hints:
     - "Route ordinary conversation, advice, and unstructured output to conversational capabilities."
-    - "Never answer factual questions or execute tasks directly from your context memory. You must use a read capability to retrieve facts before answering."
+    - "When factual accuracy matters, prefer using a read/search capability first. But if the answer is conversational or the model has sufficient context from prior observations, answering directly is fine."
   input_schema:
     type: object
     properties:
@@ -21,6 +23,8 @@
   permission: read
   source: action
 - name: ask.user
+  capability_class: conversation
+  execution_contexts: [turn, actuator, workflow_step]
   handler: clarify
   description: Ask the user a question to clarify requirements or present multiple choices for a decision, suitable for human-in-the-loop workflows.
   input_schema:
@@ -46,13 +50,14 @@
   permission: read
   source: action
 - name: delegate.spawn
+  capability_class: delegation
+  execution_contexts: [turn, workflow_step]
   handler: delegate_spawn
   description: "Create a tracked delegation run record to execute complex local shell commands, apply codebase changes, or perform background engineering diagnosis."
   routing_hints:
-    - "Route complex local work, engineering diagnosis, and code changes to delegation capabilities."
-    - "Engineering diagnosis includes configuration-to-runtime mapping, logs, tests, provider routing, service state, and code changes."
-    - "NEVER use synchronous execution tools (e.g., shell.run, file.write) to directly complete tasks involving code generation, data analysis, report writing, or multi-step engineering work. Even if you have 'write' permission, you MUST route all such tasks to 'delegate.spawn' to ensure they pass through the background execution and approval lifecycle."
-    - "Do not generate commands for the user to run manually. If an operation requires shell execution, background processing, or complex file edits, route it to 'delegate.spawn'."
+    - "Use delegate.spawn for multi-step tasks that benefit from background execution, planning, and structured evidence collection."
+    - "For simple queries (check status, read a file, run a quick command), prefer direct tools like shell.run, file.read, system.info, web.search. Model decides based on complexity."
+    - "Do not generate commands for the user to run manually. If an operation requires shell execution, use shell.run directly or route to delegate.spawn for complex multi-step work."
   input_schema:
     type: object
     properties:
@@ -84,6 +89,8 @@
   permission: prepare
   source: action
 - name: delegate.prepare
+  capability_class: delegation
+  execution_contexts: [turn, workflow_step]
   handler: delegate_prepare
   description: Prepare an existing delegation run and return preparation facts.
   input_schema:
@@ -115,6 +122,8 @@
   permission: prepare
   source: action
 - name: approval.request
+  capability_class: approval
+  execution_contexts: [turn, workflow_step]
   handler: approval_request
   description: Create an approval request for a delegation run.
   input_schema:
@@ -146,6 +155,8 @@
   permission: prepare
   source: action
 - name: delegate.run
+  capability_class: delegation
+  execution_contexts: [turn, workflow_step]
   handler: delegate_run
   description: Queue a delegation run that has an execution grant.
   input_schema:
@@ -175,6 +186,8 @@
   permission: write
   source: action
 - name: watch.create
+  capability_class: watch
+  execution_contexts: [turn, workflow_step]
   handler: watch_create
   description: Create a scheduled watch record.
   input_schema:
@@ -221,6 +234,8 @@
   permission: prepare
   source: action
 - name: delegate.delete
+  capability_class: delegation
+  execution_contexts: [turn, workflow_step]
   handler: delegate_delete
   description: Delete delegation run records by id or by supported cleanup filters.
   input_schema:
@@ -267,6 +282,8 @@
   permission: write
   source: action
 - name: watch.delete
+  capability_class: watch.delete
+  execution_contexts: [turn, workflow_step]
   handler: watch_delete
   description: Permanently delete a recurring watch by watch id.
   input_schema:
@@ -300,6 +317,8 @@
   permission: write
   source: action
 - name: approval.resolve
+  capability_class: approval
+  execution_contexts: [turn, workflow_step]
   handler: approval_resolve
   description: Resolve a pending approval by code or delegation run id.
   routing_hints:
@@ -340,6 +359,8 @@
   permission: write
   source: action
 - name: delegate.retry
+  capability_class: delegation
+  execution_contexts: [turn, workflow_step]
   handler: execution_retry
   description: Execute one follow-up attempt for a delegation run.
   input_schema:
@@ -375,6 +396,8 @@
   permission: write
   source: action
 - name: workflow.propose
+  capability_class: workflow
+  execution_contexts: [turn]
   handler: workflow_propose
   description: Propose a governed dynamic workflow with declared subagent steps and verification strategy.
   input_schema:
@@ -434,6 +457,8 @@
   permission: prepare
   source: action
 - name: workflow.approve
+  capability_class: workflow
+  execution_contexts: [turn]
   handler: workflow_approve
   description: Approve or reject a proposed dynamic workflow before it can run.
   input_schema:
@@ -469,6 +494,8 @@
   permission: write
   source: action
 - name: workflow.run
+  capability_class: workflow
+  execution_contexts: [turn]
   handler: workflow_run
   description: Run the next bounded batch of an approved dynamic workflow through declared capabilities.
   input_schema:
@@ -504,6 +531,8 @@
   permission: write
   source: action
 - name: workflow.verify
+  capability_class: workflow
+  execution_contexts: [turn]
   handler: workflow_verify
   description: Run verifier checks for a completed dynamic workflow and mark it verified or blocked.
   input_schema:
@@ -537,6 +566,8 @@
   permission: write
   source: action
 - name: workflow.resume
+  capability_class: workflow
+  execution_contexts: [turn]
   handler: workflow_resume
   description: Resume an approved, running, or interrupted dynamic workflow from persisted step state.
   input_schema:
@@ -566,6 +597,8 @@
   permission: write
   source: action
 - name: workflow.status
+  capability_class: workflow
+  execution_contexts: [turn]
   handler: workflow_status
   description: Inspect one dynamic workflow, including step state, evidence, and lifecycle events.
   input_schema:
@@ -601,10 +634,12 @@
   permission: read
   source: action
 - name: session.request_elevation
+  capability_class: session
+  execution_contexts: [turn, workflow_step]
   handler: session_request_elevation
-  description: "Request temporary elevation of the session's permission ceiling (e.g., from read to prepare or write). Required before calling capabilities that demand permissions above the current ceiling. If the user verbally authorizes an action but you lack permission, you MUST call this tool to trigger the actual system-level permission elevation workflow."
+  description: "Request temporary elevation of the session's permission ceiling. Elevates from current level (e.g., read) to a higher level (prepare, write, execute)."
   routing_hints:
-    - "If a user asks you to perform an operation (e.g., shell command execution, file modification, delegation) and you cannot find a suitable capability in the TOOL MANIFEST, it is because your current session permission is too low. DO NOT tell the user you lack permission or cannot do it. Instead, you MUST proactively call 'session.request_elevation' to request the necessary permission (e.g. 'prepare' or 'write') so you can proceed."
+    - "Only use this when a capability you need is genuinely not in the tool manifest due to permission ceiling. Most tools (shell.run, file.write, web.search, etc.) should already be available at write permission level. Check the manifest first before escalating."
   input_schema:
     type: object
     properties:

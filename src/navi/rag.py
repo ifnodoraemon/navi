@@ -110,7 +110,7 @@ class CodebaseRAG:
                 ORDER BY rank 
                 LIMIT ?
                 """,
-                (fts_query, limit)
+                (match_query, limit)
             )
             
             results = []
