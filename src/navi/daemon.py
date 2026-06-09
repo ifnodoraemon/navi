@@ -14,8 +14,10 @@ from typing import Any, Awaitable, Callable
 
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .cron import next_cron_time
+from .event_bus import ActionApprovedEvent, ApprovalResolvedEvent, EventBus
 from .evolution import EvolutionEngine
 from .execution import ExecutionService
+from .governance_agent import GovernanceAgent
 from .graph import GraphNode, GraphStore
 from .runs import Run, RunStore
 from .text_utils import truncate_middle
@@ -64,6 +66,23 @@ class SystemDaemon:
         self.evolution = EvolutionEngine(home)
         self.capabilities = CapabilityRegistry(home=home, project_dir=self.project_dir)
         self.graph = GraphStore(home)
+        self.event_bus = EventBus()
+        self.governance = GovernanceAgent(home, self.event_bus)
+        self._setup_execution_subscription()
+
+    def _setup_execution_subscription(self) -> None:
+        async def on_action_approved(event: ActionApprovedEvent) -> None:
+            task = self.runs.get(event.run_id)
+            if task and task.status in ("awaiting_approval", "queued", "preparing"):
+                self.runs.update_run(event.run_id, status="queued")
+
+        async def on_approval_resolved(event: ApprovalResolvedEvent) -> None:
+            task = self.runs.get(event.run_id)
+            if task and event.decision == "approved":
+                self.runs.update_run(event.run_id, status="queued")
+
+        self.event_bus.subscribe("action_approved", on_action_approved)
+        self.event_bus.subscribe("approval_resolved", on_approval_resolved)
 
     async def process_queue_once(self) -> list[Run]:
         completed = await self.execution.process_pending_once()

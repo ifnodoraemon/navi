@@ -122,7 +122,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     subagent_store = SubagentRunStore(home)
     workflow_store = WorkflowStore(home)
     daemon = SystemDaemon(home, project_dir=project_dir)
-    agent = HernessEngine(home=home, runtime=runtime, project_dir=project_dir)
+    agent = HernessEngine(home=home, runtime=runtime, project_dir=project_dir, event_bus=daemon.event_bus)
     capabilities = build_capability_registry(home, project_dir=project_dir)
     connector_adapters = load_connector_adapters()
     connector_status_handlers = {

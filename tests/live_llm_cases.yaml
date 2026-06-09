@@ -10,7 +10,7 @@ syscall_cases:
     source: observed:.navi/memory.db
     message: "你可以做什么"
     expect:
-      tool: tools.list
+      tool: final.answer
       permission: read
 
   - id: skills_question_uses_skills_list
@@ -27,11 +27,11 @@ syscall_cases:
       tool: tools.list
       permission: read
 
-  - id: local_directory_uses_filesystem_tool
+  - id: local_directory_uses_directory_tool
     source: observed:.navi/memory.db
     message: "列一下我本机的目录"
     expect:
-      tool: filesystem.list
+      tool: directory.list
       permission: read
 
   - id: service_start_time_uses_service_tool

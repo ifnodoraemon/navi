@@ -57,6 +57,7 @@ class CapabilityContext:
     workspace: str = ""
     session_id: str | None = None
     input_text: str = ""
+    event_bus: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -570,43 +571,19 @@ class DelegateSpawnCapability:
             },
         )
 
-        if task.autonomy_level != "L3":
-            approval = runs.create_approval(
+        # Governance intercepts via event bus — creates approval if needed
+        if context.event_bus is not None:
+            from .event_bus import ActionRequestedEvent
+            await context.event_bus.publish(ActionRequestedEvent(
+                source_agent="main_agent",
+                correlation_id=task.id,
                 run_id=task.id,
                 peer_id=context.peer_id,
                 sender_id=context.sender_id,
-            )
-            task = runs.update_run(task.id, status="awaiting_approval") or task
-            goals.update_for_run(
-                task,
-                evidence={
-                    "run_id": task.id,
-                    "run_status": task.status,
-                    "approval_status": approval.status,
-                },
-            )
-            facts = {
-                **_transition_facts("delegation_run", task.id, "created"),
-                "goal_id": goal.id,
-                "run_id": task.id,
-                "status": task.status,
-                "autonomy_level": task.autonomy_level,
-                "trust_rule_id": task.trust_rule_id,
-                "approval": {
-                    "action": approval.action,
-                    "code": approval.code,
-                    "expires_at": approval.expires_at,
-                },
-            }
-            return CapabilityResult(
-                ok=True,
-                action="approval",
-                observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
-                message=f"后台任务已准备就绪 {task.id}。请审批以允许其执行。审批码：{approval.code}",
-                run_id=task.id,
-                facts=facts,
-                terminal=True,
-            )
+                source=context.source,
+                autonomy_level=task.autonomy_level,
+            ))
+            task = runs.get(task.id) or task
 
         facts = {
             **_transition_facts("delegation_run", task.id, "created"),
@@ -616,6 +593,13 @@ class DelegateSpawnCapability:
             "autonomy_level": task.autonomy_level,
             "trust_rule_id": task.trust_rule_id,
         }
+        approvals = runs._approvals_for_run(task.id)
+        if approvals:
+            facts["approval"] = {
+                "action": approvals[0].action,
+                "code": approvals[0].code,
+                "expires_at": approvals[0].expires_at,
+            }
 
         return _fact_result(
             "delegation",

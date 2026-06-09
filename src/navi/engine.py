@@ -124,6 +124,7 @@ class HernessEngine:
             workspace=str(self.capabilities.gateway.project_dir.resolve()),
             session_id=resolved_session_id,
             input_text=text,
+            event_bus=self.event_bus,
         )
         
         observations: list[str] = []
