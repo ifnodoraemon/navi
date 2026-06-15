@@ -100,7 +100,7 @@ Runtime rules:
 - Browser-based control surfaces are out of scope; local API clients must not expose long-lived secrets.
 - Connector credentials should be persisted with restrictive file permissions when the OS allows it.
 - Any future dangerous tools, especially shell/file write tools, must require an approval policy before being available to remote connector messages.
-- Long-context operation must reload durable constraints, trust state, approvals, and relevant memory from stores before execution; it must not rely only on the current prompt window or a lossy summary.
+- Long-context operation must reload durable constraints, governance state, approvals, and relevant memory from stores before execution; it must not rely only on the current prompt window or a lossy summary.
 - Memory implementation should evolve toward typed, scoped, provenance-bearing stores: working, constraint, episodic, semantic, procedural, preference, negative, and skill memory.
 - Memory retrieval must be goal-directed and explainable; semantic similarity alone is not a sufficient recall policy.
 - Conversation sessions must be explicit state. Long-running connectors need a way to start a fresh session without deleting old transcripts, otherwise topic drift and stale local context will pollute future answers.
@@ -137,8 +137,6 @@ navi session show SESSION_ID
 navi skills
 navi auth status
 navi graph list
-navi trust list
-navi trust set RULE_ID LEVEL
 navi workflow propose OBJECTIVE
 navi workflow list
 navi workflow show WORKFLOW_ID
@@ -187,7 +185,6 @@ GET  /v1/auth/status
 GET  /v1/tools
 POST /v1/tools/{tool_name}/call
 GET  /v1/graph
-GET  /v1/trust-rules
 GET  /v1/traces
 GET  /v1/traces/{trace_id}
 GET  /v1/trace-evaluations

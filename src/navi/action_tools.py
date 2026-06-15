@@ -25,8 +25,17 @@ def _raw_action_specs() -> list[dict[str, Any]]:
 
 
 def _tool_spec(item: dict[str, Any]) -> ToolSpec:
+    capability_class = str(item.get("capability_class") or "").strip()
+    if not capability_class:
+        raise ValueError(f"action tool {item.get('name')!r} must declare capability_class")
+    execution_contexts = tuple(str(value).strip() for value in item.get("execution_contexts") or [])
+    execution_contexts = tuple(value for value in execution_contexts if value)
+    if not execution_contexts:
+        raise ValueError(f"action tool {item.get('name')!r} must declare execution_contexts")
     return ToolSpec(
         name=str(item["name"]),
+        capability_class=capability_class,
+        execution_contexts=execution_contexts,
         description=str(item.get("description", "")),
         input_schema=dict(item.get("input_schema") or {"type": "object"}),
         output_schema=dict(item.get("output_schema") or {"type": "object"}),

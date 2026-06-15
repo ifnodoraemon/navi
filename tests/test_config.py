@@ -16,7 +16,7 @@ def test_default_config_round_trip(tmp_path):
     assert not hasattr(config, "weixin")
     assert config.runtime.service_name == "navi.service"
     assert config.runtime.agent_step_budget == 8
-    assert config.execution.provider == "navi"
+    assert config.execution.provider == "react"
 
 
 def test_connector_env_file_overrides_weixin(tmp_path):
@@ -97,6 +97,7 @@ def test_env_file_overrides_execution_facts(tmp_path):
     (tmp_path / "env").write_text(
         "\n".join(
             [
+                "NAVI_EXECUTION_PROVIDER=react",
                 "NAVI_EXECUTION_TIMEOUT_SECONDS=9",
                 "NAVI_EXECUTION_MOCK=true",
             ]
@@ -106,7 +107,7 @@ def test_env_file_overrides_execution_facts(tmp_path):
 
     config = load_config(tmp_path)
 
-    assert config.execution.provider == "navi"
+    assert config.execution.provider == "react"
     assert config.execution.timeout_seconds == 9
     assert config.execution.mock is True
 

@@ -770,21 +770,30 @@ class MemoryStore:
     ) -> list[MemoryItem]:
         from .provider import ChatMessage
         from .evolution import EvolutionLedger
+        from .trace import TraceStore
 
         # 1. Fetch existing active memory items
         active_items = self._list_active_learnable_items()
 
-        # 2. Format execution logs
+        # 2. Format execution trace
+        traces = TraceStore(self.home)
+        events = traces.list_events_for_run_or_session(
+            run_id=task.id,
+            session_id=f"executor:{task.id}",
+        )
+
         logs_text_parts = []
-        for log in logs[-10:]:
-            logs_text_parts.append(
-                f"Phase: {log.phase}\n"
-                f"Command: {log.command}\n"
-                f"Exit Code: {log.exit_code}\n"
-                f"Stdout: {truncate_middle(log.stdout, TASK_LEARNING_LOG_LIMIT)}\n"
-                f"Stderr: {truncate_middle(log.stderr, TASK_LEARNING_LOG_LIMIT)}"
-            )
-        logs_text = "\n---\n".join(logs_text_parts)
+        for e in events[-10:]:
+            if e.phase == "planner.syscall":
+                tool = e.tool
+                reason = e.message
+                logs_text_parts.append(f"Model Thought -> Tool: {tool}, Reason: {reason}, Args: {e.output_json}")
+            elif e.phase == "capability.result":
+                ok = e.ok
+                msg = e.message
+                logs_text_parts.append(f"Tool Result -> Tool: {e.tool}, OK: {ok}, Msg: {truncate_middle(msg, TASK_LEARNING_LOG_LIMIT)}")
+
+        logs_text = "\n".join(logs_text_parts)
 
         # 3. Format context
         task_context = (

@@ -1,5 +1,5 @@
 service_name: navi.service
-execution_provider: navi
+execution_provider: react
 execution_timeout_seconds: 120.0
 execution_mock: false
 model_provider: mock

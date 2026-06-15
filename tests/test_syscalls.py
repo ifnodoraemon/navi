@@ -62,7 +62,7 @@ async def test_model_syscall_planner_asks_when_schedule_time_is_vague(tmp_path):
 @pytest.mark.asyncio
 async def test_model_syscall_planner_receives_recent_conversation_context(tmp_path):
     provider = ScriptedProvider(
-        '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"删除上一轮确认要删除的旧任务入口"},"confidence":0.9,"reason":"follow-up refers to recent conversation"}'
+        '{"tool":"delegate.spawn","permission":"prepare","args":{"objective": "删除上一轮确认要删除的旧任务入口", "context": "mock", "plan": "mock", "success_criteria": "mock"},"confidence":0.9,"reason":"follow-up refers to recent conversation"}'
     )
     planner = ModelSyscallPlanner(ModelPool(default=provider))
 
@@ -73,7 +73,7 @@ async def test_model_syscall_planner_receives_recent_conversation_context(tmp_pa
     )
 
     assert call.tool == "delegate.spawn"
-    assert call.args["prompt"] == "删除上一轮确认要删除的旧任务入口"
+    assert call.args["objective"] == "删除上一轮确认要删除的旧任务入口"
     assert "CONVERSATION HISTORY" in provider.messages[1].content
     assert "旧任务入口可以删除" in provider.messages[1].content
 
@@ -81,7 +81,7 @@ async def test_model_syscall_planner_receives_recent_conversation_context(tmp_pa
 @pytest.mark.asyncio
 async def test_model_syscall_planner_parses_watch_syscall(tmp_path):
     provider = ScriptedProvider(
-        '{"tool":"watch.create","permission":"prepare","args":{"prompt":"上一个通识课给我","cron":"0 21 * * *"},"confidence":0.95,"reason":"exact time provided"}'
+        '{"tool":"watch.create","permission":"prepare","args":{"objective": "上一个通识课给我", "context": "mock", "plan": "mock", "success_criteria": "mock","cron":"0 21 * * *"},"confidence":0.95,"reason":"exact time provided"}'
     )
     planner = ModelSyscallPlanner(ModelPool(default=provider))
 
@@ -89,7 +89,7 @@ async def test_model_syscall_planner_parses_watch_syscall(tmp_path):
 
     assert call.permission == "prepare"
     assert call.tool == "watch.create"
-    assert call.args == {"prompt": "上一个通识课给我", "cron": "0 21 * * *"}
+    assert call.args == {"objective": "上一个通识课给我", "cron": "0 21 * * *", "context": "mock", "plan": "mock", "success_criteria": "mock"}
 
 
 @pytest.mark.asyncio
@@ -123,7 +123,7 @@ async def test_model_syscall_planner_parses_approval_syscall(tmp_path):
 @pytest.mark.asyncio
 async def test_model_syscall_planner_prompt_routes_engineering_investigation_to_task(tmp_path):
     provider = ScriptedProvider(
-        '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"检查配置到运行时的映射问题"},"confidence":0.9,"reason":"engineering investigation"}'
+        '{"tool":"delegate.spawn","permission":"prepare","args":{"objective": "检查配置到运行时的映射问题", "context": "mock", "plan": "mock", "success_criteria": "mock"},"confidence":0.9,"reason":"engineering investigation"}'
     )
     planner = ModelSyscallPlanner(ModelPool(default=provider))
 

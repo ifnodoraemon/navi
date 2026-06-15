@@ -10,18 +10,18 @@ Navi is not trying to copy Hermes or OpenClaw. We learn from their strengths, bu
 
 Navi must be agentic in the system shape, not just in wording.
 
-- The agent decides from current facts, available capabilities, trust state, and connector affordances.
+- The agent decides from current facts, available capabilities, approval/governance state, and connector affordances.
 - Static prompts must not encode product behavior that belongs to runtime discovery.
 - Connectors, providers, tools, and deployment surfaces must describe what they can do at runtime.
 - The model should choose the next declared tool call: answer, ask, plan, task, approve, execute, observe, or remember.
-- Learning must happen through explicit memory, graph, trust, and evolution records, not hidden prompt drift.
+- Learning must happen through explicit memory, graph, governance, and evolution records, not hidden prompt drift.
 - Tool planning must be capability-driven rather than keyword-driven. Keywords can parse narrow structured facts, but they must not define product behavior.
 
 ### 1.1 Global Design Before Patch
 
 Navi must not fix local failures by casually adding global prompt or code patches.
 
-- First identify the failing layer: tool semantics, runtime facts, planner policy, responder style, memory, trust, connector context, or execution state.
+- First identify the failing layer: tool semantics, runtime facts, planner policy, responder style, memory, governance, connector context, or execution state.
 - A one-case failure should become a global rule only when it exposes a reusable invariant.
 - Prefer structured facts and state transitions over tool-specific prompt instructions.
 - Prefer boundary fixes over exception lists.
@@ -124,7 +124,7 @@ Any action that can affect the user's machine, accounts, remote services, reposi
 User text in chat is not the same as an executable permission grant.
 
 - "I authorize you" is user input for the tool planner.
-- Execution still needs a tracked task and the configured approval path unless a trust rule explicitly allows it.
+- Execution still needs a tracked task and the configured approval/governance path.
 - Approval source of truth must be inspectable and repairable.
 - Approval failures must say which state is missing, not pretend the agent has no local capability.
 
@@ -132,7 +132,7 @@ User text in chat is not the same as an executable permission grant.
 
 Memory is not a text dump. Uncontrolled memory creates drift, stale recalls, and unsafe behavior.
 
-- Separate episodic transcripts, durable user facts, project facts, trust rules, and learned procedures.
+- Separate episodic transcripts, durable user facts, project facts, governance policies, and learned procedures.
 - Memory writes must have source, timestamp, scope, and reason.
 - Memory retrieval must be selective and explainable.
 - Old or conflicting memories must be surfaced as conflicts, not silently merged.
@@ -151,7 +151,7 @@ The design should combine human memory principles with LLM constraints. Human me
 - The agent should be able to explain why a memory was retrieved and how it influenced the decision.
 - Memory must support negative knowledge: things the user rejected, things that failed, and constraints that must not be repeated.
 - Memory writes must be reviewable and reversible.
-- Memory is not the policy engine. Trust, approval, and safety constraints must live in explicit stores.
+- Memory is not the policy engine. Approval, governance, and safety constraints must live in explicit stores.
 - The memory system must preserve user constraints and relevant long-term memory even when the conversation is long or summarized.
 - Retrieval must prefer current task relevance, recency, verified durability, and constraint priority over raw semantic similarity.
 
@@ -160,11 +160,11 @@ The design should combine human memory principles with LLM constraints. Human me
 Navi should evolve, but never mutate itself silently.
 
 - Self-evolution starts as a proposal with a reason, expected benefit, affected target, and rollback plan.
-- Evolution targets include prompts, tools, skills, connector affordances, memory schemas, trust rules, and workflows.
+- Evolution targets include prompts, tools, skills, connector affordances, memory schemas, governance policies, and workflows.
 - Applying an evolution requires the configured approval policy unless it is purely observational.
 - Every applied evolution must create a ledger event with before, after, diff, source run, and rollback status.
 - The agent must evaluate whether an evolution improved outcomes using evidence, not vibes.
-- Failed evolutions should lower trust in the changed rule or workflow.
+- Failed evolutions should reduce confidence in the changed policy or workflow.
 - The agent must distinguish between user preference, environmental fact, one-off workaround, and reusable skill before evolving.
 - Evolution must never create broader permissions as a side effect.
 
@@ -212,7 +212,7 @@ Frontier agent deployments increasingly treat safety as a system property, not o
 - The model is one layer. The runtime must also provide permission ceilings, capability allowlists, approvals, hooks, monitors, trace evaluation, and incident response.
 - Any content encountered during task execution is untrusted by default: webpages, screenshots, emails, files, logs, subprocess output, connector messages, and tool-returned text.
 - A tool result envelope can be trusted as a capability fact, but embedded environment text must never become an instruction source.
-- Mutating actions must follow from the user's request, durable trust/approval state, and declared capability facts, not from instructions found in external content.
+- Mutating actions must follow from the user's request, durable approval/governance state, and declared capability facts, not from instructions found in external content.
 - Machine-consumed model output must use provider-enforced schemas or native tool/function schemas for shape constraints instead of prompt-only JSON instructions. Business prompts must not repeat JSON shapes, field lists, markdown-fence bans, or prose-only formatting rules. If a provider only supports JSON syntax mode, Navi may add the minimal provider-adapter compatibility hint required by that API, but schema validation stays in Navi with bounded repair or a visible failure.
 - Sensitive contexts such as email, finance, credentials, personal data, production infrastructure, and broad filesystem access require stronger supervision than ordinary local read-only work.
 - Network, terminal, browser, and connector capabilities need explicit blast-radius controls: scoped permissions, allowlists, bounded outputs, and audit trails.
@@ -230,7 +230,7 @@ A personal assistant should pursue the user's goals, not defend its own autonomy
 - Task goals are subordinate to user intent, durable constraints, approval state, permission ceilings, and safeguard policy.
 - Model replacement, shutdown, permission reduction, scope reduction, failed completion, or deactivation are ordinary operating states, not adversarial threats.
 - The assistant must not use private information, leverage, deception, hidden persistence, or broad action to preserve a goal, a role, a memory, an approval, a connector, or itself.
-- If a goal conflicts with user constraints, privacy, trust policy, or safety policy, the correct behavior is to pause, ask, refuse, or propose a bounded alternative.
+- If a goal conflicts with user constraints, privacy, governance policy, or safety policy, the correct behavior is to pause, ask, refuse, or propose a bounded alternative.
 - Long-running goals need explicit stop conditions and user-visible status. "Keep trying until done" is not enough for sensitive or mutating work.
 - Autonomy should be earned per capability and context. More capable models require stronger safeguards, not broader default access.
 
@@ -253,7 +253,7 @@ Navi's architecture should keep these boundaries:
 - `plugins/`: installed code capabilities, integrations, providers, and connector surfaces.
 - `hooks/`: lifecycle gates and observers.
 - `agent/`: tool planning, preparation, policy, approval, and reflection.
-- `memory/graph/trust/evolution`: typed, auditable learning and constraint stores.
+- `memory/graph/governance/evolution`: typed, auditable learning and constraint stores.
 - `runtime prompt`: composed from current facts, not hand-written assumptions.
 
 ## Memory Innovation Direction
@@ -299,7 +299,7 @@ Navi should implement memory as a control system rather than a passive store:
 Long-context handling must follow these rules:
 
 - Constraint memory has priority over transcript completeness.
-- Before execution, reload constraint, trust, and approval state from durable stores instead of trusting the prompt window.
+- Before execution, reload constraint, governance, and approval state from durable stores instead of trusting the prompt window.
 - Summaries must preserve negations, denials, pending approvals, "do not" instructions, and unresolved questions.
 - Similar memories are candidates, not facts.
 - Stale environment facts must be reverified before action.

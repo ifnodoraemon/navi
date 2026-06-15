@@ -2,7 +2,7 @@
 
 Navi is a **local-first agent OS for a governed personal AI assistant**.
 
-It is designed to give the model scaffolding, not to hardcode work on the model's behalf. Navi exposes declared capabilities, durable memory, trust and approval state, connector affordances, traces, and recovery records so the assistant can decide from current facts while staying auditable and bounded.
+It is designed to give the model scaffolding, not to hardcode work on the model's behalf. Navi exposes declared capabilities, durable memory, approval/governance state, connector affordances, traces, and recovery records so the assistant can decide from current facts while staying auditable and bounded.
 
 Version `1.1.1` adds governed dynamic workflows on top of the stable Navi agent OS contract and hardens service startup across current-contract store reinitialization.
 
@@ -14,13 +14,13 @@ Version `1.1.1` adds governed dynamic workflows on top of the stable Navi agent 
 
 *   🧠 **Governed Memory**: Typed, scoped, provenance-bearing memory for preferences, constraints, negative learnings, facts, semantic records, conflicts, and revocation.
 *   🧭 **Capability-Driven Agent Runtime**: The planner chooses declared syscalls from the capability manifest instead of relying on product keyword routing.
-*   ✅ **Trust, Approval, and Goal State**: Local execution moves through durable task, watch, goal, approval, verifier, and recovery records.
+*   ✅ **Approval, Governance, and Goal State**: Local execution moves through durable task, watch, goal, approval, verifier, and recovery records.
 *   🛡️ **Defense-in-Depth Safeguards**: Permission ceilings, connector tool policies, declarative capability risk metadata, untrusted observation boundaries, trace evaluation, and safeguard failure attribution.
 *   🧩 **Governed Dynamic Workflows**: The model can decide when a task needs dynamic orchestration and propose declarative plans with subagent steps, dependencies, allowed tools, approval, resumable execution, and independent verification.
-*   🔄 **Reversible Evolution Ledger**: Prompt, memory, skill, trust, workflow, and eval changes are recorded as reviewable, rollbackable events.
+*   🔄 **Reversible Evolution Ledger**: Prompt, memory, skill, workflow, governance-policy, and eval changes are recorded as reviewable, rollbackable events.
 *   🔌 **Skills, Plugins, and Hooks Boundaries**: Skills teach procedures, plugins add capabilities, and hooks observe or gate lifecycle events.
 *   🌐 **Multi-Surface Access**:
-    *   💻 **CLI Chat and Control Plane**: Interactive local chat plus memory, trust, evolution, trace, goal, diagnostic, and connector commands.
+    *   💻 **CLI Chat and Control Plane**: Interactive local chat plus memory, approval, evolution, trace, goal, diagnostic, and connector commands.
     *   🔧 **Headless Local API**: FastAPI server for local clients (`navi api`).
     *   💬 **Personal Weixin Connector**: Mock-tested long-poll connector shape for personal Weixin/iLink integration.
 
@@ -96,7 +96,6 @@ All local state is structured under `.navi/` or a custom `NAVI_HOME` directory:
 ├── goals.db          # Durable goal lifecycle state
 ├── traces.db         # Turn and capability trace records
 ├── subagents.db      # Planner/executor/critic/notification role records
-├── trust.db          # Trust engine states
 └── skills/           # Custom procedural guides (SKILL.md)
 ```
 
@@ -126,10 +125,8 @@ navi session list
 navi session new [alias]
 navi session show <session_id>
 
-# Skills & Trust Rules
+# Skills
 navi skills
-navi trust list
-navi trust set <rule_id> <autonomy_level>
 
 # Goals, traces, and sub-agent evidence
 navi goal list

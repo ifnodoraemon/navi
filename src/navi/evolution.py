@@ -12,7 +12,6 @@ from typing import Any
 
 from .graph import GraphStore
 from .runs import Run, RunStore
-from .trust import TrustRule, TrustStore
 
 
 @dataclass(frozen=True)
@@ -65,7 +64,7 @@ EVOLUTION_TARGETS: tuple[EvolutionTarget, ...] = (
         "prompt_layer", "Versioned prompt layer content that shapes model behavior.", "prompting"
     ),
     EvolutionTarget(
-        "skill", "Promptable skill content, metadata, provenance, and trust state.", "skills"
+        "skill", "Promptable skill content, metadata, provenance, and verification state.", "skills"
     ),
     EvolutionTarget(
         "memory_item", "Typed durable memory item content and lifecycle state.", "memory"
@@ -87,13 +86,7 @@ EVOLUTION_TARGETS: tuple[EvolutionTarget, ...] = (
         "connectors",
         True,
     ),
-    EvolutionTarget("trust_rule", "Sender/project scoped autonomy rule.", "trust", True),
-    EvolutionTarget(
-        "trust_policy",
-        "Autonomy level meanings, promotion, demotion, and approval policy.",
-        "trust",
-        True,
-    ),
+
     EvolutionTarget(
         "workflow_policy",
         "Daemon, execution, approval, and lifecycle decision policy.",
@@ -471,7 +464,6 @@ class EvolutionEngine:
         self.home = home
         self.ledger = EvolutionLedger(home)
         self.graph = GraphStore(home)
-        self.trust = TrustStore(home)
         self.runs = RunStore(home)
 
         # Jarvis Memory components
@@ -487,33 +479,6 @@ class EvolutionEngine:
         events: list[EvolutionEvent] = []
         reason = "successful task reflection" if success else "failed task reflection"
         events.append(self._update_graph(task, success=success, reason=reason))
-        previous_rule = self.trust.get(task.trust_rule_id) if task.trust_rule_id else None
-        before = json.dumps(
-            self._trust_payload(previous_rule) if previous_rule else {}, sort_keys=True
-        )
-        trust_rule = None
-        if previous_rule is not None:
-            if success:
-                trust_rule = self.trust.record_success(task)
-            else:
-                trust_rule = await self.trust.record_failure(task)
-        if trust_rule:
-            after = json.dumps(self._trust_payload(trust_rule), sort_keys=True)
-            events.append(
-                self.ledger.record(
-                    run_id=task.id,
-                    target_type="trust_rule",
-                    target_id=trust_rule.id,
-                    reason=reason,
-                    before=before,
-                    after=after,
-                )
-            )
-            self.runs.update_run(
-                task.id,
-                trust_rule_id=trust_rule.id,
-                autonomy_level=trust_rule.autonomy_level,
-            )
 
         # Active Run Learning reflection
         logs = self.runs.list_execution_logs(task.id)
@@ -525,6 +490,7 @@ class EvolutionEngine:
         try:
             from navi.trace import TraceStore
             from navi.evals import load_daily_journey_eval_dataset
+            from navi.provider import ChatMessage
             import yaml
 
             traces = TraceStore(self.home)
@@ -544,7 +510,7 @@ class EvolutionEngine:
             prompt = f"Analyze the following user journey and extract a daily eval YAML structure for it, containing 'id', 'user_goal', and a 'steps' array matching the format of daily_journeys.yaml. Return ONLY valid YAML.\n\n{text}"
 
             # Use provider
-            response = await self.provider.complete(prompt, max_tokens=1500)
+            response = await self.provider.complete_for("default", [ChatMessage(role="user", content=prompt)])
             if not response.text:
                 return
 
@@ -592,7 +558,6 @@ class EvolutionEngine:
         elif proposal.target_type in (
             "tool_spec",
             "connector_spec",
-            "trust_policy",
             "workflow_policy",
             "memory_schema",
         ):
@@ -632,11 +597,7 @@ class EvolutionEngine:
                 self.graph.replace_data(event.target_id, json.loads(event.before))
             else:
                 self.graph.delete(event.target_id)
-        elif event.target_type == "trust_rule":
-            if event.before and event.before != "{}":
-                self.trust.restore(json.loads(event.before))
-            else:
-                self.trust.delete(event.target_id)
+
         elif event.target_type == "memory_item":
             if not event.before:
                 self.memory.delete_item(event.target_id)
@@ -662,7 +623,6 @@ class EvolutionEngine:
         elif event.target_type in (
             "tool_spec",
             "connector_spec",
-            "trust_policy",
             "workflow_policy",
             "memory_schema",
             "eval_case",
@@ -702,17 +662,3 @@ class EvolutionEngine:
             before=before,
             after=after,
         )
-
-    @staticmethod
-    def _trust_payload(rule: TrustRule) -> dict[str, Any]:
-        return {
-            "id": rule.id,
-            "name": rule.name,
-            "pattern": rule.pattern,
-            "project_path": rule.project_path,
-            "sender_id": rule.sender_id,
-            "autonomy_level": rule.autonomy_level,
-            "success_count": rule.success_count,
-            "failure_count": rule.failure_count,
-            "data": rule.data,
-        }

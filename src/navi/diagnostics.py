@@ -75,7 +75,6 @@ def _state_checks(home: Path) -> list[DiagnosticCheck]:
         "memory.db",
         "runs.db",
         "goals.db",
-        "trust.db",
         "traces.db",
         "evolution.db",
         "subagents.db",

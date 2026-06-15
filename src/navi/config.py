@@ -112,7 +112,13 @@ def load_config(home: Path | None = None) -> NaviConfig:
         ),
     )
     execution = ExecutionConfig(
-        provider=DEFAULT_EXECUTION_PROVIDER,
+        provider=str(
+            env.get(
+                "NAVI_EXECUTION_PROVIDER",
+                execution_raw.get("provider", DEFAULT_EXECUTION_PROVIDER),
+            )
+        ).strip()
+        or DEFAULT_EXECUTION_PROVIDER,
         timeout_seconds=_float_env(
             env.get(
                 "NAVI_EXECUTION_TIMEOUT_SECONDS",

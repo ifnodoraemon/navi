@@ -26,10 +26,9 @@ journeys:
         expect:
           handled: true
           sent_count_delta: 1
-          sent_contains: "本地处理链路"
+          sent_contains: "Planner provider failed"
           event_contains:
             - message.received
-            - handler.error
             - reply.sent
 
   - id: weixin_local_work_request_gets_approval

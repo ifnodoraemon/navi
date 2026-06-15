@@ -186,6 +186,16 @@ def assemble_planner_turn_input(
         ]
     )
 
+    if permission_ceiling == "prepare":
+        blocks.append(
+            PromptBlock(
+                "PERMISSION EXPLANATION",
+                "turn_input",
+                "operating_context.permission_explanation",
+                "Your permission ceiling is currently restricted to 'prepare'. You can read files and investigate the environment to form a plan, but you CANNOT execute write operations or mutate state. Once you have formed a confident plan, you MUST request approval from the user using the `approval_request` tool before you can proceed.",
+            )
+        )
+
     routing_hints = []
     for tool in tools:
         if getattr(tool, "routing_hints", None):

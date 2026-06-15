@@ -42,7 +42,7 @@ async def test_core_delegation_approval_execution_goal_flow(tmp_path, monkeypatc
 
     spawned = await registry.invoke(
         "delegate.spawn",
-        {"prompt": "core smoke task"},
+        {"objective": "core smoke task", "context": "mock", "plan": "mock", "success_criteria": "mock"},
         permission="prepare",
         context=context,
     )

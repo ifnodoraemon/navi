@@ -14,6 +14,16 @@ from .runs import RunStore
 
 logger = logging.getLogger(__name__)
 ToolHandler = Callable[[dict[str, Any]], "ToolResult"]
+TURN_CONTEXT = "turn"
+ACTUATOR_CONTEXT = "actuator"
+REACT_CONTEXT = "react"
+WORKFLOW_STEP_CONTEXT = "workflow_step"
+ALL_EXECUTION_CONTEXTS = (
+    TURN_CONTEXT,
+    ACTUATOR_CONTEXT,
+    REACT_CONTEXT,
+    WORKFLOW_STEP_CONTEXT,
+)
 
 
 def validate_schema(data: Any, schema: dict[str, Any], path: str = "") -> list[str]:
@@ -74,6 +84,8 @@ def validate_schema(data: Any, schema: dict[str, Any], path: str = "") -> list[s
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
+    capability_class: str
+    execution_contexts: tuple[str, ...]
     description: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
@@ -82,6 +94,18 @@ class ToolSpec:
     permission: str = "read"
     source: str = "core"
     routing_hints: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.capability_class.strip():
+            raise ValueError(f"tool {self.name!r} must declare capability_class")
+        contexts = tuple(dict.fromkeys(str(item).strip() for item in self.execution_contexts))
+        contexts = tuple(item for item in contexts if item)
+        if not contexts:
+            raise ValueError(f"tool {self.name!r} must declare execution_contexts")
+        object.__setattr__(self, "execution_contexts", contexts)
+
+    def available_in(self, context: str) -> bool:
+        return context in self.execution_contexts
 
 
 @dataclass(frozen=True)

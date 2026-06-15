@@ -22,7 +22,6 @@ diagnostics: /v1/diagnostics
 tools: /v1/tools
 tool_call: /v1/tools/{tool_name}/call
 graph: /v1/graph
-trust_rules: /v1/trust-rules
 traces: /v1/traces
 trace: /v1/traces/{trace_id}
 trace_evaluations: /v1/trace-evaluations

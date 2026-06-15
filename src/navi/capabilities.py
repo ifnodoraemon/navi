@@ -31,6 +31,7 @@ from .workflows import (
     STEP_STATUS_RUNNING,
     WORKFLOW_STATUS_APPROVED,
     WORKFLOW_STATUS_AWAITING_APPROVAL,
+    WORKFLOW_STATUS_COMPLETED,
     WORKFLOW_STATUS_REJECTED,
     WORKFLOW_STATUS_RUNNING,
     WORKFLOW_STATUS_VERIFIED_COMPLETE,
@@ -70,6 +71,7 @@ class CapabilityResult:
     terminal: bool = False
     facts: dict[str, Any] | None = None
     provenance: str = ""
+    error_reason: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -524,22 +526,34 @@ class DelegateSpawnCapability:
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        prompt = _arg_text(args, "prompt")
-        if not prompt:
+        objective = _arg_text(args, "objective")
+        context_str = _arg_text(args, "context")
+        plan = _arg_text(args, "plan")
+        success_criteria = _arg_text(args, "success_criteria")
+
+        if not objective or not context_str or not plan or not success_criteria:
             return CapabilityResult(
                 ok=False,
                 action="delegation",
-                observation="delegate.spawn requires an objective.",
-                message="delegate.spawn requires an objective.",
+                observation="delegate.spawn requires objective, context, plan, and success_criteria.",
+                message="delegate.spawn requires objective, context, plan, and success_criteria.",
                 terminal=False,
+                error_reason="schema_mismatch",
             )
+
+        prompt = (
+            f"Objective:\n{objective}\n\n"
+            f"Context:\n{context_str}\n\n"
+            f"Plan:\n{plan}\n\n"
+            f"Success Criteria:\n{success_criteria}"
+        )
         config = load_config(self.home)
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         workspace = _resolve_workspace(context.workspace, default=self.project_dir)
 
         task = runs.create(
-            title=prompt[:120],
+            title=objective[:120],
             prompt=prompt,
             kind="delegation",
             source=context.source,
@@ -844,6 +858,7 @@ class WatchCreateCapability:
                 observation="watch.create requires prompt.",
                 message="watch.create requires prompt.",
                 terminal=False,
+                error_reason="schema_mismatch",
             )
         if kind == "once":
             next_run = _float_or_none(args.get("run_at"))
@@ -856,6 +871,7 @@ class WatchCreateCapability:
                     observation="watch.create kind=once requires run_at or run_at_text.",
                     message="watch.create kind=once requires run_at or run_at_text.",
                     terminal=False,
+                error_reason="schema_mismatch",
                 )
             cron = "once"
         else:
@@ -867,6 +883,7 @@ class WatchCreateCapability:
                     observation="watch.create kind=recurring requires cron.",
                     message="watch.create kind=recurring requires cron.",
                     terminal=False,
+                error_reason="schema_mismatch",
                 )
             try:
                 validate_cron(cron)
@@ -1036,6 +1053,7 @@ class WatchDeleteCapability:
                 observation="watch.delete requires watch_id.",
                 message="watch.delete requires watch_id.",
                 terminal=False,
+                error_reason="schema_mismatch",
             )
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
@@ -1076,149 +1094,49 @@ class ApprovalResolveCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         decision = _arg_text(args, "decision").lower()
-        if decision not in {"approve", "reject"}:
-            return CapabilityResult(
-                ok=False,
-                action="approval",
-                observation="approval.resolve requires decision approve or reject.",
-                message="approval.resolve requires decision approve or reject.",
-                terminal=False,
-            )
-        status = "approved" if decision == "approve" else "rejected"
         code = _arg_text(args, "code")
-        has_code = False
-        if code:
-            if not context.input_text and not context.session_id:
-                has_code = True
-            else:
-                has_code = code in context.input_text
-                if not has_code and context.session_id:
-                    from navi.memory import MemoryStore
-                    memory = MemoryStore(self.home)
-                    user_messages = [
-                        msg.content for msg in memory.get_messages(context.session_id)
-                        if msg.role == "user"
-                    ]
-                    has_code = any(code in content for content in user_messages[-2:])
-            if not has_code:
-                return CapabilityResult(
-                    ok=False,
-                    action="approval",
-                    observation="User did not provide this approval code. Do not hallucinate approvals.",
-                    message="User did not provide this approval code. Do not hallucinate approvals.",
-                    terminal=True,
-                )
-
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
-        runs = RunStore(self.home)
-        governance = GovernanceEngine(self.home)
-        approval = self._resolve(
-            governance, code=code, run_id=run_id, sender_id=context.sender_id, status=status
-        )
-        if approval is None:
-            facts = runs.approval_resolution_diagnostic(
-                code=code, run_id=run_id, sender_id=context.sender_id
-            )
-            message = _approval_resolution_failure_message(facts)
+        selection = _approval_selection(args, code=code, run_id=run_id)
+        if code and context.input_text and code not in context.input_text:
             return CapabilityResult(
                 ok=False,
                 action="approval",
-                observation=message,
-                message=message,
-                terminal=False,
-                facts={"approval_resolution": facts},
-            )
-        if approval.status == "expired":
-            return CapabilityResult(
-                ok=False,
-                action="approval",
-                observation="Approval code expired. Create a new delegation run.",
-                message="Approval code expired. Create a new delegation run.",
-                terminal=False,
-            )
-        if status == "approved":
-            task = runs.update_run(approval.run_id, status="queued")
-            resolved_run_id = task.id if task else approval.run_id
-            if task:
-                GoalStore(self.home).update_for_run(
-                    task,
-                    evidence={
-                        "run_id": task.id,
-                        "run_status": task.status,
-                        "approval_status": approval.status,
-                    },
-                )
-            facts = {
-                **_transition_facts("approval_request", approval.id, "updated"),
-                "run_id": resolved_run_id,
-                "approval_status": approval.status,
-                "run_status": "queued",
-            }
-            return CapabilityResult(
-                ok=True,
-                action="approval",
-                observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
-                message=f"已收到您的批准，任务 {resolved_run_id} 将在后台继续执行。",
+                observation="User did not provide this approval code. Do not hallucinate approvals.",
+                message="User did not provide this approval code. Do not hallucinate approvals.",
                 terminal=True,
-                run_id=resolved_run_id,
-                facts=facts,
+                error_reason="schema_mismatch",
             )
-        task = runs.update_run(approval.run_id, status="rejected")
-        if task:
-            # trust.record_failure was removed
-            GoalStore(self.home).update_for_run(
-                task,
-                evidence={
-                    "run_id": task.id,
-                    "run_status": task.status,
-                    "approval_status": approval.status,
-                },
-            )
-        facts = {
-            **_transition_facts("approval_request", approval.id, "updated"),
-            "run_id": approval.run_id,
-            "approval_status": approval.status,
-            "run_status": "rejected",
-        }
-        return CapabilityResult(
-            ok=True,
-            action="approval",
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
-            message=f"已拒绝任务 {approval.run_id} 的执行。",
-            terminal=True,
-            run_id=approval.run_id,
-            facts=facts,
+
+        from .control import ApprovalService, SurfaceContext
+
+        surface_ctx = SurfaceContext(
+            home=self.home,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            source=context.source,
+            workspace=context.workspace,
+            session_id=context.session_id,
+            input_text=context.input_text,
         )
-
-    @staticmethod
-    def _resolve(
-        governance: GovernanceEngine,
-        *,
-        code: str,
-        run_id: str,
-        sender_id: str,
-        status: str,
-    ):
-        if code:
-            return governance.resolve_code(code=code, sender_id=sender_id, status=status)
-        if run_id:
-            return governance.resolve_task(run_id=run_id, sender_id=sender_id, status=status)
-        return None
-
-
-def _approval_resolution_failure_message(facts: dict[str, Any]) -> str:
-    reason = str(facts.get("reason") or "")
-    messages = {
-        "approval_code_not_found": "Approval code was not found.",
-        "sender_mismatch": "Approval exists but belongs to a different sender.",
-        "approval_not_pending": f"Approval is not pending; current status is {facts.get('status') or 'unknown'}.",
-        "approval_expired": "Approval is expired. Create a new approval request.",
-        "run_not_found": "Run was not found for approval resolution.",
-        "run_has_no_approval": "Run has no approval request.",
-        "approval_identifier_missing": "approval.resolve requires code or run_id.",
-    }
-    return messages.get(reason, "Approval could not be resolved.")
-
+        service = ApprovalService(self.home)
+        res = service.resolve(
+            decision=decision,
+            selection=selection,
+            context=surface_ctx,
+            code=code,
+            run_id=run_id,
+        )
+        message = _approval_result_message(res.message, res.facts)
+        return CapabilityResult(
+            ok=res.ok,
+            action="approval",
+            observation=message,
+            message=message,
+            run_id=res.run_id,
+            terminal=_approval_failure_is_terminal(res.facts),
+            error_reason=_approval_error_reason(res.facts) if not res.ok else "unknown",
+            facts=res.facts,
+        )
 
 class ExecutionRetryCapability:
     def __init__(self, spec: ToolSpec, *, home: Path):
@@ -1240,6 +1158,7 @@ class ExecutionRetryCapability:
                 observation="delegate.retry requires run_id.",
                 message="delegate.retry requires run_id.",
                 terminal=False,
+                error_reason="schema_mismatch",
             )
         runs = RunStore(self.home)
         task = runs.get(run_id)
@@ -1299,6 +1218,7 @@ class WorkflowProposeCapability:
                 observation="workflow.propose requires objective.",
                 message="workflow.propose requires objective.",
                 terminal=False,
+                error_reason="schema_mismatch",
             )
         store = WorkflowStore(self.home)
         workspace = _resolve_workspace(context.workspace, default=self.project_dir)
@@ -1363,6 +1283,7 @@ class WorkflowApproveCapability:
                 observation="workflow.approve requires decision approve or reject.",
                 message="workflow.approve requires decision approve or reject.",
                 terminal=False,
+                error_reason="schema_mismatch",
             )
         store = WorkflowStore(self.home)
         workflow = store.get(workflow_id) if workflow_id else None
@@ -1437,6 +1358,9 @@ class WorkflowRunCapability:
         pending_count = len(
             [step for step in store.list_steps(workflow.id) if step.status == STEP_STATUS_PENDING]
         )
+        if pending_count == 0 and failed == 0:
+            return self._finish_if_possible(store, workflow)
+        
         transition = workflow_batch_transition(
             completed=completed,
             failed=failed,
@@ -1562,15 +1486,28 @@ class WorkflowRunCapability:
         counts = _workflow_counts(store, workflow)
         transition = workflow_idle_transition(counts)
         if transition is not None:
-            workflow = (
-                store.update_status(
-                    workflow.id,
-                    status=transition.status,
-                    evidence=transition.evidence,
-                    event_type=transition.event_type,
+            if transition.status == WORKFLOW_STATUS_COMPLETED:
+                from dataclasses import replace
+                decision = workflow_verification_decision(
+                    workflow=replace(workflow, status=WORKFLOW_STATUS_COMPLETED), steps=store.list_steps(workflow.id)
                 )
-                or workflow
-            )
+                workflow = store.update_status(
+                    workflow.id,
+                    status=decision.status,
+                    blocked_reason=decision.blocked_reason,
+                    evidence=decision.output,
+                    event_type=decision.event_type,
+                ) or workflow
+            else:
+                workflow = (
+                    store.update_status(
+                        workflow.id,
+                        status=transition.status,
+                        evidence=transition.evidence,
+                        event_type=transition.event_type,
+                    )
+                    or workflow
+                )
         facts = {
             **_transition_facts("workflow", workflow.id, "updated"),
             "workflow_id": workflow.id,
@@ -1699,6 +1636,39 @@ def _transition_facts(entity_type: str, entity_id: str, transition: str) -> dict
 def _arg_text(args: dict[str, Any], key: str) -> str:
     value = args.get(key)
     return str(value).strip() if value is not None else ""
+
+
+def _approval_selection(args: dict[str, Any], *, code: str, run_id: str) -> str:
+    explicit = _arg_text(args, "selection")
+    if explicit:
+        return explicit
+    return "current_run" if run_id and not code else "explicit_code"
+
+
+def _approval_result_message(message: str, facts: dict[str, Any] | None) -> str:
+    reason = _approval_reason(facts)
+    if reason == "run_has_no_approval":
+        return "Run has no approval request."
+    return message
+
+
+def _approval_failure_is_terminal(facts: dict[str, Any] | None) -> bool:
+    return _approval_reason(facts) == "approval_code_not_found_in_text"
+
+
+def _approval_error_reason(facts: dict[str, Any] | None) -> str:
+    reason = _approval_reason(facts)
+    if reason in {"invalid_decision", "approval_identifier_missing"}:
+        return "schema_mismatch"
+    return "not_found" if reason else "unknown"
+
+
+def _approval_reason(facts: dict[str, Any] | None) -> str:
+    if not isinstance(facts, dict):
+        return ""
+    if isinstance(facts.get("approval_resolution"), dict):
+        return str(facts["approval_resolution"].get("reason") or "")
+    return str(facts.get("reason") or "")
 
 
 def _float_or_none(value: Any) -> float | None:

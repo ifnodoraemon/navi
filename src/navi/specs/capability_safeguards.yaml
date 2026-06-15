@@ -115,7 +115,7 @@ tools:
       - task_control
       - local_state
     confirmation_required: true
-    reason: Delegation run queues approved or trusted execution.
+    reason: Delegation run queues execution only after approval or governance policy grant.
   delegate.delete:
     risk_class: high
     sensitive_contexts:

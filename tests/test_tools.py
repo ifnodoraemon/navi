@@ -17,7 +17,7 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
         "connector.telegram.status",
         "file.read",
         "file.write",
-        "filesystem.list",
+        "directory.list",
         "git.status",
         "hooks.list",
         "provider.config",
@@ -133,26 +133,26 @@ def test_memory_conflicts_tool_returns_declared_conflict_facts(tmp_path):
     assert recall.facts["items"][0]["conflicts"]
 
 
-def test_filesystem_list_tool_returns_directory_facts(tmp_path):
+def test_directory_list_tool_returns_directory_facts(tmp_path):
     (tmp_path / "alpha.txt").write_text("alpha", encoding="utf-8")
     registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
 
-    result = registry.call("filesystem.list", {"path": str(tmp_path), "limit": 5})
+    result = registry.call("directory.list", {"path": str(tmp_path), "limit": 5})
 
     assert result.ok is True
     assert result.facts["path"] == str(tmp_path)
     assert result.facts["entries"][0]["name"] == "alpha.txt"
 
 
-def test_filesystem_and_git_tools_reject_paths_outside_project(tmp_path):
+def test_directory_and_git_tools_reject_paths_outside_project(tmp_path):
     outside = tmp_path.parent
     registry = build_tool_gateway(tmp_path, project_dir=tmp_path)
 
-    filesystem = registry.call("filesystem.list", {"path": str(outside)})
+    directory = registry.call("directory.list", {"path": str(outside)})
     git = registry.call("git.status", {"path": str(outside)})
 
-    assert filesystem.ok is False
-    assert filesystem.error == "path must be within the project directory"
+    assert directory.ok is False
+    assert directory.error == "path must be within the project directory"
     assert git.ok is False
     assert git.error == "path must be within the project directory"
 
@@ -268,6 +268,8 @@ def test_tool_schema_validation(tmp_path):
     
     spec = ToolSpec(
         name="test.calculator",
+        capability_class="test",
+        execution_contexts=("turn",),
         description="A simple calculator",
         input_schema={
             "type": "object",

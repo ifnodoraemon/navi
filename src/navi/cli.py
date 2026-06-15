@@ -12,6 +12,7 @@ import uvicorn
 from .engine import HernessEngine
 from .api import create_app
 from .app_factory import build_runtime
+from .acceptance import load_acceptance_scenario, report_to_text, run_product_acceptance
 from .auth import AuthInspector
 from .capabilities import CapabilityContext, build_capability_registry
 from .config import ModelConfig, load_config, write_default_config
@@ -19,6 +20,7 @@ from .connector_registry import get_connector_adapter, load_connector_adapters
 from .connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
 from .diagnostics import run_diagnostics
 from .defaults import DEFAULT_API_HOST, DEFAULT_API_PORT
+from .daemon import SystemDaemon
 from .evals import (
     claw_results_to_json,
     load_claw_eval_dataset,
@@ -45,14 +47,12 @@ from .provider import build_provider
 from .service import build_systemd_user_unit, install_systemd_user_unit
 from .subagents import SubagentRunStore
 from .trace import TraceStore
-from .trust import TrustStore
 from .workflows import WorkflowStore, workflow_facts
 
 app = typer.Typer(help="Navi local-first personal agent OS")
 auth_app = typer.Typer(help="CLI auth and capability checks")
 connectors_app = typer.Typer(help="Connector lifecycle and status")
 graph_app = typer.Typer(help="Personal graph")
-trust_app = typer.Typer(help="Trust contract")
 evolution_app = typer.Typer(help="Evolution ledger")
 trace_app = typer.Typer(help="Full-flow traces and evaluations")
 goal_app = typer.Typer(help="Durable goal lifecycle")
@@ -68,7 +68,6 @@ eval_app = typer.Typer(help="Evaluation datasets")
 app.add_typer(auth_app, name="auth")
 app.add_typer(connectors_app, name="connectors")
 app.add_typer(graph_app, name="graph")
-app.add_typer(trust_app, name="trust")
 app.add_typer(evolution_app, name="evolution")
 app.add_typer(trace_app, name="trace")
 app.add_typer(goal_app, name="goal")
@@ -90,11 +89,13 @@ def chat() -> None:
     write_default_config(home)
     runtime = build_runtime(home)
     config = load_config(home)
+    daemon = SystemDaemon(home, project_dir=Path.cwd())
     agent = HernessEngine(
         home=home,
         runtime=runtime,
         project_dir=Path.cwd(),
         disabled_capability_classes=LOCAL_CONVERSATIONAL_TOOL_POLICY.blocked_capability_classes,
+        event_bus=daemon.event_bus,
     )
     session_id: str | None = None
     typer.echo("Navi chat. Type /exit to quit.")
@@ -114,11 +115,11 @@ def chat() -> None:
             break
             
         result = asyncio.run(
-            agent.handle(
+            _run_chat_turn(
+                agent,
                 text,
                 peer_id=config.runtime.local_surface,
                 sender_id=config.runtime.local_surface,
-                source="cli",
                 session_id=session_id,
             )
         )
@@ -130,6 +131,25 @@ def chat() -> None:
             pending_options = result.facts["options"]
         else:
             pending_options = []
+
+
+async def _run_chat_turn(
+    agent: HernessEngine,
+    text: str,
+    *,
+    peer_id: str,
+    sender_id: str,
+    session_id: str | None,
+):
+    result = await agent.handle(
+        text,
+        peer_id=peer_id,
+        sender_id=sender_id,
+        source="cli",
+        session_id=session_id,
+    )
+    await agent.shutdown(timeout=10.0)
+    return result
 
 
 @app.command()
@@ -611,30 +631,38 @@ def eval_connector(
         raise typer.Exit(code=1)
 
 
+@eval_app.command("acceptance")
+def eval_acceptance(
+    scenario: Path = Path("evals") / "product_acceptance.yaml",
+    workspace: Path | None = None,
+    json_output: bool = False,
+    no_auto_approve: bool = False,
+) -> None:
+    """Run a product acceptance loop against the real assistant path."""
+    home = ensure_home()
+    loaded = load_acceptance_scenario(scenario)
+    report = asyncio.run(
+        run_product_acceptance(
+            home=home,
+            project_dir=workspace,
+            scenario=loaded,
+            auto_approve=not no_auto_approve,
+        )
+    )
+    if json_output:
+        typer.echo(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        typer.echo(report_to_text(report))
+    if not report.accepted:
+        raise typer.Exit(code=1)
+
+
 @graph_app.command("list")
 def graph_list() -> None:
     """List personal graph nodes."""
     for node in GraphStore(ensure_home()).list():
         typer.echo(f"{node.type} {node.name}: {node.data}")
 
-
-@trust_app.command("list")
-def trust_list() -> None:
-    """List trust contract rules."""
-    for rule in TrustStore(ensure_home()).list():
-        typer.echo(
-            f"{rule.id} {rule.autonomy_level} {rule.name} "
-            f"success={rule.success_count} failure={rule.failure_count}"
-        )
-
-
-@trust_app.command("set")
-def trust_set(rule_id: str, level: str) -> None:
-    """Set a trust rule autonomy level."""
-    rule = TrustStore(ensure_home()).set_level(rule_id, level)
-    if rule is None:
-        raise typer.BadParameter("rule not found")
-    typer.echo(f"{rule.id} -> {rule.autonomy_level}")
 
 
 @trace_app.command("list")
@@ -660,7 +688,7 @@ def trace_show(trace_id: str) -> None:
 def trace_evaluate(trace_id: str) -> None:
     """Evaluate a trace to identify the likely optimization target."""
     evaluation = TraceStore(ensure_home()).evaluate_trace(trace_id)
-    typer.echo(f"{evaluation.outcome} {evaluation.failure_domain}: {evaluation.recommendation}")
+    typer.echo(f"{evaluation.outcome} {evaluation.failure_domain}: {evaluation.diagnostic}")
 
 
 @trace_app.command("evaluations")
@@ -668,7 +696,7 @@ def trace_evaluations(trace_id: str = typer.Argument(""), limit: int = 50) -> No
     """List trace evaluations as optimization evidence."""
     for evaluation in TraceStore(ensure_home()).list_evaluations(trace_id, limit=limit):
         typer.echo(
-            f"{evaluation.trace_id} {evaluation.outcome} {evaluation.failure_domain}: {evaluation.recommendation}"
+            f"{evaluation.trace_id} {evaluation.outcome} {evaluation.failure_domain}: {evaluation.diagnostic}"
         )
 
 

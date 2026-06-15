@@ -30,12 +30,12 @@ roles:
       - Verifier failure.
       - Before marking long-running goals verified_complete.
     evidence_required:
-      - agent.role_result trace event with reviewed target, findings, and recommendation.
+      - agent.role_result trace event with reviewed target, findings, and verdict.
     parallel_safe: true
   executor:
     purpose: Transform approved plans into concrete actuator instructions while preserving evidence requirements.
     when_to_use:
-      - Capability-backed local execution after approval or trust grant.
+      - Capability-backed local execution after approval or governance policy grant.
       - Watch execution through the actuator protocol.
     evidence_required:
       - Execution protocol evidence with non-empty evidence list, verification status, and completion summary.

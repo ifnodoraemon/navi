@@ -246,7 +246,12 @@ def create_app(home: Path | None = None) -> FastAPI:
     async def create_delegation(request: DelegationRequest) -> dict:
         result = await capabilities.invoke(
             "delegate.spawn",
-            {"prompt": request.prompt or request.title},
+            {
+                "objective": request.prompt or request.title,
+                "context": "Direct delegation via API/CLI",
+                "plan": "Execute the provided objective",
+                "success_criteria": "The objective is completed"
+            },
             permission="prepare",
             context=_local_capability_context(home, project_dir=project_dir),
         )
@@ -347,7 +352,12 @@ def create_app(home: Path | None = None) -> FastAPI:
         )
         result = await capabilities.invoke(
             "delegate.spawn",
-            {"prompt": request.prompt},
+            {
+                "objective": request.prompt,
+                "context": "Active delegation via API/CLI",
+                "plan": "Execute the provided objective",
+                "success_criteria": "The objective is completed"
+            },
             permission="prepare",
             context=context,
         )

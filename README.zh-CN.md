@@ -2,7 +2,7 @@
 
 Navi 是一个**本地优先的个人 AI 助手 Agent OS**。
 
-它的目标不是用关键词和固定流程替 AI 做事，而是给模型提供脚手架：声明式能力、权限上限、信任与审批状态、治理型记忆、连接器上下文、执行 trace、恢复计划和可回滚演进。模型从当前事实和可用能力中选择下一步，运行时负责边界、证据和审计。
+它的目标不是用关键词和固定流程替 AI 做事，而是给模型提供脚手架：声明式能力、权限上限、审批与治理状态、治理型记忆、连接器上下文、执行 trace、恢复计划和可回滚演进。模型从当前事实和可用能力中选择下一步，运行时负责边界、证据和审计。
 
 `1.1.1` 在稳定 agent OS 契约上加入了受治理动态工作流能力，并强化了当前契约 store 重建后的服务启动体验。
 
@@ -12,11 +12,11 @@ Navi 是一个**本地优先的个人 AI 助手 Agent OS**。
 
 - **能力驱动运行时**：planner 从 capability manifest 选择 syscall，而不是靠产品关键词路由。
 - **受控本地执行**：任务、watch、goal、审批、执行、验证和恢复都有持久记录。
-- **信任与审批治理**：用户聊天文本不是执行授权；本地动作必须走明确的审批和信任状态。
+- **审批与治理边界**：用户聊天文本不是执行授权；本地动作必须走明确的审批、权限上限和治理策略。
 - **治理型记忆**：支持偏好、约束、事实、反例、语义记忆、来源、置信度、召回原因、冲突和撤销。
 - **防御纵深安全**：权限上限、连接器工具策略、声明式能力风险元数据、untrusted observation 边界、trace 评估和 safeguard 归因。
 - **受治理动态工作流**：模型根据普通用户请求自行判断是否需要 workflow，并提出声明式 orchestration plan，包含 subagent 步骤、依赖、allowed tools、审批、断点续跑和独立验证。
-- **可回滚演进账本**：prompt、记忆、技能、信任、工作流和 eval 变化都可审计、可回滚。
+- **可回滚演进账本**：prompt、记忆、技能、治理策略、工作流和 eval 变化都可审计、可回滚。
 - **多入口访问**：CLI、本地 FastAPI、个人微信/Weixin 连接器 mock 链路。
 
 ## v1 契约
@@ -92,12 +92,10 @@ navi evolution list
 navi evolution show <event_id>
 navi evolution rollback <event_id>
 
-# 会话、技能与信任规则
+# 会话与技能
 navi session list
 navi session new [alias]
 navi skills
-navi trust list
-navi trust set <rule_id> <autonomy_level>
 ```
 
 本地 API 也提供同一组诊断信息：`/v1/diagnostics`。
@@ -135,7 +133,6 @@ Navi 默认把状态写入 `.navi/` 或自定义的 `NAVI_HOME`：
 ├── runs.db
 ├── subagents.db
 ├── traces.db
-├── trust.db
 └── skills/
 ```
 

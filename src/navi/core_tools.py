@@ -38,6 +38,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="service.status",
             capability_class="service",
             description="Return systemd user service facts.",
+            routing_hints=[
+                "Use service.status for Navi service health, ActiveState/SubState, MainPID, ExecMainStartTimestamp, restart, or startup-time questions. Prefer this over system.info when the target is the configured Navi service.",
+            ],
             input_schema={
                 "type": "object",
                 "properties": {"name": {"type": "string", "default": config.runtime.service_name}},
@@ -119,6 +122,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="skills.list",
             capability_class="skills",
             description="Return installed procedural skill facts.",
+            routing_hints=[
+                "Use skills.list when the user asks what skills or procedural instructions Navi has. The tool returns current installed skill facts.",
+            ],
             input_schema={"type": "object", "properties": {}},
             output_schema=_output_schema(
                 {
@@ -168,6 +174,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="tools.list",
             capability_class="tools",
             description="Return callable capability facts.",
+            routing_hints=[
+                "Use tools.list when the user asks what tools, capabilities, or callable functions Navi currently has. Do not answer tool inventory questions from the manifest alone; the manifest is for planning, while tools.list returns user-facing current facts.",
+            ],
             input_schema={"type": "object", "properties": {}},
             output_schema=_output_schema(
                 {
@@ -387,6 +396,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="codebase.search",
             capability_class="codebase",
             description="Perform a fast, semantic-like search across the entire project codebase.",
+            routing_hints=[
+                "Use codebase.search for narrow read-only location or discovery. If the user asks Navi to diagnose and fix a runtime/code/protocol problem, delegate.spawn should own the governed multi-step run; codebase.search can be one step inside that run.",
+            ],
             input_schema={
                 "type": "object",
                 "properties": {
@@ -427,6 +439,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="shell.run",
             capability_class="shell",
             description="Run a non-shell command in the project workspace and return bounded stdout/stderr facts. Set allocate_pty to true if the command strictly requires a terminal (e.g. complains about stdin not being a tty), but note that stdout may contain ANSI escape codes and stderr will be merged into stdout.",
+            routing_hints=[
+                "Do not use shell.run merely to resolve natural-language dates or times for scheduling. watch.create accepts run_at_text for one-shot schedules and cron for exact recurring schedules.",
+            ],
             input_schema={
                 "type": "object",
                 "properties": {
@@ -539,6 +554,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="system.info",
             capability_class="system",
             description="Return system information: OS, memory, disk, load, uptime. Pass category='processes' for running process list.",
+            routing_hints=[
+                "Use system.info for host, OS, hardware, disk, memory, load, or process inventory. For Navi service status or service startup time, prefer service.status.",
+            ],
             input_schema={
                 "type": "object",
                 "properties": {
@@ -886,7 +904,7 @@ def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResul
     url = str(args.get("url") or "").strip()
     if not _is_browser_url(url):
         return ToolResult(
-            tool="browser.screenshot", ok=False, error="url must be http(s) or localhost"
+            tool="browser.screenshot", ok=False, error="url must be public http(s)"
         )
     output, error = _project_path(args.get("path"), project_dir=project_dir)
     if error:
@@ -928,10 +946,7 @@ def _is_safe_path(path: Path, project_dir: Path) -> bool:
     try:
         resolved_path = path.resolve().absolute()
         resolved_project = project_dir.resolve().absolute()
-        resolved_home = Path.home().resolve().absolute()
         if resolved_project == resolved_path or resolved_project in resolved_path.parents:
-            return True
-        if resolved_home == resolved_path or resolved_home in resolved_path.parents:
             return True
         return False
     except Exception:
@@ -945,15 +960,41 @@ def _is_browser_url(value: str) -> bool:
     host = (parsed.hostname or "").lower()
     if not host:
         return False
+    return _is_public_http_host(host, port=parsed.port)
+
+
+def _is_blocked_http_host(host: str) -> bool:
     try:
         import ipaddress
 
         ip = ipaddress.ip_address(host)
-        if ip.is_private or ip.is_loopback or ip.is_link_local:
-            return False
+        return (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        )
     except ValueError:
         if host in {"localhost", "host.docker.internal"}:
-            return False
+            return True
+    return False
+
+
+def _is_public_http_host(host: str, *, port: int | None = None) -> bool:
+    if _is_blocked_http_host(host):
+        return False
+    try:
+        import socket
+
+        for family, _, _, _, sockaddr in socket.getaddrinfo(host, port or 443):
+            del family
+            address = str(sockaddr[0])
+            if _is_blocked_http_host(address):
+                return False
+    except OSError:
+        return True
     return True
 
 
@@ -1368,6 +1409,14 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return ToolResult(tool="http.fetch", ok=False, error="only http/https URLs allowed")
+    host = (parsed.hostname or "").lower()
+    if not host or not _is_public_http_host(host, port=parsed.port):
+        return ToolResult(
+            tool="http.fetch",
+            ok=False,
+            error="url host must be public; localhost, private, link-local, and metadata addresses are blocked",
+            facts={"url": url},
+        )
     method = str(args.get("method") or "GET").upper()
     headers = args.get("headers") or {}
     body = args.get("body")
@@ -1444,4 +1493,3 @@ def _system_info(args: dict[str, Any]) -> ToolResult:
         except Exception as e:
             facts["processes_error"] = str(e)
     return ToolResult(tool="system.info", ok=True, facts=facts)
-

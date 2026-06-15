@@ -168,11 +168,10 @@ def test_cli_tool_eval_model_and_skill_commands(tmp_path):
     assert "ok dataset" in weixin_validate.output
 
 
-def test_cli_graph_trust_evolution_and_connector_status(tmp_path):
+def test_cli_graph_evolution_and_connector_status(tmp_path):
     env = _env(tmp_path)
 
     assert runner.invoke(app, ["graph", "list"], env=env).exit_code == 0
-    assert runner.invoke(app, ["trust", "list"], env=env).exit_code == 0
     assert runner.invoke(app, ["evolution", "list"], env=env).exit_code == 0
     assert "prompt_layer" in runner.invoke(app, ["evolution", "targets"], env=env).output
 

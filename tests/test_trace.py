@@ -138,6 +138,10 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
         output_data={"recommended": "continue"},
     )
     completion_eval = store.evaluate_trace("completion-verify")
+
+    store.add_event(trace_id="planner-no-response", phase="turn.start")
+    store.add_event(trace_id="planner-no-response", phase="planner.call.start")
+    no_response_eval = store.evaluate_trace("planner-no-response")
     listed_completion_evals = store.list_evaluations("completion-verify")
     listed_all_evals = store.list_evaluations()
 
@@ -146,7 +150,7 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
         phase="capability.result",
         ok=True,
         tool="delegate.spawn",
-        output_data={"facts": {"run_id": "task-1", "status": "pending"}},
+        output_data={"facts": {"entity_type": "delegation_run", "run_id": "task-1", "status": "pending"}},
     )
     store.add_event(
         trace_id="pending-risk",
@@ -164,13 +168,15 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
     assert tool_eval.failure_domain == "tool_or_capability"
     assert safeguard_eval.outcome == "failure"
     assert safeguard_eval.failure_domain == "safeguard_policy"
-    assert "blocking safeguard" in safeguard_eval.recommendation
+    assert "safeguard hook decision" in safeguard_eval.diagnostic
     assert runtime_eval.failure_domain == "runtime"
     assert budget_eval.outcome == "degraded"
     assert budget_eval.failure_domain == "planning_budget"
     assert json.loads(budget_eval.evidence_json)["agent_role_results"][0]["model_role"] == "responder"
     assert completion_eval.outcome == "failure"
     assert completion_eval.failure_domain == "completion_verifier"
+    assert no_response_eval.outcome == "failure"
+    assert no_response_eval.failure_domain == "provider_or_planner_no_response"
     assert listed_completion_evals[0].id == completion_eval.id
     assert any(evaluation.id == completion_eval.id for evaluation in listed_all_evals)
     completion_evidence = json.loads(completion_eval.evidence_json)

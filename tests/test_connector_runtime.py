@@ -53,7 +53,7 @@ def test_connector_ingress_runtime_uses_remote_tool_allowlist(tmp_path):
     assert "watch.delete" not in names
     assert "file.read" not in names
     assert "file.write" not in names
-    assert "filesystem.list" not in names
+    assert "directory.list" not in names
     assert "git.status" not in names
     assert "shell.run" not in names
     assert "test.run" not in names
@@ -73,8 +73,8 @@ def test_connector_ingress_runtime_exposes_remote_tool_policy(tmp_path):
     assert "workflow.run" not in facts["allowed_tools"]
     assert "shell" in facts["blocked_capability_classes"]
     assert "browser" in facts["blocked_capability_classes"]
-    assert "filesystem" in facts["blocked_capability_classes"]
-    assert "direct filesystem" in facts["reason"]
+    assert "directory" in facts["blocked_capability_classes"]
+    assert "direct directory" in facts["reason"]
 
 
 def test_connector_runtime_has_no_legacy_allowlist_alias():

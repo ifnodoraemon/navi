@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .db import connect
+from .db import connect, ensure_schema_version
 
+
+WORKFLOW_STORE_SCHEMA_VERSION = 1
 
 WORKFLOW_STATUS_AWAITING_APPROVAL = "awaiting_approval"
 WORKFLOW_STATUS_APPROVED = "approved"
@@ -97,6 +99,123 @@ class WorkflowEvent:
     created_at: float
 
 
+@dataclass(frozen=True)
+class WorkflowTransitionDecision:
+    status: str
+    event_type: str
+    blocked_reason: str = ""
+    evidence: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowVerificationDecision:
+    passed: bool
+    status: str
+    event_type: str
+    blocked_reason: str
+    output: dict[str, Any]
+
+
+WORKFLOW_RUNNABLE_STATUSES = frozenset(
+    {
+        WORKFLOW_STATUS_APPROVED,
+        WORKFLOW_STATUS_RUNNING,
+        WORKFLOW_STATUS_INTERRUPTED,
+    }
+)
+
+
+def workflow_can_run(status: str) -> bool:
+    return status in WORKFLOW_RUNNABLE_STATUSES
+
+
+def workflow_batch_transition(
+    *,
+    completed: int,
+    failed: int,
+    pending_count: int,
+) -> WorkflowTransitionDecision:
+    if failed:
+        return WorkflowTransitionDecision(
+            status=WORKFLOW_STATUS_BLOCKED,
+            event_type="workflow.blocked",
+            blocked_reason="one or more workflow steps failed",
+            evidence={"completed_in_batch": completed, "failed_in_batch": failed},
+        )
+    if pending_count == 0:
+        return WorkflowTransitionDecision(
+            status=WORKFLOW_STATUS_COMPLETED,
+            event_type="workflow.completed",
+            evidence={"completed_in_batch": completed},
+        )
+    return WorkflowTransitionDecision(
+        status=WORKFLOW_STATUS_INTERRUPTED,
+        event_type="workflow.interrupted",
+        evidence={"completed_in_batch": completed, "pending_count": pending_count},
+    )
+
+
+def workflow_idle_transition(counts: dict[str, int]) -> WorkflowTransitionDecision | None:
+    if counts.get("pending_count") == 0 and counts.get("failed_count") == 0:
+        return WorkflowTransitionDecision(
+            status=WORKFLOW_STATUS_COMPLETED,
+            event_type="workflow.completed",
+            evidence=counts,
+        )
+    return None
+
+
+def workflow_verification_decision(
+    *,
+    workflow: Workflow,
+    steps: list[WorkflowStep],
+) -> WorkflowVerificationDecision:
+    workflow_plan = _json_dict(workflow.plan_json)
+    goal_type = str(workflow_plan.get("goal_type") or "").strip().lower()
+    failed_steps = [step for step in steps if step.status != STEP_STATUS_COMPLETED]
+    empty_evidence = [step.id for step in steps if not _json_dict(step.evidence_json)]
+    capability_steps = [
+        step.id for step in steps if _json_list(step.tool_calls_json)
+    ]
+    missing_execution_evidence = not capability_steps and goal_type != "planning"
+    passed = (
+        workflow.status in (WORKFLOW_STATUS_COMPLETED, WORKFLOW_STATUS_VERIFIED_COMPLETE) and not failed_steps and not empty_evidence
+        and not missing_execution_evidence
+    )
+    blocked_reason = ""
+    if not passed:
+        blocked_reason = (
+            "workflow verifier requires completed workflow, completed steps, and non-empty step evidence"
+        )
+        if missing_execution_evidence:
+            blocked_reason = (
+                "workflow verifier requires capability execution evidence unless plan.goal_type is planning"
+            )
+    output = {
+        "workflow_id": workflow.id,
+        "passed": passed,
+        "failed_steps": [step.id for step in failed_steps],
+        "empty_evidence_steps": empty_evidence,
+        "capability_step_count": len(capability_steps),
+        "goal_type": goal_type,
+    }
+    return WorkflowVerificationDecision(
+        passed=passed,
+        status=WORKFLOW_STATUS_VERIFIED_COMPLETE if passed else WORKFLOW_STATUS_BLOCKED,
+        event_type="workflow.verified" if passed else "workflow.verifier_blocked",
+        blocked_reason=blocked_reason,
+        output=output,
+    )
+
+
+def _json_dict(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 class WorkflowStore:
     def __init__(self, home: Path):
         self.home = home
@@ -106,6 +225,7 @@ class WorkflowStore:
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
+            ensure_schema_version(conn, "workflows", WORKFLOW_STORE_SCHEMA_VERSION)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS workflows (
@@ -598,6 +718,11 @@ def _loads(value: str, default: Any) -> Any:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return default
+
+
+def _json_list(value: str) -> list[Any]:
+    parsed = _loads(value, [])
+    return parsed if isinstance(parsed, list) else []
 
 
 def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict[str, Any]:

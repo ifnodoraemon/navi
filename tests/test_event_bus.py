@@ -1,4 +1,4 @@
-"""Tests for the event bus architecture: router → governance → response."""
+"""Tests for the event bus architecture: ingress → model agent → governance facts."""
 from __future__ import annotations
 
 import asyncio
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from navi.connector_router import ApprovalCodeDetector, ConnectorRouter
+from navi.connector_router import ConnectorRouter
 from navi.connector_runtime import ConnectorMessage
 from navi.event_bus import (
     ActionApprovedEvent,
@@ -66,43 +66,6 @@ async def test_event_bus_unsubscribe():
     assert len(received) == 0
 
 
-def test_approval_code_detector_classifies_approval(tmp_path):
-    runs = RunStore(tmp_path)
-    task = runs.create("test task", workspace=str(tmp_path))
-    approval = runs.create_approval(run_id=task.id, peer_id="p", sender_id="s")
-
-    detector = ApprovalCodeDetector(tmp_path)
-
-    result = detector.classify(f"批准 {approval.code}")
-    assert result.kind == "approval_code"
-    assert result.code == approval.code
-    assert "批准" in result.decision
-
-    result = detector.classify(f"reject {approval.code}")
-    assert result.kind == "approval_code"
-    assert "reject" in result.decision
-
-    result = detector.classify("帮我搜一下天气")
-    assert result.kind == "user_intent"
-
-
-def test_approval_code_detector_bare_code(tmp_path):
-    runs = RunStore(tmp_path)
-    task = runs.create("test task", workspace=str(tmp_path))
-    approval = runs.create_approval(run_id=task.id, peer_id="p", sender_id="s")
-
-    detector = ApprovalCodeDetector(tmp_path)
-    result = detector.classify(f"  {approval.code}  ")
-    assert result.kind == "approval_code"
-    assert approval.code in result.decision
-
-
-def test_approval_code_detector_ignores_non_existent_code(tmp_path):
-    detector = ApprovalCodeDetector(tmp_path)
-    result = detector.classify("批准 999999")
-    assert result.kind == "user_intent"
-
-
 @pytest.mark.asyncio
 async def test_connector_router_routes_user_intent(tmp_path):
     bus = EventBus()
@@ -117,7 +80,7 @@ async def test_connector_router_routes_user_intent(tmp_path):
             text="handled",
         ))
 
-    bus.subscribe("user_intent", on_intent)
+    bus.subscribe("message_ingress", on_intent)
 
     message = ConnectorMessage(
         message_id="msg-1",
@@ -134,7 +97,7 @@ async def test_connector_router_routes_user_intent(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_connector_router_routes_approval_code(tmp_path):
+async def test_connector_router_sends_approval_text_to_user_intent(tmp_path):
     bus = EventBus()
     router = ConnectorRouter(tmp_path, bus)
 
@@ -142,17 +105,17 @@ async def test_connector_router_routes_approval_code(tmp_path):
     task = runs.create("test", workspace=str(tmp_path))
     approval = runs.create_approval(run_id=task.id, peer_id="p", sender_id="s")
 
-    received_codes = []
+    received_intents = []
 
-    async def on_code(event):
-        received_codes.append(event)
+    async def on_intent(event):
+        received_intents.append(event)
         await bus.send_response(ResponseReadyEvent(
-            source_agent="governance",
+            source_agent="main_agent",
             correlation_id=event.correlation_id,
-            text="approved",
+            text="planner handled approval text",
         ))
 
-    bus.subscribe("approval_code", on_code)
+    bus.subscribe("message_ingress", on_intent)
 
     message = ConnectorMessage(
         message_id="msg-2",
@@ -163,9 +126,9 @@ async def test_connector_router_routes_approval_code(tmp_path):
         session_alias_prefix="test",
     )
     result = await router.route(message)
-    assert result == "approved"
-    assert len(received_codes) == 1
-    assert received_codes[0].code == approval.code
+    assert result == "planner handled approval text"
+    assert len(received_intents) == 1
+    assert received_intents[0].text == f"批准 {approval.code}"
 
 
 @pytest.mark.asyncio
@@ -209,8 +172,6 @@ async def test_governance_agent_suspends_high_risk(tmp_path):
 
     bus.subscribe("action_suspended", on_suspended)
 
-    channel = bus.create_response_channel("corr-test")
-
     await bus.publish(ActionRequestedEvent(
         source_agent="main_agent",
         correlation_id="corr-test",
@@ -223,44 +184,3 @@ async def test_governance_agent_suspends_high_risk(tmp_path):
     assert len(suspended) == 1
     assert suspended[0].run_id == task.id
     assert len(suspended[0].approval_code) == 6
-
-    resp = await asyncio.wait_for(channel.get(), timeout=1.0)
-    assert "审批" in resp.text or suspended[0].approval_code in resp.text
-    bus.remove_response_channel("corr-test")
-
-
-@pytest.mark.asyncio
-async def test_governance_agent_resolves_approval_code(tmp_path):
-    from navi.event_bus import ApprovalCodeEvent, ApprovalResolvedEvent
-
-    bus = EventBus()
-    governance = GovernanceAgent(tmp_path, bus)
-
-    runs = RunStore(tmp_path)
-    task = runs.create("test", workspace=str(tmp_path))
-    approval = runs.create_approval(run_id=task.id, peer_id="p", sender_id="s")
-
-    resolved = []
-
-    async def on_resolved(e):
-        resolved.append(e)
-
-    bus.subscribe("approval_resolved", on_resolved)
-
-    channel = bus.create_response_channel("corr-resolve")
-    await bus.publish(ApprovalCodeEvent(
-        source_agent="router",
-        correlation_id="corr-resolve",
-        code=approval.code,
-        decision="approve",
-        peer_id="p",
-        sender_id="s",
-        source="cli",
-    ))
-
-    assert len(resolved) == 1
-    assert resolved[0].run_id == task.id
-
-    resp = await asyncio.wait_for(channel.get(), timeout=1.0)
-    assert "批准" in resp.text or "已批准" in resp.text
-    bus.remove_response_channel("corr-resolve")

@@ -6,6 +6,7 @@
   routing_hints:
     - "Route ordinary conversation, advice, and unstructured output to conversational capabilities."
     - "When factual accuracy matters, prefer using a read/search capability first. But if the answer is conversational or the model has sufficient context from prior observations, answering directly is fine."
+    - "Do not use final.answer to answer current tool, skill, service, provider, task, workflow, or connector inventory/status questions when a declared read capability can return current facts first."
   input_schema:
     type: object
     properties:
@@ -53,18 +54,31 @@
   capability_class: delegation
   execution_contexts: [turn, workflow_step]
   handler: delegate_spawn
-  description: "Create a tracked delegation run record to execute complex local shell commands, apply codebase changes, or perform background engineering diagnosis."
+  description: "Create a narrowly-scoped delegation run for a specific, verified step. Must only be used after gathering sufficient local facts via foreground tools."
   routing_hints:
-    - "Use delegate.spawn for multi-step tasks that benefit from background execution, planning, and structured evidence collection."
-    - "For simple queries (check status, read a file, run a quick command), prefer direct tools like shell.run, file.read, system.info, web.search. Model decides based on complexity."
-    - "Do not generate commands for the user to run manually. If an operation requires shell execution, use shell.run directly or route to delegate.spawn for complex multi-step work."
+    - "FACT-FIRST: Never spawn a delegation blindly. Always use file.read, shell.run, or system.info to confirm the environment, locate files, and gather facts BEFORE creating a delegation."
+    - "GATED DELEGATION: Break complex requests into smaller, single-purpose delegations. Do not create massive 'do everything' tasks."
+    - "LOCAL-FIRST: For simple/safe queries like checking a status, reading a file, or running 'grep'/'find', use shell.run directly in the foreground. Avoid the overhead of delegate.spawn for read-only lookups."
   input_schema:
     type: object
     properties:
-      prompt:
+      objective:
         type: string
+        description: The main goal of this delegation.
+      context:
+        type: string
+        description: Relevant background information, gathered facts, and constraints.
+      plan:
+        type: string
+        description: A high-level step-by-step plan for the subagent to follow.
+      success_criteria:
+        type: string
+        description: How to verify that the delegation succeeded.
     required:
-      - prompt
+      - objective
+      - context
+      - plan
+      - success_criteria
   output_schema:
     type: object
     properties:
@@ -190,6 +204,9 @@
   execution_contexts: [turn, workflow_step]
   handler: watch_create
   description: Create a scheduled watch record.
+  routing_hints:
+    - "Use watch.create only when the user supplied a sufficiently specific recurring schedule or one-shot time. If the timing is only a broad part of day or otherwise ambiguous, ask.user for clarification instead of inventing a default time."
+    - "For one-shot reminders or pushes with a natural-language time, set kind=once and pass run_at_text from the user's wording. Do not call shell.run just to compute the current timestamp."
   input_schema:
     type: object
     properties:
@@ -320,9 +337,10 @@
   capability_class: approval
   execution_contexts: [turn, workflow_step]
   handler: approval_resolve
-  description: Resolve a pending approval by code or delegation run id.
+  description: Resolve a pending approval by explicit code, current run id, or an explicit visible approval selection.
   routing_hints:
     - "For approval resolution, preserve explicit approval codes as arguments rather than consuming them. DO NOT attempt to resolve an approval (e.g. calling approval.resolve) unless the user explicitly provides an approval code or explicitly asks to approve/reject."
+    - "For phrases like approve all, do not invent codes. Use selection=latest_visible_batch only when the user explicitly asks to approve/reject all visible/current approvals."
   input_schema:
     type: object
     properties:
@@ -335,6 +353,13 @@
         type: string
       run_id:
         type: string
+      selection:
+        type: string
+        enum:
+          - explicit_code
+          - current_run
+          - latest_visible_batch
+          - all_visible
     required:
       - decision
   output_schema:
@@ -400,6 +425,8 @@
   execution_contexts: [turn]
   handler: workflow_propose
   description: Propose a governed dynamic workflow with declared subagent steps and verification strategy.
+  routing_hints:
+    - "For workflow.propose, declare plan.goal_type as planning only when the workflow is meant to produce planning evidence without external capability execution; execution goals need declared tool_calls."
   input_schema:
     type: object
     properties:

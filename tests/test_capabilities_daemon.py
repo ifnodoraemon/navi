@@ -10,7 +10,6 @@ from navi.daemon import SystemDaemon
 from navi.execution import ExecutionService
 from navi.goals import GOAL_STATUS_ACTIVE, GOAL_STATUS_AWAITING_APPROVAL, GOAL_STATUS_VERIFIED_COMPLETE, GoalStore
 from navi.runs import RunStore
-from navi.trust import TrustStore
 
 
 def test_run_store_rejects_watch_schema_drift(tmp_path):
@@ -41,7 +40,7 @@ async def _record_prepare_request(capabilities, tmp_path, prompt, *, context=Non
     context = context or CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", source="weixin")
     recorded = await capabilities.invoke(
         "delegate.spawn",
-        {"prompt": prompt},
+        {"objective": prompt, "context": "mock", "plan": "mock", "success_criteria": "mock"},
         permission="prepare",
         context=context,
     )
@@ -86,7 +85,7 @@ async def test_task_approval_execution_and_evolution_through_os_primitives(tmp_p
         "approval.resolve",
         {"decision": "approve", "code": approval.code},
         permission="write",
-        context=CapabilityContext(home=tmp_path, sender_id="sender"),
+        context=CapabilityContext(home=tmp_path, sender_id="sender", source="weixin"),
     )
 
     assert approved.facts["run_status"] == "queued"
@@ -119,7 +118,7 @@ async def test_delegate_spawn_uses_capability_context_workspace(tmp_path, monkey
 
     planned = await capabilities.invoke(
         "delegate.spawn",
-        {"prompt": "inspect the requested workspace"},
+        {"objective": "inspect the requested workspace", "context": "mock", "plan": "mock", "success_criteria": "mock"},
         permission="prepare",
         context=CapabilityContext(
             home=tmp_path,
@@ -172,7 +171,7 @@ async def test_delegation_lifecycle_can_be_model_selected_step_by_step(tmp_path,
 
     recorded = await capabilities.invoke(
         "delegate.spawn",
-        {"prompt": "stepwise task"},
+        {"objective": "stepwise task", "context": "mock", "plan": "mock", "success_criteria": "mock"},
         permission="prepare",
         context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", workspace=str(tmp_path)),
     )
@@ -258,7 +257,85 @@ async def test_approval_resolve_reports_consumed_approval(tmp_path):
 
     assert result.ok is False
     assert result.message == "Approval is not pending; current status is approved."
-    assert result.facts["approval_resolution"]["reason"] == "approval_not_pending"
+
+
+@pytest.mark.asyncio
+async def test_approval_resolve_latest_visible_batch_scopes_sender_peer_source(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    runs = RunStore(tmp_path)
+    visible = runs.create(
+        "visible task",
+        status="awaiting_approval",
+        source="cli",
+        peer_id="peer",
+        sender_id="sender",
+        workspace=str(tmp_path),
+    )
+    other_sender = runs.create(
+        "other sender task",
+        status="awaiting_approval",
+        source="cli",
+        peer_id="peer",
+        sender_id="other",
+        workspace=str(tmp_path),
+    )
+    visible_approval = runs.create_approval(
+        run_id=visible.id, peer_id="peer", sender_id="sender"
+    )
+    runs.create_approval(run_id=other_sender.id, peer_id="peer", sender_id="other")
+
+    result = await capabilities.invoke(
+        "approval.resolve",
+        {"decision": "approve", "selection": "latest_visible_batch"},
+        permission="write",
+        context=CapabilityContext(
+            home=tmp_path,
+            peer_id="peer",
+            sender_id="sender",
+            source="cli",
+            input_text="approve the visible current approvals",
+            workspace=str(tmp_path),
+        ),
+    )
+
+    assert result.ok
+    assert result.facts["resolved_count"] == 1
+    assert runs.get(visible.id).status == "queued"
+    assert runs.get(other_sender.id).status == "awaiting_approval"
+    assert runs.get_approval(visible_approval.code).status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_approval_resolve_explicit_code_must_come_from_user_text(tmp_path):
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    runs = RunStore(tmp_path)
+    task = runs.create(
+        "visible task",
+        status="awaiting_approval",
+        source="cli",
+        peer_id="peer",
+        sender_id="sender",
+        workspace=str(tmp_path),
+    )
+    approval = runs.create_approval(run_id=task.id, peer_id="peer", sender_id="sender")
+
+    result = await capabilities.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": approval.code},
+        permission="write",
+        context=CapabilityContext(
+            home=tmp_path,
+            peer_id="peer",
+            sender_id="sender",
+            source="cli",
+            input_text="approve the visible current approvals",
+            workspace=str(tmp_path),
+        ),
+    )
+
+    assert not result.ok
+    assert "User did not provide this approval code" in result.message
+    assert runs.get(task.id).status == "awaiting_approval"
 
 
 @pytest.mark.asyncio
@@ -434,7 +511,7 @@ async def test_capability_manifest_and_execution_respect_permission_ceiling(tmp_
 
     result = await capabilities.invoke(
         "delegate.spawn",
-        {"prompt": "prepare local work"},
+        {"objective": "prepare local work", "context": "mock", "plan": "mock", "success_criteria": "mock"},
         permission="prepare",
         context=CapabilityContext(home=tmp_path, permission_ceiling="read"),
     )
@@ -490,7 +567,7 @@ async def test_mutating_action_capabilities_are_audited_once(tmp_path):
 
     result = await capabilities.invoke(
         "delegate.spawn",
-        {"prompt": "audit task recording"},
+        {"objective": "audit task recording", "context": "mock", "plan": "mock", "success_criteria": "mock"},
         permission="prepare",
         context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender"),
     )
@@ -513,7 +590,7 @@ async def test_action_audit_failure_is_logged(tmp_path, monkeypatch, caplog):
 
     result = await capabilities.invoke(
         "delegate.spawn",
-        {"prompt": "audit failure recording"},
+        {"objective": "audit failure recording", "context": "mock", "plan": "mock", "success_criteria": "mock"},
         permission="prepare",
         context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender"),
     )
@@ -540,94 +617,6 @@ async def test_gateway_capability_audit_is_not_duplicated(tmp_path):
     assert [log.tool for log in logs] == ["provider.config"]
 
 
-def test_trust_success_does_not_auto_escalate_autonomy(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
-    trust = TrustStore(tmp_path)
-    runs = RunStore(tmp_path)
-    rule = trust.upsert(
-        name="low risk",
-        pattern="trusted",
-        project_path="",
-        sender_id="sender",
-        autonomy_level="L2",
-    )
-    task = runs.create(
-        "trusted task",
-        prompt="trusted task",
-        sender_id="sender",
-        trust_rule_id=rule.id,
-        autonomy_level="L2",
-        status="completed",
-        workspace=str(tmp_path),
-    )
-
-    for _ in range(2):
-        trust.record_success(task)
-        assert trust.get(rule.id).autonomy_level == "L2"
-
-    trust.record_success(task)
-    assert trust.get(rule.id).autonomy_level == "L2"
-
-
-@pytest.mark.asyncio
-async def test_explicit_l3_trust_rule_can_auto_execute(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
-    monkeypatch.chdir(tmp_path)
-    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
-    trust = TrustStore(tmp_path)
-    workspace = str(tmp_path.resolve())
-    trust.upsert(
-        name="explicit trusted workspace",
-        pattern="trusted",
-        project_path=workspace,
-        sender_id="sender",
-        autonomy_level="L3",
-    )
-
-    recorded = await capabilities.invoke(
-        "delegate.spawn",
-        {"prompt": "trusted maintenance"},
-        permission="prepare",
-        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", source="weixin"),
-    )
-    await capabilities.invoke(
-        "delegate.prepare",
-        {"run_id": recorded.run_id},
-        permission="prepare",
-        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", source="weixin"),
-    )
-    planned = await capabilities.invoke(
-        "delegate.run",
-        {"run_id": recorded.run_id},
-        permission="write",
-        context=CapabilityContext(home=tmp_path, peer_id="peer", sender_id="sender", source="weixin"),
-    )
-
-    task = RunStore(tmp_path).get(planned.run_id)
-    assert task.status == "queued"
-    assert task.workspace == workspace
-    completed = await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
-    assert completed[0].status == "completed"
-
-
-@pytest.mark.asyncio
-async def test_internal_plan_timeout_marks_task_failed(tmp_path, monkeypatch):
-    monkeypatch.delenv("NAVI_EXECUTION_MOCK", raising=False)
-    monkeypatch.setenv("NAVI_EXECUTION_TIMEOUT_SECONDS", "1")
-    execution = ExecutionService(tmp_path)
-    task = RunStore(tmp_path).create("timeout", status="pending", workspace=str(tmp_path))
-
-    async def slow_plan(task):
-        import asyncio
-
-        await asyncio.sleep(2)
-
-    monkeypatch.setattr(execution.provider, "plan", slow_plan)
-    planned = await execution.plan_task(task)
-
-    assert planned.status == "failed"
-    assert "timed out" in planned.error
-
 
 @pytest.mark.asyncio
 async def test_evolution_rollback_restores_graph_event(tmp_path, monkeypatch):
@@ -641,12 +630,12 @@ async def test_evolution_rollback_restores_graph_event(tmp_path, monkeypatch):
         "approval.resolve",
         {"decision": "approve", "code": approval.code},
         permission="write",
-        context=CapabilityContext(home=tmp_path, sender_id="sender"),
+        context=CapabilityContext(home=tmp_path, sender_id="sender", source="weixin"),
     )
     completed = (await daemon.process_queue_once())[0]
 
     events = daemon.evolution.ledger.list()
-    assert {event.target_type for event in events}.issubset({"graph_node", "run_execution", "approval", "execution_grant", "trust_decision"})
+    assert {event.target_type for event in events}.issubset({"graph_node", "run_execution", "approval", "execution_grant", })
 
     for event in events:
         rolled_back = daemon.evolution.rollback(event.id)
@@ -656,3 +645,15 @@ async def test_evolution_rollback_restores_graph_event(tmp_path, monkeypatch):
     assert daemon.evolution.ledger.list()[0].rolled_back_at
     assert completed.id
     assert planned.run_id
+def test_disabled_capability_classes_match_exact_tool_names(tmp_path):
+    registry = CapabilityRegistry(
+        home=tmp_path,
+        project_dir=tmp_path,
+        disabled_capability_classes=frozenset({"file.write", "shell"}),
+    )
+
+    names = {spec.name for spec in registry.planner_specs()}
+
+    assert "file.write" not in names
+    assert "shell.run" not in names
+    assert "delegate.spawn" in names

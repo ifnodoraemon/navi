@@ -1,0 +1,15 @@
+id: local_file_product_loop
+source: acceptance
+peer_id: acceptance
+sender_id: acceptance
+approval_template: "approve {{approval_code}}"
+request: |
+  Complete this local product acceptance task in the current workspace.
+  Use the managed delegation flow if local mutation needs approval.
+  Write a file named acceptance-result.txt with exactly this text:
+  navi-product-accepted
+  Then verify the file exists and contains that text before reporting completion.
+expected:
+  file_contains:
+    path: acceptance-result.txt
+    text: navi-product-accepted

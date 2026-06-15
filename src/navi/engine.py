@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import asdict, dataclass, replace
@@ -12,6 +13,7 @@ logger = logging.getLogger("navi.engine")
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .config import load_config
 from .connector_registry import approval_surface_affordance
+from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from .goals import GoalStore
 from .operating_context import OperatingContext
 from .provider import ChatMessage
@@ -87,6 +89,7 @@ class HernessEngine:
         source: str,
         session_id: str | None = None,
         session_alias: str | None = None,
+        intent_facts: dict[str, Any] | None = None,
     ) -> AgentTurnResult:
         resolved_session_id = session_id
         if not resolved_session_id and session_alias:
@@ -113,25 +116,27 @@ class HernessEngine:
             input_text=text,
             event_bus=self.event_bus,
         )
-        
+
         observations: list[str] = []
-        
-        import subprocess
-        from datetime import datetime
-        cwd = self.capabilities.gateway.project_dir
-        try:
-            now = datetime.now().astimezone().isoformat()
-            git_status = subprocess.run(["git", "status", "-s"], cwd=cwd, capture_output=True, text=True, timeout=2).stdout.strip()
-            ambient = f"Ambient Context:\n- Current Time: {now}\n- Workspace: {cwd}\n"
-            if git_status:
-                ambient += f"- Git Status:\n{git_status}\n"
-            else:
-                ambient += "- Git Status: clean\n"
-            observations.append(ambient)
-        except subprocess.TimeoutExpired:
-            logger.debug("git status timed out in %s", cwd)
-        except OSError as e:
-            logger.debug("Failed to collect ambient context: %s", e)
+        state_context = SurfaceContext(
+            home=self.home,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            session_id=resolved_session_id,
+            workspace=context.workspace,
+            input_text=text,
+        )
+        current_state = CurrentStateBuilder(self.home).build(state_context)
+        observations.append(
+            "Current State Facts:\n"
+            + json.dumps(current_state_facts(current_state), ensure_ascii=False, sort_keys=True)
+        )
+        if intent_facts:
+            observations.append(
+                "Dynamic Intent Facts:\n"
+                + json.dumps(intent_facts, ensure_ascii=False, sort_keys=True)
+            )
 
         completion_events: list[dict[str, Any]] = []
         goal_ids: set[str] = set()
@@ -278,8 +283,50 @@ class HernessEngine:
                     observation="\n\n".join(observations),
                     terminal=True,
                 )
+            if result.terminal:
+                block_reason = self._completion_block_reason(
+                    completion_events,
+                    state_context=state_context,
+                )
+                if block_reason:
+                    self.trace.add_event(
+                        trace_id=trace_id,
+                        phase="completion.verify",
+                        session_id=resolved_session_id or "",
+                        run_id=result.run_id,
+                        source=source,
+                        peer_id=peer_id,
+                        sender_id=sender_id,
+                        model_role="runtime",
+                        ok=False,
+                        input_data={"events_count": len(completion_events)},
+                        output_data={"block_reason": block_reason},
+                        message=block_reason,
+                    )
+                    recovery_plan = self.recovery.plan_completion_failure(
+                        block_reason=block_reason,
+                        events=completion_events,
+                    )
+                    self.trace.add_event(
+                        trace_id=trace_id,
+                        phase="recovery.plan",
+                        session_id=resolved_session_id or "",
+                        run_id=result.run_id,
+                        source=source,
+                        peer_id=peer_id,
+                        sender_id=sender_id,
+                        model_role="runtime",
+                        ok=True,
+                        input_data={"trigger": recovery_plan.trigger},
+                        output_data=asdict(recovery_plan),
+                        message=recovery_plan.recommended,
+                    )
+                    observations.append(recovery_plan.to_observation())
+                    last_result = replace(result, terminal=False)
+                    continue
             last_result = result
             if result.terminal:
+                result = self._ensure_pending_approval_prompt(result, pending_approval_prompt)
                 turn_res = self._record_turn(text, result, session_id=resolved_session_id)
                 turn_res = self._with_trace(turn_res, trace_id)
                 self._attach_goals(
@@ -438,87 +485,33 @@ class HernessEngine:
             },
             message="internal step budget exhausted",
         )
-        for _ in range(2):
-            recovery_plan = self.recovery.plan_budget_exhaustion(events=completion_events)
-            choice = recovery_plan.choices[0] if recovery_plan.choices else None
-            self.trace.add_event(
-                trace_id=trace_id,
-                phase="recovery.plan",
-                session_id=session_id,
-                run_id=last_result.run_id if last_result else "",
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-                model_role="runtime",
-                ok=True,
-                input_data={"trigger": recovery_plan.trigger},
-                output_data=asdict(recovery_plan),
-                message=recovery_plan.recommended,
-            )
-            if choice is None:
-                return pending_approval_prompt, last_result
-            invoked = await self.capabilities.invoke(
-                choice.tool,
-                choice.args,
-                permission=choice.permission,
-                context=context,
-            )
-            completion_events.append(
-                {
-                    "tool": choice.tool,
-                    "ok": invoked.ok,
-                    "facts": invoked.facts or {},
-                    "action": invoked.action,
-                }
-            )
-            goal_id = str((invoked.facts or {}).get("goal_id") or "").strip()
-            if goal_id:
-                goal_ids.add(goal_id)
-            self.trace.add_event(
-                trace_id=trace_id,
-                phase="capability.result",
-                session_id=session_id,
-                run_id=invoked.run_id,
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-                tool=choice.tool,
-                model_role="runtime",
-                ok=invoked.ok,
-                input_data={
-                    "args": choice.args,
-                    "permission": choice.permission,
-                    "budget_recovery": True,
-                },
-                output_data={
-                    "action": invoked.action,
-                    "facts": invoked.facts or {},
-                    "terminal": invoked.terminal,
-                },
-                message=invoked.message or invoked.observation,
-            )
-            observations.append(invoked.observation or invoked.message)
-            approval_prompt = self._approval_prompt_from_facts(invoked.facts, source=source)
-            if approval_prompt:
-                pending_approval_prompt = approval_prompt
-            last_result = AgentTurnResult(
-                text=invoked.message or invoked.observation,
-                run_id=invoked.run_id,
-                action=invoked.action,
-                observation=invoked.observation,
-                model_role="runtime",
-                terminal=invoked.terminal,
-                budget_exhausted=True,
-            )
-            facts = invoked.facts or {}
-            if not invoked.ok or facts.get("status") == "awaiting_approval":
-                return pending_approval_prompt, last_result
+        del context, goal_ids
+        recovery_plan = self.recovery.plan_budget_exhaustion(events=completion_events)
+        self.trace.add_event(
+            trace_id=trace_id,
+            phase="recovery.plan",
+            session_id=session_id,
+            run_id=last_result.run_id if last_result else "",
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            model_role="runtime",
+            ok=True,
+            input_data={"trigger": recovery_plan.trigger},
+            output_data=asdict(recovery_plan),
+            message=recovery_plan.recommended,
+        )
+        observations.append(recovery_plan.to_observation())
         return pending_approval_prompt, last_result
 
-    @staticmethod
-    def _completion_block_reason(events: list[dict[str, Any]]) -> str:
+    def _completion_block_reason(
+        self,
+        events: list[dict[str, Any]],
+        *,
+        state_context: SurfaceContext | None = None,
+    ) -> str:
         if not events:
-            return ""
+            events = []
         latest_run_status: dict[str, str] = {}
         for event in events:
             facts = event.get("facts")
@@ -558,6 +551,20 @@ class HernessEngine:
                 "completion verifier blocked final answer: "
                 f"cleanup_complete=false with remaining_count={remaining}."
             )
+        if state_context is not None:
+            state = CurrentStateBuilder(self.home).build(state_context)
+            for run in state.active_runs:
+                if run.status in {"pending", "preparing", "prepared"}:
+                    return (
+                        "completion verifier blocked final answer: "
+                        f"delegation run {run.id} is still {run.status}."
+                    )
+            for workflow in state.active_workflows:
+                if workflow.status in {"approved", "running", "interrupted"}:
+                    return (
+                        "completion verifier blocked final answer: "
+                        f"workflow {workflow.id} is still {workflow.status}."
+                    )
         return ""
 
     def _trigger_background_memory(self, result: AgentTurnResult) -> None:
@@ -911,4 +918,3 @@ def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:
     if isinstance(raw, list) and raw:
         return str(raw[0])
     return fallback
-

@@ -5,6 +5,7 @@ import pytest
 from navi.capabilities import CapabilityContext, build_capability_registry
 from navi.workflows import (
     WORKFLOW_STATUS_AWAITING_APPROVAL,
+    WORKFLOW_STATUS_BLOCKED,
     WORKFLOW_STATUS_VERIFIED_COMPLETE,
     WorkflowStore,
 )
@@ -72,6 +73,7 @@ async def test_dynamic_workflow_lifecycle_runs_declared_read_capabilities(tmp_pa
 
     verified = await registry.invoke("workflow.verify", {"workflow_id": workflow_id}, permission="write", context=context)
     assert verified.ok
+    print(f"\n\n\nVERIFIED FACTS: {verified.facts}\n\n\n")
     assert verified.facts["status"] == WORKFLOW_STATUS_VERIFIED_COMPLETE
     assert verified.facts["verifier_passed"] is True
 
@@ -120,3 +122,73 @@ async def test_dynamic_workflow_blocks_undeclared_tool_calls(tmp_path):
     workflow = WorkflowStore(tmp_path).get(workflow_id)
     assert workflow is not None
     assert workflow.status == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_workflow_without_capability_calls_requires_planning_goal_type(tmp_path):
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path, peer_id="cli", sender_id="cli", source="cli", workspace=str(tmp_path)
+    )
+
+    proposed = await registry.invoke(
+        "workflow.propose",
+        {
+            "objective": "Plan a repository audit",
+            "permission_ceiling": "read",
+            "plan": {"goal_type": "planning"},
+            "steps": [{"id": "plan", "objective": "Draft the audit plan", "tool_calls": []}],
+        },
+        permission="prepare",
+        context=context,
+    )
+    workflow_id = proposed.facts["workflow_id"]
+    await registry.invoke(
+        "workflow.approve",
+        {"workflow_id": workflow_id, "decision": "approve"},
+        permission="write",
+        context=context,
+    )
+
+    result = await registry.invoke(
+        "workflow.run", {"workflow_id": workflow_id}, permission="write", context=context
+    )
+
+    assert result.ok
+    assert result.facts["completed_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_workflow_without_capability_calls_blocks_execution_goal(tmp_path):
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path, peer_id="cli", sender_id="cli", source="cli", workspace=str(tmp_path)
+    )
+
+    proposed = await registry.invoke(
+        "workflow.propose",
+        {
+            "objective": "Execute a repository audit",
+            "permission_ceiling": "read",
+            "plan": {"goal_type": "execution"},
+            "steps": [{"id": "execute", "objective": "Complete the audit", "tool_calls": []}],
+        },
+        permission="prepare",
+        context=context,
+    )
+    workflow_id = proposed.facts["workflow_id"]
+    await registry.invoke(
+        "workflow.approve",
+        {"workflow_id": workflow_id, "decision": "approve"},
+        permission="write",
+        context=context,
+    )
+
+    result = await registry.invoke(
+        "workflow.run", {"workflow_id": workflow_id}, permission="write", context=context
+    )
+
+    assert not result.ok or result.facts["status"] == WORKFLOW_STATUS_BLOCKED
+    workflow = WorkflowStore(tmp_path).get(workflow_id)
+    assert workflow is not None
+    assert workflow.status == WORKFLOW_STATUS_BLOCKED

@@ -195,7 +195,7 @@ async def test_weixin_plain_schedule_message_creates_watch(tmp_path, monkeypatch
         home=tmp_path,
         provider=_pool(ScriptedProvider(
             [
-                '{"tool":"watch.create","permission":"prepare","args":{"prompt":"进行毛选晨读","cron":"0 8 * * *"},"confidence":0.95,"reason":"explicit recurring schedule"}',
+                '{"tool":"watch.create","permission":"prepare","args":{"prompt": "进行毛选晨读","cron":"0 8 * * *"},"confidence":0.95,"reason":"explicit recurring schedule"}',
                 '{"tool":"final.answer","permission":"read","args":{"message":"已为你创建每天早上 8 点的晨读提醒。"},"confidence":0.95,"reason":"watch created"}',
             ]
         )),
@@ -246,7 +246,7 @@ async def test_weixin_plain_local_action_creates_task(tmp_path, monkeypatch):
         home=tmp_path,
         provider=_pool(ScriptedProvider(
             [
-                '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+                '{"tool":"delegate.spawn","permission":"prepare","args":{"objective": "列一下我本机的目录", "context": "mock", "plan": "mock", "success_criteria": "mock"},"confidence":0.9,"reason":"local filesystem request"}',
                 '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
                 '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
                 '{"tool":"final.answer","permission":"read","args":{"message":"已创建列目录任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',
@@ -264,7 +264,7 @@ async def test_weixin_plain_local_action_creates_task(tmp_path, monkeypatch):
     assert handled is True
     task = service.active.runs.list()[0]
     assert task.status == "awaiting_approval"
-    assert task.prompt == "列一下我本机的目录"
+    assert task.title == "列一下我本机的目录"
     assert "审批" in service.client.sent[-1]["text"]
     assert "approval.resolve" not in service.client.sent[-1]["text"]
 
@@ -277,7 +277,7 @@ async def test_weixin_command_like_business_text_routes_through_planner(tmp_path
         home=tmp_path,
         provider=_pool(ScriptedProvider(
             [
-                '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+                '{"tool":"delegate.spawn","permission":"prepare","args":{"objective": "列一下我本机的目录", "context": "mock", "plan": "mock", "success_criteria": "mock"},"confidence":0.9,"reason":"local filesystem request"}',
                 '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
                 '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
                 '{"tool":"final.answer","permission":"read","args":{"message":"已创建列目录任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',
@@ -295,7 +295,7 @@ async def test_weixin_command_like_business_text_routes_through_planner(tmp_path
     assert handled is True
     task = service.active.runs.list()[0]
     assert task.status == "awaiting_approval"
-    assert task.prompt == "列一下我本机的目录"
+    assert task.title == "列一下我本机的目录"
 
 
 @pytest.mark.asyncio
@@ -304,7 +304,7 @@ async def test_weixin_plain_approval_queues_task(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local filesystem request"}',
+            '{"tool":"delegate.spawn","permission":"prepare","args":{"objective": "列一下我本机的目录", "context": "mock", "plan": "mock", "success_criteria": "mock"},"confidence":0.9,"reason":"local filesystem request"}',
             '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"prepare task"}',
             '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.9,"reason":"request approval"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"已创建列目录任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',
@@ -326,7 +326,7 @@ async def test_weixin_plain_approval_queues_task(tmp_path, monkeypatch):
             + code
             + '"},"confidence":0.95,"reason":"explicit approval"}'
         ),
-        '{"tool":"final.answer","permission":"read","args":{"message":"任务已批准并加入执行队列。"},"confidence":0.95,"reason":"approval resolved"}',
+        '{"tool":"final.answer","permission":"read","args":{"message":"任务已批准并加入后台执行队列。"},"confidence":0.95,"reason":"approval resolved"}',
     ]
 
     handled = await service.handle_update(

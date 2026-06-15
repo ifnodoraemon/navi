@@ -22,6 +22,8 @@ from navi.tools import ToolSpec
 def _tool(name: str = "final.answer", permission: str = "read") -> ToolSpec:
     return ToolSpec(
         name=name,
+        capability_class="test",
+        execution_contexts=("turn",),
         description="test",
         input_schema={"type": "object", "properties": {"message": {"type": "string"}}},
         output_schema={"type": "object"},

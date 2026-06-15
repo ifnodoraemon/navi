@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .db import connect
+from .db import connect, ensure_schema_version
 from .runs import Run
+
+GOAL_STORE_SCHEMA_VERSION = 1
 
 GOAL_STATUS_ACTIVE = "active"
 GOAL_STATUS_AWAITING_APPROVAL = "awaiting_approval"
@@ -79,6 +81,7 @@ class GoalStore:
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
+            ensure_schema_version(conn, "goals", GOAL_STORE_SCHEMA_VERSION)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS goals (

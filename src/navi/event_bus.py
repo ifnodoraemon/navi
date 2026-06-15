@@ -41,17 +41,7 @@ class UserIntentEvent(NaviEvent):
     source: str = ""
     session_alias: str = ""
     session_id: str = ""
-
-
-@dataclass(frozen=True)
-class ApprovalCodeEvent(NaviEvent):
-    event_type: str = "approval_code"
-    message_id: str = ""
-    peer_id: str = ""
-    sender_id: str = ""
-    code: str = ""
-    decision: str = "approve"
-    source: str = ""
+    facts: dict[str, Any] = field(default_factory=dict)
 
 
 # ─── Main Agent → Governance ───
@@ -67,6 +57,15 @@ class ActionRequestedEvent(NaviEvent):
 
 
 # ─── Governance → Execution ───
+
+@dataclass(frozen=True)
+class RunCompletedEvent(NaviEvent):
+    event_type: str = "run_completed"
+    run_id: str = ""
+    status: str = ""
+    error: str = ""
+    peer_id: str = ""
+    sender_id: str = ""
 
 @dataclass(frozen=True)
 class ActionApprovedEvent(NaviEvent):

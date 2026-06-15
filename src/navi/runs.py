@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .db import connect
+from .db import connect, ensure_schema_version
+
+
+RUN_STORE_SCHEMA_VERSION = 1
 
 
 def _require_workspace(workspace: str) -> str:
@@ -104,6 +107,7 @@ class RunStore:
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
+            ensure_schema_version(conn, "runs", RUN_STORE_SCHEMA_VERSION)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
@@ -647,6 +651,19 @@ class RunStore:
                 (limit,),
             ).fetchall()
         return [Approval(*row) for row in rows]
+
+    def archive_expired_approvals(self, *, now: float | None = None) -> int:
+        cutoff = time.time() if now is None else now
+        with connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE approvals
+                SET status = 'expired', updated_at = ?
+                WHERE status = 'pending' AND expires_at < ?
+                """,
+                (cutoff, cutoff),
+            )
+            return int(cursor.rowcount or 0)
 
     def _approvals_for_run(self, run_id: str) -> list[Approval]:
         with connect(self.db_path) as conn:

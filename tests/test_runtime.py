@@ -124,6 +124,8 @@ def test_planner_prompt_marks_observed_facts_as_untrusted():
 
     tool = ToolSpec(
         name="final.answer",
+        capability_class="conversation",
+        execution_contexts=("turn",),
         description="Return a final response.",
         input_schema={"type": "object"},
         output_schema={"type": "object"},
@@ -351,6 +353,7 @@ def test_core_support_tools_expose_skills_memory_and_browser(tmp_path, monkeypat
     assert any(reason.startswith("matched_query_tokens:") for reason in recalled.facts["items"][0]["reasons"])
 
     monkeypatch.setattr("navi.core_tools.shutil.which", lambda name: None)
+    monkeypatch.setattr("navi.core_tools._is_public_http_host", lambda host, port=None: True)
     screenshot = gateway.call("browser.screenshot", {"url": "https://example.com", "path": "shot.png"})
     assert not screenshot.ok
     assert screenshot.error == "playwright CLI not found"

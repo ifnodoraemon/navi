@@ -26,3 +26,30 @@ def _execute_with_busy_retry(conn: sqlite3.Connection, sql: str) -> None:
             if "locked" not in str(exc).lower() or attempt == 5:
                 raise
             time.sleep(0.05 * (attempt + 1))
+
+
+def ensure_schema_version(conn: sqlite3.Connection, component: str, version: int) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_versions (
+            component TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    row = conn.execute(
+        "SELECT version FROM schema_versions WHERE component = ?", (component,)
+    ).fetchone()
+    if row is not None and int(row[0]) > version:
+        raise RuntimeError(
+            f"{component} schema version {row[0]} is newer than supported version {version}"
+        )
+    conn.execute(
+        """
+        INSERT INTO schema_versions(component, version, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(component) DO UPDATE SET version = excluded.version, updated_at = excluded.updated_at
+        """,
+        (component, version, time.time()),
+    )

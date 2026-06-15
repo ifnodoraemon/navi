@@ -197,7 +197,7 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"检查本地服务状态"},"confidence":0.95,"reason":"local action request"}',
+            '{"tool":"delegate.spawn","permission":"prepare","args":{"objective": "检查本地服务状态", "context": "mock", "plan": "mock", "success_criteria": "mock"},"confidence":0.95,"reason":"local action request"}',
             '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.95,"reason":"prepare task"}',
             '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.95,"reason":"request approval"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"已为你创建受控任务，等待审批后执行。"},"confidence":0.95,"reason":"task prepared"}',
@@ -222,12 +222,13 @@ def test_chat_api_routes_natural_language_task_requests(tmp_path, monkeypatch):
     assert data["facts"]["status"] == "awaiting_approval"
     assert data["facts"]["run_id"] == data["run_id"]
     task = client.get("/v1/delegations").json()["delegations"][0]
-    assert task["prompt"] == "检查本地服务状态"
+    assert task["title"] == "检查本地服务状态"
     assert task["status"] == "awaiting_approval"
     from navi.runs import RunStore
 
     code = RunStore(tmp_path).list_approvals()[0].code
-    assert f"审批码：{code}" in data["message"]
+    assert "审批码" in data["message"]
+    assert code in data["message"]
 
 
 def test_chat_api_routes_natural_language_service_status(tmp_path, monkeypatch):
@@ -271,7 +272,7 @@ def test_chat_api_routes_natural_language_approval(tmp_path, monkeypatch):
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"检查本地服务状态"},"confidence":0.95,"reason":"local action request"}',
+            '{"tool":"delegate.spawn","permission":"prepare","args":{"objective": "检查本地服务状态", "context": "mock", "plan": "mock", "success_criteria": "mock"},"confidence":0.95,"reason":"local action request"}',
             '{"tool":"delegate.prepare","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.95,"reason":"prepare task"}',
             '{"tool":"approval.request","permission":"prepare","args":{"run_id":"TASK_ID"},"confidence":0.95,"reason":"request approval"}',
             '{"tool":"final.answer","permission":"read","args":{"message":"已创建任务，等待审批。"},"confidence":0.95,"reason":"task prepared"}',

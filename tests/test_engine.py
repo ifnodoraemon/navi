@@ -6,6 +6,7 @@ import re
 import pytest
 
 from navi.engine import HernessEngine
+from navi.daemon import SystemDaemon
 from navi.defaults import DEFAULT_LOCAL_SURFACE
 from navi.fact_tools import ServiceFacts
 from navi.goals import GoalStore
@@ -171,7 +172,14 @@ async def test_engine_budget_exhausted_with_observations(tmp_path):
         ]
     )
     runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
-    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path, step_budget=1)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
+    router = HernessEngine(
+        home=tmp_path,
+        runtime=runtime,
+        project_dir=tmp_path,
+        step_budget=1,
+        event_bus=daemon.event_bus,
+    )
 
     result = await router.handle(
         "Hello",
@@ -221,12 +229,19 @@ async def test_engine_budget_recovery_prepares_and_requests_approval(tmp_path, m
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
     provider = ScriptedProvider(
         [
-            '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"列一下本机目录"},"confidence":0.9,"reason":"local work"}',
+            '{"tool":"delegate.spawn","permission":"prepare","args":{"objective": "列一下本机目录", "context": "mock", "plan": "mock", "success_criteria": "mock"},"confidence":0.9,"reason":"local work"}',
             "任务已准备好，等待审批。",
         ]
     )
     runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
-    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path, step_budget=1)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
+    router = HernessEngine(
+        home=tmp_path,
+        runtime=runtime,
+        project_dir=tmp_path,
+        step_budget=1,
+        event_bus=daemon.event_bus,
+    )
 
     result = await router.handle(
         "列一下本机目录",
@@ -258,12 +273,15 @@ async def test_engine_blocks_final_answer_when_recorded_task_is_still_pending(tm
     # engine finishes the turn after calling the finalizer LLM.
     provider = ScriptedProvider(
         [
-            '{"tool":"delegate.spawn","permission":"prepare","args":{"prompt":"列一下我本机的目录"},"confidence":0.9,"reason":"local work"}',
-            "任务已准备好，等待审批。",
+            '{"tool":"delegate.spawn","permission":"prepare","args":{"objective": "列一下我本机的目录", "context": "mock", "plan": "mock", "success_criteria": "mock"},"confidence":0.9,"reason":"local work"}',
+            '{"tool":"final.answer","permission":"read","args":{"message":"任务已准备好，等待审批。"},"confidence":0.9,"reason":"approval requested"}',
         ]
     )
     runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
-    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
+    router = HernessEngine(
+        home=tmp_path, runtime=runtime, project_dir=tmp_path, event_bus=daemon.event_bus
+    )
 
     result = await router.handle(
         "列一下我本机的目录",
