@@ -128,15 +128,7 @@ def test_t1_no_lazy_imports_in_execution() -> None:
     execution_file = project_root / "src" / "navi" / "execution.py"
     violations = find_lazy_imports_in_file(execution_file, "navi", ["navi.engine", "navi.capabilities"])
     
-    # Adapt assertions for main branch: allow known legacy lazy imports for compatibility
-    allowed = {
-        "from capabilities import ... inside function (resolved: navi.capabilities)",
-        "from engine import ... inside function (resolved: navi.engine)",
-    }
-    filtered_violations = [
-        v for v in violations if not any(allow in v for allow in allowed)
-    ]
-    assert not filtered_violations, f"Unexpected lazy imports found in execution.py: {filtered_violations}"
+    assert not violations, f"Lazy imports of engine/capabilities found in execution.py: {violations}"
 
 
 def test_t1_no_lazy_imports_in_capabilities() -> None:

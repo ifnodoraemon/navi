@@ -234,8 +234,18 @@ class DelegateDeleteCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
+        reason = _arg_text(args, "reason")
+        if not reason:
+            return CapabilityResult(
+                ok=False,
+                action="delegation",
+                observation="delegate.delete requires reason.",
+                message="delegate.delete requires reason.",
+                terminal=False,
+                error_reason="schema_mismatch",
+            )
         if not run_id:
-            return self._delete_by_filter(args)
+            return self._delete_by_filter(args, context)
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         task = runs.get(run_id)
@@ -245,6 +255,16 @@ class DelegateDeleteCapability:
                 action="delegation",
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
+                terminal=False,
+            )
+        if _remote_source(context.source) and (
+            task.status != "failed" or task.kind not in {"watch", "delegation"}
+        ):
+            return CapabilityResult(
+                ok=False,
+                action="delegation",
+                observation="remote delegate.delete can only delete failed delegation runs.",
+                message="remote delegate.delete can only delete failed delegation runs.",
                 terminal=False,
             )
         deleted = runs.delete_run(run_id)
@@ -263,6 +283,7 @@ class DelegateDeleteCapability:
             "run_id": deleted.id,
             "title": deleted.title,
             "status": deleted.status,
+            "reason": reason,
         }
         return _fact_result(
             "delegation",
@@ -270,18 +291,37 @@ class DelegateDeleteCapability:
             run_id=deleted.id,
         )
 
-    def _delete_by_filter(self, args: dict[str, Any]) -> CapabilityResult:
-        status = _arg_text(args, "status")
+    def _delete_by_filter(self, args: dict[str, Any], context: CapabilityContext) -> CapabilityResult:
+        status = _arg_text(args, "status") or "failed"
         raw_limit = args.get("limit")
         limit = (
             _positive_int(raw_limit, default=5000, maximum=5000) if raw_limit is not None else None
         )
         source = _arg_text(args, "source")
         kind = _arg_text(args, "kind")
+        if _remote_source(context.source) and not kind:
+            kind = "delegation"
+        if _remote_source(context.source) and (
+            status != "failed" or kind not in {"watch", "delegation"}
+        ):
+            return CapabilityResult(
+                ok=False,
+                action="delegation",
+                observation=(
+                    "remote delegate.delete bulk cleanup requires status=failed "
+                    "and kind watch or delegation."
+                ),
+                message=(
+                    "remote delegate.delete bulk cleanup requires status=failed "
+                    "and kind watch or delegation."
+                ),
+                terminal=False,
+            )
+
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
-        before_count = runs.count_runs(status="failed", source=source, kind=kind)
-        candidates = runs.list_by_status_filtered("failed", source=source, kind=kind, limit=limit)
+        before_count = runs.count_runs(status=status, source=source, kind=kind)
+        candidates = runs.list_by_status_filtered(status, source=source, kind=kind, limit=limit)
         deleted = []
         for task in candidates:
             removed = runs.delete_run(task.id)
@@ -297,7 +337,7 @@ class DelegateDeleteCapability:
                     "updated_at": removed.updated_at,
                 }
             )
-        remaining_count = runs.count_runs(status="failed", source=source, kind=kind)
+        remaining_count = runs.count_runs(status=status, source=source, kind=kind)
         facts = {
             **_transition_facts("bulk_delete", "runs", "completed"),
             "entity_count": len(deleted),
@@ -306,10 +346,11 @@ class DelegateDeleteCapability:
             "deleted_runs": deleted,
             "remaining_count": remaining_count,
             "cleanup_complete": remaining_count == 0,
-            "status_filter": "failed",
+            "status_filter": status,
             "source_filter": source,
             "kind_filter": kind,
             "limit_filter": limit,
+            "reason": _arg_text(args, "reason"),
         }
         return _fact_result("delegation", facts)
 

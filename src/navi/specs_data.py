@@ -174,8 +174,8 @@ DEFAULTS_SPEC: Any = {
     "execution_provider": "react",
     "execution_timeout_seconds": 120.0,
 
-    "model_provider": "mock",
-    "model_model": "mock",
+    "model_provider": "openai-compatible",
+    "model_model": "gpt-4o",
     "model_timeout_seconds": 60.0,
     "local_surface": "local",
     "agent_step_budget": 8,
@@ -503,8 +503,8 @@ SYSCALL_PLANNER_SPEC: Any = {
         "call the matching read capability first.",
         {
             "Fact-First / Local-First Policy": "Always prioritize using read-only "
-            "foreground tools (e.g. shell.run for safe "
-            "shell exploration, file.read) to confirm "
+            "foreground tools (e.g. system.info for safe "
+            "exploration, file.read) to confirm "
             "the environment, locate target files, and "
             "gather facts BEFORE spawning any "
             "background delegation. Never spawn a "
@@ -573,13 +573,6 @@ SYSCALL_PLANNER_SPEC: Any = {
 }
 
 MODEL_PROVIDERS_SPEC: Any = [
-    {
-        "name": "mock",
-        "kind": "mock",
-        "default_model": "mock",
-        "default_base_url": "",
-        "api_key_env": [],
-    },
     {
         "name": "openai-compatible",
         "kind": "openai-compatible",

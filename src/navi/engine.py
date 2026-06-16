@@ -54,6 +54,7 @@ class HernessEngine:
         permission_ceiling: str = "write",
         step_budget: int | None = None,
         event_bus: Any | None = None,
+        execution_context: str = "turn",
     ):
         self.home = home
         self.runtime = runtime
@@ -70,6 +71,7 @@ class HernessEngine:
             disabled_tools=disabled_tools,
             disabled_capability_classes=disabled_capability_classes,
             permission_ceiling=permission_ceiling,
+            execution_context=execution_context,
         )
         self.planner = ModelSyscallPlanner(runtime.provider)
         self.recovery = RecoveryPlanner()
@@ -283,7 +285,7 @@ class HernessEngine:
                     observation="\n\n".join(observations),
                     terminal=True,
                 )
-            if result.terminal:
+            if result.terminal and result.action not in ("ask.user", "ask"):
                 block_reason = self._completion_block_reason(
                     completion_events,
                     state_context=state_context,

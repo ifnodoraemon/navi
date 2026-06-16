@@ -43,6 +43,8 @@ class MemoryRequest(BaseModel):
     source: str = "api"
     status: str = "proposed"
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    reason: str = Field(min_length=1)
+    provenance: str = Field(min_length=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -312,7 +314,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     async def delete_delegation(run_id: str) -> dict:
         result = await capabilities.invoke(
             "delegate.delete",
-            {"run_id": run_id},
+            {"run_id": run_id, "reason": "api delegation delete request"},
             permission="write",
             context=_local_capability_context(home, project_dir=project_dir),
         )
@@ -358,6 +360,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             peer_id=request.peer_id,
             sender_id=request.sender_id,
             source=load_config(home).runtime.local_surface,
+            permission_ceiling="write",
             workspace=str(project_dir),
         )
         result = await capabilities.invoke(
@@ -446,6 +449,7 @@ def create_app(home: Path | None = None) -> FastAPI:
                 peer_id=request.peer_id,
                 sender_id=request.sender_id,
                 source=load_config(home).runtime.local_surface,
+                permission_ceiling="write",
                 workspace=str(project_dir),
             ),
         )
@@ -734,6 +738,7 @@ def _local_capability_context(home: Path, *, project_dir: Path) -> CapabilityCon
         peer_id=local_surface,
         sender_id=local_surface,
         source=local_surface,
+        permission_ceiling="write",
         workspace=str(project_dir),
     )
 

@@ -36,6 +36,17 @@ class MemoryAddCapability:
                 error_reason="schema_mismatch",
             )
         metadata = args.get("metadata") if isinstance(args.get("metadata"), dict) else {}
+        reason = _arg_text(args, "reason")
+        provenance = _arg_text(args, "provenance")
+        if not reason or not provenance:
+            return CapabilityResult(
+                ok=False,
+                action="memory",
+                observation="memory.add requires reason and provenance.",
+                message="memory.add requires reason and provenance.",
+                terminal=False,
+                error_reason="schema_mismatch",
+            )
         try:
             item = MemoryStore(self.home).add_item(
                 memory_type,
@@ -45,6 +56,8 @@ class MemoryAddCapability:
                 status=_arg_text(args, "status") or "proposed",
                 confidence=_confidence(args.get("confidence")),
                 metadata=metadata,
+                reason=reason,
+                provenance=provenance,
             )
         except ValueError as exc:
             return CapabilityResult(
@@ -53,7 +66,7 @@ class MemoryAddCapability:
                 observation=str(exc),
                 message=str(exc),
                 terminal=False,
-                error_reason="schema_mismatch",
+                error_reason="invalid_operation",
             )
         item_facts = asdict(item)
         facts = {
@@ -61,7 +74,13 @@ class MemoryAddCapability:
             "memory_id": item.id,
             "item": item_facts,
         }
-        return _fact_result("memory", facts, run_id=item.id)
+        facts["reason"] = reason
+        facts["provenance"] = provenance
+        return _fact_result(
+            "memory",
+            facts,
+            run_id=item.id,
+        )
 
 
 def _confidence(value: Any) -> float:

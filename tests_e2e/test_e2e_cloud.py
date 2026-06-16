@@ -11,25 +11,22 @@ from navi.event_bus import EventBus
 
 @pytest.mark.asyncio
 @pytest.mark.skipif("DEEPSEEK_API_KEY" not in os.environ, reason="DEEPSEEK_API_KEY not set")
-async def test_e2e_cloud_agent_run(mock_home, monkeypatch):
+async def test_e2e_cloud_agent_run(navi_home, monkeypatch):
     """
     Run a real E2E test against the cloud LLM using the deepseek provider.
-    This eliminates MockProvider and uses the real execution path.
+    This uses the real execution path.
     """
     # Force configuration to deepseek
     monkeypatch.setenv("NAVI_MODEL_PROVIDER", "deepseek")
     monkeypatch.setenv("NAVI_MODEL", "deepseek-v4-pro")
     
-    # Do NOT mock execution so we run the actual LLM call
-    monkeypatch.delenv("NAVI_EXECUTION_MOCK", raising=False)
-    
     bus = EventBus()
-    config = load_config(mock_home)
+    config = load_config(navi_home)
     provider = build_provider(config.model)
     
-    runtime = AgentRuntime(home=mock_home, provider=provider)
+    runtime = AgentRuntime(home=navi_home, provider=provider)
     engine = HernessEngine(
-        home=mock_home,
+        home=navi_home,
         runtime=runtime,
         project_dir=Path.cwd(),
         event_bus=bus,

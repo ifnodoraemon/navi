@@ -14,7 +14,7 @@ from navi.provider import ChatMessage, ModelPool
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 
-from .client import MockWeixinClient
+from .client import FakeWeixinClient
 from .config import WeixinConfig
 from .models import WeixinAccount, WeixinUpdate
 from .service import WeixinService
@@ -90,8 +90,8 @@ async def _run_journey(
     service = WeixinService(
         home=home, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=project_dir
     )
-    service.client = MockWeixinClient()
-    account = WeixinAccount(account_id="eval-account", token="eval-token", base_url="mock://ilink")
+    service.client = FakeWeixinClient()
+    account = WeixinAccount(account_id="eval-account", token="eval-token", base_url="fake://ilink")
     runs = RunStore(home)
     errors: list[str] = []
     events: list[dict[str, Any]] = []

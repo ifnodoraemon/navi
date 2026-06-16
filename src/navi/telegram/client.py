@@ -38,7 +38,7 @@ class TelegramClient:
         return f"{self.api_base_url}/bot{self.bot_token}/{method}"
 
 
-class MockTelegramClient:
+class FakeTelegramClient:
     def __init__(self):
         self.updates: list[TelegramUpdate] = []
         self.sent: list[dict[str, str]] = []

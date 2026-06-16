@@ -17,7 +17,7 @@ def _logged_tools(home: Path) -> set[str]:
 
 
 def test_t1_api_create_session_routes_capability(
-    api_client: TestClient, mock_home: Path
+    api_client: TestClient, navi_home: Path
 ) -> None:
     """Execute a POST /v1/sessions request via api_client and verify it creates the session."""
     alias = "e2e-session-alias"
@@ -36,11 +36,11 @@ def test_t1_api_create_session_routes_capability(
     aliases = get_response.json().get("aliases", [])
     aliases_list = [a["alias"] for a in aliases]
     assert alias in aliases_list
-    assert "session.create" in _logged_tools(mock_home)
+    assert "session.create" in _logged_tools(navi_home)
 
 
 def test_t1_api_add_memory_routes_capability(
-    api_client: TestClient, mock_home: Path
+    api_client: TestClient, navi_home: Path
 ) -> None:
     """Execute a POST /v1/memory request via api_client and verify it adds the memory item."""
     memory_data = {
@@ -49,6 +49,8 @@ def test_t1_api_add_memory_routes_capability(
         "source": "api-boundary-test",
         "status": "active",
         "confidence": 0.9,
+        "reason": "E2E validates API memory boundary",
+        "provenance": "tests_e2e:t1_api_boundary",
     }
     response = api_client.post("/v1/memory", json=memory_data)
     assert response.status_code == 200
@@ -61,6 +63,8 @@ def test_t1_api_add_memory_routes_capability(
     assert item["source"] == "api-boundary-test"
     assert item["status"] == "active"
     assert item["confidence"] == 0.9
+    assert item["reason"] == "E2E validates API memory boundary"
+    assert item["provenance"] == "tests_e2e:t1_api_boundary"
 
     # Verify database mutation by fetching memory items
     get_response = api_client.get("/v1/memory", params={"status": "active"})
@@ -68,16 +72,16 @@ def test_t1_api_add_memory_routes_capability(
     items = get_response.json().get("items", [])
     item_contents = {it["content"] for it in items}
     assert "E2E boundary test content" in item_contents
-    assert "memory.add" in _logged_tools(mock_home)
+    assert "memory.add" in _logged_tools(navi_home)
 
 
-def test_t1_api_trace_evaluate_routes_capability(api_client: TestClient, mock_home: Path) -> None:
+def test_t1_api_trace_evaluate_routes_capability(api_client: TestClient, navi_home: Path) -> None:
     """Execute a POST /v1/trace_evaluate request via api_client and verify it returns trace evaluation details."""
     from navi.trace import TraceStore
 
     trace_id = "boundary-trace-id"
     # Seed a trace event directly in the database/store
-    TraceStore(mock_home).add_event(
+    TraceStore(navi_home).add_event(
         trace_id=trace_id,
         phase="capability.result",
         tool="delegate.run",
@@ -97,11 +101,11 @@ def test_t1_api_trace_evaluate_routes_capability(api_client: TestClient, mock_ho
     
     evidence = json.loads(data["evidence_json"])
     assert evidence.get("first_failure_message") == "boundary check failure"
-    assert "trace.evaluate" in _logged_tools(mock_home)
+    assert "trace.evaluate" in _logged_tools(navi_home)
 
 
 def test_t1_api_evolution_propose_routes_capability(
-    api_client: TestClient, mock_home: Path
+    api_client: TestClient, navi_home: Path
 ) -> None:
     """Execute a POST /v1/evolution_proposals request via api_client and verify it proposes an evolution."""
     proposal_data = {
@@ -131,11 +135,11 @@ def test_t1_api_evolution_propose_routes_capability(
     proposals = get_response.json().get("proposals", [])
     proposal_ids = {prop["id"] for prop in proposals}
     assert data["id"] in proposal_ids
-    assert "evolution.propose" in _logged_tools(mock_home)
+    assert "evolution.propose" in _logged_tools(navi_home)
 
 
 def test_t1_api_evolution_apply_routes_capability(
-    api_client: TestClient, mock_home: Path
+    api_client: TestClient, navi_home: Path
 ) -> None:
     """Execute a POST /v1/evolution_proposal_apply request via api_client and verify it applies the proposal."""
     # 1. Propose an evolution
@@ -171,12 +175,12 @@ def test_t1_api_evolution_apply_routes_capability(
     assert apply_data["target_type"] == "memory_schema"
     assert apply_data["target_id"] == "apply_policy"
     assert apply_data["reason"] == "E2E evolution apply test"
-    logged = _logged_tools(mock_home)
+    logged = _logged_tools(navi_home)
     assert {"evolution.propose", "evolution.record_evaluation", "evolution.apply"} <= logged
 
 
 def test_t1_api_evolution_rollback_routes_capability(
-    api_client: TestClient, mock_home: Path
+    api_client: TestClient, navi_home: Path
 ) -> None:
     """Execute a POST /v1/evolution_rollback request via api_client and verify it rolls back the evolution event."""
     # 1. Propose an evolution
@@ -214,4 +218,4 @@ def test_t1_api_evolution_rollback_routes_capability(
     rollback_data = rollback_response.json()
     assert rollback_data["id"] == event_id
     assert rollback_data["rolled_back_at"] > 0
-    assert "evolution.rollback" in _logged_tools(mock_home)
+    assert "evolution.rollback" in _logged_tools(navi_home)

@@ -30,7 +30,7 @@ Current v1 includes:
 
 - CLI chat and control plane through `navi`.
 - Headless local API through `navi api`.
-- Model provider abstraction with `mock`, `openai-compatible`, `deepseek`, and `anthropic` provider specs.
+- Model provider abstraction with `openai-compatible`, `deepseek`, and `anthropic` provider specs.
 - Persistent local state under `.navi/` or `NAVI_HOME`.
 - Typed memory control system plus SQLite conversation sessions.
 - Task, watch, goal, approval, execution, recovery, subagent, trace, evolution, and workflow state.
@@ -82,7 +82,7 @@ Telegram requirements:
 
 - Provide an adapter under the connector registry with status diagnostics and connector-local approval affordances.
 - Support bot-token configuration, DM policy, allowed users, and home chat id through config or environment.
-- Support mock-tested inbound message handling and replies.
+- Support inbound message handling and replies.
 - Keep Telegram behavior connector-local; the core prompt and router must not know Telegram-specific commands.
 
 ## Architecture Requirements
@@ -108,7 +108,7 @@ Keep the code small, explicit, and inspectable:
 Runtime rules:
 
 - Missing real model credentials must fail clearly for real providers.
-- Mock provider is allowed for local development and tests.
+- Model providers must use real provider adapters; local tests may stub provider calls at the test boundary without adding runtime simulation modes.
 - Structured output constraints must be passed through provider/tool schema channels; business prompts must not repeat JSON shapes, field lists, or formatting bans.
 - Any action that can affect the user's machine, accounts, remote services, repository, files, credentials, or money must be traceable.
 - Connector credentials should be persisted with restrictive file permissions when the OS allows it.
@@ -139,7 +139,7 @@ navi skills
 navi tools list
 navi tools call TOOL_NAME --args-json JSON_ARGS
 
-navi memory add TYPE CONTENT
+navi memory add TYPE CONTENT --reason REASON --provenance PROVENANCE
 navi memory list
 navi memory recall QUERY
 navi memory conflicts
@@ -267,8 +267,8 @@ Current config shape:
 
 ```yaml
 model:
-  provider: mock
-  model: mock
+  provider: openai-compatible
+  model: gpt-4o
   timeout_seconds: 30.0
 runtime:
   service_name: navi.service
@@ -277,7 +277,6 @@ runtime:
 execution:
   provider: navi
   timeout_seconds: 120.0
-  mock: false
 ```
 
 Model configs may also declare provider-specific `api_base_url`, `api_key`, `fallbacks`, and role `routes`.
@@ -298,7 +297,6 @@ NAVI_LOCAL_SURFACE
 NAVI_AGENT_STEP_BUDGET
 NAVI_EXECUTION_PROVIDER
 NAVI_EXECUTION_TIMEOUT_SECONDS
-NAVI_EXECUTION_MOCK
 ```
 
 Weixin connector environment:
@@ -313,9 +311,9 @@ WEIXIN_ALLOWED_USERS
 WEIXIN_GROUP_POLICY
 WEIXIN_GROUP_ALLOWED_USERS
 WEIXIN_HOME_CHANNEL
-NAVI_WEIXIN_MOCK
-NAVI_WEIXIN_MOCK_MESSAGE
-NAVI_WEIXIN_MOCK_TYPING
+NAVI_WEIXIN_FAKE
+NAVI_WEIXIN_FAKE_MESSAGE
+NAVI_WEIXIN_FAKE_TYPING
 ```
 
 Telegram connector environment:
@@ -327,7 +325,7 @@ TELEGRAM_API_BASE_URL
 TELEGRAM_DM_POLICY
 TELEGRAM_ALLOWED_USERS
 TELEGRAM_HOME_CHAT_ID
-NAVI_TELEGRAM_MOCK
+NAVI_TELEGRAM_FAKE
 ```
 
 ## Local State
@@ -358,7 +356,7 @@ Implemented:
 
 - Python package scaffold and Typer CLI.
 - FastAPI app for headless local API clients.
-- Provider registry and provider adapters for mock, OpenAI-compatible, DeepSeek, and Anthropic-compatible models.
+- Provider registry and provider adapters for OpenAI-compatible, DeepSeek, and Anthropic-compatible models.
 - Bounded agent loop for observe/plan/read-tool/action chaining before final response.
 - Unified capability registry for action specs and gateway tools.
 - Core fact tools for providers, skills, tools, hooks, memory, files, shell, tests, web, service, and system facts.
@@ -367,8 +365,8 @@ Implemented:
 - Governed dynamic workflows persisted in `workflows.db` and exposed through `workflow.*`, CLI, and API surfaces.
 - Local memory, session, task/watch, approval, goal, trace, evolution, hook, and graph stores.
 - Connector registry plus Weixin and Telegram connector packages.
-- Weixin account store, context-token store, deduplication, policy checks, mock client, HTTP client skeleton, typing indicators, chunked text replies, voice transcript extraction, and inbound-to-agent service flow.
-- Telegram bot adapter with config, mock client, status diagnostics, policy checks, and inbound-to-agent service flow.
+- Weixin account store, context-token store, deduplication, policy checks, HTTP client skeleton, typing indicators, chunked text replies, voice transcript extraction, and inbound-to-agent service flow.
+- Telegram bot adapter with config, status diagnostics, policy checks, and inbound-to-agent service flow.
 - Tests for config, runtime, memory, providers, capabilities, workflows, goals, traces, hooks, connector runtime, Weixin, Telegram, CLI coverage, API flow, and eval datasets.
 
 Known gaps:
@@ -404,6 +402,6 @@ Before handoff, run:
 pytest -q
 PYTHONPATH=src python -m compileall src tests
 NAVI_HOME=/tmp/navi-smoke PYTHONPATH=src python -c "from navi.api import create_app; app=create_app(); print(app.title, len(app.routes))"
-NAVI_HOME=/tmp/navi-smoke-weixin NAVI_WEIXIN_MOCK=true PYTHONPATH=src python -c "import asyncio; from navi.paths import ensure_home; from navi.connector_registry import get_connector_adapter; home=ensure_home(); adapter=get_connector_adapter('weixin'); print(asyncio.run(adapter.setup(home, home, 10, None)).splitlines()[0])"
-NAVI_HOME=/tmp/navi-smoke-telegram NAVI_TELEGRAM_MOCK=true PYTHONPATH=src python -c "from navi.paths import ensure_home; from navi.connector_registry import get_connector_adapter; home=ensure_home(); adapter=get_connector_adapter('telegram'); status=adapter.status(home); print(adapter.name, status['configured'])"
+NAVI_HOME=/tmp/navi-smoke-weixin NAVI_WEIXIN_FAKE=true PYTHONPATH=src python -c "import asyncio; from navi.paths import ensure_home; from navi.connector_registry import get_connector_adapter; home=ensure_home(); adapter=get_connector_adapter('weixin'); print(asyncio.run(adapter.setup(home, home, 10, None)).splitlines()[0])"
+NAVI_HOME=/tmp/navi-smoke-telegram NAVI_TELEGRAM_FAKE=true PYTHONPATH=src python -c "from navi.paths import ensure_home; from navi.connector_registry import get_connector_adapter; home=ensure_home(); adapter=get_connector_adapter('telegram'); status=adapter.status(home); print(adapter.name, status['configured'])"
 ```

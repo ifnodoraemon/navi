@@ -38,9 +38,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="service.status",
             capability_class="service",
             description="Return systemd user service facts.",
-            routing_hints=[
-                "Use service.status for Navi service health, ActiveState/SubState, MainPID, ExecMainStartTimestamp, restart, or startup-time questions. Prefer this over system.info when the target is the configured Navi service.",
-            ],
             input_schema={
                 "type": "object",
                 "properties": {"name": {"type": "string", "default": config.runtime.service_name}},
@@ -122,9 +119,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="skills.list",
             capability_class="skills",
             description="Return installed procedural skill facts.",
-            routing_hints=[
-                "Use skills.list when the user asks what skills or procedural instructions Navi has. The tool returns current installed skill facts.",
-            ],
             input_schema={"type": "object", "properties": {}},
             output_schema=_output_schema(
                 {
@@ -174,9 +168,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="tools.list",
             capability_class="tools",
             description="Return callable capability facts.",
-            routing_hints=[
-                "Use tools.list when the user asks what tools, capabilities, or callable functions Navi currently has. Do not answer tool inventory questions from the manifest alone; the manifest is for planning, while tools.list returns user-facing current facts.",
-            ],
             input_schema={"type": "object", "properties": {}},
             output_schema=_output_schema(
                 {
@@ -396,9 +387,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="codebase.search",
             capability_class="codebase",
             description="Perform a fast, semantic-like search across the entire project codebase.",
-            routing_hints=[
-                "Use codebase.search for narrow read-only location or discovery. If the user asks Navi to diagnose and fix a runtime/code/protocol problem, delegate.spawn should own the governed multi-step run; codebase.search can be one step inside that run.",
-            ],
             input_schema={
                 "type": "object",
                 "properties": {
@@ -446,9 +434,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="shell.run",
             capability_class="shell",
             description="Run a non-shell command in the project workspace and return bounded stdout/stderr facts. Set allocate_pty to true if the command strictly requires a terminal (e.g. complains about stdin not being a tty), but note that stdout may contain ANSI escape codes and stderr will be merged into stdout.",
-            routing_hints=[
-                "Do not use shell.run merely to resolve natural-language dates or times for scheduling. watch.create accepts run_at_text for one-shot schedules and cron for exact recurring schedules.",
-            ],
             input_schema={
                 "type": "object",
                 "properties": {
@@ -561,9 +546,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             name="system.info",
             capability_class="system",
             description="Return system information: OS, memory, disk, load, uptime. Pass category='processes' for running process list.",
-            routing_hints=[
-                "Use system.info for host, OS, hardware, disk, memory, load, or process inventory. For Navi service status or service startup time, prefer service.status.",
-            ],
             input_schema={
                 "type": "object",
                 "properties": {
@@ -828,6 +810,8 @@ def _memory_item_facts(item) -> dict[str, Any]:
         "last_verified_at": item.last_verified_at,
         "expires_at": item.expires_at,
         "metadata": item.metadata,
+        "reason": getattr(item, "reason", ""),
+        "provenance": getattr(item, "provenance", ""),
     }
 
 

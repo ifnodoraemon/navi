@@ -16,11 +16,6 @@ ACTION_SPECS = [
         mutates=False,
         permission="read",
         source="action",
-        routing_hints=[
-            "Route ordinary conversation, advice, and unstructured output to conversational capabilities.",
-            "When factual accuracy matters, prefer using a read/search capability first. But if the answer is conversational or the model has sufficient context from prior observations, answering directly is fine.",
-            "Do not use final.answer to answer current tool, skill, service, provider, task, workflow, or connector inventory/status questions when a declared read capability can return current facts first.",
-        ],
     ),
     ToolSpec(
         name="ask.user",
@@ -47,7 +42,6 @@ ACTION_SPECS = [
         mutates=False,
         permission="read",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="delegate.spawn",
@@ -90,11 +84,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
-        routing_hints=[
-            "FACT-FIRST: Never spawn a delegation blindly. Always use file.read, shell.run, or system.info to confirm the environment, locate files, and gather facts BEFORE creating a delegation.",
-            "GATED DELEGATION: Break complex requests into smaller, single-purpose delegations. Do not create massive 'do everything' tasks.",
-            "LOCAL-FIRST: For simple/safe queries like checking a status, reading a file, or running 'grep'/'find', use shell.run directly in the foreground. Avoid the overhead of delegate.spawn for read-only lookups.",
-        ],
     ),
     ToolSpec(
         name="delegate.prepare",
@@ -122,7 +111,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="approval.request",
@@ -150,7 +138,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="delegate.run",
@@ -177,7 +164,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="watch.create",
@@ -214,10 +200,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
-        routing_hints=[
-            "Use watch.create only when the user supplied a sufficiently specific recurring schedule or one-shot time. If the timing is only a broad part of day or otherwise ambiguous, ask.user for clarification instead of inventing a default time.",
-            "For one-shot reminders or pushes with a natural-language time, set kind=once and pass run_at_text from the user's wording. Do not call shell.run just to compute the current timestamp.",
-        ],
     ),
     ToolSpec(
         name="delegate.delete",
@@ -232,8 +214,9 @@ ACTION_SPECS = [
                 "source": {"type": "string"},
                 "kind": {"type": "string"},
                 "limit": {"type": "integer"},
+                "reason": {"type": "string"},
             },
-            "required": [],
+            "required": ["reason"],
         },
         output_schema={
             "type": "object",
@@ -254,7 +237,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="watch.delete",
@@ -263,8 +245,11 @@ ACTION_SPECS = [
         description="""Permanently delete a watch or task (recurring or one-time) by watch id. Requires user approval.""",
         input_schema={
             "type": "object",
-            "properties": {"watch_id": {"type": "string"}},
-            "required": ["watch_id"],
+            "properties": {
+                "watch_id": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["watch_id", "reason"],
         },
         output_schema={
             "type": "object",
@@ -283,7 +268,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="approval.resolve",
@@ -319,10 +303,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[
-            "For approval resolution, preserve explicit approval codes as arguments rather than consuming them. DO NOT attempt to resolve an approval (e.g. calling approval.resolve) unless the user explicitly provides an approval code or explicitly asks to approve/reject.",
-            "For phrases like approve all, do not invent codes. Use selection=latest_visible_batch only when the user explicitly asks to approve/reject all visible/current approvals.",
-        ],
     ),
     ToolSpec(
         name="delegate.retry",
@@ -351,7 +331,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="workflow.propose",
@@ -394,9 +373,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
-        routing_hints=[
-            "For workflow.propose, declare plan.goal_type as planning only when the workflow is meant to produce planning evidence without external capability execution; execution goals need declared tool_calls."
-        ],
     ),
     ToolSpec(
         name="workflow.approve",
@@ -426,7 +402,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="workflow.run",
@@ -456,7 +431,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="workflow.verify",
@@ -485,7 +459,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="workflow.resume",
@@ -512,7 +485,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="workflow.status",
@@ -540,7 +512,6 @@ ACTION_SPECS = [
         mutates=False,
         permission="read",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="session.request_elevation",
@@ -569,9 +540,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="read",
         source="action",
-        routing_hints=[
-            "Only use this when a capability you need is genuinely not in the tool manifest due to permission ceiling. Most tools (shell.run, file.write, web.search, etc.) should already be available at write permission level. Check the manifest first before escalating."
-        ],
     ),
     ToolSpec(
         name="session.create",
@@ -594,7 +562,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="memory.add",
@@ -610,9 +577,11 @@ ACTION_SPECS = [
                 "source": {"type": "string"},
                 "status": {"type": "string"},
                 "confidence": {"type": "number"},
+                "reason": {"type": "string"},
+                "provenance": {"type": "string"},
                 "metadata": {"type": "object"},
             },
-            "required": ["type", "content"],
+            "required": ["type", "content", "reason", "provenance"],
         },
         output_schema={
             "type": "object",
@@ -628,7 +597,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="trace.evaluate",
@@ -654,7 +622,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="evolution.propose",
@@ -693,7 +660,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="evolution.record_evaluation",
@@ -722,7 +688,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="evolution.apply",
@@ -748,7 +713,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
     ToolSpec(
         name="evolution.rollback",
@@ -774,6 +738,5 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        routing_hints=[],
     ),
 ]

@@ -52,6 +52,8 @@ class MemoryItem:
     last_verified_at: float
     expires_at: float
     metadata: dict
+    reason: str = ""
+    provenance: str = ""
 
 
 @dataclass(frozen=True)
@@ -173,6 +175,15 @@ class SQLiteMemoryProvider:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_items(scope)")
 
+            cursor = conn.execute("PRAGMA table_info(memory_items)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if "reason" not in columns:
+                conn.execute("ALTER TABLE memory_items ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+            if "provenance" not in columns:
+                conn.execute(
+                    "ALTER TABLE memory_items ADD COLUMN provenance TEXT NOT NULL DEFAULT ''"
+                )
+
     def _item_from_row(self, row: tuple) -> MemoryItem:
         return MemoryItem(
             id=row[0],
@@ -187,17 +198,26 @@ class SQLiteMemoryProvider:
             last_verified_at=row[9],
             expires_at=row[10],
             metadata=json.loads(row[11]),
+            reason=row[12],
+            provenance=row[13],
         )
 
     def store_item(self, item: MemoryItem) -> None:
+        if not item.source.strip():
+            raise ValueError("memory source is required")
+        if not item.reason.strip():
+            raise ValueError("memory reason is required")
+        if not item.provenance.strip():
+            raise ValueError("memory provenance is required")
         with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO memory_items(
                     id, type, status, scope, content, source, confidence,
-                    created_at, updated_at, last_verified_at, expires_at, metadata
+                    created_at, updated_at, last_verified_at, expires_at, metadata,
+                    reason, provenance
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item.id,
@@ -212,6 +232,8 @@ class SQLiteMemoryProvider:
                     item.last_verified_at,
                     item.expires_at,
                     json.dumps(item.metadata, sort_keys=True),
+                    item.reason,
+                    item.provenance,
                 ),
             )
 
@@ -232,7 +254,8 @@ class SQLiteMemoryProvider:
             rows = conn.execute(
                 f"""
                 SELECT id, type, status, scope, content, source, confidence,
-                       created_at, updated_at, last_verified_at, expires_at, metadata
+                       created_at, updated_at, last_verified_at, expires_at, metadata,
+                       reason, provenance
                 FROM memory_items
                 {where}
                 ORDER BY updated_at DESC LIMIT ?
@@ -246,7 +269,8 @@ class SQLiteMemoryProvider:
             row = conn.execute(
                 """
                 SELECT id, type, status, scope, content, source, confidence,
-                       created_at, updated_at, last_verified_at, expires_at, metadata
+                       created_at, updated_at, last_verified_at, expires_at, metadata,
+                       reason, provenance
                 FROM memory_items WHERE id = ?
                 """,
                 (item_id,),
@@ -371,13 +395,29 @@ class MemoryStore:
         last_verified_at: float | None = None,
         expires_at: float = 0.0,
         metadata: dict | None = None,
+        reason: str = "",
+        provenance: str = "",
     ) -> MemoryItem:
         memory_type = memory_type.strip().lower()
         status = status.strip().lower()
+        content = content.strip()
+        source = source.strip()
+        resolved_scope = scope.strip() or "global"
+        reason = reason.strip()
+        provenance = provenance.strip()
         if memory_type not in MEMORY_TYPES:
             raise ValueError(f"Unsupported memory type: {memory_type}")
         if status not in MEMORY_STATUSES:
             raise ValueError(f"Unsupported memory status: {status}")
+        if not content:
+            raise ValueError("memory content is required")
+        if not source:
+            raise ValueError("memory source is required")
+        if not reason:
+            raise ValueError("memory reason is required")
+        if not provenance:
+            raise ValueError("memory provenance is required")
+        metadata = dict(metadata or {})
         blocked = _blocking_hook(
             HookRegistry(self.home).run(
                 HookEvent(
@@ -385,11 +425,11 @@ class MemoryStore:
                     payload={
                         "type": memory_type,
                         "status": status,
-                        "scope": scope.strip() or "global",
-                        "source": source.strip() or "unknown",
+                        "scope": resolved_scope,
+                        "source": source,
                         "confidence": max(0.0, min(1.0, confidence)),
-                        "content_chars": len(content.strip()),
-                        "metadata_keys": sorted((metadata or {}).keys()),
+                        "content_chars": len(content),
+                        "metadata_keys": sorted(metadata.keys()),
                     },
                 )
             )
@@ -401,16 +441,14 @@ class MemoryStore:
         # Simple automatic contradiction/overlap detection
         import difflib
 
-        resolved_scope = scope.strip() or "global"
         existing_items = self.list_items(memory_type=memory_type, status="active")
-        metadata = metadata or {}
         contradicts = set(metadata.get("contradicts", []))
         for existing in existing_items:
             if existing.scope == resolved_scope:
                 ratio = difflib.SequenceMatcher(
-                    None, existing.content.lower(), content.strip().lower()
+                    None, existing.content.lower(), content.lower()
                 ).ratio()
-                if ratio > 0.85 and existing.content.lower() != content.strip().lower():
+                if ratio > 0.85 and existing.content.lower() != content.lower():
                     contradicts.add(existing.id)
         if contradicts:
             metadata["contradicts"] = list(contradicts)
@@ -419,15 +457,17 @@ class MemoryStore:
             id=uuid.uuid4().hex,
             type=memory_type,
             status=status,
-            scope=scope.strip() or "global",
-            content=content.strip(),
-            source=source.strip() or "unknown",
+            scope=resolved_scope,
+            content=content,
+            source=source,
             confidence=max(0.0, min(1.0, confidence)),
             created_at=now,
             updated_at=now,
             last_verified_at=last_verified_at or 0.0,
             expires_at=expires_at,
             metadata=metadata or {},
+            reason=reason,
+            provenance=provenance,
         )
         self.provider.store_item(item)
         return item
@@ -692,6 +732,11 @@ class MemoryStore:
                             status="proposed",
                             confidence=conf_val,
                             metadata={"contradicts": contradicts} if contradicts else {},
+                            reason=str(
+                                learning.get("reason")
+                                or f"Consolidated from conversation session {session_id}"
+                            ),
+                            provenance=f"conversation:{session_id}",
                         )
                         seen_memory_keys.add(memory_key)
                         affected_items.append(new_item)
@@ -887,6 +932,8 @@ class MemoryStore:
                     status="proposed",
                     confidence=conf_val,
                     metadata={"contradicts": contradicts} if contradicts else {},
+                    reason=str(learning.get("reason") or f"Consolidated from run {task.id}"),
+                    provenance=f"run:{task.id}:trace",
                 )
                 seen_memory_keys.add(memory_key)
                 affected_items.append(new_item)
@@ -1044,13 +1091,14 @@ def _memory_learnings_output_schema(name: str) -> dict[str, Any]:
                                     },
                                     "content": {"type": "string"},
                                     "confidence": {"type": "number"},
+                                    "reason": {"type": "string"},
                                     "contradicts": {
                                         "type": "array",
                                         "items": {"type": "string"},
                                         "description": "IDs of existing active memories that this new memory contradicts.",
                                     },
                                 },
-                                "required": ["action", "type", "content", "confidence"],
+                                "required": ["action", "type", "content", "confidence", "reason"],
                                 "additionalProperties": False,
                             },
                             {

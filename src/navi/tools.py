@@ -94,7 +94,6 @@ class ToolSpec:
     mutates: bool = False
     permission: str = "read"
     source: str = "core"
-    routing_hints: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.capability_class.strip():

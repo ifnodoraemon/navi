@@ -192,22 +192,7 @@ def assemble_planner_turn_input(
                 "PERMISSION EXPLANATION",
                 "turn_input",
                 "operating_context.permission_explanation",
-                "Your permission ceiling is currently restricted to 'prepare'. You can read files and investigate the environment to form a plan, but you CANNOT execute write operations or mutate state. Once you have formed a confident plan, you MUST request approval from the user using the `approval_request` tool before you can proceed.",
-            )
-        )
-
-    routing_hints = []
-    for tool in tools:
-        if getattr(tool, "routing_hints", None):
-            routing_hints.extend(tool.routing_hints)
-
-    if routing_hints:
-        blocks.append(
-            PromptBlock(
-                "CAPABILITY ROUTING HINTS",
-                "manifest",
-                "capability_routing_hints",
-                "\n".join(f"- {hint}" for hint in routing_hints),
+                "Your permission ceiling is currently restricted to 'prepare'. You can read files and investigate the environment to form a plan, but you CANNOT execute write operations or mutate state. Once you have formed a confident plan, you MUST request approval from the user using the `approval.request` tool before you can proceed.",
             )
         )
 

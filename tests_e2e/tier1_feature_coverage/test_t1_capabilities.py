@@ -17,9 +17,9 @@ from navi.workflows import (
 
 
 @pytest.mark.asyncio
-async def test_t1_capabilities_registry_loading(mock_home) -> None:
+async def test_t1_capabilities_registry_loading(navi_home) -> None:
     """Verify that all decomposed capabilities are correctly discovered, loaded, and listed."""
-    registry = CapabilityRegistry(home=mock_home, project_dir=Path.cwd())
+    registry = CapabilityRegistry(home=navi_home, project_dir=Path.cwd())
     
     # Check both list_specs and planner_specs
     specs = registry.list_specs()
@@ -49,13 +49,13 @@ async def test_t1_capabilities_registry_loading(mock_home) -> None:
 
 
 @pytest.mark.asyncio
-async def test_t1_api_only_capabilities_are_isolated_from_turn_planner(mock_home) -> None:
+async def test_t1_api_only_capabilities_are_isolated_from_turn_planner(navi_home) -> None:
     """Verify API mutation capabilities exist only in the explicit API context."""
-    turn_registry = CapabilityRegistry(home=mock_home, project_dir=Path.cwd())
+    turn_registry = CapabilityRegistry(home=navi_home, project_dir=Path.cwd())
     turn_names = {spec.name for spec in turn_registry.list_specs()}
 
     api_registry = CapabilityRegistry(
-        home=mock_home,
+        home=navi_home,
         project_dir=Path.cwd(),
         execution_context=API_CONTEXT,
     )
@@ -75,11 +75,11 @@ async def test_t1_api_only_capabilities_are_isolated_from_turn_planner(mock_home
 
 
 @pytest.mark.asyncio
-async def test_t1_conversation_actions_dispatch(mock_home) -> None:
+async def test_t1_conversation_actions_dispatch(navi_home) -> None:
     """Invoke final_answer and clarify capabilities directly and verify they return correct result."""
-    registry = CapabilityRegistry(home=mock_home, project_dir=Path.cwd())
+    registry = CapabilityRegistry(home=navi_home, project_dir=Path.cwd())
     context = CapabilityContext(
-        home=mock_home,
+        home=navi_home,
         peer_id="cli",
         sender_id="cli",
         source="cli",
@@ -115,27 +115,25 @@ async def test_t1_conversation_actions_dispatch(mock_home) -> None:
 
 
 @pytest.mark.asyncio
-async def test_t1_delegation_actions_flow(mock_home, monkeypatch) -> None:
+async def test_t1_delegation_actions_flow(navi_home, monkeypatch) -> None:
     """Test delegate_spawn -> delegate_prepare -> delegate_run sequentially and verify state."""
     monkeypatch.setenv("NAVI_MODEL_PROVIDER", "openai-compatible")
     monkeypatch.setenv("NAVI_MODEL_API_KEY", "dummy")
     monkeypatch.setenv("NAVI_MODEL", "dummy")
-    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
-    
     from navi.execution import ExecutionResult
-    async def mock_provider_call(self, task, mode):
-        return ExecutionResult(provider="mock", phase="prepare", command=[], stdout="mock", stderr="", exit_code=0, started_at=0.0, ended_at=0.0, protocol=None)
-    monkeypatch.setattr("navi.execution.ExecutionService._provider_call_with_timeout", mock_provider_call)
+    async def fake_provider_call(self, task, mode):
+        return ExecutionResult(provider="test", phase="prepare", command=[], stdout="test", stderr="", exit_code=0, started_at=0.0, ended_at=0.0, protocol=None)
+    monkeypatch.setattr("navi.execution.ExecutionService._provider_call_with_timeout", fake_provider_call)
     
-    registry = CapabilityRegistry(home=mock_home, project_dir=Path.cwd())
+    registry = CapabilityRegistry(home=navi_home, project_dir=Path.cwd())
     context = CapabilityContext(
-        home=mock_home,
+        home=navi_home,
         peer_id="cli",
         sender_id="cli",
         source="cli",
         workspace=str(Path.cwd()),
     )
-    runs = RunStore(mock_home)
+    runs = RunStore(navi_home)
     
     # 1. delegate_spawn
     spawned = await registry.invoke(
@@ -171,7 +169,7 @@ async def test_t1_delegation_actions_flow(mock_home, monkeypatch) -> None:
     run = runs.get(run_id)
     assert run.status == "prepared"
     
-    # Override autonomy level to L3 to bypass execution grant check
+    # Grant execution through an explicit L3 test trust level.
     runs.update_run(run_id, autonomy_level="L3")
     
     # 3. delegate_run
@@ -189,27 +187,25 @@ async def test_t1_delegation_actions_flow(mock_home, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_t1_approval_actions_flow(mock_home, monkeypatch) -> None:
+async def test_t1_approval_actions_flow(navi_home, monkeypatch) -> None:
     """Test delegation approval flow via approval_request and approval_resolve."""
     monkeypatch.setenv("NAVI_MODEL_PROVIDER", "openai-compatible")
     monkeypatch.setenv("NAVI_MODEL_API_KEY", "dummy")
     monkeypatch.setenv("NAVI_MODEL", "dummy")
-    monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
-    
     from navi.execution import ExecutionResult
-    async def mock_provider_call(self, task, mode):
-        return ExecutionResult(exit_code=0, stdout="mock", stderr="", summary="mock", facts=[])
-    monkeypatch.setattr("navi.execution.ExecutionService._provider_call_with_timeout", mock_provider_call)
+    async def fake_provider_call(self, task, mode):
+        return ExecutionResult(provider="test", phase="prepare", command=[], stdout="test", stderr="", exit_code=0, started_at=0.0, ended_at=0.0, protocol=None)
+    monkeypatch.setattr("navi.execution.ExecutionService._provider_call_with_timeout", fake_provider_call)
     
-    registry = CapabilityRegistry(home=mock_home, project_dir=Path.cwd())
+    registry = CapabilityRegistry(home=navi_home, project_dir=Path.cwd())
     context = CapabilityContext(
-        home=mock_home,
+        home=navi_home,
         peer_id="cli",
         sender_id="cli",
         source="cli",
         workspace=str(Path.cwd()),
     )
-    runs = RunStore(mock_home)
+    runs = RunStore(navi_home)
     
     # 1. Spawn a delegation run
     spawned = await registry.invoke(
@@ -243,7 +239,7 @@ async def test_t1_approval_actions_flow(mock_home, monkeypatch) -> None:
     
     # 3. Resolve approval (include the approval code in context.input_text)
     context_with_code = CapabilityContext(
-        home=mock_home,
+        home=navi_home,
         peer_id="cli",
         sender_id="cli",
         source="cli",
@@ -265,17 +261,17 @@ async def test_t1_approval_actions_flow(mock_home, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_t1_watch_actions_flow(mock_home) -> None:
+async def test_t1_watch_actions_flow(navi_home) -> None:
     """Test watch create and watch delete flows and assert state in RunStore."""
-    registry = CapabilityRegistry(home=mock_home, project_dir=Path.cwd())
+    registry = CapabilityRegistry(home=navi_home, project_dir=Path.cwd())
     context = CapabilityContext(
-        home=mock_home,
+        home=navi_home,
         peer_id="cli",
         sender_id="cli",
         source="cli",
         workspace=str(Path.cwd()),
     )
-    runs = RunStore(mock_home)
+    runs = RunStore(navi_home)
     
     # 1. Create watch
     create_res = await registry.invoke(
@@ -298,7 +294,7 @@ async def test_t1_watch_actions_flow(mock_home) -> None:
     # 2. Delete watch
     delete_res = await registry.invoke(
         "watch.delete",
-        {"watch_id": watch_id},
+        {"watch_id": watch_id, "reason": "E2E cleanup"},
         permission="write",
         context=context,
     )
@@ -310,17 +306,17 @@ async def test_t1_watch_actions_flow(mock_home) -> None:
 
 
 @pytest.mark.asyncio
-async def test_t1_workflow_actions_flow(mock_home) -> None:
+async def test_t1_workflow_actions_flow(navi_home) -> None:
     """Test full workflow lifecycle flow: propose -> approve -> run -> verify."""
-    registry = CapabilityRegistry(home=mock_home, project_dir=Path.cwd())
+    registry = CapabilityRegistry(home=navi_home, project_dir=Path.cwd())
     context = CapabilityContext(
-        home=mock_home,
+        home=navi_home,
         peer_id="cli",
         sender_id="cli",
         source="cli",
         workspace=str(Path.cwd()),
     )
-    store = WorkflowStore(mock_home)
+    store = WorkflowStore(navi_home)
     
     # 1. Propose workflow
     proposed = await registry.invoke(

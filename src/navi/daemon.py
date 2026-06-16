@@ -68,6 +68,7 @@ class SystemDaemon:
         self.graph = GraphStore(home)
         self.event_bus = EventBus()
         self.governance = GovernanceAgent(home, self.event_bus)
+
         self._setup_execution_subscription()
 
     def _setup_execution_subscription(self) -> None:
@@ -183,11 +184,23 @@ class SystemDaemon:
             "failed", source="watch", kind="delegation", limit=excess
         )
         pruned = 0
+        from navi.trace import TraceStore
+        trace = TraceStore(self.home)
         for task in stale:
             removed = self.runs.delete_run(task.id)
             if removed is None:
                 continue
             self.graph.delete(removed.id)
+            trace.add_event(
+                trace_id=trace.new_trace_id(),
+                phase="daemon.cleanup",
+                run_id=removed.id,
+                output_data={
+                    "action": "pruned_failed_watch_task",
+                    "title": removed.title,
+                    "workspace": removed.workspace,
+                },
+            )
             pruned += 1
         return pruned
 

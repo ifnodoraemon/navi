@@ -129,12 +129,13 @@ class WatchDeleteCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         watch_id = _arg_text(args, "watch_id")
-        if not watch_id:
+        reason = _arg_text(args, "reason")
+        if not watch_id or not reason:
             return CapabilityResult(
                 ok=False,
                 action="watch",
-                observation="watch.delete requires watch_id.",
-                message="watch.delete requires watch_id.",
+                observation="watch.delete requires watch_id and reason.",
+                message="watch.delete requires watch_id and reason.",
                 terminal=False,
                 error_reason="schema_mismatch",
             )
@@ -156,6 +157,7 @@ class WatchDeleteCapability:
             "watch_id": deleted.id,
             "cron": deleted.cron,
             "prompt": deleted.prompt,
+            "reason": reason,
         }
         return _fact_result(
             "watch",

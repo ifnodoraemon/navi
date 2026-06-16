@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .capabilities import CapabilityRegistry
 from .config import load_config
 from .governance import GovernanceEngine
 from .evolution import EvolutionLedger
@@ -512,10 +513,6 @@ class NaviExecutionProvider:
             )
 
     def _prepare_messages(self, task: Run) -> list[ChatMessage]:
-        from dataclasses import asdict
-
-        from .capabilities import CapabilityRegistry
-
         registry = CapabilityRegistry(
             home=self.home,
             project_dir=_task_workspace(task),

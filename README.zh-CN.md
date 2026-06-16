@@ -84,7 +84,7 @@ navi api
 
 # 记忆
 navi memory list
-navi memory add preference "我偏好直接给出结论"
+navi memory add preference "我偏好直接给出结论" --reason "用户明确表达偏好" --provenance "manual"
 navi memory recall "开发偏好"
 navi memory revoke <item_id>
 
@@ -147,11 +147,11 @@ Navi 默认把状态写入 `.navi/` 或自定义的 `NAVI_HOME`：
 ## 微信连接器本地测试
 
 ```bash
-NAVI_WEIXIN_MOCK=true navi connectors setup weixin
-NAVI_WEIXIN_MOCK=true navi connectors run weixin --once
+NAVI_WEIXIN_FAKE=true navi connectors setup weixin
+NAVI_WEIXIN_FAKE=true navi connectors run weixin --once
 ```
 
-真实微信/iLink 接入仍需要按现场 payload 做校准；本地 mock 用于验证运行链路和策略行为。
+真实微信/iLink 接入仍需要按现场 payload 做校准；本地测试用于验证运行链路和策略行为。
 
 ## 发布说明
 

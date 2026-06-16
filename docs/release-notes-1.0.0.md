@@ -28,7 +28,7 @@ Navi is now positioned as a governed local agent OS for a personal AI assistant,
 - User-visible memory influence records in responses and traces.
 - Install-time permission manifests for plugin and MCP providers.
 - Assistant status surface for active goals, stop conditions, pending approvals, last evidence, memory influence, and safeguard pauses.
-- Live Weixin/iLink payload calibration beyond the mock connector path.
+- Live Weixin/iLink payload calibration beyond the standard connector path.
 
 ## Verification Baseline
 

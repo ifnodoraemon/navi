@@ -19,10 +19,6 @@ REMOTE_SAFE_TOOLS = frozenset(
         "delegate.spawn",
         "delegate.prepare",
         "approval.request",
-        "delegate.run",
-        "watch.create",
-        "approval.resolve",
-        "delegate.delete",
         "session.request_elevation",
         "provider.config",
         "service.status",
@@ -35,6 +31,9 @@ REMOTE_SAFE_TOOLS = frozenset(
         "memory.recall",
         "workflow.propose",
         "workflow.status",
+        "watch.create",
+        "approval.resolve",
+        "delegate.delete",
     )
 )
 REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(
@@ -82,9 +81,9 @@ REMOTE_CONNECTOR_TOOL_POLICY = ConnectorToolPolicy(
     allowed_tools=REMOTE_SAFE_TOOLS,
     blocked_capability_classes=REMOTE_BLOCKED_CAPABILITY_CLASSES,
     reason=(
-        "Remote connector ingress may prepare tracked work, request approval, inspect status, "
-        "and resolve explicit approvals, but it must not expose direct directory, file, shell, browser, "
-        "git, test, or destructive watch deletion capabilities."
+        "Remote connector ingress may prepare tracked work, create watches, resolve explicit approvals, "
+        "clean up failed delegation records, and inspect status. It must not run delegated tasks directly "
+        "or expose direct OS capabilities."
     ),
 )
 

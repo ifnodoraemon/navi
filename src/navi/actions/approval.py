@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -57,21 +56,6 @@ class ApprovalRequestCapability:
                 "approval_status": approval.status,
             },
         )
-        diff = ""
-        if task and task.workspace:
-            try:
-                res = subprocess.run(
-                    ["git", "diff", "HEAD"],
-                    cwd=task.workspace,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if res.returncode == 0:
-                    diff = res.stdout.strip()
-            except Exception:
-                pass
-
         facts = {
             **_transition_facts("approval_request", approval.id, "created"),
             "run_id": awaiting.id,
@@ -80,7 +64,6 @@ class ApprovalRequestCapability:
                 "action": approval.action,
                 "code": approval.code,
                 "expires_at": approval.expires_at,
-                "diff": diff,
             },
         }
         return _fact_result(

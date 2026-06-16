@@ -255,32 +255,32 @@ class WeixinClient:
         await asyncio.sleep(seconds)
 
 
-class MockWeixinClient:
+class FakeWeixinClient:
     def __init__(self) -> None:
         self.sent: list[dict[str, str]] = []
         self.typing: list[dict[str, str | int]] = []
 
     async def request_qr(self) -> WeixinQr:
-        return WeixinQr(qrcode_url="mock://navi-weixin-qr", ticket="mock-ticket")
+        return WeixinQr(qrcode_url="fake://navi-weixin-qr", ticket="fake-ticket")
 
     async def poll_qr_status(self, ticket: str) -> WeixinAccount | None:
         return WeixinAccount(
-            account_id="mock-weixin-account",
-            token="mock-token",
-            base_url="mock://ilink",
-            user_id="mock-user",
+            account_id="fake-weixin-account",
+            token="fake-token",
+            base_url="fake://ilink",
+            user_id="fake-user",
         )
 
     async def get_updates(self, account_id: str, *, sync_buf: str = "") -> WeixinUpdateBatch:
-        if os.environ.get("NAVI_WEIXIN_MOCK_MESSAGE"):
+        if os.environ.get("NAVI_WEIXIN_FAKE_MESSAGE"):
             return WeixinUpdateBatch(
                 updates=[
                     WeixinUpdate(
-                        message_id=f"mock-{int(time.time())}",
-                        peer_id="mock-peer",
-                        sender_id="mock-user",
-                        text=os.environ["NAVI_WEIXIN_MOCK_MESSAGE"],
-                        context_token="mock-context",
+                        message_id=f"fake-{int(time.time())}",
+                        peer_id="fake-peer",
+                        sender_id="fake-user",
+                        text=os.environ["NAVI_WEIXIN_FAKE_MESSAGE"],
+                        context_token="fake-context",
                     )
                 ],
                 sync_buf=sync_buf,
@@ -306,9 +306,9 @@ class MockWeixinClient:
             )
 
     async def get_typing_ticket(self, *, user_id: str, context_token: str = "") -> str:
-        if os.environ.get("NAVI_WEIXIN_MOCK_TYPING", "").lower() not in {"1", "true", "yes"}:
+        if os.environ.get("NAVI_WEIXIN_FAKE_TYPING", "").lower() not in {"1", "true", "yes"}:
             return ""
-        return f"mock-typing-{user_id}"
+        return f"fake-typing-{user_id}"
 
     async def send_typing(self, *, peer_id: str, typing_ticket: str, status: int) -> None:
         self.typing.append({"peer_id": peer_id, "typing_ticket": typing_ticket, "status": status})

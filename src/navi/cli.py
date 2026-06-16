@@ -246,6 +246,10 @@ def skills() -> None:
 def memory_add(
     memory_type: str,
     content: str,
+    reason: str = typer.Option(..., "--reason", help="Why this memory should be stored."),
+    provenance: str = typer.Option(
+        "manual", "--provenance", help="Source event or evidence for this memory."
+    ),
     scope: str = "global",
     source: str = "manual",
     status: str = "proposed",
@@ -270,6 +274,8 @@ def memory_add(
         status=status,
         confidence=confidence,
         metadata=metadata,
+        reason=reason,
+        provenance=provenance,
     )
     typer.echo(item.id)
 
@@ -462,7 +468,6 @@ def eval_delegations(
     json_output: bool = False,
     validate_only: bool = False,
     timeout_seconds: float = 75.0,
-
 ) -> None:
     """Run the delegation routing eval dataset against the configured model."""
     home = ensure_home()
@@ -489,7 +494,6 @@ def eval_delegations(
             project_dir=Path.cwd(),
             dataset=dataset,
             timeout_seconds=timeout_seconds,
-            provider=None,
         )
     )
     if json_output:

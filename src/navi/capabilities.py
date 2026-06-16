@@ -139,12 +139,41 @@ class CapabilityRegistry:
                 message=f"capability {name} is not available in execution context {self.execution_context}",
                 terminal=True,
             )
-        if not permission_allows(permission, context.permission_ceiling):
+        actual_ceiling = context.permission_ceiling
+        source_policy = _connector_policy_for_source(context.source)
+        if source_policy is not None:
+            if source_policy.allowed_tools and name not in source_policy.allowed_tools:
+                return CapabilityResult(
+                    ok=False,
+                    action="capability_error",
+                    observation=f"remote connector policy blocks capability {name}",
+                    message=f"remote connector policy blocks capability {name}",
+                    terminal=True,
+                )
+            if handler.spec.capability_class in source_policy.blocked_capability_classes:
+                capability_class = handler.spec.capability_class
+                return CapabilityResult(
+                    ok=False,
+                    action="capability_error",
+                    observation=f"remote connector policy blocks capability class {capability_class}",
+                    message=f"remote connector policy blocks capability class {capability_class}",
+                    terminal=True,
+                )
+            if not permission_allows(permission, source_policy.permission_ceiling):
+                ceiling = source_policy.permission_ceiling
+                return CapabilityResult(
+                    ok=False,
+                    action="capability_error",
+                    observation=f"remote connector ceiling {ceiling} blocks requested permission {permission}",
+                    message=f"remote connector ceiling {ceiling} blocks requested permission {permission}",
+                    terminal=True,
+                )
+        if not permission_allows(permission, actual_ceiling):
             return CapabilityResult(
                 ok=False,
                 action="capability_error",
-                observation=f"permission ceiling {context.permission_ceiling} blocks requested permission {permission}",
-                message=f"permission ceiling {context.permission_ceiling} blocks requested permission {permission}",
+                observation=f"permission ceiling {actual_ceiling} blocks requested permission {permission}",
+                message=f"permission ceiling {actual_ceiling} blocks requested permission {permission}",
                 terminal=True,
             )
         if not permission_allows(handler.spec.permission, permission):
@@ -269,6 +298,23 @@ class CapabilityRegistry:
 
 def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
     return next((decision for decision in decisions if decision.decision == "block"), None)
+
+
+def _connector_policy_for_source(source: str):
+    raw = source.strip()
+    if not raw:
+        return None
+    try:
+        from .connector_registry import load_connector_adapters
+        from .connector_runtime import REMOTE_CONNECTOR_TOOL_POLICY
+    except Exception:
+        return None
+    connector_sources: set[str] = set()
+    for adapter in load_connector_adapters():
+        connector_sources.update({adapter.name, adapter.spec.surface, adapter.spec.local_source})
+    if raw.startswith("connector.") or raw in connector_sources:
+        return REMOTE_CONNECTOR_TOOL_POLICY
+    return None
 
 
 

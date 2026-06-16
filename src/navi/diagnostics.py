@@ -167,9 +167,6 @@ def _connector_status_file_checks(
 
 def _api_config_checks(config) -> list[DiagnosticCheck]:
     checks = []
-    if config.model.kind == "mock":
-        checks.append(DiagnosticCheck("api.model.config", "ok", "mock provider"))
-        return checks
     if not config.model.api_base_url:
         checks.append(DiagnosticCheck("api.model.config", "error", "api_base_url missing"))
     elif not config.model.api_key:
@@ -186,8 +183,6 @@ def _api_config_checks(config) -> list[DiagnosticCheck]:
 
 
 def _api_connectivity_checks(config) -> list[DiagnosticCheck]:
-    if config.model.kind == "mock":
-        return [DiagnosticCheck("api.model.connectivity", "ok", "mock provider")]
     if not config.model.api_base_url or not config.model.api_key:
         return [
             DiagnosticCheck(

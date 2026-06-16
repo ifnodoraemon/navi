@@ -7,7 +7,7 @@ from pathlib import Path
 from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
 from navi.runtime import AgentRuntime
 
-from .client import MockTelegramClient, TelegramClient
+from .client import FakeTelegramClient, TelegramClient
 from .config import TelegramConfig
 from .models import TelegramUpdate
 
@@ -39,8 +39,8 @@ class TelegramService:
         )
 
     def _build_client(self):
-        if os.environ.get("NAVI_TELEGRAM_MOCK", "").lower() in {"1", "true", "yes"}:
-            return MockTelegramClient()
+        if os.environ.get("NAVI_TELEGRAM_FAKE", "").lower() in {"1", "true", "yes"}:
+            return FakeTelegramClient()
         if not self.config.bot_token:
             raise RuntimeError("Telegram is not configured. Set TELEGRAM_BOT_TOKEN first.")
         return TelegramClient(

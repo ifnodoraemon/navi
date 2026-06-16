@@ -370,7 +370,7 @@ async def _run_daily_journey(
     latest_run_id = ""
     try:
         if "simulator" in journey:
-            # Add a mock Provider check just in case
+            # Add a Provider check just in case
             if provider is None:
                 errors.append("Simulator requires a ModelPool provider")
             else:

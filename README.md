@@ -22,7 +22,7 @@ Version `1.1.1` adds governed dynamic workflows on top of the stable Navi agent 
 *   🌐 **Multi-Surface Access**:
     *   💻 **CLI Chat and Control Plane**: Interactive local chat plus memory, approval, evolution, trace, goal, prompt, hook, diagnostic, and connector commands.
     *   🔧 **Headless Local API**: FastAPI server for local clients (`navi api`).
-    *   💬 **Connector Packages**: Mock-tested Weixin/iLink and Telegram adapters loaded through the connector registry and governed by remote-safe tool policy.
+    *   💬 **Connector Packages**: Weixin/iLink and Telegram adapters loaded through the connector registry and governed by remote-safe tool policy.
 
 ## v1 Contract
 
@@ -69,9 +69,9 @@ navi api
 ### Setup & Run Weixin Connector
 
 ```bash
-# Set mock environment for local testing
-NAVI_WEIXIN_MOCK=true navi connectors setup weixin
-NAVI_WEIXIN_MOCK=true navi connectors run weixin --once
+# Set fake connector environment for local testing
+NAVI_WEIXIN_FAKE=true navi connectors setup weixin
+NAVI_WEIXIN_FAKE=true navi connectors run weixin --once
 ```
 
 ---
@@ -117,7 +117,7 @@ navi prompts inspect planner
 
 # Active Memory
 navi memory list
-navi memory add preference "I prefer using Python 3.12"
+navi memory add preference "I prefer using Python 3.12" --reason "User stated this preference" --provenance "manual"
 navi memory recall "python compilation preference"
 navi memory revoke <item_id>
 
