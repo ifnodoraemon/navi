@@ -545,14 +545,14 @@ class MemoryStore:
             return []
         return learnings
 
-    def recall(self, query: str, *, limit: int = 8) -> list[MemoryRecall]:
+    def recall(self, query: str, *, limit: int = 8, goal: str = "") -> list[MemoryRecall]:
         now = time.time()
         candidates = [
             item
             for item in self.list_items(limit=500)
             if item.status in ACTIVE_STATUSES and (not item.expires_at or item.expires_at > now)
         ]
-        scored = [self._score_recall(item, query) for item in candidates]
+        scored = [self._score_recall(item, query, goal) for item in candidates]
         scored = [recall for recall in scored if recall.score > 0]
         scored.sort(key=lambda recall: (recall.score, recall.item.updated_at), reverse=True)
         selected = scored[:limit]
@@ -561,8 +561,8 @@ class MemoryStore:
         conflicts = self.list_conflicts(limit=1000)
         return [self._with_conflict_reasons(recall, conflicts) for recall in selected]
 
-    def render_context(self, query: str, *, limit: int = 8) -> str:
-        recalls = self.recall(query, limit=limit)
+    def render_context(self, query: str, *, limit: int = 8, goal: str = "") -> str:
+        recalls = self.recall(query, limit=limit, goal=goal)
         if not recalls:
             return ""
         lines = ["Memory recall:"]
@@ -964,7 +964,7 @@ class MemoryStore:
         }
 
     @classmethod
-    def _score_recall(cls, item: MemoryItem, query: str) -> MemoryRecall:
+    def _score_recall(cls, item: MemoryItem, query: str, goal: str = "") -> MemoryRecall:
         priority = TYPE_PRIORITY.get(item.type, 10)
         reasons = [f"type_priority:{item.type}={priority}"]
         if item.type == "constraint":
@@ -974,12 +974,28 @@ class MemoryStore:
         content_tokens = cls._tokens(f"{item.scope} {item.content}")
         matches = sorted(query_tokens & content_tokens)
         overlap = len(matches)
-        if query_tokens and not overlap and item.type not in {"constraint", "working"}:
-            return MemoryRecall(item=item, score=0.0, reasons=["not relevant to query tokens"])
+
+        # Goal-directed relevance: a memory that matches the current task goal is
+        # retained even when it does not match the immediate query tokens, and is
+        # scored higher. This is what makes recall goal-directed rather than pure
+        # query similarity (principle 10).
+        goal_tokens = cls._tokens(goal)
+        goal_matches = sorted(goal_tokens & content_tokens)
+        goal_overlap = len(goal_matches)
+
+        if (
+            query_tokens
+            and not overlap
+            and not goal_overlap
+            and item.type not in {"constraint", "working"}
+        ):
+            return MemoryRecall(item=item, score=0.0, reasons=["not relevant to query or goal"])
         if matches:
             reasons.append(f"matched_query_tokens:{','.join(matches[:8])}")
         elif query_tokens:
             reasons.append(f"included_by_type:{item.type}")
+        if goal_matches:
+            reasons.append(f"goal_relevance:{','.join(goal_matches[:8])}")
         reasons.append(f"confidence={item.confidence:.2f}")
         import time
 
@@ -988,7 +1004,15 @@ class MemoryStore:
         freshness = min(10.0, max(0.0, 10.0 - ((now - item.updated_at) / 1_000_000)))
         if freshness > 0:
             reasons.append(f"freshness_score={freshness:.2f}")
-        score = priority + (overlap * 12) + (item.confidence * 10) + freshness
+        # Goal relevance is weighted above raw query overlap so current-task
+        # relevance is preferred over incidental semantic similarity.
+        score = (
+            priority
+            + (overlap * 12)
+            + (goal_overlap * 15)
+            + (item.confidence * 10)
+            + freshness
+        )
         return MemoryRecall(item=item, score=score, reasons=reasons)
 
     @staticmethod
