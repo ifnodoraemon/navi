@@ -425,13 +425,15 @@ async def test_engine_shutdown_cancels_background_tasks(tmp_path):
         ]
     )
     runtime = AgentRuntime(home=tmp_path, provider=ModelPool(default=provider))
-    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path)
+    from navi.event_bus import EventBus
+    event_bus = EventBus()
+    router = HernessEngine(home=tmp_path, runtime=runtime, project_dir=tmp_path, event_bus=event_bus)
 
     import asyncio
-    async def slow_consolidate(*args, **kwargs):
+    async def slow_publish(*args, **kwargs):
         await asyncio.sleep(5)
         
-    runtime.memory.extract_and_consolidate_memories = slow_consolidate
+    event_bus.publish = slow_publish
 
     await router.handle(
         "Hello",

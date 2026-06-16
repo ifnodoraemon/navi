@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable
 
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .cron import next_cron_time
-from .event_bus import ActionApprovedEvent, ApprovalResolvedEvent, EventBus
+from .event_bus import ActionApprovedEvent, ApprovalResolvedEvent, EventBus, AgentTurnCompletedEvent
 from .evolution import EvolutionEngine
 from .execution import ExecutionService
 from .governance_agent import GovernanceAgent
@@ -81,8 +81,37 @@ class SystemDaemon:
             if task and event.decision == "approved":
                 self.runs.update_run(event.run_id, status="queued")
 
+        async def on_turn_completed(event: AgentTurnCompletedEvent) -> None:
+            if event.session_id:
+                try:
+                    from .config import load_config
+                    from .runtime import AgentRuntime
+                    from .provider import build_provider
+                    
+                    config = load_config(self.home)
+                    provider = build_provider(config.model)
+                    runtime = AgentRuntime(home=self.home, provider=provider)
+                    
+                    await runtime.memory.extract_and_consolidate_memories(
+                        session_id=event.session_id,
+                        provider=provider,
+                        run_id=event.run_id,
+                    )
+
+                    from navi.goals import GoalStore
+                    goal_store = GoalStore(self.home)
+                    goals = goal_store.list(status="active")
+                    for g in goals:
+                        if g.session_id == event.session_id:
+                            await goal_store.compact_events(g.id, provider)
+
+                    await self.evolution.extract_evals_from_session(event.session_id)
+                except Exception as e:
+                    logger.error(f"Background turn completed task failed: {e}", exc_info=True)
+
         self.event_bus.subscribe("action_approved", on_action_approved)
         self.event_bus.subscribe("approval_resolved", on_approval_resolved)
+        self.event_bus.subscribe("agent_turn_completed", on_turn_completed)
 
     async def process_queue_once(self) -> list[Run]:
         from .event_bus import RunCompletedEvent

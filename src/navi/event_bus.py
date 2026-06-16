@@ -59,6 +59,13 @@ class ActionRequestedEvent(NaviEvent):
 # ─── Governance → Execution ───
 
 @dataclass(frozen=True)
+class AgentTurnCompletedEvent(NaviEvent):
+    event_type: str = "agent_turn_completed"
+    session_id: str = ""
+    run_id: str = ""
+    action: str = ""
+
+@dataclass(frozen=True)
 class RunCompletedEvent(NaviEvent):
     event_type: str = "run_completed"
     run_id: str = ""

@@ -23,10 +23,10 @@ Navi is an AI agent runtime consisting of:
 ## Milestones
 | # | Name | Scope | Dependencies | Status | Conv ID |
 |---|------|-------|-------------|--------|---------|
-| 1 | Prompt Abstraction & Capabilities God Module Decomposition | Extract prompts to prompt layer; Decompose `capabilities.py` into `src/navi/actions/` package; extract helpers. | None | IN_PROGRESS | |
-| 2 | Resolve Circular Dependencies & Log Protocols | Remove load-time circular dependencies and runtime inline imports; generate ExecutionProtocol in `execute_task`. | M1 | IN_PROGRESS | |
-| 3 | Standardize API Boundaries | Route all database mutations in `api.py` (memory, session, evolution) through the Capability layer. | M2 | IN_PROGRESS | |
-| 4 | Decouple Background Tasks & Event-Driven Handlers | Implement Pub/Sub background memory/evaluation tasks in `HernessEngine`; introduce domain events/Unit of Work. | M3 | PLANNED | |
+| 1 | Prompt Abstraction & Capabilities God Module Decomposition | Extract prompts to prompt layer; Decompose `capabilities.py` into `src/navi/actions/` package; extract helpers. | None | COMPLETED | |
+| 2 | Resolve Circular Dependencies & Log Protocols | Remove load-time circular dependencies and runtime inline imports; generate ExecutionProtocol in `execute_task`. | M1 | COMPLETED | |
+| 3 | Standardize API Boundaries | Route all database mutations in `api.py` (memory, session, evolution) through the Capability layer. | M2 | COMPLETED | |
+| 4 | Decouple Background Tasks & Event-Driven Handlers | Implement Pub/Sub background memory/evaluation tasks in `HernessEngine`; introduce domain events/Unit of Work. | M3 | COMPLETED | |
 | 5 | E2E Testing Track | Design and implement comprehensive tests covering Tiers 1-4. | None | IN_PROGRESS | |
 | 6 | Final Verification & Audit | Run complete test suite, verify judge requirements, perform forensic audit. | M4, M5 | PLANNED | |
 

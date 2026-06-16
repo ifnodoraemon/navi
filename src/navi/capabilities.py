@@ -276,72 +276,10 @@ class ActionCapabilityProvider:
         self.project_dir = project_dir
 
     def capabilities(self) -> Mapping[str, Capability]:
-        import importlib
+        from navi.actions.registry import get_action_handlers
+
         specs = {spec.name: spec for spec in load_action_tool_specs()}
-
-        # Helper function to dynamically import and return capability classes
-        def _load(module_name: str, class_name: str):
-            module = importlib.import_module(f"navi.actions.{module_name}")
-            return getattr(module, class_name)
-
-        factories = {
-            "final_answer": lambda spec: _load("conversation", "FinalAnswerCapability")(spec),
-            "clarify": lambda spec: _load("conversation", "ClarifyCapability")(spec),
-            "delegate_spawn": lambda spec: _load("delegation", "DelegateSpawnCapability")(
-                spec, home=self.home, project_dir=self.project_dir
-            ),
-            "delegate_prepare": lambda spec: _load("delegation", "DelegatePrepareCapability")(spec, home=self.home),
-            "approval_request": lambda spec: _load("approval", "ApprovalRequestCapability")(spec, home=self.home),
-            "delegate_run": lambda spec: _load("delegation", "DelegateRunCapability")(spec, home=self.home),
-            "watch_create": lambda spec: _load("watch", "WatchCreateCapability")(
-                spec, home=self.home, project_dir=self.project_dir
-            ),
-            "delegate_delete": lambda spec: _load("delegation", "DelegateDeleteCapability")(spec, home=self.home),
-            "watch_delete": lambda spec: _load("watch", "WatchDeleteCapability")(spec, home=self.home),
-            "session_create": lambda spec: _load("session", "SessionCreateCapability")(
-                spec, home=self.home
-            ),
-            "session_request_elevation": lambda spec: _load("session", "SessionRequestElevationCapability")(
-                spec, home=self.home
-            ),
-            "memory_add": lambda spec: _load("memory", "MemoryAddCapability")(spec, home=self.home),
-            "trace_evaluate": lambda spec: _load("trace", "TraceEvaluateCapability")(
-                spec, home=self.home
-            ),
-            "evolution_propose": lambda spec: _load("evolution", "EvolutionProposeCapability")(
-                spec, home=self.home
-            ),
-            "evolution_record_evaluation": lambda spec: _load(
-                "evolution", "EvolutionRecordEvaluationCapability"
-            )(spec, home=self.home),
-            "evolution_apply": lambda spec: _load("evolution", "EvolutionApplyCapability")(
-                spec, home=self.home
-            ),
-            "evolution_rollback": lambda spec: _load("evolution", "EvolutionRollbackCapability")(
-                spec, home=self.home
-            ),
-            "approval_resolve": lambda spec: _load("approval", "ApprovalResolveCapability")(spec, home=self.home),
-            "execution_retry": lambda spec: _load("delegation", "ExecutionRetryCapability")(spec, home=self.home),
-            "workflow_propose": lambda spec: _load("workflow", "WorkflowProposeCapability")(
-                spec, home=self.home, project_dir=self.project_dir
-            ),
-            "workflow_approve": lambda spec: _load("workflow", "WorkflowApproveCapability")(spec, home=self.home),
-            "workflow_run": lambda spec: _load("workflow", "WorkflowRunCapability")(
-                spec, home=self.home, project_dir=self.project_dir
-            ),
-            "workflow_verify": lambda spec: _load("workflow", "WorkflowVerifyCapability")(spec, home=self.home),
-            "workflow_resume": lambda spec: _load("workflow", "WorkflowRunCapability")(
-                spec, home=self.home, project_dir=self.project_dir, resume=True
-            ),
-            "workflow_status": lambda spec: _load("workflow", "WorkflowStatusCapability")(spec, home=self.home),
-        }
-        handlers = {}
-        for name, handler_key in action_handler_keys().items():
-            factory = factories.get(handler_key)
-            if factory is None:
-                raise ValueError(f"unknown action capability handler: {handler_key}")
-            handlers[name] = factory(specs[name])
-        return handlers
+        return get_action_handlers(self.home, self.project_dir, specs, action_handler_keys())
 
 
 class ToolGatewayCapabilityProvider:

@@ -568,49 +568,25 @@ class HernessEngine:
         return ""
 
     def _trigger_background_memory(self, result: AgentTurnResult) -> None:
-        if result.session_id:
-            logger = logging.getLogger("navi.engine")
+        if result.session_id and self.event_bus:
+            from .event_bus import AgentTurnCompletedEvent
 
-            async def run_with_semaphore():
-                async with self._memory_semaphore():
-                    await self.runtime.memory.extract_and_consolidate_memories(
-                        session_id=result.session_id,
-                        provider=self.runtime.provider,
-                        run_id=result.run_id,
-                    )
-
-                    # F06: Goal context compaction
-                    from navi.goals import GoalStore
-
-                    goal_store = GoalStore(self.home)
-                    # For all active goals in this session
-                    goals = goal_store.list(status="active")
-                    for g in goals:
-                        if g.session_id == result.session_id:
-                            await goal_store.compact_events(g.id, self.runtime.provider)
-
-                    # Auto Eval Generation
-                    try:
-                        from navi.evolution import EvolutionEngine
-
-                        evo = EvolutionEngine(self.home)
-                        await evo.extract_evals_from_session(result.session_id)
-                    except Exception as e:
-                        logger.error(f"Background eval extraction failed: {e}", exc_info=True)
-
-            task = asyncio.create_task(run_with_semaphore())
-            self._background_tasks.add(task)
-
-            def handle_done(t: asyncio.Task) -> None:
-                self._background_tasks.discard(t)
+            # Create fire-and-forget task to publish the event
+            async def publish_event():
                 try:
-                    t.result()
-                except asyncio.CancelledError:
-                    pass
+                    await self.event_bus.publish(
+                        AgentTurnCompletedEvent(
+                            session_id=result.session_id,
+                            run_id=result.run_id,
+                            action=result.action,
+                        )
+                    )
                 except Exception as e:
-                    logger.error(f"Background memory extraction failed: {e}", exc_info=True)
-
-            task.add_done_callback(handle_done)
+                    logger.error(f"Failed to publish turn completed event: {e}", exc_info=True)
+            
+            task = asyncio.create_task(publish_event())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
     async def shutdown(self, *, timeout: float = 10.0) -> None:
         if not self._background_tasks:
