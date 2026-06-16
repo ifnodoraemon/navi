@@ -8,7 +8,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .action_tools import action_handler_keys, load_action_tool_specs
 from .capabilities_types import (
     Capability,
     CapabilityContext,
@@ -60,7 +59,7 @@ class CapabilityRegistry:
             permission_ceiling=permission_ceiling,
         )
         self.providers: tuple[CapabilityProvider, ...] = (
-            ActionCapabilityProvider(home=self.home, project_dir=self.gateway.project_dir),
+            ActionCapabilityProvider(home=self.home, gateway=self.gateway),
             ToolGatewayCapabilityProvider(self.gateway),
         )
         self.hooks = HookRegistry(home)
@@ -271,15 +270,15 @@ def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
 
 
 class ActionCapabilityProvider:
-    def __init__(self, *, home: Path, project_dir: Path):
+    def __init__(self, *, home: Path, gateway):
         self.home = home
-        self.project_dir = project_dir
+        self.gateway = gateway
 
     def capabilities(self) -> Mapping[str, Capability]:
         from navi.actions.registry import get_action_handlers
 
-        specs = {spec.name: spec for spec in load_action_tool_specs()}
-        return get_action_handlers(self.home, self.project_dir, specs, action_handler_keys())
+        
+        return get_action_handlers(self.home, self.gateway.project_dir)
 
 
 class ToolGatewayCapabilityProvider:
@@ -291,9 +290,6 @@ class ToolGatewayCapabilityProvider:
             spec.name: ToolCapability(spec, gateway=self.gateway)
             for spec in self.gateway.list_specs()
         }
-
-
-
 
 
 class ToolCapability:
@@ -310,7 +306,12 @@ class ToolCapability:
     ) -> CapabilityResult:
         result = self.gateway.call(self.spec.name, args)
         observation = json.dumps(
-            {"capability": self.spec.name, "ok": result.ok, "facts": result.facts, "error": result.error},
+            {
+                "capability": self.spec.name,
+                "ok": result.ok,
+                "facts": result.facts,
+                "error": result.error,
+            },
             ensure_ascii=False,
             indent=2,
             sort_keys=True,
@@ -368,9 +369,6 @@ class ToolsListCapability:
             ),
             facts=facts,
         )
-
-
-
 
 
 def build_capability_registry(

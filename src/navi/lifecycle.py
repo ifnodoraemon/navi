@@ -83,6 +83,11 @@ def acceptance_advance(status: str) -> AcceptanceAdvance:
 def acceptance_outcome(*, accepted: bool, run_status: str) -> str:
     if accepted:
         return "accepted"
-    if run_status in {RUN_STATUS_BLOCKED, RUN_STATUS_AWAITING_APPROVAL, RUN_STATUS_QUEUED, RUN_STATUS_RUNNING}:
+    if run_status in {
+        RUN_STATUS_BLOCKED,
+        RUN_STATUS_AWAITING_APPROVAL,
+        RUN_STATUS_QUEUED,
+        RUN_STATUS_RUNNING,
+    }:
         return "blocked"
     return "failed"

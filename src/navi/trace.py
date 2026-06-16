@@ -285,7 +285,7 @@ class TraceStore:
 
 def _redact(value: Any) -> Any:
     from .safeguards import redact_secrets
-    
+
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():

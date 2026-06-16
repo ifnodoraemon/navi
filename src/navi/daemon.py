@@ -87,11 +87,11 @@ class SystemDaemon:
                     from .config import load_config
                     from .runtime import AgentRuntime
                     from .provider import build_provider
-                    
+
                     config = load_config(self.home)
                     provider = build_provider(config.model)
                     runtime = AgentRuntime(home=self.home, provider=provider)
-                    
+
                     await runtime.memory.extract_and_consolidate_memories(
                         session_id=event.session_id,
                         provider=provider,
@@ -99,6 +99,7 @@ class SystemDaemon:
                     )
 
                     from navi.goals import GoalStore
+
                     goal_store = GoalStore(self.home)
                     goals = goal_store.list(status="active")
                     for g in goals:
@@ -115,17 +116,20 @@ class SystemDaemon:
 
     async def process_queue_once(self) -> list[Run]:
         from .event_bus import RunCompletedEvent
+
         completed = await self.execution.process_pending_once()
         for task in completed:
             await self.evolution.reflect_run(task, success=task.status == "completed")
             if task.status in ("completed", "failed"):
-                await self.event_bus.publish(RunCompletedEvent(
-                    run_id=task.id,
-                    status=task.status,
-                    error=task.error,
-                    peer_id=task.peer_id,
-                    sender_id=task.sender_id
-                ))
+                await self.event_bus.publish(
+                    RunCompletedEvent(
+                        run_id=task.id,
+                        status=task.status,
+                        error=task.error,
+                        peer_id=task.peer_id,
+                        sender_id=task.sender_id,
+                    )
+                )
         return completed
 
     async def process_watches_once(self) -> list[dict]:

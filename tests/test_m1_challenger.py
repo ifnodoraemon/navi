@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from navi.prompting import PromptLayerStore
-from navi.spec_loader import load_spec
+
 from navi.capabilities import ActionCapabilityProvider, CapabilityContext
 
 
@@ -72,59 +72,9 @@ def test_prompt_layer_store_stress_and_performance(tmp_path: Path):
     avg_latency = total_duration / iterations
     print(f"\n[Stress Test] {iterations} read operations completed in {total_duration:.4f}s (Avg: {avg_latency*1e6:.2f} microseconds/read)")
     
-    # Average latency should be very small (e.g. < 50 microseconds) due to LRU cache on load_spec
+    # Average latency should be very small (e.g. < 50 microseconds)
     # And file exists check (which is fast on local FS).
     assert avg_latency < 0.001  # Must be less than 1ms per read
-
-
-def test_prompt_layer_store_cache_cleared_performance(tmp_path: Path):
-    """Verify performance of PromptLayerStore when cache is cleared every time to measure disk/yaml overhead."""
-    store = PromptLayerStore(tmp_path)
-    
-    start_time = time.perf_counter()
-    iterations = 1000  # 1000 is enough because it has to read yaml files without cache
-    for _ in range(iterations):
-        load_spec.cache_clear()
-        content = store.read("identity")
-        assert "You are Navi" in content
-    end_time = time.perf_counter()
-    
-    total_duration = end_time - start_time
-    avg_latency = total_duration / iterations
-    print(f"\n[Cache-Cleared Test] {iterations} read operations completed in {total_duration:.4f}s (Avg: {avg_latency*1e6:.2f} microseconds/read)")
-    
-    # Clearing cache makes it significantly slower since it has to read files and parse yaml every time
-    # This shows the extreme benefit of Worker's implementation caching.
-
-
-def test_prompt_layer_store_yaml_missing_and_corrupt(tmp_path: Path, monkeypatch):
-    """Verify fallback behavior when prompt_layers.yaml is missing or corrupted."""
-    store = PromptLayerStore(tmp_path)
-    
-    # We need to clear the load_spec cache first to ensure it actually tries to load
-    load_spec.cache_clear()
-    
-    # Mocking yaml file name to a non-existent one by overriding load_spec implementation
-    # or monkeypatching the Path in load_spec.
-    # Let's inspect where load_spec reads: Path(__file__).parent / "specs" / name
-    # We can temporarily patch load_spec to raise FileNotFoundError or yaml.YAMLError
-    def mock_load_spec_missing(name):
-        raise FileNotFoundError("Mock file not found")
-        
-    monkeypatch.setattr("navi.prompting.load_spec", mock_load_spec_missing)
-    
-    # When load_spec raises FileNotFoundError, read() should propagate the error or does it?
-    # Wait, the codebase currently raises it. Let's see what happens.
-    with pytest.raises(FileNotFoundError):
-        store.read("identity")
-        
-    # Now let's try with yaml corruption (e.g. returning something completely invalid or raising yaml.YAMLError)
-    def mock_load_spec_corrupt(name):
-        raise yaml.YAMLError("Mock yaml parser error")
-        
-    monkeypatch.setattr("navi.prompting.load_spec", mock_load_spec_corrupt)
-    with pytest.raises(yaml.YAMLError):
-        store.read("identity")
 
 
 def test_actions_module_loading_and_class_exposal():
@@ -170,7 +120,9 @@ def test_actions_module_loading_and_class_exposal():
 
 def test_action_capability_provider_lazy_loading(tmp_path: Path):
     """Verify ActionCapabilityProvider loads all mapped capabilities correctly using lazy import."""
-    provider = ActionCapabilityProvider(home=tmp_path, project_dir=tmp_path)
+    class FakeGateway:
+        project_dir = tmp_path
+    provider = ActionCapabilityProvider(home=tmp_path, gateway=FakeGateway())
     
     # Get all capabilities
     caps = provider.capabilities()

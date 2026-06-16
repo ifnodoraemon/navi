@@ -402,8 +402,15 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "The concept or code to search for."},
-                    "limit": {"type": "integer", "description": "Max results to return.", "default": 5},
+                    "query": {
+                        "type": "string",
+                        "description": "The concept or code to search for.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results to return.",
+                        "default": 5,
+                    },
                 },
                 "required": ["query"],
             },
@@ -560,7 +567,10 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "category": {"type": "string", "description": "Optional: 'processes' to include ps aux output."},
+                    "category": {
+                        "type": "string",
+                        "description": "Optional: 'processes' to include ps aux output.",
+                    },
                 },
             },
             output_schema=_output_schema(
@@ -903,9 +913,7 @@ def _memory_conflicts(home: Path, args: dict[str, Any]) -> ToolResult:
 def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     url = str(args.get("url") or "").strip()
     if not _is_browser_url(url):
-        return ToolResult(
-            tool="browser.screenshot", ok=False, error="url must be public http(s)"
-        )
+        return ToolResult(tool="browser.screenshot", ok=False, error="url must be public http(s)")
     output, error = _project_path(args.get("path"), project_dir=project_dir)
     if error:
         return ToolResult(tool="browser.screenshot", ok=False, error=error)
@@ -1207,25 +1215,32 @@ def _codebase_search(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     limit = int(args.get("limit") or 5)
     if not query:
         return ToolResult(tool="codebase.search", ok=False, error="query is required")
-        
+
     try:
         from .rag import CodebaseRAG
+
         rag = CodebaseRAG(project_dir)
         results = rag.search(query, limit=limit)
         return ToolResult(
             tool="codebase.search",
             ok=True,
-            facts={"results": [{"path": r.path, "snippet": r.content, "rank": r.rank} for r in results]},
+            facts={
+                "results": [{"path": r.path, "snippet": r.content, "rank": r.rank} for r in results]
+            },
         )
     except Exception as exc:
         return ToolResult(tool="codebase.search", ok=False, error=str(exc))
 
-def _run_command(command: list[str], *, cwd: Path, timeout: int, allocate_pty: bool = False) -> dict[str, Any]:
+
+def _run_command(
+    command: list[str], *, cwd: Path, timeout: int, allocate_pty: bool = False
+) -> dict[str, Any]:
     env = os.environ.copy()
     # Ensure common bin paths are in PATH
     home_dir = str(Path.home())
     current_path = env.get("PATH", "")
     import glob
+
     nvm_paths = glob.glob(f"{home_dir}/.nvm/versions/node/*/bin")
     extra_paths = [
         f"{home_dir}/.local/bin",
@@ -1238,6 +1253,7 @@ def _run_command(command: list[str], *, cwd: Path, timeout: int, allocate_pty: b
         import pty
         import select
         import time
+
         master_fd, slave_fd = pty.openpty()
         try:
             proc = subprocess.Popen(
@@ -1250,18 +1266,18 @@ def _run_command(command: list[str], *, cwd: Path, timeout: int, allocate_pty: b
                 text=False,
             )
             os.close(slave_fd)
-            
+
             output = b""
             start_time = time.time()
             timed_out = False
-            
+
             while proc.poll() is None:
                 time_left = timeout - (time.time() - start_time)
                 if time_left <= 0:
                     proc.kill()
                     timed_out = True
                     break
-                
+
                 r, _, _ = select.select([master_fd], [], [], min(0.1, time_left))
                 if r:
                     try:
@@ -1271,7 +1287,7 @@ def _run_command(command: list[str], *, cwd: Path, timeout: int, allocate_pty: b
                         output += data
                     except OSError:
                         break
-                        
+
             while True:
                 r, _, _ = select.select([master_fd], [], [], 0)
                 if r:
@@ -1284,13 +1300,13 @@ def _run_command(command: list[str], *, cwd: Path, timeout: int, allocate_pty: b
                         break
                 else:
                     break
-                    
+
             if not timed_out:
                 proc.wait(timeout=1)
             os.close(master_fd)
-            
+
             text_output = output.decode("utf-8", errors="replace")
-            
+
             if timed_out:
                 return {
                     "stdout": _truncate_output(text_output),
@@ -1298,7 +1314,7 @@ def _run_command(command: list[str], *, cwd: Path, timeout: int, allocate_pty: b
                     "exit_code": 124,
                     "timed_out": True,
                 }
-                
+
             return {
                 "stdout": _truncate_output(text_output),
                 "stderr": "",
@@ -1401,7 +1417,6 @@ def _web_search(args: dict[str, Any]) -> ToolResult:
 
 def _http_fetch(args: dict[str, Any]) -> ToolResult:
     import urllib.request
-    import json as _json
 
     url = str(args.get("url") or "").strip()
     if not url:
@@ -1444,7 +1459,9 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
                 },
             )
     except Exception as exc:
-        return ToolResult(tool="http.fetch", ok=False, error=str(exc), facts={"url": url, "method": method})
+        return ToolResult(
+            tool="http.fetch", ok=False, error=str(exc), facts={"url": url, "method": method}
+        )
 
 
 def _system_info(args: dict[str, Any]) -> ToolResult:

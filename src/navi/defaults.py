@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from .spec_loader import load_spec
+from .specs_data import DEFAULTS_SPEC
 
-_DEFAULTS = load_spec("defaults.yaml")
+_DEFAULTS = DEFAULTS_SPEC
 
 DEFAULT_SERVICE_NAME = str(_DEFAULTS["service_name"])
 DEFAULT_EXECUTION_PROVIDER = str(_DEFAULTS["execution_provider"])

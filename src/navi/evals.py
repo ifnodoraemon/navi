@@ -86,7 +86,9 @@ def load_daily_journey_eval_dataset(path: Path) -> dict[str, Any]:
         if "simulator" not in journey:
             steps = journey.get("steps")
             if not isinstance(steps, list) or not steps:
-                raise ValueError(f"journey {journey.get('id') or index} must contain non-empty steps or a simulator")
+                raise ValueError(
+                    f"journey {journey.get('id') or index} must contain non-empty steps or a simulator"
+                )
     return data
 
 
@@ -270,6 +272,7 @@ def _claw_error_domains(task: dict[str, Any], errors: list[str]) -> list[str]:
         domains.add("robustness")
     return sorted(domains)
 
+
 async def _run_daily_journey_simulator(
     *,
     journey: dict[str, Any],
@@ -290,15 +293,15 @@ async def _run_daily_journey_simulator(
         ChatMessage(role="system", content=persona),
         ChatMessage(
             role="user",
-            content="You are starting the conversation with Navi. State your initial request based on your persona. Provide your request in a natural, conversational way. Do not explain your persona to Navi."
-        )
+            content="You are starting the conversation with Navi. State your initial request based on your persona. Provide your request in a natural, conversational way. Do not explain your persona to Navi.",
+        ),
     ]
 
     for turn_idx in range(max_turns):
         user_message = await provider.complete_for("default", messages)
         user_message = user_message.strip()
         messages.append(ChatMessage(role="assistant", content=user_message))
-        
+
         if user_message == "/exit" or user_message.lower() == "exit":
             break
 
@@ -310,27 +313,32 @@ async def _run_daily_journey_simulator(
             session_id=session_id or None,
         )
         session_id = turn.session_id
-        events.append({
-            "kind": "user",
-            "message": user_message,
-            "action": turn.action,
-            "run_id": turn.run_id,
-            "text": turn.text,
-        })
+        events.append(
+            {
+                "kind": "user",
+                "message": user_message,
+                "action": turn.action,
+                "run_id": turn.run_id,
+                "text": turn.text,
+            }
+        )
 
         if turn.action in {"delegation", "approval"}:
-            messages.append(ChatMessage(
-                role="user", 
-                content=f"Navi created a background task (action={turn.action}). Navi said: {turn.text}\nIf you consider the task complete or are satisfied, reply with /exit. Otherwise, continue."
-            ))
+            messages.append(
+                ChatMessage(
+                    role="user",
+                    content=f"Navi created a background task (action={turn.action}). Navi said: {turn.text}\nIf you consider the task complete or are satisfied, reply with /exit. Otherwise, continue.",
+                )
+            )
         else:
-            messages.append(ChatMessage(
-                role="user", 
-                content=f"Navi replied: {turn.text}\nPlease reply to Navi naturally. If your goal is fully accomplished, reply with /exit."
-            ))
+            messages.append(
+                ChatMessage(
+                    role="user",
+                    content=f"Navi replied: {turn.text}\nPlease reply to Navi naturally. If your goal is fully accomplished, reply with /exit.",
+                )
+            )
 
     return errors, events
-
 
 
 async def _run_daily_journey(
@@ -383,7 +391,9 @@ async def _run_daily_journey(
                     errors.append(f"step[{index}]: step must be a mapping")
                     continue
                 if "user" in step:
-                    message = _render_journey_text(str(step["user"]), runs, latest_run_id=latest_run_id)
+                    message = _render_journey_text(
+                        str(step["user"]), runs, latest_run_id=latest_run_id
+                    )
                     turn = await engine.handle(
                         message,
                         peer_id="daily-eval",
@@ -424,7 +434,9 @@ async def _run_daily_journey(
                     latest_run_id = run.id
                     event = {"kind": "seed_failed_run", "run_id": run.id}
                 else:
-                    errors.append(f"step[{index}]: missing user, process_pending, or seed_failed_run")
+                    errors.append(
+                        f"step[{index}]: missing user, process_pending, or seed_failed_run"
+                    )
                     continue
                 events.append(event)
                 errors.extend(

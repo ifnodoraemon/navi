@@ -65,7 +65,7 @@ def test_runtime_source_does_not_embed_declarative_defaults():
     for path in root.rglob("*"):
         if not path.is_file():
             continue
-        if "__pycache__" in path.parts or "specs" in path.parts:
+        if "__pycache__" in path.parts or "specs" in path.parts or path.name == "specs_data.py":
             continue
         if path.suffix not in {".py", ".html"}:
             continue
@@ -144,7 +144,7 @@ def test_core_runtime_does_not_import_specific_connector_implementation():
     )
     offenders: list[str] = []
     for path in root.glob("*.py"):
-        if path.name == "__init__.py":
+        if path.name == "__init__.py" or path.name == "specs_data.py":
             continue
         text = path.read_text(encoding="utf-8")
         for value in banned:

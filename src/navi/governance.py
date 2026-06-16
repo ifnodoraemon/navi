@@ -77,7 +77,11 @@ class GovernanceEngine:
                 logger.warning("Invalid prepare protocol JSON for task %s", task.id)
                 return None
             if isinstance(payload, dict):
-                return payload.get("navi_execution") if isinstance(payload.get("navi_execution"), dict) else payload
+                return (
+                    payload.get("navi_execution")
+                    if isinstance(payload.get("navi_execution"), dict)
+                    else payload
+                )
         return None
 
     def _record_execution_grant(self, task: Run, *, allowed: bool, reason: str) -> bool:

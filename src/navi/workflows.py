@@ -174,23 +174,19 @@ def workflow_verification_decision(
     goal_type = str(workflow_plan.get("goal_type") or "").strip().lower()
     failed_steps = [step for step in steps if step.status != STEP_STATUS_COMPLETED]
     empty_evidence = [step.id for step in steps if not _json_dict(step.evidence_json)]
-    capability_steps = [
-        step.id for step in steps if _json_list(step.tool_calls_json)
-    ]
+    capability_steps = [step.id for step in steps if _json_list(step.tool_calls_json)]
     missing_execution_evidence = not capability_steps and goal_type != "planning"
     passed = (
-        workflow.status in (WORKFLOW_STATUS_COMPLETED, WORKFLOW_STATUS_VERIFIED_COMPLETE) and not failed_steps and not empty_evidence
+        workflow.status in (WORKFLOW_STATUS_COMPLETED, WORKFLOW_STATUS_VERIFIED_COMPLETE)
+        and not failed_steps
+        and not empty_evidence
         and not missing_execution_evidence
     )
     blocked_reason = ""
     if not passed:
-        blocked_reason = (
-            "workflow verifier requires completed workflow, completed steps, and non-empty step evidence"
-        )
+        blocked_reason = "workflow verifier requires completed workflow, completed steps, and non-empty step evidence"
         if missing_execution_evidence:
-            blocked_reason = (
-                "workflow verifier requires capability execution evidence unless plan.goal_type is planning"
-            )
+            blocked_reason = "workflow verifier requires capability execution evidence unless plan.goal_type is planning"
     output = {
         "workflow_id": workflow.id,
         "passed": passed,

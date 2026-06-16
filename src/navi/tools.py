@@ -231,11 +231,14 @@ class ToolRegistry:
     def _audit_call(self, args: dict[str, Any], result: ToolResult) -> None:
         try:
             from .safeguards import redact_secrets
+
             RunStore(self.home).add_tool_call_log(
                 tool=result.tool,
                 args_json=redact_secrets(json.dumps(args, ensure_ascii=False, sort_keys=True)),
                 ok=result.ok,
-                facts_json=redact_secrets(json.dumps(result.facts, ensure_ascii=False, sort_keys=True)),
+                facts_json=redact_secrets(
+                    json.dumps(result.facts, ensure_ascii=False, sort_keys=True)
+                ),
                 error=redact_secrets(result.error),
                 started_at=result.started_at,
                 ended_at=result.ended_at,

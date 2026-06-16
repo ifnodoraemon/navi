@@ -105,9 +105,7 @@ class RecoveryPlanner:
                     tool="final.answer",
                     permission="read",
                     args={
-                        "message": (
-                            "Verification incomplete. Attempted alternatives exhausted."
-                        )
+                        "message": ("Verification incomplete. Attempted alternatives exhausted.")
                     },
                 ),
             ],

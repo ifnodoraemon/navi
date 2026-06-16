@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .spec_loader import load_spec
+from .specs_data import MODEL_PROVIDERS_SPEC
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = tuple(
         api_key_env=tuple(item.get("api_key_env") or ()),
         structured_output=str(item.get("structured_output") or "none"),
     )
-    for item in load_spec("model_providers.yaml")
+    for item in MODEL_PROVIDERS_SPEC
 )
 
 

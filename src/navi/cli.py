@@ -99,21 +99,22 @@ def chat() -> None:
     )
     session_id: str | None = None
     typer.echo("Navi chat. Type /exit to quit.")
-    
+
     pending_options = []
-    
+
     while True:
         if pending_options:
             import questionary
+
             text = questionary.select("Choice:", choices=pending_options).ask()
             if text is None:
                 break
         else:
             text = typer.prompt("you")
-            
+
         if text.strip() in {"/exit", "/quit"}:
             break
-            
+
         result = asyncio.run(
             _run_chat_turn(
                 agent,
@@ -124,9 +125,9 @@ def chat() -> None:
             )
         )
         session_id = result.session_id or session_id
-        
+
         typer.echo(f"navi: {result.text}")
-        
+
         if result.action == "ask" and result.facts and "options" in result.facts:
             pending_options = result.facts["options"]
         else:
@@ -662,7 +663,6 @@ def graph_list() -> None:
     """List personal graph nodes."""
     for node in GraphStore(ensure_home()).list():
         typer.echo(f"{node.type} {node.name}: {node.data}")
-
 
 
 @trace_app.command("list")

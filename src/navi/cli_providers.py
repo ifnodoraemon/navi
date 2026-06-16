@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .spec_loader import load_spec
+from .specs_data import CLI_PROVIDERS_SPEC
 
 
 @dataclass(frozen=True)
@@ -28,7 +28,7 @@ CLI_PROVIDER_SPECS: tuple[CliProviderSpec, ...] = tuple(
         auth_detail=str(item.get("auth_detail") or ""),
         supports_execution=bool(item.get("supports_execution", False)),
     )
-    for item in load_spec("cli_providers.yaml")
+    for item in CLI_PROVIDERS_SPEC
 )
 
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import tempfile
-import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -412,6 +411,8 @@ def _acceptance_protocol_verified(context: dict[str, Any]) -> dict[str, Any]:
     protocol = context.get("protocol") if isinstance(context.get("protocol"), dict) else {}
     status = str(_dict_path(protocol, "verification", "status") or "")
     return _check("protocol.verified", status == "verified", status)
+
+
 def _acceptance_run_summary(context: dict[str, Any]) -> dict[str, Any]:
     run = context.get("run")
     summary = str(run.result_summary if run else "").strip()

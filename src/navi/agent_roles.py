@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Iterable
 
-from .spec_loader import load_spec
+from .specs_data import AGENT_ROLES_SPEC
 
 
 @dataclass(frozen=True)
@@ -20,7 +20,7 @@ class AgentRoleSpec:
 
 
 def list_agent_role_specs(configured_routes: Iterable[str] = ()) -> list[AgentRoleSpec]:
-    raw = load_spec("agent_roles.yaml") or {}
+    raw = AGENT_ROLES_SPEC or {}
     roles = raw.get("roles") or {}
     configured = {str(role) for role in configured_routes if str(role)}
     specs: list[AgentRoleSpec] = []

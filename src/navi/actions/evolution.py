@@ -73,7 +73,9 @@ class EvolutionRecordEvaluationCapability:
             proposal_id, evaluation_result
         )
         if proposal is None:
-            return _evolution_error("proposal not found", reason="not_found", proposal_id=proposal_id)
+            return _evolution_error(
+                "proposal not found", reason="not_found", proposal_id=proposal_id
+            )
         proposal_facts = asdict(proposal)
         facts = {
             **_transition_facts("evolution_proposal", proposal.id, "updated"),
@@ -97,13 +99,17 @@ class EvolutionApplyCapability:
     ) -> CapabilityResult:
         proposal_id = _arg_text(args, "proposal_id")
         if not proposal_id:
-            return _evolution_error("evolution.apply requires proposal_id.", reason="schema_mismatch")
+            return _evolution_error(
+                "evolution.apply requires proposal_id.", reason="schema_mismatch"
+            )
         try:
             event = EvolutionEngine(self.home).apply_proposal(proposal_id)
         except ValueError as exc:
             return _evolution_error(str(exc), reason="schema_mismatch", proposal_id=proposal_id)
         if event is None:
-            return _evolution_error("proposal not found", reason="not_found", proposal_id=proposal_id)
+            return _evolution_error(
+                "proposal not found", reason="not_found", proposal_id=proposal_id
+            )
         event_facts = asdict(event)
         facts = {
             **_transition_facts("evolution_event", event.id, "created"),
@@ -128,7 +134,9 @@ class EvolutionRollbackCapability:
     ) -> CapabilityResult:
         event_id = _arg_text(args, "event_id")
         if not event_id:
-            return _evolution_error("evolution.rollback requires event_id.", reason="schema_mismatch")
+            return _evolution_error(
+                "evolution.rollback requires event_id.", reason="schema_mismatch"
+            )
         try:
             event = EvolutionEngine(self.home).rollback(event_id)
         except ValueError as exc:

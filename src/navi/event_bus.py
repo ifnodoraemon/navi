@@ -18,6 +18,7 @@ class NaviEvent:
 
 # ─── Message Ingress ───
 
+
 @dataclass(frozen=True)
 class MessageIngressEvent(NaviEvent):
     event_type: str = "message_ingress"
@@ -30,6 +31,7 @@ class MessageIngressEvent(NaviEvent):
 
 
 # ─── Router → Agents ───
+
 
 @dataclass(frozen=True)
 class UserIntentEvent(NaviEvent):
@@ -46,6 +48,7 @@ class UserIntentEvent(NaviEvent):
 
 # ─── Main Agent → Governance ───
 
+
 @dataclass(frozen=True)
 class ActionRequestedEvent(NaviEvent):
     event_type: str = "action_requested"
@@ -58,12 +61,14 @@ class ActionRequestedEvent(NaviEvent):
 
 # ─── Governance → Execution ───
 
+
 @dataclass(frozen=True)
 class AgentTurnCompletedEvent(NaviEvent):
     event_type: str = "agent_turn_completed"
     session_id: str = ""
     run_id: str = ""
     action: str = ""
+
 
 @dataclass(frozen=True)
 class RunCompletedEvent(NaviEvent):
@@ -73,6 +78,7 @@ class RunCompletedEvent(NaviEvent):
     error: str = ""
     peer_id: str = ""
     sender_id: str = ""
+
 
 @dataclass(frozen=True)
 class ActionApprovedEvent(NaviEvent):
@@ -102,6 +108,7 @@ class ApprovalResolvedEvent(NaviEvent):
 
 
 # ─── Response ───
+
 
 @dataclass(frozen=True)
 class ResponseReadyEvent(NaviEvent):

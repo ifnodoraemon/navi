@@ -86,7 +86,6 @@ EVOLUTION_TARGETS: tuple[EvolutionTarget, ...] = (
         "connectors",
         True,
     ),
-
     EvolutionTarget(
         "workflow_policy",
         "Daemon, execution, approval, and lifecycle decision policy.",
@@ -510,7 +509,9 @@ class EvolutionEngine:
             prompt = f"Analyze the following user journey and extract a daily eval YAML structure for it, containing 'id', 'user_goal', and a 'steps' array matching the format of daily_journeys.yaml. Return ONLY valid YAML.\n\n{text}"
 
             # Use provider
-            response = await self.provider.complete_for("default", [ChatMessage(role="user", content=prompt)])
+            response = await self.provider.complete_for(
+                "default", [ChatMessage(role="user", content=prompt)]
+            )
             if not response.text:
                 return
 

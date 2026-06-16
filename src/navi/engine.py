@@ -545,7 +545,10 @@ class HernessEngine:
             ),
             None,
         )
-        if isinstance(latest_cleanup_facts, dict) and latest_cleanup_facts.get("cleanup_complete") is False:
+        if (
+            isinstance(latest_cleanup_facts, dict)
+            and latest_cleanup_facts.get("cleanup_complete") is False
+        ):
             remaining = latest_cleanup_facts.get("remaining_count")
             return (
                 "completion verifier blocked final answer: "
@@ -583,7 +586,7 @@ class HernessEngine:
                     )
                 except Exception as e:
                     logger.error(f"Failed to publish turn completed event: {e}", exc_info=True)
-            
+
             task = asyncio.create_task(publish_event())
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
@@ -874,13 +877,16 @@ def _run_approval_prompt(facts: dict[str, Any], source: str) -> str:
         return ""
     diff = str(approval.get("diff") or "").strip()
     diff_text = f"\n\nProposed Changes:\n```diff\n{diff}\n```" if diff else ""
-    return template.format(
-        task_line=f"Task ID: `{run_id}`" if run_id else "",
-        code=code,
-        expiry=expiry,
-        approve_command=approve_command,
-        reject_command=reject_command,
-    ).strip() + diff_text
+    return (
+        template.format(
+            task_line=f"Task ID: `{run_id}`" if run_id else "",
+            code=code,
+            expiry=expiry,
+            approve_command=approve_command,
+            reject_command=reject_command,
+        ).strip()
+        + diff_text
+    )
 
 
 APPROVAL_PROMPT_RENDERERS: tuple[ApprovalPromptRenderer, ...] = (
@@ -897,4 +903,5 @@ def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:
 
 
 from .execution import register_engine_class
+
 register_engine_class(HernessEngine)

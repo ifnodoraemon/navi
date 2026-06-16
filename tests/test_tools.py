@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from navi.action_tools import load_action_tool_specs
+from navi.actions.specs import ACTION_SPECS
 from navi.runs import RunStore
 from navi.safeguards import classify_capability
 from navi.tools import build_tool_gateway
@@ -37,7 +37,7 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
     assert specs["connector.weixin.status"].source == "connector.weixin"
     assert specs["connector.telegram.status"].source == "connector.telegram"
     assert all(spec.facts_only is True for spec in specs.values())
-    assert all(spec.facts_only is True for spec in load_action_tool_specs())
+    assert all(spec.facts_only is True for spec in ACTION_SPECS)
     assert all(spec.permission == "write" for spec in specs.values() if spec.mutates)
     assert all("properties" in spec.output_schema or "items" in spec.output_schema for spec in specs.values())
     assert "items" in specs["memory.recall"].output_schema["properties"]
@@ -53,7 +53,7 @@ def test_core_tool_registry_lists_fact_only_tools(tmp_path):
 
 
 def test_workflow_action_specs_declare_dynamic_workflow_safeguards():
-    specs = {spec.name: spec for spec in load_action_tool_specs()}
+    specs = {spec.name: spec for spec in ACTION_SPECS}
 
     assert specs["workflow.propose"].permission == "prepare"
     assert specs["workflow.status"].permission == "read"

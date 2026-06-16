@@ -6,7 +6,7 @@ from typing import Any
 
 import yaml
 
-from .spec_loader import load_spec
+from .specs_data import HOOKS_SPEC
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,7 @@ def _load_hook_specs(home: Path) -> list[HookSpec]:
 
 
 def _load_builtin_hook_specs() -> list[HookSpec]:
-    raw = load_spec("hooks.yaml") or []
+    raw = HOOKS_SPEC or []
     if not isinstance(raw, list):
         raise ValueError("hooks.yaml must contain a list")
     return [_hook_spec_from_mapping(item, default_source="built-in") for item in raw]

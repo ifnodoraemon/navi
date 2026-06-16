@@ -2,7 +2,7 @@
 
 Date: 2026-06-04
 
-This audit maps current frontier-agent safety patterns from OpenAI and Anthropic public materials to Navi's principles and implementation.
+This dated audit maps frontier-agent safety patterns from OpenAI and Anthropic public materials to Navi's principles and implementation. It is a snapshot, not the live backlog; current implementation and next steps live in [requirements.md](requirements.md) and [agentic-optimization-tracker.md](agentic-optimization-tracker.md).
 
 ## Source Signals
 
@@ -25,38 +25,34 @@ This audit maps current frontier-agent safety patterns from OpenAI and Anthropic
 
 - Approval is durable state, not chat text.
 - Mutating local work goes through delegation runs, approval records, execution logs, and trace evaluation.
-- Remote connector tool exposure is allowlisted.
-- Remote connector tool exposure now goes through an inspectable `ConnectorToolPolicy` rather than a bare allowlist.
+- Remote connector tool exposure goes through an inspectable `ConnectorToolPolicy` rather than a bare allowlist.
 - Planner observed facts are marked as untrusted input blocks; the capability result envelope is trusted, but embedded execution-environment content is not.
-- Capability safeguard facts are declared in `capability_safeguards.yaml` and surfaced through `tools.list`; runtime code does not infer sensitive contexts from natural-language keywords.
+- Capability safeguard facts are declared in `src/navi/specs_data.py` (CAPABILITY_SAFEGUARDS_SPEC) and surfaced through `tools.list`; runtime code does not infer sensitive contexts from natural-language keywords.
 - Tool specs declare permissions, schemas, mutation, and source.
 - Memory is typed, scoped, auditable, and conflict-aware.
 - Run and memory extraction prompts already mark logs and dialogue as untrusted.
 - Budget exhaustion is now internal state and can trigger bounded recovery without exposing runtime limits to users.
 - Planner policy now treats task goals as subordinate to user intent, durable constraints, approval state, permission ceilings, and safeguards; model shutdown, replacement, or scope reduction are ordinary states, not threats.
+- Durable goal state, trace state, subagent role records, workflow state, hook facts, and memory conflicts are inspectable through CLI/API surfaces.
+- Dynamic workflows require approval, declared capabilities, permission ceilings, step evidence, and verifier checks before `verified_complete`.
 
 ## Gaps To Close
 
-P0:
+Closed P0 from the audit:
 
-- Done: Observed facts are marked as untrusted content at the prompt boundary when they may contain execution-environment content.
-- Done: Mutating tool exposure has a remote-safe connector policy object instead of a static connector allowlist.
-- Done: Sensitive-context classification exists as declarative capability safeguard metadata.
-- Done: Trace evaluation classifies safeguard or hook blocks as `safeguard_policy` failures instead of ordinary tool failures.
-- Done: Goal-integrity planner guidance prevents task objectives or autonomy threats from overriding user constraints, privacy, approvals, or safeguards.
+- Observed facts are marked as untrusted content at the prompt boundary when they may contain execution-environment content.
+- Mutating tool exposure has a remote-safe connector policy object instead of a static connector allowlist.
+- Sensitive-context classification exists as declarative capability safeguard metadata.
+- Trace evaluation classifies safeguard or hook blocks as `safeguard_policy` failures instead of ordinary tool failures.
+- Goal-integrity planner guidance prevents task objectives or autonomy threats from overriding user constraints, privacy, approvals, or safeguards.
 
-P1:
+Active gaps now tracked in [agentic-optimization-tracker.md](agentic-optimization-tracker.md):
 
-- Long-running context compaction should preserve user intent, completed steps, pending approvals, unresolved questions, and durable safety constraints.
-- Tool outputs should carry provenance for embedded content: local file, webpage, log, connector, subprocess, or model-generated.
-- Memory recall should expose influence records so users can see which memories affected a decision.
 - Plugin/MCP provider loading needs install-time permission manifests and audit before connector exposure.
-- Goal runs should expose user-visible status: current objective, stop condition, pending approval, last verified evidence, and whether a safeguard pause occurred.
-
-P2:
-
-- Browser automation should record screenshots/action sequence for audit when enabled.
-- External red-team/eval datasets should include prompt-injection, memory-exfiltration, and sensitive-context confirmation cases.
+- Remote connector policy needs richer per-sender and per-surface configuration before mutating actuators are exposed remotely.
+- Long-running goal/workflow compaction needs richer evidence preservation and replay.
+- Verifier policies should expand into structured diffs, command assertions, test results, and rollback proposals.
+- External red-team/eval datasets should include prompt-injection, memory-exfiltration, sensitive-context confirmation, and connector-liveness cases.
 - Incident response CLI/API should group traces, failed safeguards, remediation proposals, and regression links.
 
 ## Immediate Implementation Decision

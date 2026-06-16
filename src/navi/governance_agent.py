@@ -29,11 +29,13 @@ class GovernanceAgent:
             return
 
         if task.autonomy_level == "L3" or self.governance.execution_allowed(task):
-            await self.event_bus.publish(ActionApprovedEvent(
-                source_agent="governance_agent",
-                run_id=event.run_id,
-                reason="auto-approved",
-            ))
+            await self.event_bus.publish(
+                ActionApprovedEvent(
+                    source_agent="governance_agent",
+                    run_id=event.run_id,
+                    reason="auto-approved",
+                )
+            )
         else:
             approval = self.runs.create_approval(
                 run_id=event.run_id,
@@ -41,13 +43,15 @@ class GovernanceAgent:
                 sender_id=event.sender_id,
             )
             self.runs.update_run(event.run_id, status="awaiting_approval")
-            await self.event_bus.publish(ActionSuspendedEvent(
-                source_agent="governance_agent",
-                correlation_id=event.correlation_id,
-                run_id=event.run_id,
-                reason="requires approval",
-                approval_code=approval.code,
-                peer_id=event.peer_id,
-                sender_id=event.sender_id,
-                source=event.source,
-            ))
+            await self.event_bus.publish(
+                ActionSuspendedEvent(
+                    source_agent="governance_agent",
+                    correlation_id=event.correlation_id,
+                    run_id=event.run_id,
+                    reason="requires approval",
+                    approval_code=approval.code,
+                    peer_id=event.peer_id,
+                    sender_id=event.sender_id,
+                    source=event.source,
+                )
+            )

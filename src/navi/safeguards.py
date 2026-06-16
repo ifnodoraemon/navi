@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .spec_loader import load_spec
+from .specs_data import CAPABILITY_SAFEGUARDS_SPEC
 from .tools import ToolSpec
 
 
@@ -37,7 +37,7 @@ def capability_safeguard_facts(spec: ToolSpec) -> dict:
 
 
 def _declared_safeguard(spec: ToolSpec) -> dict:
-    policy = load_spec("capability_safeguards.yaml") or {}
+    policy = CAPABILITY_SAFEGUARDS_SPEC or {}
     tools = policy.get("tools") if isinstance(policy, dict) else {}
     if isinstance(tools, dict) and isinstance(tools.get(spec.name), dict):
         return dict(tools[spec.name])

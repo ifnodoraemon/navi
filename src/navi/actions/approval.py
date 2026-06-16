@@ -65,7 +65,7 @@ class ApprovalRequestCapability:
                     cwd=task.workspace,
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
                 )
                 if res.returncode == 0:
                     diff = res.stdout.strip()

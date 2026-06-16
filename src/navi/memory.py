@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from .db import connect
 from .hooks import HookDecision, HookEvent, HookRegistry
 from .json_utils import parse_first_json_object
-from .spec_loader import load_spec
+from .specs_data import MEMORY_POLICY_SPEC, PROMPT_LAYERS_SPEC
 from .text_utils import truncate_middle
 
 logger = logging.getLogger("navi.memory")
@@ -72,7 +72,7 @@ class MemoryRecall:
     conflicts: tuple[MemoryConflict, ...] = ()
 
 
-_MEMORY_POLICY = load_spec("memory_policy.yaml")
+_MEMORY_POLICY = MEMORY_POLICY_SPEC
 MEMORY_TYPES = {str(item) for item in _MEMORY_POLICY["types"]}
 LEARNABLE_MEMORY_TYPES = tuple(str(item) for item in _MEMORY_POLICY["learnable_types"])
 MEMORY_STATUSES = {str(item) for item in _MEMORY_POLICY["statuses"]}
@@ -787,11 +787,15 @@ class MemoryStore:
             if e.phase == "planner.syscall":
                 tool = e.tool
                 reason = e.message
-                logs_text_parts.append(f"Model Thought -> Tool: {tool}, Reason: {reason}, Args: {e.output_json}")
+                logs_text_parts.append(
+                    f"Model Thought -> Tool: {tool}, Reason: {reason}, Args: {e.output_json}"
+                )
             elif e.phase == "capability.result":
                 ok = e.ok
                 msg = e.message
-                logs_text_parts.append(f"Tool Result -> Tool: {e.tool}, OK: {ok}, Msg: {truncate_middle(msg, TASK_LEARNING_LOG_LIMIT)}")
+                logs_text_parts.append(
+                    f"Tool Result -> Tool: {e.tool}, OK: {ok}, Msg: {truncate_middle(msg, TASK_LEARNING_LOG_LIMIT)}"
+                )
 
         logs_text = "\n".join(logs_text_parts)
 
@@ -946,6 +950,7 @@ class MemoryStore:
             reasons.append(f"included_by_type:{item.type}")
         reasons.append(f"confidence={item.confidence:.2f}")
         import time
+
         now = time.time()
         # Scale freshness so that recent updates score higher (up to 10 points), fading over ~115 days (10M seconds)
         freshness = min(10.0, max(0.0, 10.0 - ((now - item.updated_at) / 1_000_000)))
@@ -1008,7 +1013,7 @@ def _render_conflict_summary(conflicts: tuple[MemoryConflict, ...]) -> str:
 
 
 def _memory_prompt(name: str) -> str:
-    layers = load_spec("prompt_layers.yaml") or {}
+    layers = PROMPT_LAYERS_SPEC or {}
     layer = layers.get(name)
     if not isinstance(layer, dict):
         raise ValueError(f"missing memory prompt layer: {name}")

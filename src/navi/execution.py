@@ -93,7 +93,11 @@ class ExecutionProtocol:
         parsed = parse_first_json_object(text)
         if not isinstance(parsed, dict):
             raise ValueError("execution protocol missing JSON object")
-        payload = parsed.get("navi_execution") if isinstance(parsed.get("navi_execution"), dict) else parsed
+        payload = (
+            parsed.get("navi_execution")
+            if isinstance(parsed.get("navi_execution"), dict)
+            else parsed
+        )
         version = str(payload.get("version") or "")
         if version != EXECUTION_PROTOCOL_VERSION:
             raise ValueError(f"execution protocol version must be {EXECUTION_PROTOCOL_VERSION}")
@@ -643,7 +647,9 @@ class NaviExecutionProvider:
         ended_at: float,
     ) -> ExecutionResult:
         ok = exit_code == 0
-        summary = stdout.strip()[:1600] if ok else (stderr.strip() or f"watch exited with {exit_code}")
+        summary = (
+            stdout.strip()[:1600] if ok else (stderr.strip() or f"watch exited with {exit_code}")
+        )
         protocol = ExecutionProtocol.internal_status(
             run_id="",
             phase="watch",
@@ -710,13 +716,14 @@ class ExecutionService:
         self.runs.update_run(task.id, status=RUN_STATUS_RUNNING)
 
         from .runtime import AgentRuntime
+
         HernessEngine = get_engine_class()
-        
+
         config = load_config(self.home)
         runtime = AgentRuntime(home=self.home, provider=build_provider(config.model))
-        
+
         permission_ceiling = "write" if self.execution_allowed(task) else "prepare"
-        
+
         started_at = time.time()
         subagent_run = self.subagents.start(
             role=SUBAGENT_EXECUTOR_ROLE,
@@ -738,7 +745,7 @@ class ExecutionService:
             peer_id=task.peer_id,
             sender_id=task.sender_id,
             source=task.source,
-            session_alias=f"executor:{task.id}"
+            session_alias=f"executor:{task.id}",
         )
         exit_code = 0 if not turn_result.budget_exhausted else 1
         execution_status = "completed" if exit_code == 0 else "failed"
@@ -947,10 +954,14 @@ class ExecutionService:
             ended_at=result.ended_at,
         )
 
-
-
-    async def _provider_call(self, task: Run, phase: str, previous_result: ExecutionResult | None = None) -> ExecutionResult:
-        if self.config.mock and getattr(self, "_force_mock_result", True) and not getattr(self, "_test_disable_provider_mock", False):
+    async def _provider_call(
+        self, task: Run, phase: str, previous_result: ExecutionResult | None = None
+    ) -> ExecutionResult:
+        if (
+            self.config.mock
+            and getattr(self, "_force_mock_result", True)
+            and not getattr(self, "_test_disable_provider_mock", False)
+        ):
             # Tests might set _test_disable_provider_mock to True to test ReActRunner fallback.
             text = (
                 "Preparation: inspect the request, estimate risk, then request approval."
@@ -962,10 +973,13 @@ class ExecutionService:
             return await self.provider.plan(task)
 
         from .react_runner import ReActRunner
+
         react_runner = ReActRunner(home=self.home, provider=self.provider.provider)
         return await react_runner.run_task(task)
 
-    async def _provider_call_with_timeout(self, task: Run, phase: str, previous_result: ExecutionResult | None = None) -> ExecutionResult:
+    async def _provider_call_with_timeout(
+        self, task: Run, phase: str, previous_result: ExecutionResult | None = None
+    ) -> ExecutionResult:
         role = SUBAGENT_PLANNER_ROLE if phase == "prepare" else SUBAGENT_EXECUTOR_ROLE
         subagent_run = self.subagents.start(
             role=role,

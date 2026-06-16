@@ -330,16 +330,21 @@ class WorkflowRunCapability:
         if transition is not None:
             if transition.status == WORKFLOW_STATUS_COMPLETED:
                 from dataclasses import replace
+
                 decision = workflow_verification_decision(
-                    workflow=replace(workflow, status=WORKFLOW_STATUS_COMPLETED), steps=store.list_steps(workflow.id)
+                    workflow=replace(workflow, status=WORKFLOW_STATUS_COMPLETED),
+                    steps=store.list_steps(workflow.id),
                 )
-                workflow = store.update_status(
-                    workflow.id,
-                    status=decision.status,
-                    blocked_reason=decision.blocked_reason,
-                    evidence=decision.output,
-                    event_type=decision.event_type,
-                ) or workflow
+                workflow = (
+                    store.update_status(
+                        workflow.id,
+                        status=decision.status,
+                        blocked_reason=decision.blocked_reason,
+                        evidence=decision.output,
+                        event_type=decision.event_type,
+                    )
+                    or workflow
+                )
             else:
                 workflow = (
                     store.update_status(

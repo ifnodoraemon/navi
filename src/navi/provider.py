@@ -210,10 +210,10 @@ class FallbackProvider:
     ) -> str:
         import asyncio
         import httpx
-        
+
         errors: list[str] = []
         max_retries = 3
-        
+
         for provider in self.providers:
             for attempt in range(max_retries):
                 try:
@@ -225,14 +225,16 @@ class FallbackProvider:
                         status = exc.response.status_code
                         if status not in (429, 500, 502, 503, 504):
                             errors.append(f"{provider.__class__.__name__}: {exc}")
-                            break # don't retry on 400, 401, 403 etc.
-                    
+                            break  # don't retry on 400, 401, 403 etc.
+
                     if attempt == max_retries - 1:
                         errors.append(f"{provider.__class__.__name__}: {exc}")
                     else:
-                        logger.warning(f"Provider {provider.__class__.__name__} failed (attempt {attempt+1}/{max_retries}): {exc}. Retrying...")
-                        await asyncio.sleep(2 ** attempt)  # 1s, 2s
-                        
+                        logger.warning(
+                            f"Provider {provider.__class__.__name__} failed (attempt {attempt + 1}/{max_retries}): {exc}. Retrying..."
+                        )
+                        await asyncio.sleep(2**attempt)  # 1s, 2s
+
         raise RuntimeError("all model providers failed: " + "; ".join(errors))
 
 
@@ -362,7 +364,7 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
     choice = choices[0]
     message = choice.get("message") or {}
     content = message.get("content")
-    
+
     # Some OpenAI-compatible wrappers (like Gemini) might return structured output as a tool call
     if not content or not str(content).strip():
         tool_calls = message.get("tool_calls")
@@ -371,14 +373,16 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
             arguments = function.get("arguments")
             if arguments:
                 return str(arguments)
-                
+
     if content is None:
         raise RuntimeError(f"Provider response did not include message content: {data}")
-    
+
     content_str = str(content).strip()
     if not content_str:
         finish_reason = choice.get("finish_reason", "unknown")
-        raise RuntimeError(f"Provider response content is empty. Finish reason: {finish_reason}. Raw data: {data}")
+        raise RuntimeError(
+            f"Provider response content is empty. Finish reason: {finish_reason}. Raw data: {data}"
+        )
     return str(content)
 
 

@@ -8,7 +8,7 @@ from typing import Any
 
 from .agent_roles import list_agent_role_names, list_agent_role_specs
 from .operating_context import OperatingContext, PromptLayer, permission_allows
-from .spec_loader import load_spec
+from .specs_data import SYSCALL_PLANNER_SPEC
 from .tools import ToolSpec
 
 
@@ -87,7 +87,7 @@ def render_prompt_blocks(blocks: Iterable[PromptBlock]) -> str:
 
 
 def assemble_planner_system_prompt() -> PromptAssembly:
-    spec = load_spec("syscall_planner.yaml") or {}
+    spec = SYSCALL_PLANNER_SPEC or {}
     blocks = [
         PromptBlock(
             "PLANNER SYSTEM",

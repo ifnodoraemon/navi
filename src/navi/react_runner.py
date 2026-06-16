@@ -13,6 +13,7 @@ from .tools import REACT_CONTEXT
 
 MODEL_TERMINAL_SYSCALLS = frozenset({"completion", "chat"})
 
+
 class ReActRunner:
     def __init__(self, *, home: Path, provider: ModelPool | None = None):
         self.home = home
@@ -22,9 +23,10 @@ class ReActRunner:
 
     async def run_task(self, task: Run) -> ExecutionResult:
         from navi.execution import _task_workspace
+
         workspace = _task_workspace(task)
         started_at = time.time()
-        
+
         registry = CapabilityRegistry(
             home=self.home,
             project_dir=workspace,
@@ -39,17 +41,17 @@ class ReActRunner:
             permission_ceiling="write",
             workspace=str(workspace),
         )
-        
+
         observations: list[str] = []
         steps_taken: list[dict[str, Any]] = []
         final_summary = ""
         exit_code = 1
-        
+
         while True:
             planner_specs = registry.planner_specs(permission_ceiling=context.permission_ceiling)
             # Fake a conversation context with the task prompt
             conv_context = f"Task objective:\n{task.prompt}\n\nPreparation summary:\n{task.plan_summary or '(none)'}"
-            
+
             syscall = await self.planner.plan(
                 task.prompt,
                 tools=planner_specs,
@@ -58,23 +60,23 @@ class ReActRunner:
                 permission_ceiling=context.permission_ceiling,
                 model_roles=[],
             )
-            
+
             if syscall.tool == "system.planner_error":
                 final_summary = f"Planner error: {syscall.reason}"
                 break
-                
+
             if syscall.tool in MODEL_TERMINAL_SYSCALLS:
                 final_summary = syscall.reason or str(syscall.args)
                 exit_code = 0
                 break
-                
+
             invoked = await registry.invoke(
                 syscall.tool,
                 syscall.args,
                 permission=syscall.permission,
                 context=context,
             )
-            
+
             step_record = {
                 "tool": syscall.tool,
                 "permission": syscall.permission,
@@ -86,10 +88,10 @@ class ReActRunner:
                 "terminal": invoked.terminal,
             }
             steps_taken.append(step_record)
-            
+
             obs_text = f"Action: {syscall.tool}({json.dumps(syscall.args)})\nok: {invoked.ok}\nObservation: {invoked.observation}"
             observations.append(obs_text)
-            
+
             if invoked.terminal:
                 final_summary = invoked.observation
                 exit_code = 0 if invoked.ok else 1
@@ -133,9 +135,9 @@ class ReActRunner:
                     else "ReAct execution has failed capability evidence"
                 ),
                 "checks": ["ReAct loop completed"] if verified else [],
-            }
+            },
         )
-            
+
         return ExecutionResult(
             provider=INTERNAL_EXECUTION_PROVIDER,
             phase="execute",

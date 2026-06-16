@@ -123,7 +123,9 @@ def create_app(home: Path | None = None) -> FastAPI:
     subagent_store = SubagentRunStore(home)
     workflow_store = WorkflowStore(home)
     daemon = SystemDaemon(home, project_dir=project_dir)
-    agent = HernessEngine(home=home, runtime=runtime, project_dir=project_dir, event_bus=daemon.event_bus)
+    agent = HernessEngine(
+        home=home, runtime=runtime, project_dir=project_dir, event_bus=daemon.event_bus
+    )
     capabilities = build_capability_registry(home, project_dir=project_dir)
     api_capabilities = build_capability_registry(
         home,
@@ -258,7 +260,7 @@ def create_app(home: Path | None = None) -> FastAPI:
                 "objective": request.prompt or request.title,
                 "context": "Direct delegation via API/CLI",
                 "plan": "Execute the provided objective",
-                "success_criteria": "The objective is completed"
+                "success_criteria": "The objective is completed",
             },
             permission="prepare",
             context=_local_capability_context(home, project_dir=project_dir),
@@ -364,7 +366,7 @@ def create_app(home: Path | None = None) -> FastAPI:
                 "objective": request.prompt,
                 "context": "Active delegation via API/CLI",
                 "plan": "Execute the provided objective",
-                "success_criteria": "The objective is completed"
+                "success_criteria": "The objective is completed",
             },
             permission="prepare",
             context=context,
@@ -508,7 +510,6 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.get(api_path("graph"))
     def graph() -> dict:
         return {"nodes": [node.__dict__ for node in GraphStore(home).list()]}
-
 
     @app.get(api_path("traces"))
     def traces() -> dict:

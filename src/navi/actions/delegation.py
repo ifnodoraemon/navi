@@ -96,15 +96,18 @@ class DelegateSpawnCapability:
         # Governance intercepts via event bus — creates approval if needed
         if context.event_bus is not None:
             from ..event_bus import ActionRequestedEvent
-            await context.event_bus.publish(ActionRequestedEvent(
-                source_agent="main_agent",
-                correlation_id=task.id,
-                run_id=task.id,
-                peer_id=context.peer_id,
-                sender_id=context.sender_id,
-                source=context.source,
-                autonomy_level=task.autonomy_level,
-            ))
+
+            await context.event_bus.publish(
+                ActionRequestedEvent(
+                    source_agent="main_agent",
+                    correlation_id=task.id,
+                    run_id=task.id,
+                    peer_id=context.peer_id,
+                    sender_id=context.sender_id,
+                    source=context.source,
+                    autonomy_level=task.autonomy_level,
+                )
+            )
             task = runs.get(task.id) or task
 
         facts = {
@@ -313,10 +316,7 @@ class DelegateDeleteCapability:
             "kind_filter": kind,
             "limit_filter": limit,
         }
-        return _fact_result(
-            "delegation",
-            facts
-        )
+        return _fact_result("delegation", facts)
 
 
 class ExecutionRetryCapability:

@@ -167,18 +167,21 @@ class ConnectorIngressRuntime:
                 session_alias=event.session_alias,
                 intent_facts=event.facts,
             )
-            await self.event_bus.send_response(ResponseReadyEvent(
-                source_agent="main_agent",
-                correlation_id=event.correlation_id,
-                peer_id=event.peer_id,
-                sender_id=event.sender_id,
-                text=result.text,
-                source=event.source,
-            ))
+            await self.event_bus.send_response(
+                ResponseReadyEvent(
+                    source_agent="main_agent",
+                    correlation_id=event.correlation_id,
+                    peer_id=event.peer_id,
+                    sender_id=event.sender_id,
+                    text=result.text,
+                    source=event.source,
+                )
+            )
 
         self.event_bus.subscribe("user_intent", on_user_intent)
 
         from .event_bus import RunCompletedEvent
+
         async def on_run_completed(event: RunCompletedEvent) -> None:
             if event.status == "failed":
                 text = f"[System Alert] Your delegated sub-task (Run ID: {event.run_id}) failed with error:\n{event.error}\n\nPlease analyze the failure, adjust your strategy, and delegate a new task to resolve the user's original request."
@@ -189,18 +192,21 @@ class ConnectorIngressRuntime:
                     source="system",
                     session_alias="",
                 )
-                await self.event_bus.send_response(ResponseReadyEvent(
-                    source_agent="main_agent",
-                    correlation_id=event.correlation_id,
-                    peer_id=event.peer_id,
-                    sender_id=event.sender_id,
-                    text=result.text,
-                    source="system",
-                ))
+                await self.event_bus.send_response(
+                    ResponseReadyEvent(
+                        source_agent="main_agent",
+                        correlation_id=event.correlation_id,
+                        peer_id=event.peer_id,
+                        sender_id=event.sender_id,
+                        text=result.text,
+                        source="system",
+                    )
+                )
 
         self.event_bus.subscribe("run_completed", on_run_completed)
 
     async def handle(self, message: ConnectorMessage) -> str:
         text = await self.router.route(message)
         from .safeguards import redact_secrets
+
         return redact_secrets(text)

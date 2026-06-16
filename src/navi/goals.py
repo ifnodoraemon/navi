@@ -473,8 +473,6 @@ def _goal_status_for_run(run: Run, *, evidence: dict[str, Any] | None = None) ->
     return GOAL_STATUS_ACTIVE
 
 
-
-
 def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict[str, Any]:
     try:
         existing = json.loads(existing_json or "{}")

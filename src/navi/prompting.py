@@ -7,7 +7,7 @@ from .config import load_config
 from .operating_context import OperatingContext, PromptLayer
 from .prompt_os import PromptAssembly, assemble_responder_system_prompt
 from .service import systemd_user_unit_path
-from .spec_loader import load_spec
+from .specs_data import PROMPT_LAYERS_SPEC
 
 
 class PromptLayerStore:
@@ -54,7 +54,7 @@ class PromptLayerStore:
 
     @staticmethod
     def _default_spec(name: str) -> dict[str, Any]:
-        data = load_spec("prompt_layers.yaml") or {}
+        data = PROMPT_LAYERS_SPEC or {}
         spec = data.get(name)
         if not isinstance(spec, dict):
             return {"content": "", "minimum_permission": "read"}

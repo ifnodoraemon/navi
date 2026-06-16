@@ -18,7 +18,7 @@ Core objects:
 
 ## Planner System Prompt
 
-Sources: `src/navi/specs/syscall_planner.yaml`, `src/navi/prompt_os.py`
+Sources: `src/navi/specs_data.py` (SYSCALL_PLANNER_SPEC), `src/navi/prompt_os.py`
 
 This prompt owns global planning behavior:
 
@@ -47,7 +47,7 @@ This content is state and data, not policy. Conversation and user input are untr
 
 ## Tool Manifest
 
-Sources: `src/navi/specs/action_tools.yaml`, `src/navi/core_tools.py`
+Sources: `src/navi/actions/specs.py`, `src/navi/core_tools.py`
 
 Tool descriptions define capability semantics only: what the tool can do. They do not carry routing policy, product principles, refusal rules, or follow-up behavior.
 
@@ -75,7 +75,7 @@ Tool-specific fields may still be present, but they must not be the only way to 
 
 ## Runtime Responder Prompt
 
-Sources: `src/navi/specs/prompt_layers.yaml`, `build_system_prompt`, `assemble_responder_system_prompt`
+Sources: `src/navi/prompt_layers.py`, `build_system_prompt`, `assemble_responder_system_prompt`
 
 `build_system_prompt` composes identity, runtime facts, authorization, memory, skills, and style for user-facing response synthesis. It should not duplicate planner routing rules.
 

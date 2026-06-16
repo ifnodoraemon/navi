@@ -1,22 +1,23 @@
 # Navi Requirements
 
-This document captures the current product and implementation decisions so the next development session can continue without re-litigating the basics.
+This document is the current product and implementation source of truth for Navi. It should describe the repository as it is intended to work now, not preserve early refactoring milestones or stale compatibility expectations.
 
 ## Product Direction
 
-Navi is a local-first personal AI assistant, inspired by Hermes and OpenClaw, but it is not a clone of either project.
+Navi is a local-first agent OS for a governed personal AI assistant. It is inspired by adjacent agent systems, but it is not a clone, a chat wrapper, an enterprise RAG product, or a general multi-tenant gateway.
 
-Non-negotiable engineering principles are captured in [principles.md](principles.md). Requirements and implementation choices must not violate those principles.
+Non-negotiable engineering principles are captured in [principles.md](principles.md). Requirements and implementation choices must not violate those principles, especially the rules against product behavior hidden in keyword routing, prompt drift, or historical compatibility shims.
 
 Core positioning:
 
-- Personal assistant first, not an enterprise RAG product.
+- Personal assistant first.
 - Local-first runtime and state.
 - CLI and the headless local API are the developer/control surfaces.
-- Personal Weixin/WeChat is the first remote channel.
-- Do not build a general multi-channel gateway in v1.
+- Connector packages expose remote surfaces without hardcoding channel behavior into the core runtime.
+- Weixin/iLink is the first live-calibration target; Telegram exists as a connector package and test-covered adapter.
+- High-risk or mutating remote actions require explicit policy, permission ceilings, approval state, trace evidence, and verifier checks.
 
-The project name is `Navi`.
+Project names:
 
 - Repository/package directory: `navi`
 - CLI command: `navi`
@@ -25,95 +26,102 @@ The project name is `Navi`.
 
 ## Explicit Scope
 
-v1 should include:
+Current v1 includes:
 
-- CLI chat: `navi chat`
-- Headless local API: `navi api`
-- Model provider abstraction, with mock and OpenAI-compatible providers.
+- CLI chat and control plane through `navi`.
+- Headless local API through `navi api`.
+- Model provider abstraction with `mock`, `openai-compatible`, `deepseek`, and `anthropic` provider specs.
 - Persistent local state under `.navi/` or `NAVI_HOME`.
-- Typed memory control system plus SQLite session history.
-- Skill discovery from `.navi/skills/*/SKILL.md`.
-- Minimal task store for future scheduled/async work.
-- Personal Weixin setup and long-poll gateway shape.
+- Typed memory control system plus SQLite conversation sessions.
+- Task, watch, goal, approval, execution, recovery, subagent, trace, evolution, and workflow state.
+- Action/control capabilities declared in `src/navi/actions/specs.py`.
+- Core fact tools and gateway-loaded tools exposed through the unified capability registry.
+- Governed dynamic workflows with approval, dependency-aware execution, resumable state, step evidence, and verifier-backed completion.
+- Declarative hooks loaded from built-in specs and local YAML files.
+- Skill discovery from built-in skills and `.navi/skills/*/SKILL.md`.
+- Connector registry with Weixin/iLink and Telegram adapters.
+- Evaluation datasets for delegation routing, daily journeys, connector journeys, product acceptance, regression, and Claw-style Pass^3 flows.
 
-v1 should not include:
+Current v1 intentionally excludes:
 
-- Telegram, Slack, WhatsApp, Discord, or other remote channels.
-- Enterprise WeChat / WeCom as the primary channel.
-- Official Account / 公众号 callback flow.
-- Team/multi-tenant permission model.
-- Full RAG workbench integration.
-- Complex autonomous tool execution before permissions and tracing are tightened.
+- Team or multi-tenant permission models.
+- A browser UI or hosted web control surface.
+- Enterprise WeChat/WeCom as the primary channel.
+- Official Account / 公众号 callback flow as a primary ingress path.
+- A full RAG workbench.
+- Unsupervised high-risk autonomous execution from remote connectors.
+- Raw image/file/video/CDN media handling before text and transcript flows are live-calibrated.
 
-## Weixin Requirements
+## Connector Requirements
 
-The initial Weixin integration targets personal WeChat via QR login and long polling, following the Hermes Weixin/iLink design.
+The core runtime must remain connector agnostic. Adding or changing a connector must be done through connector specs, adapter code, and connector-local affordances rather than core prompt rewrites.
 
-Required behavior:
+Shared connector requirements:
+
+- Connector packages must expose status facts without secrets.
+- Connector ingress must route plain messages through the bounded observe/plan loop.
+- Connector sessions must be explicit and isolated by connector/sender identity.
+- Connector command syntax and approval phrasing are connector affordances, not base prompt behavior.
+- Remote tool visibility must pass through `ConnectorToolPolicy` with permission ceilings, allowed tools, blocked capability classes, and audit facts.
+- Remote connector ingress can propose and inspect workflows by default, but must not approve or run mutating workflows unless explicit policy enables it.
+
+Weixin/iLink requirements:
 
 - Provide `navi connectors setup weixin` for QR-login setup.
 - Provide `navi connectors run weixin` for long-poll message processing.
 - Store account credentials under `.navi/weixin/accounts/`.
 - Store per-peer context tokens under `.navi/weixin/context-tokens.json`.
-- Route inbound DM text messages into the agent runtime.
-- Send the agent response back to the same peer.
+- Route inbound DM text messages into the agent runtime and send the response back to the same peer.
 - Deduplicate inbound messages with a short TTL window.
-- Support DM access policy:
-  - `open`
-  - `allowlist`
-  - `disabled`
-  - `pairing` as a setup-oriented mode
-- Keep group policy config, but default it to `disabled`.
+- Support DM policies `open`, `allowlist`, `disabled`, and setup-oriented `pairing`.
+- Keep group policy config, defaulted to `disabled`; ordinary WeChat group delivery is not promised unless upstream events are actually delivered.
+- Support text replies, response chunking, optional typing indicators, and voice transcript text when upstream payloads include transcript text.
+- Treat raw images, files, video, CDN decryption, and rich media processing as later work.
 
-Important limitation:
+Telegram requirements:
 
-- v1 only promises DM behavior. Ordinary WeChat group delivery may not work because iLink bot identities often do not receive normal group events. If the upstream does not deliver group events, Navi should diagnose/log that situation rather than pretending group chat is supported.
-
-v1 media policy:
-
-- Text is required.
-- Images, files, voice, video, CDN encryption/decryption, typing indicators, and advanced markdown chunking are later work.
-- The current code should remain structured so those can be added without rewriting the service boundary.
+- Provide an adapter under the connector registry with status diagnostics and connector-local approval affordances.
+- Support bot-token configuration, DM policy, allowed users, and home chat id through config or environment.
+- Support mock-tested inbound message handling and replies.
+- Keep Telegram behavior connector-local; the core prompt and router must not know Telegram-specific commands.
 
 ## Architecture Requirements
 
-Keep the code small and explicit:
+Keep the code small, explicit, and inspectable:
 
 - `navi.config`: load `.navi/config.yaml`, `.navi/env`, and environment overrides.
-- `navi.provider`: model provider protocol plus mock/OpenAI-compatible implementations.
-- `navi.memory`: Markdown memory and SQLite session store.
-- `navi.skills`: progressive skill discovery from `SKILL.md`.
-- `navi.runtime`: agent turn orchestration.
-- `navi.model_tools`: model-driven next-tool-call planning; it is not an intent classifier.
-- `navi.action_tools`: planner-visible action/control tool specs such as answer, clarify, task, watch, and approval.
-- `navi.core_tools`: core fact tool specs and handlers.
-- `navi.tools`: tool registry and gateway loading mechanism.
-- `navi.api`: FastAPI local API.
-- `navi.cli`: Typer CLI entrypoint.
-- `navi.connector_registry`: loads connector adapters from declarative connector specs.
-- `navi.weixin`: Weixin connector implementation; it must not leak channel details into the core prompt or router.
+- `navi.provider` and `navi.provider_specs`: model provider protocol plus declared provider defaults and structured-output policy.
+- `navi.runtime`, `navi.engine`, `navi.syscalls`, `navi.prompt_os`, and `navi.prompting`: bounded turn orchestration, planner/responder prompt assembly, and provider-mediated syscall selection.
+- `navi.actions.specs` and `navi.actions.*`: planner-visible action/control capability specs and handlers.
+- `navi.capabilities` and `navi.capabilities_types`: unified capability registry, permission ceilings, contexts, and result envelopes.
+- `navi.core_tools`, `navi.fact_tools`, and `navi.tools`: core fact tools, gateway loading, filtering, schema validation, and audit behavior.
+- `navi.runs`, `navi.goals`, `navi.workflows`, `navi.subagents`, `navi.trace`, and `navi.recovery`: durable execution, goal, workflow, role, trace, and recovery stores.
+- `navi.memory`: governed memory items plus SQLite conversation sessions.
+- `navi.skills`: governed skill discovery and metadata.
+- `navi.hooks`: declarative lifecycle hooks.
+- `navi.evolution`: reviewable proposal and rollback ledger.
+- `navi.connector_registry` and `navi.connector_runtime`: connector loading, status, diagnostics, and remote-safe ingress policy.
+- `navi.weixin` and `navi.telegram`: connector packages that must not leak channel-specific behavior into the core prompt or router.
+- `navi.api` and `navi.cli`: local API and CLI control surfaces.
+- `navi.diagnostics`: local configuration, state, dependency, connector, service, auth, and capability checks.
 
 Runtime rules:
 
-- Missing real model credentials should fail clearly for real providers.
+- Missing real model credentials must fail clearly for real providers.
 - Mock provider is allowed for local development and tests.
-- Browser-based control surfaces are out of scope; local API clients must not expose long-lived secrets.
+- Structured output constraints must be passed through provider/tool schema channels; business prompts must not repeat JSON shapes, field lists, or formatting bans.
+- Any action that can affect the user's machine, accounts, remote services, repository, files, credentials, or money must be traceable.
 - Connector credentials should be persisted with restrictive file permissions when the OS allows it.
-- Any future dangerous tools, especially shell/file write tools, must require an approval policy before being available to remote connector messages.
-- Long-context operation must reload durable constraints, governance state, approvals, and relevant memory from stores before execution; it must not rely only on the current prompt window or a lossy summary.
-- Memory implementation should evolve toward typed, scoped, provenance-bearing stores: working, constraint, episodic, semantic, procedural, preference, negative, and skill memory.
+- Long-context operation must reload durable constraints, governance state, approvals, relevant memory, and goal/workflow state from stores before execution.
 - Memory retrieval must be goal-directed and explainable; semantic similarity alone is not a sufficient recall policy.
-- Conversation sessions must be explicit state. Long-running connectors need a way to start a fresh session without deleting old transcripts, otherwise topic drift and stale local context will pollute future answers.
-- Connector plain messages must pass through a bounded observe/plan loop before general chat. The loop may call multiple read fact tools in one turn before answering, then must stop, answer, ask a clarification, or prepare a managed action.
-- High-confidence local action or schedule requests should call the relevant task/watch/fact capability directly instead of asking the user to rephrase as a command.
-- Tool planning must be capability-driven, not keyword-driven as product behavior. Deterministic parsers are acceptable only for narrow structured facts such as ids, times, and explicit command syntax.
-- Source code must not define ordinary natural-language behavior with keyword lists such as question markers, action verbs, time-of-day words, or channel-specific phrasing. Natural language interpretation belongs to the model with declared tools.
-- Deterministic routing must not invent missing facts such as default times, paths, service names, task ids, or permissions. If a capability can be used but required slots are missing, the agent should ask a concise clarification.
-- Command-like text from users is ordinary model input unless a specific management CLI/API endpoint handles it. User-facing task, watch, approval, and session behavior must be decided from natural language plus declared tools.
-- Task goals must be subordinate to user intent, durable constraints, approval state, permission ceilings, and safeguard policy. Model replacement, shutdown, scope reduction, and failed goal completion are operating states, not threats to resist.
-- Extension boundaries must be explicit: skills provide promptable procedures, plugins provide installed capabilities/integrations, and hooks observe or gate lifecycle events.
-- Anything with credentials, network calls, filesystem mutation, daemon behavior, providers, or connector surfaces must be a plugin rather than a skill.
-- Anything that runs at task/message/tool/approval/memory lifecycle boundaries must be a hook rather than hidden inline logic.
+- Connector plain messages must pass through a bounded observe/plan loop before general chat.
+- High-confidence local action or schedule requests should call the relevant declared capability directly instead of asking the user to rephrase as a command.
+- Tool planning must be capability-driven, not keyword-driven as product behavior.
+- Deterministic parsers may only parse narrow structured facts such as ids, times, explicit command syntax, and provider/tool protocol envelopes.
+- Deterministic routing must not invent missing facts such as default times, paths, service names, task ids, or permissions.
+- Task and workflow goals are subordinate to user intent, durable constraints, approval state, permission ceilings, and safeguard policy.
+- Skills provide promptable procedures, plugins provide installed capabilities/integrations, and hooks observe or gate lifecycle events.
+- Anything with credentials, network calls, filesystem mutation, daemon behavior, providers, or connector surfaces must be a plugin/capability package rather than a skill.
 
 ## Public Interfaces
 
@@ -122,21 +130,48 @@ Current CLI surface:
 ```bash
 navi chat
 navi api
-navi run
+navi status
+navi doctor [--connectivity]
+navi run [--once] [--connector CONNECTOR]
 navi model
+navi skills
+
 navi tools list
 navi tools call TOOL_NAME --args-json JSON_ARGS
+
 navi memory add TYPE CONTENT
 navi memory list
 navi memory recall QUERY
+navi memory conflicts
 navi memory revoke ITEM_ID
+
 navi session new [ALIAS]
 navi session list
 navi session aliases
 navi session show SESSION_ID
-navi skills
+
 navi auth status
+navi hooks list
+navi prompts inspect [planner|responder]
+
+navi eval delegations
+navi eval daily
+navi eval claw
+navi eval connector
+navi eval acceptance
+
 navi graph list
+navi trace list
+navi trace show TRACE_ID
+navi trace evaluate TRACE_ID
+navi trace evaluations [TRACE_ID]
+
+navi goal list
+navi goal show GOAL_ID
+
+navi subagent list
+navi subagent show SUBAGENT_ID
+
 navi workflow propose OBJECTIVE
 navi workflow list
 navi workflow show WORKFLOW_ID
@@ -145,83 +180,88 @@ navi workflow reject WORKFLOW_ID
 navi workflow run WORKFLOW_ID
 navi workflow resume WORKFLOW_ID
 navi workflow verify WORKFLOW_ID
+
 navi evolution list
+navi evolution targets
+navi evolution proposals
+navi evolution propose TARGET_TYPE TARGET_ID REASON
+navi evolution apply-proposal PROPOSAL_ID
+navi evolution record-evaluation PROPOSAL_ID RESULT
 navi evolution show EVENT_ID
 navi evolution rollback EVENT_ID
+
 navi service unit
 navi service install
+
 navi connectors list
 navi connectors setup CONNECTOR
 navi connectors run CONNECTOR
 navi connectors status CONNECTOR
+navi connectors tail CONNECTOR
 ```
 
 Current API surface:
 
 ```text
-GET  /health
-POST /v1/chat
-GET  /v1/sessions
-POST /v1/sessions
-GET  /v1/session-aliases
-GET  /v1/sessions/{session_id}
-GET  /v1/memory
-GET  /v1/memory/conflicts
-POST /v1/memory
-GET  /v1/skills
-GET  /v1/delegations
-POST /v1/delegations
-PATCH /v1/delegations/{run_id}
-GET  /v1/approvals
-GET  /v1/watches
-POST /v1/delegations/{run_id}/approve
-POST /v1/delegations/process
-POST /v1/active/delegations
-POST /v1/active/approve
-POST /v1/active/reject
-POST /v1/active/watches
-POST /v1/active/watches/process
-GET  /v1/auth/status
-GET  /v1/tools
-POST /v1/tools/{tool_name}/call
-GET  /v1/graph
-GET  /v1/traces
-GET  /v1/traces/{trace_id}
-GET  /v1/trace-evaluations
-POST /v1/traces/{trace_id}/evaluate
-GET  /v1/goals
-GET  /v1/goals/{goal_id}
-GET  /v1/subagents
-GET  /v1/subagents/{subagent_id}
-GET  /v1/workflows
-POST /v1/workflows
-GET  /v1/workflows/{workflow_id}
-POST /v1/workflows/{workflow_id}/approve
-POST /v1/workflows/{workflow_id}/reject
-POST /v1/workflows/{workflow_id}/run
-POST /v1/workflows/{workflow_id}/resume
-POST /v1/workflows/{workflow_id}/verify
-GET  /v1/evolution-events
-POST /v1/evolution-events/{event_id}/rollback
-GET  /v1/evolution-targets
-GET  /v1/evolution-proposals
-POST /v1/evolution-proposals
-POST /v1/evolution-proposals/{proposal_id}/apply
-POST /v1/evolution-proposals/{proposal_id}/evaluation
-GET  /v1/connectors/weixin/status
+GET    /health
+POST   /v1/chat
+GET    /v1/sessions
+POST   /v1/sessions
+GET    /v1/session-aliases
+GET    /v1/sessions/{session_id}
+GET    /v1/memory
+GET    /v1/memory/conflicts
+POST   /v1/memory
+GET    /v1/skills
+GET    /v1/delegations
+POST   /v1/delegations
+PATCH  /v1/delegations/{run_id}
+DELETE /v1/delegations/{run_id}
+GET    /v1/approvals
+GET    /v1/watches
+POST   /v1/delegations/{run_id}/approve
+POST   /v1/delegations/process
+POST   /v1/active/delegations
+POST   /v1/active/approve
+POST   /v1/active/reject
+POST   /v1/active/watches
+POST   /v1/active/watches/process
+GET    /v1/auth/status
+GET    /v1/diagnostics
+GET    /v1/tools
+POST   /v1/tools/{tool_name}/call
+GET    /v1/graph
+GET    /v1/traces
+GET    /v1/traces/{trace_id}
+GET    /v1/trace-evaluations
+POST   /v1/traces/{trace_id}/evaluate
+GET    /v1/goals
+GET    /v1/goals/{goal_id}
+GET    /v1/subagents
+GET    /v1/subagents/{subagent_id}
+GET    /v1/workflows
+POST   /v1/workflows
+GET    /v1/workflows/{workflow_id}
+POST   /v1/workflows/{workflow_id}/approve
+POST   /v1/workflows/{workflow_id}/reject
+POST   /v1/workflows/{workflow_id}/run
+POST   /v1/workflows/{workflow_id}/resume
+POST   /v1/workflows/{workflow_id}/verify
+GET    /v1/evolution-events
+POST   /v1/evolution-events/{event_id}/rollback
+GET    /v1/evolution-targets
+GET    /v1/evolution-proposals
+POST   /v1/evolution-proposals
+POST   /v1/evolution-proposals/{proposal_id}/apply
+POST   /v1/evolution-proposals/{proposal_id}/evaluation
+GET    /v1/connectors/{connector_name}/status
 ```
 
-`POST /v1/memory` accepts a governed memory item shape: `type`, `content`,
-`scope`, `source`, `status`, `confidence`, and optional `metadata`. `GET
-/v1/memory` returns structured `items`; memory is not exposed as a flat text
-dump. `GET /v1/memory/conflicts` returns declared contradiction and
-supersession relationships so stale or competing facts are visible to
-operators and agents.
+`POST /v1/memory` accepts a governed memory item shape: `type`, `content`, `scope`, `source`, `status`, `confidence`, and optional `metadata`. `GET /v1/memory` returns structured `items`; memory is not exposed as a flat text dump. `GET /v1/memory/conflicts` returns declared contradiction and supersession relationships so stale or competing facts are visible to operators and agents.
 
-Lifecycle hooks are declared control-plane artifacts. Built-in hooks are loaded
-from `src/navi/specs/hooks.yaml`; local hooks can be added as YAML files under
-`NAVI_HOME/hooks/*.yaml` with `event`, optional `match`, `decision`, `reason`,
-and structured `facts`. Local hooks do not execute arbitrary code.
+Lifecycle hooks are declared control-plane artifacts. Built-in hooks are loaded from `src/navi/specs_data.py`; local hooks can be added as YAML files under `NAVI_HOME/hooks/*.yaml` with `event`, optional `match`, `decision`, `reason`, and structured `facts`. Local hooks do not execute arbitrary code.
+
+## Configuration
 
 Current config shape:
 
@@ -229,8 +269,7 @@ Current config shape:
 model:
   provider: mock
   model: mock
-  api_base_url: https://api.openai.com/v1
-  api_key: ""
+  timeout_seconds: 30.0
 runtime:
   service_name: navi.service
   local_surface: local
@@ -241,6 +280,8 @@ execution:
   mock: false
 ```
 
+Model configs may also declare provider-specific `api_base_url`, `api_key`, `fallbacks`, and role `routes`.
+
 Environment overrides:
 
 ```text
@@ -249,12 +290,18 @@ NAVI_MODEL_PROVIDER
 NAVI_MODEL
 NAVI_MODEL_API_BASE_URL
 NAVI_MODEL_API_KEY
+OPENAI_API_KEY
+DEEPSEEK_API_KEY
+ANTHROPIC_API_KEY
 NAVI_SERVICE_NAME
+NAVI_LOCAL_SURFACE
+NAVI_AGENT_STEP_BUDGET
+NAVI_EXECUTION_PROVIDER
 NAVI_EXECUTION_TIMEOUT_SECONDS
 NAVI_EXECUTION_MOCK
 ```
 
-Connector-specific environment is owned by each connector adapter. The Weixin adapter currently accepts:
+Weixin connector environment:
 
 ```text
 NAVI_WEIXIN_ENABLED
@@ -268,58 +315,95 @@ WEIXIN_GROUP_ALLOWED_USERS
 WEIXIN_HOME_CHANNEL
 NAVI_WEIXIN_MOCK
 NAVI_WEIXIN_MOCK_MESSAGE
+NAVI_WEIXIN_MOCK_TYPING
+```
+
+Telegram connector environment:
+
+```text
+NAVI_TELEGRAM_ENABLED
+TELEGRAM_BOT_TOKEN
+TELEGRAM_API_BASE_URL
+TELEGRAM_DM_POLICY
+TELEGRAM_ALLOWED_USERS
+TELEGRAM_HOME_CHAT_ID
+NAVI_TELEGRAM_MOCK
+```
+
+## Local State
+
+Navi stores local state under `.navi/` or `NAVI_HOME`:
+
+```text
+.navi/
+├── config.yaml
+├── env
+├── evolution.db
+├── goals.db
+├── graph.db
+├── memory.db
+├── runs.db
+├── subagents.db
+├── traces.db
+├── workflows.db
+├── hooks/
+├── skills/
+├── telegram/
+└── weixin/
 ```
 
 ## Current Implementation Status
 
 Implemented:
 
-- Python package scaffold and CLI.
+- Python package scaffold and Typer CLI.
 - FastAPI app for headless local API clients.
-- Mock and OpenAI-compatible provider shape.
-- Bounded agent loop for observe/plan/read-tool chaining before final response.
-- Tool Gateway abstraction with provider sources, refresh, filtering, and audit logs.
-- Internal execution requires the structured `navi.actuator.v1` protocol. Protocol actions must be capability calls (`tool`, `permission`, `args`), are executed through `CapabilityRegistry`, and produce actual capability-result evidence; free-form execution output or non-capability actions are failed executions. Structured output constraints must be passed through provider/tool schema channels and must not be repeated as JSON shapes or field lists in business prompts. Completed execution is treated as a completion candidate until the critic gate verifies non-empty actuator evidence, successful verification status, and independent checks for mutating actions.
-- Planner, executor, critic, and notification role executions are recorded as sub-agent runtime records with status and evidence separate from delegation rows. CLI and API consumers can inspect these records through `navi subagent list/show` and `/v1/subagents`.
-- Governed dynamic workflows persist declarative orchestration plans, subagent steps, dependency-aware execution state, approval state, verifier evidence, and lifecycle events in `workflows.db`; they are exposed through `workflow.*` capabilities, `navi workflow ...`, and `/v1/workflows`.
-- Local memory, session, and task stores.
-- Skill discovery.
-- Connector registry plus Weixin account store, context-token store, deduplication, policy checks, mock client, HTTP client skeleton, and inbound-to-agent service flow.
-- Tests for config, runtime, memory, Weixin policy, deduplication, and context persistence.
+- Provider registry and provider adapters for mock, OpenAI-compatible, DeepSeek, and Anthropic-compatible models.
+- Bounded agent loop for observe/plan/read-tool/action chaining before final response.
+- Unified capability registry for action specs and gateway tools.
+- Core fact tools for providers, skills, tools, hooks, memory, files, shell, tests, web, service, and system facts.
+- Internal execution through the structured `navi.actuator.v1` protocol; protocol actions must be capability calls and must produce capability-result evidence.
+- Planner, executor, critic, and notification role executions recorded as subagent runtime records.
+- Governed dynamic workflows persisted in `workflows.db` and exposed through `workflow.*`, CLI, and API surfaces.
+- Local memory, session, task/watch, approval, goal, trace, evolution, hook, and graph stores.
+- Connector registry plus Weixin and Telegram connector packages.
+- Weixin account store, context-token store, deduplication, policy checks, mock client, HTTP client skeleton, typing indicators, chunked text replies, voice transcript extraction, and inbound-to-agent service flow.
+- Telegram bot adapter with config, mock client, status diagnostics, policy checks, and inbound-to-agent service flow.
+- Tests for config, runtime, memory, providers, capabilities, workflows, goals, traces, hooks, connector runtime, Weixin, Telegram, CLI coverage, API flow, and eval datasets.
 
 Known gaps:
 
-- Real iLink payloads/endpoints need calibration during a live QR-login test.
-- `navi connectors setup weixin` currently polls QR status once; a production setup should loop with timeout and clearer scan/confirm states.
-- Weixin media support is not implemented.
-- Weixin typing indicators are not implemented.
-- Remote connector tool visibility uses an inspectable connector tool policy with a permission ceiling, allowed tools, blocked capability classes, and audit facts. Richer per-sender/per-surface policy configuration is still future work.
-- MCP servers are not connected yet; Tool Gateway is ready for an MCP provider. Action/control and gateway tools are exposed through the unified capability registry.
-- Execution protocol is a bounded step plan. Each step contains capability-backed actions and verification checks; Navi keeps runtime budgets internal, can trigger bounded recovery for prepare-level follow-up work, supports retry-once/continue/stop failure policy, records workspace dirty-state before/after execution, emits rollback hints on failed dirty runs, and can check expected files, file contents, git status, and test results before marking execution complete. Provider policy must distinguish schema-enforced structured outputs, JSON-only modes, and strict function/tool calling; Anthropic-compatible models use forced tool `input_schema` for machine-readable output, JSON-only modes may use only centralized provider-adapter compatibility hints and still require local validation plus bounded repair. Richer remote policy controls are still needed before exposing mutating actuators to connectors.
+- Real iLink payloads/endpoints need live QR-login and DM calibration.
+- `navi connectors setup weixin` should move from a single QR status poll to a clearer scan/confirm loop with timeout.
+- Raw Weixin image, file, video, and CDN media handling is not implemented.
+- Remote connector policy needs richer per-sender/per-surface configuration before mutating shell/file-write actuators are exposed remotely.
+- MCP/plugin providers still need install-time permission manifests and policy audit before connector exposure.
+- Workflow cost/token telemetry is still shallow metadata; approval UX should show concrete provider usage where available.
+- Long-running goal/workflow compaction needs richer evidence preservation and replay.
+- Verifier policies should grow beyond basic evidence checks into structured diffs, command-specific assertions, test result interpretation, and rollback proposals.
+- Incident response CLI/API should group traces, failed safeguards, remediation proposals, and regression links.
 - Browser UI is intentionally removed from this codebase.
 
 ## Next Implementation Steps
 
 Recommended next order:
 
-1. Run a live `navi connectors setup weixin` against iLink and adjust QR/status response parsing.
-2. Run `navi connectors run weixin` with a test DM and adjust `getupdates`/`sendmessage` payload parsing.
-3. Add structured logging and visible diagnostics for Weixin connection states.
-4. Add richer verifier policies for structured diffs, command-specific assertions, and automatic rollback proposals.
-5. Add per-sender/per-surface remote tool policy configuration before enabling shell/file-write tools from Weixin.
-6. Add workflow cost telemetry and richer long-running compaction.
-7. Improve headless API observability for sessions, connector status, memory, and task list.
-8. Add text chunking for long Weixin responses.
-9. Add optional media handling after text DM is reliable.
+1. Live-calibrate Weixin QR setup and DM send/receive payload parsing.
+2. Add richer connector liveness/status diagnostics for Weixin and Telegram production runs.
+3. Add per-sender/per-surface remote tool policy configuration.
+4. Add plugin/MCP provider permission manifests and install-time audit.
+5. Add concrete workflow and provider usage telemetry.
+6. Expand verifier policies for diffs, tests, rollback hints, and long-running compaction.
+7. Add raw media handling only after text/transcript connector behavior is reliable.
 
 ## Verification Baseline
 
 Before handoff, run:
 
 ```bash
-cd navi
 pytest -q
 PYTHONPATH=src python -m compileall src tests
 NAVI_HOME=/tmp/navi-smoke PYTHONPATH=src python -c "from navi.api import create_app; app=create_app(); print(app.title, len(app.routes))"
-NAVI_HOME=/tmp/navi-smoke-weixin NAVI_WEIXIN_MOCK=true PYTHONPATH=src python -c "import asyncio; from navi.paths import ensure_home; from navi.connector_registry import get_connector_adapter; home=ensure_home(); adapter=get_connector_adapter('weixin'); print(asyncio.run(adapter.setup(home, 10, None)).splitlines()[0])"
+NAVI_HOME=/tmp/navi-smoke-weixin NAVI_WEIXIN_MOCK=true PYTHONPATH=src python -c "import asyncio; from navi.paths import ensure_home; from navi.connector_registry import get_connector_adapter; home=ensure_home(); adapter=get_connector_adapter('weixin'); print(asyncio.run(adapter.setup(home, home, 10, None)).splitlines()[0])"
+NAVI_HOME=/tmp/navi-smoke-telegram NAVI_TELEGRAM_MOCK=true PYTHONPATH=src python -c "from navi.paths import ensure_home; from navi.connector_registry import get_connector_adapter; home=ensure_home(); adapter=get_connector_adapter('telegram'); status=adapter.status(home); print(adapter.name, status['configured'])"
 ```

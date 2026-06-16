@@ -89,9 +89,7 @@ class CurrentState:
         latest = max(item.approval.created_at for item in self.visible_pending_approvals)
         floor = latest - APPROVAL_BATCH_WINDOW_SECONDS
         return tuple(
-            item
-            for item in self.visible_pending_approvals
-            if item.approval.created_at >= floor
+            item for item in self.visible_pending_approvals if item.approval.created_at >= floor
         )
 
 
@@ -272,7 +270,11 @@ class ApprovalService:
         if candidate is not None:
             run = runs.get(candidate.run_id)
             if not _approval_matches_context(candidate, run, context):
-                if candidate.sender_id and context.sender_id and candidate.sender_id != context.sender_id:
+                if (
+                    candidate.sender_id
+                    and context.sender_id
+                    and candidate.sender_id != context.sender_id
+                ):
                     facts = runs.approval_resolution_diagnostic(
                         code=code, run_id=run_id, sender_id=context.sender_id
                     )
@@ -415,9 +417,7 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
         "visible_pending_approvals": [
             item.facts(include_code=True) for item in state.visible_pending_approvals
         ],
-        "latest_visible_approval_batch": [
-            item.facts(include_code=True) for item in latest_batch
-        ],
+        "latest_visible_approval_batch": [item.facts(include_code=True) for item in latest_batch],
         "visible_pending_approval_count": len(state.visible_pending_approvals),
         "latest_visible_batch_count": len(latest_batch),
         "active_runs": [
@@ -475,9 +475,7 @@ def _run_matches_context(run: Run, context: SurfaceContext) -> bool:
     return True
 
 
-def _approval_matches_context(
-    approval: Approval, run: Run | None, context: SurfaceContext
-) -> bool:
+def _approval_matches_context(approval: Approval, run: Run | None, context: SurfaceContext) -> bool:
     if approval.sender_id and context.sender_id and approval.sender_id != context.sender_id:
         return False
     if approval.peer_id and context.peer_id and approval.peer_id != context.peer_id:
