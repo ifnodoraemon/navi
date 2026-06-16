@@ -223,7 +223,7 @@ ACTION_SPECS = [
         name="delegate.delete",
         capability_class="delegation",
         execution_contexts=("turn", "workflow_step"),
-        description="""Delete delegation run records by id or by supported cleanup filters.""",
+        description="""Delete delegation run records by id or by supported cleanup filters. Supports deleting any run (even if not failed) but requires user approval.""",
         input_schema={
             "type": "object",
             "properties": {
@@ -260,7 +260,7 @@ ACTION_SPECS = [
         name="watch.delete",
         capability_class="watch.delete",
         execution_contexts=("turn", "workflow_step"),
-        description="""Permanently delete a recurring watch by watch id.""",
+        description="""Permanently delete a watch or task (recurring or one-time) by watch id. Requires user approval.""",
         input_schema={
             "type": "object",
             "properties": {"watch_id": {"type": "string"}},

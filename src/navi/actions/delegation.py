@@ -239,12 +239,12 @@ class DelegateDeleteCapability:
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         task = runs.get(run_id)
-        if task is not None and _remote_source(context.source) and task.status != "failed":
+        if task is None:
             return CapabilityResult(
                 ok=False,
                 action="delegation",
-                observation="remote delegate.delete can only delete failed delegation runs.",
-                message="remote delegate.delete can only delete failed delegation runs.",
+                observation=f"delegation run not found: {run_id}",
+                message=f"delegation run not found: {run_id}",
                 terminal=False,
             )
         deleted = runs.delete_run(run_id)
@@ -271,15 +271,7 @@ class DelegateDeleteCapability:
         )
 
     def _delete_by_filter(self, args: dict[str, Any]) -> CapabilityResult:
-        status = _arg_text(args, "status") or "failed"
-        if status != "failed":
-            return CapabilityResult(
-                ok=False,
-                action="delegation",
-                observation="delegate.delete bulk cleanup only supports status=failed.",
-                message="delegate.delete bulk cleanup only supports status=failed.",
-                terminal=False,
-            )
+        status = _arg_text(args, "status")
         raw_limit = args.get("limit")
         limit = (
             _positive_int(raw_limit, default=5000, maximum=5000) if raw_limit is not None else None
