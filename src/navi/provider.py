@@ -339,10 +339,26 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
     choices = data.get("choices") or []
     if not choices:
         raise RuntimeError(f"Provider response did not include choices: {data}")
-    message = choices[0].get("message") or {}
+    choice = choices[0]
+    message = choice.get("message") or {}
     content = message.get("content")
+    
+    # Some OpenAI-compatible wrappers (like Gemini) might return structured output as a tool call
+    if not content or not str(content).strip():
+        tool_calls = message.get("tool_calls")
+        if tool_calls and isinstance(tool_calls, list) and len(tool_calls) > 0:
+            function = tool_calls[0].get("function") or {}
+            arguments = function.get("arguments")
+            if arguments:
+                return str(arguments)
+                
     if content is None:
         raise RuntimeError(f"Provider response did not include message content: {data}")
+    
+    content_str = str(content).strip()
+    if not content_str:
+        finish_reason = choice.get("finish_reason", "unknown")
+        raise RuntimeError(f"Provider response content is empty. Finish reason: {finish_reason}. Raw data: {data}")
     return str(content)
 
 
