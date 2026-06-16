@@ -8,7 +8,6 @@ from typing import Any
 import yaml
 
 from .defaults import (
-    DEFAULT_EXECUTION_MOCK,
     DEFAULT_EXECUTION_PROVIDER,
     DEFAULT_EXECUTION_TIMEOUT_SECONDS,
     DEFAULT_AGENT_STEP_BUDGET,
@@ -46,7 +45,6 @@ class RuntimeConfig:
 class ExecutionConfig:
     provider: str = DEFAULT_EXECUTION_PROVIDER
     timeout_seconds: float = DEFAULT_EXECUTION_TIMEOUT_SECONDS
-    mock: bool = DEFAULT_EXECUTION_MOCK
 
 
 @dataclass
@@ -126,10 +124,6 @@ def load_config(home: Path | None = None) -> NaviConfig:
             ),
             default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
         ),
-        mock=str(
-            env.get("NAVI_EXECUTION_MOCK", execution_raw.get("mock", DEFAULT_EXECUTION_MOCK))
-        ).lower()
-        in {"1", "true", "yes", "on"},
     )
     return NaviConfig(model=model, runtime=runtime, execution=execution)
 
@@ -155,7 +149,6 @@ def write_default_config(home: Path | None = None) -> Path:
                 "execution": {
                     "provider": DEFAULT_EXECUTION_PROVIDER,
                     "timeout_seconds": DEFAULT_EXECUTION_TIMEOUT_SECONDS,
-                    "mock": DEFAULT_EXECUTION_MOCK,
                 },
             },
             sort_keys=False,
@@ -271,10 +264,10 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
             if not kind:
                 errors.append(f"{path}.kind is required for custom provider '{m.provider}'")
 
-        if kind and kind not in {"mock", "openai-compatible", "anthropic-compatible"}:
+        if kind and kind not in {"openai-compatible", "anthropic-compatible"}:
             errors.append(f"{path}.kind '{kind}' is unsupported")
 
-        if kind != "mock" and not m.api_key:
+        if not m.api_key:
             env_hint = " or ".join(api_key_env)
             errors.append(
                 f"{path}.api_key is empty and no environment override ({env_hint}) is set"

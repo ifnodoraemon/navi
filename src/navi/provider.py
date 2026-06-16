@@ -41,73 +41,7 @@ class ProviderAdapter:
     build: ProviderFactory
 
 
-class MockProvider:
-    async def complete(
-        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None
-    ) -> str:
-        if messages and "model syscall planner" in messages[0].content:
-            user_prompt = next(
-                (msg.content for msg in reversed(messages) if msg.role == "user"), ""
-            )
-            text = _extract_planner_user_message(user_prompt)
-            context = _extract_planner_conversation_context(user_prompt)
-            observations = _extract_planner_observations(user_prompt)
-            return json.dumps(
-                _mock_planner_syscall(text, context, observations), ensure_ascii=False
-            )
-        last = next((msg.content for msg in reversed(messages) if msg.role == "user"), "")
-        system = messages[0].content if messages else ""
-        execution_phase = _execution_phase_from_output_schema(output_schema) or (
-            _extract_required_execution_phase(system) if "navi_execution" in system else ""
-        )
-        if execution_phase:
-            phase = execution_phase
-            run_id = _extract_run_id(last)
-            return json.dumps(
-                {
-                    "navi_execution": {
-                        "version": "navi.actuator.v1",
-                        "phase": phase,
-                        "run_id": run_id,
-                        "plan_id": f"{phase}:{run_id or 'mock'}",
-                        "steps": [
-                            {
-                                "id": "respond",
-                                "actions": [
-                                    {
-                                        "tool": "final.answer",
-                                        "permission": "read",
-                                        "args": {"message": f"{last}"},
-                                        "target": run_id,
-                                    }
-                                ],
-                                "verification": {"checks": [], "reason": "mock provider response"},
-                                "on_failure": "stop",
-                            }
-                        ],
-                        "evidence": [
-                            {
-                                "kind": "mock_provider",
-                                "summary": f"{last}",
-                            }
-                        ],
-                        "verification": {
-                            "status": "completed",
-                            "checks": ["mock provider response"],
-                            "reason": "mock model execution",
-                        },
-                        "completion": {
-                            "status": "completed",
-                            "summary": f"{last}",
-                        },
-                    }
-                },
-                ensure_ascii=False,
-            )
-        observation_answer = _mock_observation_answer(last)
-        if observation_answer:
-            return observation_answer
-        return f"{last}"
+
 
 
 class OpenAICompatibleProvider:
@@ -258,7 +192,6 @@ class ModelPool:
 
 
 PROVIDER_ADAPTERS: tuple[ProviderAdapter, ...] = (
-    ProviderAdapter("mock", lambda config, spec: MockProvider()),
     ProviderAdapter(
         "openai-compatible", lambda config, spec: OpenAICompatibleProvider(config, spec)
     ),
@@ -513,133 +446,6 @@ def _extract_planner_conversation_context(content: str) -> str:
 def _extract_planner_observations(content: str) -> str:
     tagged = re.search(r"<observed_facts>\s*(.*?)\s*</observed_facts>", content, re.DOTALL)
     return tagged.group(1).strip() if tagged else ""
-
-
-def _mock_planner_syscall(text: str, context: str = "", observations: str = "") -> dict[str, Any]:
-    combined = f"{context}\n{observations}\n{text}"
-    run_id = _extract_any_run_id(combined)
-
-    if (
-        '"capability": "skills.list"' in observations
-        or '"capability": "tools.list"' in observations
-    ):
-        return _mock_syscall(
-            "final.answer",
-            "read",
-            {"message": _mock_observation_answer(observations)},
-            "mock inventory facts are sufficient",
-        )
-    if run_id and '"status": "awaiting_approval"' in observations:
-        return _mock_syscall(
-            "final.answer",
-            "read",
-            {"message": f"Delegation run {run_id} is prepared and awaiting approval."},
-            "mock follow-up reports approval needed",
-        )
-    if (
-        run_id
-        and '"approval_status": "approved"' in observations
-        and '"run_status": "queued"' in observations
-    ):
-        return _mock_syscall(
-            "final.answer",
-            "read",
-            {"message": f"Delegation run {run_id} has been approved and queued."},
-            "mock follow-up reports queued task",
-        )
-    if '"watch_id":' in observations:
-        return _mock_syscall(
-            "final.answer",
-            "read",
-            {"message": "Recurring watch has been created."},
-            "mock follow-up reports created watch",
-        )
-    if '"cleanup_complete": true' in observations:
-        return _mock_syscall(
-            "final.answer",
-            "read",
-            {"message": "Failed delegation records have been cleaned up."},
-            "mock follow-up reports completed cleanup",
-        )
-    if run_id and '"status": "prepared"' in observations:
-        return _mock_syscall(
-            "approval.request", "prepare", {"run_id": run_id}, "mock follow-up requests approval"
-        )
-    if run_id and '"status": "pending"' in observations:
-        return _mock_syscall(
-            "delegate.prepare",
-            "prepare",
-            {"run_id": run_id},
-            "mock follow-up prepares spawned task",
-        )
-
-    return _mock_syscall(
-        "final.answer",
-        "read",
-        {"message": f"{text}"},
-        "mock planner fallback",
-    )
-
-
-def _mock_observation_answer(text: str) -> str:
-    if '"capability": "skills.list"' in text:
-        names = _extract_json_string_values(text, "name")
-        descriptions = _extract_json_string_values(text, "description")
-        pairs = [
-            f"{name}: {descriptions[index]}"
-            for index, name in enumerate(names)
-            if name and index < len(descriptions)
-        ]
-        detail = "; ".join(pairs) if pairs else "no installed skills"
-        return f"Skills are procedural guidance packages, separate from callable tools. Installed skills: {detail}."
-    if '"capability": "tools.list"' in text:
-        names = _extract_json_string_values(text, "name")
-        selected = [
-            name
-            for name in names
-            if name
-            in {
-                "watch.create",
-                "delegate.spawn",
-                "delegate.list",
-                "delegate.status",
-                "service.status",
-                "skills.list",
-                "tools.list",
-            }
-        ]
-        if not selected:
-            selected = names[:8]
-        return (
-            "Tools are callable capabilities, separate from skills. Available tools include "
-            f"{', '.join(selected)}. watch.create supports kind=once for one-shot reminders and "
-            "kind=recurring with cron for explicit recurring schedules."
-        )
-    return ""
-
-
-def _extract_json_string_values(text: str, key: str) -> list[str]:
-    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*"([^"]*)"')
-    return [match.group(1) for match in pattern.finditer(text)]
-
-
-def _mock_syscall(tool: str, permission: str, args: dict[str, Any], reason: str) -> dict[str, Any]:
-    return {
-        "tool": tool,
-        "permission": permission,
-        "args": args,
-        "model_role": "responder",
-        "confidence": 1.0,
-        "reason": reason,
-    }
-
-
-def _extract_any_run_id(text: str) -> str:
-    marked = re.search(r"\bdelegation\s+run\s+([a-f0-9]{32})\b", text)
-    if marked:
-        return marked.group(1)
-    match = re.search(r"\b[a-f0-9]{32}\b", text)
-    return match.group(0) if match else ""
 
 
 def _extract_required_execution_phase(system: str) -> str:

@@ -158,7 +158,8 @@ sys.path.insert(0, {repr(src_dir)})
 
 from navi.engine import HernessEngine
 from navi.runtime import AgentRuntime
-from navi.provider import ModelPool, MockProvider
+from navi.provider import ModelPool, build_provider
+from navi.config import ModelConfig
 
 with tempfile.TemporaryDirectory() as tmpdir:
     home = Path(tmpdir) / "home"
@@ -166,7 +167,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
     home.mkdir()
     project_dir.mkdir()
     
-    provider = ModelPool(default=MockProvider())
+    config = ModelConfig(provider="openai-compatible", model="dummy", api_key="dummy", api_base_url="dummy", kind="openai-compatible", timeout_seconds=1.0, fallbacks=[], routes=dict())
+    provider = ModelPool(default=build_provider(config))
     runtime = AgentRuntime(home=home, provider=provider)
     engine = HernessEngine(
         home=home,

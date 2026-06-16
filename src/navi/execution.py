@@ -547,49 +547,7 @@ class NaviExecutionProvider:
             ),
         ]
 
-    @staticmethod
-    def mock_result(task: Run, phase: str, text: str) -> ExecutionResult:
-        now = time.time()
-        protocol = ExecutionProtocol(
-            run_id=task.id,
-            phase=phase,
-            plan_id=f"{phase}:{task.id}",
-            steps=[
-                {
-                    "id": "mock",
-                    "actions": [
-                        {
-                            "tool": "final.answer",
-                            "permission": "read",
-                            "args": {"message": text},
-                        }
-                    ],
-                    "verification": {"checks": [], "reason": "execution mock mode"},
-                    "on_failure": "stop",
-                }
-            ],
-            evidence=[
-                {"kind": "capability_result", "ok": True, "tool": "final.answer", "summary": text}
-            ],
-            verification={
-                "status": "verified",
-                "checks": ["mock provider check"],
-                "reason": "execution mock mode",
-            },
-            completion={"status": "completed", "summary": text},
-        )
-        return ExecutionResult(
-            provider=INTERNAL_EXECUTION_PROVIDER,
-            phase=phase,
-            command=["navi", "internal", "--mock", phase, task.id],
-            stdout=text,
-            stderr="",
-            exit_code=0,
-            started_at=now,
-            ended_at=now,
-            protocol=protocol,
-            model_role="mock",
-        )
+
 
     @staticmethod
     def _result(
@@ -957,18 +915,7 @@ class ExecutionService:
     async def _provider_call(
         self, task: Run, phase: str, previous_result: ExecutionResult | None = None
     ) -> ExecutionResult:
-        if (
-            self.config.mock
-            and getattr(self, "_force_mock_result", True)
-            and not getattr(self, "_test_disable_provider_mock", False)
-        ):
-            # Tests might set _test_disable_provider_mock to True to test ReActRunner fallback.
-            text = (
-                "Preparation: inspect the request, estimate risk, then request approval."
-                if phase == "prepare"
-                else f"Executed task internally: {task.prompt}"
-            )
-            return NaviExecutionProvider.mock_result(task, phase, text)
+
         if phase == "prepare":
             return await self.provider.plan(task)
 
@@ -988,10 +935,7 @@ class ExecutionService:
             command=["navi", "subagent", role, phase, task.id],
             input_data={"workspace": task.workspace, "autonomy_level": task.autonomy_level},
         )
-        if self.config.mock:
-            result = await self._provider_call(task, phase, previous_result=previous_result)
-            self._finish_provider_subagent(subagent_run.id, result)
-            return result
+
         started = time.time()
         try:
             result = await self._provider_call(task, phase, previous_result=previous_result)

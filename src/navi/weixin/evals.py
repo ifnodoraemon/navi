@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from navi.provider import ChatMessage, MockProvider, ModelPool
+from navi.provider import ChatMessage, ModelPool
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 
@@ -28,7 +28,7 @@ class WeixinJourneyResult:
     events: list[dict[str, Any]]
 
 
-class _FailingEvalProvider(MockProvider):
+class _FailingEvalProvider():
     async def complete(self, messages: list[ChatMessage]) -> str:
         raise RuntimeError("eval provider failure")
 
@@ -86,7 +86,7 @@ async def _run_journey(
         if journey.get("provider") == "failing"
         else provider
     )
-    runtime = AgentRuntime(home=home, provider=model_provider or ModelPool(default=MockProvider()))
+    runtime = AgentRuntime(home=home, provider=model_provider or ModelPool(default=()))
     service = WeixinService(
         home=home, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=project_dir
     )

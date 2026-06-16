@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+
+logger = logging.getLogger("navi.event_bus")
 
 
 @dataclass(frozen=True)
@@ -130,8 +133,58 @@ class EventBus:
         self._response_channels: dict[str, asyncio.Queue[ResponseReadyEvent]] = {}
         self._event_log: list[NaviEvent] = []
 
+        # Asyncio structures initialized lazily for loop-safety
+        self._queue: asyncio.Queue[NaviEvent] | None = None
+        self._worker_task: asyncio.Task | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def _ensure_worker(self) -> None:
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        if self._queue is None or self._loop != current_loop:
+            if self._worker_task and not self._worker_task.done():
+                self._worker_task.cancel()
+            
+            self._loop = current_loop
+            self._queue = asyncio.Queue()
+            self._worker_task = current_loop.create_task(self._worker_loop())
+
+    async def _worker_loop(self) -> None:
+        while True:
+            try:
+                if self._queue is None:
+                    await asyncio.sleep(0.01)
+                    continue
+                event = await self._queue.get()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Event bus worker queue.get error: {e}", exc_info=True)
+                break
+
+            try:
+                handlers = self._handlers.get(event.event_type, [])
+                if handlers:
+                    tasks = [self._run_handler_safe(h, event) for h in list(handlers)]
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception as e:
+                logger.error(f"Event bus worker error processing event {event}: {e}", exc_info=True)
+            finally:
+                if self._queue is not None:
+                    self._queue.task_done()
+
+    async def _run_handler_safe(self, handler: Handler, event: NaviEvent) -> None:
+        try:
+            await handler(event)
+        except Exception as e:
+            logger.error(f"Error executing handler {handler} for event {event}: {e}", exc_info=True)
+
     def subscribe(self, event_type: str, handler: Handler) -> Unsubscribe:
         self._handlers.setdefault(event_type, []).append(handler)
+        self._ensure_worker()
 
         def unsub() -> None:
             handlers = self._handlers.get(event_type, [])
@@ -142,9 +195,9 @@ class EventBus:
 
     async def publish(self, event: NaviEvent) -> None:
         self._event_log.append(event)
-        handlers = self._handlers.get(event.event_type, [])
-        for handler in list(handlers):
-            await handler(event)
+        self._ensure_worker()
+        if self._queue is not None:
+            await self._queue.put(event)
 
     def create_response_channel(self, correlation_id: str) -> asyncio.Queue[ResponseReadyEvent]:
         q: asyncio.Queue[ResponseReadyEvent] = asyncio.Queue()
@@ -161,7 +214,19 @@ class EventBus:
             await channel.put(event)
 
     async def drain(self) -> None:
-        await asyncio.sleep(0)
+        self._ensure_worker()
+        if self._queue is not None:
+            await self._queue.join()
+
+    async def shutdown(self) -> None:
+        if self._worker_task and not self._worker_task.done():
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"Error during event bus worker shutdown: {e}", exc_info=True)
 
     @property
     def log(self) -> list[NaviEvent]:

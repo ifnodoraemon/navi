@@ -592,6 +592,17 @@ class HernessEngine:
             task.add_done_callback(self._background_tasks.discard)
 
     async def shutdown(self, *, timeout: float = 10.0) -> None:
+        if self.event_bus:
+            try:
+                await asyncio.wait_for(self.event_bus.drain(), timeout=5.0)
+                await asyncio.wait_for(self.event_bus.shutdown(), timeout=5.0)
+            except Exception as e:
+                logger.error(f"Failed to drain/shutdown event bus during engine shutdown: {e}", exc_info=True)
+            try:
+                await self.event_bus.shutdown()
+            except Exception as e:
+                logger.error(f"Failed to shut down event bus during engine shutdown: {e}", exc_info=True)
+
         if not self._background_tasks:
             return
         try:

@@ -20,9 +20,9 @@ Version `1.1.1` adds governed dynamic workflows on top of the stable Navi agent 
 *   🔄 **Reversible Evolution Ledger**: Prompt, memory, skill, workflow, governance-policy, and eval changes are recorded as reviewable, rollbackable events.
 *   🔌 **Skills, Plugins, and Hooks Boundaries**: Skills teach procedures, plugins add capabilities, and hooks observe or gate lifecycle events.
 *   🌐 **Multi-Surface Access**:
-    *   💻 **CLI Chat and Control Plane**: Interactive local chat plus memory, approval, evolution, trace, goal, diagnostic, and connector commands.
+    *   💻 **CLI Chat and Control Plane**: Interactive local chat plus memory, approval, evolution, trace, goal, prompt, hook, diagnostic, and connector commands.
     *   🔧 **Headless Local API**: FastAPI server for local clients (`navi api`).
-    *   💬 **Personal Weixin Connector**: Mock-tested long-poll connector shape for personal Weixin/iLink integration.
+    *   💬 **Connector Packages**: Mock-tested Weixin/iLink and Telegram adapters loaded through the connector registry and governed by remote-safe tool policy.
 
 ## v1 Contract
 
@@ -96,6 +96,7 @@ All local state is structured under `.navi/` or a custom `NAVI_HOME` directory:
 ├── goals.db          # Durable goal lifecycle state
 ├── traces.db         # Turn and capability trace records
 ├── subagents.db      # Planner/executor/critic/notification role records
+├── workflows.db      # Governed dynamic workflow, step, and event state
 └── skills/           # Custom procedural guides (SKILL.md)
 ```
 
@@ -109,6 +110,11 @@ navi status
 navi doctor
 navi doctor --connectivity
 
+# Tools, hooks, and prompts
+navi tools list
+navi hooks list
+navi prompts inspect planner
+
 # Active Memory
 navi memory list
 navi memory add preference "I prefer using Python 3.12"
@@ -117,6 +123,7 @@ navi memory revoke <item_id>
 
 # Reversible Self-Evolution
 navi evolution list
+navi evolution proposals
 navi evolution show <event_id>
 navi evolution rollback <event_id>
 
@@ -133,6 +140,7 @@ navi goal list
 navi trace list
 navi subagent list
 navi workflow list
+navi workflow show <workflow_id>
 ```
 
 The same diagnostic checks are available from the local API at `/v1/diagnostics`.
@@ -160,6 +168,9 @@ navi eval claw --dataset evals/claw_navi.yaml --attempts 3
 - [Navi 1.0.0 release notes](docs/release-notes-1.0.0.md)
 - [Navi 1.1.0 release notes](docs/release-notes-1.1.0.md)
 - [Navi 1.1.1 release notes](docs/release-notes-1.1.1.md)
+- [Current requirements](docs/requirements.md)
 - [Non-negotiable principles](docs/principles.md)
 - [Frontier agent safety audit](docs/frontier-agent-safety-audit.md)
+- [Dynamic workflows](docs/dynamic-workflows.md)
+- [Prompt architecture](docs/prompt-architecture.md)
 - [Versioning contract](docs/versioning.md)

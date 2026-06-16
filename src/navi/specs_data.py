@@ -173,7 +173,7 @@ DEFAULTS_SPEC: Any = {
     "service_name": "navi.service",
     "execution_provider": "react",
     "execution_timeout_seconds": 120.0,
-    "execution_mock": False,
+
     "model_provider": "mock",
     "model_model": "mock",
     "model_timeout_seconds": 60.0,

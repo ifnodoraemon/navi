@@ -88,3 +88,12 @@ def get_action_handlers(home: Path, project_dir: Path) -> dict[str, Capability]:
             raise ValueError(f"unknown action capability handler: {name}")
         handlers[name] = factory(spec)
     return handlers
+
+
+class ActionCapabilityProvider:
+    def __init__(self, *, home: Path, gateway):
+        self.home = home
+        self.gateway = gateway
+
+    def capabilities(self) -> Mapping[str, Capability]:
+        return get_action_handlers(self.home, self.gateway.project_dir)

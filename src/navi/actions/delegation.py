@@ -108,6 +108,9 @@ class DelegateSpawnCapability:
                     autonomy_level=task.autonomy_level,
                 )
             )
+            # Yield control so event bus worker can process the event and create approvals
+            import asyncio
+            await asyncio.sleep(0.05)
             task = runs.get(task.id) or task
 
         facts = {

@@ -17,7 +17,7 @@ Navi 是一个**本地优先的个人 AI 助手 Agent OS**。
 - **防御纵深安全**：权限上限、连接器工具策略、声明式能力风险元数据、untrusted observation 边界、trace 评估和 safeguard 归因。
 - **受治理动态工作流**：模型根据普通用户请求自行判断是否需要 workflow，并提出声明式 orchestration plan，包含 subagent 步骤、依赖、allowed tools、审批、断点续跑和独立验证。
 - **可回滚演进账本**：prompt、记忆、技能、治理策略、工作流和 eval 变化都可审计、可回滚。
-- **多入口访问**：CLI、本地 FastAPI、个人微信/Weixin 连接器 mock 链路。
+- **多入口访问**：CLI、本地 FastAPI、Weixin/iLink 和 Telegram 连接器包；连接器通过 registry 加载，并受 remote-safe tool policy 约束。
 
 ## v1 契约
 
@@ -74,6 +74,11 @@ navi status
 navi doctor
 navi doctor --connectivity
 
+# 工具、hook 与 prompt
+navi tools list
+navi hooks list
+navi prompts inspect planner
+
 # 本地 API
 navi api
 
@@ -88,7 +93,9 @@ navi goal list
 navi trace list
 navi subagent list
 navi workflow list
+navi workflow show <workflow_id>
 navi evolution list
+navi evolution proposals
 navi evolution show <event_id>
 navi evolution rollback <event_id>
 
@@ -133,6 +140,7 @@ Navi 默认把状态写入 `.navi/` 或自定义的 `NAVI_HOME`：
 ├── runs.db
 ├── subagents.db
 ├── traces.db
+├── workflows.db
 └── skills/
 ```
 
@@ -150,6 +158,9 @@ NAVI_WEIXIN_MOCK=true navi connectors run weixin --once
 - [Navi 1.0.0 发布说明](docs/release-notes-1.0.0.md)
 - [Navi 1.1.0 发布说明](docs/release-notes-1.1.0.md)
 - [Navi 1.1.1 发布说明](docs/release-notes-1.1.1.md)
+- [当前需求](docs/requirements.md)
 - [不可违反原则](docs/principles.md)
 - [前沿 Agent 安全审计](docs/frontier-agent-safety-audit.md)
+- [动态工作流](docs/dynamic-workflows.md)
+- [Prompt 架构](docs/prompt-architecture.md)
 - [版本契约](docs/versioning.md)

@@ -117,9 +117,15 @@ async def test_t1_conversation_actions_dispatch(mock_home) -> None:
 @pytest.mark.asyncio
 async def test_t1_delegation_actions_flow(mock_home, monkeypatch) -> None:
     """Test delegate_spawn -> delegate_prepare -> delegate_run sequentially and verify state."""
-    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "mock")
-    monkeypatch.setenv("NAVI_MODEL", "mock")
+    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "openai-compatible")
+    monkeypatch.setenv("NAVI_MODEL_API_KEY", "dummy")
+    monkeypatch.setenv("NAVI_MODEL", "dummy")
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
+    
+    from navi.execution import ExecutionResult
+    async def mock_provider_call(self, task, mode):
+        return ExecutionResult(provider="mock", phase="prepare", command=[], stdout="mock", stderr="", exit_code=0, started_at=0.0, ended_at=0.0, protocol=None)
+    monkeypatch.setattr("navi.execution.ExecutionService._provider_call_with_timeout", mock_provider_call)
     
     registry = CapabilityRegistry(home=mock_home, project_dir=Path.cwd())
     context = CapabilityContext(
@@ -185,9 +191,15 @@ async def test_t1_delegation_actions_flow(mock_home, monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_t1_approval_actions_flow(mock_home, monkeypatch) -> None:
     """Test delegation approval flow via approval_request and approval_resolve."""
-    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "mock")
-    monkeypatch.setenv("NAVI_MODEL", "mock")
+    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "openai-compatible")
+    monkeypatch.setenv("NAVI_MODEL_API_KEY", "dummy")
+    monkeypatch.setenv("NAVI_MODEL", "dummy")
     monkeypatch.setenv("NAVI_EXECUTION_MOCK", "true")
+    
+    from navi.execution import ExecutionResult
+    async def mock_provider_call(self, task, mode):
+        return ExecutionResult(exit_code=0, stdout="mock", stderr="", summary="mock", facts=[])
+    monkeypatch.setattr("navi.execution.ExecutionService._provider_call_with_timeout", mock_provider_call)
     
     registry = CapabilityRegistry(home=mock_home, project_dir=Path.cwd())
     context = CapabilityContext(
