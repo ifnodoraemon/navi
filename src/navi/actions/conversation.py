@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+from typing import Any
+
+from ..capabilities_types import CapabilityContext, CapabilityResult
+from ..tools import ToolSpec
+from .helpers import arg_text as _arg_text
+
+
+class FinalAnswerCapability:
+    def __init__(self, spec: ToolSpec):
+        self.spec = spec
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        message = _arg_text(args, "message")
+        return CapabilityResult(
+            ok=True, action="chat", observation=message, message=message, terminal=True
+        )
+
+
+class ClarifyCapability:
+    def __init__(self, spec: ToolSpec):
+        self.spec = spec
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        message = _arg_text(args, "message")
+        options = args.get("options")
+        facts = {}
+        if isinstance(options, list) and options:
+            facts["options"] = options
+            if context.source != "cli":
+                message += "\n" + "\n".join(f"[{i + 1}] {opt}" for i, opt in enumerate(options))
+
+        return CapabilityResult(
+            ok=True, action="ask", observation=message, message=message, terminal=True, facts=facts
+        )

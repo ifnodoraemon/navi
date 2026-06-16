@@ -918,3 +918,7 @@ def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:
     if isinstance(raw, list) and raw:
         return str(raw[0])
     return fallback
+
+
+from .execution import register_engine_class
+register_engine_class(HernessEngine)

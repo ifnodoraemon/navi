@@ -13,6 +13,7 @@ from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.daemon import SystemDaemon
+from navi.prompting import PromptLayerStore
 
 from .client import MockWeixinClient, TYPING_START, TYPING_STOP, WeixinClient
 from .config import WeixinConfig
@@ -385,14 +386,7 @@ class WeixinService:
                 [
                     ChatMessage(
                         "system",
-                        "\n".join(
-                            (
-                                "You are Navi composing a concise connector notification.",
-                                "Use only the supplied facts.",
-                                "Preserve task ids, approval codes, status, errors, and important result text.",
-                                "Do not mention connector internals, JSON, or hidden routers.",
-                            )
-                        ),
+                        PromptLayerStore(self.home).read("weixin_notification"),
                     ),
                     ChatMessage("user", json.dumps(facts, ensure_ascii=False, sort_keys=True)),
                 ],

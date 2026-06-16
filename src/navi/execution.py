@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .config import load_config
 from .governance import GovernanceEngine
@@ -26,6 +25,7 @@ from .provider import ChatMessage, ModelPool, build_provider
 from .runs import Run, RunStore
 from .subagents import SubagentRunStore
 from .tools import ACTUATOR_CONTEXT
+from .prompting import PromptLayerStore
 
 INTERNAL_EXECUTION_PROVIDER = "navi"
 EXECUTION_PROTOCOL_VERSION = "navi.actuator.v1"
@@ -33,6 +33,20 @@ EXECUTION_STEP_BUDGET = 5
 SUBAGENT_PLANNER_ROLE = "planner"
 SUBAGENT_EXECUTOR_ROLE = "executor"
 SUBAGENT_NOTIFICATION_ROLE = "notification"
+
+
+_engine_class = None
+
+
+def register_engine_class(cls: type) -> None:
+    global _engine_class
+    _engine_class = cls
+
+
+def get_engine_class() -> type:
+    if _engine_class is None:
+        raise RuntimeError("HernessEngine class has not been registered yet.")
+    return _engine_class
 
 
 @dataclass(frozen=True)
@@ -392,10 +406,11 @@ class NaviExecutionProvider:
         self, *, prompt: str, source: str, peer_id: str, sender_id: str, workspace: str
     ) -> ExecutionResult:
         workspace = _require_workspace_value(workspace)
+        watch_prompt = PromptLayerStore(self.home).read("execution_watch")
         messages = [
             ChatMessage(
                 "system",
-                "You are Navi running a scheduled watch. Return the exact notification text to send to the user. Do not create tasks, request approval, or mention internal execution tools.",
+                watch_prompt,
             ),
             ChatMessage(
                 "user",
@@ -507,11 +522,12 @@ class NaviExecutionProvider:
             [asdict(spec) for spec in registry.planner_specs(permission_ceiling="write")],
             ensure_ascii=False,
         )
+        prepare_prompt = PromptLayerStore(self.home).read("execution_prepare").strip() + " "
         return [
             ChatMessage(
                 "system",
                 (
-                    "You are Navi's internal preparation pass. Produce concise preparation facts, expected capability actions, affected local areas, and whether user approval is required. "
+                    prepare_prompt
                     + _execution_protocol_instruction("prepare")
                     + f"\n\nCapability Manifest:\n{manifest}"
                 ),
@@ -693,8 +709,8 @@ class ExecutionService:
         before_state = self._execution_before_state(task)
         self.runs.update_run(task.id, status=RUN_STATUS_RUNNING)
 
-        from .engine import HernessEngine
         from .runtime import AgentRuntime
+        HernessEngine = get_engine_class()
         
         config = load_config(self.home)
         runtime = AgentRuntime(home=self.home, provider=build_provider(config.model))
@@ -725,9 +741,10 @@ class ExecutionService:
             session_alias=f"executor:{task.id}"
         )
         exit_code = 0 if not turn_result.budget_exhausted else 1
+        execution_status = "completed" if exit_code == 0 else "failed"
         self.subagents.finish(
             subagent_run.id,
-            status="completed" if exit_code == 0 else "failed",
+            status=execution_status,
             output_data={
                 "exit_code": exit_code,
                 "summary": turn_result.text,
@@ -736,6 +753,14 @@ class ExecutionService:
                 "trace_id": turn_result.trace_id,
             },
             error=turn_result.text if exit_code != 0 else "",
+        )
+        protocol = ExecutionProtocol.internal_status(
+            run_id=task.id,
+            phase="execute",
+            status=execution_status,
+            summary=turn_result.text[:1600] if turn_result.text else "",
+            reason="HernessEngine execution finished",
+            action_kind="herness_engine",
         )
         result = ExecutionResult(
             provider="react",
@@ -746,6 +771,7 @@ class ExecutionService:
             exit_code=exit_code,
             started_at=started_at,
             ended_at=time.time(),
+            protocol=protocol,
         )
 
         return self._finalize_execution_result(

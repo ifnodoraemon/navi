@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from ..capabilities_types import CapabilityContext, CapabilityResult
+from ..tools import ToolSpec
+from .helpers import (
+    arg_text as _arg_text,
+    fact_result as _fact_result,
+    transition_facts as _transition_facts,
+)
+from ..memory import MemoryStore
+from ..runs import RunStore
+
+
+class SessionCreateCapability:
+    def __init__(self, spec: ToolSpec, *, home: Path):
+        self.spec = spec
+        self.home = home
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        alias = _arg_text(args, "alias")
+        session_id = MemoryStore(self.home).create_session(alias=alias or None)
+        facts = {
+            **_transition_facts("session", session_id, "created"),
+            "session_id": session_id,
+            "alias": alias,
+        }
+        return _fact_result("session", facts, run_id=session_id)
+
+
+class SessionRequestElevationCapability:
+    def __init__(self, spec: ToolSpec, *, home: Path):
+        self.spec = spec
+        self.home = home
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        target_permission = _arg_text(args, "target_permission")
+        reason = _arg_text(args, "reason")
+
+        runs = RunStore(self.home)
+
+        # Spawn a delegation run representing the elevation request
+        task = runs.create(
+            f"Elevate session permission to {target_permission}. Reason: {reason}",
+            kind="elevation",
+            workspace=context.workspace,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            status="awaiting_approval",
+        )
+        task = runs.update_run(
+            task.id,
+            plan_summary=f"session_elevation:{target_permission}",
+        )
+
+        approval = runs.create_approval(
+            run_id=task.id, peer_id=context.peer_id, sender_id=context.sender_id
+        )
+
+        return CapabilityResult(
+            ok=True,
+            action="approval",
+            observation="",
+            run_id=task.id,
+            facts={
+                "status": "awaiting_approval",
+                "message": f"Requested {target_permission} permission. Please approve.",
+                "approval": {
+                    "action": "execute",
+                    "code": approval.code,
+                    "expires_at": approval.expires_at,
+                },
+                "run_id": task.id,
+            },
+            terminal=True,
+        )

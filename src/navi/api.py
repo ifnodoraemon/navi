@@ -19,13 +19,14 @@ from .connector_registry import load_connector_adapters
 from .daemon import SystemDaemon
 from .diagnostics import run_diagnostics
 from .defaults import DEFAULT_LOCAL_SURFACE
-from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
+from .evolution import EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
 from .graph import GraphStore
 from .paths import ensure_home
 from .runs import RunStore
 from .subagents import SubagentRunStore
 from .trace import TraceStore
+from .tools import API_CONTEXT
 from .workflows import WorkflowStore, workflow_facts
 from . import __version__
 
@@ -124,6 +125,11 @@ def create_app(home: Path | None = None) -> FastAPI:
     daemon = SystemDaemon(home, project_dir=project_dir)
     agent = HernessEngine(home=home, runtime=runtime, project_dir=project_dir, event_bus=daemon.event_bus)
     capabilities = build_capability_registry(home, project_dir=project_dir)
+    api_capabilities = build_capability_registry(
+        home,
+        project_dir=project_dir,
+        execution_context=API_CONTEXT,
+    )
     connector_adapters = load_connector_adapters()
     connector_status_handlers = {
         adapter.name: (lambda item=adapter: item.status(home)) for adapter in connector_adapters
@@ -182,9 +188,16 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {"sessions": runtime.memory.list_sessions()}
 
     @app.post(api_path("sessions"))
-    def create_session(request: SessionRequest) -> dict:
-        session_id = runtime.memory.create_session(alias=request.alias)
-        return {"session_id": session_id, "alias": request.alias}
+    async def create_session(request: SessionRequest) -> dict:
+        result = await api_capabilities.invoke(
+            "session.create",
+            request.model_dump(exclude_none=True),
+            permission="prepare",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result)
+        facts = result.facts or {}
+        return {"session_id": facts.get("session_id", ""), "alias": facts.get("alias", "")}
 
     @app.get(api_path("session_aliases"))
     def session_aliases() -> dict:
@@ -215,20 +228,15 @@ def create_app(home: Path | None = None) -> FastAPI:
         }
 
     @app.post(api_path("memory"))
-    def add_memory(request: MemoryRequest) -> dict:
-        try:
-            item = runtime.memory.add_item(
-                request.memory_type,
-                request.content,
-                source=request.source,
-                scope=request.scope,
-                status=request.status,
-                confidence=request.confidence,
-                metadata=request.metadata,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"item": asdict(item)}
+    async def add_memory(request: MemoryRequest) -> dict:
+        result = await api_capabilities.invoke(
+            "memory.add",
+            request.model_dump(by_alias=True),
+            permission="write",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result)
+        return {"item": (result.facts or {}).get("item", {})}
 
     @app.get(api_path("skills"))
     def skills() -> dict:
@@ -519,8 +527,15 @@ def create_app(home: Path | None = None) -> FastAPI:
         }
 
     @app.post(api_path("trace_evaluate"))
-    def trace_evaluate(trace_id: str) -> dict:
-        return TraceStore(home).evaluate_trace(trace_id).__dict__
+    async def trace_evaluate(trace_id: str) -> dict:
+        result = await api_capabilities.invoke(
+            "trace.evaluate",
+            {"trace_id": trace_id},
+            permission="write",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result)
+        return (result.facts or {}).get("evaluation", {})
 
     @app.get(api_path("goals"))
     def list_goals(status: str = "", limit: int = 50) -> dict:
@@ -641,42 +656,50 @@ def create_app(home: Path | None = None) -> FastAPI:
         }
 
     @app.post(api_path("evolution_proposals"))
-    def create_evolution_proposal(request: EvolutionProposalRequest) -> dict:
-        try:
-            data = request.model_dump()
-            data["source_run_id"] = data.pop("source_run_id", "")
-            proposal = EvolutionLedger(home).propose(**data)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return proposal.__dict__
+    async def create_evolution_proposal(request: EvolutionProposalRequest) -> dict:
+        result = await api_capabilities.invoke(
+            "evolution.propose",
+            request.model_dump(),
+            permission="prepare",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result)
+        return (result.facts or {}).get("proposal", {})
 
     @app.post(api_path("evolution_proposal_apply"))
-    def apply_evolution_proposal(proposal_id: str) -> dict:
-        try:
-            event = EvolutionEngine(home).apply_proposal(proposal_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if event is None:
-            raise HTTPException(status_code=404, detail="proposal not found")
-        return event.__dict__
+    async def apply_evolution_proposal(proposal_id: str) -> dict:
+        result = await api_capabilities.invoke(
+            "evolution.apply",
+            {"proposal_id": proposal_id},
+            permission="write",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result, not_found_status=404)
+        return (result.facts or {}).get("event", {})
 
     @app.post(api_path("evolution_proposal_evaluation"))
-    def record_evolution_proposal_evaluation(
+    async def record_evolution_proposal_evaluation(
         proposal_id: str, request: EvolutionEvaluationRequest
     ) -> dict:
-        proposal = EvolutionLedger(home).record_proposal_evaluation(
-            proposal_id, request.evaluation_result
+        result = await api_capabilities.invoke(
+            "evolution.record_evaluation",
+            {"proposal_id": proposal_id, "evaluation_result": request.evaluation_result},
+            permission="write",
+            context=_local_capability_context(home, project_dir=project_dir),
         )
-        if proposal is None:
-            raise HTTPException(status_code=404, detail="proposal not found")
-        return proposal.__dict__
+        _raise_capability_error(result, not_found_status=404)
+        return (result.facts or {}).get("proposal", {})
 
     @app.post(api_path("evolution_rollback"))
-    def rollback_evolution(event_id: str) -> dict:
-        event = EvolutionEngine(home).rollback(event_id)
-        if event is None:
-            raise HTTPException(status_code=404, detail="event not found")
-        return event.__dict__
+    async def rollback_evolution(event_id: str) -> dict:
+        result = await api_capabilities.invoke(
+            "evolution.rollback",
+            {"event_id": event_id},
+            permission="write",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result, not_found_status=404)
+        return (result.facts or {}).get("event", {})
 
     @app.get(api_path("connector_status"))
     def connector_status(connector_name: str) -> dict:
@@ -714,9 +737,14 @@ def _local_capability_context(home: Path, *, project_dir: Path) -> CapabilityCon
     )
 
 
-def _raise_capability_error(result: CapabilityResult) -> None:
+def _raise_capability_error(result: CapabilityResult, *, not_found_status: int = 409) -> None:
     if result.ok:
         return
+    if result.error_reason == "not_found":
+        raise HTTPException(
+            status_code=not_found_status,
+            detail=result.message or result.observation,
+        )
     raise HTTPException(status_code=409, detail=result.message or result.observation)
 
 

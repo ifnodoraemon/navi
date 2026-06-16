@@ -695,3 +695,248 @@
   mutates: true
   permission: read
   source: action
+- name: session.create
+  capability_class: session
+  execution_contexts: [api]
+  handler: session_create
+  description: Create a conversation session, optionally binding an alias.
+  input_schema:
+    type: object
+    properties:
+      alias:
+        type: string
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      session_id:
+        type: string
+      alias:
+        type: string
+  facts_only: true
+  mutates: true
+  permission: prepare
+  source: action
+- name: memory.add
+  capability_class: memory
+  execution_contexts: [api]
+  handler: memory_add
+  description: Add one typed durable memory item through the capability boundary.
+  input_schema:
+    type: object
+    properties:
+      type:
+        type: string
+      content:
+        type: string
+      scope:
+        type: string
+      source:
+        type: string
+      status:
+        type: string
+      confidence:
+        type: number
+      metadata:
+        type: object
+    required:
+      - type
+      - content
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      item:
+        type: object
+  facts_only: true
+  mutates: true
+  permission: write
+  source: action
+- name: trace.evaluate
+  capability_class: trace
+  execution_contexts: [api]
+  handler: trace_evaluate
+  description: Evaluate one trace and persist the trace evaluation record.
+  input_schema:
+    type: object
+    properties:
+      trace_id:
+        type: string
+    required:
+      - trace_id
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      evaluation:
+        type: object
+  facts_only: true
+  mutates: true
+  permission: write
+  source: action
+- name: evolution.propose
+  capability_class: evolution
+  execution_contexts: [api]
+  handler: evolution_propose
+  description: Create a reviewable evolution proposal through the capability boundary.
+  input_schema:
+    type: object
+    properties:
+      target_type:
+        type: string
+      target_id:
+        type: string
+      reason:
+        type: string
+      expected_benefit:
+        type: string
+      risk:
+        type: string
+      before:
+        type: string
+      after:
+        type: string
+      rollback_plan:
+        type: string
+      required_approval_level:
+        type: string
+      evidence:
+        type: string
+      source_run_id:
+        type: string
+      eval_cases:
+        type: array
+        items:
+          type: string
+    required:
+      - target_type
+      - target_id
+      - reason
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      proposal:
+        type: object
+  facts_only: true
+  mutates: true
+  permission: prepare
+  source: action
+- name: evolution.record_evaluation
+  capability_class: evolution
+  execution_contexts: [api]
+  handler: evolution_record_evaluation
+  description: Attach evaluation evidence to an evolution proposal.
+  input_schema:
+    type: object
+    properties:
+      proposal_id:
+        type: string
+      evaluation_result:
+        type: string
+    required:
+      - proposal_id
+      - evaluation_result
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      proposal:
+        type: object
+  facts_only: true
+  mutates: true
+  permission: write
+  source: action
+- name: evolution.apply
+  capability_class: evolution
+  execution_contexts: [api]
+  handler: evolution_apply
+  description: Apply an approved evolution proposal.
+  input_schema:
+    type: object
+    properties:
+      proposal_id:
+        type: string
+    required:
+      - proposal_id
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      event:
+        type: object
+  facts_only: true
+  mutates: true
+  permission: write
+  source: action
+- name: evolution.rollback
+  capability_class: evolution
+  execution_contexts: [api]
+  handler: evolution_rollback
+  description: Roll back a reversible evolution event.
+  input_schema:
+    type: object
+    properties:
+      event_id:
+        type: string
+    required:
+      - event_id
+  output_schema:
+    type: object
+    properties:
+      entity_type:
+        type: string
+      entity_id:
+        type: string
+      state_transition:
+        type: string
+      turn_scope:
+        type: string
+      event:
+        type: object
+  facts_only: true
+  mutates: true
+  permission: write
+  source: action
