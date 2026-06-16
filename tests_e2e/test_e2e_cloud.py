@@ -6,7 +6,6 @@ from navi.config import load_config, ModelConfig
 from navi.provider import build_provider
 from navi.runtime import AgentRuntime
 from navi.engine import HernessEngine
-from navi.event_bus import EventBus
 
 
 @pytest.mark.asyncio
@@ -20,7 +19,6 @@ async def test_e2e_cloud_agent_run(navi_home, monkeypatch):
     monkeypatch.setenv("NAVI_MODEL_PROVIDER", "deepseek")
     monkeypatch.setenv("NAVI_MODEL", "deepseek-v4-pro")
     
-    bus = EventBus()
     config = load_config(navi_home)
     provider = build_provider(config.model)
     
@@ -29,7 +27,6 @@ async def test_e2e_cloud_agent_run(navi_home, monkeypatch):
         home=navi_home,
         runtime=runtime,
         project_dir=Path.cwd(),
-        event_bus=bus,
     )
     
     # We ask the agent to call tools.list, which should be very fast and deterministic.
@@ -41,9 +38,8 @@ async def test_e2e_cloud_agent_run(navi_home, monkeypatch):
     )
     
     # Clean shutdown
-    await engine.shutdown(5)
-    await bus.drain()
-    
+    await engine.shutdown(timeout=5)
+
     # Verification
     assert response is not None
     assert response.action == "tool" or "tool" in response.text or "capabilities" in response.text.lower()

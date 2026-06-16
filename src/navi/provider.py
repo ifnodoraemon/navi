@@ -312,6 +312,13 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
 
     content_str = str(content).strip()
     if not content_str:
+        reasoning_content = str(message.get("reasoning_content") or "").strip()
+        if reasoning_content:
+            from .json_utils import parse_first_json_object
+
+            structured = parse_first_json_object(reasoning_content)
+            if structured is not None:
+                return json.dumps(structured, ensure_ascii=False)
         finish_reason = choice.get("finish_reason", "unknown")
         raise RuntimeError(
             f"Provider response content is empty. Finish reason: {finish_reason}. Raw data: {data}"

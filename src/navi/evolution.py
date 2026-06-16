@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from typing import Any
 
 from .graph import GraphStore
 from .runs import Run, RunStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,72 @@ def list_evolution_targets() -> list[dict[str, Any]]:
 
 def known_evolution_target(target_type: str) -> bool:
     return any(target.target_type == target_type for target in EVOLUTION_TARGETS)
+
+
+def _summarize_trace_events(events: list[Any]) -> str:
+    lines: list[str] = []
+    for event in events:
+        if event.phase == "turn.start":
+            message = _json_field(event.input_json, "message")
+            if message:
+                lines.append(f"user: {message}")
+        elif event.phase == "planner.syscall":
+            details = _json_object(event.output_json)
+            tool = str(details.get("tool") or event.tool or "").strip()
+            reason = str(details.get("reason") or event.message or "").strip()
+            if tool:
+                lines.append(f"planner selected {tool}: {reason}")
+        elif event.phase == "capability.result":
+            outcome = "ok" if event.ok else "failed"
+            lines.append(f"capability {event.tool} {outcome}: {event.message}".strip())
+        elif event.phase == "turn.final":
+            lines.append(f"assistant: {event.message}")
+    return "\n".join(line for line in lines if line)[:12000]
+
+
+def _json_object(raw: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _json_field(raw: str, field: str) -> str:
+    value = _json_object(raw).get(field)
+    return str(value).strip() if value is not None else ""
+
+
+def _daily_journey_eval_schema() -> dict[str, Any]:
+    return {
+        "name": "daily_journey_eval",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "id": {"type": "string"},
+                "user_goal": {"type": "string"},
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "user": {"type": "string"},
+                            "expect": {
+                                "type": "object",
+                                "additionalProperties": True,
+                            },
+                        },
+                        "required": ["user", "expect"],
+                    },
+                },
+            },
+            "required": ["id", "user_goal", "steps"],
+        },
+    }
 
 
 class EvolutionLedger:
@@ -363,51 +432,6 @@ class EvolutionLedger:
             )
         return self.get_proposal(proposal_id)
 
-    async def extract_evals_from_session(self, session_id: str) -> None:
-        try:
-            from navi.trace import TraceStore
-            from navi.evals import load_daily_journey_eval_dataset
-            import yaml
-
-            traces = TraceStore(self.home)
-            events = traces.list_events(session_id)
-            if not events:
-                return
-
-            # Construct summary
-            summary_parts = []
-            for e in events:
-                if e.phase == "turn.start":
-                    summary_parts.append(f"User: {e.input_json}")
-                elif e.phase == "turn.end":
-                    summary_parts.append(f"Action: {e.tool}, Output: {e.output_json}")
-
-            text = "\n".join(summary_parts)
-            prompt = f"Analyze the following user journey and extract a daily eval YAML structure for it, containing 'id', 'user_goal', and a 'steps' array matching the format of daily_journeys.yaml. Return ONLY valid YAML.\n\n{text}"
-
-            # Use provider
-            response = await self.provider.complete(prompt, max_tokens=1500)
-            if not response.text:
-                return
-
-            extracted = yaml.safe_load(
-                response.text.replace("```yaml", "").replace("```", "").strip()
-            )
-            if isinstance(extracted, dict) and "steps" in extracted:
-                evals_path = self.home.parent / "evals" / "auto_captured_journeys.yaml"
-                if evals_path.exists():
-                    data = load_daily_journey_eval_dataset(evals_path)
-                else:
-                    data = {"version": 1, "journeys": []}
-
-                data["journeys"].append(extracted)
-
-                with open(evals_path, "w") as f:
-                    yaml.dump(data, f, allow_unicode=True, sort_keys=False)
-
-        except Exception as e:
-            print(f"Eval extraction failed: {e}")
-
     def apply_proposal(self, proposal_id: str) -> EvolutionEvent | None:
         proposal = self.get_proposal(proposal_id)
         if proposal is None:
@@ -485,53 +509,53 @@ class EvolutionEngine:
 
         return self.ledger.list_for_task(task.id)
 
-    async def extract_evals_from_session(self, session_id: str) -> None:
-        try:
-            from navi.trace import TraceStore
-            from navi.evals import load_daily_journey_eval_dataset
-            from navi.provider import ChatMessage
-            import yaml
+    async def extract_evals_from_session(self, session_id: str, *, run_id: str = "") -> None:
+        from navi.evals import load_daily_journey_eval_dataset
+        from navi.provider import ChatMessage
+        from navi.trace import TraceStore
+        import yaml
 
-            traces = TraceStore(self.home)
-            events = traces.list_events(session_id)
-            if not events:
-                return
+        events = TraceStore(self.home).list_events_for_run_or_session(
+            run_id=run_id,
+            session_id=session_id,
+            limit=200,
+        )
+        if not events:
+            return
 
-            # Construct summary
-            summary_parts = []
-            for e in events:
-                if e.phase == "turn.start":
-                    summary_parts.append(f"User: {e.input_json}")
-                elif e.phase == "turn.end":
-                    summary_parts.append(f"Action: {e.tool}, Output: {e.output_json}")
+        trace_summary = _summarize_trace_events(events)
+        if not trace_summary:
+            return
 
-            text = "\n".join(summary_parts)
-            prompt = f"Analyze the following user journey and extract a daily eval YAML structure for it, containing 'id', 'user_goal', and a 'steps' array matching the format of daily_journeys.yaml. Return ONLY valid YAML.\n\n{text}"
+        prompt = (
+            "Extract one daily user journey eval from these Navi trace facts. "
+            "Use only facts present in the trace. Do not invent hidden state.\n\n"
+            f"{trace_summary}"
+        )
+        response = await self.provider.complete_for(
+            "planner",
+            [ChatMessage(role="user", content=prompt)],
+            output_schema=_daily_journey_eval_schema(),
+        )
+        if not response.strip():
+            return
 
-            # Use provider
-            response = await self.provider.complete_for(
-                "default", [ChatMessage(role="user", content=prompt)]
-            )
-            if not response.text:
-                return
+        extracted = json.loads(response)
+        if not isinstance(extracted, dict) or not extracted.get("steps"):
+            return
 
-            extracted = yaml.safe_load(
-                response.text.replace("```yaml", "").replace("```", "").strip()
-            )
-            if isinstance(extracted, dict) and "steps" in extracted:
-                evals_path = self.home.parent / "evals" / "auto_captured_journeys.yaml"
-                if evals_path.exists():
-                    data = load_daily_journey_eval_dataset(evals_path)
-                else:
-                    data = {"version": 1, "journeys": []}
-
-                data["journeys"].append(extracted)
-
-                with open(evals_path, "w") as f:
-                    yaml.dump(data, f, allow_unicode=True, sort_keys=False)
-
-        except Exception as e:
-            print(f"Eval extraction failed: {e}")
+        evals_path = self.home.parent / "evals" / "auto_captured_journeys.yaml"
+        if evals_path.exists():
+            data = load_daily_journey_eval_dataset(evals_path)
+        else:
+            data = {"version": 1, "journeys": []}
+        data["journeys"].append(extracted)
+        evals_path.parent.mkdir(parents=True, exist_ok=True)
+        evals_path.write_text(
+            yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        logger.info("extracted daily eval from session %s run %s", session_id, run_id)
 
     def apply_proposal(self, proposal_id: str) -> EvolutionEvent | None:
         proposal = self.ledger.get_proposal(proposal_id)
