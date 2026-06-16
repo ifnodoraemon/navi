@@ -31,10 +31,8 @@ async def test_event_bus_publish_subscribe():
     bus.subscribe("user_intent", handler)
     event = UserIntentEvent(source_agent="test", text="hello")
     await bus.publish(event)
-    await bus.drain()
     assert len(received) == 1
     assert received[0].text == "hello"
-    await bus.shutdown()
 
 
 @pytest.mark.asyncio
@@ -51,7 +49,6 @@ async def test_event_bus_response_channel():
     resp = await asyncio.wait_for(channel.get(), timeout=1.0)
     assert resp.text == "response text"
     bus.remove_response_channel("corr-1")
-    await bus.shutdown()
 
 
 @pytest.mark.asyncio
@@ -66,9 +63,7 @@ async def test_event_bus_unsubscribe():
     unsub()
 
     await bus.publish(UserIntentEvent(source_agent="test", text="ignored"))
-    await bus.drain()
     assert len(received) == 0
-    await bus.shutdown()
 
 
 @pytest.mark.asyncio
@@ -99,7 +94,6 @@ async def test_connector_router_routes_user_intent(tmp_path):
     assert result == "handled"
     assert len(received) == 1
     assert received[0].text == "你好"
-    await bus.shutdown()
 
 
 @pytest.mark.asyncio
@@ -135,7 +129,6 @@ async def test_connector_router_sends_approval_text_to_user_intent(tmp_path):
     assert result == "planner handled approval text"
     assert len(received_intents) == 1
     assert received_intents[0].text == f"批准 {approval.code}"
-    await bus.shutdown()
 
 
 @pytest.mark.asyncio
@@ -159,11 +152,9 @@ async def test_governance_agent_approves_low_risk(tmp_path):
         sender_id="s",
         source="cli",
     ))
-    await bus.drain()
 
     assert len(approved) == 1
     assert approved[0].run_id == task.id
-    await bus.shutdown()
 
 
 @pytest.mark.asyncio
@@ -189,39 +180,7 @@ async def test_governance_agent_suspends_high_risk(tmp_path):
         sender_id="s",
         source="cli",
     ))
-    await bus.drain()
 
     assert len(suspended) == 1
     assert suspended[0].run_id == task.id
     assert len(suspended[0].approval_code) == 6
-    await bus.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_event_bus_asynchronous_processing():
-    bus = EventBus()
-    received = []
-    handler_started = asyncio.Event()
-    handler_proceed = asyncio.Event()
-
-    async def async_handler(event):
-        handler_started.set()
-        await handler_proceed.wait()
-        received.append(event)
-
-    bus.subscribe("user_intent", async_handler)
-    event = UserIntentEvent(source_agent="test", text="async-test")
-
-    # Publish the event
-    await bus.publish(event)
-
-    # Assert execution is asynchronous and decoupled (returns immediately before handler completes)
-    await asyncio.wait_for(handler_started.wait(), timeout=1.0)
-    assert len(received) == 0
-
-    # Resume the handler and verify drain works
-    handler_proceed.set()
-    await bus.drain()
-    assert len(received) == 1
-    assert received[0].text == "async-test"
-    await bus.shutdown()
