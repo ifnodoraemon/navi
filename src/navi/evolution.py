@@ -111,6 +111,17 @@ def known_evolution_target(target_type: str) -> bool:
     return any(target.target_type == target_type for target in EVOLUTION_TARGETS)
 
 
+# Data-driven map of which spec-file targets persist to (subdir, suffix) on apply.
+# prompt_layer is handled separately because it writes through PromptLayerStore.
+_SPEC_FILE_TARGETS: dict[str, tuple[str, str]] = {
+    "tool_spec": ("specs", ".yaml"),
+    "connector_spec": ("specs", ".yaml"),
+    "workflow_policy": ("specs", ".yaml"),
+    "memory_schema": ("specs", ".yaml"),
+    "eval_case": ("evals", ".json"),
+}
+
+
 def _summarize_trace_events(events: list[Any]) -> str:
     lines: list[str] = []
     for event in events:
@@ -438,18 +449,7 @@ class EvolutionLedger:
             return None
         if proposal.status == "applied" and proposal.applied_event_id:
             return self.get(proposal.applied_event_id)
-        if proposal.status != "proposed":
-            raise ValueError(f"cannot apply proposal in status: {proposal.status}")
-
-        target = next((t for t in EVOLUTION_TARGETS if t.target_type == proposal.target_type), None)
-        if target and target.permissions_can_expand:
-            if proposal.required_approval_level not in ("L3", "L4"):
-                raise ValueError("permission-expanding proposals require L3/L4 approval level")
-
-        if proposal.required_approval_level != "L0" and proposal.evaluation_result != "approved":
-            raise ValueError(
-                f"proposal requires {proposal.required_approval_level} approval but is not approved"
-            )
+        self.assert_proposal_applicable(proposal)
 
         event = self.record(
             run_id=proposal.source_run_id,
@@ -469,6 +469,26 @@ class EvolutionLedger:
                 ("applied", time.time(), event.id, proposal.id),
             )
         return event
+
+    @staticmethod
+    def assert_proposal_applicable(proposal: EvolutionProposal) -> None:
+        """Single authority for whether a proposal may be applied.
+
+        Both the ledger DB transition and the engine side-effects call this so
+        the permission-expansion and approval gates cannot drift apart.
+        """
+        if proposal.status != "proposed":
+            raise ValueError(f"cannot apply proposal in status: {proposal.status}")
+        target = next(
+            (t for t in EVOLUTION_TARGETS if t.target_type == proposal.target_type), None
+        )
+        if target and target.permissions_can_expand:
+            if proposal.required_approval_level not in ("L3", "L4"):
+                raise ValueError("permission-expanding proposals require L3/L4 approval level")
+        if proposal.required_approval_level != "L0" and proposal.evaluation_result != "approved":
+            raise ValueError(
+                f"proposal requires {proposal.required_approval_level} approval but is not approved"
+            )
 
     @staticmethod
     def _diff(before: str, after: str) -> str:
@@ -563,37 +583,26 @@ class EvolutionEngine:
             return None
         if proposal.status == "applied" and proposal.applied_event_id:
             return self.ledger.get(proposal.applied_event_id)
-        if proposal.status != "proposed":
-            raise ValueError(f"cannot apply proposal in status: {proposal.status}")
+        # Reuse the ledger's single authority so engine-side effects and the DB
+        # transition share one gate (no drift between the two apply paths).
+        self.ledger.assert_proposal_applicable(proposal)
 
-        target = next((t for t in EVOLUTION_TARGETS if t.target_type == proposal.target_type), None)
-        if target and target.permissions_can_expand:
-            if proposal.required_approval_level not in ("L3", "L4"):
-                raise ValueError("permission-expanding proposals require L3/L4 approval level")
+        self._write_proposal_side_effect(proposal)
+        return self.ledger.apply_proposal(proposal_id)
 
-        if proposal.required_approval_level != "L0" and proposal.evaluation_result != "approved":
-            raise ValueError(
-                f"proposal requires {proposal.required_approval_level} approval but is not approved"
-            )
-
+    def _write_proposal_side_effect(self, proposal: EvolutionProposal) -> None:
         if proposal.target_type == "prompt_layer":
             from .prompting import PromptLayerStore
 
             PromptLayerStore(self.home).write_override(proposal.target_id, proposal.after)
-        elif proposal.target_type in (
-            "tool_spec",
-            "connector_spec",
-            "workflow_policy",
-            "memory_schema",
-        ):
-            spec_path = self.home / "specs" / f"{proposal.target_id}.yaml"
-            spec_path.parent.mkdir(parents=True, exist_ok=True)
-            spec_path.write_text(proposal.after, encoding="utf-8")
-        elif proposal.target_type == "eval_case":
-            spec_path = self.home / "evals" / f"{proposal.target_id}.json"
-            spec_path.parent.mkdir(parents=True, exist_ok=True)
-            spec_path.write_text(proposal.after, encoding="utf-8")
-        return self.ledger.apply_proposal(proposal_id)
+            return
+        spec_target = _SPEC_FILE_TARGETS.get(proposal.target_type)
+        if spec_target is None:
+            return
+        subdir, suffix = spec_target
+        spec_path = self.home / subdir / f"{proposal.target_id}{suffix}"
+        spec_path.parent.mkdir(parents=True, exist_ok=True)
+        spec_path.write_text(proposal.after, encoding="utf-8")
 
     def rollback(self, event_id: str) -> EvolutionEvent | None:
         event = self.ledger.get(event_id)
