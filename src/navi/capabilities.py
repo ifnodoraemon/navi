@@ -181,7 +181,16 @@ class CapabilityRegistry:
                 facts=facts,
             )
         started_at = time.time()
-        result = await handler.invoke(call_args, permission=permission, context=context)
+        try:
+            result = await handler.invoke(call_args, permission=permission, context=context)
+        except Exception as exc:
+            logger.exception(f"Unhandled exception in capability {name}: {exc}")
+            result = CapabilityResult(
+                ok=False,
+                action="capability_error",
+                observation=f"capability encountered an internal error: {exc}",
+                message=f"capability {name} crashed: {exc}",
+            )
         self.hooks.run(
             HookEvent(
                 event="after_capability",

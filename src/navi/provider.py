@@ -8,6 +8,9 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 import httpx
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .config import ModelConfig
 from .provider_specs import (
@@ -205,14 +208,31 @@ class FallbackProvider:
     async def complete(
         self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None
     ) -> str:
+        import asyncio
+        import httpx
+        
         errors: list[str] = []
+        max_retries = 3
+        
         for provider in self.providers:
-            try:
-                return await _complete_with_optional_schema(
-                    provider, messages, output_schema=output_schema
-                )
-            except Exception as exc:
-                errors.append(f"{provider.__class__.__name__}: {exc}")
+            for attempt in range(max_retries):
+                try:
+                    return await _complete_with_optional_schema(
+                        provider, messages, output_schema=output_schema
+                    )
+                except Exception as exc:
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        status = exc.response.status_code
+                        if status not in (429, 500, 502, 503, 504):
+                            errors.append(f"{provider.__class__.__name__}: {exc}")
+                            break # don't retry on 400, 401, 403 etc.
+                    
+                    if attempt == max_retries - 1:
+                        errors.append(f"{provider.__class__.__name__}: {exc}")
+                    else:
+                        logger.warning(f"Provider {provider.__class__.__name__} failed (attempt {attempt+1}/{max_retries}): {exc}. Retrying...")
+                        await asyncio.sleep(2 ** attempt)  # 1s, 2s
+                        
         raise RuntimeError("all model providers failed: " + "; ".join(errors))
 
 
