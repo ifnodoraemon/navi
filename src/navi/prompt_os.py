@@ -134,9 +134,7 @@ def assemble_planner_turn_input(
     permission_ceiling: str = "write",
     model_roles: list[str] | None = None,
 ) -> PromptAssembly:
-    model_roles = model_roles or list_agent_role_names(
-        ["default", "planner", "responder", "notification"]
-    )
+    model_roles = model_roles or list_agent_role_names()
     role_names = set(model_roles)
     role_contracts = [
         spec.to_prompt_dict()

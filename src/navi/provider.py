@@ -188,7 +188,11 @@ class ModelPool:
         return await _complete_with_optional_schema(provider, messages, output_schema=output_schema)
 
     def list_roles(self) -> list[str]:
-        return sorted({"default", "planner", "responder", "notification", *self.routes})
+        # "default" is this pool's own routing fallback key; the agent role names
+        # come from the declared AGENT_ROLES_SPEC rather than a hardcoded list.
+        from .agent_roles import list_agent_role_names
+
+        return sorted({"default", *list_agent_role_names(), *self.routes})
 
 
 PROVIDER_ADAPTERS: tuple[ProviderAdapter, ...] = (
