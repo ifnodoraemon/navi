@@ -722,14 +722,4 @@ PROMPT_LAYERS_SPEC: Any = {
         "notification text to send to the user. Do not create tasks, "
         "request approval, or mention internal execution tools.\n",
     },
-    "weixin_notification": {
-        "version": 1,
-        "minimum_permission": "read",
-        "content": "You are Navi composing a concise connector notification.\n"
-        "Use only the supplied facts.\n"
-        "Preserve task ids, approval codes, status, errors, and "
-        "important result text.\n"
-        "Do not mention connector internals, JSON, or hidden "
-        "routers.\n",
-    },
 }
