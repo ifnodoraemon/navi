@@ -418,24 +418,15 @@ class MemoryStore:
         if not provenance:
             raise ValueError("memory provenance is required")
         metadata = dict(metadata or {})
-        blocked = _blocking_hook(
-            HookRegistry(self.home).run(
-                HookEvent(
-                    event="before_memory_write",
-                    payload={
-                        "type": memory_type,
-                        "status": status,
-                        "scope": resolved_scope,
-                        "source": source,
-                        "confidence": max(0.0, min(1.0, confidence)),
-                        "content_chars": len(content),
-                        "metadata_keys": sorted(metadata.keys()),
-                    },
-                )
-            )
+        self._assert_memory_write_allowed(
+            memory_type=memory_type,
+            status=status,
+            scope=resolved_scope,
+            source=source,
+            confidence=max(0.0, min(1.0, confidence)),
+            content_chars=len(content),
+            metadata_keys=sorted(metadata.keys()),
         )
-        if blocked is not None:
-            raise ValueError(blocked.reason or f"hook blocked memory write: {blocked.hook}")
         now = time.time()
 
         # Simple automatic contradiction/overlap detection
@@ -533,7 +524,50 @@ class MemoryStore:
         if isinstance(item_dict.get("metadata"), str):
             item_dict["metadata"] = json.loads(item_dict["metadata"])
         item = MemoryItem(**item_dict)
+        # Restoring a memory item (e.g. evolution rollback) is still a memory
+        # write and must pass the before_memory_write hook so policy can block
+        # it (principle 9/16). The original id/metadata are preserved because
+        # this restores a previously-governed item rather than creating a new one.
+        self._assert_memory_write_allowed(
+            memory_type=item.type,
+            status=item.status,
+            scope=item.scope,
+            source=item.source,
+            confidence=max(0.0, min(1.0, item.confidence)),
+            content_chars=len(item.content),
+            metadata_keys=sorted(item.metadata.keys()),
+        )
         self.provider.store_item(item)
+
+    def _assert_memory_write_allowed(
+        self,
+        *,
+        memory_type: str,
+        status: str,
+        scope: str,
+        source: str,
+        confidence: float,
+        content_chars: int,
+        metadata_keys: list[str],
+    ) -> None:
+        blocked = _blocking_hook(
+            HookRegistry(self.home).run(
+                HookEvent(
+                    event="before_memory_write",
+                    payload={
+                        "type": memory_type,
+                        "status": status,
+                        "scope": scope,
+                        "source": source,
+                        "confidence": confidence,
+                        "content_chars": content_chars,
+                        "metadata_keys": metadata_keys,
+                    },
+                )
+            )
+        )
+        if blocked is not None:
+            raise ValueError(blocked.reason or f"hook blocked memory write: {blocked.hook}")
 
     def _parse_json_learnings(self, response_raw: str) -> list[dict]:
         data = parse_first_json_object(response_raw)
