@@ -328,17 +328,6 @@ class ExecutionResult:
         return text[:1600] if text else f"{self.phase} exited with {self.exit_code}"
 
 
-def _workspace_state(workspace: Path, *, label: str) -> dict[str, Any]:
-    status = _git_porcelain_status(workspace)
-    return {
-        "kind": "workspace_state",
-        "label": label,
-        "workspace": str(workspace),
-        "git": status,
-        "dirty": bool(status["stdout"].strip()) if status["exit_code"] == 0 else None,
-    }
-
-
 def _require_workspace_value(workspace: str, *, run_id: str = "") -> str:
     value = workspace.strip()
     if not value:
