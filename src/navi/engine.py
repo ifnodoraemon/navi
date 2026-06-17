@@ -626,7 +626,23 @@ class HernessEngine:
         if not session_id:
             return ""
         messages = self.runtime.memory.get_messages(session_id, limit=8)
-        return "\n".join(f"{item.role}: {item.content}" for item in messages)
+        if not messages:
+            return ""
+        lines = [f"{item.role}: {item.content}" for item in messages]
+        history = "\n".join(lines)
+        # Mark the most recent exchange as the anaphora anchor so elliptical
+        # follow-ups ("再看下", "continue", "again") resolve against the latest
+        # topic instead of a more salient earlier one. This is a fact for the
+        # planner, not a routing decision; the model still decides how to use it.
+        recent = [item for item in messages if item.role in ("user", "assistant")][-2:]
+        if recent:
+            focus = "\n".join(f"{item.role}: {item.content}" for item in recent)
+            return (
+                f"{history}\n\n"
+                "most_recent_exchange (resolve elliptical references like "
+                f"'再看下'/'continue' against this unless the user names a new topic):\n{focus}"
+            )
+        return history
 
     def _record_turn(
         self,
