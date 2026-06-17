@@ -54,10 +54,9 @@ class AgentRuntime:
         operating_context: OperatingContext | None = None,
     ) -> list[ChatMessage]:
         operating_context = operating_context or OperatingContext(home=self.home)
-        memory_query = user_text
-        if operating_context.objective:
-            memory_query = f"{user_text} {operating_context.objective}".strip()
-        memory_context = self.memory.render_context(memory_query)
+        memory_context = self.memory.render_context(
+            user_text, goal=operating_context.objective or ""
+        )
         skills_context = self.skills.render_prompt(
             permission_ceiling=operating_context.skill_permission_ceiling,
             workspace=operating_context.workspace,

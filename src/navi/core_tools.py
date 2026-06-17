@@ -232,6 +232,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
+                    "goal": {"type": "string"},
                     "limit": {"type": "integer", "default": 8},
                 },
                 "required": ["query"],
@@ -239,6 +240,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             output_schema=_output_schema(
                 {
                     "query": {"type": "string"},
+                    "goal": {"type": "string"},
                     "items": _array_of_objects(),
                     "count": {"type": "integer"},
                     "limit": {"type": "integer"},
@@ -861,18 +863,20 @@ def _memory_recall(home: Path, args: dict[str, Any]) -> ToolResult:
     query = str(args.get("query") or "").strip()
     if not query:
         return ToolResult(tool="memory.recall", ok=False, error="query is required")
+    goal = str(args.get("goal") or "").strip()
     limit = _positive_int(args.get("limit"), default=8, maximum=50)
     store = MemoryStore(home)
-    recalls = store.recall(query, limit=limit)
+    recalls = store.recall(query, limit=limit, goal=goal)
     return ToolResult(
         tool="memory.recall",
         ok=True,
         facts={
             "query": query,
+            "goal": goal,
             "items": [_memory_recall_facts(recall) for recall in recalls],
             "count": len(recalls),
             "limit": limit,
-            "rendered": store.render_context(query, limit=limit),
+            "rendered": store.render_context(query, limit=limit, goal=goal),
         },
     )
 

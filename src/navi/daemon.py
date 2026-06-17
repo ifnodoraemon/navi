@@ -107,7 +107,10 @@ class SystemDaemon:
                         if g.session_id == event.session_id:
                             await goal_store.compact_events(g.id, provider)
 
-                    await self.evolution.extract_evals_from_session(event.session_id)
+                    await self.evolution.extract_evals_from_session(
+                        event.session_id,
+                        run_id=event.run_id,
+                    )
                 except Exception as e:
                     logger.error(f"Background turn completed task failed: {e}", exc_info=True)
 

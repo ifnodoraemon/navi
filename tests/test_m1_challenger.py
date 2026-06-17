@@ -82,6 +82,26 @@ async def test_remote_connector_cannot_run_or_delete_unfailed_delegation(
     assert runs.get(spawned.run_id) is None
 
 
+@pytest.mark.asyncio
+async def test_bulk_delete_requires_explicit_scope(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        source="cli",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    result = await registry.invoke(
+        "delegate.delete",
+        {"status": "failed", "reason": "cleanup failed delegation records"},
+        permission="write",
+        context=context,
+    )
+
+    assert result.ok is False
+    assert "requires source or kind scope" in result.message
+
+
 def test_weixin_service_initializes_connector_ingress_without_direct_router_call(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

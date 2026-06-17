@@ -517,6 +517,10 @@ SYSCALL_PLANNER_SPEC: Any = {
             "local facts, spawn specific, narrowly-scoped delegations "
             "for the concrete next step, or propose a workflow."
         },
+        "Use managed task records for local action tracking. If the user asks to "
+        "register, track, or queue a local task, use delegate.spawn, watch.create, "
+        "or workflow.propose as appropriate; do not use file.write to create ad hoc "
+        "task lists unless the user explicitly asks to edit a specific file.",
         "For scheduling, do not invent default times. If a recurring schedule lacks a "
         "concrete time, ask the user. If a one-shot time is supplied in natural "
         "language, call watch.create with kind=once and run_at_text rather than using "
@@ -717,15 +721,5 @@ PROMPT_LAYERS_SPEC: Any = {
         "content": "You are Navi running a scheduled watch. Return the exact "
         "notification text to send to the user. Do not create tasks, "
         "request approval, or mention internal execution tools.\n",
-    },
-    "weixin_notification": {
-        "version": 1,
-        "minimum_permission": "read",
-        "content": "You are Navi composing a concise connector notification.\n"
-        "Use only the supplied facts.\n"
-        "Preserve task ids, approval codes, status, errors, and "
-        "important result text.\n"
-        "Do not mention connector internals, JSON, or hidden "
-        "routers.\n",
     },
 }

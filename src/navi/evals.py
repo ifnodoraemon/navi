@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -613,6 +614,10 @@ def validate_delegation_eval_dataset(dataset: dict[str, Any], tools: list[ToolSp
         if tool is None:
             errors.append(f"{prefix}: unknown expected tool {tool_name!r}")
             continue
+        for allowed_tool in expected.get("allowed_tools") or []:
+            allowed_name = str(allowed_tool or "")
+            if allowed_name not in by_name:
+                errors.append(f"{prefix}: unknown allowed tool {allowed_name!r}")
         if tool_name in required_tools:
             tools_seen.add(tool_name)
         permission = str(expected.get("permission") or "")
@@ -621,6 +626,7 @@ def validate_delegation_eval_dataset(dataset: dict[str, Any], tools: list[ToolSp
                 f"{prefix}: expected permission {permission!r} does not match {tool.permission!r}"
             )
         _validate_expected_args(prefix, expected.get("args") or {}, tool, errors)
+        _validate_expected_args(prefix, expected.get("args_contains") or {}, tool, errors)
     for category in sorted(required_categories - categories_seen):
         errors.append(f"dataset: missing required category {category!r}")
     for tool_name in sorted(required_tools - tools_seen - unknown_required_tools):
@@ -659,7 +665,8 @@ async def run_delegation_eval_dataset(
                 planner.plan(
                     str(case["message"]),
                     tools=tools,
-                    conversation_context=str(case.get("conversation_context") or ""),
+                    conversation_context=_case_conversation_context(case),
+                    permission_ceiling=_case_permission_ceiling(case),
                 ),
                 timeout=timeout_seconds,
             )
@@ -707,7 +714,13 @@ def match_delegation_eval_case(case: dict[str, Any], decision: ModelSyscall) -> 
     errors: list[str] = []
     expected_tool = str(expected.get("tool") or "")
     expected_permission = str(expected.get("permission") or "")
-    if decision.tool != expected_tool:
+    allowed_tools = {
+        str(item)
+        for item in (expected.get("allowed_tools") or [])
+        if isinstance(item, str) and item.strip()
+    }
+    tool_matches = decision.tool == expected_tool or decision.tool in allowed_tools
+    if not tool_matches:
         errors.append(f"tool expected {expected_tool!r}, got {decision.tool!r}")
     if decision.permission != expected_permission:
         errors.append(f"permission expected {expected_permission!r}, got {decision.permission!r}")
@@ -715,7 +728,32 @@ def match_delegation_eval_case(case: dict[str, Any], decision: ModelSyscall) -> 
         actual = decision.args.get(str(key))
         if str(actual).lower() != str(value).lower():
             errors.append(f"args.{key} expected {value!r}, got {actual!r}")
+    for key, value in (expected.get("args_contains") or {}).items():
+        actual = str(decision.args.get(str(key)) or "").lower()
+        expected_part = str(value).lower()
+        if expected_part not in actual:
+            errors.append(f"args.{key} expected to contain {value!r}, got {actual!r}")
     return errors
+
+
+def _case_conversation_context(case: dict[str, Any]) -> str:
+    parts = []
+    context = str(case.get("conversation_context") or "").strip()
+    scenario = str(case.get("scenario") or "").strip()
+    if context:
+        parts.append(context)
+    if scenario:
+        parts.append(f"Scenario facts:\n{scenario}")
+    return "\n\n".join(parts)
+
+
+def _case_permission_ceiling(case: dict[str, Any]) -> str:
+    explicit = str(case.get("permission_ceiling") or "").strip()
+    if explicit:
+        return explicit
+    scenario = str(case.get("scenario") or "")
+    match = re.search(r"permission_ceiling:\s*(read|prepare|write)\b", scenario)
+    return match.group(1) if match else "write"
 
 
 def results_to_json(results: list[EvalResult]) -> str:

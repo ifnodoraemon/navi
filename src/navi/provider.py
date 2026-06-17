@@ -188,7 +188,11 @@ class ModelPool:
         return await _complete_with_optional_schema(provider, messages, output_schema=output_schema)
 
     def list_roles(self) -> list[str]:
-        return sorted({"default", "planner", "responder", "notification", *self.routes})
+        # "default" is this pool's own routing fallback key; the agent role names
+        # come from the declared AGENT_ROLES_SPEC rather than a hardcoded list.
+        from .agent_roles import list_agent_role_names
+
+        return sorted({"default", *list_agent_role_names(), *self.routes})
 
 
 PROVIDER_ADAPTERS: tuple[ProviderAdapter, ...] = (
@@ -312,6 +316,13 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
 
     content_str = str(content).strip()
     if not content_str:
+        reasoning_content = str(message.get("reasoning_content") or "").strip()
+        if reasoning_content:
+            from .json_utils import parse_first_json_object
+
+            structured = parse_first_json_object(reasoning_content)
+            if structured is not None:
+                return json.dumps(structured, ensure_ascii=False)
         finish_reason = choice.get("finish_reason", "unknown")
         raise RuntimeError(
             f"Provider response content is empty. Finish reason: {finish_reason}. Raw data: {data}"

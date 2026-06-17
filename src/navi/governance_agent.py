@@ -28,7 +28,7 @@ class GovernanceAgent:
         if not task:
             return
 
-        if task.autonomy_level == "L3" or self.governance.execution_allowed(task):
+        if self.governance.execution_allowed(task):
             await self.event_bus.publish(
                 ActionApprovedEvent(
                     source_agent="governance_agent",

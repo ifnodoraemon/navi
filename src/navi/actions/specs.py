@@ -205,7 +205,7 @@ ACTION_SPECS = [
         name="delegate.delete",
         capability_class="delegation",
         execution_contexts=("turn", "workflow_step"),
-        description="""Delete delegation run records by id or by supported cleanup filters. Supports deleting any run (even if not failed) but requires user approval.""",
+        description="""Delete delegation run records by id or by explicit cleanup scope. Bulk cleanup must include source or kind so status-only filters do not delete unrelated records.""",
         input_schema={
             "type": "object",
             "properties": {

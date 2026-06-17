@@ -545,14 +545,14 @@ class MemoryStore:
             return []
         return learnings
 
-    def recall(self, query: str, *, limit: int = 8) -> list[MemoryRecall]:
+    def recall(self, query: str, *, limit: int = 8, goal: str = "") -> list[MemoryRecall]:
         now = time.time()
         candidates = [
             item
             for item in self.list_items(limit=500)
             if item.status in ACTIVE_STATUSES and (not item.expires_at or item.expires_at > now)
         ]
-        scored = [self._score_recall(item, query) for item in candidates]
+        scored = [self._score_recall(item, query, goal) for item in candidates]
         scored = [recall for recall in scored if recall.score > 0]
         scored.sort(key=lambda recall: (recall.score, recall.item.updated_at), reverse=True)
         selected = scored[:limit]
@@ -561,8 +561,8 @@ class MemoryStore:
         conflicts = self.list_conflicts(limit=1000)
         return [self._with_conflict_reasons(recall, conflicts) for recall in selected]
 
-    def render_context(self, query: str, *, limit: int = 8) -> str:
-        recalls = self.recall(query, limit=limit)
+    def render_context(self, query: str, *, limit: int = 8, goal: str = "") -> str:
+        recalls = self.recall(query, limit=limit, goal=goal)
         if not recalls:
             return ""
         lines = ["Memory recall:"]
@@ -630,7 +630,6 @@ class MemoryStore:
         run_id: str = "",
     ) -> list[MemoryItem]:
         from .provider import ChatMessage
-        from .evolution import EvolutionLedger
 
         if not session_id.strip():
             logger.warning("Skipping memory consolidation without a session id")
@@ -697,75 +696,16 @@ class MemoryStore:
                 # 5. Parse structured response
                 learnings = self._parse_json_learnings(response_raw)
 
-                ledger = EvolutionLedger(self.home)
-                affected_items = []
-                seen_memory_keys = {
-                    (item.type, item.content.strip().lower()) for item in active_items
-                }
-                for learning in learnings:
-                    if not isinstance(learning, dict):
-                        continue
-                    action = str(learning.get("action", "")).strip().lower()
-                    if action == "add":
-                        m_type = str(learning.get("type", "")).strip().lower()
-                        content = str(learning.get("content", "")).strip()
-                        if not content or m_type not in LEARNABLE_MEMORY_TYPES:
-                            continue
-                        memory_key = (m_type, content.lower())
-                        if memory_key in seen_memory_keys:
-                            continue
-
-                        try:
-                            conf_val = float(learning.get("confidence", 0.7))
-                        except (ValueError, TypeError):
-                            conf_val = 0.7
-
-                        contradicts = learning.get("contradicts", [])
-                        if not isinstance(contradicts, list):
-                            contradicts = []
-
-                        new_item = self.add_item(
-                            memory_type=m_type,
-                            content=content,
-                            source="conversation_consolidation",
-                            scope="global",
-                            status="proposed",
-                            confidence=conf_val,
-                            metadata={"contradicts": contradicts} if contradicts else {},
-                            reason=str(
-                                learning.get("reason")
-                                or f"Consolidated from conversation session {session_id}"
-                            ),
-                            provenance=f"conversation:{session_id}",
-                        )
-                        seen_memory_keys.add(memory_key)
-                        affected_items.append(new_item)
-                        ledger.record(
-                            run_id=run_id or f"session:{session_id}",
-                            target_type="memory_item",
-                            target_id=new_item.id,
-                            reason=f"Extracted learning: {new_item.content[:60]}",
-                            before="",
-                            after=json.dumps(new_item.__dict__, default=str),
-                        )
-                    elif action == "revoke":
-                        item_id = str(learning.get("id", "")).strip()
-                        if not item_id:
-                            continue
-                        old_item = self.get_item(item_id)
-                        if old_item and old_item.status in ["active", "accepted"]:
-                            updated_item = self.set_status(item_id, "revoked")
-                            if updated_item:
-                                affected_items.append(updated_item)
-                            ledger.record(
-                                run_id=run_id or f"session:{session_id}",
-                                target_type="memory_item",
-                                target_id=item_id,
-                                reason=str(learning.get("reason", "Revoked by consolidation")),
-                                before=json.dumps(old_item.__dict__, default=str),
-                                after="revoked",
-                            )
-                return affected_items
+                return self._apply_learnings(
+                    learnings,
+                    active_items,
+                    source="conversation_consolidation",
+                    provenance=f"conversation:{session_id}",
+                    ledger_run_id=run_id or f"session:{session_id}",
+                    add_reason_fallback=(
+                        f"Consolidated from conversation session {session_id}"
+                    ),
+                )
         finally:
             if lock is not None:
                 await self._release_session_lock(session_id)
@@ -814,7 +754,6 @@ class MemoryStore:
         provider: ModelPool,
     ) -> list[MemoryItem]:
         from .provider import ChatMessage
-        from .evolution import EvolutionLedger
         from .trace import TraceStore
 
         # 1. Fetch existing active memory items
@@ -900,50 +839,59 @@ class MemoryStore:
         # 5. Parse structured response
         learnings = self._parse_json_learnings(response_raw)
 
+        return self._apply_learnings(
+            learnings,
+            active_items,
+            source="task_reflection",
+            provenance=f"run:{task.id}:trace",
+            ledger_run_id=task.id,
+            add_reason_fallback=f"Consolidated from run {task.id}",
+        )
+
+    def _apply_learnings(
+        self,
+        learnings: list,
+        active_items: list,
+        *,
+        source: str,
+        provenance: str,
+        ledger_run_id: str,
+        add_reason_fallback: str,
+    ) -> list:
+        """Apply extracted add/revoke learnings with full provenance + ledger.
+
+        Shared by conversation consolidation and run reflection so the two
+        learning pipelines cannot drift (DRY, principle 1.1).
+        """
+        from .evolution import EvolutionLedger
+
         ledger = EvolutionLedger(self.home)
-        affected_items = []
-        seen_memory_keys = {(item.type, item.content.strip().lower()) for item in active_items}
+        affected_items: list = []
+        seen_memory_keys = {
+            (item.type, item.content.strip().lower()) for item in active_items
+        }
         for learning in learnings:
             if not isinstance(learning, dict):
                 continue
             action = str(learning.get("action", "")).strip().lower()
             if action == "add":
-                m_type = str(learning.get("type", "")).strip().lower()
-                content = str(learning.get("content", "")).strip()
-                if not content or m_type not in LEARNABLE_MEMORY_TYPES:
-                    continue
-                memory_key = (m_type, content.lower())
-                if memory_key in seen_memory_keys:
-                    continue
-
-                try:
-                    conf_val = float(learning.get("confidence", 0.7))
-                except (ValueError, TypeError):
-                    conf_val = 0.7
-
-                contradicts = learning.get("contradicts", [])
-                if not isinstance(contradicts, list):
-                    contradicts = []
-
-                new_item = self.add_item(
-                    memory_type=m_type,
-                    content=content,
-                    source="task_reflection",
-                    status="proposed",
-                    confidence=conf_val,
-                    metadata={"contradicts": contradicts} if contradicts else {},
-                    reason=str(learning.get("reason") or f"Consolidated from run {task.id}"),
-                    provenance=f"run:{task.id}:trace",
+                item = self._apply_add_learning(
+                    learning,
+                    seen_memory_keys,
+                    source=source,
+                    provenance=provenance,
+                    add_reason_fallback=add_reason_fallback,
                 )
-                seen_memory_keys.add(memory_key)
-                affected_items.append(new_item)
+                if item is None:
+                    continue
+                affected_items.append(item)
                 ledger.record(
-                    run_id=task.id,
+                    run_id=ledger_run_id,
                     target_type="memory_item",
-                    target_id=new_item.id,
-                    reason=f"Extracted learning: {new_item.content[:60]}",
+                    target_id=item.id,
+                    reason=f"Extracted learning: {item.content[:60]}",
                     before="",
-                    after=json.dumps(new_item.__dict__, default=str),
+                    after=json.dumps(item.__dict__, default=str),
                 )
             elif action == "revoke":
                 item_id = str(learning.get("id", "")).strip()
@@ -955,7 +903,7 @@ class MemoryStore:
                     if updated_item:
                         affected_items.append(updated_item)
                     ledger.record(
-                        run_id=task.id,
+                        run_id=ledger_run_id,
                         target_type="memory_item",
                         target_id=item_id,
                         reason=str(learning.get("reason", "Revoked by consolidation")),
@@ -963,6 +911,43 @@ class MemoryStore:
                         after="revoked",
                     )
         return affected_items
+
+    def _apply_add_learning(
+        self,
+        learning: dict,
+        seen_memory_keys: set,
+        *,
+        source: str,
+        provenance: str,
+        add_reason_fallback: str,
+    ):
+        m_type = str(learning.get("type", "")).strip().lower()
+        content = str(learning.get("content", "")).strip()
+        if not content or m_type not in LEARNABLE_MEMORY_TYPES:
+            return None
+        memory_key = (m_type, content.lower())
+        if memory_key in seen_memory_keys:
+            return None
+        try:
+            conf_val = float(learning.get("confidence", 0.7))
+        except (ValueError, TypeError):
+            conf_val = 0.7
+        contradicts = learning.get("contradicts", [])
+        if not isinstance(contradicts, list):
+            contradicts = []
+        new_item = self.add_item(
+            memory_type=m_type,
+            content=content,
+            source=source,
+            scope="global",
+            status="proposed",
+            confidence=conf_val,
+            metadata={"contradicts": contradicts} if contradicts else {},
+            reason=str(learning.get("reason") or add_reason_fallback),
+            provenance=provenance,
+        )
+        seen_memory_keys.add(memory_key)
+        return new_item
 
     @staticmethod
     def _item_from_row(row: tuple) -> MemoryItem:
@@ -979,7 +964,7 @@ class MemoryStore:
         }
 
     @classmethod
-    def _score_recall(cls, item: MemoryItem, query: str) -> MemoryRecall:
+    def _score_recall(cls, item: MemoryItem, query: str, goal: str = "") -> MemoryRecall:
         priority = TYPE_PRIORITY.get(item.type, 10)
         reasons = [f"type_priority:{item.type}={priority}"]
         if item.type == "constraint":
@@ -989,12 +974,28 @@ class MemoryStore:
         content_tokens = cls._tokens(f"{item.scope} {item.content}")
         matches = sorted(query_tokens & content_tokens)
         overlap = len(matches)
-        if query_tokens and not overlap and item.type not in {"constraint", "working"}:
-            return MemoryRecall(item=item, score=0.0, reasons=["not relevant to query tokens"])
+
+        # Goal-directed relevance: a memory that matches the current task goal is
+        # retained even when it does not match the immediate query tokens, and is
+        # scored higher. This is what makes recall goal-directed rather than pure
+        # query similarity (principle 10).
+        goal_tokens = cls._tokens(goal)
+        goal_matches = sorted(goal_tokens & content_tokens)
+        goal_overlap = len(goal_matches)
+
+        if (
+            query_tokens
+            and not overlap
+            and not goal_overlap
+            and item.type not in {"constraint", "working"}
+        ):
+            return MemoryRecall(item=item, score=0.0, reasons=["not relevant to query or goal"])
         if matches:
             reasons.append(f"matched_query_tokens:{','.join(matches[:8])}")
         elif query_tokens:
             reasons.append(f"included_by_type:{item.type}")
+        if goal_matches:
+            reasons.append(f"goal_relevance:{','.join(goal_matches[:8])}")
         reasons.append(f"confidence={item.confidence:.2f}")
         import time
 
@@ -1003,7 +1004,15 @@ class MemoryStore:
         freshness = min(10.0, max(0.0, 10.0 - ((now - item.updated_at) / 1_000_000)))
         if freshness > 0:
             reasons.append(f"freshness_score={freshness:.2f}")
-        score = priority + (overlap * 12) + (item.confidence * 10) + freshness
+        # Goal relevance is weighted above raw query overlap so current-task
+        # relevance is preferred over incidental semantic similarity.
+        score = (
+            priority
+            + (overlap * 12)
+            + (goal_overlap * 15)
+            + (item.confidence * 10)
+            + freshness
+        )
         return MemoryRecall(item=item, score=score, reasons=reasons)
 
     @staticmethod

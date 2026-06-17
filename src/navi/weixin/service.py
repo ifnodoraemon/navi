@@ -13,11 +13,11 @@ from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.daemon import SystemDaemon
-from navi.prompting import PromptLayerStore
 
 from .client import FakeWeixinClient, TYPING_START, TYPING_STOP, WeixinClient
 from .config import WeixinConfig
 from .models import WeixinAccount, WeixinUpdate
+from .prompts import NOTIFICATION_SYSTEM_PROMPT
 from .store import ContextTokenStore, MessageDeduplicator, WeixinStore
 
 
@@ -390,7 +390,7 @@ class WeixinService:
                 [
                     ChatMessage(
                         "system",
-                        PromptLayerStore(self.home).read("weixin_notification"),
+                        NOTIFICATION_SYSTEM_PROMPT,
                     ),
                     ChatMessage("user", json.dumps(facts, ensure_ascii=False, sort_keys=True)),
                 ],

@@ -299,6 +299,15 @@ class DelegateDeleteCapability:
         )
         source = _arg_text(args, "source")
         kind = _arg_text(args, "kind")
+        if not source and not kind:
+            return CapabilityResult(
+                ok=False,
+                action="delegation",
+                observation="delegate.delete bulk cleanup requires source or kind scope.",
+                message="delegate.delete bulk cleanup requires source or kind scope.",
+                terminal=False,
+                error_reason="scope_required",
+            )
         if _remote_source(context.source) and not kind:
             kind = "delegation"
         if _remote_source(context.source) and (

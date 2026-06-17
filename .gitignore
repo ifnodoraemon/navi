@@ -7,3 +7,5 @@ __pycache__/
 build/
 dist/
 .agents/
+eval_output.*
+evals/auto_captured_journeys.yaml
