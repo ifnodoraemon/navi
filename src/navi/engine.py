@@ -8,8 +8,6 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-logger = logging.getLogger("navi.engine")
-
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .config import load_config
 from .connector_registry import approval_surface_affordance
@@ -21,6 +19,8 @@ from .recovery import RecoveryPlanner
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
 from .trace import TraceStore
+
+logger = logging.getLogger("navi.engine")
 
 
 @dataclass(frozen=True)
@@ -145,6 +145,10 @@ class HernessEngine:
         pending_approval_prompt = ""
         last_result: AgentTurnResult | None = None
         budget_exhausted = False
+        # Principle 12: reload durable constraints from the governed memory store
+        # once per turn so they are present in every planner step, independent of
+        # what the (compressible) conversation history happens to contain.
+        durable_constraints = self.runtime.memory.render_durable_constraints()
         for _ in range(self.step_budget):
             planner_specs = self.capabilities.planner_specs(
                 permission_ceiling=context.permission_ceiling
@@ -173,6 +177,7 @@ class HernessEngine:
                     observations=observations,
                     permission_ceiling=context.permission_ceiling,
                     model_roles=self.runtime.model_roles(),
+                    durable_constraints=durable_constraints,
                 )
             except Exception as exc:
                 self.trace.add_event(
@@ -915,6 +920,8 @@ def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:
     return fallback
 
 
-from .execution import register_engine_class
+# Deferred import: execution -> capabilities -> connector_runtime -> engine forms a
+# cycle, so we register after HernessEngine is defined to break it.
+from .execution import register_engine_class  # noqa: E402
 
 register_engine_class(HernessEngine)

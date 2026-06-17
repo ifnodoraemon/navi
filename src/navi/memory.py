@@ -617,6 +617,44 @@ class MemoryStore:
             )
         return "\n".join(lines)
 
+    def active_constraints(self, *, limit: int = 100) -> list[MemoryItem]:
+        """Return all active constraint-type memories, unconditionally.
+
+        Principle 12: durable must/must-not rules must survive context compression
+        and be reloaded from the store before the agent acts. Unlike recall(),
+        this is NOT query-scored -- constraints are always in scope regardless of
+        semantic similarity to the current message, so a long or summarized
+        conversation cannot drop them.
+        """
+        now = time.time()
+        return [
+            item
+            for item in self.list_items(memory_type="constraint", limit=limit)
+            if item.status in ACTIVE_STATUSES and (not item.expires_at or item.expires_at > now)
+        ]
+
+    def render_durable_constraints(self, *, limit: int = 100) -> str:
+        """Render active constraints as authoritative facts for the planner.
+
+        Returns "" when there are no active constraints. The output is trusted
+        runtime state sourced from Navi's own governed memory store, not from
+        untrusted conversation text."""
+        constraints = self.active_constraints(limit=limit)
+        if not constraints:
+            return ""
+        lines = ["Durable constraints (reloaded from governed memory; always in effect):"]
+        for item in constraints:
+            verified = (
+                time.strftime("%Y-%m-%d", time.localtime(item.last_verified_at))
+                if item.last_verified_at
+                else "unverified"
+            )
+            lines.append(
+                f"- [scope={item.scope} confidence={item.confidence:.2f} "
+                f"source={item.source} verified={verified} id={item.id}] {item.content}"
+            )
+        return "\n".join(lines)
+
     def new_session_id(self) -> str:
         return time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
 

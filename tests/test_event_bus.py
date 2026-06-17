@@ -2,16 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import pytest
 
 from navi.connector_router import ConnectorRouter
 from navi.connector_runtime import ConnectorMessage
 from navi.event_bus import (
-    ActionApprovedEvent,
     ActionRequestedEvent,
-    ActionSuspendedEvent,
     EventBus,
     ResponseReadyEvent,
     UserIntentEvent,
@@ -141,7 +138,8 @@ async def test_connector_router_sends_approval_text_to_user_intent(tmp_path):
 @pytest.mark.asyncio
 async def test_governance_agent_approves_low_risk(tmp_path):
     bus = EventBus()
-    governance = GovernanceAgent(tmp_path, bus)
+    # Constructing the agent subscribes it to the bus; the instance is not used directly.
+    GovernanceAgent(tmp_path, bus)
 
     runs = RunStore(tmp_path)
     task = runs.create("low risk task", workspace=str(tmp_path), autonomy_level="L3")
@@ -169,7 +167,8 @@ async def test_governance_agent_approves_low_risk(tmp_path):
 @pytest.mark.asyncio
 async def test_governance_agent_suspends_high_risk(tmp_path):
     bus = EventBus()
-    governance = GovernanceAgent(tmp_path, bus)
+    # Constructing the agent subscribes it to the bus; the instance is not used directly.
+    GovernanceAgent(tmp_path, bus)
 
     runs = RunStore(tmp_path)
     task = runs.create("high risk task", workspace=str(tmp_path), autonomy_level="L2")

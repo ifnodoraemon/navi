@@ -34,6 +34,7 @@ class ModelSyscallPlanner:
         observations: list[str] | None = None,
         permission_ceiling: str = "write",
         model_roles: list[str] | None = None,
+        durable_constraints: str = "",
     ) -> ModelSyscall:
         turn_input = assemble_planner_turn_input(
             text,
@@ -42,6 +43,7 @@ class ModelSyscallPlanner:
             observations=observations,
             permission_ceiling=permission_ceiling,
             model_roles=model_roles,
+            durable_constraints=durable_constraints,
         )
         response = await self.provider.complete_for(
             "planner",

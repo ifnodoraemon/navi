@@ -20,6 +20,7 @@ from .execution import ExecutionService
 from .governance_agent import GovernanceAgent
 from .graph import GraphNode, GraphStore
 from .runs import Run, RunStore
+from .safeguards import redact_secrets
 from .text_utils import truncate_middle
 
 logger = logging.getLogger("navi.daemon")
@@ -99,13 +100,26 @@ class SystemDaemon:
                         run_id=event.run_id,
                     )
 
-                    from navi.goals import GoalStore
+                    from navi.goals import GOAL_STATUS_BLOCKED, GoalStore
 
                     goal_store = GoalStore(self.home)
                     goals = goal_store.list(status="active")
                     for g in goals:
-                        if g.session_id == event.session_id:
-                            await goal_store.compact_events(g.id, provider)
+                        if g.session_id != event.session_id:
+                            continue
+                        # Principle 17: enforce the goal's declared stop condition
+                        # before doing more work on it, so a long-running goal is
+                        # not kept active past its timeout / retry budget.
+                        stop_reason = goal_store.stop_condition_reached(g.id)
+                        if stop_reason:
+                            goal_store.update_status(
+                                g.id,
+                                GOAL_STATUS_BLOCKED,
+                                blocked_reason=stop_reason,
+                                event_type="goal.stop_condition",
+                            )
+                            continue
+                        await goal_store.compact_events(g.id, provider)
 
                     await self.evolution.extract_evals_from_session(
                         event.session_id,
@@ -489,19 +503,21 @@ class SystemDaemon:
                 for line in lines:
                     total_chars = SystemDaemon._append_log_prompt_chunk(chunks, total_chars, line)
                     if any(keyword in line.lower() for keyword in LOG_ERROR_KEYWORDS):
-                        error_lines.append(line.strip())
+                        error_lines.append(redact_secrets(line.strip()))
             new_offset = f.tell()
         pending_text += decoder.decode(b"", final=True)
         if pending_text:
             total_chars = SystemDaemon._append_log_prompt_chunk(chunks, total_chars, pending_text)
             if any(keyword in pending_text.lower() for keyword in LOG_ERROR_KEYWORDS):
-                error_lines.append(pending_text.strip())
+                error_lines.append(redact_secrets(pending_text.strip()))
         return "".join(chunks), error_lines, new_offset
 
     @staticmethod
     def _append_log_prompt_chunk(chunks: list[str], total_chars: int, line: str) -> int:
+        # Principle 13/16: external log content is untrusted and may contain
+        # secrets; redact before it enters the prompt-bound diff or error facts.
         if total_chars < MAX_LOG_PROMPT_CHARS:
-            chunks.append(line)
+            chunks.append(redact_secrets(line))
             total_chars += len(line)
         return total_chars
 

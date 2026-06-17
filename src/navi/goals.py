@@ -140,6 +140,9 @@ class GoalStore:
         run_id: str = "",
         trace_id: str = "",
         evidence: dict[str, Any] | None = None,
+        stop_condition: str = "",
+        timeout: float = 0.0,
+        max_retries: int = 0,
     ) -> Goal:
         now = time.time()
         goal = Goal(
@@ -155,9 +158,9 @@ class GoalStore:
             trace_id=trace_id,
             evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
             blocked_reason="",
-            stop_condition="",
-            timeout=0.0,
-            max_retries=0,
+            stop_condition=stop_condition,
+            timeout=timeout,
+            max_retries=max_retries,
             created_at=now,
             updated_at=now,
             completed_at=0.0,
@@ -403,6 +406,36 @@ class GoalStore:
             evidence=evidence or {},
         )
         return self.get(goal_id)
+
+    def stop_condition_reached(self, goal_id: str) -> str:
+        """Return a non-empty reason when a long-running goal has hit a declared,
+        state-based stop boundary (timeout elapsed or retry ceiling exceeded), or
+        "" when it may continue.
+
+        Principle 17: long-running goals need explicit stop conditions, so a goal
+        is not retried or kept active forever. This is a boundary rule over durable
+        state (wall-clock age, recorded retry events) only -- it makes no semantic
+        judgement about whether the objective is "done"; that stays with the agent.
+        """
+        goal = self.get(goal_id)
+        if goal is None:
+            return ""
+        if goal.status != GOAL_STATUS_ACTIVE:
+            return ""
+        if goal.timeout > 0:
+            age = time.time() - goal.created_at
+            if age >= goal.timeout:
+                return f"timeout reached: active for {age:.0f}s of {goal.timeout:.0f}s budget"
+        if goal.max_retries > 0:
+            retries = sum(
+                1
+                for event in self.list_events(goal_id, limit=1000)
+                if event.event_type == "goal.run_status"
+                and event.status in {GOAL_STATUS_BLOCKED, "failed"}
+            )
+            if retries >= goal.max_retries:
+                return f"retry ceiling reached: {retries} of {goal.max_retries} allowed"
+        return ""
 
     def update_for_run(self, run: Run, *, evidence: dict[str, Any] | None = None) -> Goal | None:
         goal = self.get_by_run(run.id)

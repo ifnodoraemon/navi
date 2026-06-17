@@ -57,6 +57,52 @@ def test_goal_store_tracks_task_lifecycle_with_evidence(tmp_path):
     ]
 
 
+def test_goal_stop_condition_reached_on_timeout(tmp_path):
+    goals = GoalStore(tmp_path)
+    goal = goals.create(
+        objective="long-running goal",
+        workspace=str(tmp_path),
+        session_id="s1",
+        timeout=3600.0,
+    )
+    # Freshly created goal is within its timeout budget.
+    assert goals.stop_condition_reached(goal.id) == ""
+
+    # Backdate created_at past the timeout to simulate an elapsed budget.
+    import sqlite3 as _sqlite3
+
+    with _sqlite3.connect(tmp_path / "goals.db") as conn:
+        conn.execute(
+            "UPDATE goals SET created_at = ? WHERE id = ?",
+            (goal.created_at - 7200.0, goal.id),
+        )
+    reason = goals.stop_condition_reached(goal.id)
+    assert "timeout reached" in reason
+
+    # A goal with no declared stop condition never trips the boundary.
+    open_goal = goals.create(objective="open goal", workspace=str(tmp_path))
+    assert goals.stop_condition_reached(open_goal.id) == ""
+
+
+def test_goal_stop_condition_reached_on_retry_ceiling(tmp_path):
+    goals = GoalStore(tmp_path)
+    goal = goals.create(
+        objective="retried goal",
+        workspace=str(tmp_path),
+        max_retries=2,
+    )
+    assert goals.stop_condition_reached(goal.id) == ""
+
+    # Record two failed run-status events while the goal stays active, simulating
+    # two retries that did not resolve the objective.
+    goals.record_event(goal.id, "goal.run_status", status=GOAL_STATUS_BLOCKED)
+    assert goals.stop_condition_reached(goal.id) == ""
+    goals.record_event(goal.id, "goal.run_status", status=GOAL_STATUS_BLOCKED)
+
+    reason = goals.stop_condition_reached(goal.id)
+    assert "retry ceiling reached" in reason
+
+
 def test_goal_store_rejects_schema_drift(tmp_path):
     with sqlite3.connect(tmp_path / "goals.db") as conn:
         conn.execute(

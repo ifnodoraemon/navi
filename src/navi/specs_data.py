@@ -157,17 +157,11 @@ CLI_PROVIDERS_SPEC: Any = [
     },
 ]
 
-SURFACE_AFFORDANCES_SPEC: Any = {
-    "default": {
-        "approval_template": "需要你批准后才会执行。\n"
-        "{task_line}\n"
-        "审批码: `{code}`\n"
-        "{expiry}\n"
-        "回复 `{approve_command} {code}` / `approve {code}` 执行，或回复 "
-        "`{reject_command} {code}` / `reject {code}` 取消。\n",
-        "approval_commands": {"approve": ["批准", "approve"], "reject": ["拒绝", "reject"]},
-    }
-}
+# Principle 4 (Connector Agnostic Core): the core runtime must not know any
+# channel's approval prompt wording or reply-command syntax. Each connector
+# declares those in its own connector.yaml; the core holds no default. When no
+# connector matches a source, approval_surface_affordance returns an empty
+# affordance and _run_approval_prompt renders nothing.
 
 DEFAULTS_SPEC: Any = {
     "service_name": "navi.service",

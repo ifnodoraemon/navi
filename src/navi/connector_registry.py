@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import navi
-from .specs_data import SURFACE_AFFORDANCES_SPEC
 
 
 @dataclass(frozen=True)
@@ -67,9 +66,9 @@ def approval_surface_affordance(source: str) -> dict[str, Any]:
         spec = adapter.spec
         if source in {spec.name, spec.surface, spec.local_source}:
             return _approval_affordance_from_spec(spec)
-    raw = SURFACE_AFFORDANCES_SPEC or {}
-    default = raw.get("default") if isinstance(raw, dict) else {}
-    return default if isinstance(default, dict) else {}
+    # Principle 4: no core default. A source with no matching connector has no
+    # approval affordance, and the caller renders no approval prompt.
+    return {}
 
 
 def _approval_affordance_from_spec(spec: ConnectorSpec) -> dict[str, Any]:

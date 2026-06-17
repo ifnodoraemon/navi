@@ -133,6 +133,7 @@ def assemble_planner_turn_input(
     observations: list[str] | None = None,
     permission_ceiling: str = "write",
     model_roles: list[str] | None = None,
+    durable_constraints: str = "",
 ) -> PromptAssembly:
     model_roles = model_roles or list_agent_role_names()
     role_names = set(model_roles)
@@ -183,6 +184,20 @@ def assemble_planner_turn_input(
             ),
         ]
     )
+
+    if durable_constraints.strip():
+        # Principle 12: durable constraints are reloaded from the governed memory
+        # store every turn so they survive context compression. They are trusted
+        # runtime state (Navi's own store), not untrusted conversation text, and
+        # rank above conversation history as a must/must-not boundary.
+        blocks.append(
+            PromptBlock(
+                "DURABLE CONSTRAINTS",
+                "turn_input",
+                "memory.constraints",
+                durable_constraints.strip(),
+            )
+        )
 
     if permission_ceiling == "read":
         blocks.append(
