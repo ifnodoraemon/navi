@@ -18,7 +18,6 @@ from .capabilities_types import (
 from .hooks import HookDecision, HookEvent, HookRegistry
 from .operating_context import permission_allows
 from .runs import RunStore
-from .safeguards import capability_safeguard_facts
 from .tools import TURN_CONTEXT, ToolSpec, build_tool_gateway
 from .actions.registry import ActionCapabilityProvider
 from .actions.tools import ToolGatewayCapabilityProvider, ToolCapability, ToolsListCapability

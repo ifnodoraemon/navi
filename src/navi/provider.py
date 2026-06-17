@@ -10,14 +10,14 @@ from typing import Any, Protocol
 import httpx
 import logging
 
-logger = logging.getLogger(__name__)
-
 from .config import ModelConfig
 from .provider_specs import (
     ProviderSpec,
     get_provider_spec,
     list_provider_specs as _list_provider_specs,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)

@@ -15,7 +15,7 @@ from .app_factory import build_runtime
 from .acceptance import load_acceptance_scenario, report_to_text, run_product_acceptance
 from .auth import AuthInspector
 from .capabilities import CapabilityContext, build_capability_registry
-from .config import ModelConfig, load_config, write_default_config
+from .config import load_config, write_default_config
 from .connector_registry import get_connector_adapter, load_connector_adapters
 from .connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
 from .diagnostics import run_diagnostics

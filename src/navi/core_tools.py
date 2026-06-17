@@ -13,7 +13,7 @@ from .fact_tools import service_facts, run_facts
 from .hooks import HookRegistry
 from .memory import MemoryStore
 from .operating_context import permission_allows
-from .runs import Approval, RunStore
+from .runs import Approval
 from .safeguards import capability_safeguard_facts
 from .skills import SkillStore
 from .tools import ALL_EXECUTION_CONTEXTS, ToolRegistry, ToolResult, ToolSpec

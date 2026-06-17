@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Mapping
 
 from ..capabilities_types import Capability
-from ..tools import ToolSpec
 
 
 from .specs import ACTION_SPECS

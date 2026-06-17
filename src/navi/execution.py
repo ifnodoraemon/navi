@@ -633,7 +633,7 @@ class ExecutionService:
 
     async def plan_task(self, task: Run) -> Run:
         self.runs.update_run(task.id, status=RUN_STATUS_PREPARING)
-        result = await self._provider_call_with_timeout(task, "prepare")
+        result = await self._prepare_with_subagent(task)
         self._log(task, result)
         task_after_prepare = self.runs.get(task.id)
         status = prepare_run_status(
@@ -898,40 +898,25 @@ class ExecutionService:
             ended_at=result.ended_at,
         )
 
-    async def _provider_call(
-        self, task: Run, phase: str, previous_result: ExecutionResult | None = None
-    ) -> ExecutionResult:
-
-        if phase == "prepare":
-            return await self.provider.plan(task)
-
-        from .react_runner import ReActRunner
-
-        react_runner = ReActRunner(home=self.home, provider=self.provider.provider)
-        return await react_runner.run_task(task)
-
-    async def _provider_call_with_timeout(
-        self, task: Run, phase: str, previous_result: ExecutionResult | None = None
-    ) -> ExecutionResult:
-        role = SUBAGENT_PLANNER_ROLE if phase == "prepare" else SUBAGENT_EXECUTOR_ROLE
+    async def _prepare_with_subagent(self, task: Run) -> ExecutionResult:
         subagent_run = self.subagents.start(
-            role=role,
-            phase=phase,
+            role=SUBAGENT_PLANNER_ROLE,
+            phase="prepare",
             run_id=task.id,
-            command=["navi", "subagent", role, phase, task.id],
+            command=["navi", "subagent", SUBAGENT_PLANNER_ROLE, "prepare", task.id],
             input_data={"workspace": task.workspace, "autonomy_level": task.autonomy_level},
         )
 
         started = time.time()
         try:
-            result = await self._provider_call(task, phase, previous_result=previous_result)
+            result = await self.provider.plan(task)
             self._finish_provider_subagent(subagent_run.id, result)
             return result
         except Exception as exc:
             result = ExecutionResult(
                 provider=INTERNAL_EXECUTION_PROVIDER,
-                phase=phase,
-                command=["navi", "internal", "--error", phase, task.id],
+                phase="prepare",
+                command=["navi", "internal", "--error", "prepare", task.id],
                 stdout="",
                 stderr=repr(exc),
                 exit_code=1,
@@ -939,7 +924,7 @@ class ExecutionService:
                 ended_at=time.time(),
                 protocol=ExecutionProtocol.internal_status(
                     run_id=task.id,
-                    phase=phase,
+                    phase="prepare",
                     status="failed",
                     summary=repr(exc),
                     reason="execution provider raised an unexpected error",

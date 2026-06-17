@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .specs_data import CAPABILITY_SAFEGUARDS_SPEC
@@ -52,8 +53,6 @@ def _declared_safeguard(spec: ToolSpec) -> dict:
         "reason": "Fallback safeguard for capability without declared metadata.",
     }
 
-
-import re
 
 _SECRET_PATTERNS = [
     r"(?i)(bearer\s+)[A-Za-z0-9\-\._~+/]+",
