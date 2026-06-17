@@ -489,6 +489,29 @@ class RunStore:
             )
         return approval
 
+    def reissue_approval(
+        self,
+        *,
+        run_id: str,
+        peer_id: str,
+        sender_id: str,
+        action: str = "execute",
+        ttl_seconds: int = 900,
+    ) -> Approval:
+        """Mint a fresh approval for a run whose prior code expired, and pull the
+        run back into awaiting_approval. The recovery path so an expired code is
+        not a dead end — the user acts on the new code instead of re-creating the
+        whole task."""
+        approval = self.create_approval(
+            run_id=run_id,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            action=action,
+            ttl_seconds=ttl_seconds,
+        )
+        self.update_run(run_id, status="awaiting_approval")
+        return approval
+
     def resolve_approval(self, code: str, sender_id: str, status: str) -> Approval | None:
         approval = self.get_approval(code)
         if approval is None or approval.sender_id != sender_id or approval.status != "pending":
@@ -553,14 +576,22 @@ class RunStore:
         return approval
 
     def has_approved_execution(self, run_id: str) -> bool:
+        return self.has_approved_action(run_id, "execute")
+
+    def has_approved_action(self, run_id: str, action: str) -> bool:
+        """True when this run has an approved approval for the given action.
+
+        Used both for task-level execution grants (action='execute') and for
+        per-capability sensitive-op grants (action='execute:<tool>'), so an
+        approved sensitive op is not re-suspended on replay."""
         with connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT 1 FROM approvals
-                WHERE run_id = ? AND action = 'execute' AND status = 'approved'
+                WHERE run_id = ? AND action = ? AND status = 'approved'
                 LIMIT 1
                 """,
-                (run_id,),
+                (run_id, action),
             ).fetchone()
         return row is not None
 
@@ -663,7 +694,29 @@ class RunStore:
                 """,
                 (cutoff, cutoff),
             )
-            return int(cursor.rowcount or 0)
+            archived = int(cursor.rowcount or 0)
+            # Move the owning runs out of awaiting_approval so they leave the
+            # active list. They become `expired`: excluded from active views but
+            # still re-issuable (a new code resurrects them) and deletable from
+            # remote — closing the dead-end where a run could neither be approved
+            # (code gone) nor removed (status not failed).
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = 'expired', updated_at = ?
+                WHERE status = 'awaiting_approval'
+                  AND id IN (
+                      SELECT run_id FROM approvals
+                      WHERE status = 'expired'
+                  )
+                  AND id NOT IN (
+                      SELECT run_id FROM approvals
+                      WHERE status = 'pending' AND expires_at >= ?
+                  )
+                """,
+                (cutoff, cutoff),
+            )
+            return archived
 
     def _approvals_for_run(self, run_id: str) -> list[Approval]:
         with connect(self.db_path) as conn:
@@ -677,6 +730,12 @@ class RunStore:
                 (run_id,),
             ).fetchall()
         return [Approval(*row) for row in rows]
+
+    def latest_approval_for_run(self, run_id: str) -> Approval | None:
+        """Most recent approval (any status) for a run. Used by the re-issue path
+        to find an expired code to replace when there is no pending one left."""
+        approvals = self._approvals_for_run(run_id)
+        return approvals[0] if approvals else None
 
     def create_watch(
         self,

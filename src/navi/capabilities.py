@@ -43,6 +43,8 @@ class CapabilityRegistry:
         disabled_capability_classes: frozenset[str] | frozenset = frozenset(),
         permission_ceiling: str = "write",
         execution_context: str = TURN_CONTEXT,
+        enforce_connector_source_policy: bool = True,
+        governed_run_id: str | None = None,
     ):
         self.home = home
         self.allow_sources = allow_sources
@@ -51,6 +53,16 @@ class CapabilityRegistry:
         self.disabled_capability_classes = disabled_capability_classes
         self.permission_ceiling = permission_ceiling
         self.execution_context = execution_context
+        # When True (live ingress), invoke() re-derives the remote connector
+        # sandbox from context.source as defense-in-depth. The approved,
+        # already-governed background executor sets this False so it is not
+        # re-sandboxed by the surface its task happened to originate from.
+        self.enforce_connector_source_policy = enforce_connector_source_policy
+        # When set, this registry executes on behalf of an approved background
+        # run. Sensitive (mutating) ops are then gated by a per-capability
+        # approval: the first such op suspends the run for a fresh code instead
+        # of running unchecked. Replay after approval passes the recorded grant.
+        self.governed_run_id = governed_run_id
         self.gateway = build_tool_gateway(
             home,
             project_dir=project_dir,
@@ -139,7 +151,11 @@ class CapabilityRegistry:
                 terminal=True,
             )
         actual_ceiling = context.permission_ceiling
-        source_policy = _connector_policy_for_source(context.source)
+        source_policy = (
+            _connector_policy_for_source(context.source)
+            if self.enforce_connector_source_policy
+            else None
+        )
         if source_policy is not None:
             if source_policy.allowed_tools and name not in source_policy.allowed_tools:
                 return CapabilityResult(
@@ -183,6 +199,9 @@ class CapabilityRegistry:
                 message=f"capability {name} is not available with permission {permission}",
                 terminal=True,
             )
+        suspended = self._maybe_suspend_for_approval(handler.spec, permission, context)
+        if suspended is not None:
+            return suspended
         call_args = args or {}
         before_decisions = self.hooks.run(
             HookEvent(
@@ -239,6 +258,62 @@ class CapabilityRegistry:
         if handler.spec.mutates and not isinstance(handler, ToolCapability):
             self._audit_action_capability(handler.spec, call_args, result, started_at=started_at)
         return result
+
+    def _maybe_suspend_for_approval(
+        self, spec: ToolSpec, permission: str, context: CapabilityContext
+    ) -> CapabilityResult | None:
+        """Gate sensitive (mutating) ops inside an approved background run.
+
+        Returns a terminal "needs approval" result (after suspending the run and
+        minting a fresh code) when the op is sensitive and lacks a per-capability
+        grant; returns None when the op may proceed."""
+        run_id = self.governed_run_id
+        if not run_id:
+            return None
+        from .safeguards import classify_capability
+
+        safeguard = classify_capability(spec)
+        sensitive = (
+            permission == "write"
+            or spec.mutates
+            or safeguard.confirmation_required
+            or safeguard.risk_class == "high"
+        )
+        if not sensitive:
+            return None
+        runs = RunStore(self.home)
+        action = f"execute:{spec.name}"
+        if runs.has_approved_action(run_id, action):
+            return None
+        task = runs.get(run_id)
+        approval = runs.create_approval(
+            run_id=run_id,
+            peer_id=context.peer_id or (task.peer_id if task else ""),
+            sender_id=context.sender_id or (task.sender_id if task else ""),
+            action=action,
+        )
+        message = (
+            f"子任务需要执行敏感操作「{spec.name}」，需要您再次批准。\n"
+            f"审批码：{approval.code}\n"
+            f"请回复「批准 {approval.code}」以继续，或「拒绝 {approval.code}」取消。"
+        )
+        runs.update_run(run_id, status="awaiting_approval", result_summary=message)
+        return CapabilityResult(
+            ok=False,
+            action="approval",
+            observation=message,
+            message=message,
+            run_id=run_id,
+            terminal=True,
+            facts={
+                "entity_type": "approval_request",
+                "entity_id": approval.id,
+                "state_transition": "created",
+                "reason": "sensitive_op_requires_approval",
+                "run_id": run_id,
+                "approval": {"code": approval.code, "action": action},
+            },
+        )
 
     def _build_handlers(self) -> Mapping[str, Capability]:
         handlers: dict[str, Capability] = {}
@@ -327,6 +402,8 @@ def build_capability_registry(
     disabled_tools: set[str] | None = None,
     permission_ceiling: str = "write",
     execution_context: str = TURN_CONTEXT,
+    enforce_connector_source_policy: bool = True,
+    governed_run_id: str | None = None,
 ) -> CapabilityRegistry:
     return CapabilityRegistry(
         home=home,
@@ -336,4 +413,6 @@ def build_capability_registry(
         disabled_tools=disabled_tools,
         permission_ceiling=permission_ceiling,
         execution_context=execution_context,
+        enforce_connector_source_policy=enforce_connector_source_policy,
+        governed_run_id=governed_run_id,
     )

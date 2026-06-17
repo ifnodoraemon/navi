@@ -683,6 +683,13 @@ class ExecutionService:
             permission_ceiling=permission_ceiling,
             disabled_capability_classes=frozenset({"delegate"}),
             step_budget=15,
+            # This task already passed governance (execution_allowed). It is
+            # approved background work, not live connector ingress, so it must
+            # not be re-sandboxed by the surface it originated from. Sensitive
+            # (mutating) ops inside it are still gated — they suspend for a fresh
+            # approval rather than running unchecked.
+            enforce_connector_source_policy=False,
+            governed_run_id=task.id,
         )
         turn_result = await engine.handle(
             f"Execute the following task:\n\n{task.prompt}\n\nWhen finished, synthesize a final completion summary.",
@@ -705,6 +712,23 @@ class ExecutionService:
             },
             error=turn_result.text if exit_code != 0 else "",
         )
+        # A sensitive op inside the run may have suspended it for a fresh
+        # approval. That state is intentional — return it as-is so the finalizer
+        # does not overwrite awaiting_approval with completed/failed. The daemon
+        # surfaces the new code to the user via the normal background channel.
+        suspended = self.runs.get(task.id)
+        if suspended is not None and suspended.status == "awaiting_approval":
+            self.subagents.finish(
+                subagent_run.id,
+                status="suspended",
+                output_data={"exit_code": 0, "summary": suspended.result_summary},
+                error="",
+            )
+            GoalStore(self.home).update_for_run(
+                suspended,
+                evidence={"run_id": suspended.id, "run_status": suspended.status},
+            )
+            return suspended
         protocol = ExecutionProtocol.internal_status(
             run_id=task.id,
             phase="execute",
