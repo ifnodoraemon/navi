@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -14,7 +13,7 @@ from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.daemon import SystemDaemon
 
-from .client import FakeWeixinClient, TYPING_START, TYPING_STOP, WeixinClient
+from .client import TYPING_START, TYPING_STOP, WeixinClient
 from .config import WeixinConfig
 from .models import WeixinAccount, WeixinUpdate
 from .prompts import NOTIFICATION_SYSTEM_PROMPT
@@ -32,6 +31,7 @@ class WeixinService:
         session_alias_prefix: str = "connector:weixin",
         project_dir: Path,
         tool_policy=None,
+        client=None,
     ):
         self.home = home
         self.project_dir = project_dir.resolve()
@@ -42,7 +42,7 @@ class WeixinService:
         self.store = WeixinStore(home)
         self.context_tokens = ContextTokenStore(home)
         self.dedup = MessageDeduplicator()
-        self.client = self._build_client()
+        self.client = client if client is not None else self._build_client()
         self.typing_tickets: dict[str, str] = {}
         self.daemon = SystemDaemon(home, project_dir=self.project_dir)
         self.active = self.daemon
@@ -57,8 +57,6 @@ class WeixinService:
         self.ingress = ConnectorIngressRuntime(**ingress_kwargs)
 
     def _build_client(self):
-        if os.environ.get("NAVI_WEIXIN_FAKE", "").lower() in {"1", "true", "yes"}:
-            return FakeWeixinClient()
         token = self.config.token
         if self.config.account_id and not token:
             account = self.store.load_account(self.config.account_id)
@@ -309,12 +307,6 @@ class WeixinService:
 
     async def _send_typing_safely(self, peer_id: str, typing_ticket: str, status: int) -> None:
         try:
-            if isinstance(self.client, FakeWeixinClient):
-                await self.client.send_typing(
-                    peer_id=peer_id, typing_ticket=typing_ticket, status=status
-                )
-                self.record_event("typing.sent", peer_id=peer_id, status=status)
-                return
             await asyncio.wait_for(
                 self.client.send_typing(
                     peer_id=peer_id, typing_ticket=typing_ticket, status=status

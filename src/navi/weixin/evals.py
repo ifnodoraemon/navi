@@ -14,10 +14,43 @@ from navi.provider import ChatMessage, ModelPool
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 
-from .client import FakeWeixinClient
+from .client import split_text_for_weixin
 from .config import WeixinConfig
 from .models import WeixinAccount, WeixinUpdate
 from .service import WeixinService
+
+
+class _CaptureWeixinClient:
+    """Eval-only test double that captures outbound weixin traffic.
+
+    Lives in the eval module (a test boundary), not in the runtime client, so
+    the production transport has no simulation mode. It records sent chunks so
+    journey assertions can inspect what would have been delivered, without
+    contacting a real weixin account.
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, str]] = []
+        self.typing: list[dict[str, str | int]] = []
+
+    async def send_message(
+        self, *, account_id: str, peer_id: str, text: str, context_token: str = ""
+    ) -> None:
+        for chunk in split_text_for_weixin(text):
+            self.sent.append(
+                {
+                    "account_id": account_id,
+                    "peer_id": peer_id,
+                    "text": chunk,
+                    "context_token": context_token,
+                }
+            )
+
+    async def get_typing_ticket(self, *, user_id: str, context_token: str = "") -> str:
+        return ""
+
+    async def send_typing(self, *, peer_id: str, typing_ticket: str, status: int) -> None:
+        self.typing.append({"peer_id": peer_id, "typing_ticket": typing_ticket, "status": status})
 
 
 @dataclass(frozen=True)
@@ -88,10 +121,13 @@ async def _run_journey(
     )
     runtime = AgentRuntime(home=home, provider=model_provider or ModelPool(default=()))
     service = WeixinService(
-        home=home, config=WeixinConfig(dm_policy="open"), runtime=runtime, project_dir=project_dir
+        home=home,
+        config=WeixinConfig(dm_policy="open"),
+        runtime=runtime,
+        project_dir=project_dir,
+        client=_CaptureWeixinClient(),
     )
-    service.client = FakeWeixinClient()
-    account = WeixinAccount(account_id="eval-account", token="eval-token", base_url="fake://ilink")
+    account = WeixinAccount(account_id="eval-account", token="eval-token", base_url="ilink")
     runs = RunStore(home)
     errors: list[str] = []
     events: list[dict[str, Any]] = []

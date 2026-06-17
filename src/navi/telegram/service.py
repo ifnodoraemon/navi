@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 
 from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
 from navi.runtime import AgentRuntime
 
-from .client import FakeTelegramClient, TelegramClient
+from .client import TelegramClient
 from .config import TelegramConfig
 from .models import TelegramUpdate
 
@@ -22,6 +21,7 @@ class TelegramService:
         local_source: str = "telegram",
         session_alias_prefix: str = "connector:telegram",
         project_dir: Path,
+        client=None,
     ):
         self.home = home
         self.project_dir = project_dir.resolve()
@@ -29,7 +29,7 @@ class TelegramService:
         self.runtime = runtime
         self.local_source = local_source
         self.session_alias_prefix = session_alias_prefix
-        self.client = self._build_client()
+        self.client = client if client is not None else self._build_client()
         self.seen: set[str] = set()
         self.ingress = ConnectorIngressRuntime(
             home=home,
@@ -39,8 +39,6 @@ class TelegramService:
         )
 
     def _build_client(self):
-        if os.environ.get("NAVI_TELEGRAM_FAKE", "").lower() in {"1", "true", "yes"}:
-            return FakeTelegramClient()
         if not self.config.bot_token:
             raise RuntimeError("Telegram is not configured. Set TELEGRAM_BOT_TOKEN first.")
         return TelegramClient(

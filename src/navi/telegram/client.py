@@ -38,22 +38,6 @@ class TelegramClient:
         return f"{self.api_base_url}/bot{self.bot_token}/{method}"
 
 
-class FakeTelegramClient:
-    def __init__(self):
-        self.updates: list[TelegramUpdate] = []
-        self.sent: list[dict[str, str]] = []
-
-    async def get_updates(
-        self, *, offset: int | None = None, timeout: int = 25
-    ) -> list[TelegramUpdate]:
-        if offset is None:
-            return list(self.updates)
-        return [update for update in self.updates if update.update_id >= offset]
-
-    async def send_message(self, *, chat_id: str, text: str) -> None:
-        self.sent.append({"chat_id": chat_id, "text": text})
-
-
 def _parse_update(item: object) -> TelegramUpdate | None:
     if not isinstance(item, dict):
         return None

@@ -11,7 +11,6 @@ from navi.capabilities_types import CapabilityContext
 from navi.runs import RunStore
 from navi.runtime import AgentRuntime
 from navi.workflows import STEP_STATUS_COMPLETED, WORKFLOW_STATUS_VERIFIED_COMPLETE, WorkflowStore
-from navi.weixin.client import FakeWeixinClient
 from navi.weixin.config import WeixinConfig
 from navi.weixin.service import WeixinService
 
@@ -104,19 +103,19 @@ async def test_bulk_delete_requires_explicit_scope(tmp_path: Path) -> None:
 
 def test_weixin_service_initializes_connector_ingress_without_direct_router_call(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("NAVI_WEIXIN_FAKE", "true")
     runtime = AgentRuntime(home=tmp_path, provider=NoModelCalls())
+    injected_client = object()
 
     service = WeixinService(
         home=tmp_path,
         config=WeixinConfig(),
         runtime=runtime,
         project_dir=tmp_path,
+        client=injected_client,
     )
 
-    assert isinstance(service.client, FakeWeixinClient)
+    assert service.client is injected_client
     assert service.active is service.daemon
     assert service.ingress.agent is not None
 
