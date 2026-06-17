@@ -33,6 +33,9 @@ def get_action_handlers(home: Path, project_dir: Path) -> dict[str, Capability]:
         "delegate_delete": lambda spec: _load("delegation", "DelegateDeleteCapability")(
             spec, home=home
         ),
+        "delegate_list": lambda spec: _load("delegation", "DelegateListCapability")(
+            spec, home=home
+        ),
         "watch_delete": lambda spec: _load("watch", "WatchDeleteCapability")(spec, home=home),
         "session_create": lambda spec: _load("session", "SessionCreateCapability")(spec, home=home),
         "session_request_elevation": lambda spec: _load(

@@ -465,14 +465,27 @@ def explicit_code_was_user_provided(
     return any(code in content for content in (session_user_messages or [])[-2:])
 
 
-def _run_matches_context(run: Run, context: SurfaceContext) -> bool:
-    if run.sender_id and context.sender_id and run.sender_id != context.sender_id:
+def run_matches_context(record: Any, context: Any) -> bool:
+    """Whether a run/watch record belongs to the caller's surface context.
+
+    Accepts any record exposing sender_id/peer_id (and optionally source), so it
+    works for both Run and Watch (Watch has no source field). Used by approval
+    visibility and by delegate.list so the two views stay consistent.
+    """
+    record_sender = getattr(record, "sender_id", "")
+    record_peer = getattr(record, "peer_id", "")
+    record_source = getattr(record, "source", "")
+    if record_sender and context.sender_id and record_sender != context.sender_id:
         return False
-    if run.peer_id and context.peer_id and run.peer_id != context.peer_id:
+    if record_peer and context.peer_id and record_peer != context.peer_id:
         return False
-    if run.source and context.source and run.source != context.source:
+    if record_source and context.source and record_source != context.source:
         return False
     return True
+
+
+def _run_matches_context(run: Run, context: SurfaceContext) -> bool:
+    return run_matches_context(run, context)
 
 
 def _approval_matches_context(approval: Approval, run: Run | None, context: SurfaceContext) -> bool:

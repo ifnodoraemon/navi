@@ -74,27 +74,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     )
     registry.register(
         _core_tool_spec(
-            name="delegate.list",
-            capability_class="delegation",
-            description="Return delegation runs and recurring watches as delegation-management facts.",
-            input_schema={
-                "type": "object",
-                "properties": {"limit": {"type": "integer", "default": 20}},
-            },
-            output_schema=_output_schema(
-                {
-                    "runs": _array_of_objects(),
-                    "watches": _array_of_objects(),
-                    "run_status_counts": {"type": "object"},
-                    "returned_run_count": {"type": "integer"},
-                    "run_limit": {"type": "integer"},
-                }
-            ),
-        ),
-        lambda args: _run_list(home, args),
-    )
-    registry.register(
-        _core_tool_spec(
             name="provider.config",
             capability_class="provider",
             description="Return configured model provider facts without secrets.",
@@ -596,23 +575,6 @@ def _run_status(home: Path, args: dict[str, Any]) -> ToolResult:
             "logs": [asdict(log) for log in facts.logs],
         },
         error="" if facts.run else "delegation run not found",
-    )
-
-
-def _run_list(home: Path, args: dict[str, Any]) -> ToolResult:
-    limit = _positive_int(args.get("limit"), default=20, maximum=100)
-    store = RunStore(home)
-    listed_runs = store.list(limit=limit)
-    return ToolResult(
-        tool="delegate.list",
-        ok=True,
-        facts={
-            "runs": [asdict(run) for run in listed_runs],
-            "watches": [asdict(watch) for watch in store.list_watches(limit=limit)],
-            "run_status_counts": store.count_runs_by_status(),
-            "returned_run_count": len(listed_runs),
-            "run_limit": limit,
-        },
     )
 
 

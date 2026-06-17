@@ -421,3 +421,48 @@ class ExecutionRetryCapability:
             "error": result.error,
         }
         return _fact_result("execution", facts, run_id=result.id)
+
+
+class DelegateListCapability:
+    """List delegation runs and watches scoped to the caller's context.
+
+    delegate.list used to be a context-blind fact tool that returned every run
+    across all channels, so a remote connector could see (and a user could try
+    to approve) tasks created on other surfaces. As an action capability it has
+    the SurfaceContext and filters to runs that match the caller's
+    peer/sender/source, matching approval visibility (principles 4, 13, 16).
+    """
+
+    def __init__(self, spec: ToolSpec, *, home: Path):
+        self.spec = spec
+        self.home = home
+
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        from dataclasses import asdict
+        from ..control import run_matches_context
+
+        limit = _positive_int(args.get("limit"), default=20, maximum=100)
+        store = RunStore(self.home)
+        runs = [run for run in store.list(limit=limit) if run_matches_context(run, context)]
+        watches = [
+            watch
+            for watch in store.list_watches(limit=limit)
+            if run_matches_context(watch, context)
+        ]
+        status_counts: dict[str, int] = {}
+        for run in runs:
+            status_counts[run.status] = status_counts.get(run.status, 0) + 1
+        facts = {
+            "runs": [asdict(run) for run in runs],
+            "watches": [asdict(watch) for watch in watches],
+            "run_status_counts": status_counts,
+            "returned_run_count": len(runs),
+            "run_limit": limit,
+        }
+        return _fact_result("delegation", facts)

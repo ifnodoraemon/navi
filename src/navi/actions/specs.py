@@ -239,6 +239,30 @@ ACTION_SPECS = [
         source="action",
     ),
     ToolSpec(
+        name="delegate.list",
+        capability_class="delegation",
+        execution_contexts=("turn", "workflow_step"),
+        description="""Return delegation runs and recurring watches for the current caller's context as delegation-management facts. Results are scoped to the caller's surface; tasks created on other channels are not listed.""",
+        input_schema={
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 20}},
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "runs": {"type": "array", "items": {"type": "object"}},
+                "watches": {"type": "array", "items": {"type": "object"}},
+                "run_status_counts": {"type": "object"},
+                "returned_run_count": {"type": "integer"},
+                "run_limit": {"type": "integer"},
+            },
+        },
+        facts_only=True,
+        mutates=False,
+        permission="read",
+        source="action",
+    ),
+    ToolSpec(
         name="watch.delete",
         capability_class="watch.delete",
         execution_contexts=("turn", "workflow_step"),
