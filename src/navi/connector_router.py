@@ -7,7 +7,14 @@ from .connector_runtime import ConnectorMessage
 from .event_bus import (
     EventBus,
     MessageIngressEvent,
+    ResponseReadyEvent,
 )
+
+# Idle window: how long we tolerate *silence* on the response channel before
+# declaring the upstream unresponsive. A turn that is still working sends
+# heartbeats well within this window, so a slow-but-live turn never times out.
+# Only a genuinely stuck/crashed upstream (no heartbeat, no response) trips it.
+IDLE_TIMEOUT_SECONDS = 120.0
 
 
 class ConnectorRouter:
@@ -32,11 +39,21 @@ class ConnectorRouter:
             )
 
             await self.event_bus.publish(event)
-
-            try:
-                response = await asyncio.wait_for(channel.get(), timeout=120.0)
-                return response.text
-            except asyncio.TimeoutError:
-                return "处理超时，请稍后重试。"
+            return await self._await_response(channel)
         finally:
             self.event_bus.remove_response_channel(correlation_id)
+
+    async def _await_response(self, channel: asyncio.Queue) -> str:
+        """Wait for the real response, resetting the deadline on every heartbeat.
+
+        The timeout is per-idle-gap, not a total wall clock: as long as the turn
+        keeps signalling liveness, we keep waiting. Silence longer than the idle
+        window means the upstream is stuck, so we surface a timeout."""
+        while True:
+            try:
+                item = await asyncio.wait_for(channel.get(), timeout=IDLE_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                return "处理超时，请稍后重试。"
+            if isinstance(item, ResponseReadyEvent):
+                return item.text
+            # Heartbeat (or any non-terminal signal): upstream is alive, keep waiting.

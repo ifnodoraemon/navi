@@ -395,6 +395,10 @@ class WeixinService:
 
     @staticmethod
     def _task_fallback(task: Run) -> str:
+        # awaiting_approval carries the re-approval prompt (with the fresh code)
+        # in result_summary; surface it verbatim rather than the empty error.
+        if task.status == "awaiting_approval":
+            return (task.result_summary or "").strip() or f"Run `{task.id}` 需要审批。"
         details = task.result_summary if task.status == "completed" else task.error
         return f"Run `{task.id}` {task.status}. {details or ''}".strip()
 

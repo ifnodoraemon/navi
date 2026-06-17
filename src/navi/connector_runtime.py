@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,12 @@ from .runtime import AgentRuntime
 
 if TYPE_CHECKING:
     from .event_bus import EventBus
+
+
+# How often a still-running turn signals liveness on its response channel. Must
+# be comfortably below the router's IDLE_TIMEOUT_SECONDS so a live turn never
+# trips the idle timeout between two heartbeats.
+HEARTBEAT_INTERVAL_SECONDS = 20.0
 
 
 REMOTE_SAFE_TOOLS = frozenset(
@@ -158,21 +165,14 @@ class ConnectorIngressRuntime:
         self._intent = IntentAgent(self.agent.home, self.agent.runtime, self.event_bus)
 
         async def on_user_intent(event: UserIntentEvent) -> None:
-            result = await self.agent.handle(
-                event.text,
-                peer_id=event.peer_id,
-                sender_id=event.sender_id,
-                source=event.source,
-                session_alias=event.session_alias,
-                intent_facts=event.facts,
-            )
+            text = await self._handle_with_heartbeat(event)
             await self.event_bus.send_response(
                 ResponseReadyEvent(
                     source_agent="main_agent",
                     correlation_id=event.correlation_id,
                     peer_id=event.peer_id,
                     sender_id=event.sender_id,
-                    text=result.text,
+                    text=text,
                     source=event.source,
                 )
             )
@@ -203,6 +203,46 @@ class ConnectorIngressRuntime:
                 )
 
         self.event_bus.subscribe("run_completed", on_run_completed)
+
+    async def _handle_with_heartbeat(self, event) -> str:
+        """Run the agent turn while emitting heartbeats so a slow-but-live turn
+        is never mistaken for a stuck upstream by the router's idle timeout.
+
+        The handler runs as a task; a companion loop pings the response channel
+        until it finishes. Any handler failure is turned into a user-facing
+        message rather than left to hang the channel."""
+        handler_task = asyncio.ensure_future(
+            self.agent.handle(
+                event.text,
+                peer_id=event.peer_id,
+                sender_id=event.sender_id,
+                source=event.source,
+                session_alias=event.session_alias,
+                intent_facts=event.facts,
+            )
+        )
+
+        async def beat() -> None:
+            while True:
+                await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+                await self.event_bus.send_heartbeat(event.correlation_id)
+
+        heartbeat_task = asyncio.ensure_future(beat())
+        try:
+            result = await handler_task
+            return result.text
+        except Exception as exc:
+            import logging
+
+            logging.getLogger("navi.connector").error(
+                "Agent turn failed for correlation %s: %s",
+                event.correlation_id,
+                exc,
+                exc_info=True,
+            )
+            return "处理时发生内部错误，请稍后重试。"
+        finally:
+            heartbeat_task.cancel()
 
     async def handle(self, message: ConnectorMessage) -> str:
         text = await self.router.route(message)

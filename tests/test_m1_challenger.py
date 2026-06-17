@@ -66,7 +66,7 @@ async def test_remote_connector_cannot_run_or_delete_unfailed_delegation(
         context=context,
     )
     assert pending_delete.ok is False
-    assert "only delete failed delegation runs" in pending_delete.message
+    assert "remote delegate.delete can only delete delegation runs that are failed, awaiting_approval, or expired." in pending_delete.message
 
     runs = RunStore(tmp_path)
     runs.update_run(spawned.run_id, status="failed")

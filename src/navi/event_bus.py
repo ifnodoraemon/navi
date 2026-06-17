@@ -123,6 +123,15 @@ class ResponseReadyEvent(NaviEvent):
     source: str = ""
 
 
+@dataclass(frozen=True)
+class HeartbeatEvent(NaviEvent):
+    """Liveness signal pushed onto a response channel while a handler is still
+    working. It resets the router's idle timeout so an in-progress turn is never
+    mistaken for an unresponsive upstream."""
+
+    event_type: str = "heartbeat"
+
+
 Handler = Callable[[NaviEvent], Awaitable[None]]
 Unsubscribe = Callable[[], None]
 
@@ -130,7 +139,7 @@ Unsubscribe = Callable[[], None]
 class EventBus:
     def __init__(self) -> None:
         self._handlers: dict[str, list[Handler]] = {}
-        self._response_channels: dict[str, asyncio.Queue[ResponseReadyEvent]] = {}
+        self._response_channels: dict[str, asyncio.Queue[NaviEvent]] = {}
         self._event_log: list[NaviEvent] = []
 
         # Asyncio structures initialized lazily for loop-safety
@@ -199,8 +208,8 @@ class EventBus:
         if self._queue is not None:
             await self._queue.put(event)
 
-    def create_response_channel(self, correlation_id: str) -> asyncio.Queue[ResponseReadyEvent]:
-        q: asyncio.Queue[ResponseReadyEvent] = asyncio.Queue()
+    def create_response_channel(self, correlation_id: str) -> asyncio.Queue[NaviEvent]:
+        q: asyncio.Queue[NaviEvent] = asyncio.Queue()
         self._response_channels[correlation_id] = q
         return q
 
@@ -212,6 +221,15 @@ class EventBus:
         channel = self._response_channels.get(event.correlation_id)
         if channel:
             await channel.put(event)
+
+    async def send_heartbeat(self, correlation_id: str) -> None:
+        """Push a liveness signal onto a waiting response channel, if any.
+
+        No-op when the channel is gone (already responded or removed), so callers
+        can fire heartbeats freely without races on completion."""
+        channel = self._response_channels.get(correlation_id)
+        if channel:
+            await channel.put(HeartbeatEvent(correlation_id=correlation_id))
 
     async def drain(self) -> None:
         self._ensure_worker()

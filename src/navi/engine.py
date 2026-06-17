@@ -55,6 +55,8 @@ class HernessEngine:
         step_budget: int | None = None,
         event_bus: Any | None = None,
         execution_context: str = "turn",
+        enforce_connector_source_policy: bool = True,
+        governed_run_id: str | None = None,
     ):
         self.home = home
         self.runtime = runtime
@@ -72,6 +74,8 @@ class HernessEngine:
             disabled_capability_classes=disabled_capability_classes,
             permission_ceiling=permission_ceiling,
             execution_context=execution_context,
+            enforce_connector_source_policy=enforce_connector_source_policy,
+            governed_run_id=governed_run_id,
         )
         self.planner = ModelSyscallPlanner(runtime.provider)
         self.recovery = RecoveryPlanner()

@@ -21,6 +21,14 @@ from ..goals import GoalStore
 from ..execution import ExecutionService
 
 
+# Statuses a remote surface (e.g. WeChat) is allowed to delete. A run stuck in
+# awaiting_approval whose code has expired would otherwise be undeletable AND
+# unapprovable — a dead end — so those terminal-for-the-user states are
+# explicitly deletable from remote, not just `failed`.
+REMOTE_DELETABLE_STATUSES = frozenset({"failed", "awaiting_approval", "expired"})
+REMOTE_DELETABLE_KINDS = frozenset({"watch", "delegation"})
+
+
 class DelegateSpawnCapability:
     def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path):
         self.spec = spec
@@ -258,13 +266,20 @@ class DelegateDeleteCapability:
                 terminal=False,
             )
         if _remote_source(context.source) and (
-            task.status != "failed" or task.kind not in {"watch", "delegation"}
+            task.status not in REMOTE_DELETABLE_STATUSES
+            or task.kind not in REMOTE_DELETABLE_KINDS
         ):
             return CapabilityResult(
                 ok=False,
                 action="delegation",
-                observation="remote delegate.delete can only delete failed delegation runs.",
-                message="remote delegate.delete can only delete failed delegation runs.",
+                observation=(
+                    "remote delegate.delete can only delete delegation runs that are "
+                    "failed, awaiting_approval, or expired."
+                ),
+                message=(
+                    "remote delegate.delete can only delete delegation runs that are "
+                    "failed, awaiting_approval, or expired."
+                ),
                 terminal=False,
             )
         deleted = runs.delete_run(run_id)
@@ -311,18 +326,18 @@ class DelegateDeleteCapability:
         if _remote_source(context.source) and not kind:
             kind = "delegation"
         if _remote_source(context.source) and (
-            status != "failed" or kind not in {"watch", "delegation"}
+            status not in REMOTE_DELETABLE_STATUSES or kind not in REMOTE_DELETABLE_KINDS
         ):
             return CapabilityResult(
                 ok=False,
                 action="delegation",
                 observation=(
-                    "remote delegate.delete bulk cleanup requires status=failed "
-                    "and kind watch or delegation."
+                    "remote delegate.delete bulk cleanup requires status in "
+                    "{failed, awaiting_approval, expired} and kind watch or delegation."
                 ),
                 message=(
-                    "remote delegate.delete bulk cleanup requires status=failed "
-                    "and kind watch or delegation."
+                    "remote delegate.delete bulk cleanup requires status in "
+                    "{failed, awaiting_approval, expired} and kind watch or delegation."
                 ),
                 terminal=False,
             )

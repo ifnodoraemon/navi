@@ -253,6 +253,60 @@ class ApprovalService:
             },
         )
 
+    def _reissue_if_expired(
+        self,
+        *,
+        runs: RunStore,
+        decision: ApprovalDecision,
+        selection: ApprovalSelection,
+        context: SurfaceContext,
+        candidate: Approval | None,
+        run_id: str,
+    ) -> ApprovalResolution | None:
+        """If the user approves against an expired code, mint a fresh approval and
+        pull the run back into awaiting_approval instead of dead-ending. Returns a
+        resolution carrying the new code, or None when re-issue does not apply
+        (rejecting, or no expired candidate)."""
+        if decision != "approve":
+            return None
+        approval = candidate
+        if approval is None and run_id:
+            approval = runs.latest_approval_for_run(run_id)
+        if approval is None or approval.status != "expired":
+            return None
+        run = runs.get(approval.run_id)
+        if not _approval_matches_context(approval, run, context):
+            return None
+        fresh = runs.reissue_approval(
+            run_id=approval.run_id,
+            peer_id=approval.peer_id or context.peer_id,
+            sender_id=approval.sender_id or context.sender_id,
+            action=approval.action,
+        )
+        message = (
+            f"原审批码已过期，已为任务 {approval.run_id} 重新生成审批码：{fresh.code}。"
+            f"请回复「批准 {fresh.code}」以执行。"
+        )
+        return ApprovalResolution(
+            ok=False,
+            decision=decision,
+            selection=selection,
+            message=message,
+            run_id=approval.run_id,
+            facts={
+                "entity_type": "approval_request",
+                "entity_id": fresh.id,
+                "state_transition": "reissued",
+                "reason": "approval_reissued",
+                "run_id": approval.run_id,
+                "approval": {
+                    "code": fresh.code,
+                    "expires_at": fresh.expires_at,
+                },
+                "run_status": "awaiting_approval",
+            },
+        )
+
     def _resolve_one(
         self,
         *,
@@ -267,6 +321,16 @@ class ApprovalService:
         candidate = runs.get_approval(code) if code else None
         if candidate is None and run_id:
             candidate = runs.pending_approval_for_run(run_id, sender_id=context.sender_id)
+        reissued = self._reissue_if_expired(
+            runs=runs,
+            decision=decision,
+            selection=selection,
+            context=context,
+            candidate=candidate,
+            run_id=run_id,
+        )
+        if reissued is not None:
+            return reissued
         if candidate is not None:
             run = runs.get(candidate.run_id)
             if not _approval_matches_context(candidate, run, context):
