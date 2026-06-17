@@ -128,10 +128,11 @@ def chat() -> None:
 
         typer.echo(f"navi: {result.text}")
 
-        if result.action == "ask" and result.facts and "options" in result.facts:
-            pending_options = result.facts["options"]
-        else:
-            pending_options = []
+        # Presentation is driven by the structured `options` fact, not by
+        # interpreting the agent's action label (principle 4: control surfaces
+        # must not encode agent action semantics).
+        options = result.facts.get("options") if result.facts else None
+        pending_options = options if isinstance(options, list) and options else []
 
 
 async def _run_chat_turn(

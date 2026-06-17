@@ -39,9 +39,12 @@ class ClarifyCapability:
         options = args.get("options")
         facts = {}
         if isinstance(options, list) and options:
+            # Always expose options as a structured fact (rich surfaces like the
+            # CLI render a menu from it) and always inline them into the message
+            # text (the only field plain text channels deliver). The capability
+            # must not branch on the surface name (principle 4).
             facts["options"] = options
-            if context.source != "cli":
-                message += "\n" + "\n".join(f"[{i + 1}] {opt}" for i, opt in enumerate(options))
+            message += "\n" + "\n".join(f"[{i + 1}] {opt}" for i, opt in enumerate(options))
 
         return CapabilityResult(
             ok=True, action="ask", observation=message, message=message, terminal=True, facts=facts
