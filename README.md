@@ -69,9 +69,9 @@ navi api
 ### Setup & Run Weixin Connector
 
 ```bash
-# Set fake connector environment for local testing
-NAVI_WEIXIN_FAKE=true navi connectors setup weixin
-NAVI_WEIXIN_FAKE=true navi connectors run weixin --once
+# Scan the QR code to authorize the account, then long-poll for messages
+navi connectors setup weixin
+navi connectors run weixin --once
 ```
 
 ---

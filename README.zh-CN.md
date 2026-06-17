@@ -144,14 +144,15 @@ Navi 默认把状态写入 `.navi/` 或自定义的 `NAVI_HOME`：
 └── skills/
 ```
 
-## 微信连接器本地测试
+## 微信连接器接入
 
 ```bash
-NAVI_WEIXIN_FAKE=true navi connectors setup weixin
-NAVI_WEIXIN_FAKE=true navi connectors run weixin --once
+# 扫码授权账号后，长轮询拉取消息
+navi connectors setup weixin
+navi connectors run weixin --once
 ```
 
-真实微信/iLink 接入仍需要按现场 payload 做校准；本地测试用于验证运行链路和策略行为。
+真实微信/iLink 接入仍需要按现场 payload 做校准。连接器逻辑通过注入测试替身在 eval/单元测试中验证，运行时不提供 fake 模式。
 
 ## 发布说明
 

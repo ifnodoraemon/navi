@@ -311,9 +311,6 @@ WEIXIN_ALLOWED_USERS
 WEIXIN_GROUP_POLICY
 WEIXIN_GROUP_ALLOWED_USERS
 WEIXIN_HOME_CHANNEL
-NAVI_WEIXIN_FAKE
-NAVI_WEIXIN_FAKE_MESSAGE
-NAVI_WEIXIN_FAKE_TYPING
 ```
 
 Telegram connector environment:
@@ -325,7 +322,6 @@ TELEGRAM_API_BASE_URL
 TELEGRAM_DM_POLICY
 TELEGRAM_ALLOWED_USERS
 TELEGRAM_HOME_CHAT_ID
-NAVI_TELEGRAM_FAKE
 ```
 
 ## Local State
@@ -402,6 +398,11 @@ Before handoff, run:
 pytest -q
 PYTHONPATH=src python -m compileall src tests
 NAVI_HOME=/tmp/navi-smoke PYTHONPATH=src python -c "from navi.api import create_app; app=create_app(); print(app.title, len(app.routes))"
-NAVI_HOME=/tmp/navi-smoke-weixin NAVI_WEIXIN_FAKE=true PYTHONPATH=src python -c "import asyncio; from navi.paths import ensure_home; from navi.connector_registry import get_connector_adapter; home=ensure_home(); adapter=get_connector_adapter('weixin'); print(asyncio.run(adapter.setup(home, home, 10, None)).splitlines()[0])"
-NAVI_HOME=/tmp/navi-smoke-telegram NAVI_TELEGRAM_FAKE=true PYTHONPATH=src python -c "from navi.paths import ensure_home; from navi.connector_registry import get_connector_adapter; home=ensure_home(); adapter=get_connector_adapter('telegram'); status=adapter.status(home); print(adapter.name, status['configured'])"
+NAVI_HOME=/tmp/navi-smoke-weixin PYTHONPATH=src python -c "from navi.paths import ensure_home; from navi.connector_registry import get_connector_adapter; home=ensure_home(); adapter=get_connector_adapter('weixin'); status=adapter.status(home); print(adapter.name, status['configured'])"
+NAVI_HOME=/tmp/navi-smoke-telegram PYTHONPATH=src python -c "from navi.paths import ensure_home; from navi.connector_registry import get_connector_adapter; home=ensure_home(); adapter=get_connector_adapter('telegram'); status=adapter.status(home); print(adapter.name, status['configured'])"
 ```
+
+End-to-end tests under `tests_e2e/` exercise the real model provider and run by
+default; they are skipped only when no API key is set. Connector logic is
+verified through injected test doubles in evals/unit tests, with no runtime fake
+mode.

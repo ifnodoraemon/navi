@@ -115,16 +115,12 @@ async def test_t1_conversation_actions_dispatch(navi_home) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_llm
 async def test_t1_delegation_actions_flow(navi_home, monkeypatch) -> None:
     """Test delegate_spawn -> delegate_prepare -> delegate_run sequentially and verify state."""
-    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "openai-compatible")
-    monkeypatch.setenv("NAVI_MODEL_API_KEY", "dummy")
-    monkeypatch.setenv("NAVI_MODEL", "dummy")
-    from navi.execution import ExecutionResult
-    async def fake_provider_call(self, task, mode):
-        return ExecutionResult(provider="test", phase="prepare", command=[], stdout="test", stderr="", exit_code=0, started_at=0.0, ended_at=0.0, protocol=None)
-    monkeypatch.setattr("navi.execution.ExecutionService._provider_call_with_timeout", fake_provider_call)
-    
+    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("NAVI_MODEL", "deepseek-v4-pro")
+
     registry = CapabilityRegistry(home=navi_home, project_dir=Path.cwd())
     context = CapabilityContext(
         home=navi_home,
@@ -187,16 +183,12 @@ async def test_t1_delegation_actions_flow(navi_home, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_llm
 async def test_t1_approval_actions_flow(navi_home, monkeypatch) -> None:
     """Test delegation approval flow via approval_request and approval_resolve."""
-    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "openai-compatible")
-    monkeypatch.setenv("NAVI_MODEL_API_KEY", "dummy")
-    monkeypatch.setenv("NAVI_MODEL", "dummy")
-    from navi.execution import ExecutionResult
-    async def fake_provider_call(self, task, mode):
-        return ExecutionResult(provider="test", phase="prepare", command=[], stdout="test", stderr="", exit_code=0, started_at=0.0, ended_at=0.0, protocol=None)
-    monkeypatch.setattr("navi.execution.ExecutionService._provider_call_with_timeout", fake_provider_call)
-    
+    monkeypatch.setenv("NAVI_MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("NAVI_MODEL", "deepseek-v4-pro")
+
     registry = CapabilityRegistry(home=navi_home, project_dir=Path.cwd())
     context = CapabilityContext(
         home=navi_home,

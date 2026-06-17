@@ -1,19 +1,19 @@
-import os
 import pytest
 from pathlib import Path
 
-from navi.config import load_config, ModelConfig
+from navi.config import load_config
 from navi.provider import build_provider
 from navi.runtime import AgentRuntime
 from navi.engine import HernessEngine
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif("DEEPSEEK_API_KEY" not in os.environ, reason="DEEPSEEK_API_KEY not set")
+@pytest.mark.live_llm
 async def test_e2e_cloud_agent_run(navi_home, monkeypatch):
     """
     Run a real E2E test against the cloud LLM using the deepseek provider.
-    This uses the real execution path.
+    This uses the real execution path. Skipped when no LLM credentials are set
+    (see the live_llm marker handling in conftest).
     """
     # Force configuration to deepseek
     monkeypatch.setenv("NAVI_MODEL_PROVIDER", "deepseek")

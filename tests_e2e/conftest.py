@@ -1,10 +1,35 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
 from navi.api import create_app
 from navi.config import write_default_config
+
+
+# Keys that indicate a real model provider is configured for live e2e runs.
+_LIVE_LLM_KEYS = ("DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NAVI_MODEL_API_KEY")
+
+
+def _has_live_llm_credentials() -> bool:
+    return any(os.environ.get(key) for key in _LIVE_LLM_KEYS)
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip live_llm e2e tests only when no real provider credentials are set.
+
+    e2e tests exercise the real model path by default; they are skipped (not
+    faked) when credentials are absent so CI without a key stays green without
+    introducing a runtime simulation mode.
+    """
+    if _has_live_llm_credentials():
+        return
+    skip = pytest.mark.skip(reason="no real LLM credentials set (live_llm e2e)")
+    for item in items:
+        if "live_llm" in item.keywords:
+            item.add_marker(skip)
 
 
 @pytest.fixture
