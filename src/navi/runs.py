@@ -533,9 +533,24 @@ class RunStore:
         self.update_run(run_id, status="awaiting_approval")
         return approval
 
-    def resolve_approval(self, code: str, sender_id: str, status: str) -> Approval | None:
+    def resolve_approval(
+        self,
+        code: str,
+        sender_id: str,
+        status: str,
+        *,
+        peer_id: str = "",
+    ) -> Approval | None:
         approval = self.get_approval(code)
-        if approval is None or approval.sender_id != sender_id or approval.status != "pending":
+        if approval is None or approval.status != "pending":
+            return None
+        # FP-3: approval codes are channel-scoped. A code minted on one
+        # peer must not be resolved from a different peer, even if the
+        # sender id matches. When ``peer_id`` is supplied (the normal path
+        # via ApprovalService), it must match the approval's peer.
+        if peer_id and approval.peer_id and approval.peer_id != peer_id:
+            return None
+        if approval.sender_id != sender_id:
             return None
         now = time.time()
         new_status = "expired" if approval.expires_at < now else status

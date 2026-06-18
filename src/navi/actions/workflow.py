@@ -131,6 +131,21 @@ class WorkflowApproveCapability:
         workflow = store.get(workflow_id) if workflow_id else None
         if workflow is None:
             return _workflow_not_found(workflow_id)
+        if decision == "approve" and workflow.sender_id and context.sender_id != workflow.sender_id:
+            return CapabilityResult(
+                ok=False,
+                action="workflow",
+                observation=(
+                    f"workflow {workflow.id} was created by sender "
+                    f"{workflow.sender_id}; only that sender may approve it."
+                ),
+                message=(
+                    f"workflow {workflow.id} was created by sender "
+                    f"{workflow.sender_id}; only that sender may approve it."
+                ),
+                terminal=False,
+                error_reason="approver_not_creator",
+            )
         status = WORKFLOW_STATUS_APPROVED if decision == "approve" else WORKFLOW_STATUS_REJECTED
         updated = store.update_status(
             workflow.id,
@@ -256,7 +271,7 @@ class WorkflowRunCapability:
                 tool_name = str(call.get("tool") or "").strip()
                 if not tool_name:
                     continue
-                if allowed_tools and tool_name not in allowed_tools:
+                if tool_name not in allowed_tools:
                     raise ValueError(f"{tool_name} is not declared in step allowed_tools")
                 requested_permission = str(call.get("permission") or "read")
                 if not permission_allows(requested_permission, workflow.permission_ceiling):

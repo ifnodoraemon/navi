@@ -60,6 +60,8 @@ _SECRET_PATTERNS = [
     r"(?i)(password[\"'\s:=]+)[^\s&\"']+",
     r"(?i)(secret[\"'\s:=]+)[^\s&\"']+",
     r"(?i)(token[\"'\s:=]+)[A-Za-z0-9\-\._~+/]+",
+    # Generic ``Authorization: <scheme> <value>`` header.
+    r"(?i)(authorization:\s*(bearer\s+)?)[A-Za-z0-9\-\._~+/=]+",
 ]
 
 
@@ -69,3 +71,46 @@ def redact_secrets(text: str) -> str:
     for pattern in _SECRET_PATTERNS:
         text = re.sub(pattern, r"\1[REDACTED]", text)
     return text
+
+
+# FP-4: secret-bearing field names whose values must be redacted regardless of
+# where they appear in a nested structure (args, facts, HTTP bodies). This is a
+# value-level allowlist complement to the keyword-prefix ``_SECRET_PATTERNS``.
+_REDACT_FIELD_NAMES = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "authorization",
+        "bearer",
+        "client_secret",
+        "password",
+        "private_key",
+        "secret",
+        "session_token",
+        "token",
+    }
+)
+
+
+def redact_secrets_deep(value: Any) -> Any:
+    """Recursively redact secrets inside nested dicts/lists/strings.
+
+    FP-4/L8: ``redact_secrets`` runs against a flattened JSON string, so
+    secrets in nested objects whose keys don't match a keyword-prefix pattern
+    slip through. This walker redacts at the value level: any string leaf is
+    passed through ``redact_secrets``, and any dict value whose lowercased key
+    is a known secret-bearing field name is fully redacted."""
+    if isinstance(value, str):
+        return redact_secrets(value)
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, nested in value.items():
+            key_lower = str(key).lower()
+            if key_lower in _REDACT_FIELD_NAMES:
+                redacted[str(key)] = "[REDACTED]"
+            else:
+                redacted[str(key)] = redact_secrets_deep(nested)
+        return redacted
+    if isinstance(value, list):
+        return [redact_secrets_deep(item) for item in value]
+    return value

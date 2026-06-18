@@ -77,6 +77,10 @@ class SessionRequestElevationCapability:
             observation="",
             run_id=task.id,
             facts={
+                "entity_type": "session",
+                "entity_id": task.id,
+                "state_transition": "elevation_requested",
+                "turn_scope": "current",
                 "status": "awaiting_approval",
                 "message": f"Requested {target_permission} permission. Please approve.",
                 "approval": {

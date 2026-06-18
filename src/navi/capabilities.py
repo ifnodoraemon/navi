@@ -292,10 +292,13 @@ class CapabilityRegistry:
             sender_id=context.sender_id or (task.sender_id if task else ""),
             action=action,
         )
-        message = (
-            f"子任务需要执行敏感操作「{spec.name}」，需要您再次批准。\n"
-            f"审批码：{approval.code}\n"
-            f"请回复「批准 {approval.code}」以继续，或「拒绝 {approval.code}」取消。"
+        from .connector_registry import render_approval_reply
+
+        message = render_approval_reply(
+            context.source,
+            code=approval.code,
+            run_id=run_id,
+            action=spec.name,
         )
         runs.update_run(run_id, status="awaiting_approval", result_summary=message)
         return CapabilityResult(
@@ -309,6 +312,7 @@ class CapabilityRegistry:
                 "entity_type": "approval_request",
                 "entity_id": approval.id,
                 "state_transition": "created",
+                "turn_scope": "current",
                 "reason": "sensitive_op_requires_approval",
                 "run_id": run_id,
                 "approval": {"code": approval.code, "action": action},

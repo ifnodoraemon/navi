@@ -414,14 +414,18 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="shell.run",
             capability_class="shell",
-            description="Run a non-shell command in the project workspace and return bounded stdout/stderr facts. Set allocate_pty to true if the command strictly requires a terminal (e.g. complains about stdin not being a tty), but note that stdout may contain ANSI escape codes and stderr will be merged into stdout.",
+            description="Run a command in the project workspace and return bounded stdout/stderr facts.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "command": {"type": "array", "items": {"type": "string"}},
                     "cwd": {"type": "string", "default": str(registry.project_dir)},
                     "timeout_seconds": {"type": "integer", "default": 20},
-                    "allocate_pty": {"type": "boolean", "default": False},
+                    "allocate_pty": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Allocate a pseudo-terminal. Use only when the command strictly requires a tty (e.g. complains about stdin not being a tty). When enabled, stdout may contain ANSI escape codes and stderr is merged into stdout.",
+                    },
                 },
                 "required": ["command"],
             },
@@ -878,7 +882,14 @@ def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResul
             tool="browser.screenshot",
             ok=False,
             error="playwright CLI not found",
-            facts={"url": url, "path": str(output)},
+            facts={
+                "entity_type": "file",
+                "entity_id": str(output),
+                "state_transition": "failed",
+                "turn_scope": "current",
+                "url": url,
+                "path": str(output),
+            },
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     timeout = _positive_int(args.get("timeout_seconds"), default=30, maximum=120)
@@ -891,6 +902,10 @@ def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResul
         ok=ok,
         error="" if ok else result["stderr"],
         facts={
+            "entity_type": "file",
+            "entity_id": str(output),
+            "state_transition": "written" if ok else "failed",
+            "turn_scope": "current",
             **result,
             "url": url,
             "path": str(output),
@@ -1063,6 +1078,10 @@ def _file_write(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
         tool="file.write",
         ok=True,
         facts={
+            "entity_type": "file",
+            "entity_id": str(path),
+            "state_transition": "appended" if mode == "append" else "written",
+            "turn_scope": "current",
             "path": str(path),
             "mode": mode,
             "bytes_written": len(content.encode("utf-8")),
@@ -1113,7 +1132,16 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     return ToolResult(
         tool="shell.run",
         ok=result["exit_code"] == 0,
-        facts={**result, "command": command, "cwd": str(cwd), "timeout_seconds": timeout},
+        facts={
+            "entity_type": "process",
+            "entity_id": " ".join(command),
+            "state_transition": "executed",
+            "turn_scope": "current",
+            **result,
+            "command": command,
+            "cwd": str(cwd),
+            "timeout_seconds": timeout,
+        },
         error=result["stderr"],
     )
 
@@ -1136,7 +1164,16 @@ def _test_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     return ToolResult(
         tool="test.run",
         ok=result["exit_code"] == 0,
-        facts={**result, "command": command, "cwd": str(cwd), "timeout_seconds": timeout},
+        facts={
+            "entity_type": "process",
+            "entity_id": " ".join(command),
+            "state_transition": "executed",
+            "turn_scope": "current",
+            **result,
+            "command": command,
+            "cwd": str(cwd),
+            "timeout_seconds": timeout,
+        },
         error=result["stderr"],
     )
 
@@ -1370,7 +1407,9 @@ def _web_search(args: dict[str, Any]) -> ToolResult:
 
 
 def _http_fetch(args: dict[str, Any]) -> ToolResult:
-    import urllib.request
+    import http.client
+    import socket
+    import ssl
 
     url = str(args.get("url") or "").strip()
     if not url:
@@ -1379,39 +1418,84 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
     if parsed.scheme not in ("http", "https"):
         return ToolResult(tool="http.fetch", ok=False, error="only http/https URLs allowed")
     host = (parsed.hostname or "").lower()
-    if not host or not _is_public_http_host(host, port=parsed.port):
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not host or not _is_public_http_host(host, port=port):
         return ToolResult(
             tool="http.fetch",
             ok=False,
             error="url host must be public; localhost, private, link-local, and metadata addresses are blocked",
             facts={"url": url},
         )
+    # FP-4/L7: pin the resolved IP for the actual TCP connection to defeat
+    # DNS rebinding. ``_is_public_http_host`` resolves once to verify; a
+    # hostile resolver could flip the record between that check and a
+    # second ``urlopen`` resolution. By resolving here and connecting to
+    # that exact IP (with the Host header / SNI kept on the original
+    # hostname), the two resolutions cannot diverge.
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        return ToolResult(
+            tool="http.fetch", ok=False, error=f"failed to resolve {host}: {exc}", facts={"url": url}
+        )
+    pinned_ip: str | None = None
+    for _, _, _, _, sockaddr in infos:
+        candidate = str(sockaddr[0])
+        if not _is_blocked_http_host(candidate):
+            pinned_ip = candidate
+            break
+    if pinned_ip is None:
+        return ToolResult(
+            tool="http.fetch",
+            ok=False,
+            error=f"host {host} resolved only to blocked addresses",
+            facts={"url": url},
+        )
+
     method = str(args.get("method") or "GET").upper()
     headers = args.get("headers") or {}
     body = args.get("body")
     max_bytes = _positive_int(args.get("max_bytes"), default=524288, maximum=2097152)
 
+    path_query = parsed.path or "/"
+    if parsed.query:
+        path_query += "?" + parsed.query
+    request_headers: dict[str, str] = {"Host": host, "User-Agent": "Navi/1.0"}
+    request_headers.update({str(k): str(v) for k, v in headers.items()})
+
+    conn: http.client.HTTPConnection | http.client.HTTPSConnection
     try:
-        data = body.encode("utf-8") if body else None
-        req = urllib.request.Request(url, data=data, method=method)
-        req.add_header("User-Agent", "Navi/1.0")
-        for k, v in headers.items():
-            req.add_header(str(k), str(v))
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            content = resp.read(max_bytes).decode("utf-8", errors="replace")
-            resp_headers = dict(resp.headers.items())
-            return ToolResult(
-                tool="http.fetch",
-                ok=True,
-                facts={
-                    "url": url,
-                    "method": method,
-                    "status_code": resp.status,
-                    "headers": resp_headers,
-                    "body": content,
-                    "truncated": len(content) >= max_bytes,
-                },
-            )
+        if parsed.scheme == "https":
+            context = ssl.create_default_context()
+            raw_sock = socket.create_connection((pinned_ip, port), timeout=15)
+            tls_sock = context.wrap_socket(raw_sock, server_hostname=host)
+            conn = http.client.HTTPSConnection(pinned_ip, port, timeout=15, context=context)
+            conn.sock = tls_sock
+        else:
+            conn = http.client.HTTPConnection(pinned_ip, port, timeout=15)
+        conn.request(
+            method,
+            path_query,
+            body=body.encode("utf-8") if body else None,
+            headers=request_headers,
+        )
+        resp = conn.getresponse()
+        content = resp.read(max_bytes).decode("utf-8", errors="replace")
+        resp_headers = dict(resp.getheaders())
+        status_code = resp.status
+        conn.close()
+        return ToolResult(
+            tool="http.fetch",
+            ok=True,
+            facts={
+                "url": url,
+                "method": method,
+                "status_code": status_code,
+                "headers": resp_headers,
+                "body": content,
+                "truncated": len(content) >= max_bytes,
+            },
+        )
     except Exception as exc:
         return ToolResult(
             tool="http.fetch", ok=False, error=str(exc), facts={"url": url, "method": method}
@@ -1433,8 +1517,8 @@ def _system_info(args: dict[str, Any]) -> ToolResult:
         try:
             with open("/proc/uptime") as f:
                 facts["uptime_seconds"] = float(f.read().split()[0])
-        except Exception:
-            pass
+        except Exception as exc:
+            facts["uptime_error"] = str(exc)
         try:
             with open("/proc/meminfo") as f:
                 for line in f:
@@ -1442,8 +1526,8 @@ def _system_info(args: dict[str, Any]) -> ToolResult:
                         facts["mem_total_kb"] = int(line.split()[1])
                     elif line.startswith("MemAvailable:"):
                         facts["mem_available_kb"] = int(line.split()[1])
-        except Exception:
-            pass
+        except Exception as exc:
+            facts["meminfo_error"] = str(exc)
     else:
         facts["uptime_seconds"] = None
         facts["mem_total_kb"] = None

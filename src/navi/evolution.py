@@ -17,6 +17,9 @@ from .runs import Run, RunStore
 logger = logging.getLogger(__name__)
 
 
+_EVALUATION_RESULTS = frozenset({"approved", "rejected", "pending"})
+
+
 @dataclass(frozen=True)
 class EvolutionEvent:
     id: str
@@ -469,6 +472,11 @@ class EvolutionLedger:
         if proposal is None:
             return None
         evaluation_result = evaluation_result.strip().lower()
+        if evaluation_result not in _EVALUATION_RESULTS:
+            raise ValueError(
+                f"evaluation_result must be one of {sorted(_EVALUATION_RESULTS)}, "
+                f"got {evaluation_result!r}"
+            )
         if evaluation_result == "approved" and not approver_id.strip():
             raise ValueError("approved evaluation requires an approver_id")
         with connect(self.db_path) as conn:
@@ -536,9 +544,9 @@ class EvolutionLedger:
         if target and target.permissions_can_expand:
             if proposal.required_approval_level not in ("L3", "L4"):
                 raise ValueError("permission-expanding proposals require L3/L4 approval level")
-        if proposal.required_approval_level != "L0" and proposal.evaluation_result != "approved":
+        if proposal.evaluation_result != "approved":
             raise ValueError(
-                f"proposal requires {proposal.required_approval_level} approval but is not approved"
+                "proposal requires evaluation_result='approved' before it can be applied"
             )
 
     @staticmethod
@@ -623,11 +631,9 @@ class EvolutionEngine:
             data = {"version": 1, "journeys": []}
         data["journeys"].append(extracted)
         after = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
-        evals_path.parent.mkdir(parents=True, exist_ok=True)
-        evals_path.write_text(after, encoding="utf-8")
-        # Record the eval capture through the audited ledger so the change
-        # is traceable and rollbackable, rather than a side effect outside
-        # the evolution record (principle 7/11).
+        # FP-5: record the ledger event BEFORE the file side effect lands, so a
+        # crash between the two never leaves an unaudited change. Mirrors the
+        # apply_proposal ledger-before-side-effect ordering.
         self.ledger.record(
             run_id=run_id,
             target_type="eval_case",
@@ -636,6 +642,8 @@ class EvolutionEngine:
             before=before,
             after=after,
         )
+        evals_path.parent.mkdir(parents=True, exist_ok=True)
+        evals_path.write_text(after, encoding="utf-8")
         logger.info("extracted daily eval from session %s run %s", session_id, run_id)
 
     def apply_proposal(self, proposal_id: str) -> EvolutionEvent | None:
@@ -652,7 +660,21 @@ class EvolutionEngine:
         # change is always auditable and rollbackable, even if the file write
         # fails afterwards (principle 7/11).
         event = self.ledger.record_apply_event(proposal)
-        self._write_proposal_side_effect(proposal)
+        try:
+            self._write_proposal_side_effect(proposal)
+        except Exception as exc:
+            # FP-5/L11: the side effect failed after the apply event was
+            # recorded. Record a follow-up failure event so the ledger
+            # reflects that the change did not land, then surface the error.
+            self.ledger.record(
+                run_id=proposal.source_run_id,
+                target_type=proposal.target_type,
+                target_id=proposal.target_id,
+                reason=f"apply side-effect failed: {exc}",
+                before=event.after,
+                after="",
+            )
+            raise
         self.ledger.mark_applied(proposal_id, event.id)
         return event
 
@@ -708,6 +730,10 @@ class EvolutionEngine:
                 self.memory.delete_item(event.target_id)
             else:
                 self.memory.restore_item(json.loads(event.before))
+                # FP-5: a rolled-back evolution reduces confidence in the
+                # affected memory item, since the change it represented was
+                # rejected and should not retain its original trust level.
+                self.memory.reduce_confidence(event.target_id, delta=0.2)
         elif event.target_type == "run_execution":
             if event.before:
                 task_dict = json.loads(event.before)

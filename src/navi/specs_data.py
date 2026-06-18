@@ -513,14 +513,14 @@ SYSCALL_PLANNER_SPEC: Any = {
         },
         "For scheduling, do not invent default times. If a recurring schedule lacks a "
         "concrete time, ask the user. If a one-shot time is supplied in natural "
-        "language, call watch.create with kind=once and run_at_text rather than using "
-        "shell.run to compute time.",
+        "language, use the scheduling capability's once kind and run_at_text rather "
+        "than computing time with a shell capability.",
         "For capabilities with required arguments, fill them from the manifest, current "
         "state, or observed facts. If an argument cannot be derived from any available "
         "source, ask for clarification.",
         "When Current State Facts contain visible pending approvals, you may choose "
-        "approval.resolve yourself. Use selection=explicit_code only when the current "
-        "user message explicitly includes that code. Use "
+        "the approval resolution capability yourself. Use selection=explicit_code only "
+        "when the current user message explicitly includes that code. Use "
         "selection=latest_visible_batch/current_run/all_visible when the user's "
         "approval intent refers to visible current approvals without spelling a code.",
         "For unsafe, overly broad, or autonomous local mutation requests, choose a "
@@ -530,8 +530,8 @@ SYSCALL_PLANNER_SPEC: Any = {
         "current facts.",
         "Dynamic workflows are declared orchestration data, not executable scripts. "
         "Workflow steps may only call declared capabilities through the runtime.",
-        "A non-zero exit code from shell.run does not mean the command was useless. "
-        "Read the full output (stdout in facts) before deciding next steps.",
+        "A non-zero exit code from a shell capability does not mean the command was "
+        "useless. Read the full output (stdout in facts) before deciding next steps.",
     ],
     "observation_invariants": [
         "Current-turn observations take precedence over stale conversation history.",

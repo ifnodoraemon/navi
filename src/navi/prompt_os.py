@@ -205,7 +205,7 @@ def assemble_planner_turn_input(
                 "PERMISSION EXPLANATION",
                 "turn_input",
                 "operating_context.permission_explanation",
-                "Your permission ceiling is currently restricted to 'read'. You can gather facts with read-only capabilities, but you CANNOT prepare or execute write operations. If the user's request requires prepare or write permission, choose `session.request_elevation` with the target permission and reason.",
+                "Your permission ceiling is currently restricted to 'read'. You can gather facts with read-only capabilities, but you CANNOT prepare or execute write operations. If the user's request requires higher permission, use the manifest's elevation capability to request it.",
             )
         )
     elif permission_ceiling == "prepare":
@@ -214,7 +214,7 @@ def assemble_planner_turn_input(
                 "PERMISSION EXPLANATION",
                 "turn_input",
                 "operating_context.permission_explanation",
-                "Your permission ceiling is currently restricted to 'prepare'. You can read files and investigate the environment to form a plan, but you CANNOT execute write operations or mutate state. Once you have formed a confident plan, you MUST request approval from the user using the `approval.request` tool before you can proceed.",
+                "Your permission ceiling is currently restricted to 'prepare'. You can read files and investigate the environment to form a plan, but you CANNOT execute write operations or mutate state. Once you have formed a confident plan, request approval from the user through the manifest's approval capability before you can proceed.",
             )
         )
 

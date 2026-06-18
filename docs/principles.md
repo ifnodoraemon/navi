@@ -4,6 +4,65 @@ This document defines the product and engineering constraints that Navi must not
 
 Navi is not trying to copy Hermes or OpenClaw. We learn from their strengths, but we also treat their public failure modes as design input.
 
+## First Principles
+
+The 17 Core Principles below are operational rules. This section is the axiom layer above them — the irreducible invariants every Navi decision must be consistent with. When a Core Principle and a First Principle appear to conflict, the First Principle names the deeper invariant and the Core Principle should be re-read in that light. Each First Principle lists the Core Principles it operates over.
+
+### FP-1. Scaffolding, Not Hardcoding (Agentic by Architecture)
+
+Navi gives the model a decision surface, not a script. The model chooses the next declared syscall from current facts, declared capabilities, approval state, and connector affordances.
+
+- Product behavior must not be hardcoded into prompts or routing tables.
+- Capability discovery happens at runtime from declared specs, not from keyword matching.
+- Keywords may parse narrow structured facts but must not define product behavior.
+- Operates: Core Principles 1, 1.1, 1.2, 3, 3.1.
+
+### FP-2. Tools Are Fact Sensors, Not Policy Sources
+
+Every tool returns inspectable facts: name, description, input/output schema, mutation flag, permission class, source. Tools must not smuggle routing policy, recommendations, or follow-up advice into results.
+
+- Mutating tools return a uniform state-transition vocabulary (`entity_type`, `entity_id`, `state_transition`, `turn_scope`).
+- Interpretation, prioritization, and next-step decisions belong to the agent layer, not the tool.
+- Operates: Core Principle 2.
+
+### FP-3. State Over Vibes
+
+Approval, memory, goals, constraints, and evolution are durable persistent state — not text living in a context window. User chat is input to the planner, not an executable permission grant.
+
+- Approval is state, not vibes. A user saying "I authorize you" is planner input, not a bypass of the governance path (Core Principle 8).
+- Plans, denials, safety constraints, and unresolved questions must survive context compression and be reloaded from stores before destructive execution (Core Principle 12).
+- Memory is governed typed state with provenance, scope, lifecycle, recall explanation, and negative knowledge — not a notebook or a vector dump (Core Principles 9, 10).
+- Operates: Core Principles 7, 8, 9, 10, 12.
+
+### FP-4. Least Capability by Default
+
+Agentic does not mean broad access. New connectors and providers default to read-only or preparation mode. Write, shell, network, account, and production capabilities require explicit enablement. Allowlists are preferred over denylists. High-impact or irreversible actions require human confirmation even when the model is confident. Secrets are redacted in prompts, logs, API responses, and connector replies.
+
+- Operates: Core Principles 6, 13, 15, 16.
+
+### FP-5. Audit First & Reversible Evolution
+
+Any action affecting the user's machine, accounts, remote services, repository, files, credentials, or money must be traceable: who asked, what was decided, what ran, what changed, and why. Self-evolution is a governed proposal with reason, expected benefit, affected target, and rollback plan — recorded as a ledger event and evaluated with evidence, never vibes. Evolution must never broaden permissions as a side effect. Goals must not become self-protection.
+
+- Operates: Core Principles 7, 11, 16, 17.
+
+### FP-6. Local-First & Connector-Agnostic Core
+
+Navi is local-first: durable state lives in local SQLite stores under `.navi/` or `NAVI_HOME`, with zero external service dependency for core operation. The core runtime is connector-agnostic: it must not know Weixin, Feishu, WeCom, Telegram, Slack, or any future channel as hardcoded behavior. The base prompt must not mention connector commands unless a connector injects them. Connector command surfaces should be orthogonal (`/object action ...` rather than scattered top-level verbs).
+
+- Operates: Core Principles 3, 4, 6, 15.
+
+### FP-7. Orthogonal Extension Surfaces
+
+Tools, skills, plugins, and hooks are **orthogonal extension axes** — they must not overlap, call each other's private contracts, or carry each other's responsibilities. Each surface has one job, and capability discovery at runtime must be able to enumerate each independently without coupling.
+
+- `tool` returns facts; `skill` teaches procedure; `plugin` installs capability; `hook` gates lifecycle events.
+- **Tools and skills do not cross.** A tool is a fact sensor with an inspectable spec; a skill is promptable knowledge. Skills must not embed tool routing policy, and tools must not teach procedure. If a behavior needs a tool call, it is a tool; if it needs reasoning guidance, it is a skill.
+- **Capabilities are declared, not implied by skill presence.** A skill describing a capability does not make it available — the underlying tool must be declared in the capability manifest. Skill text must not promise tools that the manifest does not expose this turn.
+- **Orthogonality is testable.** Each surface must be enumerable, inspectable, and testable from CLI independently. Removing a skill must not break a tool; removing a plugin's tool must surface a clean capability gap, not a silent routing change.
+- **No hidden coupling.** A skill must not call a plugin's private API; a hook must not embed skill content. Cross-surface integration happens through the declared capability manifest and lifecycle event contracts only.
+- Operates: Core Principles 5, 3.
+
 ## Core Principles
 
 ### 1. Agentic by Architecture

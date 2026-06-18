@@ -47,7 +47,7 @@ ACTION_SPECS = [
         name="delegate.spawn",
         capability_class="delegation",
         execution_contexts=("turn", "workflow_step"),
-        description="""Create a narrowly-scoped delegation run for a specific, verified step. Must only be used after gathering sufficient local facts via foreground tools.""",
+        description="""Create a narrowly-scoped delegation run for a specific, verified step.""",
         input_schema={
             "type": "object",
             "properties": {
@@ -205,14 +205,23 @@ ACTION_SPECS = [
         name="delegate.delete",
         capability_class="delegation",
         execution_contexts=("turn", "workflow_step"),
-        description="""Delete delegation run records by id or by explicit cleanup scope. Bulk cleanup must include source or kind so status-only filters do not delete unrelated records.""",
+        description="""Delete delegation run records by id or by explicit cleanup scope.""",
         input_schema={
             "type": "object",
             "properties": {
-                "run_id": {"type": "string"},
-                "status": {"type": "string"},
-                "source": {"type": "string"},
-                "kind": {"type": "string"},
+                "run_id": {"type": "string", "description": "Target a single run by id."},
+                "status": {
+                    "type": "string",
+                    "description": "Bulk cleanup filter. Status-only filters are rejected: include `source` or `kind` to scope the deletion.",
+                },
+                "source": {
+                    "type": "string",
+                    "description": "Bulk cleanup scope: delete runs from this source.",
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Bulk cleanup scope: delete runs of this kind.",
+                },
                 "limit": {"type": "integer"},
                 "reason": {"type": "string"},
             },
@@ -266,7 +275,7 @@ ACTION_SPECS = [
         name="watch.delete",
         capability_class="watch.delete",
         execution_contexts=("turn", "workflow_step"),
-        description="""Permanently delete a watch or task (recurring or one-time) by watch id. Requires user approval.""",
+        description="""Permanently delete a watch or task (recurring or one-time) by watch id.""",
         input_schema={
             "type": "object",
             "properties": {
@@ -553,11 +562,21 @@ ACTION_SPECS = [
         output_schema={
             "type": "object",
             "properties": {
-                "status": {"type": "string"},
-                "message": {"type": "string"},
-                "approval_code": {"type": "string"},
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
                 "state_transition": {"type": "string"},
                 "turn_scope": {"type": "string"},
+                "status": {"type": "string"},
+                "message": {"type": "string"},
+                "approval": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string"},
+                        "code": {"type": "string"},
+                        "expires_at": {"type": "number"},
+                    },
+                },
+                "run_id": {"type": "string"},
             },
         },
         facts_only=True,

@@ -283,9 +283,13 @@ class ApprovalService:
             sender_id=approval.sender_id or context.sender_id,
             action=approval.action,
         )
-        message = (
-            f"原审批码已过期，已为任务 {approval.run_id} 重新生成审批码：{fresh.code}。"
-            f"请回复「批准 {fresh.code}」以执行。"
+        from .connector_registry import render_approval_reply
+
+        message = render_approval_reply(
+            context.source,
+            code=fresh.code,
+            run_id=approval.run_id,
+            action=approval.action,
         )
         return ApprovalResolution(
             ok=False,
@@ -416,9 +420,9 @@ class ApprovalService:
             "run_status": run_status,
         }
         if decision == "approve":
-            message = f"已收到您的批准，任务 {resolved_run_id} 将在后台继续执行。"
+            message = f"Approved. Run {resolved_run_id} will continue in the background."
         else:
-            message = f"已拒绝任务 {resolved_run_id} 的执行。"
+            message = f"Rejected. Run {resolved_run_id} will not execute."
         return ApprovalResolution(
             ok=True,
             decision=decision,

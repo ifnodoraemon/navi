@@ -166,11 +166,12 @@ class HernessEngine:
         pending_approval_prompt = ""
         last_result: AgentTurnResult | None = None
         budget_exhausted = False
-        # Principle 12: reload durable constraints from the governed memory store
-        # once per turn so they are present in every planner step, independent of
-        # what the (compressible) conversation history happens to contain.
-        durable_constraints = self.runtime.memory.render_durable_constraints()
         for _ in range(self.step_budget):
+            # Principle 12: reload durable constraints from the governed memory
+            # store at the start of every step so mid-turn writes (a constraint
+            # added by an earlier step in this same turn) are visible to later
+            # steps, independent of the compressible conversation history.
+            durable_constraints = self.runtime.memory.render_durable_constraints()
             planner_specs = self.capabilities.planner_specs(
                 permission_ceiling=context.permission_ceiling
             )

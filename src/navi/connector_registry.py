@@ -78,6 +78,61 @@ def _approval_affordance_from_spec(spec: ConnectorSpec) -> dict[str, Any]:
     }
 
 
+def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:
+    raw = commands.get(key)
+    if isinstance(raw, list) and raw:
+        return str(raw[0])
+    return fallback
+
+
+def render_approval_reply(
+    source: str,
+    *,
+    code: str,
+    run_id: str = "",
+    action: str = "",
+    expires_at: float = 0.0,
+) -> str:
+    """Render a connector-sourced approval prompt.
+
+    FP-6: the core must not hardcode channel-specific approval verbs (``批准`` /
+    ``拒绝``). The connector affordance provides ``approval_template`` and
+    ``approval_commands``; this helper formats them. When no connector matches
+    the source (CLI/local API), it returns a connector-agnostic prompt that
+    names only the code and run id."""
+    affordance = approval_surface_affordance(source)
+    commands = (
+        affordance.get("approval_commands")
+        if isinstance(affordance.get("approval_commands"), dict)
+        else {}
+    )
+    approve_command = _first_command(commands, "approve", "approve")
+    reject_command = _first_command(commands, "reject", "reject")
+    task_line = f"Task ID: `{run_id}`" if run_id else ""
+    if expires_at:
+        try:
+            minutes = max(0, round((float(expires_at) - 0.0) / 60))
+        except (TypeError, ValueError):
+            minutes = 0
+        expiry = f"Approval expires in ~{minutes} minutes." if minutes else ""
+    else:
+        expiry = ""
+    template = str(affordance.get("approval_template") or "")
+    if template:
+        return template.format(
+            task_line=task_line,
+            code=code,
+            expiry=expiry,
+            approve_command=approve_command,
+            reject_command=reject_command,
+        ).strip()
+    head = f"Approval required for `{action}`." if action else "Approval required."
+    return (
+        f"{head}\n{task_line}\nApproval code: `{code}`\n"
+        f"Reply `{approve_command} {code}` to execute, or `{reject_command} {code}` to cancel."
+    ).strip()
+
+
 def _discover_connector_factories() -> list[Callable[[], ConnectorAdapter]]:
     factories: list[Callable[[], ConnectorAdapter]] = []
     for module_info in pkgutil.iter_modules(navi.__path__, prefix="navi."):

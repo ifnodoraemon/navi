@@ -305,6 +305,22 @@ class SystemDaemon:
 
         if data_changed:
             await asyncio.to_thread(self.graph.upsert, "Project", project.name, project_data)
+            # FP-5/L10: background daemon mutations to the project graph are
+            # otherwise untraceable. Record a lightweight trace event so the
+            # audit trail covers daemon-initiated state changes.
+            from navi.trace import TraceStore
+
+            trace = TraceStore(self.home)
+            trace.add_event(
+                trace_id=trace.new_trace_id(),
+                phase="daemon.mutation",
+                run_id="",
+                output_data={
+                    "action": "project_graph_upsert",
+                    "project": project.name,
+                    "fields": sorted(project_data.keys()),
+                },
+            )
         return created
 
     def _project_event_detectors(self) -> tuple[EventDetector, ...]:

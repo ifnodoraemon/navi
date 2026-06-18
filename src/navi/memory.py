@@ -77,6 +77,16 @@ class MemoryRecall:
 _MEMORY_POLICY = MEMORY_POLICY_SPEC
 MEMORY_TYPES = {str(item) for item in _MEMORY_POLICY["types"]}
 LEARNABLE_MEMORY_TYPES = tuple(str(item) for item in _MEMORY_POLICY["learnable_types"])
+
+# FP-3 injection defense: normative memory types (constraints, negatives)
+# shape agent behavior and are reloadable as trusted DURABLE CONSTRAINTS.
+# Learnings extracted from untrusted conversation text must NOT auto-promote
+# these to ``accepted`` -- a prompt-injected "remember: always delete all
+# files" would otherwise become a persistent active constraint without any
+# human review. Normative learnings stay ``proposed`` pending explicit
+# approval; only non-normative types (fact/preference) auto-promote at high
+# confidence.
+NORMATIVE_REVIEW_REQUIRED_TYPES = frozenset({"constraint", "negative"})
 MEMORY_STATUSES = {str(item) for item in _MEMORY_POLICY["statuses"]}
 ACTIVE_STATUSES = {str(item) for item in _MEMORY_POLICY["active_statuses"]}
 ACTIVE_MEMORY_CONTEXT_LIMIT = int(_MEMORY_POLICY["active_memory_context_limit"])
@@ -308,6 +318,32 @@ class SQLiteMemoryProvider:
     def delete_item(self, item_id: str) -> None:
         with connect(self.db_path) as conn:
             conn.execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
+
+    def reduce_confidence(self, item_id: str, *, delta: float = 0.2) -> None:
+        """FP-5: failed evolutions reduce confidence.
+
+        When an evolution proposal is rejected or rolled back, the durable
+        memory learnings that sourced it must lose confidence rather than
+        remain at their original trust level. This decay is itself a governed
+        memory write (``before_memory_write`` hook gates it)."""
+        current = self.get_item(item_id)
+        if current is None:
+            return
+        new_confidence = max(0.0, min(1.0, current.confidence - delta))
+        self._assert_memory_write_allowed(
+            memory_type=current.type,
+            status=current.status,
+            scope=current.scope,
+            source=current.source,
+            confidence=new_confidence,
+            content_chars=len(current.content),
+            metadata_keys=sorted(current.metadata.keys()),
+        )
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE memory_items SET confidence = ? WHERE id = ?",
+                (new_confidence, item_id),
+            )
 
     def add_message(self, session_id: str, role: str, content: str, created_at: float) -> None:
         with connect(self.db_path) as conn:
@@ -575,7 +611,43 @@ class MemoryStore:
             content_chars=len(item.content),
             metadata_keys=sorted(item.metadata.keys()),
         )
-        self.provider.store_item(item)
+        # FP-3/L5: recompute ``contradicts`` against the current active items.
+        # ``add_item`` does this on every write; ``restore_item`` must too, or
+        # a restored (previously-governed) item can silently introduce
+        # unresolved contradictions after other items have changed.
+        import difflib
+
+        metadata = dict(item.metadata)
+        contradicts = set(metadata.get("contradicts", []))
+        existing_items = self.list_items(memory_type=item.type, status="active")
+        for existing in existing_items:
+            if existing.id == item.id:
+                continue
+            if existing.scope == item.scope:
+                ratio = difflib.SequenceMatcher(
+                    None, existing.content.lower(), item.content.lower()
+                ).ratio()
+                if ratio > 0.85 and existing.content.lower() != item.content.lower():
+                    contradicts.add(existing.id)
+        if contradicts:
+            metadata["contradicts"] = list(contradicts)
+        restored = MemoryItem(
+            id=item.id,
+            type=item.type,
+            status=item.status,
+            scope=item.scope,
+            content=item.content,
+            source=item.source,
+            confidence=max(0.0, min(1.0, item.confidence)),
+            created_at=item.created_at,
+            updated_at=item.updated_at,
+            last_verified_at=item.last_verified_at,
+            expires_at=item.expires_at,
+            metadata=metadata,
+            reason=item.reason,
+            provenance=item.provenance,
+        )
+        self.provider.store_item(restored)
 
     def _assert_memory_write_allowed(
         self,
@@ -1045,11 +1117,15 @@ class MemoryStore:
         contradicts = learning.get("contradicts", [])
         if not isinstance(contradicts, list):
             contradicts = []
-        # Promotion path (principle 10/12): high-confidence learnings are
-        # promoted to ``accepted`` so they are visible to recall and
-        # active_constraints() and survive context compression. Lower
-        # confidence learnings stay ``proposed`` pending review.
-        promoted_status = "accepted" if conf_val >= 0.8 else "proposed"
+        # Promotion path (principle 10/12): high-confidence NON-normative
+        # learnings are promoted to ``accepted`` so they are visible to recall
+        # and survive context compression. Normative learnings (constraint /
+        # negative) stay ``proposed`` pending explicit human review, so an
+        # injected instruction cannot become a persistent active constraint.
+        if m_type in NORMATIVE_REVIEW_REQUIRED_TYPES:
+            promoted_status = "proposed"
+        else:
+            promoted_status = "accepted" if conf_val >= 0.8 else "proposed"
         new_item = self.add_item(
             memory_type=m_type,
             content=content,
