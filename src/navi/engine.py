@@ -15,7 +15,7 @@ from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from .goals import GoalStore
 from .operating_context import OperatingContext
 from .provider import ChatMessage
-from .recovery import RecoveryPlanner
+from .recovery import CompletionBlock, RecoveryPlanner
 from .runtime import AgentRuntime
 from .specs_data import RESPONDER_OBSERVATIONS_PROMPT
 from .syscalls import ModelSyscallPlanner
@@ -37,6 +37,22 @@ class AgentTurnResult:
     budget_exhausted: bool = False
     memory_influence: tuple[str, ...] = ()
     facts: dict[str, Any] | None = None
+    approval_affordance: str = ""
+
+    def surfaced_text(self) -> str:
+        """The text to surface to the user.
+
+        The model's ``text`` is preserved verbatim. The runtime approval
+        affordance (when the model did not already surface the approval
+        code) is appended as a separate trailing block rather than
+        rewritten into the model's utterance.
+        """
+        if not self.approval_affordance:
+            return self.text
+        text = self.text.strip()
+        if text:
+            return f"{text}\n\n{self.approval_affordance}"
+        return self.approval_affordance
 
 
 class HernessEngine:
@@ -300,11 +316,11 @@ class HernessEngine:
                     observation="\n\n".join(observations),
                 )
             if result.terminal and result.action not in ("ask.user", "ask"):
-                block_reason = self._completion_block_reason(
+                block = self._completion_block_reason(
                     completion_events,
                     state_context=state_context,
                 )
-                if block_reason:
+                if block:
                     self.trace.add_event(
                         trace_id=trace_id,
                         phase="completion.verify",
@@ -316,11 +332,11 @@ class HernessEngine:
                         model_role="runtime",
                         ok=False,
                         input_data={"events_count": len(completion_events)},
-                        output_data={"block_reason": block_reason},
-                        message=block_reason,
+                        output_data={"reason": block.reason},
+                        message=block.reason,
                     )
                     recovery_plan = self.recovery.plan_completion_failure(
-                        block_reason=block_reason,
+                        block=block,
                         events=completion_events,
                     )
                     self.trace.add_event(
@@ -342,7 +358,7 @@ class HernessEngine:
                     continue
             last_result = result
             if result.terminal:
-                result = self._ensure_pending_approval_prompt(result, pending_approval_prompt)
+                result = self._with_approval_affordance(result, pending_approval_prompt)
                 turn_res = self._record_turn(text, result, session_id=resolved_session_id)
                 turn_res = self._with_trace(turn_res, trace_id)
                 self._attach_goals(
@@ -525,7 +541,7 @@ class HernessEngine:
         events: list[dict[str, Any]],
         *,
         state_context: SurfaceContext | None = None,
-    ) -> str:
+    ) -> CompletionBlock | None:
         if not events:
             events = []
         latest_run_status: dict[str, str] = {}
@@ -548,9 +564,13 @@ class HernessEngine:
             run_id = str(facts.get("run_id") or facts.get("task_id") or "").strip()
             status = latest_run_status.get(run_id) or str(facts.get("status") or "").strip()
             if run_id and status in {"pending", "prepared"}:
-                return (
-                    "completion verifier blocked final answer: "
-                    f"delegation run {run_id} is still {status}."
+                return CompletionBlock(
+                    reason=(
+                        "completion verifier blocked final answer: "
+                        f"delegation run {run_id} is still {status}."
+                    ),
+                    run_id=run_id,
+                    run_status=status,
                 )
         latest_cleanup_facts = next(
             (
@@ -566,25 +586,33 @@ class HernessEngine:
             and latest_cleanup_facts.get("cleanup_complete") is False
         ):
             remaining = latest_cleanup_facts.get("remaining_count")
-            return (
-                "completion verifier blocked final answer: "
-                f"cleanup_complete=false with remaining_count={remaining}."
+            return CompletionBlock(
+                reason=(
+                    "completion verifier blocked final answer: "
+                    f"cleanup_complete=false with remaining_count={remaining}."
+                ),
             )
         if state_context is not None:
             state = CurrentStateBuilder(self.home).build(state_context)
             for run in state.active_runs:
                 if run.status in {"pending", "preparing", "prepared"}:
-                    return (
-                        "completion verifier blocked final answer: "
-                        f"delegation run {run.id} is still {run.status}."
+                    return CompletionBlock(
+                        reason=(
+                            "completion verifier blocked final answer: "
+                            f"delegation run {run.id} is still {run.status}."
+                        ),
+                        run_id=run.id,
+                        run_status=run.status,
                     )
             for workflow in state.active_workflows:
                 if workflow.status in {"approved", "running", "interrupted"}:
-                    return (
-                        "completion verifier blocked final answer: "
-                        f"workflow {workflow.id} is still {workflow.status}."
+                    return CompletionBlock(
+                        reason=(
+                            "completion verifier blocked final answer: "
+                            f"workflow {workflow.id} is still {workflow.status}."
+                        ),
                     )
-        return ""
+        return None
 
     def _trigger_background_memory(self, result: AgentTurnResult) -> None:
         if result.session_id and self.event_bus:
@@ -772,11 +800,12 @@ class HernessEngine:
             output_data={"response_chars": len(answer), "budget_exhausted": budget_exhausted},
             message=f"{model_role} synthesized response",
         )
+        approval_affordance = ""
         if pending_approval_prompt and not self._text_mentions_pending_approval(
             answer,
             pending_approval_prompt,
         ):
-            answer = self._append_pending_approval_prompt(answer, pending_approval_prompt)
+            approval_affordance = pending_approval_prompt
         self.runtime.memory.add_message(session_id, "assistant", answer)
         return AgentTurnResult(
             text=answer,
@@ -787,31 +816,27 @@ class HernessEngine:
             model_role=model_role,
             terminal=True,
             budget_exhausted=budget_exhausted,
+            approval_affordance=approval_affordance,
         )
 
-    def _ensure_pending_approval_prompt(
+    def _with_approval_affordance(
         self,
         result: AgentTurnResult,
         pending_approval_prompt: str,
     ) -> AgentTurnResult:
+        """Attach the pending approval affordance as a separate field.
+
+        The model's ``text`` is preserved verbatim. The approval affordance
+        is surfaced as a distinct trailing block at the surface boundary
+        (see ``AgentTurnResult.surfaced_text``) rather than rewritten into
+        the model's utterance.
+        """
         if not pending_approval_prompt or self._text_mentions_pending_approval(
             result.text,
             pending_approval_prompt,
         ):
             return result
-        return AgentTurnResult(
-            text=self._append_pending_approval_prompt(result.text, pending_approval_prompt),
-            session_id=result.session_id,
-            run_id=result.run_id,
-            action=result.action,
-            observation=result.observation,
-            model_role=result.model_role,
-            terminal=result.terminal,
-            trace_id=result.trace_id,
-            budget_exhausted=result.budget_exhausted,
-            memory_influence=result.memory_influence,
-            facts=result.facts,
-        )
+        return replace(result, approval_affordance=pending_approval_prompt)
 
     @staticmethod
     def _append_pending_approval_prompt(text: str, pending_approval_prompt: str) -> str:

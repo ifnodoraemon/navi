@@ -126,7 +126,7 @@ def chat() -> None:
         )
         session_id = result.session_id or session_id
 
-        typer.echo(f"navi: {result.text}")
+        typer.echo(f"navi: {result.surfaced_text()}")
 
         # Presentation is driven by the structured `options` fact, not by
         # interpreting the agent's action label (principle 4: control surfaces

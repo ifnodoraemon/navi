@@ -181,7 +181,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         )
         return {
             "session_id": result.session_id,
-            "message": result.text,
+            "message": result.surfaced_text(),
             "action": result.action,
             "run_id": result.run_id,
             "facts": result.facts or {},

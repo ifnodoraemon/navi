@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -24,6 +23,21 @@ class RecoveryPlan:
 
     def to_observation(self) -> str:
         return "Recovery plan:\n" + json.dumps(asdict(self), ensure_ascii=False, sort_keys=True)
+
+
+@dataclass(frozen=True)
+class CompletionBlock:
+    """Structured completion-verifier block reason.
+
+    Carries both the human-readable ``reason`` (used for traces and recovery
+    plan ``reason``) and the structured ``run_id`` / ``run_status`` fields that
+    the recovery planner consumes directly — instead of regex-parsing the
+    reason string back into fields (a fragile string roundtrip).
+    """
+
+    reason: str
+    run_id: str = ""
+    run_status: str = ""
 
 
 class RecoveryPlanner:
@@ -69,24 +83,23 @@ class RecoveryPlanner:
     def plan_completion_failure(
         self,
         *,
-        block_reason: str,
+        block: CompletionBlock,
         events: list[dict[str, Any]],
     ) -> RecoveryPlan:
-        run_id, run_status = _blocked_run(block_reason)
-        if run_id:
+        if block.run_id:
             return self._run_progress_plan(
-                block_reason=block_reason,
-                run_id=run_id,
-                run_status=run_status,
+                block_reason=block.reason,
+                run_id=block.run_id,
+                run_status=block.run_status,
             )
 
         cleanup_facts = _last_cleanup_facts(events)
         if cleanup_facts:
-            return self._cleanup_plan(block_reason=block_reason, facts=cleanup_facts)
+            return self._cleanup_plan(block_reason=block.reason, facts=cleanup_facts)
 
         return RecoveryPlan(
             trigger="completion.verify",
-            reason=block_reason,
+            reason=block.reason,
             recommended="retry_capability",
             choices=[
                 RecoveryChoice(
@@ -197,15 +210,6 @@ class RecoveryPlanner:
                 ),
             ],
         )
-
-
-def _blocked_run(block_reason: str) -> tuple[str, str]:
-    match = re.search(
-        r"(?:delegation run|run)\s+([A-Za-z0-9_-]+)\s+is still\s+([A-Za-z0-9_-]+)", block_reason
-    )
-    if not match:
-        return "", ""
-    return match.group(1), match.group(2)
 
 
 def _last_cleanup_facts(events: list[dict[str, Any]]) -> dict[str, Any]:

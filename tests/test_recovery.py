@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import json
 
-from navi.recovery import RecoveryPlanner
+from navi.recovery import CompletionBlock, RecoveryPlanner
 
 
 def test_recovery_planner_recommends_task_progression():
     plan = RecoveryPlanner().plan_completion_failure(
-        block_reason=(
-            "completion verifier blocked final answer: delegation run run-1 is still pending; "
-            "prepare it before reporting completion."
+        block=CompletionBlock(
+            reason=(
+                "completion verifier blocked final answer: "
+                "delegation run run-1 is still pending."
+            ),
+            run_id="run-1",
+            run_status="pending",
         ),
         events=[],
     )
@@ -42,7 +46,12 @@ def test_recovery_planner_recommends_budget_task_progression():
 
 def test_recovery_planner_recommends_finishing_failed_cleanup():
     plan = RecoveryPlanner().plan_completion_failure(
-        block_reason="completion verifier blocked final answer: delegate.delete left 2 failed delegation runs.",
+        block=CompletionBlock(
+            reason=(
+                "completion verifier blocked final answer: "
+                "delegate.delete left 2 failed delegation runs."
+            ),
+        ),
         events=[
             {
                 "tool": "delegate.delete",
