@@ -1350,12 +1350,16 @@ def _web_search(args: dict[str, Any]) -> ToolResult:
     import urllib.request
     import urllib.parse
     import json as _json
+    import os
 
     query = str(args.get("query") or "").strip()
     if not query:
         return ToolResult(tool="web.search", ok=False, error="query is required")
+    base_url = (
+        os.environ.get("NAVI_SEARCH_BASE_URL", "https://duckduckgo.com").rstrip("/")
+    )
     encoded = urllib.parse.urlencode({"q": query, "format": "json", "no_html": "1"})
-    url = f"https://duckduckgo.com/?{encoded}"
+    url = f"{base_url}/?{encoded}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Navi/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -1424,20 +1428,27 @@ def _system_info(args: dict[str, Any]) -> ToolResult:
         "arch": platform.machine(),
         "hostname": platform.node(),
     }
-    try:
-        with open("/proc/uptime") as f:
-            facts["uptime_seconds"] = float(f.read().split()[0])
-    except Exception:
-        pass
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemTotal:"):
-                    facts["mem_total_kb"] = int(line.split()[1])
-                elif line.startswith("MemAvailable:"):
-                    facts["mem_available_kb"] = int(line.split()[1])
-    except Exception:
-        pass
+    is_linux = platform.system() == "Linux"
+    if is_linux:
+        try:
+            with open("/proc/uptime") as f:
+                facts["uptime_seconds"] = float(f.read().split()[0])
+        except Exception:
+            pass
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        facts["mem_total_kb"] = int(line.split()[1])
+                    elif line.startswith("MemAvailable:"):
+                        facts["mem_available_kb"] = int(line.split()[1])
+        except Exception:
+            pass
+    else:
+        facts["uptime_seconds"] = None
+        facts["mem_total_kb"] = None
+        facts["mem_available_kb"] = None
+        facts["os_note"] = f"/proc not available on {platform.system()}"
     try:
         usage = _shutil.disk_usage(Path.home())
         facts["disk_total_gb"] = round(usage.total / (1024**3), 1)

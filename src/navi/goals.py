@@ -258,13 +258,40 @@ class GoalStore:
             rows = conn.execute(query, params).fetchall()
         return [Goal(*row) for row in rows]
 
+    # Events that encode durable constraint state and must survive context
+    # compression (principle 12). Pending approvals, denials, rejections, and
+    # blocked state cannot be dropped by an LLM summary -- they are reloaded
+    # from the store, not trusted to live only inside the model context window.
+    _CONSTRAINT_EVENT_STATUSES = frozenset(
+        {GOAL_STATUS_AWAITING_APPROVAL, GOAL_STATUS_BLOCKED, GOAL_STATUS_REJECTED}
+    )
+
     async def compact_events(self, goal_id: str, provider, *, threshold: int = 20) -> bool:
         events = self.list_events(goal_id, limit=1000)
         events.sort(key=lambda x: x.created_at)
         if len(events) <= threshold:
             return False
 
-        # Summarize events
+        # Constraint-bearing events are preserved verbatim inside the compaction
+        # record. Routine events are summarized. This bounds context growth while
+        # guaranteeing durable constraint state survives compression (principle 12).
+        preserved_events = [
+            {
+                "id": e.id,
+                "event_type": e.event_type,
+                "status": e.status,
+                "run_id": e.run_id,
+                "trace_id": e.trace_id,
+                "evidence_json": e.evidence_json,
+                "created_at": e.created_at,
+            }
+            for e in events
+            if e.status in self._CONSTRAINT_EVENT_STATUSES
+        ]
+        deletable_ids = [
+            e.id for e in events if e.status not in self._CONSTRAINT_EVENT_STATUSES
+        ]
+
         from navi.provider import ChatMessage
 
         lines = []
@@ -278,7 +305,6 @@ class GoalStore:
         )
         summary = await provider.complete_for("planner", [ChatMessage("user", prompt)])
 
-        # Create compaction event
         event = GoalEvent(
             id=uuid.uuid4().hex,
             goal_id=goal_id,
@@ -286,7 +312,11 @@ class GoalStore:
             status="active",
             run_id="",
             trace_id="",
-            evidence_json=json.dumps({"summary": summary}, ensure_ascii=False, sort_keys=True),
+            evidence_json=json.dumps(
+                {"summary": summary, "preserved_events": preserved_events},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
             created_at=time.time(),
         )
 
@@ -307,9 +337,10 @@ class GoalStore:
                     event.created_at,
                 ),
             )
-            # Delete old events except the compaction one
-            for e in events:
-                conn.execute("DELETE FROM goal_events WHERE id = ?", (e.id,))
+            # Delete only the routine (non-constraint) events; constraint-bearing
+            # events remain the structured source of truth alongside the summary.
+            for event_id in deletable_ids:
+                conn.execute("DELETE FROM goal_events WHERE id = ?", (event_id,))
 
         return True
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,16 @@ def default_service_name() -> str:
 
 def service_facts(name: str | None = None) -> ServiceFacts:
     name = name or default_service_name()
+    # Principle 15: distinguish "service stopped" from "systemd not available
+    # on this OS" (macOS, WSL without systemd, Docker). Falling back to a
+    # missing-fact on non-systemd hosts keeps environment truth local.
+    if shutil.which("systemctl") is None:
+        return ServiceFacts(
+            name=name,
+            properties={},
+            exit_code=127,
+            stderr="systemctl not found; service manager unavailable on this OS",
+        )
     command = [
         "systemctl",
         "--user",

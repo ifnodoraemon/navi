@@ -287,11 +287,36 @@ async def _complete_with_optional_schema(
     if output_schema is None:
         return await provider.complete(messages)
     try:
-        return await provider.complete(messages, output_schema=output_schema)
+        result = await provider.complete(messages, output_schema=output_schema)
     except TypeError as exc:
         if "output_schema" not in str(exc) and "unexpected keyword" not in str(exc):
             raise
-        return await provider.complete(messages)
+        result = await provider.complete(messages)
+    # Post-hoc schema validation (principle 14/16). For json_object-only
+    # providers the schema is prompt-only, so the runtime validates the
+    # returned JSON against the declared schema and rejects malformed output
+    # as a tool-call parse failure rather than trusting prompt instructions.
+    _validate_structured_output(result, output_schema)
+    return result
+
+
+def _validate_structured_output(content: str, output_schema: dict[str, Any]) -> None:
+    schema = output_schema.get("schema", output_schema)
+    if not isinstance(schema, dict):
+        return
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"structured output is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("structured output must be a JSON object")
+    required = schema.get("required")
+    if isinstance(required, list) and required:
+        missing = [key for key in required if key not in parsed]
+        if missing:
+            raise RuntimeError(
+                f"structured output missing required keys: {missing}"
+            )
 
 
 def _extract_openai_content(data: dict[str, Any]) -> str:

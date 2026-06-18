@@ -17,6 +17,7 @@ from .operating_context import OperatingContext
 from .provider import ChatMessage
 from .recovery import RecoveryPlanner
 from .runtime import AgentRuntime
+from .specs_data import RESPONDER_OBSERVATIONS_PROMPT
 from .syscalls import ModelSyscallPlanner
 from .trace import TraceStore
 
@@ -211,9 +212,13 @@ class HernessEngine:
             planner_message = syscall.reason
             if syscall.tool not in {"", "system.planner_error"} and syscall.tool not in valid_tools:
                 planner_message = f"planner selected unavailable capability: {syscall.tool}"
+            # Principle 14: raw tool-call parse failures are logged under a
+            # distinct phase from successfully-parsed syscalls, so parser
+            # health can be monitored independently of reasoning quality.
+            is_parse_failure = syscall.tool == "system.planner_error"
             self.trace.add_event(
                 trace_id=trace_id,
-                phase="planner.syscall",
+                phase="planner.parse_error" if is_parse_failure else "planner.syscall",
                 session_id=resolved_session_id or "",
                 source=source,
                 peer_id=peer_id,
@@ -287,12 +292,12 @@ class HernessEngine:
                 terminal=invoked.terminal,
                 facts=invoked.facts,
             )
-            if result.terminal and observations and result.action == "chat" and last_result:
+            if result.terminal and observations and result.action == "chat":
+                # Surface accumulated observations via the observation field
+                # without replacing the model's terminal chat action.
                 result = replace(
-                    last_result,
-                    text=result.text,
+                    result,
                     observation="\n\n".join(observations),
-                    terminal=True,
                 )
             if result.terminal and result.action not in ("ask.user", "ask"):
                 block_reason = self._completion_block_reason(
@@ -737,13 +742,7 @@ class HernessEngine:
         messages.append(
             ChatMessage(
                 "system",
-                "\n".join(
-                    (
-                        "Navi's operating system has produced capability observations.",
-                        "Use only the observations as the source of truth.",
-                        "Answer the user based on these facts, following your prompt layer rules.",
-                    )
-                ),
+                RESPONDER_OBSERVATIONS_PROMPT,
             )
         )
         messages.append(

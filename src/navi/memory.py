@@ -506,10 +506,31 @@ class MemoryStore:
     def get_item(self, item_id: str) -> MemoryItem | None:
         return self.provider.get_item(item_id)
 
+    # Lifecycle transitions a governed memory item may take. Validating these
+    # keeps the lifecycle invariant (principle 10): e.g. a revoked item cannot
+    # silently return to active without resolving the contradiction.
+    _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
+        "proposed": frozenset({"accepted", "active", "revoked", "archived"}),
+        "accepted": frozenset({"active", "archived", "revoked"}),
+        "active": frozenset({"contradicted", "stale", "archived", "revoked"}),
+        "contradicted": frozenset({"active", "archived", "revoked"}),
+        "stale": frozenset({"active", "archived", "revoked"}),
+        "archived": frozenset({"active", "revoked"}),
+        "revoked": frozenset({"proposed", "archived"}),
+    }
+
     def set_status(self, item_id: str, status: str) -> MemoryItem | None:
         status = status.strip().lower()
         if status not in MEMORY_STATUSES:
             raise ValueError(f"Unsupported memory status: {status}")
+        current = self.get_item(item_id)
+        if current is not None and current.status != status:
+            allowed = self._ALLOWED_TRANSITIONS.get(current.status, frozenset())
+            if status not in allowed:
+                raise ValueError(
+                    f"invalid memory lifecycle transition: "
+                    f"{current.status} -> {status}"
+                )
         self.provider.update_item(item_id, status=status, updated_at=time.time())
         return self.get_item(item_id)
 
@@ -518,6 +539,23 @@ class MemoryStore:
         return self.get_item(item_id)
 
     def delete_item(self, item_id: str) -> None:
+        """Hard-delete a memory item.
+
+        Principle 9/10: deletion is a governed memory write. Prefer
+        :meth:`set_status` with ``archived`` for governance rollback; hard
+        deletion is reserved for storage hygiene and gated through the
+        ``before_memory_write`` hook so policy can block it."""
+        current = self.get_item(item_id)
+        if current is not None:
+            self._assert_memory_write_allowed(
+                memory_type=current.type,
+                status="archived",
+                scope=current.scope,
+                source=current.source,
+                confidence=max(0.0, min(1.0, current.confidence)),
+                content_chars=len(current.content),
+                metadata_keys=sorted(current.metadata.keys()),
+            )
         self.provider.delete_item(item_id)
 
     def restore_item(self, item_dict: dict) -> None:
@@ -1007,12 +1045,17 @@ class MemoryStore:
         contradicts = learning.get("contradicts", [])
         if not isinstance(contradicts, list):
             contradicts = []
+        # Promotion path (principle 10/12): high-confidence learnings are
+        # promoted to ``accepted`` so they are visible to recall and
+        # active_constraints() and survive context compression. Lower
+        # confidence learnings stay ``proposed`` pending review.
+        promoted_status = "accepted" if conf_val >= 0.8 else "proposed"
         new_item = self.add_item(
             memory_type=m_type,
             content=content,
             source=source,
             scope="global",
-            status="proposed",
+            status=promoted_status,
             confidence=conf_val,
             metadata={"contradicts": contradicts} if contradicts else {},
             reason=str(learning.get("reason") or add_reason_fallback),

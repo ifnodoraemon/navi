@@ -87,6 +87,9 @@ class DelegateSpawnCapability:
             {"objective": task.title, "status": task.status, "prompt": task.prompt},
         )
         goals = GoalStore(self.home)
+        # Principle 17: delegated goals need explicit stop conditions and
+        # user-visible status, so a delegation cannot block indefinitely
+        # (e.g. waiting on an approval that never comes).
         goal = goals.create(
             objective=task.prompt,
             source=task.source,
@@ -94,6 +97,8 @@ class DelegateSpawnCapability:
             sender_id=task.sender_id,
             workspace=task.workspace,
             run_id=task.id,
+            timeout=config.execution.timeout_seconds,
+            max_retries=3,
             evidence={
                 "run_id": task.id,
                 "run_status": task.status,

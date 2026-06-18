@@ -69,9 +69,15 @@ class EvolutionRecordEvaluationCapability:
                 "evolution.record_evaluation requires proposal_id and evaluation_result.",
                 reason="schema_mismatch",
             )
-        proposal = EvolutionLedger(self.home).record_proposal_evaluation(
-            proposal_id, evaluation_result
-        )
+        try:
+            proposal = EvolutionLedger(self.home).record_proposal_evaluation(
+                proposal_id,
+                evaluation_result,
+                approver_id=context.sender_id or context.peer_id,
+                approved_at=__import__("time").time(),
+            )
+        except ValueError as exc:
+            return _evolution_error(str(exc), reason="schema_mismatch", proposal_id=proposal_id)
         if proposal is None:
             return _evolution_error(
                 "proposal not found", reason="not_found", proposal_id=proposal_id

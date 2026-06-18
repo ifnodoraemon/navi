@@ -10,7 +10,7 @@ from typing import Any
 from .db import connect, ensure_schema_version
 
 
-RUN_STORE_SCHEMA_VERSION = 1
+RUN_STORE_SCHEMA_VERSION = 2
 
 
 def _require_workspace(workspace: str) -> str:
@@ -96,6 +96,8 @@ class ToolCallLog:
     error: str
     started_at: float
     ended_at: float
+    run_id: str = ""
+    trace_id: str = ""
 
 
 class RunStore:
@@ -196,10 +198,13 @@ class RunStore:
                     facts_json TEXT NOT NULL,
                     error TEXT NOT NULL,
                     started_at REAL NOT NULL,
-                    ended_at REAL NOT NULL
+                    ended_at REAL NOT NULL,
+                    run_id TEXT NOT NULL DEFAULT '',
+                    trace_id TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
+            self._migrate_tool_call_logs(conn)
             _assert_schema_exact(conn, "tool_call_logs", _TOOL_CALL_LOG_SCHEMA)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_approvals_code ON approvals(code)")
@@ -209,6 +214,22 @@ class RunStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tool_call_logs_tool ON tool_call_logs(tool, started_at)"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tool_call_logs_run ON tool_call_logs(run_id, started_at)"
+            )
+
+    @staticmethod
+    def _migrate_tool_call_logs(conn) -> None:
+        """Backfill run_id/trace_id columns on pre-v2 runs.db installs.
+
+        Principle 1.2: schema drift is rejected loudly by _assert_schema_exact,
+        so migration must bring the on-disk shape to the current contract before
+        the assertion runs."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(tool_call_logs)")}
+        if "run_id" not in columns:
+            conn.execute("ALTER TABLE tool_call_logs ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
+        if "trace_id" not in columns:
+            conn.execute("ALTER TABLE tool_call_logs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''")
 
     def create(
         self,
@@ -912,6 +933,8 @@ class RunStore:
         error: str,
         started_at: float,
         ended_at: float,
+        run_id: str = "",
+        trace_id: str = "",
     ) -> ToolCallLog:
         log = ToolCallLog(
             id=uuid.uuid4().hex,
@@ -922,14 +945,17 @@ class RunStore:
             error=error,
             started_at=started_at,
             ended_at=ended_at,
+            run_id=run_id,
+            trace_id=trace_id,
         )
         with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO tool_call_logs(
-                    id, tool, args_json, ok, facts_json, error, started_at, ended_at
+                    id, tool, args_json, ok, facts_json, error, started_at, ended_at,
+                    run_id, trace_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     log.id,
@@ -940,6 +966,8 @@ class RunStore:
                     log.error,
                     log.started_at,
                     log.ended_at,
+                    log.run_id,
+                    log.trace_id,
                 ),
             )
         return log
@@ -972,10 +1000,23 @@ class RunStore:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, tool, args_json, ok, facts_json, error, started_at, ended_at
+                SELECT id, tool, args_json, ok, facts_json, error, started_at, ended_at,
+                       run_id, trace_id
                 FROM tool_call_logs ORDER BY started_at DESC LIMIT ?
                 """,
                 (limit,),
+            ).fetchall()
+        return [self._tool_call_log_from_row(row) for row in rows]
+
+    def list_tool_call_logs_for_run(self, run_id: str, *, limit: int = 200) -> list[ToolCallLog]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, tool, args_json, ok, facts_json, error, started_at, ended_at,
+                       run_id, trace_id
+                FROM tool_call_logs WHERE run_id = ? ORDER BY started_at ASC LIMIT ?
+                """,
+                (run_id, limit),
             ).fetchall()
         return [self._tool_call_log_from_row(row) for row in rows]
 
@@ -1071,6 +1112,8 @@ _TOOL_CALL_LOG_SCHEMA = [
     ("error", "TEXT", 1, 0),
     ("started_at", "REAL", 1, 0),
     ("ended_at", "REAL", 1, 0),
+    ("run_id", "TEXT", 1, 0),
+    ("trace_id", "TEXT", 1, 0),
 ]
 
 

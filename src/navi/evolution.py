@@ -52,6 +52,8 @@ class EvolutionProposal:
     applied_event_id: str
     eval_cases: str
     evaluation_result: str
+    approved_by: str = ""
+    approved_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -244,6 +246,20 @@ class EvolutionLedger:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_evolution_proposal_status ON evolution_proposals(status)"
             )
+            self._migrate_evolution_proposals(conn)
+
+    @staticmethod
+    def _migrate_evolution_proposals(conn) -> None:
+        """Backfill approved_by/approved_at on pre-existing evolution.db installs."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(evolution_proposals)")}
+        if "approved_by" not in columns:
+            conn.execute(
+                "ALTER TABLE evolution_proposals ADD COLUMN approved_by TEXT NOT NULL DEFAULT ''"
+            )
+        if "approved_at" not in columns:
+            conn.execute(
+                "ALTER TABLE evolution_proposals ADD COLUMN approved_at REAL NOT NULL DEFAULT 0.0"
+            )
 
     def record(
         self,
@@ -381,9 +397,10 @@ class EvolutionLedger:
                     id, target_type, target_id, reason, expected_benefit, risk,
                     before, after, diff, rollback_plan, required_approval_level,
                     evidence, source_run_id, status, created_at, applied_at,
-                    applied_event_id, eval_cases, evaluation_result
+                    applied_event_id, eval_cases, evaluation_result,
+                    approved_by, approved_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 tuple(proposal.__dict__.values()),
             )
@@ -399,7 +416,8 @@ class EvolutionLedger:
                     SELECT id, target_type, target_id, reason, expected_benefit, risk,
                            before, after, diff, rollback_plan, required_approval_level,
                            evidence, source_run_id, status, created_at, applied_at,
-                           applied_event_id, eval_cases, evaluation_result
+                           applied_event_id, eval_cases, evaluation_result,
+                           approved_by, approved_at
                     FROM evolution_proposals WHERE status = ? ORDER BY created_at DESC LIMIT ?
                     """,
                     (status, limit),
@@ -410,7 +428,8 @@ class EvolutionLedger:
                     SELECT id, target_type, target_id, reason, expected_benefit, risk,
                            before, after, diff, rollback_plan, required_approval_level,
                            evidence, source_run_id, status, created_at, applied_at,
-                           applied_event_id, eval_cases, evaluation_result
+                           applied_event_id, eval_cases, evaluation_result,
+                           approved_by, approved_at
                     FROM evolution_proposals ORDER BY created_at DESC LIMIT ?
                     """,
                     (limit,),
@@ -424,7 +443,8 @@ class EvolutionLedger:
                 SELECT id, target_type, target_id, reason, expected_benefit, risk,
                        before, after, diff, rollback_plan, required_approval_level,
                        evidence, source_run_id, status, created_at, applied_at,
-                       applied_event_id, eval_cases, evaluation_result
+                       applied_event_id, eval_cases, evaluation_result,
+                       approved_by, approved_at
                 FROM evolution_proposals WHERE id = ?
                 """,
                 (proposal_id,),
@@ -432,26 +452,56 @@ class EvolutionLedger:
         return EvolutionProposal(*row) if row else None
 
     def record_proposal_evaluation(
-        self, proposal_id: str, evaluation_result: str
+        self,
+        proposal_id: str,
+        evaluation_result: str,
+        *,
+        approver_id: str = "",
+        approved_at: float = 0.0,
     ) -> EvolutionProposal | None:
-        if self.get_proposal(proposal_id) is None:
-            return None
-        with connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE evolution_proposals SET evaluation_result = ? WHERE id = ?",
-                (evaluation_result, proposal_id),
-            )
-        return self.get_proposal(proposal_id)
+        """Record who approved an evolution proposal and when.
 
-    def apply_proposal(self, proposal_id: str) -> EvolutionEvent | None:
+        Principle 7/8/11: approval source of truth must be inspectable and
+        repairable, answering who approved, when, and via which record. An
+        ``approved`` result without an ``approver_id`` is rejected so approval
+        cannot be self-assigned by the model alone."""
         proposal = self.get_proposal(proposal_id)
         if proposal is None:
             return None
-        if proposal.status == "applied" and proposal.applied_event_id:
-            return self.get(proposal.applied_event_id)
-        self.assert_proposal_applicable(proposal)
+        evaluation_result = evaluation_result.strip().lower()
+        if evaluation_result == "approved" and not approver_id.strip():
+            raise ValueError("approved evaluation requires an approver_id")
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE evolution_proposals
+                SET evaluation_result = ?, approved_by = ?, approved_at = ?
+                WHERE id = ?
+                """,
+                (
+                    evaluation_result,
+                    approver_id.strip(),
+                    approved_at,
+                    proposal_id,
+                ),
+            )
+        # Emit a ledger event capturing the approval decision (before/after).
+        self.record(
+            run_id=proposal.source_run_id,
+            target_type=proposal.target_type,
+            target_id=proposal.target_id,
+            reason=f"evaluation recorded: {evaluation_result}",
+            before=proposal.evaluation_result,
+            after=evaluation_result,
+        )
+        return self.get_proposal(proposal_id)
 
-        event = self.record(
+    def record_apply_event(self, proposal: EvolutionProposal) -> EvolutionEvent:
+        """Record the evolution ledger event capturing before/after/diff.
+
+        Called before the side effect lands so the attempted change is always
+        auditable and rollbackable (principle 7/11)."""
+        return self.record(
             run_id=proposal.source_run_id,
             target_type=proposal.target_type,
             target_id=proposal.target_id,
@@ -459,6 +509,8 @@ class EvolutionLedger:
             before=proposal.before,
             after=proposal.after,
         )
+
+    def mark_applied(self, proposal_id: str, event_id: str) -> None:
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -466,9 +518,8 @@ class EvolutionLedger:
                 SET status = ?, applied_at = ?, applied_event_id = ?
                 WHERE id = ?
                 """,
-                ("applied", time.time(), event.id, proposal.id),
+                ("applied", time.time(), event_id, proposal_id),
             )
-        return event
 
     @staticmethod
     def assert_proposal_applicable(proposal: EvolutionProposal) -> None:
@@ -565,15 +616,25 @@ class EvolutionEngine:
             return
 
         evals_path = self.home.parent / "evals" / "auto_captured_journeys.yaml"
+        before = evals_path.read_text(encoding="utf-8") if evals_path.exists() else ""
         if evals_path.exists():
             data = load_daily_journey_eval_dataset(evals_path)
         else:
             data = {"version": 1, "journeys": []}
         data["journeys"].append(extracted)
+        after = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
         evals_path.parent.mkdir(parents=True, exist_ok=True)
-        evals_path.write_text(
-            yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
+        evals_path.write_text(after, encoding="utf-8")
+        # Record the eval capture through the audited ledger so the change
+        # is traceable and rollbackable, rather than a side effect outside
+        # the evolution record (principle 7/11).
+        self.ledger.record(
+            run_id=run_id,
+            target_type="eval_case",
+            target_id=str(extracted.get("id") or session_id),
+            reason=f"auto-captured journey eval from session {session_id}",
+            before=before,
+            after=after,
         )
         logger.info("extracted daily eval from session %s run %s", session_id, run_id)
 
@@ -587,8 +648,13 @@ class EvolutionEngine:
         # transition share one gate (no drift between the two apply paths).
         self.ledger.assert_proposal_applicable(proposal)
 
+        # Record the ledger event before performing the side effect, so the
+        # change is always auditable and rollbackable, even if the file write
+        # fails afterwards (principle 7/11).
+        event = self.ledger.record_apply_event(proposal)
         self._write_proposal_side_effect(proposal)
-        return self.ledger.apply_proposal(proposal_id)
+        self.ledger.mark_applied(proposal_id, event.id)
+        return event
 
     def _write_proposal_side_effect(self, proposal: EvolutionProposal) -> None:
         if proposal.target_type == "prompt_layer":
@@ -598,7 +664,12 @@ class EvolutionEngine:
             return
         spec_target = _SPEC_FILE_TARGETS.get(proposal.target_type)
         if spec_target is None:
-            return
+            # Declared evolution targets that have no apply side effect must
+            # fail loudly rather than recording a no-op event (principle 1.2).
+            raise ValueError(
+                f"proposal apply has no side-effect handler for "
+                f"target_type={proposal.target_type}"
+            )
         subdir, suffix = spec_target
         spec_path = self.home / subdir / f"{proposal.target_id}{suffix}"
         spec_path.parent.mkdir(parents=True, exist_ok=True)

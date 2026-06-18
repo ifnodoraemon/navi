@@ -363,6 +363,7 @@ class CapabilityRegistry:
                 error="" if result.ok else result.message or result.observation,
                 started_at=started_at,
                 ended_at=time.time(),
+                run_id=self.governed_run_id or "",
             )
         except Exception as exc:
             logger.error(

@@ -511,10 +511,6 @@ SYSCALL_PLANNER_SPEC: Any = {
             "local facts, spawn specific, narrowly-scoped delegations "
             "for the concrete next step, or propose a workflow."
         },
-        "Use managed task records for local action tracking. If the user asks to "
-        "register, track, or queue a local task, use delegate.spawn, watch.create, "
-        "or workflow.propose as appropriate; do not use file.write to create ad hoc "
-        "task lists unless the user explicitly asks to edit a specific file.",
         "For scheduling, do not invent default times. If a recurring schedule lacks a "
         "concrete time, ask the user. If a one-shot time is supplied in natural "
         "language, call watch.create with kind=once and run_at_text rather than using "
@@ -717,3 +713,14 @@ PROMPT_LAYERS_SPEC: Any = {
         "request approval, or mention internal execution tools.\n",
     },
 }
+
+
+# Static instruction fed to the responder when finalizing capability
+# observations. Kept in the prompt layer spec (rather than inlined in the
+# engine) so it is governed, versionable, and overridable like other layers
+# (principle 1.1).
+RESPONDER_OBSERVATIONS_PROMPT: str = (
+    "Navi's operating system has produced capability observations.\n"
+    "Use only the observations as the source of truth.\n"
+    "Answer the user based on these facts, following your prompt layer rules."
+)
