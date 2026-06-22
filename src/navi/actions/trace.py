@@ -10,6 +10,7 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
+from ..result import SchemaMismatch, guarded
 from ..tools import ToolSpec
 from ..trace import TraceStore
 from .helpers import arg_text as _arg_text
@@ -20,6 +21,7 @@ from .helpers import transition_facts as _transition_facts
 @capability("trace_evaluate")
 class TraceEvaluateCapability(BaseCapability):
 
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -29,14 +31,7 @@ class TraceEvaluateCapability(BaseCapability):
     ) -> CapabilityResult:
         trace_id = _arg_text(args, "trace_id")
         if not trace_id:
-            return CapabilityResult(
-                ok=False,
-                action="trace",
-                observation="trace.evaluate requires trace_id.",
-                message="trace.evaluate requires trace_id.",
-                terminal=False,
-                error_reason="schema_mismatch",
-            )
+            raise SchemaMismatch("trace.evaluate requires trace_id.")
         evaluation = TraceStore(self.home).evaluate_trace(trace_id)
         evaluation_facts = asdict(evaluation)
         facts = {

@@ -9,6 +9,7 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
+from ..result import NotFound, guarded
 from ..tools import ToolSpec
 from .helpers import (
     arg_text as _arg_text,
@@ -27,6 +28,7 @@ from ..control import ApprovalService, SurfaceContext
 @capability("approval_request")
 class ApprovalRequestCapability(BaseCapability):
 
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -38,14 +40,7 @@ class ApprovalRequestCapability(BaseCapability):
         runs = RunStore(self.home)
         task = runs.get(run_id) if run_id else None
         if task is None:
-            return CapabilityResult(
-                ok=False,
-                action="approval",
-                observation=f"delegation run not found: {run_id}",
-                message=f"delegation run not found: {run_id}",
-                terminal=False,
-                error_reason="not_found",
-            )
+            raise NotFound(f"delegation run not found: {run_id}")
         approval = runs.create_approval(
             run_id=task.id,
             peer_id=context.peer_id or task.peer_id,
