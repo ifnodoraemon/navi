@@ -10,6 +10,7 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
+from ..result import NotFound, SchemaMismatch, guarded
 from ..tools import ToolSpec
 from .helpers import (
     arg_text as _arg_text,
@@ -30,6 +31,7 @@ class WatchCreateCapability(BaseCapability):
         super().__init__(spec, home=home)
         self.project_dir = project_dir
 
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -44,50 +46,23 @@ class WatchCreateCapability(BaseCapability):
         )
         prompt = _arg_text(args, "prompt")
         if not prompt:
-            return CapabilityResult(
-                ok=False,
-                action="watch",
-                observation="watch.create requires prompt.",
-                message="watch.create requires prompt.",
-                terminal=False,
-                error_reason="schema_mismatch",
-            )
+            raise SchemaMismatch("watch.create requires prompt.")
         if kind == "once":
             next_run = _float_or_none(args.get("run_at"))
             if next_run is None and run_at_text:
                 next_run = _parse_one_shot_run_at(run_at_text)
             if next_run is None:
-                return CapabilityResult(
-                    ok=False,
-                    action="watch",
-                    observation="watch.create kind=once requires run_at or run_at_text.",
-                    message="watch.create kind=once requires run_at or run_at_text.",
-                    terminal=False,
-                    error_reason="schema_mismatch",
-                )
+                raise SchemaMismatch("watch.create kind=once requires run_at or run_at_text.")
             cron = "once"
         else:
             kind = "recurring"
             if not cron:
-                return CapabilityResult(
-                    ok=False,
-                    action="watch",
-                    observation="watch.create kind=recurring requires cron.",
-                    message="watch.create kind=recurring requires cron.",
-                    terminal=False,
-                    error_reason="schema_mismatch",
-                )
+                raise SchemaMismatch("watch.create kind=recurring requires cron.")
             try:
                 validate_cron(cron)
                 next_run = next_cron_time(cron)
             except ValueError as exc:
-                return CapabilityResult(
-                    ok=False,
-                    action="watch",
-                    observation=f"Invalid cron: {exc}",
-                    message=f"Invalid cron: {exc}",
-                    terminal=False,
-                )
+                raise SchemaMismatch(f"Invalid cron: {exc}") from exc
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         workspace = _resolve_workspace(context.workspace, default=self.project_dir)
@@ -124,6 +99,7 @@ class WatchCreateCapability(BaseCapability):
 @capability("watch_delete")
 class WatchDeleteCapability(BaseCapability):
 
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -134,25 +110,12 @@ class WatchDeleteCapability(BaseCapability):
         watch_id = _arg_text(args, "watch_id")
         reason = _arg_text(args, "reason")
         if not watch_id or not reason:
-            return CapabilityResult(
-                ok=False,
-                action="watch",
-                observation="watch.delete requires watch_id and reason.",
-                message="watch.delete requires watch_id and reason.",
-                terminal=False,
-                error_reason="schema_mismatch",
-            )
+            raise SchemaMismatch("watch.delete requires watch_id and reason.")
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         deleted = runs.delete_watch(watch_id)
         if deleted is None:
-            return CapabilityResult(
-                ok=False,
-                action="watch",
-                observation=f"watch not found: {watch_id}",
-                message=f"watch not found: {watch_id}",
-                terminal=False,
-            )
+            raise NotFound(f"watch not found: {watch_id}")
         graph.delete(deleted.id)
         facts = {
             **_transition_facts("watch", deleted.id, "deleted"),
