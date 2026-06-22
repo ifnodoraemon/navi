@@ -11,6 +11,7 @@ from ..capabilities_types import (
     capability,
 )
 from ..memory import MemoryStore
+from ..result import SchemaMismatch, guarded
 from ..tools import ToolSpec
 from .helpers import arg_text as _arg_text
 from .helpers import fact_result as _fact_result
@@ -20,6 +21,7 @@ from .helpers import transition_facts as _transition_facts
 @capability("memory_add")
 class MemoryAddCapability(BaseCapability):
 
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -30,26 +32,12 @@ class MemoryAddCapability(BaseCapability):
         memory_type = _arg_text(args, "type")
         content = _arg_text(args, "content")
         if not memory_type or not content:
-            return CapabilityResult(
-                ok=False,
-                action="memory",
-                observation="memory.add requires type and content.",
-                message="memory.add requires type and content.",
-                terminal=False,
-                error_reason="schema_mismatch",
-            )
+            raise SchemaMismatch("memory.add requires type and content.")
         metadata = args.get("metadata") if isinstance(args.get("metadata"), dict) else {}
         reason = _arg_text(args, "reason")
         provenance = _arg_text(args, "provenance")
         if not reason or not provenance:
-            return CapabilityResult(
-                ok=False,
-                action="memory",
-                observation="memory.add requires reason and provenance.",
-                message="memory.add requires reason and provenance.",
-                terminal=False,
-                error_reason="schema_mismatch",
-            )
+            raise SchemaMismatch("memory.add requires reason and provenance.")
         try:
             item = MemoryStore(self.home).add_item(
                 memory_type,
@@ -63,14 +51,7 @@ class MemoryAddCapability(BaseCapability):
                 provenance=provenance,
             )
         except ValueError as exc:
-            return CapabilityResult(
-                ok=False,
-                action="memory",
-                observation=str(exc),
-                message=str(exc),
-                terminal=False,
-                error_reason="invalid_operation",
-            )
+            raise SchemaMismatch(str(exc)) from exc
         item_facts = asdict(item)
         facts = {
             **_transition_facts("memory_item", item.id, "created"),
