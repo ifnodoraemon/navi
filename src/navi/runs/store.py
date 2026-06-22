@@ -1,104 +1,112 @@
+"""RunStore: governed run/approval/watch/execution-log persistence."""
+
 from __future__ import annotations
 
 import secrets
 import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .db import connect, ensure_schema_version
-from .schema import Column, Table, assert_schema_exact
-
+from ..db import connect, ensure_schema_version
+from ..schema import Column, Table, assert_schema_exact
+from .models import (
+    Approval,
+    ExecutionLog,
+    Run,
+    ToolCallLog,
+    Watch,
+    _approval_diagnostic_facts,
+    _require_workspace,
+)
 
 RUN_STORE_SCHEMA_VERSION = 2
 
-
-def _require_workspace(workspace: str) -> str:
-    value = workspace.strip()
-    if not value:
-        raise ValueError("workspace is required")
-    return value
-
-
-@dataclass(frozen=True)
-class Run:
-    id: str
-    title: str
-    status: str
-    created_at: float
-    updated_at: float
-    kind: str = "manual"
-    prompt: str = ""
-    source: str = "local"
-    peer_id: str = ""
-    sender_id: str = ""
-    provider: str = ""
-    workspace: str = ""
-    autonomy_level: str = "L2"
-    trust_rule_id: str = ""
-    why_now: str = ""
-    plan_summary: str = ""
-    result_summary: str = ""
-    error: str = ""
-
-
-@dataclass(frozen=True)
-class Approval:
-    id: str
-    run_id: str
-    code: str
-    action: str
-    peer_id: str
-    sender_id: str
-    status: str
-    expires_at: float
-    created_at: float
-    updated_at: float
-
-
-@dataclass(frozen=True)
-class Watch:
-    id: str
-    cron: str
-    prompt: str
-    peer_id: str
-    sender_id: str
-    enabled: bool
-    next_run_at: float
-    last_run_at: float
-    created_at: float
-    updated_at: float
-    workspace: str = ""
-    kind: str = "recurring"
-
-
-@dataclass(frozen=True)
-class ExecutionLog:
-    id: str
-    run_id: str
-    provider: str
-    phase: str
-    command: str
-    stdout: str
-    stderr: str
-    exit_code: int
-    started_at: float
-    ended_at: float
-
-
-@dataclass(frozen=True)
-class ToolCallLog:
-    id: str
-    tool: str
-    args_json: str
-    ok: bool
-    facts_json: str
-    error: str
-    started_at: float
-    ended_at: float
-    run_id: str = ""
-    trace_id: str = ""
+RUNS_TABLE = Table(
+    "runs",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("title", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+        Column("kind", "TEXT", nullable=False),
+        Column("prompt", "TEXT", nullable=False),
+        Column("source", "TEXT", nullable=False),
+        Column("peer_id", "TEXT", nullable=False),
+        Column("sender_id", "TEXT", nullable=False),
+        Column("provider", "TEXT", nullable=False),
+        Column("workspace", "TEXT", nullable=False),
+        Column("autonomy_level", "TEXT", nullable=False),
+        Column("trust_rule_id", "TEXT", nullable=False),
+        Column("why_now", "TEXT", nullable=False),
+        Column("plan_summary", "TEXT", nullable=False),
+        Column("result_summary", "TEXT", nullable=False),
+        Column("error", "TEXT", nullable=False),
+    ],
+)
+APPROVALS_TABLE = Table(
+    "approvals",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("run_id", "TEXT", nullable=False),
+        Column("code", "TEXT", nullable=False, unique=True),
+        Column("action", "TEXT", nullable=False),
+        Column("peer_id", "TEXT", nullable=False),
+        Column("sender_id", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("expires_at", "REAL", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+    ],
+)
+WATCHES_TABLE = Table(
+    "watches",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("cron", "TEXT", nullable=False),
+        Column("prompt", "TEXT", nullable=False),
+        Column("peer_id", "TEXT", nullable=False),
+        Column("sender_id", "TEXT", nullable=False),
+        Column("enabled", "INTEGER", nullable=False),
+        Column("next_run_at", "REAL", nullable=False),
+        Column("last_run_at", "REAL", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+        Column("workspace", "TEXT", nullable=False),
+        Column("kind", "TEXT", nullable=False, default="'recurring'"),
+    ],
+)
+EXECUTION_LOGS_TABLE = Table(
+    "execution_logs",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("run_id", "TEXT", nullable=False),
+        Column("provider", "TEXT", nullable=False),
+        Column("phase", "TEXT", nullable=False),
+        Column("command", "TEXT", nullable=False),
+        Column("stdout", "TEXT", nullable=False),
+        Column("stderr", "TEXT", nullable=False),
+        Column("exit_code", "INTEGER", nullable=False),
+        Column("started_at", "REAL", nullable=False),
+        Column("ended_at", "REAL", nullable=False),
+    ],
+)
+TOOL_CALL_LOGS_TABLE = Table(
+    "tool_call_logs",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("tool", "TEXT", nullable=False),
+        Column("args_json", "TEXT", nullable=False),
+        Column("ok", "INTEGER", nullable=False),
+        Column("facts_json", "TEXT", nullable=False),
+        Column("error", "TEXT", nullable=False),
+        Column("started_at", "REAL", nullable=False),
+        Column("ended_at", "REAL", nullable=False),
+        Column("run_id", "TEXT", nullable=False, default="''"),
+        Column("trace_id", "TEXT", nullable=False, default="''"),
+    ],
+)
 
 
 class RunStore:
@@ -379,6 +387,8 @@ class RunStore:
                 ),
             )
         return self.get(run_id)
+
+    # ---------------------------------------------------------------- approvals
 
     def create_approval(
         self,
@@ -698,6 +708,8 @@ class RunStore:
         approvals = self._approvals_for_run(run_id)
         return approvals[0] if approvals else None
 
+    # ------------------------------------------------------------------ watches
+
     def create_watch(
         self,
         *,
@@ -813,6 +825,8 @@ class RunStore:
         with connect(self.db_path) as conn:
             conn.execute("DELETE FROM watches WHERE id = ?", (watch_id,))
         return watch
+
+    # ----------------------------------------------------------- execution logs
 
     def add_execution_log(
         self,
@@ -960,6 +974,8 @@ class RunStore:
             ).fetchall()
         return [self._tool_call_log_from_row(row) for row in rows]
 
+    # ------------------------------------------------------------- row mappers
+
     @staticmethod
     def _run_from_row(row: tuple) -> Run:
         return Run(*row)
@@ -979,108 +995,3 @@ class RunStore:
     @staticmethod
     def _new_code() -> str:
         return f"{secrets.randbelow(1_000_000):06d}"
-
-
-RUNS_TABLE = Table(
-    "runs",
-    [
-        Column("id", "TEXT", primary_key=True),
-        Column("title", "TEXT", nullable=False),
-        Column("status", "TEXT", nullable=False),
-        Column("created_at", "REAL", nullable=False),
-        Column("updated_at", "REAL", nullable=False),
-        Column("kind", "TEXT", nullable=False),
-        Column("prompt", "TEXT", nullable=False),
-        Column("source", "TEXT", nullable=False),
-        Column("peer_id", "TEXT", nullable=False),
-        Column("sender_id", "TEXT", nullable=False),
-        Column("provider", "TEXT", nullable=False),
-        Column("workspace", "TEXT", nullable=False),
-        Column("autonomy_level", "TEXT", nullable=False),
-        Column("trust_rule_id", "TEXT", nullable=False),
-        Column("why_now", "TEXT", nullable=False),
-        Column("plan_summary", "TEXT", nullable=False),
-        Column("result_summary", "TEXT", nullable=False),
-        Column("error", "TEXT", nullable=False),
-    ],
-)
-
-APPROVALS_TABLE = Table(
-    "approvals",
-    [
-        Column("id", "TEXT", primary_key=True),
-        Column("run_id", "TEXT", nullable=False),
-        Column("code", "TEXT", nullable=False, unique=True),
-        Column("action", "TEXT", nullable=False),
-        Column("peer_id", "TEXT", nullable=False),
-        Column("sender_id", "TEXT", nullable=False),
-        Column("status", "TEXT", nullable=False),
-        Column("expires_at", "REAL", nullable=False),
-        Column("created_at", "REAL", nullable=False),
-        Column("updated_at", "REAL", nullable=False),
-    ],
-)
-
-WATCHES_TABLE = Table(
-    "watches",
-    [
-        Column("id", "TEXT", primary_key=True),
-        Column("cron", "TEXT", nullable=False),
-        Column("prompt", "TEXT", nullable=False),
-        Column("peer_id", "TEXT", nullable=False),
-        Column("sender_id", "TEXT", nullable=False),
-        Column("enabled", "INTEGER", nullable=False),
-        Column("next_run_at", "REAL", nullable=False),
-        Column("last_run_at", "REAL", nullable=False),
-        Column("created_at", "REAL", nullable=False),
-        Column("updated_at", "REAL", nullable=False),
-        Column("workspace", "TEXT", nullable=False),
-        Column("kind", "TEXT", nullable=False, default="'recurring'"),
-    ],
-)
-
-EXECUTION_LOGS_TABLE = Table(
-    "execution_logs",
-    [
-        Column("id", "TEXT", primary_key=True),
-        Column("run_id", "TEXT", nullable=False),
-        Column("provider", "TEXT", nullable=False),
-        Column("phase", "TEXT", nullable=False),
-        Column("command", "TEXT", nullable=False),
-        Column("stdout", "TEXT", nullable=False),
-        Column("stderr", "TEXT", nullable=False),
-        Column("exit_code", "INTEGER", nullable=False),
-        Column("started_at", "REAL", nullable=False),
-        Column("ended_at", "REAL", nullable=False),
-    ],
-)
-
-TOOL_CALL_LOGS_TABLE = Table(
-    "tool_call_logs",
-    [
-        Column("id", "TEXT", primary_key=True),
-        Column("tool", "TEXT", nullable=False),
-        Column("args_json", "TEXT", nullable=False),
-        Column("ok", "INTEGER", nullable=False),
-        Column("facts_json", "TEXT", nullable=False),
-        Column("error", "TEXT", nullable=False),
-        Column("started_at", "REAL", nullable=False),
-        Column("ended_at", "REAL", nullable=False),
-        Column("run_id", "TEXT", nullable=False, default="''"),
-        Column("trace_id", "TEXT", nullable=False, default="''"),
-    ],
-)
-
-
-def _approval_diagnostic_facts(approval: Approval, *, now: float, sender_id: str = "") -> dict:
-    return {
-        "approval_id": approval.id,
-        "run_id": approval.run_id,
-        "code_present": bool(approval.code),
-        "action": approval.action,
-        "status": approval.status,
-        "sender_matches": not sender_id or approval.sender_id == sender_id,
-        "is_expired": approval.expires_at < now,
-        "expires_at": approval.expires_at,
-        "updated_at": approval.updated_at,
-    }
