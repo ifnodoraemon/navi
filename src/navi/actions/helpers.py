@@ -127,6 +127,7 @@ def workflow_not_found(workflow_id: str) -> CapabilityResult:
         observation=f"workflow not found: {workflow_id}",
         message=f"workflow not found: {workflow_id}",
         terminal=False,
+        error_reason="not_found",
         facts={"workflow_id": workflow_id, "reason": "workflow_not_found"},
     )
 

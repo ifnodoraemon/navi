@@ -420,8 +420,6 @@ def _messages_for_response_format(
             "You MUST return ONLY a JSON object that strictly matches the following JSON Schema:"
         )
         instructions.append(json.dumps(output_schema, ensure_ascii=False, indent=2))
-    elif any("json" in message.content.lower() for message in messages):
-        return messages
     return [
         ChatMessage(
             "system",

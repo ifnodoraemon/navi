@@ -41,6 +41,7 @@ class ApprovalRequestCapability:
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
                 terminal=False,
+                error_reason="not_found",
             )
         approval = runs.create_approval(
             run_id=task.id,

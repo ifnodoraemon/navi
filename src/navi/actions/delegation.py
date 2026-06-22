@@ -170,6 +170,7 @@ class DelegatePrepareCapability:
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
                 terminal=False,
+                error_reason="not_found",
             )
         planned = await ExecutionService(self.home).plan_task(task)
         GoalStore(self.home).update_for_run(
@@ -209,6 +210,7 @@ class DelegateRunCapability:
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
                 terminal=False,
+                error_reason="not_found",
             )
         execution = ExecutionService(self.home)
         if not execution.execution_allowed(task):
@@ -269,6 +271,7 @@ class DelegateDeleteCapability:
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
                 terminal=False,
+                error_reason="not_found",
             )
         if _remote_source(context.source) and (
             task.status not in REMOTE_DELETABLE_STATUSES
@@ -295,6 +298,7 @@ class DelegateDeleteCapability:
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
                 terminal=False,
+                error_reason="not_found",
             )
         graph.delete(deleted.id)
         facts = {
@@ -415,6 +419,7 @@ class ExecutionRetryCapability:
                 observation=f"delegation run not found: {run_id}",
                 message=f"delegation run not found: {run_id}",
                 terminal=False,
+                error_reason="not_found",
             )
         execution = ExecutionService(self.home)
         if not execution.execution_allowed(task):

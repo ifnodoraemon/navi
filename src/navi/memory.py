@@ -567,6 +567,18 @@ class MemoryStore:
                     f"invalid memory lifecycle transition: "
                     f"{current.status} -> {status}"
                 )
+            # A lifecycle transition is a governed memory write: route it
+            # through the ``before_memory_write`` hook so policy can observe
+            # or block the new status (principle 9/10).
+            self._assert_memory_write_allowed(
+                memory_type=current.type,
+                status=status,
+                scope=current.scope,
+                source=current.source,
+                confidence=max(0.0, min(1.0, current.confidence)),
+                content_chars=len(current.content),
+                metadata_keys=sorted(current.metadata.keys()),
+            )
         self.provider.update_item(item_id, status=status, updated_at=time.time())
         return self.get_item(item_id)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from .specs_data import CAPABILITY_SAFEGUARDS_SPEC
 from .tools import ToolSpec
@@ -54,22 +55,33 @@ def _declared_safeguard(spec: ToolSpec) -> dict:
     }
 
 
-_SECRET_PATTERNS = [
-    r"(?i)(bearer\s+)[A-Za-z0-9\-\._~+/]+",
-    r"(?i)(api[_-]?key[\"'\s:=]+)[A-Za-z0-9\-\._~+/]+",
-    r"(?i)(password[\"'\s:=]+)[^\s&\"']+",
-    r"(?i)(secret[\"'\s:=]+)[^\s&\"']+",
-    r"(?i)(token[\"'\s:=]+)[A-Za-z0-9\-\._~+/]+",
+_SECRET_PATTERNS: list[tuple[str, str]] = [
+    (r"(?i)(bearer\s+)[A-Za-z0-9\-\._~+/]+", r"\1[REDACTED]"),
+    (r"(?i)(api[_-]?key[\"'\s:=]+)[A-Za-z0-9\-\._~+/]+", r"\1[REDACTED]"),
+    (r"(?i)(password[\"'\s:=]+)[^\s&\"']+", r"\1[REDACTED]"),
+    (r"(?i)(secret[\"'\s:=]+)[^\s&\"']+", r"\1[REDACTED]"),
+    (r"(?i)(token[\"'\s:=]+)[A-Za-z0-9\-\._~+/]+", r"\1[REDACTED]"),
     # Generic ``Authorization: <scheme> <value>`` header.
-    r"(?i)(authorization:\s*(bearer\s+)?)[A-Za-z0-9\-\._~+/=]+",
+    (r"(?i)(authorization:\s*(bearer\s+)?)[A-Za-z0-9\-\._~+/=]+", r"\1[REDACTED]"),
+    # PEM-encoded private keys (RSA, EC, OPENSSH, ...). Defense in depth
+    # (principle 13/16): these are well-known secret formats that must not
+    # leak through tool args/facts/audit logs even without a keyword prefix.
+    (
+        r"(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        "[REDACTED]",
+    ),
+    # Connection strings with embedded credentials (RFC-3986 userinfo):
+    # ``scheme://user:pass@host``. The password sits between ``:`` and ``@``
+    # so lookarounds redact only the credential, preserving delimiters.
+    (r"(?<=:)[^@\s:]+(?=@)", "[REDACTED]"),
 ]
 
 
 def redact_secrets(text: str) -> str:
     if not isinstance(text, str):
         return text
-    for pattern in _SECRET_PATTERNS:
-        text = re.sub(pattern, r"\1[REDACTED]", text)
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = re.sub(pattern, replacement, text)
     return text
 
 

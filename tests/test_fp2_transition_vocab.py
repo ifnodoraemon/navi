@@ -4,9 +4,7 @@ layer can reason over state changes without parsing tool-specific fields.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-from navi.core_tools import _browser_screenshot, _file_write, _shell_run, _test_run
+from navi.core_tools import _file_write, _shell_run, _test_run
 
 _TRANSITION_KEYS = {"entity_type", "entity_id", "state_transition", "turn_scope"}
 

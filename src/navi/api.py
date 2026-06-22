@@ -318,9 +318,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             permission="write",
             context=_local_capability_context(home, project_dir=project_dir),
         )
-        if not result.ok and "not found" in result.message:
-            raise HTTPException(status_code=404, detail=result.message)
-        _raise_capability_error(result)
+        _raise_capability_error(result, not_found_status=404)
         return {"deleted": True, "delegation": result.facts}
 
     @app.get(api_path("approvals"))
@@ -341,9 +339,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             permission="write",
             context=_local_capability_context(home, project_dir=project_dir),
         )
-        if not result.ok and "not found" in result.message.lower():
-            raise HTTPException(status_code=409, detail=result.message)
-        _raise_capability_error(result)
+        _raise_capability_error(result, not_found_status=409)
         task = task_store.get(run_id)
         if task is None:
             raise HTTPException(status_code=404, detail="delegation run not found")
@@ -635,9 +631,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             permission="write",
             context=_local_capability_context(home, project_dir=project_dir),
         )
-        if not result.ok and "not found" in result.message:
-            raise HTTPException(status_code=404, detail=result.message)
-        _raise_capability_error(result)
+        _raise_capability_error(result, not_found_status=404)
         workflow = workflow_store.get(workflow_id)
         if workflow is None:
             raise HTTPException(status_code=404, detail="workflow not found")
