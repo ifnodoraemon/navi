@@ -4,7 +4,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..capabilities_types import CapabilityContext, CapabilityResult
+from ..capabilities_types import (
+    BaseCapability,
+    CapabilityContext,
+    CapabilityResult,
+    capability,
+)
 from ..tools import ToolSpec
 from .helpers import (
     arg_text as _arg_text,
@@ -34,10 +39,10 @@ REMOTE_DELETABLE_STATUSES = frozenset(
 REMOTE_DELETABLE_KINDS = frozenset({"watch", "delegation"})
 
 
-class DelegateSpawnCapability:
+@capability("delegate_spawn")
+class DelegateSpawnCapability(BaseCapability):
     def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path):
-        self.spec = spec
-        self.home = home
+        super().__init__(spec, home=home)
         self.project_dir = project_dir
 
     async def invoke(
@@ -154,11 +159,8 @@ class DelegateSpawnCapability:
         )
 
 
-class DelegatePrepareCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
-
+@capability("delegate_prepare")
+class DelegatePrepareCapability(BaseCapability):
     async def invoke(
         self,
         args: dict[str, Any],
@@ -193,11 +195,8 @@ class DelegatePrepareCapability:
         )
 
 
-class DelegateRunCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
-
+@capability("delegate_run")
+class DelegateRunCapability(BaseCapability):
     async def invoke(
         self,
         args: dict[str, Any],
@@ -241,11 +240,8 @@ class DelegateRunCapability:
         )
 
 
-class DelegateDeleteCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
-
+@capability("delegate_delete")
+class DelegateDeleteCapability(BaseCapability):
     async def invoke(
         self,
         args: dict[str, Any],
@@ -395,11 +391,8 @@ class DelegateDeleteCapability:
         return _fact_result("delegation", facts)
 
 
-class ExecutionRetryCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
-
+@capability("execution_retry")
+class ExecutionRetryCapability(BaseCapability):
     async def invoke(
         self,
         args: dict[str, Any],
@@ -455,7 +448,8 @@ class ExecutionRetryCapability:
         return _fact_result("execution", facts, run_id=result.id)
 
 
-class DelegateListCapability:
+@capability("delegate_list")
+class DelegateListCapability(BaseCapability):
     """List delegation runs and watches scoped to the caller's context.
 
     delegate.list used to be a context-blind fact tool that returned every run
@@ -464,10 +458,6 @@ class DelegateListCapability:
     the SurfaceContext and filters to runs that match the caller's
     peer/sender/source, matching approval visibility (principles 4, 13, 16).
     """
-
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
 
     async def invoke(
         self,

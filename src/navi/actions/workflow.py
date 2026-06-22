@@ -4,7 +4,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ..capabilities_types import CapabilityContext, CapabilityResult
+from ..capabilities_types import (
+    BaseCapability,
+    CapabilityContext,
+    CapabilityResult,
+    capability,
+)
 from ..capabilities import build_capability_registry
 from ..tools import ToolSpec
 from .helpers import (
@@ -39,10 +44,10 @@ from ..workflows import (
 from ..subagents import SubagentRunStore
 
 
-class WorkflowProposeCapability:
+@capability("workflow_propose")
+class WorkflowProposeCapability(BaseCapability):
     def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path):
-        self.spec = spec
-        self.home = home
+        super().__init__(spec, home=home)
         self.project_dir = project_dir
 
     async def invoke(
@@ -104,10 +109,8 @@ class WorkflowProposeCapability:
         return _fact_result("workflow", facts, run_id=workflow.id)
 
 
-class WorkflowApproveCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("workflow_approve")
+class WorkflowApproveCapability(BaseCapability):
 
     async def invoke(
         self,
@@ -163,10 +166,10 @@ class WorkflowApproveCapability:
         return _fact_result("workflow", facts, run_id=workflow.id)
 
 
-class WorkflowRunCapability:
+@capability("workflow_run")
+class WorkflowRunCapability(BaseCapability):
     def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path, resume: bool = False):
-        self.spec = spec
-        self.home = home
+        super().__init__(spec, home=home)
         self.project_dir = project_dir
         self.resume = resume
 
@@ -379,10 +382,18 @@ class WorkflowRunCapability:
         return _fact_result("workflow", facts, run_id=workflow.id)
 
 
-class WorkflowVerifyCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("workflow_resume")
+class WorkflowResumeCapability(WorkflowRunCapability):
+    """Resume an existing workflow — ``WorkflowRunCapability`` with
+    ``resume=True``. Registered under a separate key so the registry can
+    distinguish starting fresh from resuming."""
+
+    def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path):
+        super().__init__(spec, home=home, project_dir=project_dir, resume=True)
+
+
+@capability("workflow_verify")
+class WorkflowVerifyCapability(BaseCapability):
 
     async def invoke(
         self,
@@ -434,10 +445,8 @@ class WorkflowVerifyCapability:
         return _fact_result("workflow", facts, run_id=workflow.id)
 
 
-class WorkflowStatusCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("workflow_status")
+class WorkflowStatusCapability(BaseCapability):
 
     async def invoke(
         self,

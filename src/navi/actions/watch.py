@@ -4,7 +4,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..capabilities_types import CapabilityContext, CapabilityResult
+from ..capabilities_types import (
+    BaseCapability,
+    CapabilityContext,
+    CapabilityResult,
+    capability,
+)
 from ..tools import ToolSpec
 from .helpers import (
     arg_text as _arg_text,
@@ -19,10 +24,10 @@ from ..runs import RunStore
 from ..graph import GraphStore
 
 
-class WatchCreateCapability:
+@capability("watch_create")
+class WatchCreateCapability(BaseCapability):
     def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path):
-        self.spec = spec
-        self.home = home
+        super().__init__(spec, home=home)
         self.project_dir = project_dir
 
     async def invoke(
@@ -116,10 +121,8 @@ class WatchCreateCapability:
         )
 
 
-class WatchDeleteCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("watch_delete")
+class WatchDeleteCapability(BaseCapability):
 
     async def invoke(
         self,

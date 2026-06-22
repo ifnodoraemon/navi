@@ -9,6 +9,7 @@ from typing import Any
 
 from .db import connect, ensure_schema_version
 from .runs import Run
+from .schema import Column, Table, assert_schema_exact
 
 GOAL_STORE_SCHEMA_VERSION = 1
 
@@ -82,46 +83,10 @@ class GoalStore:
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
             ensure_schema_version(conn, "goals", GOAL_STORE_SCHEMA_VERSION)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS goals (
-                    id TEXT PRIMARY KEY,
-                    objective TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    peer_id TEXT NOT NULL,
-                    sender_id TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    workspace TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    trace_id TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL,
-                    blocked_reason TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    completed_at REAL NOT NULL,
-                    stop_condition TEXT NOT NULL,
-                    timeout REAL NOT NULL,
-                    max_retries INTEGER NOT NULL
-                )
-                """
-            )
-            _assert_schema_exact(conn, "goals", _GOAL_SCHEMA)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS goal_events (
-                    id TEXT PRIMARY KEY,
-                    goal_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    trace_id TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-                """
-            )
-            _assert_schema_exact(conn, "goal_events", _GOAL_EVENT_SCHEMA)
+            conn.execute(GOALS_TABLE.ddl)
+            assert_schema_exact(conn, GOALS_TABLE)
+            conn.execute(GOAL_EVENTS_TABLE.ddl)
+            assert_schema_exact(conn, GOAL_EVENTS_TABLE)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status, updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_run ON goals(run_id)")
             conn.execute(
@@ -549,43 +514,40 @@ def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict
     return existing
 
 
-_GOAL_SCHEMA = [
-    ("id", "TEXT", 0, 1),
-    ("objective", "TEXT", 1, 0),
-    ("status", "TEXT", 1, 0),
-    ("source", "TEXT", 1, 0),
-    ("peer_id", "TEXT", 1, 0),
-    ("sender_id", "TEXT", 1, 0),
-    ("session_id", "TEXT", 1, 0),
-    ("workspace", "TEXT", 1, 0),
-    ("run_id", "TEXT", 1, 0),
-    ("trace_id", "TEXT", 1, 0),
-    ("evidence_json", "TEXT", 1, 0),
-    ("blocked_reason", "TEXT", 1, 0),
-    ("created_at", "REAL", 1, 0),
-    ("updated_at", "REAL", 1, 0),
-    ("completed_at", "REAL", 1, 0),
-    ("stop_condition", "TEXT", 1, 0),
-    ("timeout", "REAL", 1, 0),
-    ("max_retries", "INTEGER", 1, 0),
-]
+GOALS_TABLE = Table(
+    "goals",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("objective", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("source", "TEXT", nullable=False),
+        Column("peer_id", "TEXT", nullable=False),
+        Column("sender_id", "TEXT", nullable=False),
+        Column("session_id", "TEXT", nullable=False),
+        Column("workspace", "TEXT", nullable=False),
+        Column("run_id", "TEXT", nullable=False),
+        Column("trace_id", "TEXT", nullable=False),
+        Column("evidence_json", "TEXT", nullable=False),
+        Column("blocked_reason", "TEXT", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+        Column("completed_at", "REAL", nullable=False),
+        Column("stop_condition", "TEXT", nullable=False),
+        Column("timeout", "REAL", nullable=False),
+        Column("max_retries", "INTEGER", nullable=False),
+    ],
+)
 
-_GOAL_EVENT_SCHEMA = [
-    ("id", "TEXT", 0, 1),
-    ("goal_id", "TEXT", 1, 0),
-    ("event_type", "TEXT", 1, 0),
-    ("status", "TEXT", 1, 0),
-    ("run_id", "TEXT", 1, 0),
-    ("trace_id", "TEXT", 1, 0),
-    ("evidence_json", "TEXT", 1, 0),
-    ("created_at", "REAL", 1, 0),
-]
-
-
-def _assert_schema_exact(conn, table: str, expected: list[tuple[str, str, int, int]]) -> None:
-    schema = [
-        (row[1], str(row[2]).upper(), int(row[3]), int(row[5]))
-        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-    ]
-    if schema != expected:
-        raise RuntimeError(f"{table} schema mismatch; expected current Navi schema")
+GOAL_EVENTS_TABLE = Table(
+    "goal_events",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("goal_id", "TEXT", nullable=False),
+        Column("event_type", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("run_id", "TEXT", nullable=False),
+        Column("trace_id", "TEXT", nullable=False),
+        Column("evidence_json", "TEXT", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+    ],
+)

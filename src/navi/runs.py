@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import connect, ensure_schema_version
+from .schema import Column, Table, assert_schema_exact
 
 
 RUN_STORE_SCHEMA_VERSION = 2
@@ -110,102 +111,17 @@ class RunStore:
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
             ensure_schema_version(conn, "runs", RUN_STORE_SCHEMA_VERSION)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS runs (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    kind TEXT NOT NULL,
-                    prompt TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    peer_id TEXT NOT NULL,
-                    sender_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    workspace TEXT NOT NULL,
-                    autonomy_level TEXT NOT NULL,
-                    trust_rule_id TEXT NOT NULL,
-                    why_now TEXT NOT NULL,
-                    plan_summary TEXT NOT NULL,
-                    result_summary TEXT NOT NULL,
-                    error TEXT NOT NULL
-                )
-                """
-            )
-            _assert_schema_exact(conn, "runs", _RUN_SCHEMA)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS approvals (
-                    id TEXT PRIMARY KEY,
-                    run_id TEXT NOT NULL,
-                    code TEXT NOT NULL UNIQUE,
-                    action TEXT NOT NULL,
-                    peer_id TEXT NOT NULL,
-                    sender_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    expires_at REAL NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                )
-                """
-            )
-            _assert_schema_exact(conn, "approvals", _APPROVAL_SCHEMA)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS watches (
-                    id TEXT PRIMARY KEY,
-                    cron TEXT NOT NULL,
-                    prompt TEXT NOT NULL,
-                    peer_id TEXT NOT NULL,
-                    sender_id TEXT NOT NULL,
-                    enabled INTEGER NOT NULL,
-                    next_run_at REAL NOT NULL,
-                    last_run_at REAL NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    workspace TEXT NOT NULL,
-                    kind TEXT NOT NULL DEFAULT 'recurring'
-                )
-                """
-            )
-            _assert_schema_exact(conn, "watches", _WATCH_SCHEMA)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS execution_logs (
-                    id TEXT PRIMARY KEY,
-                    run_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    phase TEXT NOT NULL,
-                    command TEXT NOT NULL,
-                    stdout TEXT NOT NULL,
-                    stderr TEXT NOT NULL,
-                    exit_code INTEGER NOT NULL,
-                    started_at REAL NOT NULL,
-                    ended_at REAL NOT NULL
-                )
-                """
-            )
-            _assert_schema_exact(conn, "execution_logs", _EXECUTION_LOG_SCHEMA)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS tool_call_logs (
-                    id TEXT PRIMARY KEY,
-                    tool TEXT NOT NULL,
-                    args_json TEXT NOT NULL,
-                    ok INTEGER NOT NULL,
-                    facts_json TEXT NOT NULL,
-                    error TEXT NOT NULL,
-                    started_at REAL NOT NULL,
-                    ended_at REAL NOT NULL,
-                    run_id TEXT NOT NULL DEFAULT '',
-                    trace_id TEXT NOT NULL DEFAULT ''
-                )
-                """
-            )
+            conn.execute(RUNS_TABLE.ddl)
+            assert_schema_exact(conn, RUNS_TABLE)
+            conn.execute(APPROVALS_TABLE.ddl)
+            assert_schema_exact(conn, APPROVALS_TABLE)
+            conn.execute(WATCHES_TABLE.ddl)
+            assert_schema_exact(conn, WATCHES_TABLE)
+            conn.execute(EXECUTION_LOGS_TABLE.ddl)
+            assert_schema_exact(conn, EXECUTION_LOGS_TABLE)
+            conn.execute(TOOL_CALL_LOGS_TABLE.ddl)
             self._migrate_tool_call_logs(conn)
-            _assert_schema_exact(conn, "tool_call_logs", _TOOL_CALL_LOG_SCHEMA)
+            assert_schema_exact(conn, TOOL_CALL_LOGS_TABLE)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_approvals_code ON approvals(code)")
             conn.execute(
@@ -1065,89 +981,95 @@ class RunStore:
         return f"{secrets.randbelow(1_000_000):06d}"
 
 
-_RUN_SCHEMA = [
-    ("id", "TEXT", 0, 1),
-    ("title", "TEXT", 1, 0),
-    ("status", "TEXT", 1, 0),
-    ("created_at", "REAL", 1, 0),
-    ("updated_at", "REAL", 1, 0),
-    ("kind", "TEXT", 1, 0),
-    ("prompt", "TEXT", 1, 0),
-    ("source", "TEXT", 1, 0),
-    ("peer_id", "TEXT", 1, 0),
-    ("sender_id", "TEXT", 1, 0),
-    ("provider", "TEXT", 1, 0),
-    ("workspace", "TEXT", 1, 0),
-    ("autonomy_level", "TEXT", 1, 0),
-    ("trust_rule_id", "TEXT", 1, 0),
-    ("why_now", "TEXT", 1, 0),
-    ("plan_summary", "TEXT", 1, 0),
-    ("result_summary", "TEXT", 1, 0),
-    ("error", "TEXT", 1, 0),
-]
+RUNS_TABLE = Table(
+    "runs",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("title", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+        Column("kind", "TEXT", nullable=False),
+        Column("prompt", "TEXT", nullable=False),
+        Column("source", "TEXT", nullable=False),
+        Column("peer_id", "TEXT", nullable=False),
+        Column("sender_id", "TEXT", nullable=False),
+        Column("provider", "TEXT", nullable=False),
+        Column("workspace", "TEXT", nullable=False),
+        Column("autonomy_level", "TEXT", nullable=False),
+        Column("trust_rule_id", "TEXT", nullable=False),
+        Column("why_now", "TEXT", nullable=False),
+        Column("plan_summary", "TEXT", nullable=False),
+        Column("result_summary", "TEXT", nullable=False),
+        Column("error", "TEXT", nullable=False),
+    ],
+)
 
-_APPROVAL_SCHEMA = [
-    ("id", "TEXT", 0, 1),
-    ("run_id", "TEXT", 1, 0),
-    ("code", "TEXT", 1, 0),
-    ("action", "TEXT", 1, 0),
-    ("peer_id", "TEXT", 1, 0),
-    ("sender_id", "TEXT", 1, 0),
-    ("status", "TEXT", 1, 0),
-    ("expires_at", "REAL", 1, 0),
-    ("created_at", "REAL", 1, 0),
-    ("updated_at", "REAL", 1, 0),
-]
+APPROVALS_TABLE = Table(
+    "approvals",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("run_id", "TEXT", nullable=False),
+        Column("code", "TEXT", nullable=False, unique=True),
+        Column("action", "TEXT", nullable=False),
+        Column("peer_id", "TEXT", nullable=False),
+        Column("sender_id", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("expires_at", "REAL", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+    ],
+)
 
-_WATCH_SCHEMA = [
-    ("id", "TEXT", 0, 1),
-    ("cron", "TEXT", 1, 0),
-    ("prompt", "TEXT", 1, 0),
-    ("peer_id", "TEXT", 1, 0),
-    ("sender_id", "TEXT", 1, 0),
-    ("enabled", "INTEGER", 1, 0),
-    ("next_run_at", "REAL", 1, 0),
-    ("last_run_at", "REAL", 1, 0),
-    ("created_at", "REAL", 1, 0),
-    ("updated_at", "REAL", 1, 0),
-    ("workspace", "TEXT", 1, 0),
-    ("kind", "TEXT", 1, 0),
-]
+WATCHES_TABLE = Table(
+    "watches",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("cron", "TEXT", nullable=False),
+        Column("prompt", "TEXT", nullable=False),
+        Column("peer_id", "TEXT", nullable=False),
+        Column("sender_id", "TEXT", nullable=False),
+        Column("enabled", "INTEGER", nullable=False),
+        Column("next_run_at", "REAL", nullable=False),
+        Column("last_run_at", "REAL", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+        Column("workspace", "TEXT", nullable=False),
+        Column("kind", "TEXT", nullable=False, default="'recurring'"),
+    ],
+)
 
-_EXECUTION_LOG_SCHEMA = [
-    ("id", "TEXT", 0, 1),
-    ("run_id", "TEXT", 1, 0),
-    ("provider", "TEXT", 1, 0),
-    ("phase", "TEXT", 1, 0),
-    ("command", "TEXT", 1, 0),
-    ("stdout", "TEXT", 1, 0),
-    ("stderr", "TEXT", 1, 0),
-    ("exit_code", "INTEGER", 1, 0),
-    ("started_at", "REAL", 1, 0),
-    ("ended_at", "REAL", 1, 0),
-]
+EXECUTION_LOGS_TABLE = Table(
+    "execution_logs",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("run_id", "TEXT", nullable=False),
+        Column("provider", "TEXT", nullable=False),
+        Column("phase", "TEXT", nullable=False),
+        Column("command", "TEXT", nullable=False),
+        Column("stdout", "TEXT", nullable=False),
+        Column("stderr", "TEXT", nullable=False),
+        Column("exit_code", "INTEGER", nullable=False),
+        Column("started_at", "REAL", nullable=False),
+        Column("ended_at", "REAL", nullable=False),
+    ],
+)
 
-_TOOL_CALL_LOG_SCHEMA = [
-    ("id", "TEXT", 0, 1),
-    ("tool", "TEXT", 1, 0),
-    ("args_json", "TEXT", 1, 0),
-    ("ok", "INTEGER", 1, 0),
-    ("facts_json", "TEXT", 1, 0),
-    ("error", "TEXT", 1, 0),
-    ("started_at", "REAL", 1, 0),
-    ("ended_at", "REAL", 1, 0),
-    ("run_id", "TEXT", 1, 0),
-    ("trace_id", "TEXT", 1, 0),
-]
-
-
-def _assert_schema_exact(conn, table: str, expected: list[tuple[str, str, int, int]]) -> None:
-    schema = [
-        (row[1], str(row[2]).upper(), int(row[3]), int(row[5]))
-        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-    ]
-    if schema != expected:
-        raise RuntimeError(f"{table} schema mismatch; expected current Navi schema")
+TOOL_CALL_LOGS_TABLE = Table(
+    "tool_call_logs",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("tool", "TEXT", nullable=False),
+        Column("args_json", "TEXT", nullable=False),
+        Column("ok", "INTEGER", nullable=False),
+        Column("facts_json", "TEXT", nullable=False),
+        Column("error", "TEXT", nullable=False),
+        Column("started_at", "REAL", nullable=False),
+        Column("ended_at", "REAL", nullable=False),
+        Column("run_id", "TEXT", nullable=False, default="''"),
+        Column("trace_id", "TEXT", nullable=False, default="''"),
+    ],
+)
 
 
 def _approval_diagnostic_facts(approval: Approval, *, now: float, sender_id: str = "") -> dict:

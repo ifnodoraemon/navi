@@ -4,7 +4,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from ..capabilities_types import CapabilityContext, CapabilityResult
+from ..capabilities_types import (
+    BaseCapability,
+    CapabilityContext,
+    CapabilityResult,
+    capability,
+)
 from ..tools import ToolSpec
 from ..trace import TraceStore
 from .helpers import arg_text as _arg_text
@@ -12,10 +17,8 @@ from .helpers import fact_result as _fact_result
 from .helpers import transition_facts as _transition_facts
 
 
-class TraceEvaluateCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("trace_evaluate")
+class TraceEvaluateCapability(BaseCapability):
 
     async def invoke(
         self,

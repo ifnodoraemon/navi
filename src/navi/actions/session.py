@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..capabilities_types import CapabilityContext, CapabilityResult
+from ..capabilities_types import (
+    BaseCapability,
+    CapabilityContext,
+    CapabilityResult,
+    capability,
+)
 from ..tools import ToolSpec
 from .helpers import (
     arg_text as _arg_text,
@@ -14,11 +19,8 @@ from ..memory import MemoryStore
 from ..runs import RunStore
 
 
-class SessionCreateCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
-
+@capability("session_create")
+class SessionCreateCapability(BaseCapability):
     async def invoke(
         self,
         args: dict[str, Any],
@@ -36,10 +38,8 @@ class SessionCreateCapability:
         return _fact_result("session", facts, run_id=session_id)
 
 
-class SessionRequestElevationCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("session_request_elevation")
+class SessionRequestElevationCapability(BaseCapability):
 
     async def invoke(
         self,

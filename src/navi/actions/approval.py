@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..capabilities_types import CapabilityContext, CapabilityResult
+from ..capabilities_types import (
+    BaseCapability,
+    CapabilityContext,
+    CapabilityResult,
+    capability,
+)
 from ..tools import ToolSpec
 from .helpers import (
     arg_text as _arg_text,
@@ -19,10 +24,8 @@ from ..goals import GoalStore
 from ..control import ApprovalService, SurfaceContext
 
 
-class ApprovalRequestCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("approval_request")
+class ApprovalRequestCapability(BaseCapability):
 
     async def invoke(
         self,
@@ -74,10 +77,8 @@ class ApprovalRequestCapability:
         )
 
 
-class ApprovalResolveCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("approval_resolve")
+class ApprovalResolveCapability(BaseCapability):
 
     async def invoke(
         self,

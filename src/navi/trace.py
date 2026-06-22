@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .db import connect, ensure_schema_version
+from .schema import Column, Table, assert_schema_exact
 
 
 TRACE_STORE_SCHEMA_VERSION = 1
@@ -63,45 +64,13 @@ class TraceStore:
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
             ensure_schema_version(conn, "traces", TRACE_STORE_SCHEMA_VERSION)
-            trace_events_sql = """
-                CREATE TABLE IF NOT EXISTS trace_events (
-                    id TEXT PRIMARY KEY,
-                    trace_id TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    phase TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    peer_id TEXT NOT NULL,
-                    sender_id TEXT NOT NULL,
-                    tool TEXT NOT NULL,
-                    model_role TEXT NOT NULL,
-                    ok INTEGER NOT NULL,
-                    input_json TEXT NOT NULL,
-                    output_json TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-                """
-            conn.execute(trace_events_sql)
-            _ensure_schema_current(conn, "trace_events", _TRACE_EVENT_SCHEMA, trace_events_sql)
+            conn.execute(TRACE_EVENTS_TABLE.ddl)
+            _ensure_schema_current(conn, TRACE_EVENTS_TABLE)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_trace_events_trace ON trace_events(trace_id, created_at)"
             )
-            trace_evaluations_sql = """
-                CREATE TABLE IF NOT EXISTS trace_evaluations (
-                    id TEXT PRIMARY KEY,
-                    trace_id TEXT NOT NULL,
-                    outcome TEXT NOT NULL,
-                    failure_domain TEXT NOT NULL,
-                    diagnostic TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-                """
-            conn.execute(trace_evaluations_sql)
-            _ensure_schema_current(
-                conn, "trace_evaluations", _TRACE_EVALUATION_SCHEMA, trace_evaluations_sql
-            )
+            conn.execute(TRACE_EVALUATIONS_TABLE.ddl)
+            _ensure_schema_current(conn, TRACE_EVALUATIONS_TABLE)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_trace_evaluations_trace ON trace_evaluations(trace_id)"
             )
@@ -513,62 +482,53 @@ def _planner_call_started_without_result(events: list[TraceEvent]) -> bool:
     )
 
 
-_TRACE_EVENT_SCHEMA = [
-    ("id", "TEXT", 0, 1),
-    ("trace_id", "TEXT", 1, 0),
-    ("session_id", "TEXT", 1, 0),
-    ("run_id", "TEXT", 1, 0),
-    ("phase", "TEXT", 1, 0),
-    ("source", "TEXT", 1, 0),
-    ("peer_id", "TEXT", 1, 0),
-    ("sender_id", "TEXT", 1, 0),
-    ("tool", "TEXT", 1, 0),
-    ("model_role", "TEXT", 1, 0),
-    ("ok", "INTEGER", 1, 0),
-    ("input_json", "TEXT", 1, 0),
-    ("output_json", "TEXT", 1, 0),
-    ("message", "TEXT", 1, 0),
-    ("created_at", "REAL", 1, 0),
-]
+TRACE_EVENTS_TABLE = Table(
+    "trace_events",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("trace_id", "TEXT", nullable=False),
+        Column("session_id", "TEXT", nullable=False),
+        Column("run_id", "TEXT", nullable=False),
+        Column("phase", "TEXT", nullable=False),
+        Column("source", "TEXT", nullable=False),
+        Column("peer_id", "TEXT", nullable=False),
+        Column("sender_id", "TEXT", nullable=False),
+        Column("tool", "TEXT", nullable=False),
+        Column("model_role", "TEXT", nullable=False),
+        Column("ok", "INTEGER", nullable=False),
+        Column("input_json", "TEXT", nullable=False),
+        Column("output_json", "TEXT", nullable=False),
+        Column("message", "TEXT", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+    ],
+)
+TRACE_EVALUATIONS_TABLE = Table(
+    "trace_evaluations",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("trace_id", "TEXT", nullable=False),
+        Column("outcome", "TEXT", nullable=False),
+        Column("failure_domain", "TEXT", nullable=False),
+        Column("diagnostic", "TEXT", nullable=False),
+        Column("evidence_json", "TEXT", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+    ],
+)
 
-_TRACE_EVALUATION_SCHEMA = [
-    ("id", "TEXT", 0, 1),
-    ("trace_id", "TEXT", 1, 0),
-    ("outcome", "TEXT", 1, 0),
-    ("failure_domain", "TEXT", 1, 0),
-    ("diagnostic", "TEXT", 1, 0),
-    ("evidence_json", "TEXT", 1, 0),
-    ("created_at", "REAL", 1, 0),
-]
-
-_TRACE_EVENT_COLUMNS = [
-    "id",
-    "trace_id",
-    "session_id",
-    "run_id",
-    "phase",
-    "source",
-    "peer_id",
-    "sender_id",
-    "tool",
-    "model_role",
-    "ok",
-    "input_json",
-    "output_json",
-    "message",
-    "created_at",
-]
+_TRACE_EVENT_COLUMNS = [col.name for col in TRACE_EVENTS_TABLE.columns]
 
 
-def _ensure_schema_current(
-    conn, table: str, expected: list[tuple[str, str, int, int]], create_sql: str
-) -> None:
-    if _table_schema(conn, table) == expected:
+def _ensure_schema_current(conn, table: Table) -> None:
+    """Trace tables are ephemeral audit data: on schema drift we drop and
+    recreate them rather than blocking agent startup. This differs from the
+    loud ``assert_schema_exact`` used for state-bearing stores (runs/goals)."""
+    expected = table.pragma_tuples
+    if _table_schema(conn, table.name) == expected:
         return
-    conn.execute(f"DROP TABLE IF EXISTS {table}")
-    conn.execute(create_sql)
-    if _table_schema(conn, table) != expected:
-        raise RuntimeError(f"{table} schema mismatch; expected current Navi schema")
+    conn.execute(f"DROP TABLE IF EXISTS {table.name}")
+    conn.execute(table.ddl)
+    if _table_schema(conn, table.name) != expected:
+        raise RuntimeError(f"{table.name} schema mismatch; expected current Navi schema")
 
 
 def _table_schema(conn, table: str) -> list[tuple[str, str, int, int]]:

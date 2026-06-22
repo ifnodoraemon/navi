@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import connect, ensure_schema_version
+from .schema import Column, Table, assert_schema_exact
 
 
 WORKFLOW_STORE_SCHEMA_VERSION = 1
@@ -222,68 +223,12 @@ class WorkflowStore:
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
             ensure_schema_version(conn, "workflows", WORKFLOW_STORE_SCHEMA_VERSION)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS workflows (
-                    id TEXT PRIMARY KEY,
-                    objective TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    peer_id TEXT NOT NULL,
-                    sender_id TEXT NOT NULL,
-                    workspace TEXT NOT NULL,
-                    permission_ceiling TEXT NOT NULL,
-                    max_concurrency INTEGER NOT NULL,
-                    total_subagent_limit INTEGER NOT NULL,
-                    risk_class TEXT NOT NULL,
-                    estimated_cost TEXT NOT NULL,
-                    stop_condition TEXT NOT NULL,
-                    verification_strategy TEXT NOT NULL,
-                    plan_json TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL,
-                    blocked_reason TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    completed_at REAL NOT NULL
-                )
-                """
-            )
-            _assert_schema_exact(conn, "workflows", _WORKFLOW_SCHEMA)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS workflow_steps (
-                    id TEXT PRIMARY KEY,
-                    workflow_id TEXT NOT NULL,
-                    seq INTEGER NOT NULL,
-                    role TEXT NOT NULL,
-                    objective TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    depends_on_json TEXT NOT NULL,
-                    allowed_tools_json TEXT NOT NULL,
-                    tool_calls_json TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL,
-                    error TEXT NOT NULL,
-                    started_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    completed_at REAL NOT NULL
-                )
-                """
-            )
-            _assert_schema_exact(conn, "workflow_steps", _WORKFLOW_STEP_SCHEMA)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS workflow_events (
-                    id TEXT PRIMARY KEY,
-                    workflow_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    step_id TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-                """
-            )
-            _assert_schema_exact(conn, "workflow_events", _WORKFLOW_EVENT_SCHEMA)
+            conn.execute(WORKFLOWS_TABLE.ddl)
+            assert_schema_exact(conn, WORKFLOWS_TABLE)
+            conn.execute(WORKFLOW_STEPS_TABLE.ddl)
+            assert_schema_exact(conn, WORKFLOW_STEPS_TABLE)
+            conn.execute(WORKFLOW_EVENTS_TABLE.ddl)
+            assert_schema_exact(conn, WORKFLOW_EVENTS_TABLE)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status, updated_at)"
             )
@@ -730,62 +675,61 @@ def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict
     return existing
 
 
-def _assert_schema_exact(conn, table: str, expected: tuple[str, ...]) -> None:
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    actual = tuple(str(row[1]) for row in rows)
-    if actual != expected:
-        raise RuntimeError(
-            f"{table} schema mismatch: expected {', '.join(expected)}; got {', '.join(actual)}. "
-            "Reinitialize the Navi home for the current workflow contract."
-        )
-
-
-_WORKFLOW_SCHEMA = (
-    "id",
-    "objective",
-    "status",
-    "source",
-    "peer_id",
-    "sender_id",
-    "workspace",
-    "permission_ceiling",
-    "max_concurrency",
-    "total_subagent_limit",
-    "risk_class",
-    "estimated_cost",
-    "stop_condition",
-    "verification_strategy",
-    "plan_json",
-    "evidence_json",
-    "blocked_reason",
-    "created_at",
-    "updated_at",
-    "completed_at",
+WORKFLOWS_TABLE = Table(
+    "workflows",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("objective", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("source", "TEXT", nullable=False),
+        Column("peer_id", "TEXT", nullable=False),
+        Column("sender_id", "TEXT", nullable=False),
+        Column("workspace", "TEXT", nullable=False),
+        Column("permission_ceiling", "TEXT", nullable=False),
+        Column("max_concurrency", "INTEGER", nullable=False),
+        Column("total_subagent_limit", "INTEGER", nullable=False),
+        Column("risk_class", "TEXT", nullable=False),
+        Column("estimated_cost", "TEXT", nullable=False),
+        Column("stop_condition", "TEXT", nullable=False),
+        Column("verification_strategy", "TEXT", nullable=False),
+        Column("plan_json", "TEXT", nullable=False),
+        Column("evidence_json", "TEXT", nullable=False),
+        Column("blocked_reason", "TEXT", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+        Column("completed_at", "REAL", nullable=False),
+    ],
 )
-_WORKFLOW_STEP_SCHEMA = (
-    "id",
-    "workflow_id",
-    "seq",
-    "role",
-    "objective",
-    "status",
-    "depends_on_json",
-    "allowed_tools_json",
-    "tool_calls_json",
-    "evidence_json",
-    "error",
-    "started_at",
-    "updated_at",
-    "completed_at",
+WORKFLOW_STEPS_TABLE = Table(
+    "workflow_steps",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("workflow_id", "TEXT", nullable=False),
+        Column("seq", "INTEGER", nullable=False),
+        Column("role", "TEXT", nullable=False),
+        Column("objective", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("depends_on_json", "TEXT", nullable=False),
+        Column("allowed_tools_json", "TEXT", nullable=False),
+        Column("tool_calls_json", "TEXT", nullable=False),
+        Column("evidence_json", "TEXT", nullable=False),
+        Column("error", "TEXT", nullable=False),
+        Column("started_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+        Column("completed_at", "REAL", nullable=False),
+    ],
 )
-_WORKFLOW_EVENT_SCHEMA = (
-    "id",
-    "workflow_id",
-    "event_type",
-    "status",
-    "step_id",
-    "evidence_json",
-    "created_at",
+WORKFLOW_EVENTS_TABLE = Table(
+    "workflow_events",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("workflow_id", "TEXT", nullable=False),
+        Column("event_type", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("step_id", "TEXT", nullable=False),
+        Column("evidence_json", "TEXT", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+    ],
 )
 _SELECT_WORKFLOW = """
     SELECT id, objective, status, source, peer_id, sender_id, workspace,

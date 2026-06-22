@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..capabilities_types import CapabilityContext, CapabilityResult
+from ..capabilities_types import (
+    BaseCapability,
+    CapabilityContext,
+    CapabilityResult,
+    capability,
+)
 from ..tools import ToolSpec
 from .helpers import arg_text as _arg_text
 
 
-class FinalAnswerCapability:
-    def __init__(self, spec: ToolSpec):
-        self.spec = spec
-
+@capability("final_answer")
+class FinalAnswerCapability(BaseCapability):
     async def invoke(
         self,
         args: dict[str, Any],
@@ -24,9 +27,8 @@ class FinalAnswerCapability:
         )
 
 
-class ClarifyCapability:
-    def __init__(self, spec: ToolSpec):
-        self.spec = spec
+@capability("clarify")
+class ClarifyCapability(BaseCapability):
 
     async def invoke(
         self,

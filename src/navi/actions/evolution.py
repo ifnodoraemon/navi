@@ -4,7 +4,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from ..capabilities_types import CapabilityContext, CapabilityResult
+from ..capabilities_types import (
+    BaseCapability,
+    CapabilityContext,
+    CapabilityResult,
+    capability,
+)
 from ..evolution import EvolutionEngine, EvolutionLedger
 from ..tools import ToolSpec
 from .helpers import arg_text as _arg_text
@@ -12,10 +17,8 @@ from .helpers import fact_result as _fact_result
 from .helpers import transition_facts as _transition_facts
 
 
-class EvolutionProposeCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("evolution_propose")
+class EvolutionProposeCapability(BaseCapability):
 
     async def invoke(
         self,
@@ -50,10 +53,8 @@ class EvolutionProposeCapability:
         return _fact_result("evolution", facts, run_id=proposal.id)
 
 
-class EvolutionRecordEvaluationCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("evolution_record_evaluation")
+class EvolutionRecordEvaluationCapability(BaseCapability):
 
     async def invoke(
         self,
@@ -91,10 +92,8 @@ class EvolutionRecordEvaluationCapability:
         return _fact_result("evolution", facts, run_id=proposal.id)
 
 
-class EvolutionApplyCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("evolution_apply")
+class EvolutionApplyCapability(BaseCapability):
 
     async def invoke(
         self,
@@ -126,10 +125,8 @@ class EvolutionApplyCapability:
         return _fact_result("evolution", facts, run_id=event.id)
 
 
-class EvolutionRollbackCapability:
-    def __init__(self, spec: ToolSpec, *, home: Path):
-        self.spec = spec
-        self.home = home
+@capability("evolution_rollback")
+class EvolutionRollbackCapability(BaseCapability):
 
     async def invoke(
         self,
