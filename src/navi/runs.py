@@ -522,7 +522,16 @@ class RunStore:
         """Mint a fresh approval for a run whose prior code expired, and pull the
         run back into awaiting_approval. The recovery path so an expired code is
         not a dead end — the user acts on the new code instead of re-creating the
-        whole task."""
+        whole task.
+
+        Idempotency: if a live (non-expired) pending approval already exists for
+        this run, return it instead of minting a new code. Without this guard,
+        each re-submission of an expired code mints yet another code — the
+        observed "4-code storm" where the user receives four different codes for
+        the same task within seconds."""
+        existing = self.pending_approval_for_run(run_id, sender_id=sender_id)
+        if existing is not None:
+            return existing
         approval = self.create_approval(
             run_id=run_id,
             peer_id=peer_id,

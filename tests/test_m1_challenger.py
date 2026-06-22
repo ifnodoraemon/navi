@@ -24,7 +24,7 @@ class NoModelCalls:
 
 
 @pytest.mark.asyncio
-async def test_remote_connector_cannot_run_or_delete_unfailed_delegation(
+async def test_remote_connector_cannot_run_but_can_cleanup_stuck_delegation(
     tmp_path: Path,
 ) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
@@ -59,26 +59,41 @@ async def test_remote_connector_cannot_run_or_delete_unfailed_delegation(
     assert run_result.ok is False
     assert "remote connector policy blocks capability delegate.run" in run_result.message
 
+    # A run stuck in the transient ``pending`` state must be deletable from a
+    # remote surface, otherwise it is an undeletable, unapprovable, uncompletable
+    # dead end (the 13 ``delegate.delete`` failures observed in production).
     pending_delete = await registry.invoke(
         "delegate.delete",
         {"run_id": spawned.run_id, "reason": "remote cleanup attempt"},
         permission="write",
         context=context,
     )
-    assert pending_delete.ok is False
-    assert "remote delegate.delete can only delete delegation runs that are failed, awaiting_approval, or expired." in pending_delete.message
+    assert pending_delete.ok is True
+    assert RunStore(tmp_path).get(spawned.run_id) is None
 
+    # A failed run remains deletable from remote.
+    failed_spawn = await registry.invoke(
+        "delegate.spawn",
+        {
+            "objective": "Prepare another tracked task",
+            "context": "Remote connector requested tracked work.",
+            "plan": "Prepare first; execution needs approval.",
+            "success_criteria": "Task is tracked and governed.",
+        },
+        permission="prepare",
+        context=context,
+    )
     runs = RunStore(tmp_path)
-    runs.update_run(spawned.run_id, status="failed")
+    runs.update_run(failed_spawn.run_id, status="failed")
     failed_delete = await registry.invoke(
         "delegate.delete",
-        {"run_id": spawned.run_id, "reason": "remove failed delegation record"},
+        {"run_id": failed_spawn.run_id, "reason": "remove failed delegation record"},
         permission="write",
         context=context,
     )
 
     assert failed_delete.ok is True
-    assert runs.get(spawned.run_id) is None
+    assert runs.get(failed_spawn.run_id) is None
 
 
 @pytest.mark.asyncio

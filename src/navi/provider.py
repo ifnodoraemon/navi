@@ -221,8 +221,13 @@ def _build_fallback_chain(config: ModelConfig) -> ChatProvider:
         _build_single_provider(config),
         *[_build_single_provider(item) for item in config.fallbacks],
     ]
-    if len(providers) == 1:
-        return providers[0]
+    # Always wrap in FallbackProvider, even for a single provider. The
+    # FallbackProvider retries on transport-layer failures
+    # (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError,
+    # httpx.ReadTimeout) up to 3x with exponential backoff. Without this
+    # wrapper, a single-provider config has no retry — a transient
+    # ``peer closed connection without sending complete message body``
+    # becomes a terminal planner failure.
     return FallbackProvider(providers)
 
 

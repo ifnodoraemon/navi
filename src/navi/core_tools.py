@@ -1219,9 +1219,55 @@ def _codebase_search(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
         return ToolResult(tool="codebase.search", ok=False, error=str(exc))
 
 
+def _resolve_binary_error(command: list[str]) -> str:
+    """Pre-flight check: return an error message if ``command[0]`` is not on
+    PATH. Without this guard a missing binary raises a confusing
+    ``[Errno 2] No such file or directory: 'python'`` that the planner
+    blindly retries. We surface a structured hint instead (e.g. use
+    ``python3`` when only ``python3`` exists)."""
+    if not command:
+        return ""
+    binary = command[0]
+    if not binary:
+        return ""
+    # Absolute or relative path: caller owns resolution, don't second-guess.
+    if (
+        "/" in binary
+        or "\\" in binary
+        or os.path.sep in binary
+        or os.path.altsep and os.path.altsep in binary
+    ):
+        return ""
+    if shutil.which(binary):
+        return ""
+    # Binary not found - suggest known alternatives for the common cases.
+    hints = {
+        "python": "python3",
+        "python3": "python",
+        "pytest": "python3 -m pytest",
+    }
+    suggestion = hints.get(binary)
+    if suggestion:
+        suggested_bin = suggestion.split()[0]
+        if shutil.which(suggested_bin):
+            return (
+                f"binary '{binary}' not found on PATH. "
+                f"Try '{suggestion}' instead."
+            )
+    return f"binary '{binary}' not found on PATH."
+
+
 def _run_command(
     command: list[str], *, cwd: Path, timeout: int, allocate_pty: bool = False
 ) -> dict[str, Any]:
+    binary_error = _resolve_binary_error(command)
+    if binary_error:
+        return {
+            "stdout": "",
+            "stderr": binary_error,
+            "exit_code": 127,
+            "timed_out": False,
+        }
     env = os.environ.copy()
     # Ensure common bin paths are in PATH
     home_dir = str(Path.home())

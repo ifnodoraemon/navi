@@ -24,8 +24,13 @@ from ..execution import ExecutionService
 # Statuses a remote surface (e.g. WeChat) is allowed to delete. A run stuck in
 # awaiting_approval whose code has expired would otherwise be undeletable AND
 # unapprovable — a dead end — so those terminal-for-the-user states are
-# explicitly deletable from remote, not just `failed`.
-REMOTE_DELETABLE_STATUSES = frozenset({"failed", "awaiting_approval", "expired"})
+# explicitly deletable from remote, not just `failed`. ``pending`` and
+# ``prepared`` are transient pre-approval states: when the planner fails to
+# advance them, the user must be able to clean them up remotely, otherwise the
+# run is an undeletable, unapprovable, uncompletable dead end.
+REMOTE_DELETABLE_STATUSES = frozenset(
+    {"failed", "awaiting_approval", "expired", "pending", "prepared"}
+)
 REMOTE_DELETABLE_KINDS = frozenset({"watch", "delegation"})
 
 
@@ -282,11 +287,11 @@ class DelegateDeleteCapability:
                 action="delegation",
                 observation=(
                     "remote delegate.delete can only delete delegation runs that are "
-                    "failed, awaiting_approval, or expired."
+                    "failed, awaiting_approval, expired, pending, or prepared."
                 ),
                 message=(
                     "remote delegate.delete can only delete delegation runs that are "
-                    "failed, awaiting_approval, or expired."
+                    "failed, awaiting_approval, expired, pending, or prepared."
                 ),
                 terminal=False,
             )
@@ -342,11 +347,13 @@ class DelegateDeleteCapability:
                 action="delegation",
                 observation=(
                     "remote delegate.delete bulk cleanup requires status in "
-                    "{failed, awaiting_approval, expired} and kind watch or delegation."
+                    "{failed, awaiting_approval, expired, pending, prepared} "
+                    "and kind watch or delegation."
                 ),
                 message=(
                     "remote delegate.delete bulk cleanup requires status in "
-                    "{failed, awaiting_approval, expired} and kind watch or delegation."
+                    "{failed, awaiting_approval, expired, pending, prepared} "
+                    "and kind watch or delegation."
                 ),
                 terminal=False,
             )

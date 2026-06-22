@@ -24,6 +24,14 @@ from .actions.tools import ToolGatewayCapabilityProvider, ToolCapability, ToolsL
 
 logger = logging.getLogger("navi.capabilities")
 
+# Governance primitives are the approval mechanism itself, not user-data
+# mutations. Suspending them for a second-level approval inside a governed
+# background run creates an infinite approval loop: to resolve an approval,
+# the run would need another approval. These capabilities carry their own
+# first-level guard (the user-supplied approval code), so they are exempt
+# from the sensitive-op suspension in _maybe_suspend_for_approval.
+GOVERNANCE_CAPABILITIES = frozenset({"approval.resolve", "approval.request"})
+
 
 class CapabilityRegistry:
     """Agent OS syscall table.
@@ -269,6 +277,8 @@ class CapabilityRegistry:
         grant; returns None when the op may proceed."""
         run_id = self.governed_run_id
         if not run_id:
+            return None
+        if spec.name in GOVERNANCE_CAPABILITIES:
             return None
         from .safeguards import classify_capability
 

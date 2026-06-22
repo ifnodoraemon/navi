@@ -335,6 +335,35 @@ class ApprovalService:
         )
         if reissued is not None:
             return reissued
+        # Idempotent resolution: if the approval is already in the target
+        # status (e.g. the user re-submits an already-approved code), return
+        # ok=True instead of ok=False. Without this, the planner sees a
+        # failure and re-invokes approval.resolve with the same code, looping
+        # until the step budget runs out.
+        if candidate is not None:
+            target_status = status
+            if candidate.status == target_status:
+                run = runs.get(candidate.run_id)
+                if _approval_matches_context(candidate, run, context):
+                    return ApprovalResolution(
+                        ok=True,
+                        decision=decision,
+                        selection=selection,
+                        message=(
+                            f"Approval already {target_status}. "
+                            "Run continues; do not re-resolve."
+                        ),
+                        run_id=candidate.run_id,
+                        facts={
+                            "entity_type": "approval_request",
+                            "entity_id": candidate.id,
+                            "state_transition": "already_resolved",
+                            "run_id": candidate.run_id,
+                            "approval_status": candidate.status,
+                            "selection": selection,
+                            "decision": decision,
+                        },
+                    )
         if candidate is not None:
             run = runs.get(candidate.run_id)
             if not _approval_matches_context(candidate, run, context):
