@@ -19,30 +19,13 @@ if TYPE_CHECKING:
 HEARTBEAT_INTERVAL_SECONDS = 20.0
 
 
-REMOTE_SAFE_TOOLS = frozenset(
-    (
-        "final.answer",
-        "ask.user",
-        "delegate.spawn",
-        "delegate.prepare",
-        "approval.request",
-        "session.request_elevation",
-        "provider.config",
-        "service.status",
-        "delegate.status",
-        "delegate.list",
-        "skills.list",
-        "skills.view",
-        "tools.list",
-        "memory.list",
-        "memory.recall",
-        "workflow.propose",
-        "workflow.status",
-        "watch.create",
-        "approval.resolve",
-        "delegate.delete",
-    )
-)
+# The remote-connector security boundary is a *blocklist* of direct-OS
+# capability classes, not a hand-maintained per-tool allowlist. New governance
+# / read tools auto-load into the remote manifest without a central list edit;
+# only direct-OS classes (file, shell, git, browser, directory, test) are
+# blocked from the live remote path, since they would let a prompt-injected
+# message run shell or read local files without the delegate.spawn → approval
+# gate. delegate.spawn remains the governed path to local OS access.
 REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(
     (
         "browser",
@@ -85,12 +68,14 @@ class ConnectorToolPolicy:
 REMOTE_CONNECTOR_TOOL_POLICY = ConnectorToolPolicy(
     name="remote_connector_default",
     permission_ceiling="write",
-    allowed_tools=REMOTE_SAFE_TOOLS,
+    allowed_tools=frozenset(),
     blocked_capability_classes=REMOTE_BLOCKED_CAPABILITY_CLASSES,
     reason=(
-        "Remote connector ingress may prepare tracked work, create watches, resolve explicit approvals, "
-        "clean up failed delegation records, and inspect status. It must not run delegated tasks directly "
-        "or expose direct OS capabilities."
+        "Remote connector ingress may use any declared governance / read "
+        "tool directly. Direct-OS capability classes (file, shell, git, "
+        "browser, directory, test) are blocked from the live remote path; "
+        "local OS access goes through delegate.spawn → managed execution → "
+        "approval."
     ),
 )
 

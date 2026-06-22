@@ -24,9 +24,14 @@ class NoModelCalls:
 
 
 @pytest.mark.asyncio
-async def test_remote_connector_cannot_run_but_can_cleanup_stuck_delegation(
+async def test_remote_connector_full_permissions_but_execution_gated(
     tmp_path: Path,
 ) -> None:
+    """Remote connectors have full permissions to governance/read tools
+    (auto-loaded from declared specs, no hand-maintained allowlist). Only
+    direct-OS classes are blocked from the live remote path. delegate.run is
+    invokable but fails without an execution grant — the approval gate still
+    holds even with full connector permissions."""
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     context = CapabilityContext(
         home=tmp_path,
@@ -50,6 +55,8 @@ async def test_remote_connector_cannot_run_but_can_cleanup_stuck_delegation(
     assert spawned.ok is True
     assert spawned.run_id
 
+    # delegate.run is invokable from remote (full permissions), but without
+    # an execution grant (approval) it fails — the approval gate holds.
     run_result = await registry.invoke(
         "delegate.run",
         {"run_id": spawned.run_id},
@@ -57,7 +64,6 @@ async def test_remote_connector_cannot_run_but_can_cleanup_stuck_delegation(
         context=context,
     )
     assert run_result.ok is False
-    assert "remote connector policy blocks capability delegate.run" in run_result.message
 
     # A run stuck in the transient ``pending`` state must be deletable from a
     # remote surface, otherwise it is an undeletable, unapprovable, uncompletable
