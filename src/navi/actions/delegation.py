@@ -10,6 +10,7 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
+from ..result import NotFound, PermissionDenied, SchemaMismatch, guarded
 from ..tools import ToolSpec
 from .helpers import (
     arg_text as _arg_text,
@@ -45,6 +46,7 @@ class DelegateSpawnCapability(BaseCapability):
         super().__init__(spec, home=home)
         self.project_dir = project_dir
 
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -58,13 +60,8 @@ class DelegateSpawnCapability(BaseCapability):
         success_criteria = _arg_text(args, "success_criteria")
 
         if not objective or not context_str or not plan or not success_criteria:
-            return CapabilityResult(
-                ok=False,
-                action="delegation",
-                observation="delegate.spawn requires objective, context, plan, and success_criteria.",
-                message="delegate.spawn requires objective, context, plan, and success_criteria.",
-                terminal=False,
-                error_reason="schema_mismatch",
+            raise SchemaMismatch(
+                "delegate.spawn requires objective, context, plan, and success_criteria."
             )
 
         prompt = (
@@ -161,6 +158,7 @@ class DelegateSpawnCapability(BaseCapability):
 
 @capability("delegate_prepare")
 class DelegatePrepareCapability(BaseCapability):
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -171,14 +169,7 @@ class DelegatePrepareCapability(BaseCapability):
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
         task = RunStore(self.home).get(run_id) if run_id else None
         if task is None:
-            return CapabilityResult(
-                ok=False,
-                action="delegation",
-                observation=f"delegation run not found: {run_id}",
-                message=f"delegation run not found: {run_id}",
-                terminal=False,
-                error_reason="not_found",
-            )
+            raise NotFound(f"delegation run not found: {run_id}")
         planned = await ExecutionService(self.home).plan_task(task)
         GoalStore(self.home).update_for_run(
             planned, evidence={"run_id": planned.id, "run_status": planned.status}
@@ -197,6 +188,7 @@ class DelegatePrepareCapability(BaseCapability):
 
 @capability("delegate_run")
 class DelegateRunCapability(BaseCapability):
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -208,23 +200,10 @@ class DelegateRunCapability(BaseCapability):
         runs = RunStore(self.home)
         task = runs.get(run_id) if run_id else None
         if task is None:
-            return CapabilityResult(
-                ok=False,
-                action="delegation",
-                observation=f"delegation run not found: {run_id}",
-                message=f"delegation run not found: {run_id}",
-                terminal=False,
-                error_reason="not_found",
-            )
+            raise NotFound(f"delegation run not found: {run_id}")
         execution = ExecutionService(self.home)
         if not execution.execution_allowed(task):
-            return CapabilityResult(
-                ok=False,
-                action="delegation",
-                observation="execution grant missing",
-                message="execution grant missing",
-                terminal=False,
-            )
+            raise PermissionDenied("execution grant missing")
         queued = runs.update_run(task.id, status="queued") or task
         GoalStore(self.home).update_for_run(
             queued, evidence={"run_id": queued.id, "run_status": queued.status}
@@ -242,6 +221,7 @@ class DelegateRunCapability(BaseCapability):
 
 @capability("delegate_delete")
 class DelegateDeleteCapability(BaseCapability):
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -252,44 +232,21 @@ class DelegateDeleteCapability(BaseCapability):
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
         reason = _arg_text(args, "reason")
         if not reason:
-            return CapabilityResult(
-                ok=False,
-                action="delegation",
-                observation="delegate.delete requires reason.",
-                message="delegate.delete requires reason.",
-                terminal=False,
-                error_reason="schema_mismatch",
-            )
+            raise SchemaMismatch("delegate.delete requires reason.")
         if not run_id:
             return self._delete_by_filter(args, context)
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         task = runs.get(run_id)
         if task is None:
-            return CapabilityResult(
-                ok=False,
-                action="delegation",
-                observation=f"delegation run not found: {run_id}",
-                message=f"delegation run not found: {run_id}",
-                terminal=False,
-                error_reason="not_found",
-            )
+            raise NotFound(f"delegation run not found: {run_id}")
         if _remote_source(context.source) and (
             task.status not in REMOTE_DELETABLE_STATUSES
             or task.kind not in REMOTE_DELETABLE_KINDS
         ):
-            return CapabilityResult(
-                ok=False,
-                action="delegation",
-                observation=(
-                    "remote delegate.delete can only delete delegation runs that are "
-                    "failed, awaiting_approval, expired, pending, or prepared."
-                ),
-                message=(
-                    "remote delegate.delete can only delete delegation runs that are "
-                    "failed, awaiting_approval, expired, pending, or prepared."
-                ),
-                terminal=False,
+            raise PermissionDenied(
+                "remote delegate.delete can only delete delegation runs that are "
+                "failed, awaiting_approval, expired, pending, or prepared."
             )
         deleted = runs.delete_run(run_id)
         if deleted is None:
@@ -393,6 +350,7 @@ class DelegateDeleteCapability(BaseCapability):
 
 @capability("execution_retry")
 class ExecutionRetryCapability(BaseCapability):
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -402,25 +360,11 @@ class ExecutionRetryCapability(BaseCapability):
     ) -> CapabilityResult:
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
         if not run_id:
-            return CapabilityResult(
-                ok=False,
-                action="execution",
-                observation="delegate.retry requires run_id.",
-                message="delegate.retry requires run_id.",
-                terminal=False,
-                error_reason="schema_mismatch",
-            )
+            raise SchemaMismatch("delegate.retry requires run_id.")
         runs = RunStore(self.home)
         task = runs.get(run_id)
         if task is None:
-            return CapabilityResult(
-                ok=False,
-                action="execution",
-                observation=f"delegation run not found: {run_id}",
-                message=f"delegation run not found: {run_id}",
-                terminal=False,
-                error_reason="not_found",
-            )
+            raise NotFound(f"delegation run not found: {run_id}")
         execution = ExecutionService(self.home)
         if not execution.execution_allowed(task):
             return CapabilityResult(
