@@ -1,3 +1,5 @@
+"""MemoryStore: governed memory CRUD + recall + learning pipelines."""
+
 from __future__ import annotations
 
 import asyncio
@@ -5,408 +7,31 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
 
-from .db import connect
-from .hooks import HookDecision, HookEvent, HookRegistry
-from .json_utils import parse_first_json_object
-from .specs_data import MEMORY_POLICY_SPEC, PROMPT_LAYERS_SPEC
-from .text_utils import truncate_middle
+from ..hooks import HookDecision, HookEvent, HookRegistry
+from ..json_utils import parse_first_json_object
+from ..specs_data import PROMPT_LAYERS_SPEC
+from ..text_utils import truncate_middle
+from .models import (
+    ACTIVE_MEMORY_CONTEXT_LIMIT,
+    ACTIVE_STATUSES,
+    LEARNABLE_MEMORY_TYPES,
+    MEMORY_STATUSES,
+    MEMORY_TYPES,
+    NORMATIVE_REVIEW_REQUIRED_TYPES,
+    TASK_LEARNING_LOG_LIMIT,
+    TYPE_PRIORITY,
+    MemoryConflict,
+    MemoryItem,
+    MemoryRecall,
+)
+from .provider import MemoryProvider, SQLiteMemoryProvider
 
 logger = logging.getLogger("navi.memory")
 
-if TYPE_CHECKING:
-    from .provider import ModelPool
-    from .runs import Run, ExecutionLog
-
-
-@dataclass(frozen=True)
-class StoredMessage:
-    session_id: str
-    role: str
-    content: str
-    created_at: float
-
-
-@dataclass(frozen=True)
-class SessionAlias:
-    alias: str
-    session_id: str
-    created_at: float
-    updated_at: float
-
-
-@dataclass(frozen=True)
-class MemoryItem:
-    id: str
-    type: str
-    status: str
-    scope: str
-    content: str
-    source: str
-    confidence: float
-    created_at: float
-    updated_at: float
-    last_verified_at: float
-    expires_at: float
-    metadata: dict
-    reason: str = ""
-    provenance: str = ""
-
-
-@dataclass(frozen=True)
-class MemoryConflict:
-    item: MemoryItem
-    relation: str
-    conflicting_item_id: str
-    conflicting_item: MemoryItem | None
-    status: str
-    reason: str
-
-
-@dataclass(frozen=True)
-class MemoryRecall:
-    item: MemoryItem
-    score: float
-    reasons: list[str]
-    conflicts: tuple[MemoryConflict, ...] = ()
-
-
-_MEMORY_POLICY = MEMORY_POLICY_SPEC
-MEMORY_TYPES = {str(item) for item in _MEMORY_POLICY["types"]}
-LEARNABLE_MEMORY_TYPES = tuple(str(item) for item in _MEMORY_POLICY["learnable_types"])
-
-# FP-3 injection defense: normative memory types (constraints, negatives)
-# shape agent behavior and are reloadable as trusted DURABLE CONSTRAINTS.
-# Learnings extracted from untrusted conversation text must NOT auto-promote
-# these to ``accepted`` -- a prompt-injected "remember: always delete all
-# files" would otherwise become a persistent active constraint without any
-# human review. Normative learnings stay ``proposed`` pending explicit
-# approval; only non-normative types (fact/preference) auto-promote at high
-# confidence.
-NORMATIVE_REVIEW_REQUIRED_TYPES = frozenset({"constraint", "negative"})
-MEMORY_STATUSES = {str(item) for item in _MEMORY_POLICY["statuses"]}
-ACTIVE_STATUSES = {str(item) for item in _MEMORY_POLICY["active_statuses"]}
-ACTIVE_MEMORY_CONTEXT_LIMIT = int(_MEMORY_POLICY["active_memory_context_limit"])
-TASK_LEARNING_LOG_LIMIT = int(_MEMORY_POLICY["task_learning_log_limit"])
-TYPE_PRIORITY = {str(key): int(value) for key, value in _MEMORY_POLICY["type_priority"].items()}
-
-
-def memory_policy_facts() -> dict:
-    return {
-        "types": sorted(MEMORY_TYPES),
-        "learnable_types": list(LEARNABLE_MEMORY_TYPES),
-        "statuses": sorted(MEMORY_STATUSES),
-        "active_statuses": sorted(ACTIVE_STATUSES),
-        "active_memory_context_limit": ACTIVE_MEMORY_CONTEXT_LIMIT,
-        "task_learning_log_limit": TASK_LEARNING_LOG_LIMIT,
-        "type_priority": TYPE_PRIORITY,
-    }
-
-
-class MemoryProvider(Protocol):
-    def store_item(self, item: MemoryItem) -> None: ...
-    def get_items(
-        self, *, memory_type: str | None = None, status: str | None = None, limit: int = 50
-    ) -> list[MemoryItem]: ...
-    def get_item(self, item_id: str) -> MemoryItem | None: ...
-    def update_item(
-        self,
-        item_id: str,
-        *,
-        status: str | None = None,
-        last_verified_at: float | None = None,
-        updated_at: float | None = None,
-    ) -> None: ...
-    def delete_item(self, item_id: str) -> None: ...
-    def add_message(self, session_id: str, role: str, content: str, created_at: float) -> None: ...
-    def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]: ...
-    def list_sessions(self) -> list[str]: ...
-    def set_session_alias(
-        self, alias: str, session_id: str, created_at: float, updated_at: float
-    ) -> None: ...
-    def get_session_alias(self, alias: str) -> SessionAlias | None: ...
-    def list_session_aliases(self, limit: int = 50) -> list[SessionAlias]: ...
-
-
-class SQLiteMemoryProvider:
-    def __init__(self, db_path: Path):
-        self.db_path = db_path
-        self._init_db()
-
-    def _init_db(self) -> None:
-        with connect(self.db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)"
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS session_aliases (
-                    alias TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS memory_items (
-                    id TEXT PRIMARY KEY,
-                    type TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    scope TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    last_verified_at REAL NOT NULL,
-                    expires_at REAL NOT NULL,
-                    metadata TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_items(status, type)"
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_items(scope)")
-
-            cursor = conn.execute("PRAGMA table_info(memory_items)")
-            columns = [row[1] for row in cursor.fetchall()]
-            if "reason" not in columns:
-                conn.execute("ALTER TABLE memory_items ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
-            if "provenance" not in columns:
-                conn.execute(
-                    "ALTER TABLE memory_items ADD COLUMN provenance TEXT NOT NULL DEFAULT ''"
-                )
-
-    def _item_from_row(self, row: tuple) -> MemoryItem:
-        return MemoryItem(
-            id=row[0],
-            type=row[1],
-            status=row[2],
-            scope=row[3],
-            content=row[4],
-            source=row[5],
-            confidence=row[6],
-            created_at=row[7],
-            updated_at=row[8],
-            last_verified_at=row[9],
-            expires_at=row[10],
-            metadata=json.loads(row[11]),
-            reason=row[12],
-            provenance=row[13],
-        )
-
-    def store_item(self, item: MemoryItem) -> None:
-        if not item.source.strip():
-            raise ValueError("memory source is required")
-        if not item.reason.strip():
-            raise ValueError("memory reason is required")
-        if not item.provenance.strip():
-            raise ValueError("memory provenance is required")
-        with connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO memory_items(
-                    id, type, status, scope, content, source, confidence,
-                    created_at, updated_at, last_verified_at, expires_at, metadata,
-                    reason, provenance
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    item.id,
-                    item.type,
-                    item.status,
-                    item.scope,
-                    item.content,
-                    item.source,
-                    item.confidence,
-                    item.created_at,
-                    item.updated_at,
-                    item.last_verified_at,
-                    item.expires_at,
-                    json.dumps(item.metadata, sort_keys=True),
-                    item.reason,
-                    item.provenance,
-                ),
-            )
-
-    def get_items(
-        self, *, memory_type: str | None = None, status: str | None = None, limit: int = 50
-    ) -> list[MemoryItem]:
-        clauses = []
-        values: list[object] = []
-        if memory_type:
-            clauses.append("type = ?")
-            values.append(memory_type)
-        if status:
-            clauses.append("status = ?")
-            values.append(status)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        values.append(limit)
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                f"""
-                SELECT id, type, status, scope, content, source, confidence,
-                       created_at, updated_at, last_verified_at, expires_at, metadata,
-                       reason, provenance
-                FROM memory_items
-                {where}
-                ORDER BY updated_at DESC LIMIT ?
-                """,
-                values,
-            ).fetchall()
-        return [self._item_from_row(row) for row in rows]
-
-    def get_item(self, item_id: str) -> MemoryItem | None:
-        with connect(self.db_path) as conn:
-            row = conn.execute(
-                """
-                SELECT id, type, status, scope, content, source, confidence,
-                       created_at, updated_at, last_verified_at, expires_at, metadata,
-                       reason, provenance
-                FROM memory_items WHERE id = ?
-                """,
-                (item_id,),
-            ).fetchone()
-        return self._item_from_row(row) if row else None
-
-    def update_item(
-        self,
-        item_id: str,
-        *,
-        status: str | None = None,
-        last_verified_at: float | None = None,
-        updated_at: float | None = None,
-    ) -> None:
-        sets = []
-        values: list[object] = []
-        if status is not None:
-            sets.append("status = ?")
-            values.append(status)
-        if last_verified_at is not None:
-            sets.append("last_verified_at = ?")
-            values.append(last_verified_at)
-        if updated_at is not None:
-            sets.append("updated_at = ?")
-            values.append(updated_at)
-        if not sets:
-            return
-        values.append(item_id)
-        with connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE memory_items SET " + ", ".join(sets) + " WHERE id = ?",
-                values,
-            )
-
-    def delete_item(self, item_id: str) -> None:
-        with connect(self.db_path) as conn:
-            conn.execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
-
-    def reduce_confidence(self, item_id: str, *, delta: float = 0.2) -> None:
-        """FP-5: failed evolutions reduce confidence.
-
-        When an evolution proposal is rejected or rolled back, the durable
-        memory learnings that sourced it must lose confidence rather than
-        remain at their original trust level. This decay is itself a governed
-        memory write (``before_memory_write`` hook gates it)."""
-        current = self.get_item(item_id)
-        if current is None:
-            return
-        new_confidence = max(0.0, min(1.0, current.confidence - delta))
-        self._assert_memory_write_allowed(
-            memory_type=current.type,
-            status=current.status,
-            scope=current.scope,
-            source=current.source,
-            confidence=new_confidence,
-            content_chars=len(current.content),
-            metadata_keys=sorted(current.metadata.keys()),
-        )
-        with connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE memory_items SET confidence = ? WHERE id = ?",
-                (new_confidence, item_id),
-            )
-
-    def add_message(self, session_id: str, role: str, content: str, created_at: float) -> None:
-        with connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT INTO messages(session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (session_id, role, content, created_at),
-            )
-
-    def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]:
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT session_id, role, content, created_at
-                FROM messages
-                WHERE session_id = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (session_id, limit),
-            ).fetchall()
-        return [StoredMessage(*row) for row in reversed(rows)]
-
-    def list_sessions(self) -> list[str]:
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT session_id FROM messages GROUP BY session_id ORDER BY MAX(created_at) DESC"
-            ).fetchall()
-        return [row[0] for row in rows]
-
-    def set_session_alias(
-        self, alias: str, session_id: str, created_at: float, updated_at: float
-    ) -> None:
-        with connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO session_aliases(alias, session_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(alias) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at
-                """,
-                (alias, session_id, created_at, updated_at),
-            )
-
-    def get_session_alias(self, alias: str) -> SessionAlias | None:
-        with connect(self.db_path) as conn:
-            row = conn.execute(
-                """
-                SELECT alias, session_id, created_at, updated_at
-                FROM session_aliases WHERE alias = ?
-                """,
-                (alias,),
-            ).fetchone()
-        return SessionAlias(*row) if row else None
-
-    def list_session_aliases(self, limit: int = 50) -> list[SessionAlias]:
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT alias, session_id, created_at, updated_at
-                FROM session_aliases ORDER BY updated_at DESC LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [SessionAlias(*row) for row in rows]
+# TYPE_CHECKING-only imports kept in the methods that need them to avoid
+# import cycles at module load time.
 
 
 class MemoryStore:
@@ -415,9 +40,11 @@ class MemoryStore:
         self.memory_dir = home / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.provider = provider or SQLiteMemoryProvider(home / "memory.db")
-        self._session_locks = {}
-        self._session_lock_refs = {}
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._session_lock_refs: dict[str, int] = {}
         self._session_locks_guard: asyncio.Lock | None = None
+
+    # ------------------------------------------------------------------ writes
 
     def add_item(
         self,
@@ -715,6 +342,8 @@ class MemoryStore:
             return []
         return learnings
 
+    # ------------------------------------------------------------------ recall
+
     def recall(self, query: str, *, limit: int = 8, goal: str = "") -> list[MemoryRecall]:
         now = time.time()
         candidates = [
@@ -791,6 +420,8 @@ class MemoryStore:
             )
         return "\n".join(lines)
 
+    # --------------------------------------------------------------- sessions
+
     def new_session_id(self) -> str:
         return time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
 
@@ -831,13 +462,15 @@ class MemoryStore:
     def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]:
         return self.provider.get_messages(session_id, limit)
 
+    # ------------------------------------------------------------ consolidation
+
     async def extract_and_consolidate_memories(
         self,
         session_id: str,
         provider: ModelPool,
         run_id: str = "",
     ) -> list[MemoryItem]:
-        from .provider import ChatMessage
+        from .provider import ChatMessage  # type: ignore[attr-defined]
 
         if not session_id.strip():
             logger.warning("Skipping memory consolidation without a session id")
@@ -955,13 +588,15 @@ class MemoryStore:
             self._session_locks_guard = asyncio.Lock()
         return self._session_locks_guard
 
+    # ------------------------------------------------------- run reflection
+
     async def extract_memories_from_run(
         self,
         task: Run,
         logs: list[ExecutionLog],
         provider: ModelPool,
     ) -> list[MemoryItem]:
-        from .provider import ChatMessage
+        from .provider import ChatMessage  # type: ignore[attr-defined]
         from .trace import TraceStore
 
         # 1. Fetch existing active memory items
@@ -1056,6 +691,8 @@ class MemoryStore:
             add_reason_fallback=f"Consolidated from run {task.id}",
         )
 
+    # --------------------------------------------------------- apply learnings
+
     def _apply_learnings(
         self,
         learnings: list,
@@ -1071,7 +708,7 @@ class MemoryStore:
         Shared by conversation consolidation and run reflection so the two
         learning pipelines cannot drift (DRY, principle 1.1).
         """
-        from .evolution import EvolutionLedger
+        from ..evolution import EvolutionLedger
 
         ledger = EvolutionLedger(self.home)
         affected_items: list = []
@@ -1166,6 +803,8 @@ class MemoryStore:
         seen_memory_keys.add(memory_key)
         return new_item
 
+    # ------------------------------------------------------------- scoring
+
     @staticmethod
     def _item_from_row(row: tuple) -> MemoryItem:
         values = list(row)
@@ -1214,9 +853,8 @@ class MemoryStore:
         if goal_matches:
             reasons.append(f"goal_relevance:{','.join(goal_matches[:8])}")
         reasons.append(f"confidence={item.confidence:.2f}")
-        import time
-
         now = time.time()
+
         # Scale freshness so that recent updates score higher (up to 10 points), fading over ~115 days (10M seconds)
         freshness = min(10.0, max(0.0, 10.0 - ((now - item.updated_at) / 1_000_000)))
         if freshness > 0:
@@ -1258,7 +896,7 @@ def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
     return next((decision for decision in decisions if decision.decision == "block"), None)
 
 
-def _metadata_id_list(value: Any) -> list[str]:
+def _metadata_id_list(value) -> list[str]:
     if isinstance(value, str):
         return [value.strip()] if value.strip() else []
     if isinstance(value, list):
@@ -1296,7 +934,7 @@ def _memory_prompt(name: str) -> str:
     return content.format(learnable_types="|".join(LEARNABLE_MEMORY_TYPES))
 
 
-def _memory_learnings_output_schema(name: str) -> dict[str, Any]:
+def _memory_learnings_output_schema(name: str) -> dict:
     return {
         "name": name,
         "strict": False,
