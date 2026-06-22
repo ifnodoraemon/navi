@@ -10,6 +10,7 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
+from ..result import NotFound, SchemaMismatch, guarded
 from ..capabilities import build_capability_registry
 from ..tools import ToolSpec
 from .helpers import (
@@ -50,6 +51,7 @@ class WorkflowProposeCapability(BaseCapability):
         super().__init__(spec, home=home)
         self.project_dir = project_dir
 
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -59,14 +61,7 @@ class WorkflowProposeCapability(BaseCapability):
     ) -> CapabilityResult:
         objective = _arg_text(args, "objective")
         if not objective:
-            return CapabilityResult(
-                ok=False,
-                action="workflow",
-                observation="workflow.propose requires objective.",
-                message="workflow.propose requires objective.",
-                terminal=False,
-                error_reason="schema_mismatch",
-            )
+            raise SchemaMismatch("workflow.propose requires objective.")
         store = WorkflowStore(self.home)
         workspace = _resolve_workspace(context.workspace, default=self.project_dir)
         steps = args.get("steps") if isinstance(args.get("steps"), list) else []
@@ -112,6 +107,7 @@ class WorkflowProposeCapability(BaseCapability):
 @capability("workflow_approve")
 class WorkflowApproveCapability(BaseCapability):
 
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -122,18 +118,11 @@ class WorkflowApproveCapability(BaseCapability):
         workflow_id = _arg_text(args, "workflow_id")
         decision = _arg_text(args, "decision").lower()
         if decision not in {"approve", "reject"}:
-            return CapabilityResult(
-                ok=False,
-                action="workflow",
-                observation="workflow.approve requires decision approve or reject.",
-                message="workflow.approve requires decision approve or reject.",
-                terminal=False,
-                error_reason="schema_mismatch",
-            )
+            raise SchemaMismatch("workflow.approve requires decision approve or reject.")
         store = WorkflowStore(self.home)
         workflow = store.get(workflow_id) if workflow_id else None
         if workflow is None:
-            return _workflow_not_found(workflow_id)
+            raise NotFound(f"workflow not found: {workflow_id}")
         if decision == "approve" and workflow.sender_id and context.sender_id != workflow.sender_id:
             return CapabilityResult(
                 ok=False,
@@ -173,6 +162,7 @@ class WorkflowRunCapability(BaseCapability):
         self.project_dir = project_dir
         self.resume = resume
 
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -184,15 +174,11 @@ class WorkflowRunCapability(BaseCapability):
         store = WorkflowStore(self.home)
         workflow = store.get(workflow_id) if workflow_id else None
         if workflow is None:
-            return _workflow_not_found(workflow_id)
+            raise NotFound(f"workflow not found: {workflow_id}")
         if not workflow_can_run(workflow.status):
-            return CapabilityResult(
-                ok=False,
-                action="workflow",
-                observation=f"workflow {workflow.id} is {workflow.status}; approve or resume only supported running states.",
-                message=f"workflow {workflow.id} is {workflow.status}; approve or resume only supported running states.",
-                terminal=False,
-                facts={"workflow_id": workflow.id, "status": workflow.status},
+            raise SchemaMismatch(
+                f"workflow {workflow.id} is {workflow.status}; "
+                "approve or resume only supported running states."
             )
         store.update_status(
             workflow.id,
@@ -395,6 +381,7 @@ class WorkflowResumeCapability(WorkflowRunCapability):
 @capability("workflow_verify")
 class WorkflowVerifyCapability(BaseCapability):
 
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -406,7 +393,7 @@ class WorkflowVerifyCapability(BaseCapability):
         store = WorkflowStore(self.home)
         workflow = store.get(workflow_id) if workflow_id else None
         if workflow is None:
-            return _workflow_not_found(workflow_id)
+            raise NotFound(f"workflow not found: {workflow_id}")
         subagents = SubagentRunStore(self.home)
         verifier = subagents.start(
             role="critic",
@@ -448,6 +435,7 @@ class WorkflowVerifyCapability(BaseCapability):
 @capability("workflow_status")
 class WorkflowStatusCapability(BaseCapability):
 
+    @guarded
     async def invoke(
         self,
         args: dict[str, Any],
@@ -459,7 +447,7 @@ class WorkflowStatusCapability(BaseCapability):
         store = WorkflowStore(self.home)
         workflow = store.get(workflow_id) if workflow_id else None
         if workflow is None:
-            return _workflow_not_found(workflow_id)
+            raise NotFound(f"workflow not found: {workflow_id}")
         facts = workflow_facts(store, workflow)
         return _fact_result("workflow", facts, run_id=workflow.id)
 
