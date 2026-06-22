@@ -116,6 +116,26 @@ def known_evolution_target(target_type: str) -> bool:
     return any(target.target_type == target_type for target in EVOLUTION_TARGETS)
 
 
+# Governance event types recorded in the evolution ledger alongside evolution
+# target types. Declaring these prevents schema drift (principle 1.2): the
+# ``record()`` gate rejects any ``target_type`` not in this set, so typos and
+# undeclared event categories surface loudly instead of silently persisting.
+GOVERNANCE_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "execution_grant",
+        "approval",
+    }
+)
+
+
+def known_ledger_target_type(target_type: str) -> bool:
+    """Whether ``target_type`` is a declared evolution target or governance event."""
+    return (
+        known_evolution_target(target_type)
+        or target_type in GOVERNANCE_EVENT_TYPES
+    )
+
+
 # Data-driven map of which spec-file targets persist to (subdir, suffix) on apply.
 # prompt_layer is handled separately because it writes through PromptLayerStore.
 _SPEC_FILE_TARGETS: dict[str, tuple[str, str]] = {
@@ -274,6 +294,8 @@ class EvolutionLedger:
         before: str,
         after: str,
     ) -> EvolutionEvent:
+        if not known_ledger_target_type(target_type):
+            raise ValueError(f"unknown ledger target type: {target_type}")
         event = EvolutionEvent(
             id=uuid.uuid4().hex,
             run_id=run_id,

@@ -583,6 +583,20 @@ class MemoryStore:
         return self.get_item(item_id)
 
     def verify_item(self, item_id: str) -> MemoryItem | None:
+        # Verification is a governed memory write (principle 9/10): route it
+        # through the ``before_memory_write`` hook so policy can observe or
+        # block verification events, consistent with ``reduce_confidence``.
+        current = self.get_item(item_id)
+        if current is not None:
+            self._assert_memory_write_allowed(
+                memory_type=current.type,
+                status=current.status,
+                scope=current.scope,
+                source=current.source,
+                confidence=max(0.0, min(1.0, current.confidence)),
+                content_chars=len(current.content),
+                metadata_keys=sorted(current.metadata.keys()),
+            )
         self.provider.update_item(item_id, last_verified_at=time.time(), updated_at=time.time())
         return self.get_item(item_id)
 

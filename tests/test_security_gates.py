@@ -152,3 +152,35 @@ def test_h4_l0_proposal_still_requires_evaluation(tmp_path):
     )
     refreshed = ledger.get_proposal(proposal.id)
     ledger.assert_proposal_applicable(refreshed)  # no raise
+
+
+def test_ledger_rejects_undeclared_target_type(tmp_path):
+    """P1.2: the evolution ledger must reject ``target_type`` values that are
+    neither declared evolution targets nor declared governance event types.
+    Undeclared types are schema drift and must surface loudly."""
+    ledger = EvolutionLedger(tmp_path)
+    with pytest.raises(ValueError, match="unknown ledger target type"):
+        ledger.record(
+            run_id="run-1",
+            target_type="totally_made_up",
+            target_id="t1",
+            reason="test",
+            before="",
+            after="",
+        )
+
+
+def test_ledger_accepts_governance_event_types(tmp_path):
+    """Governance event types (execution_grant, approval) are declared and
+    accepted by the ledger, alongside evolution target types."""
+    ledger = EvolutionLedger(tmp_path)
+    for governance_type in ("execution_grant", "approval"):
+        event = ledger.record(
+            run_id="run-1",
+            target_type=governance_type,
+            target_id="t1",
+            reason="test",
+            before="denied",
+            after="allowed",
+        )
+        assert event.target_type == governance_type
