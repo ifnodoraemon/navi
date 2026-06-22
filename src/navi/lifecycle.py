@@ -1,18 +1,33 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 
-RUN_STATUS_PENDING = "pending"
-RUN_STATUS_PREPARING = "preparing"
-RUN_STATUS_PREPARED = "prepared"
-RUN_STATUS_AWAITING_APPROVAL = "awaiting_approval"
-RUN_STATUS_QUEUED = "queued"
-RUN_STATUS_RUNNING = "running"
-RUN_STATUS_COMPLETED = "completed"
-RUN_STATUS_FAILED = "failed"
-RUN_STATUS_BLOCKED = "blocked"
-RUN_STATUS_REJECTED = "rejected"
+class RunStatus(StrEnum):
+    PENDING = "pending"
+    PREPARING = "preparing"
+    PREPARED = "prepared"
+    AWAITING_APPROVAL = "awaiting_approval"
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    REJECTED = "rejected"
+
+
+# Backwards-compatible string aliases.
+RUN_STATUS_PENDING = RunStatus.PENDING
+RUN_STATUS_PREPARING = RunStatus.PREPARING
+RUN_STATUS_PREPARED = RunStatus.PREPARED
+RUN_STATUS_AWAITING_APPROVAL = RunStatus.AWAITING_APPROVAL
+RUN_STATUS_QUEUED = RunStatus.QUEUED
+RUN_STATUS_RUNNING = RunStatus.RUNNING
+RUN_STATUS_COMPLETED = RunStatus.COMPLETED
+RUN_STATUS_FAILED = RunStatus.FAILED
+RUN_STATUS_BLOCKED = RunStatus.BLOCKED
+RUN_STATUS_REJECTED = RunStatus.REJECTED
 
 RUN_TERMINAL_STATUSES = frozenset(
     {
