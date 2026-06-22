@@ -505,6 +505,15 @@ SYSCALL_PLANNER_SPEC: Any = {
             "delegation blindly."
         },
         {
+            "Remote Surface → Local Access": "When your current surface lacks direct "
+            "OS tools (file.read, directory.list, shell) — e.g. a remote connector — "
+            "delegate.spawn IS the path to local access. The delegated task runs "
+            "locally with full OS capabilities. Do NOT flatly refuse local-file or "
+            "local-process requests from a surface without direct OS tools; either "
+            "delegate.spawn a local task, or ask.user for the specifics (which "
+            "directory, what filename, what format) needed to scope the delegation."
+        },
+        {
             "Gated Delegation": "For complex requests (e.g., diagnosis, multi-step "
             "repairs, broad codebase changes), do not create a single "
             "massive delegate.spawn. Once you have gathered sufficient "

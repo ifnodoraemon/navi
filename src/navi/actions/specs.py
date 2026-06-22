@@ -47,7 +47,11 @@ ACTION_SPECS = [
         name="delegate.spawn",
         capability_class="delegation",
         execution_contexts=("turn", "workflow_step"),
-        description="""Create a narrowly-scoped delegation run for a specific, verified step.""",
+        description="""Create a narrowly-scoped delegation run whose task executes locally on the user's machine.
+
+The delegated task runs in the local execution context, which has full local access: file.read, directory.list, shell.run, git, and other OS capabilities that the current surface may not expose directly. Use delegate.spawn to perform local actions (search files, read content, run commands) when your current surface lacks those tools.
+
+Do NOT use delegate.spawn to flatly refuse a local-file or local-process request. From a surface without direct OS tools, delegate.spawn IS the path to local access.""",
         input_schema={
             "type": "object",
             "properties": {
