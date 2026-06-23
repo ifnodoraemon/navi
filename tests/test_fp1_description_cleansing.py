@@ -47,7 +47,7 @@ def test_watch_delete_description_drops_approval_safeguard() -> None:
 
 
 def test_shell_run_description_drops_pty_decision_rule() -> None:
-    core = _read("src/navi/core_tools.py")
+    core = _read("src/navi/core_tools/registration.py")
     # The pty decision rule moved out of the description...
     assert "Set allocate_pty to true if the command strictly requires" not in core
     # ...and into the allocate_pty arg description.
