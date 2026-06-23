@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import connect
+from .paths import db_paths
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,7 @@ class SubagentRunStore:
     def __init__(self, home: Path):
         self.home = home
         self.home.mkdir(parents=True, exist_ok=True)
-        self.db_path = home / "subagents.db"
+        self.db_path = db_paths(home).subagents
         self._init_db()
 
     def _init_db(self) -> None:

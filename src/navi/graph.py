@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .db import connect
+from .paths import db_paths
 from typing import Any
 
 
@@ -23,7 +24,7 @@ class GraphNode:
 class GraphStore:
     def __init__(self, home: Path):
         home.mkdir(parents=True, exist_ok=True)
-        self.db_path = home / "graph.db"
+        self.db_path = db_paths(home).graph
         self._init_db()
 
     def _init_db(self) -> None:

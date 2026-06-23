@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..db import connect, ensure_schema_version
+from ..paths import db_paths
 from ..schema import Column, Table, assert_schema_exact
 from .models import (
     Approval,
@@ -113,7 +114,7 @@ class RunStore:
     def __init__(self, home: Path):
         self.home = home
         self.home.mkdir(parents=True, exist_ok=True)
-        self.db_path = home / "runs.db"
+        self.db_path = db_paths(home).runs
         self._init_db()
 
     def _init_db(self) -> None:

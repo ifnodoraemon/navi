@@ -9,6 +9,7 @@ import time
 import uuid
 from pathlib import Path
 
+from ..paths import db_paths
 from ..hooks import HookDecision, HookEvent, HookRegistry
 from ..json_utils import parse_first_json_object
 from ..specs_data import PROMPT_LAYERS_SPEC
@@ -39,7 +40,7 @@ class MemoryStore:
         self.home = home
         self.memory_dir = home / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self.provider = provider or SQLiteMemoryProvider(home / "memory.db")
+        self.provider = provider or SQLiteMemoryProvider(db_paths(home).memory)
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_lock_refs: dict[str, int] = {}
         self._session_locks_guard: asyncio.Lock | None = None
