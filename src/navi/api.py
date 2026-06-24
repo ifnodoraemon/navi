@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from dataclasses import asdict
@@ -7,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .engine import HernessEngine
@@ -156,6 +158,46 @@ def create_app(home: Path | None = None) -> FastAPI:
         if header_key != api_key:
             return Response(content="Unauthorized", status_code=401)
         return await call_next(request)
+
+    @app.middleware("http")
+    async def envelope_middleware(request: Request, call_next):
+        """Uniform response envelope: ``{"ok": bool, "data": ..., "error": ...}``.
+
+        Wraps every JSON response — success or error — in a single shape so
+        API consumers do not have to special-case per-endpoint return
+        structures (principle 2: tools/capabilities return facts; the API
+        presents them consistently). HTTP status codes are preserved; only
+        the body is normalized. Non-JSON responses (e.g. the 401 text body)
+        pass through untouched."""
+        response: Response = await call_next(request)
+        content_type = response.headers.get("content-type", "")
+        if not content_type.startswith("application/json"):
+            return response
+        chunks: list[bytes] = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk)
+        body = b"".join(chunks)
+        if not body:
+            return response
+        try:
+            parsed = json.loads(body)
+        except (ValueError, TypeError):
+            return Response(
+                content=body,
+                status_code=response.status_code,
+                media_type="application/json",
+            )
+        status_code = response.status_code
+        if 200 <= status_code < 300:
+            envelope: dict[str, Any] = {"ok": True, "data": parsed, "error": None}
+        else:
+            detail = parsed.get("detail") if isinstance(parsed, dict) else parsed
+            envelope = {
+                "ok": False,
+                "data": None,
+                "error": {"status": status_code, "detail": detail},
+            }
+        return JSONResponse(content=envelope, status_code=status_code)
 
     @app.get(api_path("health"))
     def health() -> dict:
