@@ -614,14 +614,6 @@ def create_app(home: Path | None = None) -> FastAPI:
     async def run_workflow(workflow_id: str) -> dict:
         return await _workflow_action("workflow.run", workflow_id)
 
-    @app.post(api_path("workflow_resume"))
-    async def resume_workflow(workflow_id: str) -> dict:
-        return await _workflow_action("workflow.resume", workflow_id)
-
-    @app.post(api_path("workflow_verify"))
-    async def verify_workflow(workflow_id: str) -> dict:
-        return await _workflow_action("workflow.verify", workflow_id)
-
     async def _workflow_action(
         tool: str, workflow_id: str, extra_args: dict[str, Any] | None = None
     ) -> dict:

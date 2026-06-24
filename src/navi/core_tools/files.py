@@ -1,69 +1,10 @@
 """Core tool handlers."""
 from __future__ import annotations
-import os
-import shutil
-import subprocess
-from dataclasses import asdict
 from pathlib import Path
-from urllib.parse import urlparse
 from typing import Any
-from ..config import load_config
-from ..fact_tools import service_facts, run_facts
-from ..hooks import HookRegistry
-from ..memory import MemoryStore
-from ..operating_context import permission_allows
-from ..runs import Approval
-from ..safeguards import capability_safeguard_facts
-from ..skills import SkillStore
-from ..tools import ALL_EXECUTION_CONTEXTS, ToolRegistry, ToolResult, ToolSpec
-from .codebase import _codebase_search, _project_path
-from .paths import _is_safe_path
+from ..tools import ToolResult
+from .codebase import _project_path
 from .utils import _positive_int
-
-def _directory_list(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
-    raw_path = str(args.get("path") or str(project_dir))
-    limit = _positive_int(args.get("limit"), default=50, maximum=200)
-    path = Path(raw_path).expanduser()
-
-    if not _is_safe_path(path, project_dir):
-        return ToolResult(
-            tool="directory.list", ok=False, error="path must be within the project directory"
-        )
-
-    fact_path = path.resolve() if path.exists() else path
-    facts: dict[str, Any] = {
-        "path": str(fact_path),
-        "exists": path.exists(),
-        "is_dir": path.is_dir() if path.exists() else False,
-        "entries": [],
-        "limit": limit,
-    }
-    if not path.exists():
-        return ToolResult(tool="directory.list", ok=False, facts=facts, error="path not found")
-    if not path.is_dir():
-        return ToolResult(
-            tool="directory.list", ok=False, facts=facts, error="path is not a directory"
-        )
-    entries = []
-    for child in sorted(path.iterdir(), key=lambda item: item.name)[:limit]:
-        try:
-            stat = child.stat()
-            entries.append(
-                {
-                    "name": child.name,
-                    "path": str(child),
-                    "type": "directory" if child.is_dir() else "file",
-                    "size": stat.st_size,
-                    "modified_at": stat.st_mtime,
-                }
-            )
-        except OSError as exc:
-            entries.append(
-                {"name": child.name, "path": str(child), "type": "unknown", "error": str(exc)}
-            )
-    facts["entries"] = entries
-    facts["entry_count"] = len(entries)
-    return ToolResult(tool="directory.list", ok=True, facts=facts)
 
 
 def _file_read(args: dict[str, Any], *, project_dir: Path) -> ToolResult:

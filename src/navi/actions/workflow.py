@@ -157,10 +157,9 @@ class WorkflowApproveCapability(BaseCapability):
 
 @capability("workflow_run")
 class WorkflowRunCapability(BaseCapability):
-    def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path, resume: bool = False):
+    def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path):
         super().__init__(spec, home=home)
         self.project_dir = project_dir
-        self.resume = resume
 
     @guarded
     async def invoke(
@@ -180,11 +179,12 @@ class WorkflowRunCapability(BaseCapability):
                 f"workflow {workflow.id} is {workflow.status}; "
                 "approve or resume only supported running states."
             )
+        resume = bool(args.get("resume"))
         store.update_status(
             workflow.id,
             status=WORKFLOW_STATUS_RUNNING,
-            evidence={"resume": self.resume, "runner": context.sender_id},
-            event_type="workflow.resume" if self.resume else "workflow.run",
+            evidence={"resume": resume, "runner": context.sender_id},
+            event_type="workflow.resume" if resume else "workflow.run",
         )
         workflow = store.get(workflow.id) or workflow
         steps = store.list_steps(workflow.id)
@@ -364,70 +364,6 @@ class WorkflowRunCapability(BaseCapability):
             "workflow_id": workflow.id,
             "status": workflow.status,
             **counts,
-        }
-        return _fact_result("workflow", facts, run_id=workflow.id)
-
-
-@capability("workflow_resume")
-class WorkflowResumeCapability(WorkflowRunCapability):
-    """Resume an existing workflow — ``WorkflowRunCapability`` with
-    ``resume=True``. Registered under a separate key so the registry can
-    distinguish starting fresh from resuming."""
-
-    def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path):
-        super().__init__(spec, home=home, project_dir=project_dir, resume=True)
-
-
-@capability("workflow_verify")
-class WorkflowVerifyCapability(BaseCapability):
-
-    @guarded
-    async def invoke(
-        self,
-        args: dict[str, Any],
-        *,
-        permission: str,
-        context: CapabilityContext,
-    ) -> CapabilityResult:
-        workflow_id = _arg_text(args, "workflow_id")
-        store = WorkflowStore(self.home)
-        workflow = store.get(workflow_id) if workflow_id else None
-        if workflow is None:
-            raise NotFound(f"workflow not found: {workflow_id}")
-        subagents = SubagentRunStore(self.home)
-        verifier = subagents.start(
-            role="critic",
-            phase="workflow.verify",
-            run_id=workflow.id,
-            command=["navi", "workflow", "verify", workflow.id],
-            input_data={"workflow_id": workflow.id, "strategy": workflow.verification_strategy},
-        )
-        decision = workflow_verification_decision(
-            workflow=workflow,
-            steps=store.list_steps(workflow.id),
-        )
-        subagents.finish(
-            verifier.id,
-            status="completed" if decision.passed else "failed",
-            output_data=decision.output,
-            error=decision.blocked_reason,
-        )
-        updated = (
-            store.update_status(
-                workflow.id,
-                status=decision.status,
-                blocked_reason=decision.blocked_reason,
-                evidence={"verifier": decision.output, "verifier_subagent_id": verifier.id},
-                event_type=decision.event_type,
-            )
-            or workflow
-        )
-        facts = {
-            **_transition_facts("workflow", workflow.id, "updated"),
-            "workflow_id": workflow.id,
-            "status": updated.status,
-            "verifier_passed": decision.passed,
-            "blocked_reason": decision.blocked_reason,
         }
         return _fact_result("workflow", facts, run_id=workflow.id)
 

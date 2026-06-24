@@ -1,43 +1,10 @@
-"""Core tool handlers."""
+"""Delegation status tool handler."""
 from __future__ import annotations
-import os
-import shutil
-import subprocess
 from dataclasses import asdict
 from pathlib import Path
-from urllib.parse import urlparse
 from typing import Any
-from ..config import load_config
-from ..fact_tools import service_facts, run_facts
-from ..hooks import HookRegistry
-from ..memory import MemoryStore
-from ..operating_context import permission_allows
-from ..runs import Approval
-from ..safeguards import capability_safeguard_facts
-from ..skills import SkillStore
-from ..tools import ALL_EXECUTION_CONTEXTS, ToolRegistry, ToolResult, ToolSpec
-
-def _service_status(args: dict[str, Any], *, default_name: str) -> ToolResult:
-    name = str(args.get("name") or default_name)
-    facts = service_facts(name)
-    return ToolResult(
-        tool="service.status", ok=facts.exit_code == 0, facts=asdict(facts), error=facts.stderr
-    )
-
-
-def _run_status(home: Path, args: dict[str, Any]) -> ToolResult:
-    run_id = args.get("run_id")
-    facts = run_facts(home, str(run_id) if run_id else None)
-    return ToolResult(
-        tool="delegate.status",
-        ok=facts.run is not None,
-        facts={
-            "run": asdict(facts.run) if facts.run else None,
-            "approvals": [_approval_facts(approval) for approval in facts.approvals],
-            "logs": [asdict(log) for log in facts.logs],
-        },
-        error="" if facts.run else "delegation run not found",
-    )
+from ..runs import Approval, RunStore
+from ..tools import ToolResult
 
 
 def _approval_facts(approval: Approval) -> dict[str, Any]:
@@ -55,3 +22,28 @@ def _approval_facts(approval: Approval) -> dict[str, Any]:
     }
 
 
+def _run_status(home: Path, args: dict[str, Any]) -> ToolResult:
+    run_id = args.get("run_id")
+    store = RunStore(home)
+    run = store.get(str(run_id)) if run_id else None
+    if run is None and not run_id:
+        runs = store.list(limit=1)
+        run = runs[0] if runs else None
+    if run is None:
+        return ToolResult(
+            tool="delegate.status",
+            ok=False,
+            facts={"run": None, "approvals": [], "logs": []},
+            error="delegation run not found",
+        )
+    approvals = [a for a in store.list_approvals(limit=100) if a.run_id == run.id]
+    logs = store.list_execution_logs(run.id, limit=20)
+    return ToolResult(
+        tool="delegate.status",
+        ok=True,
+        facts={
+            "run": asdict(run),
+            "approvals": [_approval_facts(approval) for approval in approvals],
+            "logs": [asdict(log) for log in logs],
+        },
+    )

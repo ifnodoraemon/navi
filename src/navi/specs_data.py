@@ -107,8 +107,6 @@ API_PATHS_SPEC: Any = {
     "workflow_approve": "/v1/workflows/{workflow_id}/approve",
     "workflow_reject": "/v1/workflows/{workflow_id}/reject",
     "workflow_run": "/v1/workflows/{workflow_id}/run",
-    "workflow_resume": "/v1/workflows/{workflow_id}/resume",
-    "workflow_verify": "/v1/workflows/{workflow_id}/verify",
     "evolution_events": "/v1/evolution-events",
     "evolution_rollback": "/v1/evolution-events/{event_id}/rollback",
     "evolution_targets": "/v1/evolution-targets",
@@ -280,12 +278,6 @@ CAPABILITY_SAFEGUARDS_SPEC: Any = {
             "confirmation_required": True,
             "reason": "Browser capture reads untrusted web content and writes an artifact.",
         },
-        "directory.list": {
-            "risk_class": "medium",
-            "sensitive_contexts": ["directory"],
-            "confirmation_required": False,
-            "reason": "Directory listing exposes local directory metadata.",
-        },
         "file.read": {
             "risk_class": "medium",
             "sensitive_contexts": ["filesystem", "untrusted_local_content"],
@@ -298,23 +290,11 @@ CAPABILITY_SAFEGUARDS_SPEC: Any = {
             "confirmation_required": True,
             "reason": "File writes mutate local project state.",
         },
-        "git.status": {
-            "risk_class": "medium",
-            "sensitive_contexts": ["repository"],
-            "confirmation_required": False,
-            "reason": "Git status exposes repository state.",
-        },
         "shell.run": {
             "risk_class": "high",
             "sensitive_contexts": ["terminal", "local_state"],
             "confirmation_required": True,
             "reason": "Shell execution can mutate or inspect the local environment.",
-        },
-        "test.run": {
-            "risk_class": "high",
-            "sensitive_contexts": ["terminal", "local_state"],
-            "confirmation_required": True,
-            "reason": "Test commands execute local processes.",
         },
         "memory.list": {
             "risk_class": "medium",
@@ -452,12 +432,6 @@ CAPABILITY_SAFEGUARDS_SPEC: Any = {
             "reason": "HTTP fetch retrieves external content that must be treated as "
             "untrusted data.",
         },
-        "system.info": {
-            "risk_class": "low",
-            "sensitive_contexts": [],
-            "confirmation_required": False,
-            "reason": "System info reads local hardware and OS state with no side effects.",
-        },
     },
 }
 
@@ -497,8 +471,7 @@ SYSCALL_PLANNER_SPEC: Any = {
         "call the matching read capability first.",
         {
             "Fact-First / Local-First Policy": "Always prioritize using read-only "
-            "foreground tools (e.g. system.info for safe "
-            "exploration, file.read) to confirm "
+            "foreground tools (e.g. file.read) to confirm "
             "the environment, locate target files, and "
             "gather facts BEFORE spawning any "
             "background delegation. Never spawn a "
@@ -506,7 +479,7 @@ SYSCALL_PLANNER_SPEC: Any = {
         },
         {
             "Remote Surface → Local Access": "When your current surface lacks direct "
-            "OS tools (file.read, directory.list, shell) — e.g. a remote connector — "
+            "OS tools (file.read, shell.run) — e.g. a remote connector — "
             "delegate.spawn IS the path to local access. The delegated task runs "
             "locally with full OS capabilities. Do NOT flatly refuse local-file or "
             "local-process requests from a surface without direct OS tools; either "

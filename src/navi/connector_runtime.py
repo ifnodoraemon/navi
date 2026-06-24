@@ -29,12 +29,9 @@ HEARTBEAT_INTERVAL_SECONDS = 20.0
 REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(
     (
         "browser",
-        "directory",
         "file.read",
         "file.write",
-        "git",
         "shell",
-        "test",
         "watch.delete",
     )
 )

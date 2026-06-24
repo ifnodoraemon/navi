@@ -32,17 +32,20 @@ def _ctx(home: Path) -> CapabilityContext:
 
 @pytest.mark.asyncio
 async def test_ingress_blocks_read_but_executor_allows_it(tmp_path):
-    # Live connector ingress: source policy still hard-blocks directory listing.
+    # Live connector ingress: source policy still hard-blocks local file read.
     ingress = build_capability_registry(tmp_path, project_dir=tmp_path)
     blocked = await ingress.invoke(
-        "directory.list", {"path": str(tmp_path)}, permission="read", context=_ctx(tmp_path)
+        "file.read", {"path": str(tmp_path / "missing.txt")},
+        permission="read", context=_ctx(tmp_path),
     )
     assert blocked.ok is False
     assert "policy blocks capability" in blocked.message
 
     # Approved background executor: same source, but ingress sandbox is off.
+    target = tmp_path / "resume.txt"
+    target.write_text("name: Ada")
     runs = RunStore(tmp_path)
-    task = runs.create("list files", source="connector.weixin", workspace=str(tmp_path))
+    task = runs.create("read file", source="connector.weixin", workspace=str(tmp_path))
     executor = build_capability_registry(
         tmp_path,
         project_dir=tmp_path,
@@ -50,7 +53,7 @@ async def test_ingress_blocks_read_but_executor_allows_it(tmp_path):
         governed_run_id=task.id,
     )
     allowed = await executor.invoke(
-        "directory.list", {"path": str(tmp_path)}, permission="read", context=_ctx(tmp_path)
+        "file.read", {"path": str(target)}, permission="read", context=_ctx(tmp_path)
     )
     assert allowed.ok is True  # the read op the user actually wanted
 

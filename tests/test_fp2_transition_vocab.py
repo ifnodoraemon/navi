@@ -4,7 +4,7 @@ layer can reason over state changes without parsing tool-specific fields.
 """
 from __future__ import annotations
 
-from navi.core_tools import _file_write, _shell_run, _test_run
+from navi.core_tools import _file_write, _shell_run
 
 _TRANSITION_KEYS = {"entity_type", "entity_id", "state_transition", "turn_scope"}
 
@@ -44,15 +44,6 @@ def test_file_write_append_transition(tmp_path):
 
 def test_shell_run_returns_transition_vocab(tmp_path):
     result = _shell_run(
-        {"command": ["echo", "hi"], "cwd": str(tmp_path)},
-        project_dir=tmp_path,
-    )
-    assert result.ok
-    _assert_transition_vocab(result.facts, "executed")
-
-
-def test_test_run_returns_transition_vocab(tmp_path):
-    result = _test_run(
         {"command": ["echo", "hi"], "cwd": str(tmp_path)},
         project_dir=tmp_path,
     )

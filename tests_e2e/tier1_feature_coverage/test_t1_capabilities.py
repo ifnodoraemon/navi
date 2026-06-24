@@ -40,7 +40,6 @@ async def test_t1_capabilities_registry_loading(navi_home) -> None:
         "workflow.propose",
         "workflow.approve",
         "workflow.run",
-        "workflow.verify",
     ]
     
     for name in expected_capabilities:
@@ -367,17 +366,3 @@ async def test_t1_workflow_actions_flow(navi_home) -> None:
     assert workflow.status == WORKFLOW_STATUS_VERIFIED_COMPLETE
     steps = store.list_steps(workflow_id)
     assert steps[0].status == "completed"
-    
-    # 4. Verify workflow
-    verified = await registry.invoke(
-        "workflow.verify",
-        {"workflow_id": workflow_id},
-        permission="write",
-        context=context,
-    )
-    assert verified.ok is True
-    assert verified.facts["status"] == WORKFLOW_STATUS_VERIFIED_COMPLETE
-    
-    # Verify final state in store
-    workflow = store.get(workflow_id)
-    assert workflow.status == WORKFLOW_STATUS_VERIFIED_COMPLETE

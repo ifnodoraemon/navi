@@ -12,7 +12,6 @@ from .auth import AuthInspector
 from .capabilities import build_capability_registry
 from .config import load_config, validate_config
 from .connector_registry import ConnectorAdapter, load_connector_adapters
-from .fact_tools import service_facts
 from .provider import resolve_model_config
 from .provider_specs import get_provider_spec
 from .service import systemd_user_unit_path
@@ -232,20 +231,72 @@ def _first_existing_path(paths: tuple[Path, ...]) -> Path | None:
     return None
 
 
+def _service_facts(name: str) -> dict[str, object]:
+    """Return ``{properties, exit_code, stderr}`` from ``systemctl --user show``.
+
+    Inlined from the removed ``fact_tools.service_facts``; this is the only
+    remaining caller of that parsing logic."""
+    if shutil.which("systemctl") is None:
+        return {
+            "properties": {},
+            "exit_code": 127,
+            "stderr": "systemctl not found; service manager unavailable on this OS",
+        }
+    command = [
+        "systemctl",
+        "--user",
+        "show",
+        name,
+        "--property=ActiveEnterTimestamp",
+        "--property=ActiveState",
+        "--property=SubState",
+        "--property=MainPID",
+    ]
+    result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=8)
+    properties: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("=")
+        if key:
+            properties[key] = value
+    if result.returncode != 0:
+        fb = subprocess.run(
+            ["systemctl", "--user", "is-active", name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        active_state = fb.stdout.strip()
+        if fb.returncode == 0 and active_state:
+            properties["ActiveState"] = active_state
+            properties.setdefault("SubState", active_state)
+            return {
+                "properties": properties,
+                "exit_code": 0,
+                "stderr": result.stderr.strip(),
+            }
+    return {
+        "properties": properties,
+        "exit_code": result.returncode,
+        "stderr": result.stderr.strip(),
+    }
+
+
 def _service_runtime_check(name: str) -> DiagnosticCheck:
     try:
-        facts = service_facts(name)
+        facts = _service_facts(name)
     except Exception as exc:
         return DiagnosticCheck("service.runtime", "warn", f"{exc.__class__.__name__}")
-    active = facts.properties.get("ActiveState") or "unknown"
-    substate = facts.properties.get("SubState") or "unknown"
-    if facts.exit_code == 0 and active == "active":
+    properties = facts["properties"]
+    active = properties.get("ActiveState") or "unknown"
+    substate = properties.get("SubState") or "unknown"
+    if facts["exit_code"] == 0 and active == "active":
         return DiagnosticCheck("service.runtime", "ok", f"{name} {active}/{substate}")
     fallback = _systemd_is_active(name)
     if fallback:
         return DiagnosticCheck("service.runtime", "ok", f"{name} {fallback}/running")
     return DiagnosticCheck(
-        "service.runtime", "warn", f"{name} {active}/{substate} exit_code={facts.exit_code}"
+        "service.runtime", "warn", f"{name} {active}/{substate} exit_code={facts['exit_code']}"
     )
 
 

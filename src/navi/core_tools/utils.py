@@ -1,21 +1,10 @@
 """Core tool handlers."""
 from __future__ import annotations
 import os
-import shutil
-import subprocess
-from dataclasses import asdict
-from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
-from ..config import load_config
-from ..fact_tools import service_facts, run_facts
-from ..hooks import HookRegistry
-from ..memory import MemoryStore
-from ..operating_context import permission_allows
-from ..runs import Approval
-from ..safeguards import capability_safeguard_facts
-from ..skills import SkillStore
-from ..tools import ALL_EXECUTION_CONTEXTS, ToolRegistry, ToolResult, ToolSpec
+from .paths import _is_blocked_http_host, _is_public_http_host
+from ..tools import ToolResult
 
 def _truncate_output(value: str, *, limit: int = 12000) -> str:
     text = str(value or "")
@@ -36,7 +25,6 @@ def _web_search(args: dict[str, Any]) -> ToolResult:
     import urllib.request
     import urllib.parse
     import json as _json
-    import os
 
     query = str(args.get("query") or "").strip()
     if not query:
@@ -149,59 +137,4 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
         return ToolResult(
             tool="http.fetch", ok=False, error=str(exc), facts={"url": url, "method": method}
         )
-
-
-def _system_info(args: dict[str, Any]) -> ToolResult:
-    import platform
-    import shutil as _shutil
-
-    facts: dict[str, Any] = {
-        "os": platform.platform(),
-        "python": platform.python_version(),
-        "arch": platform.machine(),
-        "hostname": platform.node(),
-    }
-    is_linux = platform.system() == "Linux"
-    if is_linux:
-        try:
-            with open("/proc/uptime") as f:
-                facts["uptime_seconds"] = float(f.read().split()[0])
-        except Exception as exc:
-            facts["uptime_error"] = str(exc)
-        try:
-            with open("/proc/meminfo") as f:
-                for line in f:
-                    if line.startswith("MemTotal:"):
-                        facts["mem_total_kb"] = int(line.split()[1])
-                    elif line.startswith("MemAvailable:"):
-                        facts["mem_available_kb"] = int(line.split()[1])
-        except Exception as exc:
-            facts["meminfo_error"] = str(exc)
-    else:
-        facts["uptime_seconds"] = None
-        facts["mem_total_kb"] = None
-        facts["mem_available_kb"] = None
-        facts["os_note"] = f"/proc not available on {platform.system()}"
-    try:
-        usage = _shutil.disk_usage(Path.home())
-        facts["disk_total_gb"] = round(usage.total / (1024**3), 1)
-        facts["disk_free_gb"] = round(usage.free / (1024**3), 1)
-        facts["disk_used_pct"] = round((usage.used / usage.total) * 100, 1)
-    except Exception:
-        pass
-    try:
-        load = os.getloadavg()
-        facts["load_avg"] = {"1m": load[0], "5m": load[1], "15m": load[2]}
-    except Exception:
-        pass
-    category = str(args.get("category") or "").strip()
-    if category == "processes":
-        try:
-            ps = subprocess.run(
-                ["ps", "aux", "--sort=-%mem"], capture_output=True, text=True, timeout=5
-            )
-            facts["processes"] = ps.stdout[:8000]
-        except Exception as e:
-            facts["processes_error"] = str(e)
-    return ToolResult(tool="system.info", ok=True, facts=facts)
 

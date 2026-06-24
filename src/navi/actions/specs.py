@@ -49,7 +49,7 @@ ACTION_SPECS = [
         execution_contexts=("turn", "workflow_step"),
         description="""Create a narrowly-scoped delegation run whose task executes locally on the user's machine.
 
-The delegated task runs in the local execution context, which has full local access: file.read, directory.list, shell.run, git, and other OS capabilities that the current surface may not expose directly. Use delegate.spawn to perform local actions (search files, read content, run commands) when your current surface lacks those tools.
+The delegated task runs in the local execution context, which has full local access: file.read, shell.run, and other OS capabilities that the current surface may not expose directly. Use delegate.spawn to perform local actions (search files, read content, run commands) when your current surface lacks those tools.
 
 Do NOT use delegate.spawn to flatly refuse a local-file or local-process request. From a surface without direct OS tools, delegate.spawn IS the path to local access.""",
         input_schema={
@@ -444,10 +444,13 @@ Do NOT use delegate.spawn to flatly refuse a local-file or local-process request
         name="workflow.run",
         capability_class="workflow",
         execution_contexts=("turn",),
-        description="""Run the next bounded batch of an approved dynamic workflow through declared capabilities.""",
+        description="""Run the next bounded batch of an approved dynamic workflow through declared capabilities. When all steps are complete, the verifier runs automatically and the workflow transitions to verified or blocked. Set resume=true to resume an interrupted workflow.""",
         input_schema={
             "type": "object",
-            "properties": {"workflow_id": {"type": "string"}},
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "resume": {"type": "boolean", "default": False},
+            },
             "required": ["workflow_id"],
         },
         output_schema={
@@ -462,60 +465,6 @@ Do NOT use delegate.spawn to flatly refuse a local-file or local-process request
                 "completed_count": {"type": "integer"},
                 "failed_count": {"type": "integer"},
                 "pending_count": {"type": "integer"},
-            },
-        },
-        facts_only=True,
-        mutates=True,
-        permission="write",
-        source="action",
-    ),
-    ToolSpec(
-        name="workflow.verify",
-        capability_class="workflow",
-        execution_contexts=("turn",),
-        description="""Run verifier checks for a completed dynamic workflow and mark it verified or blocked.""",
-        input_schema={
-            "type": "object",
-            "properties": {"workflow_id": {"type": "string"}},
-            "required": ["workflow_id"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "entity_type": {"type": "string"},
-                "entity_id": {"type": "string"},
-                "state_transition": {"type": "string"},
-                "turn_scope": {"type": "string"},
-                "workflow_id": {"type": "string"},
-                "status": {"type": "string"},
-                "verifier_passed": {"type": "boolean"},
-                "blocked_reason": {"type": "string"},
-            },
-        },
-        facts_only=True,
-        mutates=True,
-        permission="write",
-        source="action",
-    ),
-    ToolSpec(
-        name="workflow.resume",
-        capability_class="workflow",
-        execution_contexts=("turn",),
-        description="""Resume an approved, running, or interrupted dynamic workflow from persisted step state.""",
-        input_schema={
-            "type": "object",
-            "properties": {"workflow_id": {"type": "string"}},
-            "required": ["workflow_id"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "entity_type": {"type": "string"},
-                "entity_id": {"type": "string"},
-                "state_transition": {"type": "string"},
-                "turn_scope": {"type": "string"},
-                "workflow_id": {"type": "string"},
-                "status": {"type": "string"},
             },
         },
         facts_only=True,

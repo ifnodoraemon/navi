@@ -839,18 +839,6 @@ def workflow_run(workflow_id: str) -> None:
     _workflow_action_cli("workflow.run", workflow_id)
 
 
-@workflow_app.command("resume")
-def workflow_resume(workflow_id: str) -> None:
-    """Resume a dynamic workflow from persisted state."""
-    _workflow_action_cli("workflow.resume", workflow_id)
-
-
-@workflow_app.command("verify")
-def workflow_verify(workflow_id: str) -> None:
-    """Verify a completed dynamic workflow."""
-    _workflow_action_cli("workflow.verify", workflow_id)
-
-
 def _workflow_action_cli(tool: str, workflow_id: str, extra_args: dict | None = None) -> None:
     home = ensure_home()
     capabilities = build_capability_registry(home, project_dir=Path.cwd())

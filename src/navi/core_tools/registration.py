@@ -1,34 +1,20 @@
 """Core tool handlers."""
 from __future__ import annotations
-import os
-import shutil
-import subprocess
-from dataclasses import asdict
 from pathlib import Path
-from urllib.parse import urlparse
 from typing import Any
 from ..config import load_config
-from ..fact_tools import service_facts, run_facts
-from ..hooks import HookRegistry
-from ..memory import MemoryStore
-from ..operating_context import permission_allows
-from ..runs import Approval
-from ..safeguards import capability_safeguard_facts
-from ..skills import SkillStore
-from ..tools import ALL_EXECUTION_CONTEXTS, ToolRegistry, ToolResult, ToolSpec
+from ..tools import ALL_EXECUTION_CONTEXTS, ToolRegistry, ToolSpec
 from .browser import _browser_screenshot
 from .codebase import _codebase_search
-from .files import _directory_list, _file_read, _file_write
+from .files import _file_read, _file_write
 from .hooks import _hooks_list
 from .memory import _memory_conflicts, _memory_list, _memory_recall
-from .paths import _is_safe_path
 from .provider import _provider_config
-from .run_command import _run_command
-from .service import _approval_facts, _run_status, _service_status
-from .shell import _shell_run, _test_run
+from .service import _run_status
+from .shell import _shell_run
 from .skills import _skills_list, _skills_view
 from .tools_list import _tools_list
-from .utils import _http_fetch, _system_info, _web_search
+from .utils import _http_fetch, _web_search
 
 
 def _core_tool_spec(**kwargs: Any) -> ToolSpec:
@@ -45,26 +31,6 @@ def _array_of_objects() -> dict[str, Any]:
 
 def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     config = load_config(home)
-    registry.register(
-        _core_tool_spec(
-            name="service.status",
-            capability_class="service",
-            description="Return systemd user service facts.",
-            input_schema={
-                "type": "object",
-                "properties": {"name": {"type": "string", "default": config.runtime.service_name}},
-            },
-            output_schema=_output_schema(
-                {
-                    "name": {"type": "string"},
-                    "properties": {"type": "object"},
-                    "exit_code": {"type": "integer"},
-                    "stderr": {"type": "string"},
-                }
-            ),
-        ),
-        lambda args: _service_status(args, default_name=config.runtime.service_name),
-    )
     registry.register(
         _core_tool_spec(
             name="delegate.status",
@@ -295,33 +261,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     )
     registry.register(
         _core_tool_spec(
-            name="directory.list",
-            capability_class="directory",
-            description="Return directory entry facts.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "default": str(registry.project_dir)},
-                    "limit": {"type": "integer", "default": 50},
-                },
-            },
-            output_schema=_output_schema(
-                {
-                    "path": {"type": "string"},
-                    "exists": {"type": "boolean"},
-                    "is_dir": {"type": "boolean"},
-                    "is_file": {"type": "boolean"},
-                    "size": {"type": "integer"},
-                    "entries": _array_of_objects(),
-                    "entry_count": {"type": "integer"},
-                    "limit": {"type": "integer"},
-                }
-            ),
-        ),
-        lambda args: _directory_list(args, project_dir=registry.project_dir),
-    )
-    registry.register(
-        _core_tool_spec(
             name="file.read",
             capability_class="file.read",
             description="Read a UTF-8 text file inside the current project workspace.",
@@ -402,28 +341,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
 
     registry.register(
         _core_tool_spec(
-            name="git.status",
-            capability_class="git",
-            description="Return git repository status facts.",
-            input_schema={
-                "type": "object",
-                "properties": {"path": {"type": "string", "default": str(registry.project_dir)}},
-            },
-            output_schema=_output_schema(
-                {
-                    "path": {"type": "string"},
-                    "root": {"type": "string"},
-                    "head": {"type": "string"},
-                    "status": {"type": "array", "items": {"type": "string"}},
-                    "exit_code": {"type": "integer"},
-                    "stderr": {"type": "string"},
-                }
-            ),
-        ),
-        lambda args: _git_status(args, project_dir=registry.project_dir),
-    )
-    registry.register(
-        _core_tool_spec(
             name="shell.run",
             capability_class="shell",
             description="Run a command in the project workspace and return bounded stdout/stderr facts.",
@@ -457,37 +374,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             permission="write",
         ),
         lambda args: _shell_run(args, project_dir=registry.project_dir),
-    )
-    registry.register(
-        _core_tool_spec(
-            name="test.run",
-            capability_class="test",
-            description="Run a project test command and return bounded stdout/stderr facts.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "command": {"type": "array", "items": {"type": "string"}},
-                    "cwd": {"type": "string", "default": str(registry.project_dir)},
-                    "timeout_seconds": {"type": "integer", "default": 60},
-                    "allocate_pty": {"type": "boolean", "default": False},
-                },
-            },
-            output_schema=_output_schema(
-                {
-                    "stdout": {"type": "string"},
-                    "stderr": {"type": "string"},
-                    "exit_code": {"type": "integer"},
-                    "timed_out": {"type": "boolean"},
-                    "command": {"type": "array", "items": {"type": "string"}},
-                    "cwd": {"type": "string"},
-                    "timeout_seconds": {"type": "integer"},
-                }
-            ),
-            facts_only=True,
-            mutates=True,
-            permission="write",
-        ),
-        lambda args: _test_run(args, project_dir=registry.project_dir),
     )
     registry.register(
         _core_tool_spec(
@@ -537,36 +423,5 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             permission="read",
         ),
         _http_fetch,
-    )
-    registry.register(
-        _core_tool_spec(
-            name="system.info",
-            capability_class="system",
-            description="Return system information: OS, memory, disk, load, uptime. Pass category='processes' for running process list.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "category": {
-                        "type": "string",
-                        "description": "Optional: 'processes' to include ps aux output.",
-                    },
-                },
-            },
-            output_schema=_output_schema(
-                {
-                    "os": {"type": "string"},
-                    "hostname": {"type": "string"},
-                    "mem_total_kb": {"type": "integer"},
-                    "mem_available_kb": {"type": "integer"},
-                    "disk_total_gb": {"type": "number"},
-                    "disk_free_gb": {"type": "number"},
-                    "disk_used_pct": {"type": "number"},
-                    "load_avg": {"type": "object"},
-                    "uptime_seconds": {"type": "number"},
-                }
-            ),
-            permission="read",
-        ),
-        _system_info,
     )
 
