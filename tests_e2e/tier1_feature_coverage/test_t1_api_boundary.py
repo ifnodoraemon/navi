@@ -24,7 +24,7 @@ def test_t1_api_create_session_routes_capability(
     response = api_client.post("/v1/sessions", json={"alias": alias})
     assert response.status_code == 200
     
-    data = response.json()
+    data = response.json()["data"]
     assert "session_id" in data
     assert data["alias"] == alias
     session_id = data["session_id"]
@@ -33,7 +33,7 @@ def test_t1_api_create_session_routes_capability(
     # Verify session alias is created by checking the session-aliases endpoint
     get_response = api_client.get("/v1/session-aliases")
     assert get_response.status_code == 200
-    aliases = get_response.json().get("aliases", [])
+    aliases = get_response.json()["data"].get("aliases", [])
     aliases_list = [a["alias"] for a in aliases]
     assert alias in aliases_list
     assert "session.create" in _logged_tools(navi_home)
@@ -55,7 +55,7 @@ def test_t1_api_add_memory_routes_capability(
     response = api_client.post("/v1/memory", json=memory_data)
     assert response.status_code == 200
     
-    data = response.json()
+    data = response.json()["data"]
     assert "item" in data
     item = data["item"]
     assert item["type"] == "preference"
@@ -69,7 +69,7 @@ def test_t1_api_add_memory_routes_capability(
     # Verify database mutation by fetching memory items
     get_response = api_client.get("/v1/memory", params={"status": "active"})
     assert get_response.status_code == 200
-    items = get_response.json().get("items", [])
+    items = get_response.json()["data"].get("items", [])
     item_contents = {it["content"] for it in items}
     assert "E2E boundary test content" in item_contents
     assert "memory.add" in _logged_tools(navi_home)
@@ -93,7 +93,7 @@ def test_t1_api_trace_evaluate_routes_capability(api_client: TestClient, navi_ho
     response = api_client.post(f"/v1/traces/{trace_id}/evaluate")
     assert response.status_code == 200
 
-    data = response.json()
+    data = response.json()["data"]
     assert "id" in data
     assert data["trace_id"] == trace_id
     assert data["failure_domain"] == "tool_or_capability"
@@ -122,7 +122,7 @@ def test_t1_api_evolution_propose_routes_capability(
     response = api_client.post("/v1/evolution-proposals", json=proposal_data)
     assert response.status_code == 200
 
-    data = response.json()
+    data = response.json()["data"]
     assert "id" in data
     assert data["target_type"] == "memory_schema"
     assert data["target_id"] == "api_boundary_policy"
@@ -132,7 +132,7 @@ def test_t1_api_evolution_propose_routes_capability(
     # Verify mutation via GET /v1/evolution-proposals
     get_response = api_client.get("/v1/evolution-proposals", params={"status": "proposed"})
     assert get_response.status_code == 200
-    proposals = get_response.json().get("proposals", [])
+    proposals = get_response.json()["data"].get("proposals", [])
     proposal_ids = {prop["id"] for prop in proposals}
     assert data["id"] in proposal_ids
     assert "evolution.propose" in _logged_tools(navi_home)
@@ -156,7 +156,7 @@ def test_t1_api_evolution_apply_routes_capability(
     }
     response = api_client.post("/v1/evolution-proposals", json=proposal_data)
     assert response.status_code == 200
-    proposal_id = response.json()["id"]
+    proposal_id = response.json()["data"]["id"]
 
     # 2. Record proposal evaluation as approved
     eval_response = api_client.post(
@@ -164,13 +164,13 @@ def test_t1_api_evolution_apply_routes_capability(
         json={"evaluation_result": "approved"},
     )
     assert eval_response.status_code == 200
-    assert eval_response.json()["evaluation_result"] == "approved"
+    assert eval_response.json()["data"]["evaluation_result"] == "approved"
 
     # 3. Apply the proposal
     apply_response = api_client.post(f"/v1/evolution-proposals/{proposal_id}/apply")
     assert apply_response.status_code == 200
 
-    apply_data = apply_response.json()
+    apply_data = apply_response.json()["data"]
     assert "id" in apply_data
     assert apply_data["target_type"] == "memory_schema"
     assert apply_data["target_id"] == "apply_policy"
@@ -197,7 +197,7 @@ def test_t1_api_evolution_rollback_routes_capability(
     }
     response = api_client.post("/v1/evolution-proposals", json=proposal_data)
     assert response.status_code == 200
-    proposal_id = response.json()["id"]
+    proposal_id = response.json()["data"]["id"]
 
     # 2. Approve proposal
     eval_response = api_client.post(
@@ -209,13 +209,13 @@ def test_t1_api_evolution_rollback_routes_capability(
     # 3. Apply proposal (generates an evolution event)
     apply_response = api_client.post(f"/v1/evolution-proposals/{proposal_id}/apply")
     assert apply_response.status_code == 200
-    event_id = apply_response.json()["id"]
+    event_id = apply_response.json()["data"]["id"]
 
     # 4. Rollback the event
     rollback_response = api_client.post(f"/v1/evolution-events/{event_id}/rollback")
     assert rollback_response.status_code == 200
 
-    rollback_data = rollback_response.json()
+    rollback_data = rollback_response.json()["data"]
     assert rollback_data["id"] == event_id
     assert rollback_data["rolled_back_at"] > 0
     assert "evolution.rollback" in _logged_tools(navi_home)

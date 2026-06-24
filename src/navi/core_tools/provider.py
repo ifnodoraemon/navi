@@ -4,7 +4,7 @@ from pathlib import Path
 from ..tools import ToolResult
 
 def _provider_config(home: Path) -> ToolResult:
-    from .config import validate_config, load_config
+    from ..config import validate_config, load_config
 
     try:
         config = load_config(home)
