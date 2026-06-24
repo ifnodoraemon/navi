@@ -500,12 +500,6 @@ def _extract_anthropic_content(
                     perm = "write"
                     if tool_permissions and name in tool_permissions:
                         perm = tool_permissions[name]
-                    else:
-                        name_lower = name.lower()
-                        if any(x in name_lower for x in ["write", "run", "exec", "spawn", "delete", "create", "update", "modify"]):
-                            perm = "write"
-                        elif any(x in name_lower for x in ["read", "list", "status", "stat", "get", "info"]):
-                            perm = "read"
                     reconstructed = {
                         "tool": name,
                         "permission": perm,
