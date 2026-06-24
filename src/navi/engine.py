@@ -10,7 +10,7 @@ from typing import Any
 from ._engine_phases import EnginePhasesMixin
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .config import load_config
-from .control import SurfaceContext, current_state_facts
+from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from .engine_types import AgentTurnResult
 from .operating_context import OperatingContext
 from .recovery import RecoveryPlanner
