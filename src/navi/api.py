@@ -732,12 +732,14 @@ def _local_capability_context(home: Path, *, project_dir: Path) -> CapabilityCon
 def _raise_capability_error(result: CapabilityResult, *, not_found_status: int = 409) -> None:
     if result.ok:
         return
+    # Principle 13/16: never echo raw observation text (which may contain
+    # file paths, shell output, or internal state) into an HTTP response.
+    # Prefer the capability's structured message; fall back to a generic
+    # detail rather than leaking observation content.
+    safe_detail = result.message or "capability invocation failed"
     if result.error_reason == "not_found":
-        raise HTTPException(
-            status_code=not_found_status,
-            detail=result.message or result.observation,
-        )
-    raise HTTPException(status_code=409, detail=result.message or result.observation)
+        raise HTTPException(status_code=not_found_status, detail=safe_detail)
+    raise HTTPException(status_code=409, detail=safe_detail)
 
 
 def _capability_result_dict(result: CapabilityResult) -> dict[str, Any]:

@@ -11,6 +11,7 @@ from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import Run
+from navi.safeguards import redact_secrets
 from navi.daemon import SystemDaemon
 
 from .client import TYPING_START, TYPING_STOP, WeixinClient
@@ -376,7 +377,7 @@ class WeixinService:
         if facts.get("event") == "watch_result":
             raw_result = str(facts.get("raw_result") or "").strip()
             if raw_result:
-                return raw_result
+                return redact_secrets(raw_result)
         try:
             text = await self.runtime.complete(
                 [
@@ -389,9 +390,9 @@ class WeixinService:
                 role="notification",
             )
         except Exception:
-            return fallback
+            return redact_secrets(fallback)
         stripped = text.strip()
-        return stripped or fallback
+        return redact_secrets(stripped or fallback)
 
     @staticmethod
     def _task_fallback(task: Run) -> str:
@@ -443,11 +444,22 @@ class WeixinService:
 
 
 def _redact_event_facts(facts: dict) -> dict:
+    """Redact secrets from event facts before they hit events.jsonl.
+
+    Free-text fields (text_preview, error, message, raw_result) are scanned
+    for bearer tokens / api keys / passwords / PEM blocks and redacted in
+    place, so a user-pasted secret is never persisted verbatim. Field keys
+    that name a secret outright are masked regardless of value.
+    """
     redacted = {}
+    sensitive_keys = ("token", "secret", "password", "key", "code")
+    free_text_keys = ("text_preview", "error", "message", "raw_result", "detail")
     for key, value in facts.items():
         key_text = str(key).lower()
-        if any(token in key_text for token in ("token", "secret", "password", "key", "code")):
+        if any(token in key_text for token in sensitive_keys):
             redacted[key] = "[redacted]"
+        elif key_text in free_text_keys and isinstance(value, str):
+            redacted[key] = redact_secrets(value)
         else:
             redacted[key] = value
     return redacted

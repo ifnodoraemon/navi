@@ -87,6 +87,15 @@ class GovernanceEngine:
     def _record_execution_grant(self, task: Run, *, allowed: bool, reason: str) -> bool:
         from .evolution import EvolutionLedger
 
+        # Principle 8: an approval failure must say which state is missing,
+        # not pretend the agent has no local capability. Attach the approval
+        # resolution diagnostic so the caller can act (re-issue code, approve,
+        # etc.) instead of guessing.
+        if not allowed:
+            diagnostic = self.runs.approval_resolution_diagnostic(
+                run_id=task.id, sender_id=task.sender_id
+            )
+            reason = f"{reason} | approval_state={diagnostic.get('reason', 'unknown')} run_status={task.status}"
         logger.info(
             "Execution %s for task %s: %s",
             "allowed" if allowed else "blocked",

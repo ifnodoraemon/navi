@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from .db import connect, ensure_schema_version
 from .paths import db_paths
-from .schema import Column, Table, assert_schema_exact
+from .schema import Column, Table
 
 
 TRACE_STORE_SCHEMA_VERSION = 1

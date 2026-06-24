@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
 from ..capabilities_types import (
@@ -11,7 +10,6 @@ from ..capabilities_types import (
     capability,
 )
 from ..evolution import EvolutionEngine, EvolutionLedger
-from ..tools import ToolSpec
 from .helpers import arg_text as _arg_text
 from .helpers import fact_result as _fact_result
 from .helpers import transition_facts as _transition_facts

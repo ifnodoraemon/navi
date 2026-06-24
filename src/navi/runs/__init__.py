@@ -41,4 +41,6 @@ __all__ = [
     "Run",
     "ToolCallLog",
     "Watch",
+    "_approval_diagnostic_facts",
+    "_require_workspace",
 ]

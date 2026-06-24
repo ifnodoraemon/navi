@@ -135,10 +135,11 @@ async def test_governance_capabilities_not_suspended_in_governed_run(
     """approval.resolve / approval.request must not trigger a second-level
     approval suspension inside a governed background run — otherwise resolving
     an approval requires another approval (infinite loop)."""
-    from navi.capabilities import GOVERNANCE_CAPABILITIES
-
-    assert "approval.resolve" in GOVERNANCE_CAPABILITIES
-    assert "approval.request" in GOVERNANCE_CAPABILITIES
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    request_spec = registry.get("approval.request")
+    resolve_spec = registry.get("approval.resolve")
+    assert request_spec is not None and request_spec.governance_exempt is True
+    assert resolve_spec is not None and resolve_spec.governance_exempt is True
 
     runs = RunStore(tmp_path)
     run = runs.create(
@@ -150,7 +151,6 @@ async def test_governance_capabilities_not_suspended_in_governed_run(
         workspace=str(tmp_path),
         kind="delegation",
     )
-    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     # Simulate a governed background run: any mutating capability would be
     # suspended for a second-level approval here.
     registry.governed_run_id = run.id

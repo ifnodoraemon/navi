@@ -395,6 +395,14 @@ class EvolutionLedger:
     ) -> EvolutionProposal:
         if not known_evolution_target(target_type):
             raise ValueError(f"unknown evolution target type: {target_type}")
+        for field_name, field_value in (
+            ("target_id", target_id),
+            ("reason", reason),
+            ("expected_benefit", expected_benefit),
+            ("rollback_plan", rollback_plan),
+        ):
+            if not str(field_value).strip():
+                raise ValueError(f"proposal {field_name} must not be empty")
         proposal = EvolutionProposal(
             id=uuid.uuid4().hex,
             target_type=target_type,

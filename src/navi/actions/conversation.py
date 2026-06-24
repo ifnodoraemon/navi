@@ -8,7 +8,6 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
-from ..tools import ToolSpec
 from .helpers import arg_text as _arg_text
 
 

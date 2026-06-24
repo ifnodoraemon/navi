@@ -19,18 +19,10 @@ from .hooks import HookDecision, HookEvent, HookRegistry
 from .operating_context import permission_allows
 from .runs import RunStore
 from .tools import TURN_CONTEXT, ToolSpec, build_tool_gateway
-from .actions.registry import ActionCapabilityProvider
+from .actions.registry import ActionCapabilityProvider  # noqa: F401
 from .actions.tools import ToolGatewayCapabilityProvider, ToolCapability, ToolsListCapability
 
 logger = logging.getLogger("navi.capabilities")
-
-# Governance primitives are the approval mechanism itself, not user-data
-# mutations. Suspending them for a second-level approval inside a governed
-# background run creates an infinite approval loop: to resolve an approval,
-# the run would need another approval. These capabilities carry their own
-# first-level guard (the user-supplied approval code), so they are exempt
-# from the sensitive-op suspension in _maybe_suspend_for_approval.
-GOVERNANCE_CAPABILITIES = frozenset({"approval.resolve", "approval.request"})
 
 
 class CapabilityRegistry:
@@ -278,7 +270,7 @@ class CapabilityRegistry:
         run_id = self.governed_run_id
         if not run_id:
             return None
-        if spec.name in GOVERNANCE_CAPABILITIES:
+        if spec.governance_exempt:
             return None
         from .safeguards import classify_capability
 

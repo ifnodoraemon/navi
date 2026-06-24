@@ -142,6 +142,7 @@ Do NOT use delegate.spawn to flatly refuse a local-file or local-process request
         mutates=True,
         permission="prepare",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="delegate.run",
@@ -340,6 +341,7 @@ Do NOT use delegate.spawn to flatly refuse a local-file or local-process request
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="delegate.retry",

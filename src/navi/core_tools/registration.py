@@ -2,7 +2,6 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Any
-from ..config import load_config
 from ..tools import ALL_EXECUTION_CONTEXTS, ToolRegistry, ToolSpec
 from .browser import _browser_screenshot
 from .codebase import _codebase_search
@@ -30,7 +29,6 @@ def _array_of_objects() -> dict[str, Any]:
 
 
 def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
-    config = load_config(home)
     registry.register(
         _core_tool_spec(
             name="delegate.status",

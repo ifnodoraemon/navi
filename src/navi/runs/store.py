@@ -451,22 +451,77 @@ class RunStore:
         not a dead end — the user acts on the new code instead of re-creating the
         whole task.
 
-        Idempotency: if a live (non-expired) pending approval already exists for
-        this run, return it instead of minting a new code. Without this guard,
-        each re-submission of an expired code mints yet another code — the
-        observed "4-code storm" where the user receives four different codes for
-        the same task within seconds."""
-        existing = self.pending_approval_for_run(run_id, sender_id=sender_id)
-        if existing is not None:
-            return existing
-        approval = self.create_approval(
-            run_id=run_id,
-            peer_id=peer_id,
-            sender_id=sender_id,
-            action=action,
-            ttl_seconds=ttl_seconds,
-        )
-        self.update_run(run_id, status="awaiting_approval")
+        Concurrency: the check-then-mint-then-update sequence runs inside a
+        single ``with connect()`` transaction (an IMMEDIATE write lock), so two
+        surfaces racing to re-submit an expired code cannot both mint — the
+        second sees the row the first inserted and returns it. Without this
+        guard, each re-submission of an expired code mints yet another code —
+        the observed "4-code storm" where the user receives four different codes
+        for the same task within seconds."""
+        now = time.time()
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    """
+                    SELECT id, run_id, code, action, peer_id, sender_id, status,
+                           expires_at, created_at, updated_at
+                    FROM approvals
+                    WHERE run_id = ? AND sender_id = ? AND status = 'pending'
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (run_id, sender_id),
+                ).fetchone()
+                if row is not None:
+                    existing = Approval(*row)
+                    if existing.expires_at >= now:
+                        conn.execute("COMMIT")
+                        return existing
+                    conn.execute(
+                        "UPDATE approvals SET status = ?, updated_at = ? WHERE id = ?",
+                        ("expired", now, existing.id),
+                    )
+                approval = Approval(
+                    id=uuid.uuid4().hex,
+                    run_id=run_id,
+                    code=self._new_code(),
+                    action=action,
+                    peer_id=peer_id,
+                    sender_id=sender_id,
+                    status="pending",
+                    expires_at=now + ttl_seconds,
+                    created_at=now,
+                    updated_at=now,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO approvals(
+                        id, run_id, code, action, peer_id, sender_id, status,
+                        expires_at, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        approval.id,
+                        approval.run_id,
+                        approval.code,
+                        approval.action,
+                        approval.peer_id,
+                        approval.sender_id,
+                        approval.status,
+                        approval.expires_at,
+                        approval.created_at,
+                        approval.updated_at,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                    ("awaiting_approval", now, run_id),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
         return approval
 
     def resolve_approval(

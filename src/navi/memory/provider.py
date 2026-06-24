@@ -6,8 +6,50 @@ import json
 from pathlib import Path
 from typing import Protocol
 
-from ..db import connect
+from ..db import connect, ensure_schema_version
+from ..schema import Column, Table, assert_schema_exact
 from .models import MemoryItem, SessionAlias, StoredMessage
+
+MEMORY_SCHEMA_VERSION = 1
+
+MESSAGES_TABLE = Table(
+    "messages",
+    [
+        Column("id", "INTEGER", primary_key=True),
+        Column("session_id", "TEXT", nullable=False),
+        Column("role", "TEXT", nullable=False),
+        Column("content", "TEXT", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+    ],
+)
+SESSION_ALIASES_TABLE = Table(
+    "session_aliases",
+    [
+        Column("alias", "TEXT", primary_key=True),
+        Column("session_id", "TEXT", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+    ],
+)
+MEMORY_ITEMS_TABLE = Table(
+    "memory_items",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("type", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("scope", "TEXT", nullable=False),
+        Column("content", "TEXT", nullable=False),
+        Column("source", "TEXT", nullable=False),
+        Column("confidence", "REAL", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+        Column("last_verified_at", "REAL", nullable=False),
+        Column("expires_at", "REAL", nullable=False),
+        Column("metadata", "TEXT", nullable=False),
+        Column("reason", "TEXT", nullable=False, default="''"),
+        Column("provenance", "TEXT", nullable=False, default="''"),
+    ],
+)
 
 
 class MemoryProvider(Protocol):
@@ -42,61 +84,37 @@ class SQLiteMemoryProvider:
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-                """
-            )
+            ensure_schema_version(conn, "memory", MEMORY_SCHEMA_VERSION)
+            conn.execute(MESSAGES_TABLE.ddl)
+            assert_schema_exact(conn, MESSAGES_TABLE)
+            conn.execute(SESSION_ALIASES_TABLE.ddl)
+            assert_schema_exact(conn, SESSION_ALIASES_TABLE)
+            conn.execute(MEMORY_ITEMS_TABLE.ddl)
+            self._migrate_memory_items(conn)
+            assert_schema_exact(conn, MEMORY_ITEMS_TABLE)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)"
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS session_aliases (
-                    alias TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS memory_items (
-                    id TEXT PRIMARY KEY,
-                    type TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    scope TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    last_verified_at REAL NOT NULL,
-                    expires_at REAL NOT NULL,
-                    metadata TEXT NOT NULL
-                )
-                """
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_items(status, type)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_items(scope)")
 
-            cursor = conn.execute("PRAGMA table_info(memory_items)")
-            columns = [row[1] for row in cursor.fetchall()]
-            if "reason" not in columns:
-                conn.execute("ALTER TABLE memory_items ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
-            if "provenance" not in columns:
-                conn.execute(
-                    "ALTER TABLE memory_items ADD COLUMN provenance TEXT NOT NULL DEFAULT ''"
-                )
+    @staticmethod
+    def _migrate_memory_items(conn) -> None:
+        """Backfill reason/provenance on pre-schema-version memory.db.
+
+        Principle 1.2: the schema-exact guard rejects drift loudly, so the
+        on-disk shape must reach the current contract before the assertion
+        runs. reason/provenance were added after the initial memory_items
+        table; ALTER them in if missing."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_items)")}
+        if "reason" not in columns:
+            conn.execute("ALTER TABLE memory_items ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+        if "provenance" not in columns:
+            conn.execute(
+                "ALTER TABLE memory_items ADD COLUMN provenance TEXT NOT NULL DEFAULT ''"
+            )
 
     def _item_from_row(self, row: tuple) -> MemoryItem:
         return MemoryItem(
@@ -150,6 +168,84 @@ class SQLiteMemoryProvider:
                     item.provenance,
                 ),
             )
+
+    def store_item_with_contradictions(self, item: MemoryItem) -> MemoryItem:
+        """Store ``item`` and recompute its ``contradicts`` set against the
+        currently-active items of the same type — all within a single
+        transaction so a concurrent writer cannot interleave between the read
+        and the write (principle 1.2/16). Returns the stored item with its
+        updated metadata."""
+        import difflib
+
+        if not item.source.strip() or not item.reason.strip() or not item.provenance.strip():
+            raise ValueError("memory source, reason, and provenance are required")
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, type, status, scope, content, source, confidence,
+                       created_at, updated_at, last_verified_at, expires_at, metadata,
+                       reason, provenance
+                FROM memory_items
+                WHERE type = ? AND status = 'active'
+                """,
+                (item.type,),
+            ).fetchall()
+            metadata = dict(item.metadata)
+            contradicts = set(metadata.get("contradicts", []))
+            for row in rows:
+                existing = self._item_from_row(row)
+                if existing.id == item.id:
+                    continue
+                if existing.scope == item.scope:
+                    ratio = difflib.SequenceMatcher(
+                        None, existing.content.lower(), item.content.lower()
+                    ).ratio()
+                    if ratio > 0.85 and existing.content.lower() != item.content.lower():
+                        contradicts.add(existing.id)
+            if contradicts:
+                metadata["contradicts"] = sorted(contradicts)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_items(
+                    id, type, status, scope, content, source, confidence,
+                    created_at, updated_at, last_verified_at, expires_at, metadata,
+                    reason, provenance
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.id,
+                    item.type,
+                    item.status,
+                    item.scope,
+                    item.content,
+                    item.source,
+                    item.confidence,
+                    item.created_at,
+                    item.updated_at,
+                    item.last_verified_at,
+                    item.expires_at,
+                    json.dumps(metadata, sort_keys=True),
+                    item.reason,
+                    item.provenance,
+                ),
+            )
+        return MemoryItem(
+            id=item.id,
+            type=item.type,
+            status=item.status,
+            scope=item.scope,
+            content=item.content,
+            source=item.source,
+            confidence=item.confidence,
+            created_at=item.created_at,
+            updated_at=item.updated_at,
+            last_verified_at=item.last_verified_at,
+            expires_at=item.expires_at,
+            metadata=metadata,
+            reason=item.reason,
+            provenance=item.provenance,
+        )
 
     def get_items(
         self, *, memory_type: str | None = None, status: str | None = None, limit: int = 50

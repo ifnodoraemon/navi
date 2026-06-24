@@ -29,10 +29,15 @@ from .models import (
 )
 from .provider import MemoryProvider, SQLiteMemoryProvider
 
-logger = logging.getLogger("navi.memory")
-
 # TYPE_CHECKING-only imports kept in the methods that need them to avoid
 # import cycles at module load time.
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .provider import ModelPool, SessionAlias, StoredMessage
+    from ..runs.models import ExecutionLog, Run
+
+logger = logging.getLogger("navi.memory")
 
 
 class MemoryStore:
@@ -93,21 +98,6 @@ class MemoryStore:
         )
         now = time.time()
 
-        # Simple automatic contradiction/overlap detection
-        import difflib
-
-        existing_items = self.list_items(memory_type=memory_type, status="active")
-        contradicts = set(metadata.get("contradicts", []))
-        for existing in existing_items:
-            if existing.scope == resolved_scope:
-                ratio = difflib.SequenceMatcher(
-                    None, existing.content.lower(), content.lower()
-                ).ratio()
-                if ratio > 0.85 and existing.content.lower() != content.lower():
-                    contradicts.add(existing.id)
-        if contradicts:
-            metadata["contradicts"] = list(contradicts)
-
         item = MemoryItem(
             id=uuid.uuid4().hex,
             type=memory_type,
@@ -124,8 +114,9 @@ class MemoryStore:
             reason=reason,
             provenance=provenance,
         )
-        self.provider.store_item(item)
-        return item
+        # Atomic: recompute contradictions and store in one transaction so a
+        # concurrent writer cannot interleave between read and write.
+        return self.provider.store_item_with_contradictions(item)
 
     def list_items(
         self,
@@ -265,27 +256,11 @@ class MemoryStore:
             content_chars=len(item.content),
             metadata_keys=sorted(item.metadata.keys()),
         )
-        # FP-3/L5: recompute ``contradicts`` against the current active items.
-        # ``add_item`` does this on every write; ``restore_item`` must too, or
-        # a restored (previously-governed) item can silently introduce
-        # unresolved contradictions after other items have changed.
-        import difflib
-
-        metadata = dict(item.metadata)
-        contradicts = set(metadata.get("contradicts", []))
-        existing_items = self.list_items(memory_type=item.type, status="active")
-        for existing in existing_items:
-            if existing.id == item.id:
-                continue
-            if existing.scope == item.scope:
-                ratio = difflib.SequenceMatcher(
-                    None, existing.content.lower(), item.content.lower()
-                ).ratio()
-                if ratio > 0.85 and existing.content.lower() != item.content.lower():
-                    contradicts.add(existing.id)
-        if contradicts:
-            metadata["contradicts"] = list(contradicts)
-        restored = MemoryItem(
+        # FP-3/L5: recompute ``contradicts`` against the current active items
+        # atomically (read + contradict + store in one transaction) so a
+        # restored item cannot silently introduce unresolved contradictions
+        # after other items have changed.
+        normalized = MemoryItem(
             id=item.id,
             type=item.type,
             status=item.status,
@@ -297,11 +272,11 @@ class MemoryStore:
             updated_at=item.updated_at,
             last_verified_at=item.last_verified_at,
             expires_at=item.expires_at,
-            metadata=metadata,
+            metadata=dict(item.metadata),
             reason=item.reason,
             provenance=item.provenance,
         )
-        self.provider.store_item(restored)
+        self.provider.store_item_with_contradictions(normalized)
 
     def _assert_memory_write_allowed(
         self,

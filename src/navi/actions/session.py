@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from ..capabilities_types import (
@@ -9,7 +8,6 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
-from ..tools import ToolSpec
 from .helpers import (
     arg_text as _arg_text,
     fact_result as _fact_result,

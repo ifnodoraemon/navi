@@ -4,7 +4,9 @@ import shutil
 from pathlib import Path
 from typing import Any
 from ..tools import ToolResult
+from .codebase import _project_path
 from .paths import _is_browser_url
+from .run_command import _run_command
 from .utils import _positive_int
 
 def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResult:

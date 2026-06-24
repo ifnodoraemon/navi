@@ -49,6 +49,27 @@ from .subagents import SubagentRunStore
 from .trace import TraceStore
 from .workflows import WorkflowStore, workflow_facts
 
+def _invoke_capability(name: str, args: dict) -> dict:
+    """Invoke a capability through the unified registry (same path the API
+    takes), so CLI writes go through hook gates and schema validation."""
+    home = ensure_home()
+    capabilities = build_capability_registry(home, project_dir=Path.cwd())
+    spec = capabilities.get(name)
+    if spec is None:
+        raise typer.BadParameter(f"capability not found: {name}")
+    result = asyncio.run(
+        capabilities.invoke(
+            name,
+            args,
+            permission=spec.permission,
+            context=CapabilityContext(home=home, peer_id="cli", sender_id="cli", source="cli"),
+        )
+    )
+    if not result.ok:
+        raise typer.BadParameter(result.message or result.observation or "capability failed")
+    return result.facts or {}
+
+
 app = typer.Typer(help="Navi local-first personal agent OS")
 auth_app = typer.Typer(help="CLI auth and capability checks")
 connectors_app = typer.Typer(help="Connector lifecycle and status")
@@ -267,18 +288,21 @@ def memory_add(
         if not isinstance(parsed, dict):
             raise typer.BadParameter("metadata JSON must be an object")
         metadata = parsed
-    item = MemoryStore(ensure_home()).add_item(
-        memory_type,
-        content,
-        scope=scope,
-        source=source,
-        status=status,
-        confidence=confidence,
-        metadata=metadata,
-        reason=reason,
-        provenance=provenance,
+    result = _invoke_capability(
+        "memory.add",
+        {
+            "type": memory_type,
+            "content": content,
+            "scope": scope,
+            "source": source,
+            "status": status,
+            "confidence": confidence,
+            "metadata": metadata,
+            "reason": reason,
+            "provenance": provenance,
+        },
     )
-    typer.echo(item.id)
+    typer.echo(result.get("memory_id", ""))
 
 
 @memory_app.command("list")
@@ -1089,7 +1113,7 @@ def _cli_service_active(name: str) -> bool:
             text=True,
             timeout=8,
         )
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired):
         return False
     if result.returncode == 0 and result.stdout.strip() == "active":
         return True
@@ -1101,7 +1125,7 @@ def _cli_service_active(name: str) -> bool:
             text=True,
             timeout=8,
         )
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired):
         return False
     return "Active: active (running)" in status.stdout
 

@@ -29,57 +29,88 @@ ALL_EXECUTION_CONTEXTS = (
 
 def validate_schema(data: Any, schema: dict[str, Any], path: str = "") -> list[str]:
     """Validates data against a simplified JSON Schema. Returns list of error messages."""
-    errors = []
+    errors: list[str] = []
     if not isinstance(schema, dict):
         return errors
-
     expected_type = schema.get("type")
+    validator = _TYPE_VALIDATORS.get(expected_type)
+    if validator is None:
+        return errors
+    return validator(data, schema, path, errors)
 
-    if expected_type == "object":
-        if not isinstance(data, dict):
-            errors.append(f"'{path or 'input'}' must be an object, got {type(data).__name__}")
-            return errors
 
-        # Check required fields
-        required = schema.get("required", [])
-        for field in required:
-            if field not in data:
-                errors.append(f"'{path or 'input'}' is missing required property: {field}")
-
-        # Validate properties
-        properties = schema.get("properties", {})
-        for key, val in data.items():
-            if key in properties:
-                errors.extend(
-                    validate_schema(val, properties[key], f"{path}.{key}" if path else key)
-                )
-
-    elif expected_type == "array":
-        if not isinstance(data, (list, tuple)):
-            errors.append(f"'{path or 'input'}' must be an array, got {type(data).__name__}")
-            return errors
-        items = schema.get("items")
-        if items:
-            for idx, item in enumerate(data):
-                errors.extend(validate_schema(item, items, f"{path}[{idx}]"))
-
-    elif expected_type == "string":
-        if not isinstance(data, str):
-            errors.append(f"'{path or 'input'}' must be a string, got {type(data).__name__}")
-
-    elif expected_type == "integer":
-        if not isinstance(data, int) or isinstance(data, bool):
-            errors.append(f"'{path or 'input'}' must be an integer, got {type(data).__name__}")
-
-    elif expected_type == "number":
-        if not isinstance(data, (int, float)) or isinstance(data, bool):
-            errors.append(f"'{path or 'input'}' must be a number, got {type(data).__name__}")
-
-    elif expected_type == "boolean":
-        if not isinstance(data, bool):
-            errors.append(f"'{path or 'input'}' must be a boolean, got {type(data).__name__}")
-
+def _validate_object(
+    data: Any, schema: dict[str, Any], path: str, errors: list[str]
+) -> list[str]:
+    if not isinstance(data, dict):
+        errors.append(f"'{path or 'input'}' must be an object, got {type(data).__name__}")
+        return errors
+    required = schema.get("required", [])
+    for req_field in required:
+        if req_field not in data:
+            errors.append(f"'{path or 'input'}' is missing required property: {req_field}")
+    properties = schema.get("properties", {})
+    for key, val in data.items():
+        if key in properties:
+            errors.extend(
+                validate_schema(val, properties[key], f"{path}.{key}" if path else key)
+            )
     return errors
+
+
+def _validate_array(
+    data: Any, schema: dict[str, Any], path: str, errors: list[str]
+) -> list[str]:
+    if not isinstance(data, (list, tuple)):
+        errors.append(f"'{path or 'input'}' must be an array, got {type(data).__name__}")
+        return errors
+    items = schema.get("items")
+    if items:
+        for idx, item in enumerate(data):
+            errors.extend(validate_schema(item, items, f"{path}[{idx}]"))
+    return errors
+
+
+def _validate_string(
+    data: Any, schema: dict[str, Any], path: str, errors: list[str]
+) -> list[str]:
+    if not isinstance(data, str):
+        errors.append(f"'{path or 'input'}' must be a string, got {type(data).__name__}")
+    return errors
+
+
+def _validate_integer(
+    data: Any, schema: dict[str, Any], path: str, errors: list[str]
+) -> list[str]:
+    if not isinstance(data, int) or isinstance(data, bool):
+        errors.append(f"'{path or 'input'}' must be an integer, got {type(data).__name__}")
+    return errors
+
+
+def _validate_number(
+    data: Any, schema: dict[str, Any], path: str, errors: list[str]
+) -> list[str]:
+    if not isinstance(data, (int, float)) or isinstance(data, bool):
+        errors.append(f"'{path or 'input'}' must be a number, got {type(data).__name__}")
+    return errors
+
+
+def _validate_boolean(
+    data: Any, schema: dict[str, Any], path: str, errors: list[str]
+) -> list[str]:
+    if not isinstance(data, bool):
+        errors.append(f"'{path or 'input'}' must be a boolean, got {type(data).__name__}")
+    return errors
+
+
+_TYPE_VALIDATORS: dict[str, Callable[..., list[str]]] = {
+    "object": _validate_object,
+    "array": _validate_array,
+    "string": _validate_string,
+    "integer": _validate_integer,
+    "number": _validate_number,
+    "boolean": _validate_boolean,
+}
 
 
 @dataclass(frozen=True)
@@ -94,6 +125,12 @@ class ToolSpec:
     mutates: bool = False
     permission: str = "read"
     source: str = "core"
+    # Governance primitives (approval.request/approval.resolve) carry their
+    # own first-level guard (the user-supplied approval code) and must not be
+    # suspended by the very approval mechanism they implement — that creates
+    # an infinite approval loop. Declared per-spec so the exemption is
+    # data-driven, not a hardcoded name set (principle 1.1/6).
+    governance_exempt: bool = False
 
     def __post_init__(self) -> None:
         if not self.capability_class.strip():
