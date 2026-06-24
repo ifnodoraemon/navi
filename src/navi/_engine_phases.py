@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
+from .control import CurrentStateBuilder, SurfaceContext
 from .engine_approval_prompts import _render_approval_prompt
 from .engine_types import AgentTurnResult
 from .goals import GoalStore
@@ -19,7 +18,6 @@ from .specs_data import RESPONDER_OBSERVATIONS_PROMPT
 from .trace import TraceStore
 
 if TYPE_CHECKING:
-    from .capabilities import CapabilityRegistry
     from .runtime import AgentRuntime
 
 
