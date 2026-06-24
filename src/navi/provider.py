@@ -129,9 +129,11 @@ class AnthropicCompatibleProvider:
             )
             response.raise_for_status()
             data = response.json()
+        tool_permissions = _parse_manifest_from_messages(messages)
         return _extract_anthropic_content(
             data,
             tool_name=structured_tool["name"] if structured_tool else "",
+            tool_permissions=tool_permissions,
         )
 
 
@@ -457,7 +459,33 @@ def _anthropic_payload(model: str, messages: list[ChatMessage]) -> dict[str, Any
     }
 
 
-def _extract_anthropic_content(data: dict[str, Any], *, tool_name: str = "") -> str:
+def _parse_manifest_from_messages(messages: list[ChatMessage]) -> dict[str, str]:
+    """Finds [TOOL MANIFEST] in messages and extracts tool permissions."""
+    tool_permissions = {}
+    for msg in messages:
+        if not msg.content:
+            continue
+        match = re.search(r"\[TOOL MANIFEST\]\s*(\[.*?\])", msg.content, re.DOTALL)
+        if match:
+            try:
+                tools_list = json.loads(match.group(1))
+                if isinstance(tools_list, list):
+                    for tool in tools_list:
+                        name = tool.get("name")
+                        perm = tool.get("permission")
+                        if name and perm:
+                            tool_permissions[name] = perm
+            except Exception:
+                pass
+    return tool_permissions
+
+
+def _extract_anthropic_content(
+    data: dict[str, Any],
+    *,
+    tool_name: str = "",
+    tool_permissions: dict[str, str] | None = None,
+) -> str:
     blocks = data.get("content") or []
     if tool_name:
         for block in blocks:
@@ -469,14 +497,15 @@ def _extract_anthropic_content(data: dict[str, Any], *, tool_name: str = "") -> 
             if block.get("type") == "tool_use":
                 name = block.get("name")
                 if name:
-                    perm = "read"
-                    name_lower = name.lower()
-                    if any(x in name_lower for x in ["write", "run", "exec", "spawn", "delete", "create", "update", "modify"]):
-                        perm = "write"
-                    elif any(x in name_lower for x in ["read", "list", "status", "stat", "get", "info"]):
-                        perm = "read"
+                    perm = "write"
+                    if tool_permissions and name in tool_permissions:
+                        perm = tool_permissions[name]
                     else:
-                        perm = "write"
+                        name_lower = name.lower()
+                        if any(x in name_lower for x in ["write", "run", "exec", "spawn", "delete", "create", "update", "modify"]):
+                            perm = "write"
+                        elif any(x in name_lower for x in ["read", "list", "status", "stat", "get", "info"]):
+                            perm = "read"
                     reconstructed = {
                         "tool": name,
                         "permission": perm,
@@ -485,7 +514,7 @@ def _extract_anthropic_content(data: dict[str, Any], *, tool_name: str = "") -> 
                         "confidence": 1.0,
                         "reason": f"Reconstructed from direct tool call to {name}",
                     }
-                    logger.info(f"Fallback: mapping direct tool call {name} to navi_syscall: {reconstructed}")
+                    logger.info(f"Fallback: mapping direct tool call {name} to navi_syscall (permission={perm}): {reconstructed}")
                     return json.dumps(reconstructed, ensure_ascii=False)
         raise RuntimeError(f"Provider response did not include tool output {tool_name}: {data}")
     text = "\n".join(
