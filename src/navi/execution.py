@@ -24,6 +24,7 @@ from .lifecycle import (
 )
 from .provider import ChatMessage, ModelPool, build_provider
 from .runs import Run, RunStore
+from .safeguards import redact_secrets
 from .subagents import SubagentRunStore
 from .tools import ACTUATOR_CONTEXT
 from .prompting import PromptLayerStore
@@ -441,7 +442,7 @@ class NaviExecutionProvider:
         except Exception as exc:
             return self._watch_result(
                 stdout="",
-                stderr=str(exc),
+                stderr=redact_secrets(str(exc)),
                 exit_code=1,
                 started_at=started,
                 ended_at=time.time(),
@@ -494,7 +495,7 @@ class NaviExecutionProvider:
                 phase=phase,
                 command=["navi", "subagent", role, phase, task.id],
                 stdout="",
-                stderr=str(exc),
+                stderr=redact_secrets(str(exc)),
                 exit_code=1,
                 started_at=started,
                 ended_at=time.time(),
@@ -657,6 +658,12 @@ class ExecutionService:
 
     async def execute_task(self, task: Run) -> Run:
         before_state = self._execution_before_state(task)
+
+        # Resolve the permission ceiling BEFORE flipping the run to RUNNING so
+        # the persisted status never claims full-authority execution while the
+        # turn actually runs under a degraded ("prepare") ceiling. A governance
+        # downgrade is reflected before, not after, the state transition.
+        permission_ceiling = "write" if self.execution_allowed(task) else "prepare"
         self.runs.update_run(task.id, status=RUN_STATUS_RUNNING)
 
         from .runtime import AgentRuntime
@@ -665,8 +672,6 @@ class ExecutionService:
 
         config = load_config(self.home)
         runtime = AgentRuntime(home=self.home, provider=build_provider(config.model))
-
-        permission_ceiling = "write" if self.execution_allowed(task) else "prepare"
 
         started_at = time.time()
         subagent_run = self.subagents.start(

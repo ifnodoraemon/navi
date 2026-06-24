@@ -145,6 +145,8 @@ class FallbackProvider:
         import asyncio
         import httpx
 
+        from .safeguards import redact_secrets
+
         errors: list[str] = []
         max_retries = 3
 
@@ -158,11 +160,15 @@ class FallbackProvider:
                     if isinstance(exc, httpx.HTTPStatusError):
                         status = exc.response.status_code
                         if status not in (429, 500, 502, 503, 504):
-                            errors.append(f"{provider.__class__.__name__}: {exc}")
+                            errors.append(
+                                redact_secrets(f"{provider.__class__.__name__}: {exc}")
+                            )
                             break  # don't retry on 400, 401, 403 etc.
 
                     if attempt == max_retries - 1:
-                        errors.append(f"{provider.__class__.__name__}: {exc}")
+                        errors.append(
+                            redact_secrets(f"{provider.__class__.__name__}: {exc}")
+                        )
                     else:
                         logger.warning(
                             f"Provider {provider.__class__.__name__} failed (attempt {attempt + 1}/{max_retries}): {exc}. Retrying..."
