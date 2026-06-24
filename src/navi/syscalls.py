@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .provider import ChatMessage, ModelPool
@@ -56,7 +56,11 @@ class ModelSyscallPlanner:
             ],
             output_schema=_syscall_output_schema(),
         )
-        return self._parse_syscall(response)
+        syscall = self._parse_syscall(response)
+        matching_spec = next((spec for spec in tools if spec.name == syscall.tool), None)
+        if matching_spec:
+            syscall = replace(syscall, permission=matching_spec.permission)
+        return syscall
 
     @staticmethod
     def _parse_syscall(response: str) -> ModelSyscall:

@@ -129,11 +129,9 @@ class AnthropicCompatibleProvider:
             )
             response.raise_for_status()
             data = response.json()
-        tool_permissions = _parse_manifest_from_messages(messages)
         return _extract_anthropic_content(
             data,
             tool_name=structured_tool["name"] if structured_tool else "",
-            tool_permissions=tool_permissions,
         )
 
 
@@ -459,32 +457,10 @@ def _anthropic_payload(model: str, messages: list[ChatMessage]) -> dict[str, Any
     }
 
 
-def _parse_manifest_from_messages(messages: list[ChatMessage]) -> dict[str, str]:
-    """Finds [TOOL MANIFEST] in messages and extracts tool permissions."""
-    tool_permissions = {}
-    for msg in messages:
-        if not msg.content:
-            continue
-        match = re.search(r"\[TOOL MANIFEST\]\s*(\[.*?\])", msg.content, re.DOTALL)
-        if match:
-            try:
-                tools_list = json.loads(match.group(1))
-                if isinstance(tools_list, list):
-                    for tool in tools_list:
-                        name = tool.get("name")
-                        perm = tool.get("permission")
-                        if name and perm:
-                            tool_permissions[name] = perm
-            except Exception:
-                pass
-    return tool_permissions
-
-
 def _extract_anthropic_content(
     data: dict[str, Any],
     *,
     tool_name: str = "",
-    tool_permissions: dict[str, str] | None = None,
 ) -> str:
     blocks = data.get("content") or []
     if tool_name:
@@ -497,18 +473,15 @@ def _extract_anthropic_content(
             if block.get("type") == "tool_use":
                 name = block.get("name")
                 if name:
-                    perm = "write"
-                    if tool_permissions and name in tool_permissions:
-                        perm = tool_permissions[name]
                     reconstructed = {
                         "tool": name,
-                        "permission": perm,
+                        "permission": "read",  # placeholder, will be dynamically resolved by planner
                         "args": block.get("input") or {},
                         "model_role": "responder",
                         "confidence": 1.0,
                         "reason": f"Reconstructed from direct tool call to {name}",
                     }
-                    logger.info(f"Fallback: mapping direct tool call {name} to navi_syscall (permission={perm}): {reconstructed}")
+                    logger.info(f"Fallback: mapping direct tool call {name} to navi_syscall: {reconstructed}")
                     return json.dumps(reconstructed, ensure_ascii=False)
         raise RuntimeError(f"Provider response did not include tool output {tool_name}: {data}")
     text = "\n".join(
