@@ -14,6 +14,7 @@ and a hand-typed ``SELECT`` column list.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 
@@ -41,12 +42,24 @@ class Column:
     default: str | None = None
 
 
+_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
 @dataclass(frozen=True, slots=True)
 class Table:
     """A named table backed by a column list."""
 
     name: str
     columns: list[Column]
+
+    def __post_init__(self) -> None:
+        # Defense in depth: SQL identifiers cannot be parameterized, so table
+        # names are interpolated into PRAGMA/DROP/CREATE DDL via f-strings. They
+        # are schema-as-code (code-controlled) today; validating the identifier
+        # shape at construction guarantees no future Table can smuggle SQL
+        # through ``name``, making every ``f"...{table.name}"`` site safe.
+        if not _TABLE_NAME_RE.match(self.name):
+            raise ValueError(f"invalid SQL table identifier: {self.name!r}")
 
     @property
     def ddl(self) -> str:

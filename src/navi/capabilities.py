@@ -388,7 +388,8 @@ def _connector_policy_for_source(source: str):
     try:
         from .connector_registry import load_connector_adapters
         from .connector_runtime import REMOTE_CONNECTOR_TOOL_POLICY
-    except Exception:
+    except ImportError as exc:
+        logger.debug("connector adapters unavailable for source policy: %s", exc)
         return None
     connector_sources: set[str] = set()
     for adapter in load_connector_adapters():

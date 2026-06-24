@@ -291,9 +291,11 @@ class SystemDaemon:
                 )
                 continue
             events, state_updates = event_batch
-            data_changed = self._apply_state_updates(project_data, state_updates) or data_changed
+            if state_updates:
+                project_data = self._apply_state_updates(project_data, state_updates)
+                data_changed = True
             for event in events:
-                created_event, event_changed = await self._apply_event_policy(
+                created_event, event_changed, project_data = await self._apply_event_policy(
                     event,
                     project_data,
                     has_active_task=context.has_active_task,
@@ -367,9 +369,17 @@ class SystemDaemon:
             return path
 
     @staticmethod
-    def _apply_state_updates(target: dict[str, Any], updates: dict[str, Any]) -> bool:
-        target.update(updates)
-        return bool(updates)
+    def _apply_state_updates(
+        target: dict[str, Any], updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Return a new dict with ``updates`` merged onto ``target``.
+
+        Immutable merge: callers rebind their own reference to the result rather
+        than relying on a hidden in-place mutation of ``target``.
+        """
+        if not updates:
+            return target
+        return {**target, **updates}
 
     async def _detect_git_mutations(
         self,
@@ -618,10 +628,12 @@ class SystemDaemon:
         *,
         has_active_task: bool,
         workspace: str,
-    ) -> tuple[dict | None, bool]:
+    ) -> tuple[dict | None, bool, dict]:
         policy_updates = event.suppressed_state_updates if has_active_task else event.state_updates
+        changed = bool(policy_updates)
+        project_data = self._apply_state_updates(project_data, policy_updates)
         if has_active_task:
-            return None, self._apply_state_updates(project_data, policy_updates)
+            return None, changed, project_data
 
         result = await self._submit_event_to_agent(
             prompt=self._event_policy_prompt(event),
@@ -633,10 +645,10 @@ class SystemDaemon:
                 workspace=workspace,
             ),
         )
-        data_changed = self._apply_state_updates(project_data, policy_updates)
         return (
             self._event_result(event, result),
-            data_changed,
+            changed,
+            project_data,
         )
 
     async def _submit_event_to_agent(self, *, prompt: str, context: CapabilityContext):

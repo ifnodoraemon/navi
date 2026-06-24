@@ -6,6 +6,12 @@ from typing import Any
 from .paths import _is_blocked_http_host, _is_public_http_host
 from ..tools import ToolResult
 
+# Caller-supplied http.fetch headers may not override these — they control
+# request addressing/framing; overriding them enables smuggling/vhost confusion.
+_FORBIDDEN_FETCH_HEADERS = frozenset(
+    {"host", "content-length", "transfer-encoding", "connection"}
+)
+
 def _truncate_output(value: str, *, limit: int = 12000) -> str:
     text = str(value or "")
     if len(text) <= limit:
@@ -32,6 +38,22 @@ def _web_search(args: dict[str, Any]) -> ToolResult:
     base_url = (
         os.environ.get("NAVI_SEARCH_BASE_URL", "https://duckduckgo.com").rstrip("/")
     )
+    # SSRF guard mirroring http.fetch: the search base URL must resolve to a
+    # public host. Blocks localhost/private/link-local/metadata even if
+    # NAVI_SEARCH_BASE_URL is misconfigured to point inward.
+    parsed_base = urlparse(base_url)
+    base_host = (parsed_base.hostname or "").lower()
+    if (
+        parsed_base.scheme not in ("http", "https")
+        or not base_host
+        or not _is_public_http_host(base_host, port=parsed_base.port)
+    ):
+        return ToolResult(
+            tool="web.search",
+            ok=False,
+            error="search base url must be a public http/https host",
+            facts={"query": query},
+        )
     encoded = urllib.parse.urlencode({"q": query, "format": "json", "no_html": "1"})
     url = f"{base_url}/?{encoded}"
     try:
@@ -98,7 +120,16 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
     if parsed.query:
         path_query += "?" + parsed.query
     request_headers: dict[str, str] = {"Host": host, "User-Agent": "Navi/1.0"}
-    request_headers.update({str(k): str(v) for k, v in headers.items()})
+    # Caller headers may not override addressing/framing headers: overriding
+    # Host or Content-Length/Transfer-Encoding against the pinned IP enables
+    # request smuggling and vhost confusion.
+    request_headers.update(
+        {
+            str(k): str(v)
+            for k, v in headers.items()
+            if str(k).lower() not in _FORBIDDEN_FETCH_HEADERS
+        }
+    )
 
     conn: http.client.HTTPConnection | http.client.HTTPSConnection
     try:
