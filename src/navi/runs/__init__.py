@@ -9,6 +9,13 @@ Re-exports the public API previously available from the monolithic
 
 from __future__ import annotations
 
+from ._approval_store import APPROVALS_TABLE, ApprovalStoreMixin
+from ._execution_log_store import (
+    EXECUTION_LOGS_TABLE,
+    TOOL_CALL_LOGS_TABLE,
+    ExecutionLogStoreMixin,
+)
+from ._watch_store import WATCHES_TABLE, WatchStoreMixin
 from .models import (
     Approval,
     ExecutionLog,
@@ -18,24 +25,19 @@ from .models import (
     _approval_diagnostic_facts,
     _require_workspace,
 )
-from .store import (
-    APPROVALS_TABLE,
-    EXECUTION_LOGS_TABLE,
-    RUN_STORE_SCHEMA_VERSION,
-    RUNS_TABLE,
-    RunStore,
-    TOOL_CALL_LOGS_TABLE,
-    WATCHES_TABLE,
-)
+from .store import RUN_STORE_SCHEMA_VERSION, RUNS_TABLE, RunStore
 
 __all__ = [
     "APPROVALS_TABLE",
+    "ApprovalStoreMixin",
     "EXECUTION_LOGS_TABLE",
+    "ExecutionLogStoreMixin",
     "RUN_STORE_SCHEMA_VERSION",
     "RUNS_TABLE",
     "RunStore",
     "TOOL_CALL_LOGS_TABLE",
     "WATCHES_TABLE",
+    "WatchStoreMixin",
     "Approval",
     "ExecutionLog",
     "Run",

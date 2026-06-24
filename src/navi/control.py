@@ -283,6 +283,11 @@ class ApprovalService:
             sender_id=approval.sender_id or context.sender_id,
             action=approval.action,
         )
+        if fresh is None:
+            # The run was approved/advanced concurrently between reading the
+            # expired candidate and re-issuing. Fall back to the normal resolve
+            # path, which reports the run's actual current state.
+            return None
         from .connector_registry import render_approval_reply
 
         message = render_approval_reply(
