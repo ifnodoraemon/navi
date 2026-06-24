@@ -465,6 +465,28 @@ def _extract_anthropic_content(data: dict[str, Any], *, tool_name: str = "") -> 
                 tool_input = block.get("input")
                 if isinstance(tool_input, dict):
                     return json.dumps(tool_input, ensure_ascii=False)
+        for block in blocks:
+            if block.get("type") == "tool_use":
+                name = block.get("name")
+                if name:
+                    perm = "read"
+                    name_lower = name.lower()
+                    if any(x in name_lower for x in ["write", "run", "exec", "spawn", "delete", "create", "update", "modify"]):
+                        perm = "write"
+                    elif any(x in name_lower for x in ["read", "list", "status", "stat", "get", "info"]):
+                        perm = "read"
+                    else:
+                        perm = "write"
+                    reconstructed = {
+                        "tool": name,
+                        "permission": perm,
+                        "args": block.get("input") or {},
+                        "model_role": "responder",
+                        "confidence": 1.0,
+                        "reason": f"Reconstructed from direct tool call to {name}",
+                    }
+                    logger.info(f"Fallback: mapping direct tool call {name} to navi_syscall: {reconstructed}")
+                    return json.dumps(reconstructed, ensure_ascii=False)
         raise RuntimeError(f"Provider response did not include tool output {tool_name}: {data}")
     text = "\n".join(
         str(block.get("text") or "") for block in blocks if block.get("type") == "text"
