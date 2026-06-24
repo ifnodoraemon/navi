@@ -66,7 +66,7 @@ class OpenAICompatibleProvider:
             "model": self.config.model,
             "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
             "temperature": 0,
-            "max_tokens": 65536,
+            "max_tokens": 8192,
         }
         structured_format = _structured_response_format(self.spec, output_schema)
         if structured_format:
@@ -451,7 +451,7 @@ def _anthropic_payload(model: str, messages: list[ChatMessage]) -> dict[str, Any
         conversation.append({"role": role, "content": message.content})
     return {
         "model": model,
-        "max_tokens": 65536,
+        "max_tokens": 8192,
         "system": "\n\n".join(system_parts),
         "messages": conversation or [{"role": "user", "content": ""}],
     }
