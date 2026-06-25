@@ -50,7 +50,9 @@ navi chat
 navi api
 ```
 
-本地 API 地址以 `navi api` 的命令输出和当前配置为准。
+本地 API 地址以 `navi api` 的命令输出和当前配置为准。API 请求需要
+`X-API-Key`；可以设置 `NAVI_API_KEY`，或读取 `NAVI_HOME` 下生成的
+`api_key`（默认路径是 `.navi/api_key`）。
 
 ## 审批工作流
 
@@ -154,15 +156,12 @@ navi connectors run weixin --once
 
 真实微信/iLink 接入仍需要按现场 payload 做校准。连接器逻辑通过注入测试替身在 eval/单元测试中验证，运行时不提供 fake 模式。
 
-## 发布说明
+## 关键文档
 
-- [Navi 1.0.0 发布说明](docs/release-notes-1.0.0.md)
-- [Navi 1.1.0 发布说明](docs/release-notes-1.1.0.md)
-- [Navi 1.1.1 发布说明](docs/release-notes-1.1.1.md)
-- [Navi 1.1.2 发布说明](docs/release-notes-1.1.2.md)
 - [当前需求](docs/requirements.md)
 - [不可违反原则](docs/principles.md)
-- [前沿 Agent 安全审计](docs/frontier-agent-safety-audit.md)
+- [Agentic 优化追踪](docs/agentic-optimization-tracker.md)
 - [动态工作流](docs/dynamic-workflows.md)
 - [Prompt 架构](docs/prompt-architecture.md)
 - [版本契约](docs/versioning.md)
+- [发布说明](docs/release-notes.md)

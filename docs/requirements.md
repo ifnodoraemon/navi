@@ -96,6 +96,7 @@ Keep the code small, explicit, and inspectable:
 - `navi.capabilities` and `navi.capabilities_types`: unified capability registry, permission ceilings, contexts, and result envelopes.
 - `navi.core_tools`, `navi.fact_tools`, and `navi.tools`: core fact tools, gateway loading, filtering, schema validation, and audit behavior.
 - `navi.runs`, `navi.goals`, `navi.workflows`, `navi.subagents`, `navi.trace`, and `navi.recovery`: durable execution, goal, workflow, role, trace, and recovery stores.
+- `navi.agent_roles` and generated role specs in `navi.specs_data`: planner, responder, executor, critic, and notification role contracts with traceable evidence requirements.
 - `navi.memory`: governed memory items plus SQLite conversation sessions.
 - `navi.skills`: governed skill discovery and metadata.
 - `navi.hooks`: declarative lifecycle hooks.
@@ -157,7 +158,7 @@ navi prompts inspect [planner|responder]
 navi eval delegations
 navi eval daily
 navi eval claw
-navi eval connector
+navi eval connector [--dataset evals/weixin_journeys.yaml]
 navi eval acceptance
 
 navi graph list
@@ -177,7 +178,7 @@ navi workflow list
 navi workflow show WORKFLOW_ID
 navi workflow approve WORKFLOW_ID
 navi workflow reject WORKFLOW_ID
-navi workflow run WORKFLOW_ID
+navi workflow run WORKFLOW_ID [--resume]
 
 navi evolution list
 navi evolution targets
@@ -199,6 +200,9 @@ navi connectors tail CONNECTOR
 ```
 
 Current API surface:
+
+All local API endpoints require `X-API-Key`. The key comes from `NAVI_API_KEY`
+or from the generated `NAVI_HOME/api_key` file (`.navi/api_key` by default).
 
 ```text
 GET    /health
@@ -242,7 +246,7 @@ POST   /v1/workflows
 GET    /v1/workflows/{workflow_id}
 POST   /v1/workflows/{workflow_id}/approve
 POST   /v1/workflows/{workflow_id}/reject
-POST   /v1/workflows/{workflow_id}/run
+POST   /v1/workflows/{workflow_id}/run[?resume=true]
 GET    /v1/evolution-events
 POST   /v1/evolution-events/{event_id}/rollback
 GET    /v1/evolution-targets
@@ -265,13 +269,13 @@ Current config shape:
 model:
   provider: openai-compatible
   model: gpt-4o
-  timeout_seconds: 30.0
+  timeout_seconds: 60.0
 runtime:
   service_name: navi.service
   local_surface: local
   agent_step_budget: 8
 execution:
-  provider: navi
+  provider: react
   timeout_seconds: 120.0
 ```
 
@@ -283,11 +287,14 @@ Environment overrides:
 NAVI_HOME
 NAVI_MODEL_PROVIDER
 NAVI_MODEL
+NAVI_MODEL_KIND
 NAVI_MODEL_API_BASE_URL
 NAVI_MODEL_API_KEY
+NAVI_MODEL_TIMEOUT_SECONDS
 OPENAI_API_KEY
 DEEPSEEK_API_KEY
 ANTHROPIC_API_KEY
+NAVI_API_KEY
 NAVI_SERVICE_NAME
 NAVI_LOCAL_SURFACE
 NAVI_AGENT_STEP_BUDGET
@@ -326,6 +333,7 @@ Navi stores local state under `.navi/` or `NAVI_HOME`:
 
 ```text
 .navi/
+├── api_key
 ├── config.yaml
 ├── env
 ├── evolution.db

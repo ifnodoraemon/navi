@@ -46,8 +46,6 @@ REMOTE_BLOCKED_TOOLS = frozenset(
     (
         "workflow.approve",
         "workflow.run",
-        "workflow.resume",
-        "workflow.verify",
     )
 )
 

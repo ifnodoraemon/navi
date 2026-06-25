@@ -136,6 +136,4 @@ def test_blocked_capability_classes_are_direct_os_only() -> None:
     assert REMOTE_BLOCKED_TOOLS == {
         "workflow.approve",
         "workflow.run",
-        "workflow.resume",
-        "workflow.verify",
     }

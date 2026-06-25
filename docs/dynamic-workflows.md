@@ -15,7 +15,7 @@ They are intentionally not executable scripts. A workflow is declarative data:
 - verification strategy;
 - ordered subagent steps;
 - optional dependency ids;
-- optional allowed tools;
+- allowed tools for every step that declares capability calls;
 - optional capability calls.
 
 ## Lifecycle
@@ -41,5 +41,6 @@ They are intentionally not executable scripts. A workflow is declarative data:
 navi workflow propose "Audit provider facts" --steps-json '[{"id":"provider","role":"auditor","objective":"Inspect provider config","allowed_tools":["provider.config"],"tool_calls":[{"tool":"provider.config","permission":"read","args":{}}]}]'
 navi workflow approve <workflow_id>
 navi workflow run <workflow_id>
+navi workflow run <workflow_id> --resume
 navi workflow show <workflow_id>
 ```

@@ -47,13 +47,16 @@ from .provider import build_provider
 from .service import build_systemd_user_unit, install_systemd_user_unit
 from .subagents import SubagentRunStore
 from .trace import TraceStore
+from .tools import API_CONTEXT
 from .workflows import WorkflowStore, workflow_facts
 
-def _invoke_capability(name: str, args: dict) -> dict:
+def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CONTEXT) -> dict:
     """Invoke a capability through the unified registry (same path the API
     takes), so CLI writes go through hook gates and schema validation."""
     home = ensure_home()
-    capabilities = build_capability_registry(home, project_dir=Path.cwd())
+    capabilities = build_capability_registry(
+        home, project_dir=Path.cwd(), execution_context=execution_context
+    )
     spec = capabilities.get(name)
     if spec is None:
         raise typer.BadParameter(f"capability not found: {name}")
@@ -630,7 +633,7 @@ def eval_claw(
 
 @eval_app.command("connector")
 def eval_connector(
-    dataset: Path = Path("evals") / "connector_journeys.yaml",
+    dataset: Path = Path("evals") / "weixin_journeys.yaml",
     json_output: bool = False,
     validate_only: bool = False,
     timeout_seconds: float = 30.0,
@@ -858,9 +861,9 @@ def workflow_reject(workflow_id: str) -> None:
 
 
 @workflow_app.command("run")
-def workflow_run(workflow_id: str) -> None:
+def workflow_run(workflow_id: str, resume: bool = False) -> None:
     """Run the next bounded batch of an approved dynamic workflow."""
-    _workflow_action_cli("workflow.run", workflow_id)
+    _workflow_action_cli("workflow.run", workflow_id, {"resume": resume})
 
 
 def _workflow_action_cli(tool: str, workflow_id: str, extra_args: dict | None = None) -> None:

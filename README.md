@@ -66,6 +66,9 @@ navi chat
 navi api
 ```
 
+The local API requires `X-API-Key`. Set `NAVI_API_KEY` or read the generated
+key from `NAVI_HOME/api_key` (`.navi/api_key` by default).
+
 ### Setup & Run Weixin Connector
 
 ```bash
@@ -163,15 +166,12 @@ navi eval claw --dataset evals/claw_navi.yaml --attempts 3
 
 `evals/claw_navi.yaml` is a repository-local Claw-Eval compatible subset. It preserves the task/split/rubric/Pass^3 shape while avoiding large external fixtures in the repo.
 
-## Release Notes
+## Canonical Docs
 
-- [Navi 1.0.0 release notes](docs/release-notes-1.0.0.md)
-- [Navi 1.1.0 release notes](docs/release-notes-1.1.0.md)
-- [Navi 1.1.1 release notes](docs/release-notes-1.1.1.md)
-- [Navi 1.1.2 release notes](docs/release-notes-1.1.2.md)
 - [Current requirements](docs/requirements.md)
 - [Non-negotiable principles](docs/principles.md)
-- [Frontier agent safety audit](docs/frontier-agent-safety-audit.md)
+- [Agentic optimization tracker](docs/agentic-optimization-tracker.md)
 - [Dynamic workflows](docs/dynamic-workflows.md)
 - [Prompt architecture](docs/prompt-architecture.md)
 - [Versioning contract](docs/versioning.md)
+- [Release notes](docs/release-notes.md)

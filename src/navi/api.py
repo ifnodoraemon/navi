@@ -653,8 +653,8 @@ def create_app(home: Path | None = None) -> FastAPI:
         return await _workflow_action("workflow.approve", workflow_id, {"decision": "reject"})
 
     @app.post(api_path("workflow_run"))
-    async def run_workflow(workflow_id: str) -> dict:
-        return await _workflow_action("workflow.run", workflow_id)
+    async def run_workflow(workflow_id: str, resume: bool = False) -> dict:
+        return await _workflow_action("workflow.run", workflow_id, {"resume": resume})
 
     async def _workflow_action(
         tool: str, workflow_id: str, extra_args: dict[str, Any] | None = None

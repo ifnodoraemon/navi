@@ -11,8 +11,9 @@ This tracker is the current backlog and completion ledger for Navi's agentic arc
 | [ ] | B03 | P1 | plugin/MCP policy | Add install-time permission manifests and audit for plugin/MCP providers. | New tool providers cannot reach connectors or mutating capabilities before policy review. | Manifest schema, install audit tests, connector exposure tests |
 | [ ] | B04 | P1 | workflow telemetry | Replace vague workflow cost metadata with concrete provider/token usage where available. | Workflow approval can show meaningful cost and budget facts. | Workflow store/API fields, provider usage tests |
 | [ ] | B05 | P1 | verifier depth | Expand verifier policies for diffs, command assertions, test results, rollback proposals, and long-running compaction. | Completion claims carry stronger independent evidence and useful recovery choices. | Verifier tests, trace evaluation cases, recovery fixtures |
-| [ ] | B06 | P2 | media ingress | Add raw Weixin image/file/video/CDN handling after text and transcript behavior is live-calibrated. | Media support does not weaken connector safety or prompt-boundary rules. | Connector payload fixtures, media policy tests |
-| [ ] | B07 | P2 | incident response | Group traces, failed safeguards, remediation proposals, and regression links in CLI/API. | Safety failures become auditable incidents with repair evidence. | Trace/incident API tests, CLI coverage |
+| [ ] | B06 | P1 | red-team evals | Add prompt-injection, memory-exfiltration, sensitive-context confirmation, connector-liveness, and config-drift cases. | Safety and runtime-drift failures become regression-covered product behavior. | Eval datasets, trace failure fixtures, connector liveness tests |
+| [ ] | B07 | P2 | media ingress | Add raw Weixin image/file/video/CDN handling after text and transcript behavior is live-calibrated. | Media support does not weaken connector safety or prompt-boundary rules. | Connector payload fixtures, media policy tests |
+| [ ] | B08 | P2 | incident response | Group traces, failed safeguards, remediation proposals, and regression links in CLI/API. | Safety failures become auditable incidents with repair evidence. | Trace/incident API tests, CLI coverage |
 
 ## Completed Architecture Themes
 

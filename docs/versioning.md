@@ -37,7 +37,7 @@ Every stage bump should include:
 
 ## Release Flow
 
-1. Open a PR that changes `pyproject.toml`, `src/navi/__init__.py`, and release notes.
+1. Open a PR that changes `pyproject.toml`, `src/navi/__init__.py`, and `docs/release-notes.md`.
 2. Merge only after CI and review pass.
 3. Tag the merged commit with `v<version>`.
 4. Push the tag to trigger the GitHub Release workflow.
