@@ -358,22 +358,25 @@ async def _run_daily_journey(
     journey_id = str(journey.get("id") or "")
     if journey_id.startswith("public_"):
         source = "public_hermes"
-        from .connector_runtime import REMOTE_BLOCKED_CAPABILITY_CLASSES
+        from .connector_runtime import REMOTE_BLOCKED_CAPABILITY_CLASSES, REMOTE_BLOCKED_TOOLS
         disabled_capability_classes = REMOTE_BLOCKED_CAPABILITY_CLASSES
+        disabled_tools = REMOTE_BLOCKED_TOOLS
     else:
         source = "cli"
         disabled_capability_classes = frozenset()
+        disabled_tools = frozenset()
 
     from .event_bus import EventBus
     from .governance_agent import GovernanceAgent
     event_bus = EventBus()
-    governance = GovernanceAgent(home, event_bus)
+    GovernanceAgent(home, event_bus)
 
     engine = HernessEngine(
         home=home,
         runtime=runtime,
         project_dir=project_dir,
         permission_ceiling=ceiling,
+        disabled_tools=disabled_tools,
         disabled_capability_classes=disabled_capability_classes,
         event_bus=event_bus,
     )

@@ -22,17 +22,32 @@ HEARTBEAT_INTERVAL_SECONDS = 20.0
 # The remote-connector security boundary is a *blocklist* of direct-OS
 # capability classes, not a hand-maintained per-tool allowlist. New governance
 # / read tools auto-load into the remote manifest without a central list edit;
-# only direct-OS classes (file, shell, git, browser, directory, test) are
-# blocked from the live remote path, since they would let a prompt-injected
-# message run shell or read local files without the delegate.spawn → approval
-# gate. delegate.spawn remains the governed path to local OS access.
+# direct local-environment classes are blocked from the live remote path since
+# they would let a prompt-injected message inspect or mutate local state without
+# the delegate.spawn → approval gate. delegate.spawn remains the governed path
+# to local OS access.
 REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(
     (
         "browser",
+        "codebase",
+        "directory",
         "file.read",
         "file.write",
+        "git",
         "shell",
+        "service",
+        "system",
+        "test",
         "watch.delete",
+    )
+)
+
+REMOTE_BLOCKED_TOOLS = frozenset(
+    (
+        "workflow.approve",
+        "workflow.run",
+        "workflow.resume",
+        "workflow.verify",
     )
 )
 
@@ -44,6 +59,7 @@ class ConnectorToolPolicy:
     name: str
     permission_ceiling: str
     allowed_tools: FrozenSet[str]
+    blocked_tools: FrozenSet[str]
     blocked_capability_classes: FrozenSet[str]
     reason: str
 
@@ -57,6 +73,7 @@ class ConnectorToolPolicy:
             "name": self.name,
             "permission_ceiling": self.permission_ceiling,
             "allowed_tools": sorted(self.allowed_tools),
+            "blocked_tools": sorted(self.blocked_tools),
             "blocked_capability_classes": sorted(self.blocked_capability_classes),
             "reason": self.reason,
         }
@@ -66,13 +83,14 @@ REMOTE_CONNECTOR_TOOL_POLICY = ConnectorToolPolicy(
     name="remote_connector_default",
     permission_ceiling="write",
     allowed_tools=frozenset(),
+    blocked_tools=REMOTE_BLOCKED_TOOLS,
     blocked_capability_classes=REMOTE_BLOCKED_CAPABILITY_CLASSES,
     reason=(
         "Remote connector ingress may use any declared governance / read "
-        "tool directly. Direct-OS capability classes (file, shell, git, "
-        "browser, directory, test) are blocked from the live remote path; "
-        "local OS access goes through delegate.spawn → managed execution → "
-        "approval."
+        "tool directly unless explicitly blocked. Direct local-environment "
+        "capability classes and workflow execution/approval tools are blocked "
+        "from the live remote path; local OS access goes through delegate.spawn "
+        "→ managed execution → approval."
     ),
 )
 
@@ -80,6 +98,7 @@ LOCAL_CONVERSATIONAL_TOOL_POLICY = ConnectorToolPolicy(
     name="local_conversational_default",
     permission_ceiling="write",
     allowed_tools=frozenset(),
+    blocked_tools=frozenset(),
     blocked_capability_classes=frozenset(),
     reason="Local conversational loop has full tool access; model decides when to use direct tools vs delegation.",
 )
@@ -132,6 +151,7 @@ class ConnectorIngressRuntime:
             allowed_tools=tool_policy.allowed_tool_names()
             if allowed_tools is None
             else allowed_tools,
+            disabled_tools=tool_policy.blocked_tools,
             disabled_capability_classes=tool_policy.blocked_capability_classes,
             permission_ceiling=tool_policy.permission_ceiling,
             event_bus=self.event_bus,

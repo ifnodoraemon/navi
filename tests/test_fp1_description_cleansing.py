@@ -26,6 +26,8 @@ def test_delegate_spawn_description_is_pure_semantics() -> None:
     specs = _read("src/navi/actions/specs.py")
     # The sequencing rule must be gone from the description.
     assert "Must only be used after gathering sufficient local facts" not in specs
+    assert "Do NOT use delegate.spawn" not in specs
+    assert "delegate.spawn IS the path" not in specs
 
 
 def test_delegate_delete_bulk_constraint_moved_to_schema() -> None:

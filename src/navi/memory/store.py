@@ -22,7 +22,6 @@ from .models import (
     MEMORY_TYPES,
     NORMATIVE_REVIEW_REQUIRED_TYPES,
     TASK_LEARNING_LOG_LIMIT,
-    TYPE_PRIORITY,
     MemoryConflict,
     MemoryItem,
     MemoryRecall,

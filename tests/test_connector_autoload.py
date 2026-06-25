@@ -16,7 +16,7 @@ import pytest
 
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
-from navi.connector_runtime import REMOTE_BLOCKED_CAPABILITY_CLASSES
+from navi.connector_runtime import REMOTE_BLOCKED_CAPABILITY_CLASSES, REMOTE_BLOCKED_TOOLS
 
 
 def _remote_ctx(home: Path) -> CapabilityContext:
@@ -73,22 +73,41 @@ async def test_remote_autoloads_governance_tools(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_remote_autoloads_read_only_inspection(tmp_path: Path) -> None:
-    """Read-only inspection tools (codebase.search) that are not direct-OS
-    auto-load into the remote manifest."""
+async def test_remote_blocks_local_codebase_inspection(tmp_path: Path) -> None:
+    """Codebase search reads local file snippets, so live remote ingress must
+    route it through delegated local execution instead of exposing it directly."""
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     context = _remote_ctx(tmp_path)
+    result = await registry.invoke(
+        "codebase.search", {"query": "resume"}, permission="read", context=context
+    )
+    assert result.ok is False
+    assert "policy blocks capability class codebase" in result.message
+
+
+@pytest.mark.asyncio
+async def test_remote_blocks_workflow_execution_tools(tmp_path: Path) -> None:
+    """Remote connectors may propose/inspect workflows by default, but cannot
+    directly approve or run them."""
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = _remote_ctx(tmp_path)
+    proposed = await registry.invoke(
+        "workflow.propose",
+        {"objective": "audit remote policy"},
+        permission="prepare",
+        context=context,
+    )
+    assert proposed.ok is True
+    workflow_id = str((proposed.facts or {}).get("workflow_id") or "")
+    assert workflow_id
+
     for name, args in [
-        ("codebase.search", {"query": "resume"}),
+        ("workflow.approve", {"workflow_id": workflow_id, "decision": "approve"}),
+        ("workflow.run", {"workflow_id": workflow_id}),
     ]:
-        result = await registry.invoke(
-            name, args, permission="read", context=context
-        )
-        # These should not be policy-blocked (they may still fail on
-        # missing data, but not with a connector-policy block).
-        assert "policy blocks capability" not in result.message, (
-            f"{name} should not be policy-blocked from remote"
-        )
+        result = await registry.invoke(name, args, permission="write", context=context)
+        assert result.ok is False
+        assert f"policy blocks capability {name}" in result.message
 
 
 def test_blocked_capability_classes_are_direct_os_only() -> None:
@@ -96,9 +115,27 @@ def test_blocked_capability_classes_are_direct_os_only() -> None:
     prompt-injection boundary. It must not contain governance classes
     (delegation, approval, workflow, memory, session, etc.)."""
     blocked = REMOTE_BLOCKED_CAPABILITY_CLASSES
-    direct_os = {"browser", "file.read", "file.write", "shell", "watch.delete"}
+    direct_os = {
+        "browser",
+        "codebase",
+        "directory",
+        "file.read",
+        "file.write",
+        "git",
+        "service",
+        "shell",
+        "system",
+        "test",
+        "watch.delete",
+    }
     assert blocked == direct_os
-    governance = {"delegation", "approval", "workflow", "memory", "session", "conversation"}
+    governance = {"delegation", "approval", "memory", "session", "conversation"}
     assert not (blocked & governance), (
         "governance classes must not be in the direct-OS blocklist"
     )
+    assert REMOTE_BLOCKED_TOOLS == {
+        "workflow.approve",
+        "workflow.run",
+        "workflow.resume",
+        "workflow.verify",
+    }

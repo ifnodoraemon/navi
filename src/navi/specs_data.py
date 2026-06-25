@@ -401,18 +401,6 @@ CAPABILITY_SAFEGUARDS_SPEC: Any = {
             "confirmation_required": True,
             "reason": "Workflow run executes declared subagent steps through capabilities.",
         },
-        "workflow.verify": {
-            "risk_class": "high",
-            "sensitive_contexts": ["dynamic_workflow", "verification"],
-            "confirmation_required": True,
-            "reason": "Workflow verify marks a completed orchestration as verified or blocked.",
-        },
-        "workflow.resume": {
-            "risk_class": "high",
-            "sensitive_contexts": ["dynamic_workflow", "task_control"],
-            "confirmation_required": True,
-            "reason": "Workflow resume continues persisted dynamic orchestration state.",
-        },
         "workflow.status": {
             "risk_class": "medium",
             "sensitive_contexts": ["dynamic_workflow"],
@@ -473,20 +461,19 @@ SYSCALL_PLANNER_SPEC: Any = {
         "final.answer to synthesize the answer instead of calling the read capability again.",
         {
             "Fact-First / Local-First Policy": "Always prioritize using read-only "
-            "foreground tools (e.g. file.read) to confirm "
+            "foreground capabilities to confirm "
             "the environment, locate target files, and "
             "gather facts BEFORE spawning any "
             "background delegation. Never spawn a "
             "delegation blindly."
         },
         {
-            "Remote Surface → Local Access": "When your current surface lacks direct "
-            "OS tools (file.read, shell.run) — e.g. a remote connector — "
-            "delegate.spawn IS the path to local access. The delegated task runs "
-            "locally with full OS capabilities. Do NOT flatly refuse local-file or "
-            "local-process requests from a surface without direct OS tools; either "
-            "delegate.spawn a local task, or ask.user for the specifics (which "
-            "directory, what filename, what format) needed to scope the delegation."
+            "Remote Surface → Local Access": "When a remote or other current surface "
+            "lacks direct local-environment capabilities, use the manifest's "
+            "governed local execution or delegation capability to create a scoped local task. "
+            "Do not flatly refuse local-file or local-process requests solely "
+            "because direct OS tools are absent; ask.user for the specifics "
+            "needed to scope the local task when the request is underspecified."
         },
         {
             "Gated Delegation": "For complex requests (e.g., diagnosis, multi-step "

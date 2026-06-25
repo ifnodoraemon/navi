@@ -1,6 +1,6 @@
 # Governed Dynamic Workflows
 
-Navi dynamic workflows are model-proposed orchestration plans that the runtime stores, gates, executes, resumes, and verifies.
+Navi dynamic workflows are model-proposed orchestration plans that the runtime stores, gates, executes, resumes through the run path, and verifies automatically when runnable work is complete.
 
 The planner decides when to call `workflow.propose` from ordinary user language. Users should not need to switch modes or manually request a workflow for normal use. CLI and API commands are operator control surfaces for inspection, approval, execution, recovery, and verification after a workflow has been proposed.
 
@@ -23,8 +23,8 @@ They are intentionally not executable scripts. A workflow is declarative data:
 1. `workflow.propose` creates a workflow in `awaiting_approval`.
 2. `workflow.approve` moves it to `approved` or `rejected`.
 3. `workflow.run` executes the next dependency-ready batch through declared capabilities.
-4. `workflow.resume` continues from persisted state after interruption.
-5. `workflow.verify` records a critic subagent and marks the workflow `verified_complete` or `blocked`.
+4. `workflow.run` with `resume=true` continues from persisted state after interruption.
+5. When no pending work remains, `workflow.run` applies the verifier and marks the workflow `verified_complete` or `blocked`.
 6. `workflow.status` returns workflow, step, event, and evidence facts.
 
 ## Safety Rules
@@ -41,7 +41,5 @@ They are intentionally not executable scripts. A workflow is declarative data:
 navi workflow propose "Audit provider facts" --steps-json '[{"id":"provider","role":"auditor","objective":"Inspect provider config","allowed_tools":["provider.config"],"tool_calls":[{"tool":"provider.config","permission":"read","args":{}}]}]'
 navi workflow approve <workflow_id>
 navi workflow run <workflow_id>
-navi workflow resume <workflow_id>
-navi workflow verify <workflow_id>
 navi workflow show <workflow_id>
 ```

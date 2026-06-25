@@ -5,7 +5,13 @@ keyword-prefix ``_SECRET_PATTERNS``: PEM private keys and connection
 strings with embedded credentials. Also guards against false positives
 on ordinary URLs and ``user@host`` addresses.
 """
+import asyncio
+from pathlib import Path
+
+from navi.capabilities import CapabilityContext, build_capability_registry
+from navi.runs import RunStore
 from navi.safeguards import redact_secrets, redact_secrets_deep
+from navi.tools import API_CONTEXT
 
 
 def test_redacts_bearer_authorization_header():
@@ -57,3 +63,35 @@ def test_deep_redaction_handles_nested_connection_string():
     assert redacted["api_key"] == "[REDACTED]"
     assert "p@host" not in redacted["config"]["db"]
     assert redacted["name"] == "project"
+
+
+def test_action_capability_audit_log_redacts_args(tmp_path: Path):
+    async def run() -> str:
+        registry = build_capability_registry(
+            tmp_path,
+            project_dir=tmp_path,
+            execution_context=API_CONTEXT,
+        )
+        context = CapabilityContext(
+            home=tmp_path,
+            peer_id="local",
+            sender_id="local",
+            source="api",
+            workspace=str(tmp_path),
+        )
+        await registry.invoke(
+            "memory.add",
+            {
+                "type": "fact",
+                "content": "api_key=sk-action-secret-123",
+                "reason": "audit regression",
+                "provenance": "test",
+            },
+            permission="write",
+            context=context,
+        )
+        return RunStore(tmp_path).list_tool_call_logs(limit=1)[0].args_json
+
+    args_json = asyncio.run(run())
+    assert "sk-action-secret-123" not in args_json
+    assert "api_key=[REDACTED]" in args_json

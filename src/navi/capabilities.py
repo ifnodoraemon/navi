@@ -157,6 +157,14 @@ class CapabilityRegistry:
             else None
         )
         if source_policy is not None:
+            if name in source_policy.blocked_tools:
+                return CapabilityResult(
+                    ok=False,
+                    action="capability_error",
+                    observation=f"remote connector policy blocks capability {name}",
+                    message=f"remote connector policy blocks capability {name}",
+                    terminal=True,
+                )
             if source_policy.allowed_tools and name not in source_policy.allowed_tools:
                 return CapabilityResult(
                     ok=False,
@@ -361,12 +369,16 @@ class CapabilityRegistry:
             "terminal": result.terminal,
         }
         try:
+            from .safeguards import redact_secrets, redact_secrets_deep
+
             RunStore(self.home).add_tool_call_log(
                 tool=spec.name,
-                args_json=json.dumps(args, ensure_ascii=False, sort_keys=True),
+                args_json=json.dumps(redact_secrets_deep(args), ensure_ascii=False, sort_keys=True),
                 ok=result.ok,
-                facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
-                error="" if result.ok else result.message or result.observation,
+                facts_json=json.dumps(
+                    redact_secrets_deep(facts), ensure_ascii=False, sort_keys=True
+                ),
+                error="" if result.ok else redact_secrets(result.message or result.observation),
                 started_at=started_at,
                 ended_at=time.time(),
                 run_id=self.governed_run_id or "",

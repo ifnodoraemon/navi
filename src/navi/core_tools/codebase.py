@@ -26,16 +26,16 @@ def _command_list(value: Any) -> list[str]:
     return command[:32]
 
 
-def _codebase_search(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
+def _codebase_search(args: dict[str, Any], *, project_dir: Path, home: Path) -> ToolResult:
     query = str(args.get("query") or "")
     limit = int(args.get("limit") or 5)
     if not query:
         return ToolResult(tool="codebase.search", ok=False, error="query is required")
 
     try:
-        from .rag import CodebaseRAG
+        from ..rag import CodebaseRAG
 
-        rag = CodebaseRAG(project_dir)
+        rag = CodebaseRAG(project_dir, db_path=home / "codebase_rag.db")
         results = rag.search(query, limit=limit)
         return ToolResult(
             tool="codebase.search",
@@ -84,5 +84,4 @@ def _resolve_binary_error(command: list[str]) -> str:
                 f"Try '{suggestion}' instead."
             )
     return f"binary '{binary}' not found on PATH."
-
 

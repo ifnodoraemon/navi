@@ -9,7 +9,6 @@ verbatim while condensing older messages.
 from __future__ import annotations
 
 import re
-import unicodedata
 from typing import Any, Protocol
 
 __all__ = ["ContextManager"]

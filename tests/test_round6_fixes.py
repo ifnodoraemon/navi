@@ -24,10 +24,8 @@ from navi.capabilities_types import CapabilityContext
 from navi.control import ApprovalService, SurfaceContext
 from navi.core_tools import _resolve_binary_error, _run_command
 from navi.provider import (
-    AnthropicCompatibleProvider,
     ChatMessage,
     FallbackProvider,
-    OpenAICompatibleProvider,
     _build_fallback_chain,
 )
 from navi.runs import RunStore

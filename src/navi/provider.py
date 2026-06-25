@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import inspect
 from dataclasses import dataclass
 from collections.abc import AsyncGenerator, Callable
 from typing import Any, Protocol
@@ -468,22 +469,44 @@ async def _complete_with_optional_schema(
     temperature: float | None = None,
     max_tokens: int | None = None,
 ) -> str:
+    requested_kwargs: dict[str, Any] = {}
+    if output_schema is not None:
+        requested_kwargs["output_schema"] = output_schema
+    if temperature is not None:
+        requested_kwargs["temperature"] = temperature
+    if max_tokens is not None:
+        requested_kwargs["max_tokens"] = max_tokens
+    accepted_kwargs = _accepted_complete_kwargs(provider, requested_kwargs)
     if output_schema is None:
-        return await provider.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        return await provider.complete(messages, **accepted_kwargs)
     try:
-        result = await provider.complete(
-            messages, output_schema=output_schema, temperature=temperature, max_tokens=max_tokens
-        )
+        result = await provider.complete(messages, **accepted_kwargs)
     except TypeError as exc:
         if "output_schema" not in str(exc) and "unexpected keyword" not in str(exc):
             raise
-        result = await provider.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        fallback_kwargs = {
+            key: value for key, value in accepted_kwargs.items() if key != "output_schema"
+        }
+        result = await provider.complete(messages, **fallback_kwargs)
     # Post-hoc schema validation (principle 14/16). For json_object-only
     # providers the schema is prompt-only, so the runtime validates the
     # returned JSON against the declared schema and rejects malformed output
     # as a tool-call parse failure rather than trusting prompt instructions.
     _validate_structured_output(result, output_schema)
     return result
+
+
+def _accepted_complete_kwargs(
+    provider: ChatProvider,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        parameters = inspect.signature(provider.complete).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(param.kind is param.VAR_KEYWORD for param in parameters.values()):
+        return kwargs
+    return {key: value for key, value in kwargs.items() if key in parameters}
 
 
 def _validate_structured_output(content: str, output_schema: dict[str, Any]) -> None:

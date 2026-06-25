@@ -178,8 +178,6 @@ navi workflow show WORKFLOW_ID
 navi workflow approve WORKFLOW_ID
 navi workflow reject WORKFLOW_ID
 navi workflow run WORKFLOW_ID
-navi workflow resume WORKFLOW_ID
-navi workflow verify WORKFLOW_ID
 
 navi evolution list
 navi evolution targets
@@ -245,8 +243,6 @@ GET    /v1/workflows/{workflow_id}
 POST   /v1/workflows/{workflow_id}/approve
 POST   /v1/workflows/{workflow_id}/reject
 POST   /v1/workflows/{workflow_id}/run
-POST   /v1/workflows/{workflow_id}/resume
-POST   /v1/workflows/{workflow_id}/verify
 GET    /v1/evolution-events
 POST   /v1/evolution-events/{event_id}/rollback
 GET    /v1/evolution-targets

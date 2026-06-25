@@ -78,8 +78,6 @@ coverage:
   - workflow.propose
   - workflow.approve
   - workflow.run
-  - workflow.verify
-  - workflow.resume
   - workflow.status
   - test.run
   - session.request_elevation
@@ -543,10 +541,11 @@ cases:
   source: architecture:dynamic-workflows
   message: "\u7EE7\u7EED\u521A\u624D\u4E2D\u65AD\u7684 workflow wf_123"
   expect:
-    tool: workflow.resume
+    tool: workflow.run
     permission: write
     args:
       workflow_id: wf_123
+      resume: true
 - id: verify_completed_dynamic_workflow
   category: delegation_lifecycle
   source: architecture:dynamic-workflows
@@ -565,8 +564,8 @@ cases:
   conversation_context: "assistant: workflow.status facts for wf_123: status=running;\
     \ all steps completed; no failed steps; approval already granted."
   expect:
-    tool: workflow.verify
-    permission: write
+    tool: workflow.status
+    permission: read
     args:
       workflow_id: wf_123
 - id: coding_debugging_becomes_task
