@@ -8,6 +8,7 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
+from ..result import SchemaMismatch
 from .helpers import arg_text as _arg_text
 
 
@@ -21,6 +22,8 @@ class FinalAnswerCapability(BaseCapability):
         context: CapabilityContext,
     ) -> CapabilityResult:
         message = _arg_text(args, "message")
+        if not message:
+            raise SchemaMismatch("Missing or empty 'message' argument. You must provide the actual text to send to the user.")
         return CapabilityResult(
             ok=True, action="chat", observation=message, message=message, terminal=True
         )
@@ -37,6 +40,8 @@ class ClarifyCapability(BaseCapability):
         context: CapabilityContext,
     ) -> CapabilityResult:
         message = _arg_text(args, "message")
+        if not message:
+            raise SchemaMismatch("Missing or empty 'message' argument. You must provide the actual question to ask the user.")
         options = args.get("options")
         facts = {}
         if isinstance(options, list) and options:
