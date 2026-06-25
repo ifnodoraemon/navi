@@ -353,14 +353,29 @@ async def _run_daily_journey(
         AgentRuntime(home=home, provider=provider) if provider is not None else build_runtime(home)
     )
     ceiling = journey.get("permission_ceiling", "write")
-    from .connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
+    
+    # Dynamically resolve source and disabled capability classes
+    journey_id = str(journey.get("id") or "")
+    if journey_id.startswith("public_"):
+        source = "public_hermes"
+        from .connector_runtime import REMOTE_BLOCKED_CAPABILITY_CLASSES
+        disabled_capability_classes = REMOTE_BLOCKED_CAPABILITY_CLASSES
+    else:
+        source = "cli"
+        disabled_capability_classes = frozenset()
+
+    from .event_bus import EventBus
+    from .governance_agent import GovernanceAgent
+    event_bus = EventBus()
+    governance = GovernanceAgent(home, event_bus)
 
     engine = HernessEngine(
         home=home,
         runtime=runtime,
         project_dir=project_dir,
         permission_ceiling=ceiling,
-        disabled_capability_classes=LOCAL_CONVERSATIONAL_TOOL_POLICY.blocked_capability_classes,
+        disabled_capability_classes=disabled_capability_classes,
+        event_bus=event_bus,
     )
     runs = RunStore(home)
     goals = GoalStore(home)
@@ -399,7 +414,7 @@ async def _run_daily_journey(
                         message,
                         peer_id="daily-eval",
                         sender_id="daily-eval",
-                        source="cli",
+                        source=source,
                         session_id=session_id or None,
                     )
                     session_id = turn.session_id

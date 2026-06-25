@@ -41,11 +41,17 @@ logger = logging.getLogger("navi.memory")
 
 
 class MemoryStore:
-    def __init__(self, home: Path, provider: MemoryProvider | None = None):
+    def __init__(
+        self,
+        home: Path,
+        provider: MemoryProvider | None = None,
+        embedding_service: object | None = None,
+    ):
         self.home = home
         self.memory_dir = home / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.provider = provider or SQLiteMemoryProvider(db_paths(home).memory)
+        self._embedding_service = embedding_service
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_lock_refs: dict[str, int] = {}
         self._session_locks_guard: asyncio.Lock | None = None
@@ -322,41 +328,36 @@ class MemoryStore:
 
     def recall(self, query: str, *, limit: int = 8, goal: str = "") -> list[MemoryRecall]:
         now = time.time()
-        candidates = [
-            item
-            for item in self.list_items(limit=500)
-            if item.status in ACTIVE_STATUSES and (not item.expires_at or item.expires_at > now)
-        ]
-        scored = [self._score_recall(item, query, goal) for item in candidates]
-        scored = [recall for recall in scored if recall.score > 0]
-        scored.sort(key=lambda recall: (recall.score, recall.item.updated_at), reverse=True)
-        selected = scored[:limit]
+        fts_query = f"{query} {goal}".strip()
+        if not fts_query:
+            return []
+
+        fts_results = self.provider.search_fts(fts_query, limit=limit * 3)
+        if not fts_results:
+            return []
+
+        selected = []
+        for item_id, rank in fts_results:
+            item = self.get_item(item_id)
+            if not item:
+                continue
+            if item.status not in ACTIVE_STATUSES or (item.expires_at and item.expires_at <= now):
+                continue
+            score = abs(rank)
+            selected.append(
+                MemoryRecall(
+                    item=item,
+                    score=score,
+                    reasons=[f"fts_rank={rank:.4f}"],
+                )
+            )
+            if len(selected) >= limit:
+                break
+
         if not selected:
             return []
         conflicts = self.list_conflicts(limit=1000)
         return [self._with_conflict_reasons(recall, conflicts) for recall in selected]
-
-    def render_context(self, query: str, *, limit: int = 8, goal: str = "") -> str:
-        recalls = self.recall(query, limit=limit, goal=goal)
-        if not recalls:
-            return ""
-        lines = ["Memory recall:"]
-        for recall in recalls:
-            item = recall.item
-            verified = (
-                time.strftime("%Y-%m-%d", time.localtime(item.last_verified_at))
-                if item.last_verified_at
-                else "unverified"
-            )
-            reason_text = "; ".join(recall.reasons[:4])
-            conflict_text = _render_conflict_summary(recall.conflicts)
-            conflict_clause = f" conflicts={conflict_text}" if conflict_text else ""
-            lines.append(
-                f"- [{item.type} status={item.status} scope={item.scope} confidence={item.confidence:.2f} "
-                f"source={item.source} verified={verified} score={recall.score:.2f} id={item.id} "
-                f"reason={reason_text}{conflict_clause}] {item.content}"
-            )
-        return "\n".join(lines)
 
     def active_constraints(self, *, limit: int = 100) -> list[MemoryItem]:
         """Return all active constraint-type memories, unconditionally.
@@ -787,64 +788,7 @@ class MemoryStore:
         values[11] = json.loads(values[11] or "{}")
         return MemoryItem(*values)
 
-    @staticmethod
-    def _tokens(text: str) -> set[str]:
-        return {
-            part.lower()
-            for part in text.replace("/", " ").replace("_", " ").split()
-            if len(part) >= 2
-        }
 
-    @classmethod
-    def _score_recall(cls, item: MemoryItem, query: str, goal: str = "") -> MemoryRecall:
-        priority = TYPE_PRIORITY.get(item.type, 10)
-        reasons = [f"type_priority:{item.type}={priority}"]
-        if item.type == "constraint":
-            priority += 50
-            reasons.append("constraint memory receives guardrail priority")
-        query_tokens = cls._tokens(query)
-        content_tokens = cls._tokens(f"{item.scope} {item.content}")
-        matches = sorted(query_tokens & content_tokens)
-        overlap = len(matches)
-
-        # Goal-directed relevance: a memory that matches the current task goal is
-        # retained even when it does not match the immediate query tokens, and is
-        # scored higher. This is what makes recall goal-directed rather than pure
-        # query similarity (principle 10).
-        goal_tokens = cls._tokens(goal)
-        goal_matches = sorted(goal_tokens & content_tokens)
-        goal_overlap = len(goal_matches)
-
-        if (
-            query_tokens
-            and not overlap
-            and not goal_overlap
-            and item.type not in {"constraint", "working"}
-        ):
-            return MemoryRecall(item=item, score=0.0, reasons=["not relevant to query or goal"])
-        if matches:
-            reasons.append(f"matched_query_tokens:{','.join(matches[:8])}")
-        elif query_tokens:
-            reasons.append(f"included_by_type:{item.type}")
-        if goal_matches:
-            reasons.append(f"goal_relevance:{','.join(goal_matches[:8])}")
-        reasons.append(f"confidence={item.confidence:.2f}")
-        now = time.time()
-
-        # Scale freshness so that recent updates score higher (up to 10 points), fading over ~115 days (10M seconds)
-        freshness = min(10.0, max(0.0, 10.0 - ((now - item.updated_at) / 1_000_000)))
-        if freshness > 0:
-            reasons.append(f"freshness_score={freshness:.2f}")
-        # Goal relevance is weighted above raw query overlap so current-task
-        # relevance is preferred over incidental semantic similarity.
-        score = (
-            priority
-            + (overlap * 12)
-            + (goal_overlap * 15)
-            + (item.confidence * 10)
-            + freshness
-        )
-        return MemoryRecall(item=item, score=score, reasons=reasons)
 
     @staticmethod
     def _with_conflict_reasons(

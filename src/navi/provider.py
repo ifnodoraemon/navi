@@ -4,7 +4,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from typing import Any, Protocol
 
 import httpx
@@ -28,8 +28,16 @@ class ChatMessage:
 
 class ChatProvider(Protocol):
     async def complete(
-        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None
+        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
+        temperature: float | None = None, max_tokens: int | None = None
     ) -> str: ...
+
+    async def stream(
+        self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
+    ) -> AsyncGenerator[str, None]:
+        """Yield content tokens.  Default: fall back to complete() and yield once."""
+        result = await self.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        yield result
 
 
 ProviderFactory = Callable[[ModelConfig, ProviderSpec], ChatProvider]
@@ -57,7 +65,8 @@ class OpenAICompatibleProvider:
         self.transport = transport
 
     async def complete(
-        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None
+        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
+        temperature: float | None = None, max_tokens: int | None = None
     ) -> str:
         if not self.config.api_key:
             env_hint = " or ".join(self.spec.api_key_env) or "NAVI_MODEL_API_KEY"
@@ -65,8 +74,8 @@ class OpenAICompatibleProvider:
         payload = {
             "model": self.config.model,
             "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
-            "temperature": 0,
-            "max_tokens": 32768,
+            "temperature": 0 if temperature is None else temperature,
+            "max_tokens": 32768 if max_tokens is None else max_tokens,
         }
         structured_format = _structured_response_format(self.spec, output_schema)
         if structured_format:
@@ -90,6 +99,48 @@ class OpenAICompatibleProvider:
             data = response.json()
         return _extract_openai_content(data)
 
+    async def stream(
+        self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
+    ) -> AsyncGenerator[str, None]:
+        """Yield content-delta tokens via SSE (OpenAI-compatible streaming)."""
+        import httpx_sse
+
+        if not self.config.api_key:
+            env_hint = " or ".join(self.spec.api_key_env) or "NAVI_MODEL_API_KEY"
+            raise RuntimeError(f"{env_hint} is required for {self.config.provider} provider")
+        payload = {
+            "model": self.config.model,
+            "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
+            "temperature": 0 if temperature is None else temperature,
+            "max_tokens": 32768 if max_tokens is None else max_tokens,
+            "stream": True,
+        }
+        headers = {"Authorization": f"Bearer {self.config.api_key}"}
+        async with httpx.AsyncClient(
+            timeout=None, transport=self.transport
+        ) as client:
+            async with httpx_sse.aconnect_sse(
+                client,
+                "POST",
+                f"{self.config.api_base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+            ) as event_source:
+                async for sse in event_source.aiter_sse():
+                    if sse.data == "[DONE]":
+                        return
+                    try:
+                        chunk = json.loads(sse.data)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    token = delta.get("content")
+                    if token:
+                        yield token
+
 
 class AnthropicCompatibleProvider:
     def __init__(
@@ -104,12 +155,13 @@ class AnthropicCompatibleProvider:
         self.transport = transport
 
     async def complete(
-        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None
+        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
+        temperature: float | None = None, max_tokens: int | None = None
     ) -> str:
         if not self.config.api_key:
             env_hint = " or ".join(self.spec.api_key_env) or "ANTHROPIC_API_KEY"
             raise RuntimeError(f"{env_hint} is required for {self.config.provider} provider")
-        payload = _anthropic_payload(self.config.model, messages)
+        payload = _anthropic_payload(self.config.model, messages, temperature=temperature, max_tokens=max_tokens)
         structured_tool = _anthropic_structured_tool(self.spec, output_schema)
         if structured_tool:
             payload["tools"] = [structured_tool]
@@ -134,13 +186,62 @@ class AnthropicCompatibleProvider:
             tool_name=structured_tool["name"] if structured_tool else "",
         )
 
+    async def stream(
+        self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
+    ) -> AsyncGenerator[str, None]:
+        """Yield content-delta tokens via Anthropic streaming."""
+        if not self.config.api_key:
+            env_hint = " or ".join(self.spec.api_key_env) or "ANTHROPIC_API_KEY"
+            raise RuntimeError(f"{env_hint} is required for {self.config.provider} provider")
+        payload = _anthropic_payload(self.config.model, messages, temperature=temperature, max_tokens=max_tokens)
+        payload["stream"] = True
+        headers = {
+            "x-api-key": self.config.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        async with httpx.AsyncClient(
+            timeout=None, transport=self.transport
+        ) as client:
+            async with client.stream(
+                "POST",
+                f"{self.config.api_base_url}/messages",
+                json=payload,
+                headers=headers,
+            ) as response:
+                response.raise_for_status()
+                event_type = ""
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        event_type = ""
+                        continue
+                    if line.startswith("event:"):
+                        event_type = line[len("event:"):].strip()
+                        if event_type == "message_stop":
+                            return
+                        continue
+                    if line.startswith("data:"):
+                        if event_type != "content_block_delta":
+                            continue
+                        raw = line[len("data:"):].strip()
+                        try:
+                            chunk = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        delta = chunk.get("delta") or {}
+                        token = delta.get("text")
+                        if token:
+                            yield token
+
 
 class FallbackProvider:
     def __init__(self, providers: list[ChatProvider]):
         self.providers = providers
 
     async def complete(
-        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None
+        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
+        temperature: float | None = None, max_tokens: int | None = None
     ) -> str:
         import asyncio
         import httpx
@@ -154,7 +255,8 @@ class FallbackProvider:
             for attempt in range(max_retries):
                 try:
                     return await _complete_with_optional_schema(
-                        provider, messages, output_schema=output_schema
+                        provider, messages, output_schema=output_schema,
+                        temperature=temperature, max_tokens=max_tokens
                     )
                 except Exception as exc:
                     if isinstance(exc, httpx.HTTPStatusError):
@@ -177,11 +279,60 @@ class FallbackProvider:
 
         raise RuntimeError("all model providers failed: " + "; ".join(errors))
 
+    async def stream(
+        self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
+    ) -> AsyncGenerator[str, None]:
+        """Try each provider's stream(); commit after the first yielded token."""
+        import asyncio
+        import httpx
+
+        from .safeguards import redact_secrets
+
+        errors: list[str] = []
+        max_retries = 3
+
+        for provider in self.providers:
+            for attempt in range(max_retries):
+                try:
+                    first = True
+                    async for token in provider.stream(messages, temperature=temperature, max_tokens=max_tokens):
+                        first = False
+                        yield token
+                    # Successfully exhausted the generator — we're done.
+                    return
+                except Exception as exc:
+                    if not first:
+                        # Already started yielding to the caller — cannot
+                        # transparently switch providers, so propagate.
+                        raise
+
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        status = exc.response.status_code
+                        if status not in (429, 500, 502, 503, 504):
+                            errors.append(
+                                redact_secrets(f"{provider.__class__.__name__}: {exc}")
+                            )
+                            break
+
+                    if attempt == max_retries - 1:
+                        errors.append(
+                            redact_secrets(f"{provider.__class__.__name__}: {exc}")
+                        )
+                    else:
+                        logger.warning(
+                            f"Provider {provider.__class__.__name__} stream failed "
+                            f"(attempt {attempt + 1}/{max_retries}): {exc}. Retrying..."
+                        )
+                        await asyncio.sleep(2**attempt)
+
+        raise RuntimeError("all model providers failed (stream): " + "; ".join(errors))
+
 
 class ModelPool:
-    def __init__(self, *, default: ChatProvider, routes: dict[str, ChatProvider] | None = None):
+    def __init__(self, *, default: ChatProvider, routes: dict[str, ChatProvider] | None = None, config: ModelConfig | None = None):
         self.default = default
         self.routes = routes or {}
+        self.config = config
 
     async def complete_for(
         self,
@@ -191,7 +342,26 @@ class ModelPool:
         output_schema: dict[str, Any] | None = None,
     ) -> str:
         provider = self.routes.get(role, self.default)
-        return await _complete_with_optional_schema(provider, messages, output_schema=output_schema)
+        params = self.config.get_role_params(role) if self.config else {}
+        temperature = params.get("temperature")
+        max_tokens = params.get("max_tokens")
+        return await _complete_with_optional_schema(
+            provider, messages, output_schema=output_schema,
+            temperature=temperature, max_tokens=max_tokens
+        )
+
+    async def stream_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+    ) -> AsyncGenerator[str, None]:
+        """Route to the right provider by role and return its stream."""
+        provider = self.routes.get(role, self.default)
+        params = self.config.get_role_params(role) if self.config else {}
+        temperature = params.get("temperature")
+        max_tokens = params.get("max_tokens")
+        async for token in provider.stream(messages, temperature=temperature, max_tokens=max_tokens):
+            yield token
 
     def list_roles(self) -> list[str]:
         # "default" is this pool's own routing fallback key; the agent role names
@@ -219,6 +389,7 @@ def build_provider(config: ModelConfig) -> ModelPool:
             role: _build_fallback_chain(route_config)
             for role, route_config in config.routes.items()
         },
+        config=config,
     )
 
 
@@ -294,15 +465,19 @@ async def _complete_with_optional_schema(
     messages: list[ChatMessage],
     *,
     output_schema: dict[str, Any] | None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     if output_schema is None:
-        return await provider.complete(messages)
+        return await provider.complete(messages, temperature=temperature, max_tokens=max_tokens)
     try:
-        result = await provider.complete(messages, output_schema=output_schema)
+        result = await provider.complete(
+            messages, output_schema=output_schema, temperature=temperature, max_tokens=max_tokens
+        )
     except TypeError as exc:
         if "output_schema" not in str(exc) and "unexpected keyword" not in str(exc):
             raise
-        result = await provider.complete(messages)
+        result = await provider.complete(messages, temperature=temperature, max_tokens=max_tokens)
     # Post-hoc schema validation (principle 14/16). For json_object-only
     # providers the schema is prompt-only, so the runtime validates the
     # returned JSON against the declared schema and rejects malformed output
@@ -440,7 +615,9 @@ def _messages_for_response_format(
     ]
 
 
-def _anthropic_payload(model: str, messages: list[ChatMessage]) -> dict[str, Any]:
+def _anthropic_payload(
+    model: str, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
+) -> dict[str, Any]:
     system_parts: list[str] = []
     conversation: list[dict[str, str]] = []
     for message in messages:
@@ -449,12 +626,15 @@ def _anthropic_payload(model: str, messages: list[ChatMessage]) -> dict[str, Any
             continue
         role = "assistant" if message.role == "assistant" else "user"
         conversation.append({"role": role, "content": message.content})
-    return {
+    payload = {
         "model": model,
-        "max_tokens": 32768,
+        "max_tokens": 32768 if max_tokens is None else max_tokens,
         "system": "\n\n".join(system_parts),
         "messages": conversation or [{"role": "user", "content": ""}],
     }
+    if temperature is not None:
+        payload["temperature"] = temperature
+    return payload
 
 
 def _extract_anthropic_content(

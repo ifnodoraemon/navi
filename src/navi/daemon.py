@@ -72,6 +72,13 @@ class SystemDaemon:
 
         self._setup_execution_subscription()
 
+    def start(self) -> None:
+        from .scheduler import SchedulerStore, SchedulerRunner
+
+        self.scheduler_store = SchedulerStore(self.home)
+        self.scheduler_runner = SchedulerRunner(self.scheduler_store, self.event_bus)
+        self.scheduler_runner.start()
+
     def _setup_execution_subscription(self) -> None:
         async def on_action_approved(event: ActionApprovedEvent) -> None:
             task = self.runs.get(event.run_id)

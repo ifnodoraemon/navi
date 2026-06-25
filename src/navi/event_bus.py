@@ -132,6 +132,13 @@ class HeartbeatEvent(NaviEvent):
     event_type: str = "heartbeat"
 
 
+@dataclass(frozen=True)
+class ScheduledTaskEvent(NaviEvent):
+    event_type: str = "scheduled_task"
+    action: str = ""
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
 Handler = Callable[[NaviEvent], Awaitable[None]]
 Unsubscribe = Callable[[], None]
 

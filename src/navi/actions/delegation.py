@@ -113,24 +113,23 @@ class DelegateSpawnCapability(BaseCapability):
             },
         )
 
-        # Governance intercepts via event bus — creates approval if needed
+        # Governance intercepts synchronously to create approvals immediately
         if context.event_bus is not None:
             from ..event_bus import ActionRequestedEvent
+            from ..governance_agent import GovernanceAgent
 
-            await context.event_bus.publish(
-                ActionRequestedEvent(
-                    source_agent="main_agent",
-                    correlation_id=task.id,
-                    run_id=task.id,
-                    peer_id=context.peer_id,
-                    sender_id=context.sender_id,
-                    source=context.source,
-                    autonomy_level=task.autonomy_level,
-                )
+            event = ActionRequestedEvent(
+                source_agent="main_agent",
+                correlation_id=task.id,
+                run_id=task.id,
+                peer_id=context.peer_id,
+                sender_id=context.sender_id,
+                source=context.source,
+                autonomy_level=task.autonomy_level,
             )
-            # Yield control so event bus worker can process the event and create approvals
-            import asyncio
-            await asyncio.sleep(0.05)
+            # Invoke the governance logic directly to avoid event bus deadlocks
+            gov = GovernanceAgent(self.home, context.event_bus)
+            await gov._on_action_requested(event)
             task = runs.get(task.id) or task
 
         facts = {

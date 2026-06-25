@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
+import struct
 from pathlib import Path
 from typing import Protocol
 
 from ..db import connect, ensure_schema_version
 from ..schema import Column, Table, assert_schema_exact
 from .models import MemoryItem, SessionAlias, StoredMessage
+
+logger = logging.getLogger("navi.memory.provider")
 
 MEMORY_SCHEMA_VERSION = 1
 
@@ -99,6 +103,45 @@ class SQLiteMemoryProvider:
                 "CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_items(status, type)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_items(scope)")
+            
+            # FTS5 trigram table for fast keyword search
+            conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5("
+                "id UNINDEXED, content, tokenize='trigram'"
+                ")"
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS memory_items_ai AFTER INSERT ON memory_items
+                BEGIN
+                    DELETE FROM memory_fts WHERE id = new.id;
+                    INSERT INTO memory_fts(id, content) VALUES (new.id, new.content);
+                END;
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS memory_items_ad AFTER DELETE ON memory_items
+                BEGIN
+                    DELETE FROM memory_fts WHERE id = old.id;
+                END;
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS memory_items_au AFTER UPDATE ON memory_items
+                BEGIN
+                    DELETE FROM memory_fts WHERE id = old.id;
+                    INSERT INTO memory_fts(id, content) VALUES (new.id, new.content);
+                END;
+                """
+            )
+            # Backfill any existing items that aren't in the FTS table
+            conn.execute(
+                "INSERT INTO memory_fts(id, content) "
+                "SELECT id, content FROM memory_items "
+                "WHERE id NOT IN (SELECT id FROM memory_fts)"
+            )
 
     @staticmethod
     def _migrate_memory_items(conn) -> None:
@@ -318,6 +361,28 @@ class SQLiteMemoryProvider:
     def delete_item(self, item_id: str) -> None:
         with connect(self.db_path) as conn:
             conn.execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
+
+    def search_fts(self, query: str, limit: int) -> list[tuple[str, float]]:
+        """Query the FTS5 trigram table and return a list of (item_id, rank)."""
+        # Escape double quotes to avoid FTS syntax errors if query has them
+        safe_query = query.replace('"', '""')
+        match_expr = f'"{safe_query}"'
+        try:
+            with connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT id, rank "
+                    "FROM memory_fts "
+                    "WHERE memory_fts MATCH ? "
+                    "ORDER BY rank "
+                    "LIMIT ?",
+                    (match_expr, limit),
+                ).fetchall()
+                return [(row[0], float(row[1])) for row in rows]
+        except Exception:
+            logger.debug("search_fts failed for query %r", query, exc_info=True)
+            return []
+
+
 
     def add_message(self, session_id: str, role: str, content: str, created_at: float) -> None:
         with connect(self.db_path) as conn:

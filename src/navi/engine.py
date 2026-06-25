@@ -10,6 +10,7 @@ from typing import Any
 from ._engine_phases import EnginePhasesMixin
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .config import load_config
+from .context import ContextManager
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from .engine_types import AgentTurnResult
 from .operating_context import OperatingContext
@@ -66,6 +67,7 @@ class HernessEngine(EnginePhasesMixin):
         self.planner = ModelSyscallPlanner(runtime.provider)
         self.recovery = RecoveryPlanner()
         self.trace = TraceStore(home)
+        self.context_manager = ContextManager()
         self._memory_sem: asyncio.Semaphore | None = None
         self._background_tasks: set[asyncio.Task] = set()
 
@@ -457,11 +459,19 @@ class HernessEngine(EnginePhasesMixin):
             message=invoked.message or invoked.observation,
         )
 
+        obs = invoked.observation
+        if invoked.ok:
+            if obs and not obs.startswith("["):
+                obs = f"[{syscall.tool} result] {obs}"
+        else:
+            if obs and not obs.startswith("["):
+                obs = f"[{syscall.tool} error] {obs}"
+
         result = AgentTurnResult(
             text=invoked.message or invoked.observation,
             run_id=invoked.run_id,
             action=invoked.action,
-            observation=invoked.observation,
+            observation=obs,
             model_role=syscall.model_role,
             terminal=invoked.terminal,
             facts=invoked.facts,
@@ -555,8 +565,8 @@ class HernessEngine(EnginePhasesMixin):
     def _conversation_context(self, session_id: str | None) -> str:
         if not session_id:
             return ""
-        messages = self.runtime.memory.get_messages(session_id, limit=8)
-        return "\n".join(f"{item.role}: {item.content}" for item in messages)
+        messages = self.runtime.memory.get_messages(session_id, limit=100)
+        return self.context_manager.build_conversation_context(messages)
 
 
 

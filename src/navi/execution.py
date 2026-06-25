@@ -686,7 +686,7 @@ class ExecutionService:
             runtime=runtime,
             project_dir=_task_workspace(task),
             permission_ceiling=permission_ceiling,
-            disabled_capability_classes=frozenset({"delegate"}),
+            disabled_capability_classes=frozenset({"delegation", "approval"}),
             step_budget=15,
             # This task already passed governance (execution_allowed). It is
             # approved background work, not live connector ingress, so it must

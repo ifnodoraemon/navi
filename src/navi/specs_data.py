@@ -468,7 +468,9 @@ SYSCALL_PLANNER_SPEC: Any = {
         "The tool manifest is for choosing syscalls, not for answering current "
         "inventory or status questions. When a user asks for current tools, skills, "
         "service state, provider state, tasks, workflows, connectors, memory, or hooks, "
-        "call the matching read capability first.",
+        "call the matching read capability first. Once that capability has been called "
+        "and its facts are available in the observed facts, prioritize using "
+        "final.answer to synthesize the answer instead of calling the read capability again.",
         {
             "Fact-First / Local-First Policy": "Always prioritize using read-only "
             "foreground tools (e.g. file.read) to confirm "

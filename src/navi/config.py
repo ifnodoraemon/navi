@@ -32,6 +32,17 @@ class ModelConfig:
     timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
     fallbacks: list["ModelConfig"] = field(default_factory=list)
     routes: dict[str, "ModelConfig"] = field(default_factory=dict)
+    role_params: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def get_role_params(self, role: str) -> dict[str, Any]:
+        defaults = {
+            "planner": {"temperature": 0.0, "max_tokens": 4096},
+            "responder": {"temperature": 0.6, "max_tokens": 16384},
+            "consolidator": {"temperature": 0.1, "max_tokens": 2048},
+        }
+        base = defaults.get(role, {"temperature": 0.3, "max_tokens": 8192})
+        base.update(self.role_params.get(role, {}))
+        return base
 
 
 @dataclass
@@ -234,6 +245,7 @@ def _model_config(model_raw: dict, *, env: dict[str, str], allow_env_override: b
         for name, item in (model_raw.get("routes") or {}).items()
         if isinstance(item, dict)
     }
+    role_params = model_raw.get("role_params") or {}
     return ModelConfig(
         provider=provider,
         model=model,
@@ -243,6 +255,7 @@ def _model_config(model_raw: dict, *, env: dict[str, str], allow_env_override: b
         timeout_seconds=timeout_seconds,
         fallbacks=fallbacks,
         routes=routes,
+        role_params=role_params,
     )
 
 
