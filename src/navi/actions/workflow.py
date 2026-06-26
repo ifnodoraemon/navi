@@ -22,7 +22,6 @@ from .helpers import (
     json_list as _json_list,
     failure_result as _failure_result,
 )
-from ..operating_context import permission_allows
 from ..tools import WORKFLOW_STEP_CONTEXT
 from ..workflows import (
     STEP_STATUS_COMPLETED,
@@ -256,62 +255,43 @@ class WorkflowRunCapability(BaseCapability):
         allowed_tools = set(_json_list(step.allowed_tools_json))
         evidence: list[dict[str, Any]] = []
         try:
-            for call in tool_calls:
-                tool_name = str(call.get("tool") or "").strip()
-                if not tool_name:
-                    continue
-                if tool_name not in allowed_tools:
-                    raise ValueError(f"{tool_name} is not declared in step allowed_tools")
-                requested_permission = str(call.get("permission") or "read")
-                if not permission_allows(requested_permission, workflow.permission_ceiling):
-                    raise ValueError(
-                        f"{tool_name} requests {requested_permission}, above workflow ceiling {workflow.permission_ceiling}"
-                    )
-                registry = build_capability_registry(
-                    self.home,
-                    project_dir=Path(workflow.workspace),
-                    permission_ceiling=workflow.permission_ceiling,
-                    execution_context=WORKFLOW_STEP_CONTEXT,
-                )
-                spec = registry.get(tool_name)
-                if spec is None:
-                    raise ValueError(
-                        f"{tool_name} is not available in execution context {WORKFLOW_STEP_CONTEXT}"
-                    )
-                capability_result = await registry.invoke(
-                    tool_name,
-                    call.get("args") if isinstance(call.get("args"), dict) else {},
-                    permission=requested_permission,
-                    context=CapabilityContext(
-                        home=self.home,
-                        peer_id=context.peer_id,
-                        sender_id=context.sender_id,
-                        source=context.source,
-                        permission_ceiling=workflow.permission_ceiling,
-                        workspace=workflow.workspace,
-                    ),
-                )
-                evidence.append(
-                    {
-                        "tool": tool_name,
-                        "permission": requested_permission,
-                        "ok": capability_result.ok,
-                        "facts": capability_result.facts or {},
-                        "error": ""
-                        if capability_result.ok
-                        else capability_result.message or capability_result.observation,
-                    }
-                )
-                if not capability_result.ok:
-                    raise ValueError(capability_result.message or capability_result.observation)
+            self._validate_declared_calls(
+                tool_calls,
+                allowed_tools=allowed_tools,
+                workflow=workflow,
+            )
+            turn_result = await self._run_model_step(
+                workflow,
+                step,
+                tool_calls=tool_calls,
+                allowed_tools=allowed_tools,
+                context=context,
+            )
+            evidence = self._trace_evidence(turn_result.trace_id)
             if not evidence:
                 evidence.append(
                     {
-                        "kind": "subagent_step",
-                        "summary": "Step completed as an explicit workflow role record; no capability calls were declared.",
+                        "kind": "model_step",
+                        "action": turn_result.action,
+                        "ok": not bool(turn_result.facts and turn_result.facts.get("error_reason")),
+                        "trace_id": turn_result.trace_id,
+                        "summary": turn_result.text,
                     }
                 )
-            output = {"step_id": step.id, "evidence": evidence}
+            if turn_result.action in {"ask", "ask.user"}:
+                raise ValueError(turn_result.text or "workflow step requested user input")
+            error_reason = ""
+            if isinstance(turn_result.facts, dict):
+                error_reason = str(turn_result.facts.get("error_reason") or "")
+            if turn_result.action == "capability_error" or error_reason:
+                raise ValueError(turn_result.text or error_reason or "workflow step failed")
+            output = {
+                "step_id": step.id,
+                "trace_id": turn_result.trace_id,
+                "action": turn_result.action,
+                "summary": turn_result.text,
+                "evidence": evidence,
+            }
             subagents.finish(run.id, status="completed", output_data=output)
             store.update_step(step.id, status=STEP_STATUS_COMPLETED, evidence=output)
             return CapabilityResult(
@@ -334,6 +314,120 @@ class WorkflowRunCapability(BaseCapability):
                     "error_type": exc.__class__.__name__,
                 },
             )
+
+    def _validate_declared_calls(
+        self,
+        tool_calls: list[dict[str, Any]],
+        *,
+        allowed_tools: set[str],
+        workflow: Workflow,
+    ) -> None:
+        declared_tools = {
+            str(call.get("tool") or "").strip()
+            for call in tool_calls
+            if isinstance(call, dict) and str(call.get("tool") or "").strip()
+        }
+        for tool_name in sorted(declared_tools):
+            if tool_name not in allowed_tools:
+                raise ValueError(f"{tool_name} is not declared in step allowed_tools")
+        if not declared_tools:
+            return
+        registry = build_capability_registry(
+            self.home,
+            project_dir=Path(workflow.workspace),
+            allowed_tools=allowed_tools,
+            permission_ceiling=workflow.permission_ceiling,
+            execution_context=WORKFLOW_STEP_CONTEXT,
+        )
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            tool_name = str(call.get("tool") or "").strip()
+            if not tool_name:
+                continue
+            requested_permission = str(call.get("permission") or "read")
+            spec = registry.get(tool_name)
+            if spec is None:
+                raise ValueError(
+                    f"{tool_name} is not available in execution context {WORKFLOW_STEP_CONTEXT}"
+                )
+            if not self._permission_allowed(requested_permission, workflow.permission_ceiling):
+                raise ValueError(
+                    f"{tool_name} requests {requested_permission}, above workflow ceiling {workflow.permission_ceiling}"
+                )
+
+    async def _run_model_step(
+        self,
+        workflow: Workflow,
+        step: WorkflowStep,
+        *,
+        tool_calls: list[dict[str, Any]],
+        allowed_tools: set[str],
+        context: CapabilityContext,
+    ):
+        from ..config import load_config
+        from ..engine import HernessEngine
+        from ..provider import build_provider
+        from ..runtime import AgentRuntime
+
+        runtime = AgentRuntime(home=self.home, provider=build_provider(load_config(self.home).model))
+        model_tools = set(allowed_tools)
+        model_tools.update({"final.answer", "ask.user"})
+        engine = HernessEngine(
+            home=self.home,
+            runtime=runtime,
+            project_dir=Path(workflow.workspace),
+            allowed_tools=model_tools,
+            permission_ceiling=workflow.permission_ceiling,
+            event_bus=context.event_bus,
+            execution_context=WORKFLOW_STEP_CONTEXT,
+        )
+        return await engine.handle(
+            _step_prompt(
+                workflow,
+                step,
+                tool_calls=tool_calls,
+                allowed_tools=sorted(allowed_tools),
+            ),
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            source=context.source,
+            session_id=context.session_id,
+            intent_facts={
+                "workflow_id": workflow.id,
+                "workflow_step_id": step.id,
+                "workflow_step_role": step.role,
+                "workflow_step_allowed_tools": sorted(allowed_tools),
+                "declared_tool_calls": tool_calls,
+            },
+        )
+
+    def _trace_evidence(self, trace_id: str) -> list[dict[str, Any]]:
+        if not trace_id:
+            return []
+        from ..trace import TraceStore
+
+        evidence: list[dict[str, Any]] = []
+        for event in TraceStore(self.home).list_events(trace_id):
+            if event.phase != "capability.result":
+                continue
+            evidence.append(
+                {
+                    "tool": event.tool,
+                    "ok": event.ok,
+                    "input": _json_object(event.input_json),
+                    "output": _json_object(event.output_json),
+                    "message": event.message,
+                    "model_role": event.model_role,
+                }
+            )
+        return evidence
+
+    @staticmethod
+    def _permission_allowed(requested: str, ceiling: str) -> bool:
+        from ..operating_context import permission_allows
+
+        return permission_allows(requested, ceiling)
 
     def _finish_if_possible(self, store: WorkflowStore, workflow: Workflow) -> CapabilityResult:
         counts = _workflow_counts(store, workflow)
