@@ -324,11 +324,12 @@ class EnginePhasesMixin:
     def _text_mentions_pending_approval(text: str, pending_approval_prompt: str) -> bool:
         if pending_approval_prompt in text:
             return True
-        marker = "Approval code: `"
-        if marker not in pending_approval_prompt:
-            return False
-        code = pending_approval_prompt.split(marker, 1)[1].split("`", 1)[0]
-        return bool(code and code in text)
+        import re
+        match = re.search(r"`(\d{6})`", pending_approval_prompt)
+        if match:
+            code = match.group(1)
+            return bool(code and code in text)
+        return False
 
     @staticmethod
     def _approval_prompt_from_facts(facts: dict[str, Any] | None, *, source: str = "") -> str:
