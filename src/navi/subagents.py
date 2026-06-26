@@ -122,7 +122,7 @@ class SubagentRunStore:
         output_data: dict[str, Any] | None = None,
         error: str = "",
     ) -> SubagentRun | None:
-        if status not in {"completed", "failed", "cancelled"}:
+        if status not in {"completed", "failed", "cancelled", "suspended"}:
             raise ValueError(f"unsupported subagent status: {status}")
         now = time.time()
         with connect(self.db_path) as conn:

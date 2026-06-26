@@ -672,9 +672,16 @@ def _extract_anthropic_content(
                 tool_input = block.get("input")
                 if isinstance(tool_input, dict):
                     return json.dumps(tool_input, ensure_ascii=False)
+                raise RuntimeError(
+                    f"Provider structured tool output {tool_name} was not an object: {data}"
+                )
         for block in blocks:
             if block.get("type") == "tool_use":
                 name = block.get("name")
+                if name == tool_name:
+                    raise RuntimeError(
+                        f"Provider structured tool output {tool_name} was invalid: {data}"
+                    )
                 if name:
                     reconstructed = {
                         "tool": name,
@@ -684,7 +691,11 @@ def _extract_anthropic_content(
                         "confidence": 1.0,
                         "reason": f"Reconstructed from direct tool call to {name}",
                     }
-                    logger.info(f"Fallback: mapping direct tool call {name} to navi_syscall: {reconstructed}")
+                    logger.info(
+                        "Fallback: reconstructed direct tool call %s as planner output: %s",
+                        name,
+                        reconstructed,
+                    )
                     return json.dumps(reconstructed, ensure_ascii=False)
         raise RuntimeError(f"Provider response did not include tool output {tool_name}: {data}")
     text = "\n".join(

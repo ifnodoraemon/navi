@@ -14,7 +14,9 @@ from .evolution import EvolutionLedger
 from .goals import GoalStore
 from .json_utils import parse_first_json_object
 from .lifecycle import (
+    RUN_STATUS_AWAITING_APPROVAL,
     RUN_STATUS_BLOCKED,
+    RUN_STATUS_FAILED,
     RUN_STATUS_PREPARING,
     RUN_STATUS_QUEUED,
     RUN_STATUS_RUNNING,
@@ -658,13 +660,14 @@ class ExecutionService:
             source=task.source,
             session_alias=f"executor:{task.id}",
         )
-        exit_code = 0
-        execution_status = "completed"
+        execution_status, status_reason = self._execution_status_from_turn_result(turn_result)
+        exit_code = 0 if execution_status != RUN_STATUS_FAILED else 1
         self.subagents.finish(
             subagent_run.id,
-            status=execution_status,
+            status="failed" if exit_code else "completed",
             output_data={
                 "exit_code": exit_code,
+                "execution_status": execution_status,
                 "summary": turn_result.text,
                 "provider": "react",
                 "model_role": turn_result.model_role,
@@ -694,7 +697,7 @@ class ExecutionService:
             phase="execute",
             status=execution_status,
             summary=turn_result.text[:1600] if turn_result.text else "",
-            reason="HernessEngine execution finished",
+            reason=status_reason,
             action_kind="herness_engine",
         )
         result = ExecutionResult(
@@ -702,7 +705,7 @@ class ExecutionService:
             phase="execute",
             command=["navi", "react", task.id],
             stdout=turn_result.text,
-            stderr=turn_result.text if exit_code != 0 else "",
+            stderr=status_reason if execution_status == RUN_STATUS_BLOCKED else (turn_result.text if exit_code != 0 else ""),
             exit_code=exit_code,
             started_at=started_at,
             ended_at=time.time(),
@@ -715,6 +718,17 @@ class ExecutionService:
             before_state=before_state,
             reason_exit_code=result.exit_code,
         )
+
+    @staticmethod
+    def _execution_status_from_turn_result(result) -> tuple[str, str]:
+        facts = result.facts if isinstance(result.facts, dict) else {}
+        if result.action in {"ask", "ask.user"}:
+            return RUN_STATUS_BLOCKED, "execution produced an ask action and is waiting for user input"
+        if result.action == "approval" or facts.get("reason") == "sensitive_op_requires_approval":
+            return RUN_STATUS_AWAITING_APPROVAL, "execution suspended for approval"
+        if result.action == "capability_error" or facts.get("error_reason"):
+            return RUN_STATUS_FAILED, "execution ended with capability error facts"
+        return RUN_STATUS_COMPLETED, "execution produced terminal completion facts"
 
     def _execution_before_state(self, task: Run) -> str:
         task_before = self.runs.get(task.id)
@@ -740,6 +754,7 @@ class ExecutionService:
         finalize = execute_finalize_decision(
             exit_code=result.exit_code,
             stderr=result.stderr,
+            completion_status=str((result.protocol.completion if result.protocol else {}).get("status") or ""),
         )
         updated_task = (
             self.runs.update_run(

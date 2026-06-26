@@ -16,7 +16,6 @@ from .workflows import (
     Workflow,
     WorkflowStore,
 )
-from .connector_registry import approval_command_words
 
 
 ApprovalDecision = Literal["approve", "reject"]
@@ -572,30 +571,6 @@ def explicit_code_was_user_provided(
     if code in input_text:
         return True
     return any(code in content for content in (session_user_messages or [])[-2:])
-
-
-def approval_decision_was_user_provided(
-    *,
-    decision: str,
-    source: str,
-    input_text: str,
-) -> bool:
-    text = input_text.strip()
-    if not text:
-        return False
-    lowered = text.lower()
-    compact = "".join(lowered.split())
-    for command in approval_command_words(source, decision):
-        word = command.strip().lower()
-        if not word:
-            continue
-        if compact.startswith(f"not{word}") or compact.startswith(f"no{word}"):
-            continue
-        if compact.startswith(f"不{word}"):
-            continue
-        if word in lowered or word in compact:
-            return True
-    return False
 
 
 def run_matches_context(record: Any, context: Any) -> bool:

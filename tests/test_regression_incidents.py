@@ -8,9 +8,14 @@ import yaml
 
 from navi.engine import HernessEngine
 from navi.evolution import EvolutionEngine, EvolutionLedger
-from navi.provider import ChatMessage, _extract_openai_content
+from navi.capabilities import build_capability_registry
+from navi.capabilities_types import CapabilityContext
+from navi.engine_types import AgentTurnResult
+from navi.execution import ExecutionService
+from navi.provider import ChatMessage, _extract_anthropic_content, _extract_openai_content
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
+from navi.syscalls import ModelSyscallPlanner
 from navi.trace import TraceStore
 
 
@@ -44,6 +49,64 @@ def test_provider_recovers_structured_json_from_reasoning_content():
 
     assert recovered["tool"] == "final.answer"
     assert recovered["args"]["message"] == "ok"
+
+
+class _PlannerSchemaProvider:
+    def __init__(self) -> None:
+        self.output_schema: dict | None = None
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        self.output_schema = output_schema
+        return json.dumps(
+            {
+                "tool": "final.answer",
+                "permission": "read",
+                "args": {"message": "ok"},
+                "model_role": "responder",
+                "confidence": 1.0,
+                "reason": "facts available",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_planner_structured_output_wrapper_is_not_a_capability_name():
+    provider = _PlannerSchemaProvider()
+    planner = ModelSyscallPlanner(provider)
+
+    decision = await planner.plan("hi", tools=[])
+
+    assert provider.output_schema["name"] == "planner_decision"
+    assert decision.tool == "final.answer"
+
+
+def test_anthropic_structured_wrapper_returns_inner_planner_decision():
+    raw = {
+        "content": [
+            {
+                "type": "tool_use",
+                "name": "planner_decision",
+                "input": {
+                    "tool": "delegate.list",
+                    "permission": "read",
+                    "args": {"limit": 10},
+                    "model_role": "planner",
+                    "confidence": 1,
+                    "reason": "inspect run facts",
+                },
+            }
+        ]
+    }
+
+    parsed = json.loads(_extract_anthropic_content(raw, tool_name="planner_decision"))
+
+    assert parsed["tool"] == "delegate.list"
 
 
 class _StructuredJourneyProvider:

@@ -145,7 +145,7 @@ def _extract_json_object(text: str) -> str:
 
 def _syscall_output_schema() -> dict[str, Any]:
     return {
-        "name": "navi_syscall",
+        "name": "planner_decision",
         "strict": False,
         "schema": {
             "type": "object",
@@ -153,7 +153,7 @@ def _syscall_output_schema() -> dict[str, Any]:
                 "tool": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Capability name from the manifest (e.g., 'shell.run'). Do NOT output 'navi_syscall' here.",
+                    "description": "Selected capability name from the current manifest.",
                 },
                 "permission": {"type": "string", "enum": ["read", "prepare", "write"]},
                 "args": {"type": "object", "description": "Arguments for the selected capability."},

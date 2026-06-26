@@ -66,7 +66,13 @@ def execute_finalize_decision(
     *,
     exit_code: int,
     stderr: str,
+    completion_status: str = "",
 ) -> RunFinalizeDecision:
+    if completion_status == RUN_STATUS_BLOCKED:
+        error = stderr.strip() if stderr else "execution blocked"
+        return RunFinalizeDecision(status=RUN_STATUS_BLOCKED, error=error)
+    if completion_status == RUN_STATUS_AWAITING_APPROVAL:
+        return RunFinalizeDecision(status=RUN_STATUS_AWAITING_APPROVAL, error="")
     if exit_code == 0:
         return RunFinalizeDecision(status=RUN_STATUS_COMPLETED, error="")
     error = stderr.strip() if stderr else "actuator loop failed"

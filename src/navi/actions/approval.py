@@ -22,11 +22,7 @@ from .helpers import (
 )
 from ..runs import RunStore
 from ..goals import GoalStore
-from ..control import (
-    ApprovalService,
-    SurfaceContext,
-    approval_decision_was_user_provided,
-)
+from ..control import ApprovalService, SurfaceContext
 
 
 @capability("approval_request")
@@ -90,28 +86,6 @@ class ApprovalResolveCapability(BaseCapability):
         code = _arg_text(args, "code")
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
         selection = _approval_selection(args, code=code, run_id=run_id)
-        if (
-            selection in {"latest_visible_batch", "all_visible"}
-            and context.input_text
-            and not approval_decision_was_user_provided(
-                decision=decision,
-                source=context.source,
-                input_text=context.input_text,
-            )
-        ):
-            facts = {
-                "reason": "approval_decision_not_in_user_input",
-                "selection": selection,
-                "decision": decision,
-                "approval_decision_present_in_current_user_input": False,
-            }
-            return _failure_result(
-                "approval",
-                message="approval decision was not present in current user input",
-                error_reason="schema_mismatch",
-                terminal=True,
-                facts=facts,
-            )
         if code and context.input_text and code not in context.input_text:
             facts = {
                 "reason": "approval_code_not_in_user_input",

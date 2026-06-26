@@ -28,6 +28,11 @@ from ..goals import GoalStore
 from ..execution import ExecutionService
 
 
+ACTIVE_DELEGATION_STATUSES = frozenset(
+    {"pending", "preparing", "prepared", "awaiting_approval", "queued", "running"}
+)
+
+
 # Statuses a remote surface (e.g. WeChat) is allowed to delete. A run stuck in
 # awaiting_approval whose code has expired would otherwise be undeletable AND
 # unapprovable — a dead end — so those terminal-for-the-user states are
@@ -75,6 +80,31 @@ class DelegateSpawnCapability(BaseCapability):
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         workspace = _resolve_workspace(_arg_text(args, "workspace") or context.workspace, default=self.project_dir)
+
+        existing = self._existing_active_run(
+            runs,
+            prompt=prompt,
+            workspace=workspace,
+            context=context,
+        )
+        if existing is not None:
+            facts = {
+                **_transition_facts("delegation_run", existing.id, "existing"),
+                "run_id": existing.id,
+                "status": existing.status,
+                "autonomy_level": existing.autonomy_level,
+                "trust_rule_id": existing.trust_rule_id,
+                "deduplicated": True,
+            }
+            approvals = runs._approvals_for_run(existing.id)
+            pending = next((item for item in approvals if item.status == "pending"), None)
+            if pending is not None:
+                facts["approval"] = {
+                    "action": pending.action,
+                    "code": pending.code,
+                    "expires_at": pending.expires_at,
+                }
+            return _fact_result("delegation", facts, run_id=existing.id)
 
         task = runs.create(
             title=objective[:120],
@@ -154,6 +184,27 @@ class DelegateSpawnCapability(BaseCapability):
             facts,
             run_id=task.id,
         )
+
+    @staticmethod
+    def _existing_active_run(
+        runs: RunStore,
+        *,
+        prompt: str,
+        workspace: str,
+        context: CapabilityContext,
+    ):
+        from ..control import run_matches_context
+
+        for run in runs.list(limit=100):
+            if run.kind != "delegation":
+                continue
+            if run.status not in ACTIVE_DELEGATION_STATUSES:
+                continue
+            if run.prompt != prompt or run.workspace != workspace:
+                continue
+            if run_matches_context(run, context):
+                return run
+        return None
 
 
 @capability("delegate_prepare")
