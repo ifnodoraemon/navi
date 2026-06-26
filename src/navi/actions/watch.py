@@ -115,6 +115,7 @@ class WatchDeleteCapability(BaseCapability):
         graph.delete(deleted.id)
         facts = {
             **_transition_facts("watch", deleted.id, "deleted"),
+            "completion_evidence": True,
             "deleted": True,
             "watch_id": deleted.id,
             "cron": deleted.cron,

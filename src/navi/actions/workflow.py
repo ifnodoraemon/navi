@@ -501,6 +501,44 @@ def _runnable_steps(steps: list[WorkflowStep]) -> list[WorkflowStep]:
     return runnable
 
 
+def _step_prompt(
+    workflow: Workflow,
+    step: WorkflowStep,
+    *,
+    tool_calls: list[dict[str, Any]],
+    allowed_tools: list[str],
+) -> str:
+    prompt = {
+        "workflow_id": workflow.id,
+        "workflow_objective": workflow.objective,
+        "step_id": step.id,
+        "step_role": step.role,
+        "step_objective": step.objective,
+        "permission_ceiling": workflow.permission_ceiling,
+        "allowed_tools": allowed_tools,
+        "depends_on": _json_list(step.depends_on_json),
+        "declared_tool_calls": tool_calls,
+        "instruction": (
+            "Complete this workflow step by choosing from the current capability manifest. "
+            "The declared_tool_calls are planner facts from the proposal, not a script to replay. "
+            "Use final.answer when the step is complete, or ask.user only if user input is truly required."
+        ),
+    }
+    return "Workflow step execution facts:\n" + json.dumps(
+        prompt,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _json_object(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _workflow_counts(store: WorkflowStore, workflow: Workflow) -> dict[str, int]:
     steps = store.list_steps(workflow.id)
     return {

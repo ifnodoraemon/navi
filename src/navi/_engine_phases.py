@@ -92,19 +92,20 @@ class EnginePhasesMixin:
                 event.get("facts")
                 for event in reversed(events)
                 if isinstance(event.get("facts"), dict)
-                and "cleanup_complete" in event.get("facts", {})
+                and event.get("facts", {}).get("entity_type") == "bulk_delete"
+                and "completion_evidence" in event.get("facts", {})
             ),
             None,
         )
         if (
             isinstance(latest_cleanup_facts, dict)
-            and latest_cleanup_facts.get("cleanup_complete") is False
+            and latest_cleanup_facts.get("completion_evidence") is False
         ):
             remaining = latest_cleanup_facts.get("remaining_count")
             return CompletionBlock(
                 reason=(
                     "completion verifier blocked final answer: "
-                    f"cleanup_complete=false with remaining_count={remaining}."
+                    f"bulk_delete completion_evidence=false with remaining_count={remaining}."
                 ),
             )
         if state_context is not None:

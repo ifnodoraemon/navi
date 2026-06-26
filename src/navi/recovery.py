@@ -106,6 +106,10 @@ def _last_cleanup_facts(events: list[dict[str, Any]]) -> dict[str, Any]:
         if event.get("tool") != "delegate.delete":
             continue
         facts = event.get("facts")
-        if isinstance(facts, dict) and facts.get("cleanup_complete") is False:
+        if (
+            isinstance(facts, dict)
+            and facts.get("entity_type") == "bulk_delete"
+            and facts.get("completion_evidence") is False
+        ):
             return facts
     return {}

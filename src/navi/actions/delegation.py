@@ -310,6 +310,7 @@ class DelegateDeleteCapability(BaseCapability):
         graph.delete(deleted.id)
         facts = {
             **_transition_facts("delegation_run", deleted.id, "deleted"),
+            "completion_evidence": True,
             "deleted": True,
             "run_id": deleted.id,
             "title": deleted.title,
@@ -376,6 +377,7 @@ class DelegateDeleteCapability(BaseCapability):
         remaining_count = runs.count_runs(status=status, source=source, kind=kind)
         facts = {
             **_transition_facts("bulk_delete", "runs", "completed"),
+            "completion_evidence": remaining_count == 0,
             "entity_count": len(deleted),
             "before_count": before_count,
             "deleted_count": len(deleted),

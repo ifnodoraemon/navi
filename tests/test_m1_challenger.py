@@ -23,6 +23,40 @@ class NoModelCalls:
         return []
 
 
+class WorkflowStepProvider:
+    def __init__(self) -> None:
+        self.planner_calls = 0
+
+    async def complete_for(self, role: str, messages: list[Any], **kwargs: Any) -> str:
+        if role != "planner":
+            raise AssertionError(f"unexpected model role in workflow step: {role}")
+        self.planner_calls += 1
+        if self.planner_calls == 1:
+            return json.dumps(
+                {
+                    "tool": "provider.config",
+                    "permission": "read",
+                    "args": {},
+                    "model_role": "auditor",
+                    "confidence": 1.0,
+                    "reason": "inspect provider facts for the workflow step",
+                }
+            )
+        return json.dumps(
+            {
+                "tool": "final.answer",
+                "permission": "read",
+                "args": {"message": "workflow evidence complete"},
+                "model_role": "auditor",
+                "confidence": 1.0,
+                "reason": "provider facts have been inspected",
+            }
+        )
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "auditor"]
+
+
 @pytest.mark.asyncio
 async def test_remote_connector_full_permissions_but_execution_gated(
     tmp_path: Path,
@@ -142,7 +176,12 @@ def test_weixin_service_initializes_connector_ingress_without_direct_router_call
 
 
 @pytest.mark.asyncio
-async def test_workflow_run_executes_declared_capability_evidence(tmp_path: Path) -> None:
+async def test_workflow_run_uses_model_owned_step_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = WorkflowStepProvider()
+    monkeypatch.setattr("navi.provider.build_provider", lambda config: provider)
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     context = CapabilityContext(
         home=tmp_path,
@@ -162,12 +201,12 @@ async def test_workflow_run_executes_declared_capability_evidence(tmp_path: Path
                     "id": "report",
                     "role": "auditor",
                     "objective": "Return the verified step result.",
-                    "allowed_tools": ["final.answer"],
+                    "allowed_tools": ["provider.config"],
                     "tool_calls": [
                         {
-                            "tool": "final.answer",
+                            "tool": "provider.config",
                             "permission": "read",
-                            "args": {"message": "workflow evidence complete"},
+                            "args": {},
                         }
                     ],
                 }
@@ -202,9 +241,10 @@ async def test_workflow_run_executes_declared_capability_evidence(tmp_path: Path
     steps = store.list_steps(workflow_id)
     assert len(steps) == 1
     assert steps[0].status == STEP_STATUS_COMPLETED
+    assert provider.planner_calls == 2
 
     evidence = json.loads(steps[0].evidence_json)
-    tool_evidence = evidence["evidence"][0]
-    assert tool_evidence["tool"] == "final.answer"
-    assert tool_evidence["permission"] == "read"
-    assert tool_evidence["ok"] is True
+    tool_names = [item["tool"] for item in evidence["evidence"]]
+    assert tool_names == ["provider.config", "final.answer"]
+    assert evidence["trace_id"]
+    assert evidence["summary"] == "workflow evidence complete"

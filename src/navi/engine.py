@@ -287,11 +287,7 @@ class HernessEngine(EnginePhasesMixin):
     def _facts_complete_current_request(facts: dict[str, Any] | None) -> bool:
         if not isinstance(facts, dict):
             return False
-        if facts.get("deleted") is True:
-            return True
-        if facts.get("cleanup_complete") is True:
-            return True
-        return False
+        return facts.get("completion_evidence") is True
 
     @staticmethod
     def _progress_signature(

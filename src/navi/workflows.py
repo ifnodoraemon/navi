@@ -176,7 +176,7 @@ def workflow_verification_decision(
     goal_type = str(workflow_plan.get("goal_type") or "").strip().lower()
     failed_steps = [step for step in steps if step.status != STEP_STATUS_COMPLETED]
     empty_evidence = [step.id for step in steps if not _json_dict(step.evidence_json)]
-    capability_steps = [step.id for step in steps if _json_list(step.tool_calls_json)]
+    capability_steps = [step.id for step in steps if _step_has_execution_evidence(step)]
     missing_execution_evidence = not capability_steps and goal_type != "planning"
     passed = (
         workflow.status in (WORKFLOW_STATUS_COMPLETED, WORKFLOW_STATUS_VERIFIED_COMPLETE)
@@ -212,6 +212,21 @@ def _json_dict(value: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _step_has_execution_evidence(step: WorkflowStep) -> bool:
+    evidence = _json_dict(step.evidence_json)
+    items = evidence.get("evidence")
+    if not isinstance(items, list):
+        return False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("tool") or "").strip():
+            return True
+        if item.get("kind") == "model_step" and str(item.get("trace_id") or "").strip():
+            return True
+    return False
 
 
 class WorkflowStore:
