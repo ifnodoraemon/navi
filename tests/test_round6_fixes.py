@@ -356,6 +356,29 @@ async def test_tool_gateway_preserves_structured_tool_error_reason(
     assert "instead" not in result.observation.lower()
 
 
+@pytest.mark.asyncio
+async def test_guarded_action_failure_observation_is_structured_facts(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+
+    result = await registry.invoke("watch.create", {}, permission="prepare", context=context)
+
+    assert result.ok is False
+    assert result.error_reason == "schema_mismatch"
+    assert json.loads(result.observation) == {
+        "error_reason": "schema_mismatch",
+        "error_type": "SchemaMismatch",
+    }
+    assert "requires prompt" not in result.observation.lower()
+    assert "requires prompt" in result.message.lower()
+
+
 # ---------------------------------------------------------------------------
 # Fix 4: FallbackProvider always wraps single-provider configs
 # ---------------------------------------------------------------------------

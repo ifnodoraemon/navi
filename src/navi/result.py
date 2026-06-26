@@ -15,6 +15,7 @@ The decorator catches :class:`NaviError` subclasses and converts them to
 from __future__ import annotations
 
 import functools
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, TypeVar
@@ -116,6 +117,11 @@ class Result(Generic[T]):
 # ----------------------------------------------------------------- @guarded
 
 
+def _error_observation(*, error_reason: str, error_type: str) -> tuple[str, dict[str, Any]]:
+    facts = {"error_reason": error_reason, "error_type": error_type}
+    return json.dumps(facts, ensure_ascii=False, sort_keys=True), facts
+
+
 def guarded(fn: Callable) -> Callable:
     """Decorator for ``Capability.invoke`` methods.
 
@@ -134,12 +140,17 @@ def guarded(fn: Callable) -> Callable:
             logger.debug("capability %s failed: %s", getattr(self, "spec", ""), exc)
             from .capabilities_types import CapabilityResult
 
+            observation, facts = _error_observation(
+                error_reason=exc.reason,
+                error_type=exc.__class__.__name__,
+            )
             return CapabilityResult(
                 ok=False,
                 action="error",
-                observation=str(exc),
+                observation=observation,
                 message=str(exc),
                 terminal=exc.terminal,
+                facts=facts,
                 error_reason=exc.reason,
             )
         except Exception as exc:
@@ -148,12 +159,17 @@ def guarded(fn: Callable) -> Callable:
             )
             from .capabilities_types import CapabilityResult
 
+            observation, facts = _error_observation(
+                error_reason="internal_error",
+                error_type=exc.__class__.__name__,
+            )
             return CapabilityResult(
                 ok=False,
                 action="error",
-                observation=f"internal error: {exc}",
+                observation=observation,
                 message=f"internal error: {exc}",
                 terminal=False,
+                facts=facts,
                 error_reason="internal_error",
             )
 
