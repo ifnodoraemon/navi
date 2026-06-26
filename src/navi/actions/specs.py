@@ -64,6 +64,10 @@ ACTION_SPECS = [
                     "type": "string",
                     "description": "How to verify that the delegation succeeded.",
                 },
+                "workspace": {
+                    "type": "string",
+                    "description": "Optional absolute path to run the task in. Defaults to the current workspace.",
+                },
             },
             "required": ["objective", "context", "plan", "success_criteria"],
         },

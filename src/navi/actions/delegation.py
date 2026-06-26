@@ -74,7 +74,7 @@ class DelegateSpawnCapability(BaseCapability):
         config = load_config(self.home)
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
-        workspace = _resolve_workspace(context.workspace, default=self.project_dir)
+        workspace = _resolve_workspace(_arg_text(args, "workspace") or context.workspace, default=self.project_dir)
 
         task = runs.create(
             title=objective[:120],
