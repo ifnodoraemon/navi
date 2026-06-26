@@ -97,42 +97,6 @@ def float_or_none(value: Any) -> float | None:
         return None
 
 
-def parse_one_shot_run_at(text: str, *, now: float | None = None) -> float | None:
-    raw = text.strip()
-    if not raw:
-        return None
-    base = datetime.fromtimestamp(now or time.time())
-    day_offset = 1 if "\u660e\u5929" in raw else 0
-    hour, minute = parse_clock_time(raw)
-    if hour is None:
-        return None
-    candidate = base.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(
-        days=day_offset
-    )
-    if day_offset == 0 and candidate.timestamp() <= base.timestamp():
-        candidate += timedelta(days=1)
-    return candidate.timestamp()
-
-
-def parse_clock_time(text: str) -> tuple[int | None, int]:
-    match = re.search(r"(^|\D)([01]?\d|2[0-3])[:：]([0-5]\d)", text)
-    if match:
-        return int(match.group(2)), int(match.group(3))
-    match = re.search(r"(\d{1,2})\s*(?:\u70b9|\u65f6)(?:\s*([0-5]?\d)\s*\u5206?)?", text)
-    if not match:
-        return None, 0
-    hour = int(match.group(1))
-    minute = int(match.group(2) or 0)
-    if "\u4e0b\u5348" in text and hour < 12:
-        hour += 12
-    if "\u665a\u4e0a" in text and hour < 12:
-        hour += 12
-    if "\u4e2d\u5348" in text and hour < 12:
-        hour += 12
-    if hour > 23 or minute > 59:
-        return None, 0
-    return hour, minute
-
 
 def positive_int(value: Any, *, default: int, maximum: int) -> int:
     try:

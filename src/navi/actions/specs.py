@@ -180,8 +180,7 @@ ACTION_SPECS = [
             "properties": {
                 "prompt": {"type": "string"},
                 "cron": {"type": "string"},
-                "run_at": {"type": "number"},
-                "run_at_text": {"type": "string"},
+                "run_at": {"type": "number", "description": "Unix timestamp indicating when to run"},
                 "kind": {"type": "string", "enum": ["once", "recurring"]},
             },
             "required": ["prompt"],

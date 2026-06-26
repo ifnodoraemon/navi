@@ -18,7 +18,6 @@ from .helpers import (
     fact_result as _fact_result,
     resolve_workspace as _resolve_workspace,
     float_or_none as _float_or_none,
-    parse_one_shot_run_at as _parse_one_shot_run_at,
 )
 from ..cron import next_cron_time, validate_cron
 from ..runs import RunStore
@@ -40,19 +39,16 @@ class WatchCreateCapability(BaseCapability):
         context: CapabilityContext,
     ) -> CapabilityResult:
         cron = _arg_text(args, "cron")
-        run_at_text = _arg_text(args, "run_at_text")
         kind = _arg_text(args, "kind") or (
-            "once" if args.get("run_at") is not None or run_at_text else "recurring"
+            "once" if args.get("run_at") is not None else "recurring"
         )
         prompt = _arg_text(args, "prompt")
         if not prompt:
             raise SchemaMismatch("watch.create requires prompt.")
         if kind == "once":
             next_run = _float_or_none(args.get("run_at"))
-            if next_run is None and run_at_text:
-                next_run = _parse_one_shot_run_at(run_at_text)
             if next_run is None:
-                raise SchemaMismatch("watch.create kind=once requires run_at or run_at_text.")
+                raise SchemaMismatch("watch.create kind=once requires run_at.")
             cron = "once"
         else:
             kind = "recurring"
