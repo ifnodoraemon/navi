@@ -214,6 +214,75 @@ class _RepeatListProvider:
 
 
 @pytest.mark.asyncio
+async def test_delegate_spawn_returns_existing_active_run_for_same_fact_scope(tmp_path):
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    args = {
+        "objective": "在用户电脑上找到简历文件并发送给用户",
+        "context": "用户请求发送简历文件。",
+        "plan": "在工作区搜索简历文件。",
+        "success_criteria": "返回搜索事实。",
+    }
+
+    first = await registry.invoke("delegate.spawn", args, permission="prepare", context=context)
+    second = await registry.invoke("delegate.spawn", args, permission="prepare", context=context)
+
+    runs = RunStore(tmp_path).list(limit=20)
+    assert first.ok is True
+    assert second.ok is True
+    assert second.run_id == first.run_id
+    assert second.facts["deduplicated"] is True
+    assert len([run for run in runs if run.kind == "delegation"]) == 1
+
+
+class _AskOnlyEngine:
+    def __init__(self, **kwargs):
+        pass
+
+    async def handle(self, *args, **kwargs) -> AgentTurnResult:
+        return AgentTurnResult(
+            text="请提供文件位置。",
+            action="ask",
+            model_role="responder",
+            terminal=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_executor_ask_result_blocks_run_instead_of_marking_completed(
+    tmp_path,
+    monkeypatch,
+):
+    import navi.execution as execution_module
+
+    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _AskOnlyEngine)
+    runs = RunStore(tmp_path)
+    task = runs.create(
+        "在用户电脑上找到简历文件并发送给用户",
+        prompt="Objective:\n找到简历\n\nSuccess Criteria:\n找到并发送",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="queued",
+    )
+
+    result = await ExecutionService(tmp_path).execute_task(task)
+
+    assert result.status == "blocked"
+    assert result.result_summary == "请提供文件位置。"
+    assert "waiting for user input" in result.error
+
+
+@pytest.mark.asyncio
 async def test_expired_task_cleanup_finishes_from_completion_facts(tmp_path):
     runs = RunStore(tmp_path)
     expired = runs.create(
