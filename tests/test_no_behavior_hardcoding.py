@@ -216,9 +216,14 @@ def test_missing_binary_error_does_not_emit_candidate_commands(tmp_path: Path) -
 def test_connector_failure_fallbacks_do_not_suggest_retry() -> None:
     """FP-2/FP-6: connector fallbacks should identify runtime failure facts,
     not tell the user what to do next."""
-    for rel in ("src/navi/connector_router.py", "src/navi/connector_runtime.py"):
+    for rel in (
+        "src/navi/connector_router.py",
+        "src/navi/connector_runtime.py",
+        "src/navi/weixin/service.py",
+    ):
         text = (PROJECT_ROOT / rel).read_text(encoding="utf-8")
         assert "稍后重试" not in text
+        assert "请稍后" not in text
 
 
 def test_memory_write_hook_block_is_not_overridden_for_non_constraints(tmp_path: Path) -> None:
@@ -264,3 +269,10 @@ def test_connectorless_approval_reply_contains_facts_not_reply_commands() -> Non
     assert "Reply `" not in rendered
     assert "approve ABC123" not in rendered
     assert "reject ABC123" not in rendered
+
+
+def test_governance_agent_reports_state_not_auto_approval() -> None:
+    source = (PROJECT_ROOT / "src/navi/governance_agent.py").read_text(encoding="utf-8")
+    assert "auto-approved" not in source
+    assert "Auto-approved" not in source
+    assert "execution grant allowed by governance state" in source

@@ -33,7 +33,7 @@ class GovernanceAgent:
                 ActionApprovedEvent(
                     source_agent="governance_agent",
                     run_id=event.run_id,
-                    reason="auto-approved",
+                    reason="execution grant allowed by governance state",
                 )
             )
         else:

@@ -38,6 +38,9 @@ def test_render_approval_reply_cli_source_is_connector_agnostic() -> None:
     # No hardcoded Chinese verbs leak in for the connector-less path.
     assert "批准" not in rendered
     assert "拒绝" not in rendered
+    assert "Reply `" not in rendered
+    assert "approve ZZZ999" not in rendered
+    assert "reject ZZZ999" not in rendered
 
 
 def test_core_control_files_do_not_hardcode_approval_verbs() -> None:
