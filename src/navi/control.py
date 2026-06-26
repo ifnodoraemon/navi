@@ -16,6 +16,7 @@ from .workflows import (
     Workflow,
     WorkflowStore,
 )
+from .connector_registry import approval_command_words
 
 
 ApprovalDecision = Literal["approve", "reject"]
@@ -232,9 +233,9 @@ class ApprovalService:
         ok = bool(resolved) and not failures
         verb = "approved" if decision == "approve" else "rejected"
         message = (
-            f"{len(resolved)} visible approval(s) {verb}."
+            f"approval_batch decision={decision} selection={selection} resolved_count={len(resolved)} failed_count=0"
             if ok
-            else f"{len(resolved)} approval(s) {verb}; {len(failures)} failed."
+            else f"approval_batch decision={decision} selection={selection} resolved_count={len(resolved)} failed_count={len(failures)}"
         )
         return ApprovalResolution(
             ok=ok,
@@ -353,7 +354,11 @@ class ApprovalService:
                         ok=True,
                         decision=decision,
                         selection=selection,
-                        message=f"Approval already {target_status}; run state is unchanged.",
+                        message=(
+                            "approval_request "
+                            f"status={target_status} run_id={candidate.run_id} "
+                            "state_transition=already_resolved"
+                        ),
                         run_id=candidate.run_id,
                         facts={
                             "entity_type": "approval_request",
@@ -450,9 +455,15 @@ class ApprovalService:
             "run_status": run_status,
         }
         if decision == "approve":
-            message = f"Approved. Run {resolved_run_id} will continue in the background."
+            message = (
+                f"approval_request status=approved run_id={resolved_run_id} "
+                f"run_status={run_status}"
+            )
         else:
-            message = f"Rejected. Run {resolved_run_id} will not execute."
+            message = (
+                f"approval_request status=rejected run_id={resolved_run_id} "
+                f"run_status={run_status}"
+            )
         return ApprovalResolution(
             ok=True,
             decision=decision,
@@ -561,6 +572,30 @@ def explicit_code_was_user_provided(
     if code in input_text:
         return True
     return any(code in content for content in (session_user_messages or [])[-2:])
+
+
+def approval_decision_was_user_provided(
+    *,
+    decision: str,
+    source: str,
+    input_text: str,
+) -> bool:
+    text = input_text.strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    compact = "".join(lowered.split())
+    for command in approval_command_words(source, decision):
+        word = command.strip().lower()
+        if not word:
+            continue
+        if compact.startswith(f"not{word}") or compact.startswith(f"no{word}"):
+            continue
+        if compact.startswith(f"不{word}"):
+            continue
+        if word in lowered or word in compact:
+            return True
+    return False
 
 
 def run_matches_context(record: Any, context: Any) -> bool:

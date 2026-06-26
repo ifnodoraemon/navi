@@ -71,6 +71,17 @@ def approval_surface_affordance(source: str) -> dict[str, Any]:
     return {}
 
 
+def approval_command_words(source: str, decision: str) -> tuple[str, ...]:
+    affordance = approval_surface_affordance(source)
+    commands = affordance.get("approval_commands")
+    if not isinstance(commands, dict):
+        return ()
+    raw = commands.get(decision)
+    if not isinstance(raw, list):
+        return ()
+    return tuple(str(item).strip() for item in raw if str(item).strip())
+
+
 def _approval_affordance_from_spec(spec: ConnectorSpec) -> dict[str, Any]:
     return {
         "approval_template": spec.approval_template,

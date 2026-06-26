@@ -153,7 +153,7 @@ def _syscall_output_schema() -> dict[str, Any]:
                 "tool": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Capability name from the manifest.",
+                    "description": "Capability name from the manifest (e.g., 'shell.run'). Do NOT output 'navi_syscall' here.",
                 },
                 "permission": {"type": "string", "enum": ["read", "prepare", "write"]},
                 "args": {"type": "object", "description": "Arguments for the selected capability."},
