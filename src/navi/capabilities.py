@@ -25,6 +25,30 @@ from .actions.tools import ToolGatewayCapabilityProvider, ToolCapability, ToolsL
 logger = logging.getLogger("navi.capabilities")
 
 
+def _capability_error(
+    *,
+    error_reason: str,
+    message: str,
+    observation_facts: dict[str, Any],
+    facts: dict[str, Any] | None = None,
+    terminal: bool = True,
+) -> CapabilityResult:
+    fact_payload = {"error_reason": error_reason, **observation_facts, **(facts or {})}
+    observation_payload = {
+        "error_reason": error_reason,
+        **observation_facts,
+    }
+    return CapabilityResult(
+        ok=False,
+        action="capability_error",
+        observation=json.dumps(observation_payload, ensure_ascii=False, sort_keys=True),
+        message=message,
+        terminal=terminal,
+        facts=fact_payload,
+        error_reason=error_reason,
+    )
+
+
 class CapabilityRegistry:
     """Agent OS syscall table.
 
@@ -135,20 +159,19 @@ class CapabilityRegistry:
     ) -> CapabilityResult:
         handler = self.handlers.get(name)
         if handler is None:
-            return CapabilityResult(
-                ok=False,
-                action="capability_error",
-                observation=f"capability not found: {name}",
+            return _capability_error(
+                error_reason="not_found",
                 message=f"capability not found: {name}",
-                terminal=True,
+                observation_facts={"tool": name},
             )
         if not handler.spec.available_in(self.execution_context):
-            return CapabilityResult(
-                ok=False,
-                action="capability_error",
-                observation=f"capability {name} is not available in execution context {self.execution_context}",
+            return _capability_error(
+                error_reason="execution_context_unavailable",
                 message=f"capability {name} is not available in execution context {self.execution_context}",
-                terminal=True,
+                observation_facts={
+                    "tool": name,
+                    "execution_context": self.execution_context,
+                },
             )
         actual_ceiling = context.permission_ceiling
         source_policy = (
@@ -158,54 +181,67 @@ class CapabilityRegistry:
         )
         if source_policy is not None:
             if name in source_policy.blocked_tools:
-                return CapabilityResult(
-                    ok=False,
-                    action="capability_error",
-                    observation=f"remote connector policy blocks capability {name}",
+                return _capability_error(
+                    error_reason="remote_tool_blocked",
                     message=f"remote connector policy blocks capability {name}",
-                    terminal=True,
+                    observation_facts={
+                        "tool": name,
+                        "source": context.source,
+                        "policy": source_policy.name,
+                    },
                 )
             if source_policy.allowed_tools and name not in source_policy.allowed_tools:
-                return CapabilityResult(
-                    ok=False,
-                    action="capability_error",
-                    observation=f"remote connector policy blocks capability {name}",
+                return _capability_error(
+                    error_reason="remote_tool_not_allowed",
                     message=f"remote connector policy blocks capability {name}",
-                    terminal=True,
+                    observation_facts={
+                        "tool": name,
+                        "source": context.source,
+                        "policy": source_policy.name,
+                    },
                 )
             if handler.spec.capability_class in source_policy.blocked_capability_classes:
                 capability_class = handler.spec.capability_class
-                return CapabilityResult(
-                    ok=False,
-                    action="capability_error",
-                    observation=f"remote connector policy blocks capability class {capability_class}",
+                return _capability_error(
+                    error_reason="remote_capability_class_blocked",
                     message=f"remote connector policy blocks capability class {capability_class}",
-                    terminal=True,
+                    observation_facts={
+                        "tool": name,
+                        "capability_class": capability_class,
+                        "source": context.source,
+                        "policy": source_policy.name,
+                    },
                 )
             if not permission_allows(permission, source_policy.permission_ceiling):
                 ceiling = source_policy.permission_ceiling
-                return CapabilityResult(
-                    ok=False,
-                    action="capability_error",
-                    observation=f"remote connector ceiling {ceiling} blocks requested permission {permission}",
+                return _capability_error(
+                    error_reason="remote_permission_ceiling",
                     message=f"remote connector ceiling {ceiling} blocks requested permission {permission}",
-                    terminal=True,
+                    observation_facts={
+                        "requested_permission": permission,
+                        "permission_ceiling": ceiling,
+                        "source": context.source,
+                        "policy": source_policy.name,
+                    },
                 )
         if not permission_allows(permission, actual_ceiling):
-            return CapabilityResult(
-                ok=False,
-                action="capability_error",
-                observation=f"permission ceiling {actual_ceiling} blocks requested permission {permission}",
+            return _capability_error(
+                error_reason="permission_ceiling",
                 message=f"permission ceiling {actual_ceiling} blocks requested permission {permission}",
-                terminal=True,
+                observation_facts={
+                    "requested_permission": permission,
+                    "permission_ceiling": actual_ceiling,
+                },
             )
         if not permission_allows(handler.spec.permission, permission):
-            return CapabilityResult(
-                ok=False,
-                action="capability_error",
-                observation=f"capability {name} is not available with permission {permission}",
+            return _capability_error(
+                error_reason="permission_mismatch",
                 message=f"capability {name} is not available with permission {permission}",
-                terminal=True,
+                observation_facts={
+                    "tool": name,
+                    "requested_permission": permission,
+                    "capability_permission": handler.spec.permission,
+                },
             )
         suspended = self._maybe_suspend_for_approval(handler.spec, permission, context)
         if suspended is not None:
@@ -228,12 +264,10 @@ class CapabilityRegistry:
         blocked = _blocking_hook(before_decisions)
         if blocked is not None:
             facts = {"hook_decision": asdict(blocked)}
-            return CapabilityResult(
-                ok=False,
-                action="capability_error",
-                observation=blocked.reason or f"hook blocked capability: {blocked.hook}",
+            return _capability_error(
+                error_reason="hook_blocked",
                 message=blocked.reason or f"hook blocked capability: {blocked.hook}",
-                terminal=True,
+                observation_facts={"tool": name, "hook": blocked.hook},
                 facts=facts,
             )
         started_at = time.time()
@@ -241,11 +275,11 @@ class CapabilityRegistry:
             result = await handler.invoke(call_args, permission=permission, context=context)
         except Exception as exc:
             logger.exception(f"Unhandled exception in capability {name}: {exc}")
-            result = CapabilityResult(
-                ok=False,
-                action="capability_error",
-                observation=f"capability encountered an internal error: {exc}",
+            result = _capability_error(
+                error_reason="internal_error",
                 message=f"capability {name} crashed: {exc}",
+                observation_facts={"tool": name, "error_type": type(exc).__name__},
+                terminal=False,
             )
         self.hooks.run(
             HookEvent(

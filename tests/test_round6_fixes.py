@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -250,6 +251,59 @@ async def test_session_elevation_returns_state_facts_without_approval_instructio
     assert result.facts["reason"] == "needs local edit"
     assert "message" not in result.facts
     assert "please approve" not in result.observation.lower()
+
+
+@pytest.mark.asyncio
+async def test_capability_registry_returns_fact_only_not_found_observation(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(home=tmp_path, workspace=str(tmp_path))
+
+    result = await registry.invoke(
+        "missing.capability",
+        {},
+        permission="read",
+        context=context,
+    )
+
+    assert result.ok is False
+    assert result.error_reason == "not_found"
+    assert json.loads(result.observation) == {
+        "error_reason": "not_found",
+        "tool": "missing.capability",
+    }
+    assert "capability not found" not in result.observation
+
+
+@pytest.mark.asyncio
+async def test_remote_policy_failure_observation_is_structured_facts(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        peer_id="weixin-peer",
+        sender_id="weixin-user",
+        source="connector.weixin",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+
+    result = await registry.invoke(
+        "file.read",
+        {"path": "README.md"},
+        permission="read",
+        context=context,
+    )
+
+    assert result.ok is False
+    assert result.error_reason == "remote_capability_class_blocked"
+    observation = json.loads(result.observation)
+    assert observation["tool"] == "file.read"
+    assert observation["capability_class"] == "file.read"
+    assert observation["policy"] == "remote_connector_default"
+    assert "policy blocks" not in result.observation
 
 
 # ---------------------------------------------------------------------------
