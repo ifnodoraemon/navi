@@ -578,7 +578,7 @@ class HernessEngine(EnginePhasesMixin):
                     ok=True,
                     input_data={"trigger": recovery_plan.trigger},
                     output_data=asdict(recovery_plan),
-                    message=recovery_plan.recommended,
+                    message=recovery_plan.reason,
                 )
                 progress_signature = self._progress_signature(
                     syscall.tool,

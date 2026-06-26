@@ -78,11 +78,11 @@ def _approval_affordance_from_spec(spec: ConnectorSpec) -> dict[str, Any]:
     }
 
 
-def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:
+def _first_command(commands: dict[str, Any], key: str) -> str:
     raw = commands.get(key)
     if isinstance(raw, list) and raw:
         return str(raw[0])
-    return fallback
+    return ""
 
 
 def render_approval_reply(
@@ -98,16 +98,16 @@ def render_approval_reply(
     FP-6: the core must not hardcode channel-specific approval verbs (``批准`` /
     ``拒绝``). The connector affordance provides ``approval_template`` and
     ``approval_commands``; this helper formats them. When no connector matches
-    the source (CLI/local API), it returns a connector-agnostic prompt that
-    names only the code and run id."""
+    the source (CLI/local API), it returns facts only and avoids fixed reply
+    commands."""
     affordance = approval_surface_affordance(source)
     commands = (
         affordance.get("approval_commands")
         if isinstance(affordance.get("approval_commands"), dict)
         else {}
     )
-    approve_command = _first_command(commands, "approve", "approve")
-    reject_command = _first_command(commands, "reject", "reject")
+    approve_command = _first_command(commands, "approve")
+    reject_command = _first_command(commands, "reject")
     task_line = f"Task ID: `{run_id}`" if run_id else ""
     if expires_at:
         try:
@@ -127,10 +127,7 @@ def render_approval_reply(
             reject_command=reject_command,
         ).strip()
     head = f"Approval required for `{action}`." if action else "Approval required."
-    return (
-        f"{head}\n{task_line}\nApproval code: `{code}`\n"
-        f"Reply `{approve_command} {code}` to execute, or `{reject_command} {code}` to cancel."
-    ).strip()
+    return f"{head}\n{task_line}\nApproval code: `{code}`".strip()
 
 
 def _discover_connector_factories() -> list[Callable[[], ConnectorAdapter]]:

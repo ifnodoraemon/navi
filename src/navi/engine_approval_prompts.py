@@ -21,28 +21,12 @@ def _render_approval_prompt(facts: dict[str, Any] | None, *, source: str = "") -
 
 
 def _workflow_approval_prompt(facts: dict[str, Any], source: str) -> str:
-    del source
-    workflow_id = str(facts.get("workflow_id") or "").strip()
-    if not workflow_id:
-        return ""
-    step_count = facts.get("step_count")
-    risk_class = str(facts.get("risk_class") or "unknown")
-    estimated_cost = str(facts.get("estimated_cost") or "unknown")
-    stop_condition = str(facts.get("stop_condition") or "").strip()
-    details = [
-        f"Workflow ID: `{workflow_id}`",
-        f"Steps: {step_count}" if step_count is not None else "",
-        f"Risk class: {risk_class}",
-        f"Estimated cost: {estimated_cost}",
-        f"Stop condition: {stop_condition}" if stop_condition else "",
-    ]
-    detail_text = "\n".join(f"- {item}" for item in details if item)
-    return (
-        "Workflow proposal is awaiting confirmation before execution.\n"
-        f"{detail_text}\n"
-        f"Approve: `navi workflow approve {workflow_id}`\n"
-        f"Reject: `navi workflow reject {workflow_id}`"
-    ).strip()
+    del facts, source
+    # Workflow approval state is already returned as structured facts
+    # (`status=awaiting_approval`, `workflow_id`, `confirmation_required`).
+    # The responder/model decides how to explain that state for the current
+    # user and surface; the core must not inject fixed CLI command text.
+    return ""
 
 
 def _run_approval_prompt(facts: dict[str, Any], source: str) -> str:
@@ -65,8 +49,8 @@ def _run_approval_prompt(facts: dict[str, Any], source: str) -> str:
         if isinstance(affordance.get("approval_commands"), dict)
         else {}
     )
-    approve_command = _first_command(commands, "approve", "approve")
-    reject_command = _first_command(commands, "reject", "reject")
+    approve_command = _first_command(commands, "approve")
+    reject_command = _first_command(commands, "reject")
     template = str(affordance.get("approval_template") or "")
     if not template:
         return ""
@@ -90,8 +74,8 @@ APPROVAL_PROMPT_RENDERERS: tuple[ApprovalPromptRenderer, ...] = (
 )
 
 
-def _first_command(commands: dict[str, Any], key: str, fallback: str) -> str:
+def _first_command(commands: dict[str, Any], key: str) -> str:
     raw = commands.get(key)
     if isinstance(raw, list) and raw:
         return str(raw[0])
-    return fallback
+    return ""

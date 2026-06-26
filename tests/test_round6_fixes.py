@@ -24,7 +24,6 @@ from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.control import ApprovalService, SurfaceContext
 from navi.core_tools import _resolve_binary_error, _run_command
-from navi.core_tools.codebase import _binary_candidates
 from navi.provider import (
     ChatMessage,
     FallbackProvider,
@@ -486,7 +485,7 @@ async def test_fallback_provider_retries_on_remote_protocol_error(
 
 def test_resolve_binary_error_reports_missing_binary_without_advice() -> None:
     """When 'python' is not on PATH but 'python3' is, the pre-flight check
-    must surface a factual error plus structured candidates instead of letting subprocess raise a
+    must surface a factual error instead of letting subprocess raise a
     confusing '[Errno 2] No such file or directory: 'python''."""
     error = _resolve_binary_error(["python", "-m", "pytest"])
     # On systems where 'python' exists, no error. On systems where only
@@ -496,7 +495,6 @@ def test_resolve_binary_error_reports_missing_binary_without_advice() -> None:
     else:
         assert error == "binary 'python' not found on PATH."
         assert "Try " not in error
-        assert _binary_candidates(["python", "-m", "pytest"]) == ["python3"]
 
 
 def test_resolve_binary_error_returns_empty_for_known_binary() -> None:
@@ -522,7 +520,7 @@ def test_run_command_returns_structured_error_for_missing_binary(
     assert result["exit_code"] == 127
     assert "not found" in result["stderr"].lower()
     assert result["error_reason"] == "binary_not_found"
-    assert result["candidate_binaries"] == []
+    assert "candidate_binaries" not in result
 
 
 def test_run_command_returns_fact_only_error_for_denied_binary(

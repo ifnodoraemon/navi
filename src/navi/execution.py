@@ -337,46 +337,6 @@ def _task_workspace(task: Run) -> Path:
     return Path(_require_workspace_value(task.workspace, run_id=task.id))
 
 
-def _recovery_evidence(step_index: int, policy: str, reason: str) -> dict[str, Any]:
-    return {
-        "kind": "recovery_decision",
-        "step_index": step_index,
-        "policy": policy,
-        "reason": reason,
-    }
-
-
-def _rollback_evidence(
-    before_state: dict[str, Any], after_state: dict[str, Any], failures: list[str]
-) -> dict[str, Any] | None:
-    if not failures:
-        return None
-    before_git = before_state.get("git") if isinstance(before_state.get("git"), dict) else {}
-    after_git = after_state.get("git") if isinstance(after_state.get("git"), dict) else {}
-    before_status = str(before_git.get("stdout") or "")
-    after_status = str(after_git.get("stdout") or "")
-    if before_status == after_status:
-        return None
-    return {
-        "kind": "rollback_hint",
-        "reason": "workspace changed during failed execution",
-        "before_git_status": before_status,
-        "after_git_status": after_status,
-    }
-
-
-def _actuator_summary(evidence: list[dict[str, Any]], *, fallback: str, failures: list[str]) -> str:
-    if failures:
-        return failures[0][:1600]
-    for item in evidence:
-        if item.get("message"):
-            return str(item["message"])[:1600]
-    for item in evidence:
-        if item.get("observation"):
-            return str(item["observation"])[:1600]
-    return fallback[:1600] if fallback else "all protocol actions executed"
-
-
 class NaviExecutionProvider:
     """Internal execution planner backed by Navi's configured model pool."""
 

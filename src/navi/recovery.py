@@ -1,31 +1,23 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any
 
 
 @dataclass(frozen=True)
-class RecoveryChoice:
-    kind: str
-    reason: str
-    tool: str = ""
-    permission: str = "read"
-    args: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class RecoveryPlan:
+class RecoveryFacts:
     trigger: str
     reason: str
-    recommended: str
-    choices: list[RecoveryChoice]
+    blocked: bool = True
+    details: dict[str, Any] = field(default_factory=dict)
 
     def to_observation(self) -> str:
         facts = {
             "trigger": self.trigger,
             "reason": self.reason,
-            "blocked": True,
+            "blocked": self.blocked,
+            **self.details,
         }
         return (
             "Completion verifier facts:\n"
@@ -54,9 +46,9 @@ class RecoveryPlanner:
         *,
         block: CompletionBlock,
         events: list[dict[str, Any]],
-    ) -> RecoveryPlan:
+    ) -> RecoveryFacts:
         if block.run_id:
-            return self._run_progress_plan(
+            return self._run_progress_facts(
                 block_reason=block.reason,
                 run_id=block.run_id,
                 run_status=block.run_status,
@@ -64,120 +56,48 @@ class RecoveryPlanner:
 
         cleanup_facts = _last_cleanup_facts(events)
         if cleanup_facts:
-            return self._cleanup_plan(block_reason=block.reason, facts=cleanup_facts)
+            return self._cleanup_facts(block_reason=block.reason, facts=cleanup_facts)
 
-        return RecoveryPlan(
+        return RecoveryFacts(
             trigger="completion.verify",
             reason=block.reason,
-            recommended="retry_capability",
-            choices=[
-                RecoveryChoice(
-                    kind="retry_capability",
-                    reason="Retry the last capability or try an alternative approach.",
-                ),
-                RecoveryChoice(
-                    kind="rollback_proposal",
-                    reason="Create a rollback proposal if the failed work changed local state.",
-                    tool="evolution.propose",
-                    permission="prepare",
-                ),
-                RecoveryChoice(
-                    kind="report_status",
-                    reason="Report current status to user if all retry options are exhausted.",
-                    tool="final.answer",
-                    permission="read",
-                    args={
-                        "message": ("Verification incomplete. Attempted alternatives exhausted.")
-                    },
-                ),
-            ],
+            details={"failure_domain": "completion_verifier"},
         )
 
-    def _run_progress_plan(
+    def _run_progress_facts(
         self,
         *,
         block_reason: str,
         run_id: str,
         run_status: str,
-    ) -> RecoveryPlan:
-        if run_status == "pending":
-            first = RecoveryChoice(
-                kind="continue",
-                reason="The delegation run exists but has not been prepared.",
-                tool="delegate.prepare",
-                permission="prepare",
-                args={"run_id": run_id},
-            )
-        else:
-            first = RecoveryChoice(
-                kind="ask_user",
-                reason="The delegation run is prepared and needs user approval before execution.",
-                tool="approval.request",
-                permission="prepare",
-                args={"run_id": run_id},
-            )
-        return RecoveryPlan(
+    ) -> RecoveryFacts:
+        details = {
+            "blocked_entity_type": "delegation_run",
+            "run_id": run_id,
+            "run_status": run_status,
+        }
+        return RecoveryFacts(
             trigger="completion.verify",
             reason=block_reason,
-            recommended=first.kind,
-            choices=[
-                first,
-                RecoveryChoice(
-                    kind="alternate_capability",
-                    reason="Inspect delegation state before choosing another action.",
-                    tool="delegate.list",
-                    permission="read",
-                ),
-                RecoveryChoice(
-                    kind="report_status",
-                    reason="Report delegation status to user if no other option is viable.",
-                    tool="final.answer",
-                    permission="read",
-                    args={
-                        "message": "Delegation run is in progress. Awaiting next actionable state."
-                    },
-                ),
-            ],
+            details=details,
         )
 
-    def _cleanup_plan(self, *, block_reason: str, facts: dict[str, Any]) -> RecoveryPlan:
-        args: dict[str, Any] = {"status": "failed"}
+    def _cleanup_facts(self, *, block_reason: str, facts: dict[str, Any]) -> RecoveryFacts:
+        details: dict[str, Any] = {
+            "blocked_entity_type": "delegation_cleanup",
+            "cleanup_complete": False,
+            "remaining_count": facts.get("remaining_count"),
+        }
         source = str(facts.get("source_filter") or "").strip()
         kind = str(facts.get("kind_filter") or "").strip()
         if source:
-            args["source"] = source
+            details["source_filter"] = source
         if kind:
-            args["kind"] = kind
-        return RecoveryPlan(
+            details["kind_filter"] = kind
+        return RecoveryFacts(
             trigger="completion.verify",
             reason=block_reason,
-            recommended="continue",
-            choices=[
-                RecoveryChoice(
-                    kind="continue",
-                    reason="Cleanup is incomplete; run the same cleanup without the limiting filter.",
-                    tool="delegate.delete",
-                    permission="write",
-                    args=args,
-                ),
-                RecoveryChoice(
-                    kind="ask_user",
-                    reason="Ask before continuing if the remaining failed records are ambiguous.",
-                    tool="final.answer",
-                    permission="read",
-                    args={
-                        "message": (
-                            f"Cleanup is not verified complete; {facts.get('remaining_count')} failed records remain."
-                        )
-                    },
-                ),
-                RecoveryChoice(
-                    kind="rollback_proposal",
-                    reason="If cleanup removed the wrong records, propose rollback from trace and run evidence.",
-                    tool="evolution.propose",
-                    permission="prepare",
-                ),
-            ],
+            details=details,
         )
 
 

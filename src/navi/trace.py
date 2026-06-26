@@ -380,7 +380,11 @@ def _completion_verifier_failure_rule(
     recovery_plan = next((event for event in events if event.phase == "recovery.plan"), None)
     if recovery_plan:
         evidence["recovery_plan_recorded"] = True
-        evidence["recovery_recommended"] = _event_output(recovery_plan).get("recommended", "")
+        recovery_output = _event_output(recovery_plan)
+        evidence["recovery_blocked"] = bool(recovery_output.get("blocked", True))
+        details = recovery_output.get("details")
+        if isinstance(details, dict):
+            evidence["recovery_detail_keys"] = sorted(details)
         diagnostic = "completion verifier failed after a recovery plan was recorded"
     else:
         evidence["recovery_plan_recorded"] = False

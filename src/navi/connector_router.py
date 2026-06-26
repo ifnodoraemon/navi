@@ -39,11 +39,11 @@ class ConnectorRouter:
             )
 
             await self.event_bus.publish(event)
-            return await self._await_response(channel)
+            return await self._await_response(channel, correlation_id=correlation_id)
         finally:
             self.event_bus.remove_response_channel(correlation_id)
 
-    async def _await_response(self, channel: asyncio.Queue) -> str:
+    async def _await_response(self, channel: asyncio.Queue, *, correlation_id: str) -> str:
         """Wait for the real response, resetting the deadline on every heartbeat.
 
         The timeout is per-idle-gap, not a total wall clock: as long as the turn
@@ -53,7 +53,7 @@ class ConnectorRouter:
             try:
                 item = await asyncio.wait_for(channel.get(), timeout=IDLE_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
-                return "处理超时，请稍后重试。"
+                return f"连接器处理超时；correlation_id={correlation_id}。"
             if isinstance(item, ResponseReadyEvent):
                 return item.text
             # Heartbeat (or any non-terminal signal): upstream is alive, keep waiting.

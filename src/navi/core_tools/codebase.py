@@ -68,20 +68,3 @@ def _resolve_binary_error(command: list[str]) -> str:
     if shutil.which(binary):
         return ""
     return f"binary '{binary}' not found on PATH."
-
-
-def _binary_candidates(command: list[str]) -> list[str]:
-    if not command:
-        return []
-    binary = command[0]
-    if not binary or "/" in binary or "\\" in binary:
-        return []
-    hints = {
-        "python": ["python3"],
-        "python3": ["python"],
-        "pytest": ["python3", "-m", "pytest"],
-    }
-    candidate = hints.get(binary) or []
-    if candidate and shutil.which(candidate[0]):
-        return candidate
-    return []

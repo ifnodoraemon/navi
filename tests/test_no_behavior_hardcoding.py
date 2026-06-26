@@ -155,3 +155,112 @@ def test_planner_turn_input_carries_durable_constraints_as_trusted_block() -> No
     # When there are no constraints, no block is emitted (no empty noise).
     empty = assemble_planner_turn_input("do something", tools=[], durable_constraints="")
     assert [b for b in empty.blocks if b.name == "DURABLE CONSTRAINTS"] == []
+
+
+def test_recovery_runtime_records_facts_not_recommendations() -> None:
+    """FP-2: completion recovery must surface verifier facts, not a runtime
+    recommendation or a hardcoded list of next actions."""
+    sources = [
+        (PROJECT_ROOT / "src/navi/recovery.py").read_text(encoding="utf-8"),
+        (PROJECT_ROOT / "src/navi/engine.py").read_text(encoding="utf-8"),
+        (PROJECT_ROOT / "src/navi/trace.py").read_text(encoding="utf-8"),
+    ]
+    forbidden = (
+        "recommended",
+        "RecoveryChoice",
+        "Retry the last capability",
+        "Create a rollback proposal",
+        "Report current status",
+    )
+    for source in sources:
+        for token in forbidden:
+            assert token not in source
+
+
+def test_core_does_not_hardcode_workflow_approval_next_step() -> None:
+    """FP-1/FP-6: workflow approval state is a fact. The core must not append
+    fixed CLI approve/reject commands to every surface."""
+    source = (PROJECT_ROOT / "src/navi/engine_approval_prompts.py").read_text(
+        encoding="utf-8"
+    )
+    assert "navi workflow approve" not in source
+    assert "navi workflow reject" not in source
+
+    from navi.engine_approval_prompts import _render_approval_prompt
+
+    rendered = _render_approval_prompt(
+        {
+            "status": "awaiting_approval",
+            "workflow_id": "wf-1",
+            "confirmation_required": True,
+        },
+        source="connector.weixin",
+    )
+    assert rendered == ""
+
+
+def test_missing_binary_error_does_not_emit_candidate_commands(tmp_path: Path) -> None:
+    """FP-2: command tools report missing-binary facts instead of suggesting a
+    hardcoded substitute command."""
+    from navi.core_tools import _run_command
+
+    result = _run_command(
+        ["definitely-not-a-real-binary-xyz123", "--version"],
+        cwd=tmp_path,
+        timeout=5,
+    )
+    assert result["error_reason"] == "binary_not_found"
+    assert "candidate_binaries" not in result
+
+
+def test_connector_failure_fallbacks_do_not_suggest_retry() -> None:
+    """FP-2/FP-6: connector fallbacks should identify runtime failure facts,
+    not tell the user what to do next."""
+    for rel in ("src/navi/connector_router.py", "src/navi/connector_runtime.py"):
+        text = (PROJECT_ROOT / rel).read_text(encoding="utf-8")
+        assert "稍后重试" not in text
+
+
+def test_memory_write_hook_block_is_not_overridden_for_non_constraints(tmp_path: Path) -> None:
+    """FP-7: hook decisions are lifecycle policy facts. The runtime must not
+    silently convert a declared block into observe for non-constraint memories."""
+    hook_dir = tmp_path / "hooks"
+    hook_dir.mkdir()
+    (hook_dir / "memory.yaml").write_text(
+        """
+hooks:
+  - name: block.memory
+    event: before_memory_write
+    decision: block
+    reason: memory writes disabled by local hook
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    store = MemoryStore(tmp_path)
+    with pytest.raises(ValueError, match="memory writes disabled by local hook"):
+        store.add_item(
+            "preference",
+            "Prefer short answers",
+            source="test",
+            reason="local hook block regression",
+            provenance="test",
+        )
+
+
+def test_connectorless_approval_reply_contains_facts_not_reply_commands() -> None:
+    """FP-1/FP-6: connectorless approval output should not inject a fixed
+    reply command; it should expose the approval code as a fact."""
+    from navi.connector_registry import render_approval_reply
+
+    rendered = render_approval_reply(
+        "cli",
+        code="ABC123",
+        run_id="run-1",
+        action="execute:file.write",
+    )
+    assert "Approval code: `ABC123`" in rendered
+    assert "Task ID: `run-1`" in rendered
+    assert "Reply `" not in rendered
+    assert "approve ABC123" not in rendered
+    assert "reject ABC123" not in rendered

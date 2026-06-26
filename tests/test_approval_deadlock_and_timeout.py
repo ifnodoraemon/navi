@@ -71,7 +71,7 @@ async def test_router_times_out_on_true_silence(tmp_path, monkeypatch):
 
     bus.subscribe("message_ingress", on_intent)
     result = await router.route(_message())
-    assert result == "处理超时，请稍后重试。"
+    assert result == "连接器处理超时；correlation_id=msg-x。"
     await bus.shutdown()
 
 
@@ -203,6 +203,4 @@ async def test_remote_still_blocks_deleting_running_run(tmp_path):
     res = await _remote_delete(tmp_path, task.id)
     assert res.ok is False
     assert runs.get(task.id) is not None
-
-
 

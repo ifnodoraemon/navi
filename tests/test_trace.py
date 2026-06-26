@@ -122,7 +122,10 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
         trace_id="completion-verify",
         phase="recovery.plan",
         ok=True,
-        output_data={"recommended": "continue"},
+        output_data={
+            "blocked": True,
+            "details": {"blocked_entity_type": "delegation_run", "run_status": "pending"},
+        },
     )
     completion_eval = store.evaluate_trace("completion-verify")
 
@@ -165,7 +168,11 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     assert any(evaluation.id == completion_eval.id for evaluation in listed_all_evals)
     completion_evidence = json.loads(completion_eval.evidence_json)
     assert completion_evidence["recovery_plan_recorded"] is True
-    assert completion_evidence["recovery_recommended"] == "continue"
+    assert completion_evidence["recovery_blocked"] is True
+    assert completion_evidence["recovery_detail_keys"] == [
+        "blocked_entity_type",
+        "run_status",
+    ]
     assert pending_eval.outcome == "degraded"
     assert pending_eval.failure_domain == "completion_verifier_gap"
     assert json.loads(pending_eval.evidence_json)["pending_run_completion_risk"] is True

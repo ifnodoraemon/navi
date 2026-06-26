@@ -4,7 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Any
-from .codebase import _binary_candidates, _resolve_binary_error
+from .codebase import _resolve_binary_error
 from .utils import _truncate_output
 
 # Defense in depth (principle 13): a denylist of binaries that can cause
@@ -77,7 +77,6 @@ def _run_command(
             "timed_out": False,
             "error_reason": "binary_not_found",
             "binary": command[0],
-            "candidate_binaries": _binary_candidates(command),
         }
     env = os.environ.copy()
     # Ensure common bin paths are in PATH

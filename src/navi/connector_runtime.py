@@ -252,7 +252,11 @@ class ConnectorIngressRuntime:
                 exc,
                 exc_info=True,
             )
-            return "处理时发生内部错误，请稍后重试。"
+            return (
+                "连接器处理失败；"
+                f"correlation_id={event.correlation_id}；"
+                f"error_type={type(exc).__name__}。"
+            )
         finally:
             heartbeat_task.cancel()
 

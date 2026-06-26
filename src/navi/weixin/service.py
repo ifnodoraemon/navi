@@ -93,7 +93,7 @@ class WeixinService:
                     f"Add WEIXIN_ACCOUNT_ID={account.account_id} to .navi/env or environment."
                 )
             if asyncio.get_running_loop().time() >= deadline:
-                return f"Weixin setup timed out. Scan and confirm this QR URL, then run setup again: {qr.qrcode_url}"
+                return f"Weixin setup timed out: qr_url={qr.qrcode_url}"
             await asyncio.sleep(1)
 
     def update_status(self, status: str, error: str = "") -> None:
@@ -234,7 +234,7 @@ class WeixinService:
         context_token = self.context_tokens.get(account.account_id, update.peer_id)
         text = await self._handle_with_typing(update, message, context_token=context_token)
         if not text.strip():
-            text = "我收到消息了，但这次没有生成有效回复。请稍后再试。"
+            text = f"本地处理链路没有生成有效回复；message_id={update.message_id}。"
         try:
             await self.client.send_message(
                 account_id=account.account_id,
@@ -270,7 +270,11 @@ class WeixinService:
                 sender_id=update.sender_id,
                 error=f"{type(exc).__name__}: {exc}",
             )
-            return "我收到消息了，但本地处理链路刚刚出错了。请稍后再试，或让我诊断 provider / service 状态。"
+            return (
+                "本地处理链路失败；"
+                f"message_id={update.message_id}；"
+                f"error_type={type(exc).__name__}。"
+            )
         finally:
             stop_typing.set()
             if typing_task:

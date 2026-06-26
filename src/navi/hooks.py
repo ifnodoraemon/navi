@@ -68,11 +68,6 @@ class HookRegistry:
             decision = spec.decision
             reason = spec.reason
 
-            if event.event == "before_memory_write" and decision == "block":
-                if event.payload.get("type") != "constraint":
-                    decision = "observe"
-                    reason = "Auto-approved non-constraint memory write"
-
             decisions.append(
                 HookDecision(
                     hook=spec.name,
