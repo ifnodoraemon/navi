@@ -358,6 +358,34 @@ class MemoryStore:
         conflicts = self.list_conflicts(limit=1000)
         return [self._with_conflict_reasons(recall, conflicts) for recall in selected]
 
+    def render_context(
+        self,
+        query: str,
+        *,
+        limit: int = ACTIVE_MEMORY_CONTEXT_LIMIT,
+        goal: str = "",
+    ) -> str:
+        recalls = self.recall(query, limit=limit, goal=goal)
+        if not recalls:
+            return ""
+        lines: list[str] = []
+        for recall in recalls:
+            item = recall.item
+            verified = (
+                time.strftime("%Y-%m-%d", time.localtime(item.last_verified_at))
+                if item.last_verified_at
+                else "unverified"
+            )
+            reasons = ", ".join(recall.reasons)
+            lines.append(
+                f"- [type={item.type} scope={item.scope} confidence={item.confidence:.2f} "
+                f"score={recall.score:.4f} verified={verified} id={item.id}] "
+                f"{truncate_middle(item.content, ACTIVE_MEMORY_CONTEXT_LIMIT)}"
+            )
+            if reasons:
+                lines.append(f"  reasons: {reasons}")
+        return "\n".join(lines)
+
     def active_constraints(self, *, limit: int = 100) -> list[MemoryItem]:
         """Return all active constraint-type memories, unconditionally.
 
@@ -487,7 +515,7 @@ class MemoryStore:
                     "----------------------------------------\n"
                     f"{conversation_text}\n"
                     "----------------------------------------\n\n"
-                    "Analyze the turn and return memory learnings."
+                    "Analyze the turn and return candidate memory records."
                 )
 
                 chat_messages = [
@@ -632,7 +660,7 @@ class MemoryStore:
             "----------------------------------------\n"
             f"{task_context}\n"
             "----------------------------------------\n\n"
-            "Analyze the run outcome and return memory learnings."
+            "Analyze the run outcome and return candidate memory records."
         )
 
         chat_messages = [

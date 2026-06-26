@@ -20,15 +20,15 @@ Core objects:
 
 Sources: `src/navi/specs_data.py` (SYSCALL_PLANNER_SPEC), `src/navi/prompt_os.py`
 
-This prompt owns global planning behavior:
+This prompt owns syscall selection boundaries:
 
 - output contract
 - prompt and tool boundaries
-- routing policy
+- generic schema, permission, and mutation constraints
 - observation invariants
 - security rules
 
-It must not contain one-off fixes for a single tool result. If a rule is needed after a capability mutates state, express it as a generic state-transition invariant.
+It must not contain product-flow routing, one-off fixes for a single tool result, or connector-specific recovery recipes. If a rule is needed after a capability mutates state, express it as a generic state-transition invariant or move deterministic behavior into runtime state/control-plane code.
 
 ## Planner Turn Input
 

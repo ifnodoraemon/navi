@@ -4,7 +4,7 @@ semantics, not routing policy, sequencing rules, or follow-up advice.
 After Batch C, the following descriptions were cleansed of procedural/routing
 content:
   - delegate.spawn: removed "Must only be used after gathering sufficient local
-    facts via foreground tools" (sequencing rule belongs in routing_rules).
+    facts via foreground tools" (sequencing belongs in runtime facts/control).
   - delegate.delete: removed "Bulk cleanup must include source or kind..."
     (constraint moved to input_schema field descriptions).
   - watch.delete: removed "Requires user approval" (safeguard, not semantics).
@@ -56,8 +56,8 @@ def test_shell_run_description_drops_pty_decision_rule() -> None:
     assert "Allocate a pseudo-terminal. Use only when the command strictly requires" in core
 
 
-def test_specs_data_scheduling_rule_does_not_name_specific_tools() -> None:
-    """FP-1: the scheduling routing rule must not hardcode tool names like
+def test_specs_data_does_not_hardcode_scheduling_tool_routing() -> None:
+    """FP-1: planner policy must not hardcode tool names like
     watch.create or shell.run. The model discovers the right tool from the
     manifest."""
     data = _read("src/navi/specs_data.py")
@@ -67,9 +67,65 @@ def test_specs_data_scheduling_rule_does_not_name_specific_tools() -> None:
     assert "kind=once and run_at_text rather than using shell.run" not in data
 
 
+def test_planner_rules_do_not_encode_scenario_routing_policy() -> None:
+    """FP-1: planner policy can state generic syscall constraints, but it must
+    not carry product-flow patches for remote access, delegation, scheduling, or
+    tool inventory questions."""
+    data = _read("src/navi/specs_data.py")
+    forbidden = [
+        "Default to taking action",
+        "Prefer action over clarification",
+        "Exhaust available capabilities",
+        "call the matching read capability first",
+        "Remote Surface",
+        "Gated Delegation",
+        "background delegation",
+        "do not invent default times",
+        "run_at_text rather than computing time",
+        "visible pending approvals",
+        "A non-zero exit code from a shell capability",
+    ]
+    for phrase in forbidden:
+        assert phrase not in data
+
+
+def test_responder_style_does_not_encode_product_flow_patches() -> None:
+    data = _read("src/navi/specs_data.py")
+    forbidden = [
+        "what the next action should be",
+        "Navi can run the requested inspection",
+        "managed local action flow",
+        "Do not give a CLI invocation",
+        "Prefer natural-language task requests",
+    ]
+    for phrase in forbidden:
+        assert phrase not in data
+
+
+def test_memory_prompts_extract_candidates_not_governance_policy() -> None:
+    data = _read("src/navi/specs_data.py")
+    assert "learning agent" not in data
+    assert "Focus heavily" not in data
+    assert "should be learned" not in data
+    assert "memory store decides promotion status" in data
+
+
+def test_execution_prompts_do_not_encode_action_flow_policy() -> None:
+    data = _read("src/navi/specs_data.py")
+    forbidden = [
+        "expected capability actions",
+        "Do not create tasks",
+        "request approval, or mention internal execution tools",
+    ]
+    for phrase in forbidden:
+        assert phrase not in data
+
+
 def test_prompt_os_elevation_explanation_does_not_name_tool() -> None:
     """FP-1: the read-ceiling permission explanation must not hardcode the
     session.request_elevation tool name as a routing hint."""
     pos = _read("src/navi/prompt_os.py")
     assert "session.request_elevation" not in pos
     assert "approval.request" not in pos
+    assert "manifest's elevation capability" not in pos
+    assert "manifest's approval capability" not in pos

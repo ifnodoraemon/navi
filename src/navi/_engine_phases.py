@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -50,93 +50,6 @@ class EnginePhasesMixin:
         goals = GoalStore(self.home)
         for goal_id in sorted(goal_ids):
             goals.attach_trace(goal_id, trace_id=trace_id, session_id=session_id, evidence=evidence)
-
-    async def _finalize_exhausted_budget_no_observations(
-        self,
-        *,
-        text: str,
-        trace_id: str,
-        resolved_session_id: str | None,
-        source: str,
-        peer_id: str,
-        sender_id: str,
-    ) -> AgentTurnResult:
-        """Handle budget exhaustion when no observations to finalize."""
-        resolved_session_id = resolved_session_id or self.runtime.memory.new_session_id()
-        self.runtime.memory.add_message(resolved_session_id, "user", text)
-        messages = self.runtime.build_messages(
-            resolved_session_id,
-            user_text=text,
-            operating_context=OperatingContext(
-                home=self.home,
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-                permission_ceiling=self.permission_ceiling,
-                skill_permission_ceiling="read",
-                workspace=str(self.capabilities.gateway.project_dir.resolve()),
-            ),
-        )
-        answer = await self.runtime.complete(messages, role="responder")
-        self.runtime.memory.add_message(resolved_session_id, "assistant", answer)
-        return AgentTurnResult(
-            text=answer,
-            session_id=resolved_session_id,
-            action="chat",
-            terminal=True,
-            trace_id=trace_id,
-            budget_exhausted=True,
-        )
-
-    async def _recover_budget_exhaustion(
-        self,
-        *,
-        trace_id: str,
-        session_id: str,
-        source: str,
-        peer_id: str,
-        sender_id: str,
-        context: Any,  # CapabilityContext
-        completion_events: list[dict[str, Any]],
-        observations: list[str],
-        goal_ids: set[str],
-        pending_approval_prompt: str,
-        last_result: AgentTurnResult | None,
-    ) -> tuple[str, AgentTurnResult | None]:
-        self.trace.add_event(
-            trace_id=trace_id,
-            phase="runtime.budget_exhausted",
-            session_id=session_id,
-            source=source,
-            peer_id=peer_id,
-            sender_id=sender_id,
-            model_role="runtime",
-            ok=True,
-            output_data={
-                "observations_count": len(observations),
-                "last_action": last_result.action if last_result else "",
-                "last_run_id": last_result.run_id if last_result else "",
-            },
-            message="internal step budget exhausted",
-        )
-        del context, goal_ids
-        recovery_plan = self.recovery.plan_budget_exhaustion(events=completion_events)
-        self.trace.add_event(
-            trace_id=trace_id,
-            phase="recovery.plan",
-            session_id=session_id,
-            run_id=last_result.run_id if last_result else "",
-            source=source,
-            peer_id=peer_id,
-            sender_id=sender_id,
-            model_role="runtime",
-            ok=True,
-            input_data={"trigger": recovery_plan.trigger},
-            output_data=asdict(recovery_plan),
-            message=recovery_plan.recommended,
-        )
-        observations.append(recovery_plan.to_observation())
-        return pending_approval_prompt, last_result
 
     def _completion_block_reason(
         self,
@@ -258,7 +171,6 @@ class EnginePhasesMixin:
             model_role=result.model_role,
             terminal=result.terminal,
             trace_id=result.trace_id,
-            budget_exhausted=result.budget_exhausted,
             memory_influence=result.memory_influence,
             facts=result.facts,
         )
@@ -274,7 +186,6 @@ class EnginePhasesMixin:
             model_role=result.model_role,
             terminal=result.terminal,
             trace_id=trace_id,
-            budget_exhausted=result.budget_exhausted,
             memory_influence=result.memory_influence,
             facts=result.facts,
         )
@@ -301,7 +212,6 @@ class EnginePhasesMixin:
             output_data={
                 "action": result.action,
                 "terminal": result.terminal,
-                "budget_exhausted": result.budget_exhausted,
             },
             message=result.text,
         )
@@ -321,7 +231,6 @@ class EnginePhasesMixin:
         run_id: str = "",
         model_role: str = "responder",
         pending_approval_prompt: str = "",
-        budget_exhausted: bool = False,
     ) -> AgentTurnResult:
         session_id = session_id or self.runtime.memory.new_session_id()
         observation = "\n\n".join(observations)
@@ -366,7 +275,7 @@ class EnginePhasesMixin:
             model_role=model_role,
             ok=True,
             input_data={"observations_count": len(observations), "action": action},
-            output_data={"response_chars": len(answer), "budget_exhausted": budget_exhausted},
+            output_data={"response_chars": len(answer)},
             message=f"{model_role} synthesized response",
         )
         approval_affordance = ""
@@ -384,7 +293,6 @@ class EnginePhasesMixin:
             observation=observation,
             model_role=model_role,
             terminal=True,
-            budget_exhausted=budget_exhausted,
             approval_affordance=approval_affordance,
         )
 

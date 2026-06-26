@@ -31,7 +31,6 @@ from .prompting import PromptLayerStore
 
 INTERNAL_EXECUTION_PROVIDER = "navi"
 EXECUTION_PROTOCOL_VERSION = "navi.actuator.v1"
-EXECUTION_STEP_BUDGET = 5
 SUBAGENT_PLANNER_ROLE = "planner"
 SUBAGENT_EXECUTOR_ROLE = "executor"
 SUBAGENT_NOTIFICATION_ROLE = "notification"
@@ -183,7 +182,7 @@ def _protocol_steps(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw_steps, list) or not raw_steps:
         raise ValueError("execution protocol steps must be a non-empty list")
     steps: list[dict[str, Any]] = []
-    for index, raw_step in enumerate(raw_steps[:EXECUTION_STEP_BUDGET]):
+    for index, raw_step in enumerate(raw_steps):
         if not isinstance(raw_step, dict):
             raise ValueError("execution protocol step entries must be objects")
         raw_actions = raw_step.get("actions")
@@ -200,14 +199,12 @@ def _protocol_steps(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "on_failure": str(raw_step.get("on_failure") or "stop"),
             }
         )
-    if len(raw_steps) > EXECUTION_STEP_BUDGET:
-        raise ValueError(f"execution protocol exceeds step budget {EXECUTION_STEP_BUDGET}")
     return steps
 
 
 def _execution_protocol_instruction(phase: str) -> str:
     return (
-        f"Return a {phase} protocol with at most {EXECUTION_STEP_BUDGET} steps. "
+        f"Return a {phase} protocol with the steps needed for the current phase. "
         "Each step action must name a declared capability tool, permission, and args. "
         "The protocol is declarative evidence for Navi; do not claim side effects that did not run."
     )
@@ -227,7 +224,6 @@ def _execution_output_schema(phase: str) -> dict[str, Any]:
                     "steps": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": EXECUTION_STEP_BUDGET,
                         "items": {
                             "type": "object",
                             "properties": {
@@ -687,7 +683,6 @@ class ExecutionService:
             project_dir=_task_workspace(task),
             permission_ceiling=permission_ceiling,
             disabled_capability_classes=frozenset({"delegation", "approval"}),
-            step_budget=15,
             # This task already passed governance (execution_allowed). It is
             # approved background work, not live connector ingress, so it must
             # not be re-sandboxed by the surface it originated from. Sensitive
@@ -703,8 +698,8 @@ class ExecutionService:
             source=task.source,
             session_alias=f"executor:{task.id}",
         )
-        exit_code = 0 if not turn_result.budget_exhausted else 1
-        execution_status = "completed" if exit_code == 0 else "failed"
+        exit_code = 0
+        execution_status = "completed"
         self.subagents.finish(
             subagent_run.id,
             status=execution_status,

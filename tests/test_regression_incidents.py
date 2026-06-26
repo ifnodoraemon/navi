@@ -6,8 +6,11 @@ import sqlite3
 import pytest
 import yaml
 
+from navi.engine import HernessEngine
 from navi.evolution import EvolutionEngine, EvolutionLedger
 from navi.provider import ChatMessage, _extract_openai_content
+from navi.runtime import AgentRuntime
+from navi.runs import RunStore
 from navi.trace import TraceStore
 
 
@@ -73,6 +76,140 @@ class _StructuredJourneyProvider:
                 ],
             }
         )
+
+
+class _DeleteExpiredProvider:
+    def __init__(self) -> None:
+        self.planner_calls = 0
+        self.responder_calls = 0
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        if role == "planner":
+            self.planner_calls += 1
+            return json.dumps(
+                {
+                    "tool": "delegate.delete",
+                    "permission": "write",
+                    "args": {
+                        "status": "expired",
+                        "kind": "delegation",
+                        "reason": "delete expired tasks",
+                    },
+                    "reason": "clean up expired delegation runs",
+                }
+            )
+        if role == "responder":
+            self.responder_calls += 1
+            content = "\n".join(message.content for message in messages)
+            assert '"cleanup_complete": true' in content
+            assert '"deleted_count": 1' in content
+            return "已删除 1 个过期任务。"
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+
+class _RepeatListProvider:
+    def __init__(self) -> None:
+        self.planner_calls = 0
+        self.responder_calls = 0
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        if role == "planner":
+            self.planner_calls += 1
+            return json.dumps(
+                {
+                    "tool": "delegate.list",
+                    "permission": "read",
+                    "args": {"limit": 20},
+                    "reason": "inspect current tasks",
+                }
+            )
+        if role == "responder":
+            self.responder_calls += 1
+            content = "\n".join(message.content for message in messages)
+            assert "Runtime convergence" not in content
+            assert "Capability observations:" in content
+            return "当前没有任务。"
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+
+@pytest.mark.asyncio
+async def test_expired_task_cleanup_finishes_from_completion_facts(tmp_path):
+    runs = RunStore(tmp_path)
+    expired = runs.create(
+        "在用户电脑上找到简历文件并发送给用户",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="expired",
+    )
+    provider = _DeleteExpiredProvider()
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "删除过期的任务",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert result.text == "已删除 1 个过期任务。"
+    assert result.terminal is True
+    assert runs.get(expired.id) is None
+    assert provider.planner_calls == 1
+    assert provider.responder_calls == 1
+    phases = [event.phase for event in TraceStore(tmp_path).list_events(result.trace_id)]
+    assert "runtime.converged" not in phases
+
+
+@pytest.mark.asyncio
+async def test_repeated_stable_capability_result_converges(tmp_path):
+    provider = _RepeatListProvider()
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "我们现在都要哪些任务",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert result.text == "当前没有任务。"
+    assert provider.planner_calls == 2
+    assert provider.responder_calls == 1
+    phases = [event.phase for event in TraceStore(tmp_path).list_events(result.trace_id)]
+    assert "runtime.converged" in phases
 
 
 @pytest.mark.asyncio

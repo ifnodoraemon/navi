@@ -402,22 +402,6 @@ def _runtime_failure_rule(
     )
 
 
-def _budget_degraded_rule(
-    events: list[TraceEvent], evidence: dict[str, Any]
-) -> TraceEvaluationDraft | None:
-    del evidence
-    if not any(
-        event.phase == "turn.final" and _event_output(event).get("budget_exhausted") is True
-        for event in events
-    ):
-        return None
-    return TraceEvaluationDraft(
-        "degraded",
-        "planning_budget",
-        "turn final event reported budget_exhausted=true",
-    )
-
-
 def _planner_no_response_rule(
     events: list[TraceEvent], evidence: dict[str, Any]
 ) -> TraceEvaluationDraft | None:
@@ -463,7 +447,6 @@ TRACE_EVALUATION_RULES: tuple[TraceEvaluationRule, ...] = (
     _capability_failure_rule,
     _completion_verifier_failure_rule,
     _runtime_failure_rule,
-    _budget_degraded_rule,
     _planner_no_response_rule,
     _pending_completion_gap_rule,
     _missing_trace_rule,

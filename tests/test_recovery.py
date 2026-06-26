@@ -21,27 +21,17 @@ def test_recovery_planner_recommends_task_progression():
     assert plan.recommended == "continue"
     assert plan.choices[0].tool == "delegate.prepare"
     assert plan.choices[0].args == {"run_id": "run-1"}
-    assert json.loads(plan.to_observation().split("\n", 1)[1])["choices"][0]["kind"] == "continue"
-
-
-def test_recovery_planner_recommends_budget_task_progression():
-    plan = RecoveryPlanner().plan_budget_exhaustion(
-        events=[
-            {
-                "tool": "delegate.spawn",
-                "facts": {
-                    "run_id": "run-1",
-                    "status": "pending",
-                },
-            }
-        ],
-    )
-
-    assert plan.trigger == "runtime.budget_exhausted"
-    assert plan.recommended == "continue"
-    assert plan.choices[0].tool == "delegate.prepare"
-    assert plan.choices[0].permission == "prepare"
-    assert plan.choices[0].args == {"run_id": "run-1"}
+    observation = json.loads(plan.to_observation().split("\n", 1)[1])
+    assert observation == {
+        "blocked": True,
+        "reason": (
+            "completion verifier blocked final answer: "
+            "delegation run run-1 is still pending."
+        ),
+        "trigger": "completion.verify",
+    }
+    assert "choices" not in observation
+    assert "recommended" not in observation
 
 
 def test_recovery_planner_recommends_finishing_failed_cleanup():

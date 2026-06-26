@@ -64,7 +64,7 @@ def test_trace_store_reinitializes_schema_drift(tmp_path):
     assert "task_id" not in columns
 
 
-def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
+def test_trace_store_evaluates_failure_domains(tmp_path):
     store = TraceStore(tmp_path)
 
     store.add_event(
@@ -112,19 +112,6 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
     runtime_eval = store.evaluate_trace("runtime-failure")
 
     store.add_event(
-        trace_id="budget",
-        phase="agent.role_result",
-        model_role="responder",
-        message="responder synthesized response",
-    )
-    store.add_event(
-        trace_id="budget",
-        phase="turn.final",
-        output_data={"budget_exhausted": True},
-    )
-    budget_eval = store.evaluate_trace("budget")
-
-    store.add_event(
         trace_id="completion-verify",
         phase="completion.verify",
         ok=False,
@@ -170,9 +157,6 @@ def test_trace_store_evaluates_failure_domains_and_budget_degradation(tmp_path):
     assert safeguard_eval.failure_domain == "safeguard_policy"
     assert "safeguard hook decision" in safeguard_eval.diagnostic
     assert runtime_eval.failure_domain == "runtime"
-    assert budget_eval.outcome == "degraded"
-    assert budget_eval.failure_domain == "planning_budget"
-    assert json.loads(budget_eval.evidence_json)["agent_role_results"][0]["model_role"] == "responder"
     assert completion_eval.outcome == "failure"
     assert completion_eval.failure_domain == "completion_verifier"
     assert no_response_eval.outcome == "failure"

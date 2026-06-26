@@ -273,7 +273,6 @@ model:
 runtime:
   service_name: navi.service
   local_surface: local
-  agent_step_budget: 8
 execution:
   provider: react
   timeout_seconds: 120.0

@@ -16,7 +16,6 @@ class AgentTurnResult:
     model_role: str = "responder"
     terminal: bool = False
     trace_id: str = ""
-    budget_exhausted: bool = False
     memory_influence: tuple[str, ...] = ()
     facts: dict[str, Any] | None = None
     approval_affordance: str = ""

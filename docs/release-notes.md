@@ -14,7 +14,7 @@ Patch release for principle-aligned runtime hardening and docs/eval reconciliati
 - Fixes `codebase.search` registration by using the current RAG import path, storing its cache under Navi home, and returning the declared `results` schema.
 - Fixes provider fallback retries so schema validation only passes optional call arguments accepted by the concrete provider implementation.
 - Redacts secret-bearing action capability arguments and errors in audit logs.
-- Removes routing policy from the `delegate.spawn` tool description and keeps routing guidance in planner context.
+- Removes routing policy from the `delegate.spawn` tool description and keeps remote/local access behavior declared through runtime policy and capability facts.
 - Aligns dynamic workflow docs and evals with the current runtime contract: resume uses `workflow.run(resume=true)`, and verification is runtime-backed completion rather than a separate public tool.
 
 Verification:

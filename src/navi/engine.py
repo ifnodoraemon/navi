@@ -9,11 +9,9 @@ from typing import Any
 
 from ._engine_phases import EnginePhasesMixin
 from .capabilities import CapabilityContext, CapabilityRegistry
-from .config import load_config
 from .context import ContextManager
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from .engine_types import AgentTurnResult
-from .operating_context import OperatingContext
 from .recovery import RecoveryPlanner
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
@@ -39,7 +37,6 @@ class HernessEngine(EnginePhasesMixin):
         disabled_tools: set[str] | None = None,
         disabled_capability_classes: frozenset[str] | frozenset = frozenset(),
         permission_ceiling: str = "write",
-        step_budget: int | None = None,
         event_bus: Any | None = None,
         execution_context: str = "turn",
         enforce_connector_source_policy: bool = True,
@@ -49,9 +46,6 @@ class HernessEngine(EnginePhasesMixin):
         self.runtime = runtime
         self.permission_ceiling = permission_ceiling
         self.event_bus = event_bus
-        self.step_budget = (
-            step_budget if step_budget is not None else load_config(home).runtime.agent_step_budget
-        )
         self.capabilities = CapabilityRegistry(
             home=home,
             project_dir=project_dir,
@@ -154,10 +148,9 @@ class HernessEngine(EnginePhasesMixin):
         completion_events: list[dict[str, Any]] = []
         goal_ids: set[str] = set()
         pending_approval_prompt = ""
-        last_result: AgentTurnResult | None = None
-        budget_exhausted = False
+        seen_progress_signatures: set[str] = set()
 
-        for _ in range(self.step_budget):
+        while True:
             step_result = await self._react_step(
                 text=text,
                 trace_id=trace_id,
@@ -178,7 +171,39 @@ class HernessEngine(EnginePhasesMixin):
             if step_result.should_continue:
                 # Recovery triggered; continue loop with updated observations
                 observations.append(step_result.recovery_observation)
-                last_result = step_result.last_result
+                progress_signature = step_result.progress_signature
+                if progress_signature and progress_signature in seen_progress_signatures:
+                    result = step_result.result
+                    self.trace.add_event(
+                        trace_id=trace_id,
+                        phase="runtime.converged",
+                        session_id=resolved_session_id or "",
+                        run_id=result.run_id,
+                        source=source,
+                        peer_id=peer_id,
+                        sender_id=sender_id,
+                        model_role="runtime",
+                        ok=True,
+                        output_data={
+                            "observations_count": len(observations),
+                            "signature": progress_signature,
+                        },
+                        message="repeated recovery result; synthesizing stable observations",
+                    )
+                    return await self._finalize_stable_observations(
+                        text=text,
+                        observations=observations,
+                        result=result,
+                        goal_ids=goal_ids,
+                        resolved_session_id=resolved_session_id,
+                        trace_id=trace_id,
+                        source=source,
+                        peer_id=peer_id,
+                        sender_id=sender_id,
+                        pending_approval_prompt=pending_approval_prompt,
+                    )
+                if progress_signature:
+                    seen_progress_signatures.add(progress_signature)
                 continue
 
             # Update loop state from successful step
@@ -190,7 +215,6 @@ class HernessEngine(EnginePhasesMixin):
             if goal_id:
                 goal_ids.add(goal_id)
 
-            last_result = result
             if result.terminal:
                 # Terminal condition met; finalize and return
                 result = self._with_approval_affordance(result, pending_approval_prompt)
@@ -208,88 +232,120 @@ class HernessEngine(EnginePhasesMixin):
                 self._trigger_background_memory(turn_res)
                 return turn_res
 
-            observations.append(result.observation or result.text)
-        else:
-            budget_exhausted = True
+            observation = result.observation or result.text
+            if observation:
+                observations.append(observation)
 
-        # Phase 3: Post-loop handling (budget exhaustion, observations finalization, or fallback chat)
-        if budget_exhausted:
-            pending_approval_prompt, last_result = await self._recover_budget_exhaustion(
-                trace_id=trace_id,
-                session_id=resolved_session_id or "",
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-                context=context,
-                completion_events=completion_events,
-                observations=observations,
-                goal_ids=goal_ids,
-                pending_approval_prompt=pending_approval_prompt,
-                last_result=last_result,
-            )
+            if self._facts_complete_current_request(step_result.invoked_facts):
+                return await self._finalize_stable_observations(
+                    text=text,
+                    observations=observations,
+                    result=result,
+                    goal_ids=goal_ids,
+                    resolved_session_id=resolved_session_id,
+                    trace_id=trace_id,
+                    source=source,
+                    peer_id=peer_id,
+                    sender_id=sender_id,
+                    pending_approval_prompt=pending_approval_prompt,
+                )
 
-        if observations:
-            turn_res = await self._finalize_observations(
-                text,
-                observations,
-                session_id=resolved_session_id,
-                trace_id=trace_id,
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-                action=last_result.action if last_result else "chat",
-                run_id=last_result.run_id if last_result else "",
-                model_role=last_result.model_role if last_result else "responder",
-                pending_approval_prompt=pending_approval_prompt,
-                budget_exhausted=budget_exhausted,
-            )
-            turn_res = self._with_trace(turn_res, trace_id)
-            self._attach_goals(
-                goal_ids,
-                trace_id=trace_id,
-                session_id=turn_res.session_id,
-                evidence={"final_action": turn_res.action, "budget_exhausted": budget_exhausted},
-            )
-            self._record_trace_final(
-                turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
-            )
-            self._trigger_background_memory(turn_res)
-            return turn_res
+            progress_signature = step_result.progress_signature
+            if progress_signature and progress_signature in seen_progress_signatures:
+                self.trace.add_event(
+                    trace_id=trace_id,
+                    phase="runtime.converged",
+                    session_id=resolved_session_id or "",
+                    run_id=result.run_id,
+                    source=source,
+                    peer_id=peer_id,
+                    sender_id=sender_id,
+                    model_role="runtime",
+                    ok=True,
+                    output_data={
+                        "observations_count": len(observations),
+                        "signature": progress_signature,
+                    },
+                    message="repeated capability result; synthesizing stable observations",
+                )
+                return await self._finalize_stable_observations(
+                    text=text,
+                    observations=observations,
+                    result=result,
+                    goal_ids=goal_ids,
+                    resolved_session_id=resolved_session_id,
+                    trace_id=trace_id,
+                    source=source,
+                    peer_id=peer_id,
+                    sender_id=sender_id,
+                    pending_approval_prompt=pending_approval_prompt,
+                )
+            if progress_signature:
+                seen_progress_signatures.add(progress_signature)
 
-        if budget_exhausted:
-            turn_res = await self._finalize_exhausted_budget_no_observations(
-                text=text,
-                trace_id=trace_id,
-                resolved_session_id=resolved_session_id,
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-            )
-            self._record_trace_final(
-                turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
-            )
-            self._trigger_background_memory(turn_res)
-            return turn_res
+    @staticmethod
+    def _facts_complete_current_request(facts: dict[str, Any] | None) -> bool:
+        if not isinstance(facts, dict):
+            return False
+        if facts.get("deleted") is True:
+            return True
+        if facts.get("cleanup_complete") is True:
+            return True
+        return False
 
-        reply = await self.runtime.chat(
-            text,
-            session_id=resolved_session_id,
-            operating_context=OperatingContext(
-                home=self.home,
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-                permission_ceiling=self.permission_ceiling,
-                skill_permission_ceiling="read",
-                workspace=str(self.capabilities.gateway.project_dir.resolve()),
-            ),
+    @staticmethod
+    def _progress_signature(
+        tool: str,
+        args: dict[str, Any],
+        *,
+        ok: bool,
+        facts: dict[str, Any] | None,
+    ) -> str:
+        return json.dumps(
+            {
+                "tool": tool,
+                "args": args,
+                "ok": ok,
+                "facts": facts or {},
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
         )
-        turn_res = AgentTurnResult(
-            text=reply.content,
-            session_id=reply.session_id,
-            action="chat",
-            terminal=True,
+
+    async def _finalize_stable_observations(
+        self,
+        *,
+        text: str,
+        observations: list[str],
+        result: AgentTurnResult,
+        goal_ids: set[str],
+        resolved_session_id: str | None,
+        trace_id: str,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+        pending_approval_prompt: str,
+    ) -> AgentTurnResult:
+        turn_res = await self._finalize_observations(
+            text,
+            observations,
+            session_id=resolved_session_id,
             trace_id=trace_id,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            action=result.action,
+            run_id=result.run_id,
+            model_role=result.model_role,
+            pending_approval_prompt=pending_approval_prompt,
+        )
+        turn_res = self._with_trace(turn_res, trace_id)
+        self._attach_goals(
+            goal_ids,
+            trace_id=trace_id,
+            session_id=turn_res.session_id,
+            evidence={"final_action": turn_res.action},
         )
         self._record_trace_final(
             turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
@@ -305,7 +361,7 @@ class HernessEngine(EnginePhasesMixin):
         should_return: bool = False  # True if must return immediately (error or early exit)
         should_continue: bool = False  # True if recovery triggered, continue loop
         recovery_observation: str = ""  # Observation to append if continuing
-        last_result: AgentTurnResult | None = None  # Last result when continuing
+        progress_signature: str = ""
 
     async def _react_step(
         self,
@@ -416,11 +472,13 @@ class HernessEngine(EnginePhasesMixin):
                     terminal=True,
                 )
                 return self._StepResult(result=result, should_return=True)
-            # Capability unavailable; break loop
-            return self._StepResult(
-                result=AgentTurnResult(text="", action="chat", terminal=False),
-                should_return=False,
+            result = AgentTurnResult(
+                text=planner_message,
+                action="capability_error",
+                model_role="planner",
+                terminal=True,
             )
+            return self._StepResult(result=result)
 
         # Invoke capability
         invoked = await self.capabilities.invoke(
@@ -522,15 +580,31 @@ class HernessEngine(EnginePhasesMixin):
                     output_data=asdict(recovery_plan),
                     message=recovery_plan.recommended,
                 )
+                progress_signature = self._progress_signature(
+                    syscall.tool,
+                    syscall.args,
+                    ok=invoked.ok,
+                    facts=invoked.facts,
+                )
                 return self._StepResult(
                     result=result,
                     invoked_facts=invoked.facts,
                     should_continue=True,
                     recovery_observation=recovery_plan.to_observation(),
-                    last_result=replace(result, terminal=False),
+                    progress_signature=progress_signature,
                 )
 
-        return self._StepResult(result=result, invoked_facts=invoked.facts)
+        progress_signature = self._progress_signature(
+            syscall.tool,
+            syscall.args,
+            ok=invoked.ok,
+            facts=invoked.facts,
+        )
+        return self._StepResult(
+            result=result,
+            invoked_facts=invoked.facts,
+            progress_signature=progress_signature,
+        )
 
 
     async def shutdown(self, *, timeout: float = 10.0) -> None:

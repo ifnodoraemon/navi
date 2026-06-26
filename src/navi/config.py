@@ -10,7 +10,6 @@ import yaml
 from .defaults import (
     DEFAULT_EXECUTION_PROVIDER,
     DEFAULT_EXECUTION_TIMEOUT_SECONDS,
-    DEFAULT_AGENT_STEP_BUDGET,
     DEFAULT_LOCAL_SURFACE,
     DEFAULT_MODEL_TIMEOUT_SECONDS,
     DEFAULT_MODEL_MODEL,
@@ -49,7 +48,6 @@ class ModelConfig:
 class RuntimeConfig:
     service_name: str = DEFAULT_SERVICE_NAME
     local_surface: str = DEFAULT_LOCAL_SURFACE
-    agent_step_budget: int = DEFAULT_AGENT_STEP_BUDGET
 
 
 @dataclass
@@ -113,12 +111,6 @@ def load_config(home: Path | None = None) -> NaviConfig:
         local_surface=str(
             env.get("NAVI_LOCAL_SURFACE", runtime_raw.get("local_surface", DEFAULT_LOCAL_SURFACE))
         ).strip(),
-        agent_step_budget=_int_env(
-            env.get(
-                "NAVI_AGENT_STEP_BUDGET",
-                runtime_raw.get("agent_step_budget", DEFAULT_AGENT_STEP_BUDGET),
-            )
-        ),
     )
     execution = ExecutionConfig(
         provider=str(
@@ -155,7 +147,6 @@ def write_default_config(home: Path | None = None) -> Path:
                 "runtime": {
                     "service_name": DEFAULT_SERVICE_NAME,
                     "local_surface": DEFAULT_LOCAL_SURFACE,
-                    "agent_step_budget": DEFAULT_AGENT_STEP_BUDGET,
                 },
                 "execution": {
                     "provider": DEFAULT_EXECUTION_PROVIDER,
@@ -174,13 +165,6 @@ def _float_env(value: object, *, default: float) -> float:
         return max(1.0, float(value))
     except (TypeError, ValueError):
         return default
-
-
-def _int_env(value: object) -> int:
-    try:
-        return max(1, int(value))
-    except (TypeError, ValueError):
-        return DEFAULT_AGENT_STEP_BUDGET
 
 
 def _provider_spec(provider: str, model_raw: dict, env: dict[str, str]) -> ProviderSpec:

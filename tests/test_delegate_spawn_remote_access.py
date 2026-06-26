@@ -1,4 +1,4 @@
-"""Tests for the remote-surface → delegate.spawn routing fix.
+"""Tests for the remote-surface local-access capability boundary.
 
 Production symptom: from a WeChat (remote connector) surface, the user asked
 "把我电脑上的简历发我". The planner saw that file.read/directory.list/shell
@@ -8,15 +8,18 @@ clarification.
 
 Current contract:
 - delegate.spawn's description states only capability semantics.
-- The planner policy states the general remote-surface rule without smuggling
-  routing instructions into the tool description.
+- Remote connector policy exposes governed delegation while blocking direct OS
+  classes; the planner prompt must not carry remote-surface routing policy.
 """
 
 from __future__ import annotations
 
 from navi.actions.specs import ACTION_SPECS
+from navi.connector_runtime import (
+    REMOTE_BLOCKED_CAPABILITY_CLASSES,
+    REMOTE_CONNECTOR_TOOL_POLICY,
+)
 from navi.prompt_os import assemble_planner_system_prompt
-from navi.specs_data import SYSCALL_PLANNER_SPEC
 
 
 def _delegate_spawn_spec():
@@ -44,28 +47,16 @@ def test_delegate_spawn_description_does_not_carry_routing_policy() -> None:
     assert "use delegate.spawn" not in description
 
 
-def test_routing_rules_cover_remote_surface_local_access() -> None:
-    """The TASK ROUTING RULES must include guidance that, from a surface
-    without direct OS tools, governed local delegation is the path to local access."""
-    rules = SYSCALL_PLANNER_SPEC.get("routing_rules") or []
-    parts: list[str] = []
-    for rule in rules:
-        if isinstance(rule, dict):
-            parts.extend(str(v) for v in rule.values())
-        else:
-            parts.append(str(rule))
-    combined = " ".join(parts).lower()
-    assert "remote" in combined or "surface without" in combined, (
-        "routing rules must address the remote-surface local-access case"
-    )
-    assert "governed local" in combined or "delegation capability" in combined, (
-        "routing rules must describe the governed local-access path"
-    )
+def test_remote_surface_local_access_is_declared_by_policy_not_prompt() -> None:
+    policy = REMOTE_CONNECTOR_TOOL_POLICY
+    assert "delegate.spawn" not in policy.blocked_tools
+    assert "delegation" not in policy.blocked_capability_classes
+    assert {"file.read", "directory", "shell"} <= REMOTE_BLOCKED_CAPABILITY_CLASSES
 
 
-def test_planner_system_prompt_contains_remote_access_rule() -> None:
-    """The assembled planner system prompt must surface the remote-surface →
-    governed local access guidance to the model."""
+def test_planner_system_prompt_does_not_encode_remote_access_routing() -> None:
     rendered = assemble_planner_system_prompt().render().lower()
-    assert "governed local" in rendered or "delegation capability" in rendered
-    assert "remote" in rendered or "surface without" in rendered
+    assert "remote surface" not in rendered
+    assert "governed local" not in rendered
+    assert "delegation capability" not in rendered
+    assert "delegate.spawn" not in rendered

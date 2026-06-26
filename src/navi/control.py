@@ -343,8 +343,7 @@ class ApprovalService:
         # Idempotent resolution: if the approval is already in the target
         # status (e.g. the user re-submits an already-approved code), return
         # ok=True instead of ok=False. Without this, the planner sees a
-        # failure and re-invokes approval.resolve with the same code, looping
-        # until the step budget runs out.
+        # failure and re-invokes approval.resolve with the same code.
         if candidate is not None:
             target_status = status
             if candidate.status == target_status:
