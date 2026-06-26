@@ -58,7 +58,7 @@ ACTION_SPECS = [
                 },
                 "plan": {
                     "type": "string",
-                    "description": "A high-level step-by-step plan for the subagent to follow.",
+                    "description": "Concise execution plan and evidence scope for the delegation run.",
                 },
                 "success_criteria": {
                     "type": "string",
@@ -343,7 +343,7 @@ ACTION_SPECS = [
         name="delegate.retry",
         capability_class="delegation",
         execution_contexts=("turn", "workflow_step"),
-        description="""Execute one follow-up attempt for a delegation run.""",
+        description="""Execute one retry attempt for a delegation run.""",
         input_schema={
             "type": "object",
             "properties": {"run_id": {"type": "string"}, "follow_up_prompt": {"type": "string"}},

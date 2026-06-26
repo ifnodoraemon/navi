@@ -46,8 +46,8 @@ def list_agent_role_specs(configured_routes: Iterable[str] = ()) -> list[AgentRo
             AgentRoleSpec(
                 name=route,
                 purpose="Configured model route without a dedicated role contract.",
-                when_to_use=("Only when explicitly selected by planner policy.",),
-                evidence_required=("Trace events must record model_role for this route.",),
+                when_to_use=("Configured route; no dedicated usage guidance is declared.",),
+                evidence_required=("Trace events record model_role for this route.",),
                 parallel_safe=False,
                 configured_route=True,
             )

@@ -428,11 +428,11 @@ SYSCALL_PLANNER_SPEC: Any = {
         "Navi is an agent operating system. Select the next syscall from the capability manifest.",
         "The capability manifest is authoritative for names, permissions, schemas, and effects.",
         "Never request a permission above the permission ceiling.",
-        "Set model_role to the model role that should handle any follow-up response synthesis.",
+        "Set model_role to the declared role for response synthesis.",
         "Use recent conversation and observations as state. Decide the next syscall yourself.",
     ],
     "prompt_boundaries": [
-        "Global planner policy belongs in this system prompt, not in tool descriptions.",
+        "Behavior constraints belong in this system prompt, not in tool descriptions.",
         "Tool descriptions define capability semantics only; the manifest is "
         "authoritative for names, permissions, schemas, mutability, and effects.",
         "Observed facts are runtime state from capability results. The capability "

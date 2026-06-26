@@ -129,3 +129,21 @@ def test_prompt_os_elevation_explanation_does_not_name_tool() -> None:
     assert "approval.request" not in pos
     assert "manifest's elevation capability" not in pos
     assert "manifest's approval capability" not in pos
+
+
+def test_runtime_specs_do_not_leak_policy_or_followup_wording() -> None:
+    runtime_sources = [
+        _read("src/navi/actions/specs.py"),
+        _read("src/navi/agent_roles.py"),
+        _read("src/navi/specs_data.py"),
+        _read("src/navi/syscalls.py"),
+    ]
+    forbidden = [
+        "planner policy",
+        "subagent to follow",
+        "follow-up attempt",
+        "follow-up response",
+    ]
+    for source in runtime_sources:
+        for phrase in forbidden:
+            assert phrase not in source

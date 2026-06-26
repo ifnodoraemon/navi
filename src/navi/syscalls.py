@@ -159,7 +159,7 @@ def _syscall_output_schema() -> dict[str, Any]:
                 "args": {"type": "object", "description": "Arguments for the selected capability."},
                 "model_role": {
                     "type": "string",
-                    "description": "Role for follow-up response synthesis.",
+                    "description": "Declared role for response synthesis.",
                 },
                 "confidence": {"type": "number"},
                 "reason": {"type": "string"},
