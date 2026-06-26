@@ -8,6 +8,30 @@ from navi.safeguards import capability_safeguard_facts
 from navi.tools import ToolSpec
 
 
+def _tool_error_reason(error: str, facts: dict[str, Any]) -> str:
+    existing = facts.get("error_reason")
+    if isinstance(existing, str) and existing.strip():
+        return existing.strip()
+    lowered = error.lower()
+    if "invalid arguments" in lowered or "must be" in lowered:
+        return "invalid_arguments"
+    if "required" in lowered or "is required" in lowered:
+        return "missing_required_argument"
+    if "not found" in lowered:
+        return "not_found"
+    if "not a file" in lowered:
+        return "not_a_file"
+    if "not a directory" in lowered:
+        return "not_a_directory"
+    if "permission" in lowered:
+        return "permission_error"
+    if "timed out" in lowered or "timeout" in lowered:
+        return "timeout"
+    if "blocked" in lowered or "denied" in lowered:
+        return "blocked"
+    return "tool_error"
+
+
 class ToolGatewayCapabilityProvider:
     def __init__(self, gateway):
         self.gateway = gateway
@@ -32,13 +56,20 @@ class ToolCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         result = self.gateway.call(self.spec.name, args)
+        facts = dict(result.facts or {})
+        error_reason = ""
+        if not result.ok:
+            error_reason = _tool_error_reason(result.error, facts)
+            facts.setdefault("error_reason", error_reason)
+        payload = {
+            "capability": self.spec.name,
+            "ok": result.ok,
+            "facts": facts,
+        }
+        if error_reason:
+            payload["error_reason"] = error_reason
         observation = json.dumps(
-            {
-                "capability": self.spec.name,
-                "ok": result.ok,
-                "facts": result.facts,
-                "error": result.error,
-            },
+            payload,
             ensure_ascii=False,
             indent=2,
             sort_keys=True,
@@ -48,7 +79,8 @@ class ToolCapability:
             action="tool",
             observation=observation,
             message=result.error if not result.ok else "",
-            facts=result.facts,
+            facts=facts,
+            error_reason=error_reason or "unknown",
         )
 
 

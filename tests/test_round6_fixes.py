@@ -306,6 +306,56 @@ async def test_remote_policy_failure_observation_is_structured_facts(
     assert "policy blocks" not in result.observation
 
 
+@pytest.mark.asyncio
+async def test_tool_gateway_failure_observation_uses_error_reason(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+
+    result = await registry.invoke("shell.run", {}, permission="write", context=context)
+
+    assert result.ok is False
+    assert result.error_reason == "invalid_arguments"
+    observation = json.loads(result.observation)
+    assert observation["error_reason"] == "invalid_arguments"
+    assert observation["facts"]["error_reason"] == "invalid_arguments"
+    assert "error" not in observation
+    assert "Invalid arguments" not in result.observation
+
+
+@pytest.mark.asyncio
+async def test_tool_gateway_preserves_structured_tool_error_reason(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+
+    result = await registry.invoke(
+        "shell.run",
+        {"command": ["rm", "-rf", "target"], "cwd": str(tmp_path)},
+        permission="write",
+        context=context,
+    )
+
+    assert result.ok is False
+    assert result.error_reason == "binary_denied"
+    observation = json.loads(result.observation)
+    assert observation["error_reason"] == "binary_denied"
+    assert observation["facts"]["error_reason"] == "binary_denied"
+    assert "error" not in observation
+    assert "use " not in result.observation.lower()
+    assert "instead" not in result.observation.lower()
+
+
 # ---------------------------------------------------------------------------
 # Fix 4: FallbackProvider always wraps single-provider configs
 # ---------------------------------------------------------------------------
