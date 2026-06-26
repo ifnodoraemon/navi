@@ -57,6 +57,9 @@ class SessionRequest(BaseModel):
 class DelegationRequest(BaseModel):
     title: str
     prompt: str | None = None
+    context: str | None = None
+    plan: str | None = None
+    success_criteria: str | None = None
 
 
 class DelegationStatusRequest(BaseModel):
@@ -67,6 +70,9 @@ class ActiveDelegationRequest(BaseModel):
     prompt: str
     peer_id: str = DEFAULT_LOCAL_SURFACE
     sender_id: str = DEFAULT_LOCAL_SURFACE
+    context: str | None = None
+    plan: str | None = None
+    success_criteria: str | None = None
 
 
 class ActiveApprovalRequest(BaseModel):
@@ -92,6 +98,24 @@ class WorkflowRequest(BaseModel):
     verification_strategy: str = ""
     plan: dict[str, Any] = Field(default_factory=dict)
     steps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def _delegation_spawn_args(
+    *,
+    objective: str,
+    context: str | None,
+    plan: str | None,
+    success_criteria: str | None,
+) -> dict[str, str]:
+    return {
+        "objective": objective,
+        "context": context
+        or "API request supplied no separate context; use the objective as the task facts.",
+        "plan": plan
+        or "API request supplied no execution plan; derive the plan from objective and context.",
+        "success_criteria": success_criteria
+        or "API request supplied no success criteria; derive completion evidence from objective and context.",
+    }
 
 
 class ToolCallRequest(BaseModel):
@@ -300,12 +324,12 @@ def create_app(home: Path | None = None) -> FastAPI:
     async def create_delegation(request: DelegationRequest) -> dict:
         result = await capabilities.invoke(
             "delegate.spawn",
-            {
-                "objective": request.prompt or request.title,
-                "context": "Direct delegation via API/CLI",
-                "plan": "Execute the provided objective",
-                "success_criteria": "The objective is completed",
-            },
+            _delegation_spawn_args(
+                objective=request.prompt or request.title,
+                context=request.context,
+                plan=request.plan,
+                success_criteria=request.success_criteria,
+            ),
             permission="prepare",
             context=_local_capability_context(home, project_dir=project_dir),
         )
@@ -403,12 +427,12 @@ def create_app(home: Path | None = None) -> FastAPI:
         )
         result = await capabilities.invoke(
             "delegate.spawn",
-            {
-                "objective": request.prompt,
-                "context": "Active delegation via API/CLI",
-                "plan": "Execute the provided objective",
-                "success_criteria": "The objective is completed",
-            },
+            _delegation_spawn_args(
+                objective=request.prompt,
+                context=request.context,
+                plan=request.plan,
+                success_criteria=request.success_criteria,
+            ),
             permission="prepare",
             context=context,
         )

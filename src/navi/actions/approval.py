@@ -85,7 +85,8 @@ class ApprovalResolveCapability(BaseCapability):
         decision = _arg_text(args, "decision").lower()
         code = _arg_text(args, "code")
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
-        selection = _approval_selection(args, code=code, run_id=run_id)
+        batch_id = _arg_text(args, "batch_id")
+        selection = _approval_selection(args, code=code, run_id=run_id, batch_id=batch_id)
         if code and context.input_text and code not in context.input_text:
             facts = {
                 "reason": "approval_code_not_in_user_input",
@@ -116,6 +117,7 @@ class ApprovalResolveCapability(BaseCapability):
             context=surface_ctx,
             code=code,
             run_id=run_id,
+            batch_id=batch_id,
         )
         message = _approval_result_message(res.message, res.facts)
         if not res.ok:

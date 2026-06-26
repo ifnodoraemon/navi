@@ -41,6 +41,7 @@ class HernessEngine(EnginePhasesMixin):
         execution_context: str = "turn",
         enforce_connector_source_policy: bool = True,
         governed_run_id: str | None = None,
+        governed_workflow_id: str | None = None,
     ):
         self.home = home
         self.runtime = runtime
@@ -62,6 +63,7 @@ class HernessEngine(EnginePhasesMixin):
         self.recovery = RecoveryPlanner()
         self.trace = TraceStore(home)
         self.context_manager = ContextManager()
+        self.governed_workflow_id = governed_workflow_id or ""
         self._memory_sem: asyncio.Semaphore | None = None
         self._background_tasks: set[asyncio.Task] = set()
 

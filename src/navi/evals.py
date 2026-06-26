@@ -636,6 +636,20 @@ def validate_delegation_eval_dataset(dataset: dict[str, Any], tools: list[ToolSp
             allowed_name = str(allowed_tool or "")
             if allowed_name not in by_name:
                 errors.append(f"{prefix}: unknown allowed tool {allowed_name!r}")
+        for option in expected.get("allowed_decisions") or []:
+            if not isinstance(option, dict):
+                errors.append(f"{prefix}: allowed_decisions entries must be mappings")
+                continue
+            allowed_name = str(option.get("tool") or "")
+            allowed = by_name.get(allowed_name)
+            if allowed is None:
+                errors.append(f"{prefix}: unknown allowed decision tool {allowed_name!r}")
+                continue
+            allowed_permission = str(option.get("permission") or "")
+            if allowed_permission and allowed_permission != allowed.permission:
+                errors.append(
+                    f"{prefix}: allowed decision {allowed_name!r} permission {allowed_permission!r} does not match {allowed.permission!r}"
+                )
         if tool_name in required_tools:
             tools_seen.add(tool_name)
         permission = str(expected.get("permission") or "")
@@ -732,21 +746,61 @@ def match_delegation_eval_case(case: dict[str, Any], decision: ModelSyscall) -> 
     errors: list[str] = []
     expected_tool = str(expected.get("tool") or "")
     expected_permission = str(expected.get("permission") or "")
+    candidates: list[dict[str, Any]] = [
+        {
+            "tool": expected_tool,
+            "permission": expected_permission,
+            "args": expected.get("args") or {},
+            "args_contains": expected.get("args_contains") or {},
+        }
+    ]
+    for option in expected.get("allowed_decisions") or []:
+        if not isinstance(option, dict):
+            continue
+        candidates.append(
+            {
+                "tool": str(option.get("tool") or ""),
+                "permission": str(option.get("permission") or ""),
+                "args": option.get("args") or {},
+                "args_contains": option.get("args_contains") or {},
+            }
+        )
     allowed_tools = {
         str(item)
         for item in (expected.get("allowed_tools") or [])
         if isinstance(item, str) and item.strip()
     }
-    tool_matches = decision.tool == expected_tool or decision.tool in allowed_tools
-    if not tool_matches:
-        errors.append(f"tool expected {expected_tool!r}, got {decision.tool!r}")
-    if decision.permission != expected_permission:
-        errors.append(f"permission expected {expected_permission!r}, got {decision.permission!r}")
-    for key, value in (expected.get("args") or {}).items():
+    candidates.extend(
+        {"tool": tool, "permission": expected_permission, "args": {}, "args_contains": {}}
+        for tool in sorted(allowed_tools)
+    )
+    matched = next(
+        (
+            candidate
+            for candidate in candidates
+            if decision.tool == candidate["tool"]
+            and (
+                not candidate["permission"]
+                or decision.permission == candidate["permission"]
+            )
+        ),
+        None,
+    )
+    if matched is None:
+        expected_summary = [
+            f"{candidate['tool']}:{candidate['permission'] or '*'}"
+            for candidate in candidates
+            if candidate["tool"]
+        ]
+        errors.append(
+            f"decision expected one of {expected_summary!r}, got {decision.tool!r}:{decision.permission!r}"
+        )
+        return errors
+    for key, value in (matched.get("args") or {}).items():
         actual = decision.args.get(str(key))
         if str(actual).lower() != str(value).lower():
             errors.append(f"args.{key} expected {value!r}, got {actual!r}")
-    for key, value in (expected.get("args_contains") or {}).items():
+    for key, value in (matched.get("args_contains") or {}).items():
         actual = str(decision.args.get(str(key)) or "").lower()
         expected_part = str(value).lower()
         if expected_part not in actual:

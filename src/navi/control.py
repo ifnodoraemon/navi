@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +20,9 @@ from .workflows import (
 
 
 ApprovalDecision = Literal["approve", "reject"]
-ApprovalSelection = Literal["explicit_code", "current_run", "latest_visible_batch", "all_visible"]
+ApprovalSelection = Literal[
+    "explicit_code", "current_run", "batch_id", "latest_visible_batch", "all_visible"
+]
 
 APPROVAL_BATCH_WINDOW_SECONDS = 30.0
 PENDING_RUN_STATUSES = frozenset({"pending", "preparing", "prepared", "awaiting_approval"})
@@ -72,6 +75,29 @@ class VisibleApproval:
 
 
 @dataclass(frozen=True)
+class VisibleApprovalBatch:
+    id: str
+    approvals: tuple[VisibleApproval, ...]
+    window_seconds: float
+    newest_created_at: float
+    oldest_created_at: float
+
+    def facts(self, *, include_code: bool = False) -> dict[str, Any]:
+        return {
+            "batch_id": self.id,
+            "approval_count": len(self.approvals),
+            "approval_ids": [item.approval.id for item in self.approvals],
+            "run_ids": [item.approval.run_id for item in self.approvals],
+            "window_seconds": self.window_seconds,
+            "newest_created_at": self.newest_created_at,
+            "oldest_created_at": self.oldest_created_at,
+            "approvals": [
+                item.facts(include_code=include_code) for item in self.approvals
+            ],
+        }
+
+
+@dataclass(frozen=True)
 class CurrentState:
     surface: str
     peer_id: str
@@ -84,13 +110,12 @@ class CurrentState:
 
     @property
     def latest_visible_batch(self) -> tuple[VisibleApproval, ...]:
-        if not self.visible_pending_approvals:
-            return ()
-        latest = max(item.approval.created_at for item in self.visible_pending_approvals)
-        floor = latest - APPROVAL_BATCH_WINDOW_SECONDS
-        return tuple(
-            item for item in self.visible_pending_approvals if item.approval.created_at >= floor
-        )
+        batches = self.visible_approval_batches
+        return batches[0].approvals if batches else ()
+
+    @property
+    def visible_approval_batches(self) -> tuple[VisibleApprovalBatch, ...]:
+        return _visible_approval_batches(self.visible_pending_approvals)
 
 
 @dataclass(frozen=True)
@@ -166,6 +191,7 @@ class ApprovalService:
         context: SurfaceContext,
         code: str = "",
         run_id: str = "",
+        batch_id: str = "",
     ) -> ApprovalResolution:
         if decision not in {"approve", "reject"}:
             return ApprovalResolution(
@@ -198,12 +224,25 @@ class ApprovalService:
                 code="",
                 run_id=run_id,
             )
+        if selection == "batch_id" and not batch_id:
+            return self._missing_identifier(decision, selection)
         state = CurrentStateBuilder(self.home).build(context)
-        approvals = (
-            state.latest_visible_batch
-            if selection == "latest_visible_batch"
-            else state.visible_pending_approvals
-        )
+        selected_batch: VisibleApprovalBatch | None = None
+        if selection == "batch_id":
+            selected_batch = next(
+                (
+                    batch
+                    for batch in state.visible_approval_batches
+                    if batch.id == batch_id
+                ),
+                None,
+            )
+            approvals = selected_batch.approvals if selected_batch else ()
+        elif selection == "latest_visible_batch":
+            selected_batch = next(iter(state.visible_approval_batches), None)
+            approvals = selected_batch.approvals if selected_batch else ()
+        else:
+            approvals = state.visible_pending_approvals
         if not approvals:
             return ApprovalResolution(
                 ok=False,
@@ -213,6 +252,7 @@ class ApprovalService:
                 facts={
                     "reason": "no_visible_pending_approvals",
                     "selection": selection,
+                    "batch_id": batch_id,
                     "pending_visible_count": len(state.visible_pending_approvals),
                 },
             )
@@ -230,7 +270,6 @@ class ApprovalService:
             target = resolved if one.ok else failures
             target.append(one.facts or {"run_id": item.approval.run_id})
         ok = bool(resolved) and not failures
-        verb = "approved" if decision == "approve" else "rejected"
         message = (
             f"approval_batch decision={decision} selection={selection} resolved_count={len(resolved)} failed_count=0"
             if ok
@@ -246,6 +285,10 @@ class ApprovalService:
                 "entity_type": "approval_batch",
                 "selection": selection,
                 "decision": decision,
+                "batch_id": selected_batch.id if selected_batch else "",
+                "batch_window_seconds": (
+                    selected_batch.window_seconds if selected_batch else 0
+                ),
                 "resolved_count": len(resolved),
                 "failed_count": len(failures),
                 "resolved": resolved,
@@ -516,6 +559,7 @@ def render_visible_approvals(state: CurrentState) -> str:
 
 def current_state_facts(state: CurrentState) -> dict[str, Any]:
     latest_batch = state.latest_visible_batch
+    batches = state.visible_approval_batches
     return {
         "surface": state.surface,
         "peer_id": state.peer_id,
@@ -526,6 +570,11 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
             item.facts(include_code=True) for item in state.visible_pending_approvals
         ],
         "latest_visible_approval_batch": [item.facts(include_code=True) for item in latest_batch],
+        "visible_approval_batches": [
+            batch.facts(include_code=True) for batch in batches
+        ],
+        "latest_visible_batch_id": batches[0].id if batches else "",
+        "approval_batch_window_seconds": APPROVAL_BATCH_WINDOW_SECONDS,
         "visible_pending_approval_count": len(state.visible_pending_approvals),
         "latest_visible_batch_count": len(latest_batch),
         "active_runs": [
@@ -556,6 +605,39 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
             for workflow in state.active_workflows
         ],
     }
+
+
+def _visible_approval_batches(
+    approvals: tuple[VisibleApproval, ...],
+) -> tuple[VisibleApprovalBatch, ...]:
+    batches: list[VisibleApprovalBatch] = []
+    remaining = list(approvals)
+    while remaining:
+        newest = remaining[0].approval.created_at
+        floor = newest - APPROVAL_BATCH_WINDOW_SECONDS
+        current = [
+            item for item in remaining if item.approval.created_at >= floor
+        ]
+        remaining = [
+            item for item in remaining if item.approval.created_at < floor
+        ]
+        created = [item.approval.created_at for item in current]
+        batches.append(
+            VisibleApprovalBatch(
+                id=_approval_batch_id(current),
+                approvals=tuple(current),
+                window_seconds=APPROVAL_BATCH_WINDOW_SECONDS,
+                newest_created_at=max(created),
+                oldest_created_at=min(created),
+            )
+        )
+    return tuple(batches)
+
+
+def _approval_batch_id(approvals: list[VisibleApproval]) -> str:
+    raw = "|".join(sorted(item.approval.id for item in approvals))
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return f"approval_batch:{digest}"
 
 
 def explicit_code_was_user_provided(

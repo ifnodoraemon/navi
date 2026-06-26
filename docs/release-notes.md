@@ -49,7 +49,7 @@ Minor release that adds governed dynamic workflows to the v1 agent OS contract.
 
 - Adds `workflow.propose` for model-selected declarative orchestration plans with objective, subagent steps, dependencies, allowed tools, permission ceiling, cost/risk metadata, stop condition, and verification strategy.
 - Adds approval, run/resume, status, durable store, CLI, and API surfaces for workflows. Current resume uses `workflow.run(resume=true)`.
-- Keeps workflow plans as data, not executable scripts. Steps call declared Navi capabilities through the runtime.
+- Keeps workflow plans as data, not executable scripts. Steps run as model-owned loops constrained by declared tool scopes; stored tool-call intents are facts, not replay instructions.
 - Keeps remote connector ingress limited to workflow proposal/status by default; workflow approval/run remains blocked remotely unless explicit policy enables it.
 - Adds engine-level tests for natural language request, model-selected `workflow.propose`, persisted proposal, and user-facing approval prompt.
 

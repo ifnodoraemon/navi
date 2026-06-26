@@ -41,6 +41,7 @@ class EnginePhasesMixin:
     capabilities: Any  # CapabilityRegistry
     permission_ceiling: str
     event_bus: Any | None
+    governed_workflow_id: str
 
     def _attach_goals(
         self, goal_ids: set[str], *, trace_id: str, session_id: str, evidence: dict[str, Any]
@@ -121,6 +122,8 @@ class EnginePhasesMixin:
                         run_status=run.status,
                     )
             for workflow in state.active_workflows:
+                if workflow.id == self.governed_workflow_id:
+                    continue
                 if workflow.status in {"approved", "running", "interrupted"}:
                     return CompletionBlock(
                         reason=(

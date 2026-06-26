@@ -453,7 +453,7 @@ SYSCALL_PLANNER_SPEC: Any = {
         "memory, or prior conversation. Unknown required arguments make that "
         "capability call invalid for the current decision.",
         "Dynamic workflows are declared orchestration data, not executable scripts. "
-        "Workflow steps may only call declared capabilities through the runtime.",
+        "Workflow steps run as model-owned loops constrained by declared capability scopes.",
     ],
     "observation_invariants": [
         "Current-turn observations have higher recency than stale conversation history.",

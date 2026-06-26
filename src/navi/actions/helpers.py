@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
-import time
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -57,10 +54,12 @@ def arg_text(args: dict[str, Any], key: str) -> str:
     return str(value).strip() if value is not None else ""
 
 
-def approval_selection(args: dict[str, Any], *, code: str, run_id: str) -> str:
+def approval_selection(args: dict[str, Any], *, code: str, run_id: str, batch_id: str = "") -> str:
     explicit = arg_text(args, "selection")
     if explicit:
         return explicit
+    if batch_id and not code and not run_id:
+        return "batch_id"
     return "current_run" if run_id and not code else "explicit_code"
 
 

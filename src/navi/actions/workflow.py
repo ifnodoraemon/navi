@@ -381,6 +381,7 @@ class WorkflowRunCapability(BaseCapability):
             permission_ceiling=workflow.permission_ceiling,
             event_bus=context.event_bus,
             execution_context=WORKFLOW_STEP_CONTEXT,
+            governed_workflow_id=workflow.id,
         )
         return await engine.handle(
             _step_prompt(

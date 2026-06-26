@@ -22,7 +22,7 @@ import pytest
 
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
-from navi.control import ApprovalService, SurfaceContext
+from navi.control import ApprovalService, CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.core_tools import _resolve_binary_error, _run_command
 from navi.provider import (
     ChatMessage,
@@ -122,6 +122,48 @@ def test_reissue_approval_returns_existing_pending_approval(
         sender_id="weixin-user",
     )
     assert reissued.code == first.code
+
+
+def test_approval_resolve_accepts_visible_batch_id(tmp_path: Path) -> None:
+    runs = RunStore(tmp_path)
+    context = SurfaceContext(
+        home=tmp_path,
+        source="connector.weixin",
+        peer_id="weixin-peer",
+        sender_id="weixin-user",
+    )
+    for title in ("a", "b"):
+        run = runs.create(
+            title,
+            prompt=title,
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=str(tmp_path),
+            kind="delegation",
+        )
+        runs.create_approval(
+            run_id=run.id,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+        )
+
+    state = CurrentStateBuilder(tmp_path).build(context)
+    facts = current_state_facts(state)
+    batch_id = facts["visible_approval_batches"][0]["batch_id"]
+
+    result = ApprovalService(tmp_path).resolve(
+        decision="approve",
+        selection="batch_id",
+        context=context,
+        batch_id=batch_id,
+    )
+
+    assert result.ok is True
+    assert result.facts["selection"] == "batch_id"
+    assert result.facts["batch_id"] == batch_id
+    assert result.facts["resolved_count"] == 2
+    assert all(approval.status == "approved" for approval in runs.list_approvals(limit=10))
 
 
 # ---------------------------------------------------------------------------

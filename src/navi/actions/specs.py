@@ -319,9 +319,16 @@ ACTION_SPECS = [
                 "decision": {"type": "string", "enum": ["approve", "reject"]},
                 "code": {"type": "string"},
                 "run_id": {"type": "string"},
+                "batch_id": {"type": "string"},
                 "selection": {
                     "type": "string",
-                    "enum": ["explicit_code", "current_run", "latest_visible_batch", "all_visible"],
+                    "enum": [
+                        "explicit_code",
+                        "current_run",
+                        "batch_id",
+                        "latest_visible_batch",
+                        "all_visible",
+                    ],
                 },
             },
             "required": ["decision"],
@@ -447,7 +454,7 @@ ACTION_SPECS = [
         name="workflow.run",
         capability_class="workflow",
         execution_contexts=("turn",),
-        description="""Run the next bounded batch of an approved dynamic workflow through declared capabilities. When all steps are complete, the verifier runs automatically and the workflow transitions to verified or blocked. Set resume=true to resume an interrupted workflow.""",
+        description="""Run the next bounded batch of an approved dynamic workflow as model-owned step loops constrained by each step's declared tool scope. When all steps are complete, the verifier runs automatically and the workflow transitions to verified or blocked. Set resume=true to resume an interrupted workflow.""",
         input_schema={
             "type": "object",
             "properties": {

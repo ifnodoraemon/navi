@@ -51,6 +51,8 @@ def test_recovery_planner_returns_cleanup_state_facts():
             {
                 "tool": "delegate.delete",
                 "facts": {
+                    "entity_type": "bulk_delete",
+                    "completion_evidence": False,
                     "cleanup_complete": False,
                     "remaining_count": 2,
                     "source_filter": "watch",

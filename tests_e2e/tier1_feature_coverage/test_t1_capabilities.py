@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
+
 import pytest
 
 from navi.capabilities import CapabilityRegistry, CapabilityContext
@@ -14,6 +17,40 @@ from navi.workflows import (
     WORKFLOW_STATUS_APPROVED,
     WORKFLOW_STATUS_VERIFIED_COMPLETE,
 )
+
+
+class _WorkflowStepProvider:
+    def __init__(self) -> None:
+        self.planner_calls = 0
+
+    async def complete_for(self, role: str, messages: list[Any], **kwargs: Any) -> str:
+        if role != "planner":
+            raise AssertionError(f"unexpected model role in workflow step: {role}")
+        self.planner_calls += 1
+        if self.planner_calls == 1:
+            return json.dumps(
+                {
+                    "tool": "provider.config",
+                    "permission": "read",
+                    "args": {},
+                    "model_role": "auditor",
+                    "confidence": 1.0,
+                    "reason": "inspect provider facts",
+                }
+            )
+        return json.dumps(
+            {
+                "tool": "final.answer",
+                "permission": "read",
+                "args": {"message": "workflow lifecycle complete"},
+                "model_role": "auditor",
+                "confidence": 1.0,
+                "reason": "step evidence is complete",
+            }
+        )
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "auditor"]
 
 
 @pytest.mark.asyncio
@@ -297,8 +334,13 @@ async def test_t1_watch_actions_flow(navi_home) -> None:
 
 
 @pytest.mark.asyncio
-async def test_t1_workflow_actions_flow(navi_home) -> None:
+async def test_t1_workflow_actions_flow(
+    navi_home,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test full workflow lifecycle flow: propose -> approve -> run -> verify."""
+    provider = _WorkflowStepProvider()
+    monkeypatch.setattr("navi.provider.build_provider", lambda config: provider)
     registry = CapabilityRegistry(home=navi_home, project_dir=Path.cwd())
     context = CapabilityContext(
         home=navi_home,
@@ -366,3 +408,4 @@ async def test_t1_workflow_actions_flow(navi_home) -> None:
     assert workflow.status == WORKFLOW_STATUS_VERIFIED_COMPLETE
     steps = store.list_steps(workflow_id)
     assert steps[0].status == "completed"
+    assert provider.planner_calls == 2
