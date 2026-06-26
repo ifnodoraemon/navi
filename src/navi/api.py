@@ -538,7 +538,7 @@ def create_app(home: Path | None = None) -> FastAPI:
                 status_code=409,
                 detail=(
                     f"direct API tool calls are read-only; {tool_name} requires "
-                    f"{spec.permission} and must use managed approval flow"
+                    f"{spec.permission} permission"
                 ),
             )
         result = await capabilities.invoke(

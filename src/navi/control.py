@@ -353,10 +353,7 @@ class ApprovalService:
                         ok=True,
                         decision=decision,
                         selection=selection,
-                        message=(
-                            f"Approval already {target_status}. "
-                            "Run continues; do not re-resolve."
-                        ),
+                        message=f"Approval already {target_status}; run state is unchanged.",
                         run_id=candidate.run_id,
                         facts={
                             "entity_type": "approval_request",
@@ -424,7 +421,7 @@ class ApprovalService:
                 ok=False,
                 decision=decision,
                 selection=selection,
-                message="Approval code expired. Create a new delegation run.",
+                message="Approval code expired.",
                 run_id=approval.run_id,
                 facts={"approval_status": "expired", "run_id": approval.run_id},
             )
@@ -484,7 +481,7 @@ def approval_resolution_failure_message(facts: dict[str, Any]) -> str:
         "approval_code_not_found": "Approval code was not found.",
         "sender_mismatch": "Approval exists but belongs to a different sender.",
         "approval_not_pending": f"Approval is not pending; current status is {facts.get('status') or 'unknown'}.",
-        "approval_expired": "Approval is expired. Create a new approval request.",
+        "approval_expired": "Approval is expired.",
         "run_not_found": "Run was not found for approval resolution.",
         "run_has_no_approval": "Run has no approval request.",
         "approval_identifier_missing": "approval.resolve requires code or run_id.",

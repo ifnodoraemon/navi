@@ -501,7 +501,7 @@ ACTION_SPECS = [
         name="session.request_elevation",
         capability_class="session",
         execution_contexts=("turn", "workflow_step"),
-        description="""Request temporary elevation of the session's permission ceiling. Elevates from current level (e.g., read) to a higher level (prepare, write, execute).""",
+        description="""Create a temporary session permission elevation request record.""",
         input_schema={
             "type": "object",
             "properties": {
@@ -518,7 +518,8 @@ ACTION_SPECS = [
                 "state_transition": {"type": "string"},
                 "turn_scope": {"type": "string"},
                 "status": {"type": "string"},
-                "message": {"type": "string"},
+                "target_permission": {"type": "string"},
+                "reason": {"type": "string"},
                 "approval": {
                     "type": "object",
                     "properties": {

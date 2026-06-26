@@ -85,13 +85,19 @@ class ApprovalResolveCapability(BaseCapability):
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
         selection = _approval_selection(args, code=code, run_id=run_id)
         if code and context.input_text and code not in context.input_text:
+            facts = {
+                "reason": "approval_code_not_in_user_input",
+                "selection": selection,
+                "code_present_in_current_user_input": False,
+            }
             return CapabilityResult(
                 ok=False,
                 action="approval",
-                observation="User did not provide this approval code. Do not hallucinate approvals.",
-                message="User did not provide this approval code. Do not hallucinate approvals.",
+                observation="approval code was not present in current user input",
+                message="approval code was not present in current user input",
                 terminal=True,
                 error_reason="schema_mismatch",
+                facts=facts,
             )
 
         surface_ctx = SurfaceContext(

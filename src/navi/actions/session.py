@@ -80,7 +80,8 @@ class SessionRequestElevationCapability(BaseCapability):
                 "state_transition": "elevation_requested",
                 "turn_scope": "current",
                 "status": "awaiting_approval",
-                "message": f"Requested {target_permission} permission. Please approve.",
+                "target_permission": target_permission,
+                "reason": reason,
                 "approval": {
                     "action": "execute",
                     "code": approval.code,

@@ -5,7 +5,7 @@ Covers:
 - reissue_approval dedup against existing pending approval
 - governance capabilities exempt from second-level approval suspension
 - FallbackProvider always wraps single-provider configs (transport retry)
-- pre-flight binary validation in _run_command (python -> python3 hint)
+- pre-flight binary validation in _run_command (missing binary facts)
 - pending/prepared runs deletable from remote (stuck-run cleanup)
 """
 
@@ -23,6 +23,7 @@ from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.control import ApprovalService, SurfaceContext
 from navi.core_tools import _resolve_binary_error, _run_command
+from navi.core_tools.codebase import _binary_candidates
 from navi.provider import (
     ChatMessage,
     FallbackProvider,
@@ -84,6 +85,8 @@ async def test_approval_resolve_already_approved_is_idempotent(
         code=approval.code,
     )
     assert second.ok is True
+    assert "do not" not in second.message.lower()
+    assert "re-resolve" not in second.message.lower()
     assert second.facts.get("state_transition") == "already_resolved"
 
 
@@ -173,6 +176,82 @@ async def test_governance_capabilities_not_suspended_in_governed_run(
     assert "sensitive_op_requires_approval" not in str(result.facts)
 
 
+@pytest.mark.asyncio
+async def test_approval_resolve_rejects_unseen_code_as_fact_only_error(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "t",
+        prompt="p",
+        source="connector.weixin",
+        peer_id="weixin-peer",
+        sender_id="weixin-user",
+        workspace=str(tmp_path),
+        kind="delegation",
+    )
+    approval = runs.create_approval(
+        run_id=run.id,
+        peer_id="weixin-peer",
+        sender_id="weixin-user",
+    )
+    context = CapabilityContext(
+        home=tmp_path,
+        peer_id="weixin-peer",
+        sender_id="weixin-user",
+        source="connector.weixin",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+        input_text="全部批准",
+    )
+
+    result = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": approval.code},
+        permission="write",
+        context=context,
+    )
+
+    assert result.ok is False
+    assert "hallucinate" not in result.observation.lower()
+    assert "do not" not in result.observation.lower()
+    assert result.facts == {
+        "reason": "approval_code_not_in_user_input",
+        "selection": "explicit_code",
+        "code_present_in_current_user_input": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_session_elevation_returns_state_facts_without_approval_instruction(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        peer_id="weixin-peer",
+        sender_id="weixin-user",
+        source="connector.weixin",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+
+    result = await registry.invoke(
+        "session.request_elevation",
+        {"target_permission": "write", "reason": "needs local edit"},
+        permission="read",
+        context=context,
+    )
+
+    assert result.ok is True
+    assert result.facts["state_transition"] == "elevation_requested"
+    assert result.facts["target_permission"] == "write"
+    assert result.facts["reason"] == "needs local edit"
+    assert "message" not in result.facts
+    assert "please approve" not in result.observation.lower()
+
+
 # ---------------------------------------------------------------------------
 # Fix 4: FallbackProvider always wraps single-provider configs
 # ---------------------------------------------------------------------------
@@ -251,17 +330,19 @@ async def test_fallback_provider_retries_on_remote_protocol_error(
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_binary_error_suggests_python3_for_python() -> None:
+def test_resolve_binary_error_reports_missing_binary_without_advice() -> None:
     """When 'python' is not on PATH but 'python3' is, the pre-flight check
-    must surface a structured hint instead of letting subprocess raise a
+    must surface a factual error plus structured candidates instead of letting subprocess raise a
     confusing '[Errno 2] No such file or directory: 'python''."""
     error = _resolve_binary_error(["python", "-m", "pytest"])
     # On systems where 'python' exists, no error. On systems where only
-    # 'python3' exists (the production failure), a suggestion is returned.
+    # 'python3' exists (the production failure), a factual error is returned.
     if shutil.which("python"):
         assert error == ""
     else:
-        assert "python3" in error
+        assert error == "binary 'python' not found on PATH."
+        assert "Try " not in error
+        assert _binary_candidates(["python", "-m", "pytest"]) == ["python3"]
 
 
 def test_resolve_binary_error_returns_empty_for_known_binary() -> None:
@@ -277,7 +358,7 @@ def test_resolve_binary_error_returns_empty_for_path_binary() -> None:
 def test_run_command_returns_structured_error_for_missing_binary(
     tmp_path: Path,
 ) -> None:
-    """A missing binary must return a structured 127-error with a clear hint,
+    """A missing binary must return a structured 127-error with facts,
     not a confusing '[Errno 2] No such file or directory'."""
     result = _run_command(
         ["definitely-not-a-real-binary-xyz123", "--version"],
@@ -286,6 +367,20 @@ def test_run_command_returns_structured_error_for_missing_binary(
     )
     assert result["exit_code"] == 127
     assert "not found" in result["stderr"].lower()
+    assert result["error_reason"] == "binary_not_found"
+    assert result["candidate_binaries"] == []
+
+
+def test_run_command_returns_fact_only_error_for_denied_binary(
+    tmp_path: Path,
+) -> None:
+    result = _run_command(["rm", "-rf", "target"], cwd=tmp_path, timeout=5)
+
+    assert result["exit_code"] == 127
+    assert result["error_reason"] == "binary_denied"
+    assert result["binary"] == "rm"
+    assert "use " not in result["stderr"].lower()
+    assert "instead" not in result["stderr"].lower()
 
 
 # ---------------------------------------------------------------------------

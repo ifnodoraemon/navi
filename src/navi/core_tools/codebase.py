@@ -51,9 +51,7 @@ def _codebase_search(args: dict[str, Any], *, project_dir: Path, home: Path) -> 
 def _resolve_binary_error(command: list[str]) -> str:
     """Pre-flight check: return an error message if ``command[0]`` is not on
     PATH. Without this guard a missing binary raises a confusing
-    ``[Errno 2] No such file or directory: 'python'`` that the planner
-    blindly retries. We surface a structured hint instead (e.g. use
-    ``python3`` when only ``python3`` exists)."""
+    ``[Errno 2] No such file or directory: 'python'``."""
     if not command:
         return ""
     binary = command[0]
@@ -69,19 +67,21 @@ def _resolve_binary_error(command: list[str]) -> str:
         return ""
     if shutil.which(binary):
         return ""
-    # Binary not found - suggest known alternatives for the common cases.
-    hints = {
-        "python": "python3",
-        "python3": "python",
-        "pytest": "python3 -m pytest",
-    }
-    suggestion = hints.get(binary)
-    if suggestion:
-        suggested_bin = suggestion.split()[0]
-        if shutil.which(suggested_bin):
-            return (
-                f"binary '{binary}' not found on PATH. "
-                f"Try '{suggestion}' instead."
-            )
     return f"binary '{binary}' not found on PATH."
 
+
+def _binary_candidates(command: list[str]) -> list[str]:
+    if not command:
+        return []
+    binary = command[0]
+    if not binary or "/" in binary or "\\" in binary:
+        return []
+    hints = {
+        "python": ["python3"],
+        "python3": ["python"],
+        "pytest": ["python3", "-m", "pytest"],
+    }
+    candidate = hints.get(binary) or []
+    if candidate and shutil.which(candidate[0]):
+        return candidate
+    return []

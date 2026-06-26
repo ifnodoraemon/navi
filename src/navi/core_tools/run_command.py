@@ -4,7 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Any
-from .codebase import _resolve_binary_error
+from .codebase import _binary_candidates, _resolve_binary_error
 from .utils import _truncate_output
 
 # Defense in depth (principle 13): a denylist of binaries that can cause
@@ -51,11 +51,7 @@ def _binary_denied(command: list[str]) -> str:
     # Normalize: strip directory component and common extensions.
     name = os.path.basename(binary)
     if name in _BLOCKED_BINARIES:
-        return (
-            f"binary '{name}' is on the denylist (irreversible or "
-            f"exfiltration risk). Use a more specific, non-destructive "
-            f"command instead."
-        )
+        return f"binary '{name}' is on the denylist (irreversible or exfiltration risk)."
     return ""
 
 
@@ -69,6 +65,8 @@ def _run_command(
             "stderr": denied,
             "exit_code": 127,
             "timed_out": False,
+            "error_reason": "binary_denied",
+            "binary": command[0],
         }
     binary_error = _resolve_binary_error(command)
     if binary_error:
@@ -77,6 +75,9 @@ def _run_command(
             "stderr": binary_error,
             "exit_code": 127,
             "timed_out": False,
+            "error_reason": "binary_not_found",
+            "binary": command[0],
+            "candidate_binaries": _binary_candidates(command),
         }
     env = os.environ.copy()
     # Ensure common bin paths are in PATH
@@ -222,5 +223,3 @@ def _run_git(path: Path, *args: str) -> dict[str, Any]:
         "stderr": result.stderr.strip(),
         "exit_code": result.returncode,
     }
-
-
