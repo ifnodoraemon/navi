@@ -109,6 +109,21 @@ def test_anthropic_structured_wrapper_returns_inner_planner_decision():
     assert parsed["tool"] == "delegate.list"
 
 
+def test_anthropic_direct_tool_call_is_not_reconstructed_as_planner_decision():
+    raw = {
+        "content": [
+            {
+                "type": "tool_use",
+                "name": "delegate.list",
+                "input": {"limit": 10},
+            }
+        ]
+    }
+
+    with pytest.raises(RuntimeError, match="did not include tool output planner_decision"):
+        _extract_anthropic_content(raw, tool_name="planner_decision")
+
+
 class _StructuredJourneyProvider:
     def __init__(self) -> None:
         self.calls: list[dict] = []

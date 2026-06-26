@@ -677,26 +677,10 @@ def _extract_anthropic_content(
                 )
         for block in blocks:
             if block.get("type") == "tool_use":
-                name = block.get("name")
-                if name == tool_name:
+                if block.get("name") == tool_name:
                     raise RuntimeError(
                         f"Provider structured tool output {tool_name} was invalid: {data}"
                     )
-                if name:
-                    reconstructed = {
-                        "tool": name,
-                        "permission": "read",  # placeholder, will be dynamically resolved by planner
-                        "args": block.get("input") or {},
-                        "model_role": "responder",
-                        "confidence": 1.0,
-                        "reason": f"Reconstructed from direct tool call to {name}",
-                    }
-                    logger.info(
-                        "Fallback: reconstructed direct tool call %s as planner output: %s",
-                        name,
-                        reconstructed,
-                    )
-                    return json.dumps(reconstructed, ensure_ascii=False)
         raise RuntimeError(f"Provider response did not include tool output {tool_name}: {data}")
     text = "\n".join(
         str(block.get("text") or "") for block in blocks if block.get("type") == "text"

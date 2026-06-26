@@ -157,6 +157,21 @@ def test_planner_turn_input_carries_durable_constraints_as_trusted_block() -> No
     assert [b for b in empty.blocks if b.name == "DURABLE CONSTRAINTS"] == []
 
 
+def test_planner_turn_input_uses_permission_ceiling_fact_without_explanation() -> None:
+    """The permission ceiling is a fact block; runtime gates enforce it."""
+    from navi.prompt_os import assemble_planner_turn_input
+
+    assembly = assemble_planner_turn_input(
+        "do something",
+        tools=[],
+        permission_ceiling="read",
+    )
+
+    assert [b.name for b in assembly.blocks].count("PERMISSION CEILING") == 1
+    assert [b for b in assembly.blocks if b.name == "PERMISSION EXPLANATION"] == []
+    assert "Read-only capabilities are allowed" not in assembly.render()
+
+
 def test_recovery_runtime_records_facts_not_recommendations() -> None:
     """FP-2: completion recovery must surface verifier facts, not a runtime
     recommendation or a hardcoded list of next actions."""

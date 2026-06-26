@@ -199,25 +199,6 @@ def assemble_planner_turn_input(
             )
         )
 
-    if permission_ceiling == "read":
-        blocks.append(
-            PromptBlock(
-                "PERMISSION EXPLANATION",
-                "turn_input",
-                "operating_context.permission_explanation",
-                "Your permission ceiling is currently restricted to 'read'. Read-only capabilities are allowed; preparation, execution, and state mutation are not allowed under this ceiling.",
-            )
-        )
-    elif permission_ceiling == "prepare":
-        blocks.append(
-            PromptBlock(
-                "PERMISSION EXPLANATION",
-                "turn_input",
-                "operating_context.permission_explanation",
-                "Your permission ceiling is currently restricted to 'prepare'. Read and preparation capabilities are allowed; execution and state mutation above prepare are not allowed under this ceiling.",
-            )
-        )
-
     blocks.extend(
         [
             PromptBlock(
