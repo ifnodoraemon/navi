@@ -11,6 +11,7 @@ from ..capabilities_types import (
 )
 from ..evolution import EvolutionEngine, EvolutionLedger
 from .helpers import arg_text as _arg_text
+from .helpers import failure_result as _failure_result
 from .helpers import fact_result as _fact_result
 from .helpers import transition_facts as _transition_facts
 
@@ -160,12 +161,9 @@ def _evolution_error(
     proposal_id: str = "",
     event_id: str = "",
 ) -> CapabilityResult:
-    return CapabilityResult(
-        ok=False,
-        action="evolution",
-        observation=message,
-        message=message,
-        terminal=False,
+    return _failure_result(
+        "evolution",
+        message,
         error_reason=reason,
         facts={
             "reason": reason,

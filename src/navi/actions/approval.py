@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..capabilities_types import (
@@ -17,6 +18,7 @@ from .helpers import (
     approval_result_message as _approval_result_message,
     approval_failure_is_terminal as _approval_failure_is_terminal,
     approval_error_reason as _approval_error_reason,
+    failure_result as _failure_result,
 )
 from ..runs import RunStore
 from ..goals import GoalStore
@@ -90,13 +92,11 @@ class ApprovalResolveCapability(BaseCapability):
                 "selection": selection,
                 "code_present_in_current_user_input": False,
             }
-            return CapabilityResult(
-                ok=False,
-                action="approval",
-                observation="approval code was not present in current user input",
+            return _failure_result(
+                "approval",
                 message="approval code was not present in current user input",
-                terminal=True,
                 error_reason="schema_mismatch",
+                terminal=True,
                 facts=facts,
             )
 
@@ -118,13 +118,21 @@ class ApprovalResolveCapability(BaseCapability):
             run_id=run_id,
         )
         message = _approval_result_message(res.message, res.facts)
+        if not res.ok:
+            return _failure_result(
+                "approval",
+                message,
+                error_reason=_approval_error_reason(res.facts),
+                run_id=res.run_id,
+                terminal=_approval_failure_is_terminal(res.facts),
+                facts=res.facts,
+            )
+        facts = res.facts or {}
         return CapabilityResult(
-            ok=res.ok,
+            ok=True,
             action="approval",
-            observation=message,
+            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             message=message,
             run_id=res.run_id,
-            terminal=_approval_failure_is_terminal(res.facts),
-            error_reason=_approval_error_reason(res.facts) if not res.ok else "unknown",
-            facts=res.facts,
+            facts=facts,
         )

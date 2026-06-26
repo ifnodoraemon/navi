@@ -21,6 +21,28 @@ def fact_result(action: str, facts: dict[str, Any], *, run_id: str = "") -> Capa
     )
 
 
+def failure_result(
+    action: str,
+    message: str,
+    *,
+    error_reason: str,
+    facts: dict[str, Any] | None = None,
+    run_id: str = "",
+    terminal: bool = False,
+) -> CapabilityResult:
+    payload = {"error_reason": error_reason, **(facts or {})}
+    return CapabilityResult(
+        ok=False,
+        action=action,
+        observation=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        message=message,
+        run_id=run_id,
+        terminal=terminal,
+        facts=payload,
+        error_reason=error_reason,
+    )
+
+
 def transition_facts(entity_type: str, entity_id: str, transition: str) -> dict[str, Any]:
     return {
         "entity_type": entity_type,
@@ -121,12 +143,9 @@ def positive_int(value: Any, *, default: int, maximum: int) -> int:
 
 
 def workflow_not_found(workflow_id: str) -> CapabilityResult:
-    return CapabilityResult(
-        ok=False,
-        action="workflow",
-        observation=f"workflow not found: {workflow_id}",
-        message=f"workflow not found: {workflow_id}",
-        terminal=False,
+    return failure_result(
+        "workflow",
+        f"workflow not found: {workflow_id}",
         error_reason="not_found",
         facts={"workflow_id": workflow_id, "reason": "workflow_not_found"},
     )

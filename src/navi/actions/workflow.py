@@ -20,6 +20,7 @@ from .helpers import (
     resolve_workspace as _resolve_workspace,
     positive_int as _positive_int,
     json_list as _json_list,
+    failure_result as _failure_result,
 )
 from ..operating_context import permission_allows
 from ..tools import WORKFLOW_STEP_CONTEXT
@@ -123,19 +124,19 @@ class WorkflowApproveCapability(BaseCapability):
         if workflow is None:
             raise NotFound(f"workflow not found: {workflow_id}")
         if decision == "approve" and workflow.sender_id and context.sender_id != workflow.sender_id:
-            return CapabilityResult(
-                ok=False,
-                action="workflow",
-                observation=(
-                    f"workflow {workflow.id} was created by sender "
-                    f"{workflow.sender_id}; only that sender may approve it."
-                ),
-                message=(
-                    f"workflow {workflow.id} was created by sender "
-                    f"{workflow.sender_id}; only that sender may approve it."
-                ),
-                terminal=False,
+            message = (
+                f"workflow {workflow.id} was created by sender "
+                f"{workflow.sender_id}; only that sender may approve it."
+            )
+            return _failure_result(
+                "workflow",
+                message,
                 error_reason="approver_not_creator",
+                facts={
+                    "workflow_id": workflow.id,
+                    "creator_sender_id": workflow.sender_id,
+                    "current_sender_id": context.sender_id,
+                },
             )
         status = WORKFLOW_STATUS_APPROVED if decision == "approve" else WORKFLOW_STATUS_REJECTED
         updated = store.update_status(
@@ -323,8 +324,15 @@ class WorkflowRunCapability(BaseCapability):
             output = {"step_id": step.id, "evidence": evidence, "error": str(exc)}
             subagents.finish(run.id, status="failed", output_data=output, error=str(exc))
             store.update_step(step.id, status=STEP_STATUS_FAILED, evidence=output, error=str(exc))
-            return CapabilityResult(
-                ok=False, action="workflow", observation=str(exc), message=str(exc), facts=output
+            return _failure_result(
+                "workflow",
+                str(exc),
+                error_reason="workflow_step_failed",
+                facts={
+                    "step_id": step.id,
+                    "evidence": evidence,
+                    "error_type": exc.__class__.__name__,
+                },
             )
 
     def _finish_if_possible(self, store: WorkflowStore, workflow: Workflow) -> CapabilityResult:

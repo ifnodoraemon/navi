@@ -10,6 +10,7 @@ passes the recorded grant instead of re-suspending.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,9 @@ async def test_executor_suspends_on_sensitive_write(tmp_path):
     # Suspended for fresh approval rather than running unchecked.
     assert res.ok is False
     assert res.facts["reason"] == "sensitive_op_requires_approval"
+    observation = json.loads(res.observation)
+    assert observation["reason"] == "sensitive_op_requires_approval"
+    assert "message" not in observation
     code = res.facts["approval"]["code"]
     assert len(code) == 6
     refetched = runs.get(task.id)
@@ -146,5 +150,3 @@ async def test_executor_does_not_suspend_without_governed_run(tmp_path):
     )
     assert res.ok is True
     assert (tmp_path / "y.txt").exists()
-
-

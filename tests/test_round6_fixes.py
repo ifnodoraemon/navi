@@ -217,11 +217,12 @@ async def test_approval_resolve_rejects_unseen_code_as_fact_only_error(
     assert result.ok is False
     assert "hallucinate" not in result.observation.lower()
     assert "do not" not in result.observation.lower()
-    assert result.facts == {
-        "reason": "approval_code_not_in_user_input",
-        "selection": "explicit_code",
-        "code_present_in_current_user_input": False,
-    }
+    assert result.error_reason == "schema_mismatch"
+    assert result.facts["reason"] == "approval_code_not_in_user_input"
+    assert result.facts["selection"] == "explicit_code"
+    assert result.facts["code_present_in_current_user_input"] is False
+    assert json.loads(result.observation)["error_reason"] == "schema_mismatch"
+    assert "approval code was not present" not in result.observation.lower()
 
 
 @pytest.mark.asyncio
@@ -377,6 +378,32 @@ async def test_guarded_action_failure_observation_is_structured_facts(
     }
     assert "requires prompt" not in result.observation.lower()
     assert "requires prompt" in result.message.lower()
+
+
+@pytest.mark.asyncio
+async def test_direct_action_failure_observation_uses_failure_facts(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+
+    result = await registry.invoke(
+        "delegate.delete",
+        {"status": "failed", "reason": "cleanup"},
+        permission="write",
+        context=context,
+    )
+
+    assert result.ok is False
+    assert result.error_reason == "scope_required"
+    observation = json.loads(result.observation)
+    assert observation["error_reason"] == "scope_required"
+    assert observation["status"] == "failed"
+    assert "requires source or kind" not in result.observation.lower()
 
 
 # ---------------------------------------------------------------------------

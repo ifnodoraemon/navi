@@ -19,6 +19,7 @@ from .helpers import (
     resolve_workspace as _resolve_workspace,
     positive_int as _positive_int,
     remote_source as _remote_source,
+    failure_result as _failure_result,
 )
 from ..config import load_config
 from ..runs import RunStore
@@ -249,13 +250,11 @@ class DelegateDeleteCapability(BaseCapability):
             )
         deleted = runs.delete_run(run_id)
         if deleted is None:
-            return CapabilityResult(
-                ok=False,
-                action="delegation",
-                observation=f"delegation run not found: {run_id}",
-                message=f"delegation run not found: {run_id}",
-                terminal=False,
+            return _failure_result(
+                "delegation",
+                f"delegation run not found: {run_id}",
                 error_reason="not_found",
+                facts={"run_id": run_id},
             )
         graph.delete(deleted.id)
         facts = {
@@ -281,33 +280,27 @@ class DelegateDeleteCapability(BaseCapability):
         source = _arg_text(args, "source")
         kind = _arg_text(args, "kind")
         if not source and not kind:
-            return CapabilityResult(
-                ok=False,
-                action="delegation",
-                observation="delegate.delete bulk cleanup requires source or kind scope.",
+            return _failure_result(
+                "delegation",
                 message="delegate.delete bulk cleanup requires source or kind scope.",
-                terminal=False,
                 error_reason="scope_required",
+                facts={"status": status, "source": source, "kind": kind},
             )
         if _remote_source(context.source) and not kind:
             kind = "delegation"
         if _remote_source(context.source) and (
             status not in REMOTE_DELETABLE_STATUSES or kind not in REMOTE_DELETABLE_KINDS
         ):
-            return CapabilityResult(
-                ok=False,
-                action="delegation",
-                observation=(
-                    "remote delegate.delete bulk cleanup requires status in "
-                    "{failed, awaiting_approval, expired, pending, prepared} "
-                    "and kind watch or delegation."
-                ),
-                message=(
-                    "remote delegate.delete bulk cleanup requires status in "
-                    "{failed, awaiting_approval, expired, pending, prepared} "
-                    "and kind watch or delegation."
-                ),
-                terminal=False,
+            message = (
+                "remote delegate.delete bulk cleanup requires status in "
+                "{failed, awaiting_approval, expired, pending, prepared} "
+                "and kind watch or delegation."
+            )
+            return _failure_result(
+                "delegation",
+                message,
+                error_reason="remote_scope_denied",
+                facts={"status": status, "source": source, "kind": kind},
             )
 
         runs = RunStore(self.home)
@@ -366,12 +359,11 @@ class ExecutionRetryCapability(BaseCapability):
             raise NotFound(f"delegation run not found: {run_id}")
         execution = ExecutionService(self.home)
         if not execution.execution_allowed(task):
-            return CapabilityResult(
-                ok=False,
-                action="execution",
-                observation="execution grant missing: approved approval or explicit L3 trust rule required",
+            return _failure_result(
+                "execution",
                 message="execution grant missing: approved approval or explicit L3 trust rule required",
-                terminal=False,
+                error_reason="execution_grant_missing",
+                facts={"run_id": run_id},
             )
         follow_up = _arg_text(args, "follow_up_prompt")
         retry_task = replace(

@@ -345,22 +345,24 @@ class CapabilityRegistry:
             action=spec.name,
         )
         runs.update_run(run_id, status="awaiting_approval", result_summary=message)
+        facts = {
+            "entity_type": "approval_request",
+            "entity_id": approval.id,
+            "state_transition": "created",
+            "turn_scope": "current",
+            "reason": "sensitive_op_requires_approval",
+            "run_id": run_id,
+            "approval": {"code": approval.code, "action": action},
+        }
         return CapabilityResult(
             ok=False,
             action="approval",
-            observation=message,
+            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             message=message,
             run_id=run_id,
             terminal=True,
-            facts={
-                "entity_type": "approval_request",
-                "entity_id": approval.id,
-                "state_transition": "created",
-                "turn_scope": "current",
-                "reason": "sensitive_op_requires_approval",
-                "run_id": run_id,
-                "approval": {"code": approval.code, "action": action},
-            },
+            facts=facts,
+            error_reason="approval_required",
         )
 
     def _build_handlers(self) -> Mapping[str, Capability]:
