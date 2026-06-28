@@ -12,10 +12,21 @@ from .capabilities import CapabilityContext, CapabilityRegistry
 from .context import ContextManager
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from .engine_types import AgentTurnResult
+from .loop import (
+    LoopCheckName,
+    LoopCheckResult,
+    LoopDecision,
+    LoopDecisionKind,
+    LoopNextAction,
+    LoopPhase,
+    LoopReason,
+    LoopSeverity,
+    TracePhase,
+)
 from .recovery import RecoveryPlanner
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
-from .trace import LoopCheckResult, LoopDecision, TraceStore
+from .trace import TraceStore
 
 logger = logging.getLogger("navi.engine")
 
@@ -84,7 +95,7 @@ class HernessEngine(EnginePhasesMixin):
         trace_id = self.trace.new_trace_id()
         self.trace.add_event(
             trace_id=trace_id,
-            phase="turn.start",
+            phase=TracePhase.TURN_START,
             session_id=resolved_session_id or "",
             source=source,
             peer_id=peer_id,
@@ -192,20 +203,20 @@ class HernessEngine(EnginePhasesMixin):
                     trace_id,
                     decision=LoopDecision(
                         decision="recover",
-                        reason="completion_checker_blocked",
-                        phase="loop.check",
+                        reason=LoopReason.COMPLETION_CHECKER_BLOCKED,
+                        phase=LoopPhase.CHECK,
                         tool=step_result.tool,
                         run_id=step_result.result.run_id,
                         progress_signature=progress_signature,
                         checker_results=(
                             LoopCheckResult(
-                                name="completion_checker",
+                                name=LoopCheckName.COMPLETION_CHECKER,
                                 passed=False,
-                                severity="error",
+                                severity=LoopSeverity.ERROR,
                                 reason=step_result.recovery_observation,
                             ),
                         ),
-                        next_action="continue",
+                        next_action=LoopNextAction.CONTINUE,
                     ),
                     result=step_result.result,
                     resolved_session_id=resolved_session_id,
@@ -219,21 +230,21 @@ class HernessEngine(EnginePhasesMixin):
                         trace_id,
                         decision=LoopDecision(
                             decision="converged",
-                            reason="repeated_recovery_signature",
-                            phase="runtime",
+                            reason=LoopReason.REPEATED_RECOVERY_SIGNATURE,
+                            phase=LoopPhase.RUNTIME,
                             tool=step_result.tool,
                             run_id=result.run_id,
                             progress_signature=progress_signature,
                             gate_results=(
                                 LoopCheckResult(
-                                    name="no_progress_gate",
+                                    name=LoopCheckName.NO_PROGRESS_GATE,
                                     passed=False,
-                                    severity="warning",
+                                    severity=LoopSeverity.WARNING,
                                     reason="same recovery signature was observed twice",
                                     evidence={"observations_count": len(observations)},
                                 ),
                             ),
-                            next_action="finalize_stable_observations",
+                            next_action=LoopNextAction.FINALIZE_STABLE_OBSERVATIONS,
                         ),
                         result=result,
                         resolved_session_id=resolved_session_id,
@@ -243,7 +254,7 @@ class HernessEngine(EnginePhasesMixin):
                     )
                     self.trace.add_event(
                         trace_id=trace_id,
-                        phase="runtime.converged",
+                        phase=TracePhase.RUNTIME_CONVERGED,
                         session_id=resolved_session_id or "",
                         run_id=result.run_id,
                         source=source,
@@ -321,21 +332,21 @@ class HernessEngine(EnginePhasesMixin):
             if self._facts_complete_current_request(step_result.invoked_facts):
                 self._record_loop_decision(
                     trace_id,
-                    decision=LoopDecision(
-                        decision="finalize",
-                        reason="completion_evidence_true",
-                        phase="runtime",
+                        decision=LoopDecision(
+                        decision=LoopDecisionKind.FINALIZE,
+                        reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
+                        phase=LoopPhase.RUNTIME,
                         tool=step_result.tool,
                         run_id=result.run_id,
                         goal_ids=tuple(sorted(goal_ids)),
                         checker_results=(
                             LoopCheckResult(
-                                name="completion_evidence",
+                                name=LoopCheckName.COMPLETION_EVIDENCE,
                                 passed=True,
                                 reason="capability facts marked current request complete",
                             ),
                         ),
-                        next_action="finalize_stable_observations",
+                        next_action=LoopNextAction.FINALIZE_STABLE_OBSERVATIONS,
                     ),
                     result=result,
                     resolved_session_id=resolved_session_id,
@@ -360,24 +371,24 @@ class HernessEngine(EnginePhasesMixin):
             if progress_signature and progress_signature in seen_progress_signatures:
                 self._record_loop_decision(
                     trace_id,
-                    decision=LoopDecision(
-                        decision="converged",
-                        reason="repeated_progress_signature",
-                        phase="runtime",
+                        decision=LoopDecision(
+                        decision=LoopDecisionKind.CONVERGED,
+                        reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
+                        phase=LoopPhase.RUNTIME,
                         tool=step_result.tool,
                         run_id=result.run_id,
                         progress_signature=progress_signature,
                         goal_ids=tuple(sorted(goal_ids)),
                         gate_results=(
                             LoopCheckResult(
-                                name="no_progress_gate",
+                                name=LoopCheckName.NO_PROGRESS_GATE,
                                 passed=False,
-                                severity="warning",
+                                severity=LoopSeverity.WARNING,
                                 reason="same capability result signature was observed twice",
                                 evidence={"observations_count": len(observations)},
                             ),
                         ),
-                        next_action="finalize_stable_observations",
+                        next_action=LoopNextAction.FINALIZE_STABLE_OBSERVATIONS,
                     ),
                     result=result,
                     resolved_session_id=resolved_session_id,
@@ -387,7 +398,7 @@ class HernessEngine(EnginePhasesMixin):
                 )
                 self.trace.add_event(
                     trace_id=trace_id,
-                    phase="runtime.converged",
+                    phase=TracePhase.RUNTIME_CONVERGED,
                     session_id=resolved_session_id or "",
                     run_id=result.run_id,
                     source=source,
@@ -418,22 +429,22 @@ class HernessEngine(EnginePhasesMixin):
                 self._record_loop_decision(
                     trace_id,
                     decision=LoopDecision(
-                        decision="continue",
-                        reason="capability_observation_appended",
-                        phase="runtime",
+                        decision=LoopDecisionKind.CONTINUE,
+                        reason=LoopReason.CAPABILITY_OBSERVATION_APPENDED,
+                        phase=LoopPhase.RUNTIME,
                         tool=step_result.tool,
                         run_id=result.run_id,
                         progress_signature=progress_signature,
                         goal_ids=tuple(sorted(goal_ids)),
                         checker_results=(
                             LoopCheckResult(
-                                name="completion_evidence",
+                                name=LoopCheckName.COMPLETION_EVIDENCE,
                                 passed=False,
-                                severity="info",
+                                severity=LoopSeverity.INFO,
                                 reason="capability facts did not complete the current request",
                             ),
                         ),
-                        next_action="plan_next_step",
+                        next_action=LoopNextAction.PLAN_NEXT_STEP,
                     ),
                     result=result,
                     resolved_session_id=resolved_session_id,
