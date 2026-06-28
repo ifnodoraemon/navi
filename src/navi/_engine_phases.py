@@ -28,7 +28,7 @@ class EnginePhasesMixin:
     - home: Path
     - trace: TraceStore
     - runtime: AgentRuntime
-    - recovery: RecoveryPlanner
+    - recovery_planner: RecoveryPlanner
     - capabilities: CapabilityRegistry
     - permission_ceiling: str
     - event_bus: Any | None
@@ -37,7 +37,7 @@ class EnginePhasesMixin:
     home: Path
     trace: TraceStore
     runtime: AgentRuntime
-    recovery: RecoveryPlanner
+    recovery_planner: RecoveryPlanner
     capabilities: Any  # CapabilityRegistry
     permission_ceiling: str
     event_bus: Any | None
@@ -82,7 +82,7 @@ class EnginePhasesMixin:
             if run_id and status in {"pending", "prepared"}:
                 return CompletionBlock(
                     reason=(
-                        "completion verifier blocked final answer: "
+                        "loop checker blocked final answer: "
                         f"delegation run {run_id} is still {status}."
                     ),
                     run_id=run_id,
@@ -105,7 +105,7 @@ class EnginePhasesMixin:
             remaining = latest_cleanup_facts.get("remaining_count")
             return CompletionBlock(
                 reason=(
-                    "completion verifier blocked final answer: "
+                    "loop checker blocked final answer: "
                     f"bulk_delete completion_evidence=false with remaining_count={remaining}."
                 ),
             )
@@ -115,7 +115,7 @@ class EnginePhasesMixin:
                 if run.status in {"pending", "preparing", "prepared"}:
                     return CompletionBlock(
                         reason=(
-                            "completion verifier blocked final answer: "
+                            "loop checker blocked final answer: "
                             f"delegation run {run.id} is still {run.status}."
                         ),
                         run_id=run.id,
@@ -127,7 +127,7 @@ class EnginePhasesMixin:
                 if workflow.status in {"approved", "running", "interrupted"}:
                     return CompletionBlock(
                         reason=(
-                            "completion verifier blocked final answer: "
+                            "loop checker blocked final answer: "
                             f"workflow {workflow.id} is still {workflow.status}."
                         ),
                     )
@@ -177,6 +177,7 @@ class EnginePhasesMixin:
             trace_id=result.trace_id,
             memory_influence=result.memory_influence,
             facts=result.facts,
+            approval_affordance=result.approval_affordance,
         )
 
     @staticmethod
@@ -192,6 +193,7 @@ class EnginePhasesMixin:
             trace_id=trace_id,
             memory_influence=result.memory_influence,
             facts=result.facts,
+            approval_affordance=result.approval_affordance,
         )
 
     def _record_trace_final(

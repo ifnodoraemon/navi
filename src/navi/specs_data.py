@@ -96,6 +96,7 @@ API_PATHS_SPEC: Any = {
     "graph": "/v1/graph",
     "traces": "/v1/traces",
     "trace": "/v1/traces/{trace_id}",
+    "trace_decisions": "/v1/traces/{trace_id}/decisions",
     "trace_evaluations": "/v1/trace-evaluations",
     "trace_evaluate": "/v1/traces/{trace_id}/evaluate",
     "goals": "/v1/goals",

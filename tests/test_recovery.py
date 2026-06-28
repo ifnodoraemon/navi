@@ -9,7 +9,7 @@ def test_recovery_planner_returns_task_state_facts():
     plan = RecoveryPlanner().plan_completion_failure(
         block=CompletionBlock(
             reason=(
-                "completion verifier blocked final answer: "
+                "loop checker blocked final answer: "
                 "delegation run run-1 is still pending."
             ),
             run_id="run-1",
@@ -28,12 +28,12 @@ def test_recovery_planner_returns_task_state_facts():
         "blocked": True,
         "blocked_entity_type": "delegation_run",
         "reason": (
-            "completion verifier blocked final answer: "
+            "loop checker blocked final answer: "
             "delegation run run-1 is still pending."
         ),
         "run_id": "run-1",
         "run_status": "pending",
-        "trigger": "completion.verify",
+        "trigger": "loop.check",
     }
     assert "choices" not in observation
     assert "recommended" not in observation
@@ -43,7 +43,7 @@ def test_recovery_planner_returns_cleanup_state_facts():
     plan = RecoveryPlanner().plan_completion_failure(
         block=CompletionBlock(
             reason=(
-                "completion verifier blocked final answer: "
+                "loop checker blocked final answer: "
                 "delegate.delete left 2 failed delegation runs."
             ),
         ),

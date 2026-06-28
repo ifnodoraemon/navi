@@ -67,6 +67,7 @@ class CapabilityContext:
     permission_ceiling: str = "write"
     workspace: str = ""
     session_id: str | None = None
+    trace_id: str = ""
     input_text: str = ""
     event_bus: Any | None = None
 

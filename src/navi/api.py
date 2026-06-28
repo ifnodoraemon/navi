@@ -583,7 +583,30 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get(api_path("trace"))
     def trace(trace_id: str) -> dict:
-        return {"events": [event.__dict__ for event in TraceStore(home).list_events(trace_id)]}
+        store = TraceStore(home)
+        return {
+            "events": [event.__dict__ for event in store.list_events(trace_id)],
+            "loop_decisions": [
+                {
+                    **event.__dict__,
+                    "decision": _json_object(event.output_json),
+                }
+                for event in store.list_loop_decisions(trace_id)
+            ],
+        }
+
+    @app.get(api_path("trace_decisions"))
+    def trace_decisions(trace_id: str) -> dict:
+        store = TraceStore(home)
+        return {
+            "loop_decisions": [
+                {
+                    **event.__dict__,
+                    "decision": _json_object(event.output_json),
+                }
+                for event in store.list_loop_decisions(trace_id)
+            ]
+        }
 
     @app.get(api_path("trace_evaluations"))
     def trace_evaluations(trace_id: str = "", limit: int = 50) -> dict:
@@ -818,6 +841,14 @@ def _capability_result_dict(result: CapabilityResult) -> dict[str, Any]:
         "terminal": result.terminal,
         "facts": result.facts or {},
     }
+
+
+def _json_object(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _local_surface_message(result: CapabilityResult, *, source: str) -> str:

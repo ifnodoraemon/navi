@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 
+from fastapi.testclient import TestClient
+
+from navi.api import create_app
 from navi.db import connect
-from navi.trace import TraceStore
+from navi.trace import LoopCheckResult, LoopDecision, TraceStore
 
 
 def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
@@ -21,8 +24,17 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
         output_data={"approval_code": "123456", "safe": "ok"},
         message="planned",
     )
+    store.add_loop_decision(
+        trace_id=trace_id,
+        decision=LoopDecision(
+            decision="finalize",
+            reason="redaction_test",
+            evidence={"api_key": "secret"},
+        ),
+    )
 
     events = store.list_events(trace_id)
+    decisions = store.list_loop_decisions(trace_id)
 
     assert store.list_trace_ids() == [trace_id]
     assert events[0].phase == "planner.syscall"
@@ -32,6 +44,8 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
         "nested": {"password": "[redacted]"},
     }
     assert json.loads(events[0].output_json)["approval_code"] == "[redacted]"
+    assert len(decisions) == 1
+    assert json.loads(decisions[0].output_json)["evidence"]["api_key"] == "[redacted]"
 
 
 def test_trace_store_reinitializes_schema_drift(tmp_path):
@@ -62,6 +76,40 @@ def test_trace_store_reinitializes_schema_drift(tmp_path):
         columns = [row[1] for row in conn.execute("PRAGMA table_info(trace_events)").fetchall()]
     assert "session_id" in columns
     assert "task_id" not in columns
+
+
+def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_loop_decision(
+        trace_id="trace-api",
+        decision=LoopDecision(
+            decision="finalize",
+            reason="api_test",
+            checker_results=(
+                LoopCheckResult(
+                    name="terminal_result",
+                    passed=True,
+                    reason="terminal action chat",
+                ),
+            ),
+        ),
+    )
+    app = create_app(tmp_path)
+    api_key = (tmp_path / "api_key").read_text(encoding="utf-8").strip()
+    client = TestClient(app)
+
+    response = client.get(
+        "/v1/traces/trace-api/decisions",
+        headers={"X-API-Key": api_key},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    decisions = payload["data"]["loop_decisions"]
+    assert len(decisions) == 1
+    assert decisions[0]["decision"]["decision"] == "finalize"
+    assert decisions[0]["decision"]["checker_results"][0]["name"] == "terminal_result"
 
 
 def test_trace_store_evaluates_failure_domains(tmp_path):
@@ -113,14 +161,14 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
 
     store.add_event(
         trace_id="completion-verify",
-        phase="completion.verify",
+        phase="loop.check",
         ok=False,
         tool="final.answer",
         message="task is still pending",
     )
     store.add_event(
         trace_id="completion-verify",
-        phase="recovery.plan",
+        phase="loop.recovery",
         ok=True,
         output_data={
             "blocked": True,
@@ -150,20 +198,71 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     )
     pending_eval = store.evaluate_trace("pending-risk")
 
+    store.add_loop_decision(
+        trace_id="loop-failed",
+        decision=LoopDecision(
+            decision="failed",
+            reason="planner_parse_error",
+            checker_results=(
+                LoopCheckResult(
+                    name="planner_result",
+                    passed=False,
+                    severity="error",
+                    reason="invalid structured output",
+                ),
+            ),
+        ),
+    )
+    loop_failed_eval = store.evaluate_trace("loop-failed")
+
+    store.add_loop_decision(
+        trace_id="loop-approval",
+        decision=LoopDecision(
+            decision="pause_for_approval",
+            reason="approval_already_pending",
+            gate_results=(
+                LoopCheckResult(
+                    name="approval_gate",
+                    passed=False,
+                    severity="warning",
+                    reason="existing approval is still pending",
+                ),
+            ),
+        ),
+    )
+    loop_approval_eval = store.evaluate_trace("loop-approval")
+
+    store.add_loop_decision(
+        trace_id="loop-converged",
+        decision=LoopDecision(
+            decision="converged",
+            reason="repeated_progress_signature",
+            gate_results=(
+                LoopCheckResult(
+                    name="no_progress_gate",
+                    passed=False,
+                    severity="warning",
+                    reason="same capability result signature was observed twice",
+                ),
+            ),
+        ),
+    )
+    loop_converged_eval = store.evaluate_trace("loop-converged")
+
     missing_eval = store.evaluate_trace("missing")
 
     assert planner_eval.outcome == "failure"
-    assert planner_eval.failure_domain == "prompt_or_provider_parser"
+    assert planner_eval.failure_domain == "planner_or_parser"
     assert json.loads(planner_eval.evidence_json)["first_failure_tool"] == "provider.config"
-    assert tool_eval.failure_domain == "tool_or_capability"
+    assert tool_eval.failure_domain == "capability_failure"
     assert safeguard_eval.outcome == "failure"
     assert safeguard_eval.failure_domain == "safeguard_policy"
     assert "safeguard hook decision" in safeguard_eval.diagnostic
     assert runtime_eval.failure_domain == "runtime"
     assert completion_eval.outcome == "failure"
-    assert completion_eval.failure_domain == "completion_verifier"
+    assert completion_eval.failure_domain == "checker_blocked"
     assert no_response_eval.outcome == "failure"
-    assert no_response_eval.failure_domain == "provider_or_planner_no_response"
+    assert no_response_eval.failure_domain == "provider_no_response"
     assert listed_completion_evals[0].id == completion_eval.id
     assert any(evaluation.id == completion_eval.id for evaluation in listed_all_evals)
     completion_evidence = json.loads(completion_eval.evidence_json)
@@ -174,7 +273,15 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
         "run_status",
     ]
     assert pending_eval.outcome == "degraded"
-    assert pending_eval.failure_domain == "completion_verifier_gap"
+    assert pending_eval.failure_domain == "missing_completion_check"
     assert json.loads(pending_eval.evidence_json)["pending_run_completion_risk"] is True
+    assert loop_failed_eval.outcome == "failure"
+    assert loop_failed_eval.failure_domain == "planner_or_parser"
+    assert loop_approval_eval.outcome == "degraded"
+    assert loop_approval_eval.failure_domain == "approval_loop"
+    assert loop_converged_eval.outcome == "degraded"
+    assert loop_converged_eval.failure_domain == "loop_no_progress"
+    loop_evidence = json.loads(loop_approval_eval.evidence_json)
+    assert loop_evidence["loop_decisions"][0]["failed_gates"] == ["approval_gate"]
     assert missing_eval.outcome == "unknown"
     assert missing_eval.failure_domain == "trace_missing"

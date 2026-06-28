@@ -330,8 +330,18 @@ async def test_expired_task_cleanup_finishes_from_completion_facts(tmp_path):
     assert runs.get(expired.id) is None
     assert provider.planner_calls == 1
     assert provider.responder_calls == 1
-    phases = [event.phase for event in TraceStore(tmp_path).list_events(result.trace_id)]
+    events = TraceStore(tmp_path).list_events(result.trace_id)
+    phases = [event.phase for event in events]
     assert "runtime.converged" not in phases
+    loop_decisions = [
+        json.loads(event.output_json)
+        for event in events
+        if event.phase == "loop.decision"
+    ]
+    assert any(
+        item["decision"] == "finalize" and item["reason"] == "completion_evidence_true"
+        for item in loop_decisions
+    )
 
 
 @pytest.mark.asyncio
@@ -355,8 +365,18 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
     assert result.text == "当前没有任务。"
     assert provider.planner_calls == 2
     assert provider.responder_calls == 1
-    phases = [event.phase for event in TraceStore(tmp_path).list_events(result.trace_id)]
+    events = TraceStore(tmp_path).list_events(result.trace_id)
+    phases = [event.phase for event in events]
     assert "runtime.converged" in phases
+    loop_decisions = [
+        json.loads(event.output_json)
+        for event in events
+        if event.phase == "loop.decision"
+    ]
+    assert any(
+        item["decision"] == "converged" and item["reason"] == "repeated_progress_signature"
+        for item in loop_decisions
+    )
 
 
 @pytest.mark.asyncio

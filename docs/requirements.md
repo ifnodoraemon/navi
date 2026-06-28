@@ -8,6 +8,10 @@ Navi is a local-first agent OS for a governed personal AI assistant. It is inspi
 
 Non-negotiable engineering principles are captured in [principles.md](principles.md). Requirements and implementation choices must not violate those principles, especially the rules against product behavior hidden in keyword routing, prompt drift, or historical compatibility shims.
 
+Loop runtime behavior is captured in [loop-engineering.md](loop-engineering.md).
+The planner loop must expose explicit decisions, checkers, gates, and trace
+evaluation evidence instead of embedding loop-control rules in prompts.
+
 Core positioning:
 
 - Personal assistant first.
@@ -34,6 +38,8 @@ Current v1 includes:
 - Persistent local state under `.navi/` or `NAVI_HOME`.
 - Typed memory control system plus SQLite conversation sessions.
 - Task, watch, goal, approval, execution, recovery, subagent, trace, evolution, and workflow state.
+- Structured loop-decision traces for continue, recover, approval pause,
+  convergence, finalization, blocked, and failed runtime transitions.
 - Action/control capabilities declared in `src/navi/actions/specs.py`.
 - Core fact tools and gateway-loaded tools exposed through the unified capability registry.
 - Governed dynamic workflows with approval, dependency-aware execution, resumable state, step evidence, and verifier-backed completion.
@@ -164,6 +170,7 @@ navi eval acceptance
 navi graph list
 navi trace list
 navi trace show TRACE_ID
+navi trace decisions TRACE_ID
 navi trace evaluate TRACE_ID
 navi trace evaluations [TRACE_ID]
 
@@ -235,6 +242,7 @@ POST   /v1/tools/{tool_name}/call
 GET    /v1/graph
 GET    /v1/traces
 GET    /v1/traces/{trace_id}
+GET    /v1/traces/{trace_id}/decisions
 GET    /v1/trace-evaluations
 POST   /v1/traces/{trace_id}/evaluate
 GET    /v1/goals

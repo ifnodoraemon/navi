@@ -23,6 +23,7 @@ from .helpers import (
     failure_result as _failure_result,
 )
 from ..tools import WORKFLOW_STEP_CONTEXT
+from ..trace import LoopCheckResult, LoopDecision, TraceStore
 from ..workflows import (
     STEP_STATUS_COMPLETED,
     STEP_STATUS_FAILED,
@@ -189,7 +190,7 @@ class WorkflowRunCapability(BaseCapability):
         steps = store.list_steps(workflow.id)
         runnable = _runnable_steps(steps)[: workflow.max_concurrency]
         if not runnable:
-            return self._finish_if_possible(store, workflow)
+            return self._finish_if_possible(store, workflow, context=context)
         completed = 0
         failed = 0
         for step in runnable:
@@ -204,7 +205,7 @@ class WorkflowRunCapability(BaseCapability):
             [step for step in store.list_steps(workflow.id) if step.status == STEP_STATUS_PENDING]
         )
         if pending_count == 0 and failed == 0:
-            return self._finish_if_possible(store, workflow)
+            return self._finish_if_possible(store, workflow, context=context)
 
         transition = workflow_batch_transition(
             completed=completed,
@@ -278,6 +279,12 @@ class WorkflowRunCapability(BaseCapability):
                         "summary": turn_result.text,
                     }
                 )
+            self._record_step_loop_decision(
+                workflow,
+                step,
+                turn_result=turn_result,
+                context=context,
+            )
             if turn_result.action in {"ask", "ask.user"}:
                 raise ValueError(turn_result.text or "workflow step requested user input")
             error_reason = ""
@@ -406,7 +413,6 @@ class WorkflowRunCapability(BaseCapability):
     def _trace_evidence(self, trace_id: str) -> list[dict[str, Any]]:
         if not trace_id:
             return []
-        from ..trace import TraceStore
 
         evidence: list[dict[str, Any]] = []
         for event in TraceStore(self.home).list_events(trace_id):
@@ -424,13 +430,78 @@ class WorkflowRunCapability(BaseCapability):
             )
         return evidence
 
+    def _record_step_loop_decision(
+        self,
+        workflow: Workflow,
+        step: WorkflowStep,
+        *,
+        turn_result,
+        context: CapabilityContext,
+    ) -> None:
+        if not turn_result.trace_id:
+            return
+        decision = "finalize"
+        reason = "workflow_step_completed"
+        check_passed = True
+        severity = "info"
+        next_action = "complete_step"
+        if turn_result.action in {"ask", "ask.user"}:
+            decision = "blocked"
+            reason = "workflow_step_requested_user_input"
+            check_passed = False
+            severity = "error"
+            next_action = "block_workflow_step"
+        error_reason = ""
+        if isinstance(turn_result.facts, dict):
+            error_reason = str(turn_result.facts.get("error_reason") or "")
+        if turn_result.action == "capability_error" or error_reason:
+            decision = "failed"
+            reason = "workflow_step_capability_failure"
+            check_passed = False
+            severity = "error"
+            next_action = "fail_workflow_step"
+        trace = TraceStore(self.home)
+        trace.add_loop_decision(
+            trace_id=turn_result.trace_id,
+            decision=LoopDecision(
+                decision=decision,
+                reason=reason,
+                phase="workflow.step",
+                tool=turn_result.action,
+                run_id=turn_result.run_id,
+                workflow_id=workflow.id,
+                step_id=step.id,
+                checker_results=(
+                    LoopCheckResult(
+                        name="workflow_step_checker",
+                        passed=check_passed,
+                        severity=severity,
+                        reason=turn_result.text or reason,
+                    ),
+                ),
+                next_action=next_action,
+            ),
+            session_id=context.session_id or "",
+            run_id=turn_result.run_id or workflow.id,
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+        )
+        trace.evaluate_trace(turn_result.trace_id)
+
     @staticmethod
     def _permission_allowed(requested: str, ceiling: str) -> bool:
         from ..operating_context import permission_allows
 
         return permission_allows(requested, ceiling)
 
-    def _finish_if_possible(self, store: WorkflowStore, workflow: Workflow) -> CapabilityResult:
+    def _finish_if_possible(
+        self,
+        store: WorkflowStore,
+        workflow: Workflow,
+        *,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
         counts = _workflow_counts(store, workflow)
         transition = workflow_idle_transition(counts)
         if transition is not None:
@@ -440,6 +511,11 @@ class WorkflowRunCapability(BaseCapability):
                 decision = workflow_verification_decision(
                     workflow=replace(workflow, status=WORKFLOW_STATUS_COMPLETED),
                     steps=store.list_steps(workflow.id),
+                )
+                self._record_workflow_verification_loop_decision(
+                    workflow,
+                    decision=decision,
+                    context=context,
                 )
                 workflow = (
                     store.update_status(
@@ -468,6 +544,46 @@ class WorkflowRunCapability(BaseCapability):
             **counts,
         }
         return _fact_result("workflow", facts, run_id=workflow.id)
+
+    def _record_workflow_verification_loop_decision(
+        self,
+        workflow: Workflow,
+        *,
+        decision,
+        context: CapabilityContext,
+    ) -> None:
+        if not context.trace_id:
+            return
+        TraceStore(self.home).add_loop_decision(
+            trace_id=context.trace_id,
+            decision=LoopDecision(
+                decision="finalize" if decision.passed else "blocked",
+                reason="workflow_verifier_passed"
+                if decision.passed
+                else "workflow_verifier_blocked",
+                phase="workflow.verify",
+                tool="workflow.run",
+                run_id=workflow.id,
+                workflow_id=workflow.id,
+                checker_results=tuple(
+                    LoopCheckResult(
+                        name=check.name,
+                        passed=check.passed,
+                        severity=check.severity,
+                        reason=check.reason,
+                        evidence=check.evidence,
+                    )
+                    for check in decision.check_results
+                ),
+                next_action="mark_workflow_verified" if decision.passed else "block_workflow",
+                evidence=decision.output,
+            ),
+            session_id=context.session_id or "",
+            run_id=workflow.id,
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+        )
 
 
 @capability("workflow_status")

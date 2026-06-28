@@ -10,6 +10,7 @@ from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.runs import RunStore
 from navi.runtime import AgentRuntime
+from navi.trace import TraceStore
 from navi.workflows import STEP_STATUS_COMPLETED, WORKFLOW_STATUS_VERIFIED_COMPLETE, WorkflowStore
 from navi.weixin.config import WeixinConfig
 from navi.weixin.service import WeixinService
@@ -190,6 +191,7 @@ async def test_workflow_run_uses_model_owned_step_loop(
         source="cli",
         permission_ceiling="write",
         workspace=str(tmp_path),
+        trace_id="workflow-outer-trace",
     )
     proposed = await registry.invoke(
         "workflow.propose",
@@ -238,6 +240,15 @@ async def test_workflow_run_uses_model_owned_step_loop(
     workflow = store.get(workflow_id)
     assert workflow is not None
     assert workflow.status == WORKFLOW_STATUS_VERIFIED_COMPLETE
+    workflow_evidence = json.loads(workflow.evidence_json)
+    checker_names = [item["name"] for item in workflow_evidence["checker_results"]]
+    assert checker_names == [
+        "workflow_status_completed",
+        "workflow_steps_completed",
+        "workflow_step_evidence_present",
+        "workflow_capability_evidence_present",
+    ]
+    assert all(item["passed"] for item in workflow_evidence["checker_results"])
     steps = store.list_steps(workflow_id)
     assert len(steps) == 1
     assert steps[0].status == STEP_STATUS_COMPLETED
@@ -248,3 +259,13 @@ async def test_workflow_run_uses_model_owned_step_loop(
     assert tool_names == ["provider.config", "final.answer"]
     assert evidence["trace_id"]
     assert evidence["summary"] == "workflow evidence complete"
+    outer_decisions = [
+        json.loads(event.output_json)
+        for event in TraceStore(tmp_path).list_loop_decisions("workflow-outer-trace")
+    ]
+    assert any(
+        item["phase"] == "workflow.verify"
+        and item["decision"] == "finalize"
+        and item["reason"] == "workflow_verifier_passed"
+        for item in outer_decisions
+    )

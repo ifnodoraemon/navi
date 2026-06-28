@@ -720,8 +720,48 @@ def trace_show(trace_id: str) -> None:
         typer.echo(
             f"{event.phase} {marker} tool={event.tool or '-'} role={event.model_role or '-'}"
         )
+        if event.phase == "loop.decision":
+            output = _json_object(event.output_json)
+            typer.echo(
+                "  "
+                + " ".join(
+                    part
+                    for part in (
+                        f"decision={output.get('decision') or '-'}",
+                        f"reason={output.get('reason') or '-'}",
+                        f"next={output.get('next_action') or '-'}",
+                    )
+                    if part
+                )
+            )
+            failed = _failed_loop_result_names(output.get("checker_results"))
+            failed.extend(_failed_loop_result_names(output.get("gate_results")))
+            if failed:
+                typer.echo(f"  failed={', '.join(failed)}")
         if event.message:
             typer.echo(f"  {event.message[:240]}")
+
+
+@trace_app.command("decisions")
+def trace_decisions(trace_id: str) -> None:
+    """Show loop decisions for one full-flow trace."""
+    for event in TraceStore(ensure_home()).list_loop_decisions(trace_id):
+        output = _json_object(event.output_json)
+        typer.echo(
+            " ".join(
+                (
+                    output.get("decision") or "-",
+                    output.get("phase") or "-",
+                    f"tool={event.tool or output.get('tool') or '-'}",
+                    f"reason={output.get('reason') or '-'}",
+                    f"next={output.get('next_action') or '-'}",
+                )
+            )
+        )
+        failed = _failed_loop_result_names(output.get("checker_results"))
+        failed.extend(_failed_loop_result_names(output.get("gate_results")))
+        if failed:
+            typer.echo(f"  failed={', '.join(failed)}")
 
 
 @trace_app.command("evaluate")
@@ -738,6 +778,27 @@ def trace_evaluations(trace_id: str = typer.Argument(""), limit: int = 50) -> No
         typer.echo(
             f"{evaluation.trace_id} {evaluation.outcome} {evaluation.failure_domain}: {evaluation.diagnostic}"
         )
+
+
+def _json_object(value: str) -> dict:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _failed_loop_result_names(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    names: list[str] = []
+    for item in value:
+        if not isinstance(item, dict) or item.get("passed") is not False:
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            names.append(name)
+    return names
 
 
 @goal_app.command("list")

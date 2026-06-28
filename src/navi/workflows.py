@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +116,25 @@ class WorkflowVerificationDecision:
     event_type: str
     blocked_reason: str
     output: dict[str, Any]
+    check_results: tuple["WorkflowCheckResult", ...] = ()
+
+
+@dataclass(frozen=True)
+class WorkflowCheckResult:
+    name: str
+    passed: bool
+    severity: str = "info"
+    reason: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "passed": self.passed,
+            "severity": self.severity,
+            "reason": self.reason,
+            "evidence": self.evidence,
+        }
 
 
 WORKFLOW_RUNNABLE_STATUSES = frozenset(
@@ -178,17 +197,61 @@ def workflow_verification_decision(
     empty_evidence = [step.id for step in steps if not _json_dict(step.evidence_json)]
     capability_steps = [step.id for step in steps if _step_has_execution_evidence(step)]
     missing_execution_evidence = not capability_steps and goal_type != "planning"
-    passed = (
-        workflow.status in (WORKFLOW_STATUS_COMPLETED, WORKFLOW_STATUS_VERIFIED_COMPLETE)
-        and not failed_steps
-        and not empty_evidence
-        and not missing_execution_evidence
+    status_completed = workflow.status in (
+        WORKFLOW_STATUS_COMPLETED,
+        WORKFLOW_STATUS_VERIFIED_COMPLETE,
     )
+    check_results = (
+        WorkflowCheckResult(
+            name="workflow_status_completed",
+            passed=status_completed,
+            severity="error" if not status_completed else "info",
+            reason=(
+                "workflow is in a completed status"
+                if status_completed
+                else f"workflow status is {workflow.status}"
+            ),
+            evidence={"status": workflow.status},
+        ),
+        WorkflowCheckResult(
+            name="workflow_steps_completed",
+            passed=not failed_steps,
+            severity="error" if failed_steps else "info",
+            reason=(
+                "all workflow steps completed"
+                if not failed_steps
+                else "one or more workflow steps are not completed"
+            ),
+            evidence={"failed_steps": [step.id for step in failed_steps]},
+        ),
+        WorkflowCheckResult(
+            name="workflow_step_evidence_present",
+            passed=not empty_evidence,
+            severity="error" if empty_evidence else "info",
+            reason=(
+                "all workflow steps have evidence"
+                if not empty_evidence
+                else "one or more workflow steps have empty evidence"
+            ),
+            evidence={"empty_evidence_steps": empty_evidence},
+        ),
+        WorkflowCheckResult(
+            name="workflow_capability_evidence_present",
+            passed=not missing_execution_evidence,
+            severity="error" if missing_execution_evidence else "info",
+            reason=(
+                "workflow has capability execution evidence or is planning-only"
+                if not missing_execution_evidence
+                else "workflow lacks capability execution evidence"
+            ),
+            evidence={"capability_step_count": len(capability_steps), "goal_type": goal_type},
+        ),
+    )
+    passed = all(check.passed for check in check_results)
     blocked_reason = ""
     if not passed:
-        blocked_reason = "workflow verifier requires completed workflow, completed steps, and non-empty step evidence"
-        if missing_execution_evidence:
-            blocked_reason = "workflow verifier requires capability execution evidence unless plan.goal_type is planning"
+        failed_check = next(check for check in check_results if not check.passed)
+        blocked_reason = failed_check.reason
     output = {
         "workflow_id": workflow.id,
         "passed": passed,
@@ -196,6 +259,7 @@ def workflow_verification_decision(
         "empty_evidence_steps": empty_evidence,
         "capability_step_count": len(capability_steps),
         "goal_type": goal_type,
+        "checker_results": [check.to_dict() for check in check_results],
     }
     return WorkflowVerificationDecision(
         passed=passed,
@@ -203,6 +267,7 @@ def workflow_verification_decision(
         event_type="workflow.verified" if passed else "workflow.verifier_blocked",
         blocked_reason=blocked_reason,
         output=output,
+        check_results=check_results,
     )
 
 

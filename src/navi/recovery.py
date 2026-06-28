@@ -20,7 +20,7 @@ class RecoveryFacts:
             **self.details,
         }
         return (
-            "Completion verifier facts:\n"
+            "Loop checker facts:\n"
             + json.dumps(facts, ensure_ascii=False, sort_keys=True)
         )
 
@@ -59,9 +59,9 @@ class RecoveryPlanner:
             return self._cleanup_facts(block_reason=block.reason, facts=cleanup_facts)
 
         return RecoveryFacts(
-            trigger="completion.verify",
+            trigger="loop.check",
             reason=block.reason,
-            details={"failure_domain": "completion_verifier"},
+            details={"failure_domain": "checker_blocked"},
         )
 
     def _run_progress_facts(
@@ -77,7 +77,7 @@ class RecoveryPlanner:
             "run_status": run_status,
         }
         return RecoveryFacts(
-            trigger="completion.verify",
+            trigger="loop.check",
             reason=block_reason,
             details=details,
         )
@@ -95,7 +95,7 @@ class RecoveryPlanner:
         if kind:
             details["kind_filter"] = kind
         return RecoveryFacts(
-            trigger="completion.verify",
+            trigger="loop.check",
             reason=block_reason,
             details=details,
         )
