@@ -202,7 +202,7 @@ class HernessEngine(EnginePhasesMixin):
                 self._record_loop_decision(
                     trace_id,
                     decision=LoopDecision(
-                        decision="recover",
+                        decision=LoopDecisionKind.RECOVER,
                         reason=LoopReason.COMPLETION_CHECKER_BLOCKED,
                         phase=LoopPhase.CHECK,
                         tool=step_result.tool,
@@ -229,7 +229,7 @@ class HernessEngine(EnginePhasesMixin):
                     self._record_loop_decision(
                         trace_id,
                         decision=LoopDecision(
-                            decision="converged",
+                            decision=LoopDecisionKind.CONVERGED,
                             reason=LoopReason.REPEATED_RECOVERY_SIGNATURE,
                             phase=LoopPhase.RUNTIME,
                             tool=step_result.tool,
@@ -332,7 +332,7 @@ class HernessEngine(EnginePhasesMixin):
             if self._facts_complete_current_request(step_result.invoked_facts):
                 self._record_loop_decision(
                     trace_id,
-                        decision=LoopDecision(
+                    decision=LoopDecision(
                         decision=LoopDecisionKind.FINALIZE,
                         reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
                         phase=LoopPhase.RUNTIME,
@@ -371,7 +371,7 @@ class HernessEngine(EnginePhasesMixin):
             if progress_signature and progress_signature in seen_progress_signatures:
                 self._record_loop_decision(
                     trace_id,
-                        decision=LoopDecision(
+                    decision=LoopDecision(
                         decision=LoopDecisionKind.CONVERGED,
                         reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
                         phase=LoopPhase.RUNTIME,
@@ -483,20 +483,20 @@ class HernessEngine(EnginePhasesMixin):
         step_result: Any,
     ) -> LoopDecision:
         text = result.text or result.observation
-        reason = "planner_or_parser_failure"
+        reason = LoopReason.PLANNER_OR_PARSER_FAILURE
         if "provider failed" in text.lower():
-            reason = "provider_no_response"
+            reason = LoopReason.PROVIDER_NO_RESPONSE
         return LoopDecision(
-            decision="failed",
+            decision=LoopDecisionKind.FAILED,
             reason=reason,
-            phase="planner",
+            phase=LoopPhase.PLANNER,
             tool=step_result.tool or result.action,
             run_id=result.run_id,
             checker_results=(
                 LoopCheckResult(
-                    name="planner_result",
+                    name=LoopCheckName.PLANNER_RESULT,
                     passed=False,
-                    severity="error",
+                    severity=LoopSeverity.ERROR,
                     reason=text,
                 ),
             ),
@@ -513,17 +513,17 @@ class HernessEngine(EnginePhasesMixin):
     ) -> LoopDecision:
         if result.action == "capability_error":
             return LoopDecision(
-                decision="failed",
-                reason="capability_failure",
-                phase="capability",
+                decision=LoopDecisionKind.FAILED,
+                reason=LoopReason.CAPABILITY_FAILURE,
+                phase=LoopPhase.CAPABILITY,
                 tool=tool or result.action,
                 run_id=result.run_id,
                 goal_ids=tuple(sorted(goal_ids)),
                 checker_results=(
                     LoopCheckResult(
-                        name="capability_result",
+                        name=LoopCheckName.CAPABILITY_RESULT,
                         passed=False,
-                        severity="error",
+                        severity=LoopSeverity.ERROR,
                         reason=result.text or result.observation,
                     ),
                 ),
@@ -531,18 +531,22 @@ class HernessEngine(EnginePhasesMixin):
         if _facts_waiting_for_approval(facts) or pending_approval_prompt:
             deduplicated = bool(facts and facts.get("deduplicated"))
             return LoopDecision(
-                decision="pause_for_approval",
-                reason="approval_already_pending" if deduplicated else "approval_required",
-                phase="runtime",
+                decision=LoopDecisionKind.PAUSE_FOR_APPROVAL,
+                reason=(
+                    LoopReason.APPROVAL_ALREADY_PENDING
+                    if deduplicated
+                    else LoopReason.APPROVAL_REQUIRED
+                ),
+                phase=LoopPhase.RUNTIME,
                 tool=tool or result.action,
                 run_id=result.run_id,
                 workflow_id=str((facts or {}).get("workflow_id") or ""),
                 goal_ids=tuple(sorted(goal_ids)),
                 gate_results=(
                     LoopCheckResult(
-                        name="approval_gate",
+                        name=LoopCheckName.APPROVAL_GATE,
                         passed=not deduplicated,
-                        severity="warning" if deduplicated else "info",
+                        severity=LoopSeverity.WARNING if deduplicated else LoopSeverity.INFO,
                         reason=(
                             "existing approval is still pending"
                             if deduplicated
@@ -550,18 +554,18 @@ class HernessEngine(EnginePhasesMixin):
                         ),
                     ),
                 ),
-                next_action="wait_for_approval",
+                next_action=LoopNextAction.WAIT_FOR_APPROVAL,
             )
         return LoopDecision(
-            decision="finalize",
-            reason="terminal_result",
-            phase="runtime",
+            decision=LoopDecisionKind.FINALIZE,
+            reason=LoopReason.TERMINAL_RESULT,
+            phase=LoopPhase.RUNTIME,
             tool=tool or result.action,
             run_id=result.run_id,
             goal_ids=tuple(sorted(goal_ids)),
             checker_results=(
                 LoopCheckResult(
-                    name="terminal_result",
+                    name=LoopCheckName.TERMINAL_RESULT,
                     passed=True,
                     reason=f"terminal action {result.action}",
                 ),
