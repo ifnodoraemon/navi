@@ -39,6 +39,7 @@ from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
 from .graph import GraphStore
 from .hooks import HookRegistry
+from .loop import LoopPhase, failed_loop_result_names
 from .memory import MemoryStore
 from .paths import ensure_home
 from .prompt_os import assemble_planner_system_prompt
@@ -720,7 +721,7 @@ def trace_show(trace_id: str) -> None:
         typer.echo(
             f"{event.phase} {marker} tool={event.tool or '-'} role={event.model_role or '-'}"
         )
-        if event.phase == "loop.decision":
+        if event.phase == LoopPhase.DECISION:
             output = _json_object(event.output_json)
             typer.echo(
                 "  "
@@ -734,8 +735,8 @@ def trace_show(trace_id: str) -> None:
                     if part
                 )
             )
-            failed = _failed_loop_result_names(output.get("checker_results"))
-            failed.extend(_failed_loop_result_names(output.get("gate_results")))
+            failed = failed_loop_result_names(output.get("checker_results"))
+            failed.extend(failed_loop_result_names(output.get("gate_results")))
             if failed:
                 typer.echo(f"  failed={', '.join(failed)}")
         if event.message:
@@ -758,8 +759,8 @@ def trace_decisions(trace_id: str) -> None:
                 )
             )
         )
-        failed = _failed_loop_result_names(output.get("checker_results"))
-        failed.extend(_failed_loop_result_names(output.get("gate_results")))
+        failed = failed_loop_result_names(output.get("checker_results"))
+        failed.extend(failed_loop_result_names(output.get("gate_results")))
         if failed:
             typer.echo(f"  failed={', '.join(failed)}")
 
@@ -794,19 +795,6 @@ def _json_object(value: str) -> dict:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
-
-
-def _failed_loop_result_names(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    names: list[str] = []
-    for item in value:
-        if not isinstance(item, dict) or item.get("passed") is not False:
-            continue
-        name = str(item.get("name") or "").strip()
-        if name:
-            names.append(name)
-    return names
 
 
 @goal_app.command("list")

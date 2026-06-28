@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from .loop import LoopPhase
+
 
 @dataclass(frozen=True)
 class RecoveryFacts:
@@ -59,7 +61,7 @@ class RecoveryPlanner:
             return self._cleanup_facts(block_reason=block.reason, facts=cleanup_facts)
 
         return RecoveryFacts(
-            trigger="loop.check",
+            trigger=LoopPhase.CHECK,
             reason=block.reason,
             details={"failure_domain": "checker_blocked"},
         )
@@ -77,7 +79,7 @@ class RecoveryPlanner:
             "run_status": run_status,
         }
         return RecoveryFacts(
-            trigger="loop.check",
+            trigger=LoopPhase.CHECK,
             reason=block_reason,
             details=details,
         )
@@ -95,7 +97,7 @@ class RecoveryPlanner:
         if kind:
             details["kind_filter"] = kind
         return RecoveryFacts(
-            trigger="loop.check",
+            trigger=LoopPhase.CHECK,
             reason=block_reason,
             details=details,
         )
