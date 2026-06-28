@@ -6,8 +6,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from .approval_contract import (
+    APPROVAL_DECISION_APPROVE,
+    APPROVAL_DECISION_REJECT,
+    APPROVAL_DECISIONS,
+    APPROVAL_STATUS_APPROVED,
+    APPROVAL_STATUS_EXPIRED,
+    APPROVAL_STATUS_REJECTED,
+)
 from .goals import GoalStore
 from .governance import GovernanceEngine
+from .lifecycle import (
+    RUN_PENDING_STATUSES,
+    RUN_STATUS_AWAITING_APPROVAL,
+    RUN_STATUS_QUEUED,
+    RUN_STATUS_REJECTED,
+)
 from .runs import Approval, Run, RunStore
 from .workflows import (
     WORKFLOW_STATUS_APPROVED,
@@ -25,7 +39,6 @@ ApprovalSelection = Literal[
 ]
 
 APPROVAL_BATCH_WINDOW_SECONDS = 30.0
-PENDING_RUN_STATUSES = frozenset({"pending", "preparing", "prepared", "awaiting_approval"})
 ACTIVE_WORKFLOW_STATUSES = frozenset(
     {
         WORKFLOW_STATUS_AWAITING_APPROVAL,
@@ -138,7 +151,7 @@ class CurrentStateBuilder:
         visible = self._visible_pending_approvals(runs, context)
         active_runs = tuple(
             run
-            for run in runs.list_by_statuses(sorted(PENDING_RUN_STATUSES), limit=100)
+            for run in runs.list_by_statuses(sorted(RUN_PENDING_STATUSES), limit=100)
             if _run_matches_context(run, context)
         )
         workflows = WorkflowStore(self.home)
@@ -193,7 +206,7 @@ class ApprovalService:
         run_id: str = "",
         batch_id: str = "",
     ) -> ApprovalResolution:
-        if decision not in {"approve", "reject"}:
+        if decision not in APPROVAL_DECISIONS:
             return ApprovalResolution(
                 ok=False,
                 decision=decision,
@@ -201,7 +214,11 @@ class ApprovalService:
                 message="approval decision must be approve or reject.",
                 facts={"reason": "invalid_decision"},
             )
-        status = "approved" if decision == "approve" else "rejected"
+        status = (
+            APPROVAL_STATUS_APPROVED
+            if decision == APPROVAL_DECISION_APPROVE
+            else APPROVAL_STATUS_REJECTED
+        )
         if selection == "explicit_code":
             if not code:
                 return self._missing_identifier(decision, selection)
@@ -310,12 +327,12 @@ class ApprovalService:
         pull the run back into awaiting_approval instead of dead-ending. Returns a
         resolution carrying the new code, or None when re-issue does not apply
         (rejecting, or no expired candidate)."""
-        if decision != "approve":
+        if decision != APPROVAL_DECISION_APPROVE:
             return None
         approval = candidate
         if approval is None and run_id:
             approval = runs.latest_approval_for_run(run_id)
-        if approval is None or approval.status != "expired":
+        if approval is None or approval.status != APPROVAL_STATUS_EXPIRED:
             return None
         run = runs.get(approval.run_id)
         if not _approval_matches_context(approval, run, context):
@@ -355,7 +372,7 @@ class ApprovalService:
                     "code": fresh.code,
                     "expires_at": fresh.expires_at,
                 },
-                "run_status": "awaiting_approval",
+                "run_status": RUN_STATUS_AWAITING_APPROVAL,
             },
         )
 
@@ -463,16 +480,18 @@ class ApprovalService:
                 run_id=run_id,
                 facts={"approval_resolution": facts},
             )
-        if approval.status == "expired":
+        if approval.status == APPROVAL_STATUS_EXPIRED:
             return ApprovalResolution(
                 ok=False,
                 decision=decision,
                 selection=selection,
                 message="Approval code expired.",
                 run_id=approval.run_id,
-                facts={"approval_status": "expired", "run_id": approval.run_id},
+                facts={"approval_status": APPROVAL_STATUS_EXPIRED, "run_id": approval.run_id},
             )
-        run_status = "queued" if decision == "approve" else "rejected"
+        run_status = (
+            RUN_STATUS_QUEUED if decision == APPROVAL_DECISION_APPROVE else RUN_STATUS_REJECTED
+        )
         task = runs.update_run(approval.run_id, status=run_status)
         if task:
             GoalStore(self.home).update_for_run(
@@ -496,7 +515,7 @@ class ApprovalService:
             "approval_status": approval.status,
             "run_status": run_status,
         }
-        if decision == "approve":
+        if decision == APPROVAL_DECISION_APPROVE:
             message = (
                 f"approval_request status=approved run_id={resolved_run_id} "
                 f"run_status={run_status}"

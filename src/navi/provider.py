@@ -12,6 +12,7 @@ import httpx
 import logging
 
 from .config import ModelConfig
+from .json_utils import json_schema_errors
 from .provider_specs import (
     ProviderSpec,
     get_provider_spec,
@@ -519,13 +520,10 @@ def _validate_structured_output(content: str, output_schema: dict[str, Any]) -> 
         raise RuntimeError(f"structured output is not valid JSON: {exc}") from exc
     if not isinstance(parsed, dict):
         raise RuntimeError("structured output must be a JSON object")
-    required = schema.get("required")
-    if isinstance(required, list) and required:
-        missing = [key for key in required if key not in parsed]
-        if missing:
-            raise RuntimeError(
-                f"structured output missing required keys: {missing}"
-            )
+    errors = json_schema_errors(parsed, schema)
+    if errors:
+        detail = "; ".join(errors[:5])
+        raise RuntimeError(f"structured output schema mismatch: {detail}")
 
 
 def _extract_openai_content(data: dict[str, Any]) -> str:
@@ -550,13 +548,6 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
 
     content_str = str(content).strip()
     if not content_str:
-        reasoning_content = str(message.get("reasoning_content") or "").strip()
-        if reasoning_content:
-            from .json_utils import parse_first_json_object
-
-            structured = parse_first_json_object(reasoning_content)
-            if structured is not None:
-                return json.dumps(structured, ensure_ascii=False)
         finish_reason = choice.get("finish_reason", "unknown")
         raise RuntimeError(
             f"Provider response content is empty. Finish reason: {finish_reason}. Raw data: {data}"

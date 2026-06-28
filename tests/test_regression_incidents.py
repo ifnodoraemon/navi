@@ -96,7 +96,7 @@ def test_anthropic_structured_wrapper_returns_inner_planner_decision():
                     "tool": "delegate.list",
                     "permission": "read",
                     "args": {"limit": 10},
-                    "model_role": "planner",
+                    "model_role": "responder",
                     "confidence": 1,
                     "reason": "inspect run facts",
                 },
@@ -122,6 +122,34 @@ def test_anthropic_direct_tool_call_is_not_reconstructed_as_planner_decision():
 
     with pytest.raises(RuntimeError, match="did not include tool output planner_decision"):
         _extract_anthropic_content(raw, tool_name="planner_decision")
+
+
+def test_planner_parser_rejects_markdown_fenced_json():
+    decision = ModelSyscallPlanner._parse_syscall(
+        '```json\n{"tool":"final.answer","permission":"read","args":{},'
+        '"model_role":"responder","confidence":1,"reason":"done"}\n```'
+    )
+
+    assert decision.tool == "system.planner_error"
+    assert decision.reason == "planner returned invalid JSON"
+
+
+def test_planner_parser_rejects_missing_schema_fields():
+    decision = ModelSyscallPlanner._parse_syscall(
+        json.dumps(
+            {
+                "tool": "final.answer",
+                "permission": "read",
+                "args": {"message": "ok"},
+                "reason": "done",
+            }
+        )
+    )
+
+    assert decision.tool == "system.planner_error"
+    assert decision.reason == "planner decision schema mismatch"
+    assert "$.model_role is required" in decision.args["schema_errors"]
+    assert "$.confidence is required" in decision.args["schema_errors"]
 
 
 class _StructuredJourneyProvider:
@@ -179,6 +207,8 @@ class _DeleteExpiredProvider:
                         "kind": "delegation",
                         "reason": "delete expired tasks",
                     },
+                    "model_role": "responder",
+                    "confidence": 1.0,
                     "reason": "clean up expired delegation runs",
                 }
             )
@@ -213,6 +243,8 @@ class _RepeatListProvider:
                     "tool": "delegate.list",
                     "permission": "read",
                     "args": {"limit": 20},
+                    "model_role": "responder",
+                    "confidence": 1.0,
                     "reason": "inspect current tasks",
                 }
             )

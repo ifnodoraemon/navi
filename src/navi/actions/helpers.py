@@ -6,6 +6,8 @@ from typing import Any
 
 from ..capabilities_types import CapabilityResult
 from ..connector_registry import load_connector_adapters
+from ..capability_contract import CAPABILITY_ERROR_REASON_KEY
+from ..json_utils import json_list, json_object
 
 
 def fact_result(action: str, facts: dict[str, Any], *, run_id: str = "") -> CapabilityResult:
@@ -27,7 +29,7 @@ def failure_result(
     run_id: str = "",
     terminal: bool = False,
 ) -> CapabilityResult:
-    payload = {"error_reason": error_reason, **(facts or {})}
+    payload = {CAPABILITY_ERROR_REASON_KEY: error_reason, **(facts or {})}
     return CapabilityResult(
         ok=False,
         action=action,
@@ -114,20 +116,7 @@ def workflow_not_found(workflow_id: str) -> CapabilityResult:
     )
 
 
-def json_list(value: str) -> list[Any]:
-    try:
-        parsed = json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        return []
-    return parsed if isinstance(parsed, list) else []
-
-
-def json_dict(value: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+json_dict = json_object
 
 
 def remote_source(source: str) -> bool:

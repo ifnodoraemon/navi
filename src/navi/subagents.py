@@ -10,6 +10,20 @@ from typing import Any
 from .db import connect
 from .paths import db_paths
 
+SUBAGENT_STATUS_RUNNING = "running"
+SUBAGENT_STATUS_COMPLETED = "completed"
+SUBAGENT_STATUS_FAILED = "failed"
+SUBAGENT_STATUS_CANCELLED = "cancelled"
+SUBAGENT_STATUS_SUSPENDED = "suspended"
+SUBAGENT_TERMINAL_STATUSES = frozenset(
+    {
+        SUBAGENT_STATUS_COMPLETED,
+        SUBAGENT_STATUS_FAILED,
+        SUBAGENT_STATUS_CANCELLED,
+        SUBAGENT_STATUS_SUSPENDED,
+    }
+)
+
 
 @dataclass(frozen=True)
 class SubagentRun:
@@ -79,7 +93,7 @@ class SubagentRunStore:
             role=role,
             phase=phase,
             run_id=run_id,
-            status="running",
+            status=SUBAGENT_STATUS_RUNNING,
             command=" ".join(command or ["navi", "subagent", role, phase, run_id]).strip(),
             input_json=json.dumps(input_data or {}, ensure_ascii=False, sort_keys=True),
             output_json="{}",
@@ -122,7 +136,7 @@ class SubagentRunStore:
         output_data: dict[str, Any] | None = None,
         error: str = "",
     ) -> SubagentRun | None:
-        if status not in {"completed", "failed", "cancelled", "suspended"}:
+        if status not in SUBAGENT_TERMINAL_STATUSES:
             raise ValueError(f"unsupported subagent status: {status}")
         now = time.time()
         with connect(self.db_path) as conn:

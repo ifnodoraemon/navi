@@ -7,13 +7,13 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-
-from .db import connect
-from .loop import TracePhase
-from .paths import db_paths
 from typing import Any
 
+from .db import connect
 from .graph import GraphStore
+from .json_utils import json_object
+from .loop import TracePhase
+from .paths import db_paths
 from .runs import Run, RunStore
 
 logger = logging.getLogger(__name__)
@@ -157,7 +157,7 @@ def _summarize_trace_events(events: list[Any]) -> str:
             if message:
                 lines.append(f"user: {message}")
         elif event.phase == TracePhase.PLANNER_SYSCALL:
-            details = _json_object(event.output_json)
+            details = json_object(event.output_json)
             tool = str(details.get("tool") or event.tool or "").strip()
             reason = str(details.get("reason") or event.message or "").strip()
             if tool:
@@ -170,16 +170,8 @@ def _summarize_trace_events(events: list[Any]) -> str:
     return "\n".join(line for line in lines if line)[:12000]
 
 
-def _json_object(raw: str) -> dict[str, Any]:
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 def _json_field(raw: str, field: str) -> str:
-    value = _json_object(raw).get(field)
+    value = json_object(raw).get(field)
     return str(value).strip() if value is not None else ""
 
 

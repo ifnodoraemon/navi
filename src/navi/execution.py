@@ -8,14 +8,22 @@ from pathlib import Path
 from typing import Any
 
 from .capabilities import CapabilityRegistry
+from .capability_contract import (
+    CAPABILITY_ACTION_APPROVAL,
+    CAPABILITY_ACTION_ERROR,
+    CAPABILITY_ERROR_REASON_KEY,
+    CAPABILITY_REASON_KEY,
+    CAPABILITY_REASON_SENSITIVE_APPROVAL,
+)
 from .config import load_config
+from .conversation_contract import CONVERSATION_ASK_ACTIONS
 from .governance import GovernanceEngine
 from .evolution import EvolutionLedger
 from .goals import GoalStore
-from .json_utils import parse_first_json_object
 from .lifecycle import (
     RUN_STATUS_AWAITING_APPROVAL,
     RUN_STATUS_BLOCKED,
+    RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     RUN_STATUS_PREPARING,
     RUN_STATUS_QUEUED,
@@ -27,7 +35,12 @@ from .lifecycle import (
 from .provider import ChatMessage, ModelPool, build_provider
 from .runs import Run, RunStore
 from .safeguards import redact_secrets
-from .subagents import SubagentRunStore
+from .subagents import (
+    SUBAGENT_STATUS_COMPLETED,
+    SUBAGENT_STATUS_FAILED,
+    SUBAGENT_STATUS_SUSPENDED,
+    SubagentRunStore,
+)
 from .tools import ACTUATOR_CONTEXT
 from .prompting import PromptLayerStore
 
@@ -93,7 +106,10 @@ class ExecutionProtocol:
 
     @classmethod
     def from_model_output(cls, *, run_id: str, phase: str, text: str) -> "ExecutionProtocol":
-        parsed = parse_first_json_object(text)
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("execution protocol output must be valid JSON") from exc
         if not isinstance(parsed, dict):
             raise ValueError("execution protocol missing JSON object")
         payload = (
@@ -522,7 +538,7 @@ class NaviExecutionProvider:
             protocol = ExecutionProtocol.internal_status(
                 run_id=run_id,
                 phase=phase,
-                status="failed",
+                status=RUN_STATUS_FAILED,
                 summary=str(exc),
                 reason="provider output violated the required execution protocol",
                 action_kind="execution_error",
@@ -556,7 +572,7 @@ class NaviExecutionProvider:
         protocol = ExecutionProtocol.internal_status(
             run_id="",
             phase="watch",
-            status="completed" if ok else "failed",
+            status=RUN_STATUS_COMPLETED if ok else RUN_STATUS_FAILED,
             summary=summary or "scheduled watch completed",
             reason="scheduled watch notification completed" if ok else "scheduled watch failed",
             action_kind="watch_notification",
@@ -664,7 +680,7 @@ class ExecutionService:
         exit_code = 0 if execution_status != RUN_STATUS_FAILED else 1
         self.subagents.finish(
             subagent_run.id,
-            status="failed" if exit_code else "completed",
+            status=SUBAGENT_STATUS_FAILED if exit_code else SUBAGENT_STATUS_COMPLETED,
             output_data={
                 "exit_code": exit_code,
                 "execution_status": execution_status,
@@ -680,10 +696,10 @@ class ExecutionService:
         # does not overwrite awaiting_approval with completed/failed. The daemon
         # surfaces the new code to the user via the normal background channel.
         suspended = self.runs.get(task.id)
-        if suspended is not None and suspended.status == "awaiting_approval":
+        if suspended is not None and suspended.status == RUN_STATUS_AWAITING_APPROVAL:
             self.subagents.finish(
                 subagent_run.id,
-                status="suspended",
+                status=SUBAGENT_STATUS_SUSPENDED,
                 output_data={"exit_code": 0, "summary": suspended.result_summary},
                 error="",
             )
@@ -722,11 +738,14 @@ class ExecutionService:
     @staticmethod
     def _execution_status_from_turn_result(result) -> tuple[str, str]:
         facts = result.facts if isinstance(result.facts, dict) else {}
-        if result.action in {"ask", "ask.user"}:
+        if result.action in CONVERSATION_ASK_ACTIONS:
             return RUN_STATUS_BLOCKED, "execution produced an ask action and is waiting for user input"
-        if result.action == "approval" or facts.get("reason") == "sensitive_op_requires_approval":
+        if (
+            result.action == CAPABILITY_ACTION_APPROVAL
+            or facts.get(CAPABILITY_REASON_KEY) == CAPABILITY_REASON_SENSITIVE_APPROVAL
+        ):
             return RUN_STATUS_AWAITING_APPROVAL, "execution suspended for approval"
-        if result.action == "capability_error" or facts.get("error_reason"):
+        if result.action == CAPABILITY_ACTION_ERROR or facts.get(CAPABILITY_ERROR_REASON_KEY):
             return RUN_STATUS_FAILED, "execution ended with capability error facts"
         return RUN_STATUS_COMPLETED, "execution produced terminal completion facts"
 
@@ -836,7 +855,11 @@ class ExecutionService:
         self._log(watch_task, result)
         self.subagents.finish(
             subagent_run.id,
-            status="completed" if result.exit_code == 0 else "failed",
+            status=(
+                SUBAGENT_STATUS_COMPLETED
+                if result.exit_code == 0
+                else SUBAGENT_STATUS_FAILED
+            ),
             output_data={
                 "exit_code": result.exit_code,
                 "summary": result.summary,
@@ -924,7 +947,7 @@ class ExecutionService:
                 protocol=ExecutionProtocol.internal_status(
                     run_id=task.id,
                     phase="prepare",
-                    status="failed",
+                    status=RUN_STATUS_FAILED,
                     summary=repr(exc),
                     reason="execution provider raised an unexpected error",
                     action_kind="execution_error",
@@ -936,7 +959,11 @@ class ExecutionService:
     def _finish_provider_subagent(self, subagent_id: str, result: ExecutionResult) -> None:
         self.subagents.finish(
             subagent_id,
-            status="completed" if result.exit_code == 0 else "failed",
+            status=(
+                SUBAGENT_STATUS_COMPLETED
+                if result.exit_code == 0
+                else SUBAGENT_STATUS_FAILED
+            ),
             output_data={
                 "exit_code": result.exit_code,
                 "summary": result.summary,

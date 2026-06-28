@@ -11,7 +11,13 @@ from ..capabilities_types import (
     capability,
 )
 from ..result import NotFound, SchemaMismatch, guarded
+from ..approval_contract import (
+    APPROVAL_DECISION_APPROVE,
+    APPROVAL_DECISIONS,
+)
 from ..capabilities import build_capability_registry
+from ..capability_contract import CAPABILITY_ACTION_ERROR, CAPABILITY_ERROR_REASON_KEY
+from ..conversation_contract import CONVERSATION_ASK_ACTIONS
 from ..tools import ToolSpec
 from .helpers import (
     arg_text as _arg_text,
@@ -19,6 +25,7 @@ from .helpers import (
     fact_result as _fact_result,
     resolve_workspace as _resolve_workspace,
     positive_int as _positive_int,
+    json_dict as _json_dict,
     json_list as _json_list,
     failure_result as _failure_result,
 )
@@ -28,10 +35,10 @@ from ..loop import (
     LoopCheckResult,
     LoopDecision,
     LoopDecisionKind,
-    LoopNextAction,
     LoopPhase,
     LoopReason,
     LoopSeverity,
+    TraceFailureDomain,
     TracePhase,
 )
 from ..trace import TraceStore
@@ -53,7 +60,11 @@ from ..workflows import (
     workflow_idle_transition,
     workflow_verification_decision,
 )
-from ..subagents import SubagentRunStore
+from ..subagents import (
+    SUBAGENT_STATUS_COMPLETED,
+    SUBAGENT_STATUS_FAILED,
+    SubagentRunStore,
+)
 
 
 @capability("workflow_propose")
@@ -128,13 +139,17 @@ class WorkflowApproveCapability(BaseCapability):
     ) -> CapabilityResult:
         workflow_id = _arg_text(args, "workflow_id")
         decision = _arg_text(args, "decision").lower()
-        if decision not in {"approve", "reject"}:
+        if decision not in APPROVAL_DECISIONS:
             raise SchemaMismatch("workflow.approve requires decision approve or reject.")
         store = WorkflowStore(self.home)
         workflow = store.get(workflow_id) if workflow_id else None
         if workflow is None:
             raise NotFound(f"workflow not found: {workflow_id}")
-        if decision == "approve" and workflow.sender_id and context.sender_id != workflow.sender_id:
+        if (
+            decision == APPROVAL_DECISION_APPROVE
+            and workflow.sender_id
+            and context.sender_id != workflow.sender_id
+        ):
             message = (
                 f"workflow {workflow.id} was created by sender "
                 f"{workflow.sender_id}; only that sender may approve it."
@@ -149,7 +164,11 @@ class WorkflowApproveCapability(BaseCapability):
                     "current_sender_id": context.sender_id,
                 },
             )
-        status = WORKFLOW_STATUS_APPROVED if decision == "approve" else WORKFLOW_STATUS_REJECTED
+        status = (
+            WORKFLOW_STATUS_APPROVED
+            if decision == APPROVAL_DECISION_APPROVE
+            else WORKFLOW_STATUS_REJECTED
+        )
         updated = store.update_status(
             workflow.id,
             status=status,
@@ -285,7 +304,10 @@ class WorkflowRunCapability(BaseCapability):
                     {
                         "kind": "model_step",
                         "action": turn_result.action,
-                        "ok": not bool(turn_result.facts and turn_result.facts.get("error_reason")),
+                        "ok": not bool(
+                            turn_result.facts
+                            and turn_result.facts.get(CAPABILITY_ERROR_REASON_KEY)
+                        ),
                         "trace_id": turn_result.trace_id,
                         "summary": turn_result.text,
                     }
@@ -296,12 +318,12 @@ class WorkflowRunCapability(BaseCapability):
                 turn_result=turn_result,
                 context=context,
             )
-            if turn_result.action in {"ask", "ask.user"}:
+            if turn_result.action in CONVERSATION_ASK_ACTIONS:
                 raise ValueError(turn_result.text or "workflow step requested user input")
             error_reason = ""
             if isinstance(turn_result.facts, dict):
-                error_reason = str(turn_result.facts.get("error_reason") or "")
-            if turn_result.action == "capability_error" or error_reason:
+                error_reason = str(turn_result.facts.get(CAPABILITY_ERROR_REASON_KEY) or "")
+            if turn_result.action == CAPABILITY_ACTION_ERROR or error_reason:
                 raise ValueError(turn_result.text or error_reason or "workflow step failed")
             output = {
                 "step_id": step.id,
@@ -310,7 +332,7 @@ class WorkflowRunCapability(BaseCapability):
                 "summary": turn_result.text,
                 "evidence": evidence,
             }
-            subagents.finish(run.id, status="completed", output_data=output)
+            subagents.finish(run.id, status=SUBAGENT_STATUS_COMPLETED, output_data=output)
             store.update_step(step.id, status=STEP_STATUS_COMPLETED, evidence=output)
             return CapabilityResult(
                 ok=True,
@@ -320,7 +342,12 @@ class WorkflowRunCapability(BaseCapability):
             )
         except Exception as exc:
             output = {"step_id": step.id, "evidence": evidence, "error": str(exc)}
-            subagents.finish(run.id, status="failed", output_data=output, error=str(exc))
+            subagents.finish(
+                run.id,
+                status=SUBAGENT_STATUS_FAILED,
+                output_data=output,
+                error=str(exc),
+            )
             store.update_step(step.id, status=STEP_STATUS_FAILED, evidence=output, error=str(exc))
             return _failure_result(
                 "workflow",
@@ -389,8 +416,12 @@ class WorkflowRunCapability(BaseCapability):
         from ..runtime import AgentRuntime
 
         runtime = AgentRuntime(home=self.home, provider=build_provider(load_config(self.home).model))
-        model_tools = set(allowed_tools)
-        model_tools.update({"final.answer", "ask.user"})
+        model_tools = _workflow_model_tools(
+            self.home,
+            workspace=workflow.workspace,
+            allowed_tools=allowed_tools,
+            permission_ceiling=workflow.permission_ceiling,
+        )
         engine = HernessEngine(
             home=self.home,
             runtime=runtime,
@@ -433,8 +464,8 @@ class WorkflowRunCapability(BaseCapability):
                 {
                     "tool": event.tool,
                     "ok": event.ok,
-                    "input": _json_object(event.input_json),
-                    "output": _json_object(event.output_json),
+                    "input": _json_dict(event.input_json),
+                    "output": _json_dict(event.output_json),
                     "message": event.message,
                     "model_role": event.model_role,
                 }
@@ -453,24 +484,24 @@ class WorkflowRunCapability(BaseCapability):
             return
         decision = LoopDecisionKind.FINALIZE
         reason = LoopReason.WORKFLOW_STEP_COMPLETED
+        failure_domain = TraceFailureDomain.NONE
         check_passed = True
         severity = LoopSeverity.INFO
-        next_action = LoopNextAction.COMPLETE_STEP
-        if turn_result.action in {"ask", "ask.user"}:
+        if turn_result.action in CONVERSATION_ASK_ACTIONS:
             decision = LoopDecisionKind.BLOCKED
             reason = LoopReason.WORKFLOW_STEP_REQUESTED_USER_INPUT
+            failure_domain = TraceFailureDomain.CHECKER_BLOCKED
             check_passed = False
             severity = LoopSeverity.ERROR
-            next_action = LoopNextAction.BLOCK_WORKFLOW_STEP
         error_reason = ""
         if isinstance(turn_result.facts, dict):
-            error_reason = str(turn_result.facts.get("error_reason") or "")
-        if turn_result.action == "capability_error" or error_reason:
+            error_reason = str(turn_result.facts.get(CAPABILITY_ERROR_REASON_KEY) or "")
+        if turn_result.action == CAPABILITY_ACTION_ERROR or error_reason:
             decision = LoopDecisionKind.FAILED
             reason = LoopReason.WORKFLOW_STEP_CAPABILITY_FAILURE
+            failure_domain = TraceFailureDomain.CAPABILITY_FAILURE
             check_passed = False
             severity = LoopSeverity.ERROR
-            next_action = LoopNextAction.FAIL_WORKFLOW_STEP
         trace = TraceStore(self.home)
         trace.add_loop_decision(
             trace_id=turn_result.trace_id,
@@ -478,6 +509,7 @@ class WorkflowRunCapability(BaseCapability):
                 decision=decision,
                 reason=reason,
                 phase=LoopPhase.WORKFLOW_STEP,
+                failure_domain=failure_domain,
                 tool=turn_result.action,
                 run_id=turn_result.run_id,
                 workflow_id=workflow.id,
@@ -490,7 +522,6 @@ class WorkflowRunCapability(BaseCapability):
                         reason=turn_result.text or reason,
                     ),
                 ),
-                next_action=next_action,
             ),
             session_id=context.session_id or "",
             run_id=turn_result.run_id or workflow.id,
@@ -573,6 +604,9 @@ class WorkflowRunCapability(BaseCapability):
                 if decision.passed
                 else LoopReason.WORKFLOW_VERIFIER_BLOCKED,
                 phase=LoopPhase.WORKFLOW_VERIFY,
+                failure_domain=TraceFailureDomain.NONE
+                if decision.passed
+                else TraceFailureDomain.CHECKER_BLOCKED,
                 tool="workflow.run",
                 run_id=workflow.id,
                 workflow_id=workflow.id,
@@ -585,11 +619,6 @@ class WorkflowRunCapability(BaseCapability):
                         evidence=check.evidence,
                     )
                     for check in decision.check_results
-                ),
-                next_action=(
-                    LoopNextAction.MARK_WORKFLOW_VERIFIED
-                    if decision.passed
-                    else LoopNextAction.BLOCK_WORKFLOW
                 ),
                 evidence=decision.output,
             ),
@@ -651,9 +680,9 @@ def _step_prompt(
         "depends_on": _json_list(step.depends_on_json),
         "declared_tool_calls": tool_calls,
         "instruction": (
-            "Complete this workflow step by choosing from the current capability manifest. "
+            "Workflow step execution is constrained by the current capability manifest. "
             "The declared_tool_calls are planner facts from the proposal, not a script to replay. "
-            "Use final.answer when the step is complete, or ask.user only if user input is truly required."
+            "Terminal and user-input outcomes must be represented through declared capabilities."
         ),
     }
     return "Workflow step execution facts:\n" + json.dumps(
@@ -663,12 +692,25 @@ def _step_prompt(
     )
 
 
-def _json_object(value: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(value or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+def _workflow_model_tools(
+    home: Path,
+    *,
+    workspace: str,
+    allowed_tools: set[str],
+    permission_ceiling: str,
+) -> set[str]:
+    registry = build_capability_registry(
+        home,
+        project_dir=Path(workspace),
+        permission_ceiling=permission_ceiling,
+        execution_context=WORKFLOW_STEP_CONTEXT,
+    )
+    terminal_tools = {
+        spec.name
+        for spec in registry.planner_specs(permission_ceiling=permission_ceiling)
+        if spec.capability_class == "conversation" and not spec.mutates
+    }
+    return set(allowed_tools) | terminal_tools
 
 
 def _workflow_counts(store: WorkflowStore, workflow: Workflow) -> dict[str, int]:

@@ -8,6 +8,8 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
+from ..capability_contract import CAPABILITY_ACTION_APPROVAL
+from ..lifecycle import RUN_STATUS_AWAITING_APPROVAL
 from .helpers import (
     arg_text as _arg_text,
     fact_result as _fact_result,
@@ -58,7 +60,7 @@ class SessionRequestElevationCapability(BaseCapability):
             workspace=context.workspace,
             peer_id=context.peer_id,
             sender_id=context.sender_id,
-            status="awaiting_approval",
+            status=RUN_STATUS_AWAITING_APPROVAL,
         )
         task = runs.update_run(
             task.id,
@@ -71,7 +73,7 @@ class SessionRequestElevationCapability(BaseCapability):
 
         return CapabilityResult(
             ok=True,
-            action="approval",
+            action=CAPABILITY_ACTION_APPROVAL,
             observation="",
             run_id=task.id,
             facts={
@@ -79,7 +81,7 @@ class SessionRequestElevationCapability(BaseCapability):
                 "entity_id": task.id,
                 "state_transition": "elevation_requested",
                 "turn_scope": "current",
-                "status": "awaiting_approval",
+                "status": RUN_STATUS_AWAITING_APPROVAL,
                 "target_permission": target_permission,
                 "reason": reason,
                 "approval": {

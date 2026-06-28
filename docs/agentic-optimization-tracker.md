@@ -22,7 +22,8 @@ These themes have landed in the current codebase and should be treated as baseli
 - Capability-driven planning through declared action specs and core/gateway tool specs.
 - Durable task, watch, goal, approval, recovery, trace, subagent, evolution, and workflow stores.
 - Loop engineering baseline: structured `loop.decision` events, checker/gate
-  results, loop-level trace evaluation domains, and CLI/API trace visibility.
+  results, loop-level trace evaluation domains, LangSmith-style run/span views,
+  and CLI/API trace visibility.
 - Current-contract schema checks rather than silent compatibility migrations.
 - Prompt OS layering with planner/responder boundaries and untrusted observed facts.
 - Connector-agnostic core runtime with connector-local surface affordances.

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from navi.api import create_app
 from navi.db import connect
+from navi.loop import LoopCheckName, LoopDecisionKind, LoopReason, TraceFailureDomain
 from navi.trace import LoopCheckResult, LoopDecision, TraceStore
 
 
@@ -16,6 +17,7 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
     store.add_event(
         trace_id=trace_id,
         phase="planner.syscall",
+        session_id="session-redaction",
         input_data={
             "api_key": "secret",
             "nested": {"password": "pw"},
@@ -49,8 +51,13 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
     assert json.loads(decisions[0].output_json)["evidence"]["api_key"] == "[redacted]"
     assert runs[0].id == trace_id
     assert runs[0].run_type == "chain"
+    assert runs[0].thread_id == "session-redaction"
+    assert runs[0].metadata["event_count"] == 2
     assert runs[1].run_type == "llm"
+    assert runs[1].inputs["api_key"] == "[redacted]"
     assert runs[2].name == "loop.decision"
+    assert runs[2].parent_run_id == trace_id
+    assert runs[2].feedback == {}
 
 
 def test_trace_store_reinitializes_schema_drift(tmp_path):
@@ -79,8 +86,15 @@ def test_trace_store_reinitializes_schema_drift(tmp_path):
     assert event.trace_id == "trace-current"
     with connect(tmp_path / "traces.db") as conn:
         columns = [row[1] for row in conn.execute("PRAGMA table_info(trace_events)").fetchall()]
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        ]
     assert "session_id" in columns
     assert "task_id" not in columns
+    assert "trace_runs" not in tables
 
 
 def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
@@ -88,11 +102,11 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
     store.add_loop_decision(
         trace_id="trace-api",
         decision=LoopDecision(
-            decision="finalize",
-            reason="api_test",
+            decision=LoopDecisionKind.FINALIZE,
+            reason=LoopReason.TERMINAL_RESULT,
             checker_results=(
                 LoopCheckResult(
-                    name="terminal_result",
+                    name=LoopCheckName.TERMINAL_RESULT,
                     passed=True,
                     reason="terminal action chat",
                 ),
@@ -123,6 +137,7 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
     assert trace_response.status_code == 200
     trace_payload = trace_response.json()
     assert trace_payload["data"]["runs"][0]["id"] == "trace-api"
+    assert trace_payload["data"]["runs"][0]["feedback"] == {}
 
     runs_response = client.get(
         "/v1/traces/trace-api/runs",
@@ -131,6 +146,7 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
     assert runs_response.status_code == 200
     runs_payload = runs_response.json()
     assert runs_payload["data"]["runs"][0]["run_type"] == "chain"
+    assert "thread_id" in runs_payload["data"]["runs"][0]
 
 
 def test_trace_store_evaluates_failure_domains(tmp_path):
@@ -224,6 +240,7 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
         decision=LoopDecision(
             decision="failed",
             reason="planner_parse_error",
+            failure_domain=TraceFailureDomain.PLANNER_OR_PARSER,
             checker_results=(
                 LoopCheckResult(
                     name="planner_result",
@@ -241,6 +258,7 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
         decision=LoopDecision(
             decision="pause_for_approval",
             reason="approval_already_pending",
+            failure_domain=TraceFailureDomain.APPROVAL_LOOP,
             gate_results=(
                 LoopCheckResult(
                     name="approval_gate",
@@ -258,6 +276,7 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
         decision=LoopDecision(
             decision="converged",
             reason="repeated_progress_signature",
+            failure_domain=TraceFailureDomain.LOOP_NO_PROGRESS,
             gate_results=(
                 LoopCheckResult(
                     name="no_progress_gate",
@@ -303,6 +322,7 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     assert loop_converged_eval.outcome == "degraded"
     assert loop_converged_eval.failure_domain == "loop_no_progress"
     loop_evidence = json.loads(loop_approval_eval.evidence_json)
+    assert loop_evidence["loop_decisions"][0]["failure_domain"] == "approval_loop"
     assert loop_evidence["loop_decisions"][0]["failed_gates"] == ["approval_gate"]
     assert missing_eval.outcome == "unknown"
     assert missing_eval.failure_domain == "trace_missing"

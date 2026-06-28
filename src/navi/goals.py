@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from .db import connect, ensure_schema_version
+from .lifecycle import (
+    RUN_STATUS_AWAITING_APPROVAL,
+    RUN_STATUS_BLOCKED,
+    RUN_STATUS_COMPLETED,
+    RUN_STATUS_FAILED,
+    RUN_STATUS_REJECTED,
+)
 from .paths import db_paths
 from .runs import Run
 from .schema import Column, Table, assert_schema_exact
@@ -441,7 +448,7 @@ class GoalStore:
         evidence = evidence or {"run_id": run.id, "run_status": run.status}
         status = _goal_status_for_run(run, evidence=evidence)
         reason = run.error if status == GOAL_STATUS_BLOCKED else ""
-        if run.status == "completed" and status == GOAL_STATUS_BLOCKED and not reason:
+        if run.status == RUN_STATUS_COMPLETED and status == GOAL_STATUS_BLOCKED and not reason:
             reason = "critic gate evidence missing or failed"
         return self.update_status(
             goal.id,
@@ -492,13 +499,13 @@ class GoalStore:
 
 
 def _goal_status_for_run(run: Run, *, evidence: dict[str, Any] | None = None) -> str:
-    if run.status == "completed":
+    if run.status == RUN_STATUS_COMPLETED:
         return GOAL_STATUS_VERIFIED_COMPLETE
-    if run.status == "awaiting_approval":
+    if run.status == RUN_STATUS_AWAITING_APPROVAL:
         return GOAL_STATUS_AWAITING_APPROVAL
-    if run.status == "rejected":
+    if run.status == RUN_STATUS_REJECTED:
         return GOAL_STATUS_REJECTED
-    if run.status in {"failed", "blocked"}:
+    if run.status in {RUN_STATUS_FAILED, RUN_STATUS_BLOCKED}:
         return GOAL_STATUS_BLOCKED
     return GOAL_STATUS_ACTIVE
 

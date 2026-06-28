@@ -165,3 +165,20 @@ def test_runtime_specs_do_not_leak_policy_or_followup_wording() -> None:
     for source in runtime_sources:
         for phrase in forbidden:
             assert phrase not in source
+
+
+def test_workflow_step_prompt_does_not_name_terminal_tool_choices() -> None:
+    data = _read("src/navi/actions/workflow.py")
+    assert "Use final.answer" not in data
+    assert "ask.user only" not in data
+    assert '{"final.answer", "ask.user"}' not in data
+
+
+def test_model_json_protocols_do_not_extract_json_from_prose() -> None:
+    for relative in (
+        "src/navi/json_utils.py",
+        "src/navi/execution.py",
+        "src/navi/memory/store.py",
+        "src/navi/provider.py",
+    ):
+        assert "parse_first_json_object" not in _read(relative)

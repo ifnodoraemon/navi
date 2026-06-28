@@ -19,6 +19,15 @@ from .evolution import EvolutionEngine
 from .execution import ExecutionService
 from .governance_agent import GovernanceAgent
 from .graph import GraphNode, GraphStore
+from .lifecycle import (
+    RUN_STATUS_AWAITING_APPROVAL,
+    RUN_STATUS_COMPLETED,
+    RUN_STATUS_FAILED,
+    RUN_STATUS_PENDING,
+    RUN_STATUS_PREPARING,
+    RUN_STATUS_QUEUED,
+    RUN_STATUS_RUNNING,
+)
 from .runs import Run, RunStore
 from .safeguards import redact_secrets
 from .text_utils import truncate_middle
@@ -82,13 +91,17 @@ class SystemDaemon:
     def _setup_execution_subscription(self) -> None:
         async def on_action_approved(event: ActionApprovedEvent) -> None:
             task = self.runs.get(event.run_id)
-            if task and task.status in ("awaiting_approval", "queued", "preparing"):
-                self.runs.update_run(event.run_id, status="queued")
+            if task and task.status in {
+                RUN_STATUS_AWAITING_APPROVAL,
+                RUN_STATUS_QUEUED,
+                RUN_STATUS_PREPARING,
+            }:
+                self.runs.update_run(event.run_id, status=RUN_STATUS_QUEUED)
 
         async def on_approval_resolved(event: ApprovalResolvedEvent) -> None:
             task = self.runs.get(event.run_id)
             if task and event.decision == "approved":
-                self.runs.update_run(event.run_id, status="queued")
+                self.runs.update_run(event.run_id, status=RUN_STATUS_QUEUED)
 
         async def on_turn_completed(event: AgentTurnCompletedEvent) -> None:
             if event.session_id:
@@ -144,8 +157,8 @@ class SystemDaemon:
 
         completed = await self.execution.process_pending_once()
         for task in completed:
-            await self.evolution.reflect_run(task, success=task.status == "completed")
-            if task.status in ("completed", "failed"):
+            await self.evolution.reflect_run(task, success=task.status == RUN_STATUS_COMPLETED)
+            if task.status in (RUN_STATUS_COMPLETED, RUN_STATUS_FAILED):
                 await self.event_bus.publish(
                     RunCompletedEvent(
                         run_id=task.id,
@@ -200,12 +213,14 @@ class SystemDaemon:
         self, *, keep_latest: int = MAX_FAILED_WATCH_RUN_RECORDS
     ) -> int:
         keep_latest = max(0, keep_latest)
-        total = self.runs.count_runs(status="failed", source="watch", kind="delegation")
+        total = self.runs.count_runs(
+            status=RUN_STATUS_FAILED, source="watch", kind="delegation"
+        )
         excess = max(0, total - keep_latest)
         if excess == 0:
             return 0
         stale = self.runs.list_by_status_filtered(
-            "failed", source="watch", kind="delegation", limit=excess
+            RUN_STATUS_FAILED, source="watch", kind="delegation", limit=excess
         )
         pruned = 0
         from navi.trace import TraceStore
@@ -355,7 +370,9 @@ class SystemDaemon:
     def _active_workspaces(self) -> set[str]:
         return {
             self._canonical_path(task.workspace)
-            for task in self.runs.list_by_statuses(["running", "queued", "pending"])
+            for task in self.runs.list_by_statuses(
+                [RUN_STATUS_RUNNING, RUN_STATUS_QUEUED, RUN_STATUS_PENDING]
+            )
             if task.workspace
         }
 

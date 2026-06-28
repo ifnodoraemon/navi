@@ -22,15 +22,18 @@ from .helpers import (
     failure_result as _failure_result,
 )
 from ..config import load_config
-from ..runs import RunStore
-from ..graph import GraphStore
-from ..goals import GoalStore
 from ..execution import ExecutionService
-
-
-ACTIVE_DELEGATION_STATUSES = frozenset(
-    {"pending", "preparing", "prepared", "awaiting_approval", "queued", "running"}
+from ..goals import GoalStore
+from ..graph import GraphStore
+from ..lifecycle import (
+    RUN_ACTIVE_STATUSES,
+    RUN_STATUS_AWAITING_APPROVAL,
+    RUN_STATUS_FAILED,
+    RUN_STATUS_PENDING,
+    RUN_STATUS_PREPARED,
+    RUN_STATUS_QUEUED,
 )
+from ..runs import RunStore
 
 
 # Statuses a remote surface (e.g. WeChat) is allowed to delete. A run stuck in
@@ -41,7 +44,13 @@ ACTIVE_DELEGATION_STATUSES = frozenset(
 # advance them, the user must be able to clean them up remotely, otherwise the
 # run is an undeletable, unapprovable, uncompletable dead end.
 REMOTE_DELETABLE_STATUSES = frozenset(
-    {"failed", "awaiting_approval", "expired", "pending", "prepared"}
+    {
+        RUN_STATUS_FAILED,
+        RUN_STATUS_AWAITING_APPROVAL,
+        "expired",
+        RUN_STATUS_PENDING,
+        RUN_STATUS_PREPARED,
+    }
 )
 REMOTE_DELETABLE_KINDS = frozenset({"watch", "delegation"})
 
@@ -198,7 +207,7 @@ class DelegateSpawnCapability(BaseCapability):
         for run in runs.list(limit=100):
             if run.kind != "delegation":
                 continue
-            if run.status not in ACTIVE_DELEGATION_STATUSES:
+            if run.status not in RUN_ACTIVE_STATUSES:
                 continue
             if run.prompt != prompt or run.workspace != workspace:
                 continue
@@ -255,7 +264,7 @@ class DelegateRunCapability(BaseCapability):
         execution = ExecutionService(self.home)
         if not execution.execution_allowed(task):
             raise PermissionDenied("execution grant missing")
-        queued = runs.update_run(task.id, status="queued") or task
+        queued = runs.update_run(task.id, status=RUN_STATUS_QUEUED) or task
         GoalStore(self.home).update_for_run(
             queued, evidence={"run_id": queued.id, "run_status": queued.status}
         )

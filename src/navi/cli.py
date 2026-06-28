@@ -39,7 +39,8 @@ from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
 from .graph import GraphStore
 from .hooks import HookRegistry
-from .loop import LoopPhase, failed_loop_result_names
+from .json_utils import json_object
+from .loop import LoopPhase, loop_decision_summary
 from .memory import MemoryStore
 from .paths import ensure_home
 from .prompt_os import assemble_planner_system_prompt
@@ -722,21 +723,24 @@ def trace_show(trace_id: str) -> None:
             f"{event.phase} {marker} tool={event.tool or '-'} role={event.model_role or '-'}"
         )
         if event.phase == LoopPhase.DECISION:
-            output = _json_object(event.output_json)
+            output = json_object(event.output_json)
+            summary = loop_decision_summary(
+                output,
+                event_tool=event.tool,
+                event_run_id=event.run_id,
+            )
             typer.echo(
                 "  "
                 + " ".join(
                     part
                     for part in (
-                        f"decision={output.get('decision') or '-'}",
-                        f"reason={output.get('reason') or '-'}",
-                        f"next={output.get('next_action') or '-'}",
+                        f"decision={summary.decision or '-'}",
+                        f"reason={summary.reason or '-'}",
                     )
                     if part
                 )
             )
-            failed = failed_loop_result_names(output.get("checker_results"))
-            failed.extend(failed_loop_result_names(output.get("gate_results")))
+            failed = [*summary.failed_checkers, *summary.failed_gates]
             if failed:
                 typer.echo(f"  failed={', '.join(failed)}")
         if event.message:
@@ -747,20 +751,23 @@ def trace_show(trace_id: str) -> None:
 def trace_decisions(trace_id: str) -> None:
     """Show loop decisions for one full-flow trace."""
     for event in TraceStore(ensure_home()).list_loop_decisions(trace_id):
-        output = _json_object(event.output_json)
+        output = json_object(event.output_json)
+        summary = loop_decision_summary(
+            output,
+            event_tool=event.tool,
+            event_run_id=event.run_id,
+        )
         typer.echo(
             " ".join(
                 (
-                    output.get("decision") or "-",
-                    output.get("phase") or "-",
-                    f"tool={event.tool or output.get('tool') or '-'}",
-                    f"reason={output.get('reason') or '-'}",
-                    f"next={output.get('next_action') or '-'}",
+                    summary.decision or "-",
+                    summary.phase or "-",
+                    f"tool={summary.tool or '-'}",
+                    f"reason={summary.reason or '-'}",
                 )
             )
         )
-        failed = failed_loop_result_names(output.get("checker_results"))
-        failed.extend(failed_loop_result_names(output.get("gate_results")))
+        failed = [*summary.failed_checkers, *summary.failed_gates]
         if failed:
             typer.echo(f"  failed={', '.join(failed)}")
 
@@ -787,14 +794,6 @@ def trace_evaluations(trace_id: str = typer.Argument(""), limit: int = 50) -> No
         typer.echo(
             f"{evaluation.trace_id} {evaluation.outcome} {evaluation.failure_domain}: {evaluation.diagnostic}"
         )
-
-
-def _json_object(value: str) -> dict:
-    try:
-        parsed = json.loads(value or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
 
 
 @goal_app.command("list")

@@ -11,7 +11,6 @@ from pathlib import Path
 
 from ..paths import db_paths
 from ..hooks import HookDecision, HookEvent, HookRegistry
-from ..json_utils import parse_first_json_object
 from ..loop import TracePhase
 from ..specs_data import PROMPT_LAYERS_SPEC
 from ..text_utils import truncate_middle
@@ -315,7 +314,10 @@ class MemoryStore:
             raise ValueError(blocked.reason or f"hook blocked memory write: {blocked.hook}")
 
     def _parse_json_learnings(self, response_raw: str) -> list[dict]:
-        data = parse_first_json_object(response_raw)
+        try:
+            data = json.loads(response_raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
         if not isinstance(data, dict):
             return []
 

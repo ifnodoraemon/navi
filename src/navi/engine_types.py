@@ -5,13 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .conversation_contract import CONVERSATION_ACTION_CHAT
+
 
 @dataclass(frozen=True)
 class AgentTurnResult:
     text: str
     session_id: str = ""
     run_id: str = ""
-    action: str = "chat"
+    action: str = CONVERSATION_ACTION_CHAT
     observation: str = ""
     model_role: str = "responder"
     terminal: bool = False

@@ -9,6 +9,8 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
+from ..capability_contract import CAPABILITY_ACTION_APPROVAL
+from ..lifecycle import RUN_STATUS_AWAITING_APPROVAL
 from ..result import NotFound, guarded
 from .helpers import (
     arg_text as _arg_text,
@@ -46,7 +48,7 @@ class ApprovalRequestCapability(BaseCapability):
             peer_id=context.peer_id or task.peer_id,
             sender_id=context.sender_id or task.sender_id,
         )
-        awaiting = runs.update_run(task.id, status="awaiting_approval") or task
+        awaiting = runs.update_run(task.id, status=RUN_STATUS_AWAITING_APPROVAL) or task
         GoalStore(self.home).update_for_run(
             awaiting,
             evidence={
@@ -132,7 +134,7 @@ class ApprovalResolveCapability(BaseCapability):
         facts = res.facts or {}
         return CapabilityResult(
             ok=True,
-            action="approval",
+            action=CAPABILITY_ACTION_APPROVAL,
             observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             message=message,
             run_id=res.run_id,

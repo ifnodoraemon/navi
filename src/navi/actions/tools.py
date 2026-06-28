@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
+from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY
 from navi.capabilities_types import Capability, CapabilityContext, CapabilityResult
 from navi.safeguards import capability_safeguard_facts
 from navi.tools import ToolSpec
 
 
 def _tool_error_reason(error: str, facts: dict[str, Any]) -> str:
-    existing = facts.get("error_reason")
+    existing = facts.get(CAPABILITY_ERROR_REASON_KEY)
     if isinstance(existing, str) and existing.strip():
         return existing.strip()
     lowered = error.lower()
@@ -60,14 +61,14 @@ class ToolCapability:
         error_reason = ""
         if not result.ok:
             error_reason = _tool_error_reason(result.error, facts)
-            facts.setdefault("error_reason", error_reason)
+            facts.setdefault(CAPABILITY_ERROR_REASON_KEY, error_reason)
         payload = {
             "capability": self.spec.name,
             "ok": result.ok,
             "facts": facts,
         }
         if error_reason:
-            payload["error_reason"] = error_reason
+            payload[CAPABILITY_ERROR_REASON_KEY] = error_reason
         observation = json.dumps(
             payload,
             ensure_ascii=False,

@@ -20,6 +20,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, TypeVar
 
+from .capability_contract import CAPABILITY_ERROR_REASON_KEY
+
 logger = logging.getLogger("navi.result")
 
 T = TypeVar("T")
@@ -118,7 +120,7 @@ class Result(Generic[T]):
 
 
 def _error_observation(*, error_reason: str, error_type: str) -> tuple[str, dict[str, Any]]:
-    facts = {"error_reason": error_reason, "error_type": error_type}
+    facts = {CAPABILITY_ERROR_REASON_KEY: error_reason, "error_type": error_type}
     return json.dumps(facts, ensure_ascii=False, sort_keys=True), facts
 
 

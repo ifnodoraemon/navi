@@ -117,6 +117,9 @@ Runtime rules:
 - Missing real model credentials must fail clearly for real providers.
 - Model providers must use real provider adapters; local tests may stub provider calls at the test boundary without adding runtime simulation modes.
 - Structured output constraints must be passed through provider/tool schema channels; business prompts must not repeat JSON shapes, field lists, or formatting bans.
+- JSON is a first-class machine protocol. Provider structured outputs are parsed and validated against the declared JSON schema, and trace/loop evaluation reads structured fields such as `failure_domain`, `checker_results`, and `gate_results` instead of classifying natural-language reason text.
+- Declared capability input and output schemas are runtime contracts, not planner hints. Action capabilities are rejected before invocation on input schema mismatch and converted to structured `schema_mismatch` facts on output schema mismatch.
+- Planner syscall output must be a complete JSON object matching the declared `planner_decision` schema. Navi must not recover planner decisions from markdown fences, surrounding prose, or parser defaults for missing permission, role, confidence, or argument fields.
 - Any action that can affect the user's machine, accounts, remote services, repository, files, credentials, or money must be traceable.
 - Connector credentials should be persisted with restrictive file permissions when the OS allows it.
 - Long-context operation must reload durable constraints, governance state, approvals, relevant memory, and goal/workflow state from stores before execution.
@@ -266,6 +269,12 @@ POST   /v1/evolution-proposals/{proposal_id}/apply
 POST   /v1/evolution-proposals/{proposal_id}/evaluation
 GET    /v1/connectors/{connector_name}/status
 ```
+
+Trace runs are exposed as a LangSmith-style root trace run plus child
+planner/capability/checker/recovery/final spans derived from raw trace events.
+The run view provides analysis fields such as `run_type`, `status`,
+`thread_id`, `tags`, `metadata`, and `feedback` without introducing a second
+trace store.
 
 `POST /v1/memory` accepts a governed memory item shape: `type`, `content`, `scope`, `source`, `status`, `confidence`, and optional `metadata`. `GET /v1/memory` returns structured `items`; memory is not exposed as a flat text dump. `GET /v1/memory/conflicts` returns declared contradiction and supersession relationships so stale or competing facts are visible to operators and agents.
 

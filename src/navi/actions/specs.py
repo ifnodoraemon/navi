@@ -1,3 +1,4 @@
+from ..approval_contract import APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT
 from ..tools import ToolSpec
 
 ACTION_SPECS = [
@@ -316,7 +317,10 @@ ACTION_SPECS = [
         input_schema={
             "type": "object",
             "properties": {
-                "decision": {"type": "string", "enum": ["approve", "reject"]},
+                "decision": {
+                    "type": "string",
+                    "enum": [APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT],
+                },
                 "code": {"type": "string"},
                 "run_id": {"type": "string"},
                 "batch_id": {"type": "string"},
@@ -430,7 +434,10 @@ ACTION_SPECS = [
             "type": "object",
             "properties": {
                 "workflow_id": {"type": "string"},
-                "decision": {"type": "string", "enum": ["approve", "reject"]},
+                "decision": {
+                    "type": "string",
+                    "enum": [APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT],
+                },
             },
             "required": ["workflow_id", "decision"],
         },

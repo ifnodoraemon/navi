@@ -30,7 +30,8 @@ Each decision may include:
   workflow-step evidence, terminal result validity, or capability result status.
 - `gate_results`: runtime gates such as approval wait and no-progress
   convergence.
-- `next_action`: the runtime transition after the decision.
+- `failure_domain`: structured trace/eval domain such as `planner_or_parser`,
+  `capability_failure`, `checker_blocked`, `approval_loop`, or `none`.
 - `progress_signature`: the stable signature used for no-progress detection.
 - `workflow_id`, `step_id`, and `goal_ids` when the loop is part of durable
   workflow or goal execution.
@@ -70,11 +71,17 @@ Inspection surfaces:
 Navi traces should move toward a run/span model: a root trace run plus child
 runs for planner calls, capability calls, loop checks, recovery, workflow
 steps, and final responses. Each projected run exposes `name`, `run_type`,
-`status`, `inputs`, `outputs`, `tags`, and `metadata`.
+`status`, `thread_id`, `inputs`, `outputs`, `tags`, `metadata`, and
+`feedback`.
 
-The current implementation provides this as a projection over trace events. A
-future schema pass can persist parent-child run ids directly if the product
-needs richer span timing, nesting, feedback, dataset links, or export parity.
+The current implementation derives this view from `trace_events`, which remain
+the single trace source of truth. The root run uses the `trace_id`; child runs
+point to it through `parent_run_id`. `session_id` is exposed as `thread_id`,
+which gives trace consumers a LangSmith-style thread grouping without making
+the runtime infer the agent's next step.
+
+Remaining parity gaps are explicit product work: durable feedback capture,
+dataset links, and export/import interoperability.
 
 ## Prohibited Surfaces
 
@@ -83,11 +90,15 @@ Navi must not control loop behavior through:
 - Planner prompt rules for a specific approval state.
 - Hardcoded `final.answer` fallback text.
 - Visible step-budget or budget-exhausted semantics.
-- Compatibility aliases for obsolete trace failure-domain names.
+- Aliases for obsolete trace failure-domain names.
 
-Machine vocabulary for phases, decision kinds, checker names, next actions,
-and failure domains must live in `src/navi/loop.py`, not as scattered string
-checks in runtime code.
+Machine vocabulary for phases, decision kinds, checker names, and failure
+domains must live in `src/navi/loop.py`, not as scattered string checks in
+runtime code.
+
+Trace evaluation must read structured JSON fields such as `failure_domain`,
+`checker_results`, and `gate_results`. It must not infer domains from natural
+language `reason` text or token matching.
 
 If the model repeats a `delegate.spawn` while the approval is already pending,
 the runtime records `pause_for_approval` with an `approval_gate` result and the

@@ -24,6 +24,7 @@ from .defaults import DEFAULT_LOCAL_SURFACE
 from .evolution import EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
 from .graph import GraphStore
+from .json_utils import json_object
 from .paths import ensure_home
 from .runs import RunStore
 from .subagents import SubagentRunStore
@@ -590,7 +591,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             "loop_decisions": [
                 {
                     **event.__dict__,
-                    "decision": _json_object(event.output_json),
+                    "decision": json_object(event.output_json),
                 }
                 for event in store.list_loop_decisions(trace_id)
             ],
@@ -603,7 +604,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             "loop_decisions": [
                 {
                     **event.__dict__,
-                    "decision": _json_object(event.output_json),
+                    "decision": json_object(event.output_json),
                 }
                 for event in store.list_loop_decisions(trace_id)
             ]
@@ -846,14 +847,6 @@ def _capability_result_dict(result: CapabilityResult) -> dict[str, Any]:
         "terminal": result.terminal,
         "facts": result.facts or {},
     }
-
-
-def _json_object(value: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(value or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
 
 
 def _local_surface_message(result: CapabilityResult, *, source: str) -> str:

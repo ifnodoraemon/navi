@@ -8,20 +8,24 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .db import connect, ensure_schema_version
+from .json_utils import json_object
 from .loop import (
     LoopCheckResult,
     LoopDecision,
     LoopDecisionKind,
+    LoopDecisionSummary,
     LoopPhase,
     TraceFailureDomain,
     TraceOutcome,
     TracePhase,
+    TraceRunStatus,
+    TraceRunType,
     TraceRunView,
     classify_loop_blocked,
     classify_loop_failure,
-    failed_loop_result_names,
     is_approval_loop_decision,
     loop_decision_ok,
+    loop_decision_summary,
 )
 from .paths import db_paths
 from .schema import Column, Table
@@ -326,40 +330,34 @@ def _redact(value: Any) -> Any:
 
 
 def _event_output(event: TraceEvent) -> dict[str, Any]:
-    try:
-        parsed = json.loads(event.output_json or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return json_object(event.output_json)
 
 
 def _event_input(event: TraceEvent) -> dict[str, Any]:
-    try:
-        parsed = json.loads(event.input_json or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return json_object(event.input_json)
 
 
 def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRunView]:
     if not events:
         return []
+    first_session_id = next((event.session_id for event in events if event.session_id), "")
     root = TraceRunView(
         id=trace_id,
         trace_id=trace_id,
         parent_run_id="",
         name="trace",
-        run_type="chain",
-        status="error" if any(not event.ok for event in events) else "success",
+        run_type=TraceRunType.CHAIN,
+        status=TraceRunStatus.ERROR if any(not event.ok for event in events) else TraceRunStatus.SUCCESS,
         start_time=min(event.created_at for event in events),
         end_time=max(event.created_at for event in events),
+        thread_id=first_session_id,
         inputs=_event_input(events[0]),
         outputs=_event_output(events[-1]),
         tags=("navi",),
         metadata={
             "event_count": len(events),
             "source": next((event.source for event in events if event.source), ""),
-            "session_id": next((event.session_id for event in events if event.session_id), ""),
+            "session_id": first_session_id,
         },
     )
     return [root, *(_event_run_view(event, parent_run_id=trace_id) for event in events)]
@@ -372,9 +370,10 @@ def _event_run_view(event: TraceEvent, *, parent_run_id: str) -> TraceRunView:
         parent_run_id=parent_run_id,
         name=event.tool or event.phase,
         run_type=_event_run_type(event),
-        status="success" if event.ok else "error",
+        status=TraceRunStatus.SUCCESS if event.ok else TraceRunStatus.ERROR,
         start_time=event.created_at,
         end_time=event.created_at,
+        thread_id=event.session_id,
         inputs=_event_input(event),
         outputs=_event_output(event),
         tags=tuple(tag for tag in ("navi", event.phase, event.tool, event.model_role) if tag),
@@ -390,17 +389,17 @@ def _event_run_view(event: TraceEvent, *, parent_run_id: str) -> TraceRunView:
     )
 
 
-def _event_run_type(event: TraceEvent) -> str:
-    if event.phase in {
-        TracePhase.PLANNER_CALL_START,
-        TracePhase.PLANNER_CALL_ERROR,
-        TracePhase.PLANNER_PARSE_ERROR,
-        TracePhase.PLANNER_SYSCALL,
-    }:
-        return "llm"
-    if event.phase == TracePhase.CAPABILITY_RESULT:
-        return "tool"
-    return "chain"
+_EVENT_RUN_TYPES_BY_PHASE: dict[str, TraceRunType] = {
+    str(TracePhase.PLANNER_CALL_START): TraceRunType.LLM,
+    str(TracePhase.PLANNER_CALL_ERROR): TraceRunType.LLM,
+    str(TracePhase.PLANNER_PARSE_ERROR): TraceRunType.LLM,
+    str(TracePhase.PLANNER_SYSCALL): TraceRunType.LLM,
+    str(TracePhase.CAPABILITY_RESULT): TraceRunType.TOOL,
+}
+
+
+def _event_run_type(event: TraceEvent) -> TraceRunType:
+    return _EVENT_RUN_TYPES_BY_PHASE.get(event.phase, TraceRunType.CHAIN)
 
 
 def _loop_decision_events(events: list[TraceEvent]) -> list[tuple[TraceEvent, dict[str, Any]]]:
@@ -455,17 +454,11 @@ def _record_first_failure_evidence(event: TraceEvent, evidence: dict[str, Any]) 
 
 
 def _loop_decision_summary(event: TraceEvent, output: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "decision": str(output.get("decision") or ""),
-        "reason": str(output.get("reason") or ""),
-        "phase": str(output.get("phase") or ""),
-        "tool": event.tool or str(output.get("tool") or ""),
-        "run_id": event.run_id or str(output.get("run_id") or ""),
-        "workflow_id": str(output.get("workflow_id") or ""),
-        "step_id": str(output.get("step_id") or ""),
-        "failed_checkers": failed_loop_result_names(output.get("checker_results")),
-        "failed_gates": failed_loop_result_names(output.get("gate_results")),
-    }
+    return loop_decision_summary(
+        output,
+        event_tool=event.tool,
+        event_run_id=event.run_id,
+    ).to_dict()
 
 
 def _loop_decision_rule(
@@ -475,47 +468,62 @@ def _loop_decision_rule(
     if not decisions:
         return None
 
-    for _event, output in reversed(decisions):
-        if str(output.get("decision") or "") == LoopDecisionKind.FAILED:
+    for event, output in reversed(decisions):
+        summary = loop_decision_summary(
+            output,
+            event_tool=event.tool,
+            event_run_id=event.run_id,
+        )
+        if summary.decision == LoopDecisionKind.FAILED:
             return TraceEvaluationDraft(
                 TraceOutcome.FAILURE,
                 classify_loop_failure(output),
-                _loop_diagnostic(output, "loop ended with an explicit failure decision"),
+                _loop_diagnostic(summary, "loop ended with an explicit failure decision"),
             )
 
-    for _event, output in reversed(decisions):
-        decision = str(output.get("decision") or "")
-        if decision == LoopDecisionKind.BLOCKED:
+    for event, output in reversed(decisions):
+        summary = loop_decision_summary(
+            output,
+            event_tool=event.tool,
+            event_run_id=event.run_id,
+        )
+        if summary.decision == LoopDecisionKind.BLOCKED:
             return TraceEvaluationDraft(
                 TraceOutcome.FAILURE,
                 classify_loop_blocked(output),
-                _loop_diagnostic(output, "loop was blocked by a checker or gate"),
+                _loop_diagnostic(summary, "loop was blocked by a checker or gate"),
             )
         if is_approval_loop_decision(output):
             return TraceEvaluationDraft(
                 TraceOutcome.DEGRADED,
                 TraceFailureDomain.APPROVAL_LOOP,
-                _loop_diagnostic(output, "loop repeated or re-entered an approval gate"),
+                _loop_diagnostic(summary, "loop repeated or re-entered an approval gate"),
             )
 
-    for _event, output in reversed(decisions):
-        if str(output.get("decision") or "") == LoopDecisionKind.CONVERGED:
+    for event, output in reversed(decisions):
+        summary = loop_decision_summary(
+            output,
+            event_tool=event.tool,
+            event_run_id=event.run_id,
+        )
+        if summary.decision == LoopDecisionKind.CONVERGED:
             return TraceEvaluationDraft(
                 TraceOutcome.DEGRADED,
                 TraceFailureDomain.LOOP_NO_PROGRESS,
-                _loop_diagnostic(output, "loop converged after repeated stable progress signature"),
+                _loop_diagnostic(
+                    summary,
+                    "loop converged after repeated stable progress signature",
+                ),
             )
 
     return None
 
 
-def _loop_diagnostic(output: dict[str, Any], fallback: str) -> str:
-    reason = str(output.get("reason") or "").strip()
-    decision = str(output.get("decision") or "").strip()
-    if decision and reason:
-        return f"{fallback}: {decision} ({reason})"
-    if reason:
-        return f"{fallback}: {reason}"
+def _loop_diagnostic(summary: LoopDecisionSummary, fallback: str) -> str:
+    if summary.decision and summary.reason:
+        return f"{fallback}: {summary.decision} ({summary.reason})"
+    if summary.reason:
+        return f"{fallback}: {summary.reason}"
     return fallback
 
 

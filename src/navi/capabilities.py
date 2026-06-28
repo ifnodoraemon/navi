@@ -15,7 +15,16 @@ from .capabilities_types import (
     CapabilityProvider,
     CapabilityResult,
 )
+from .capability_contract import (
+    CAPABILITY_ACTION_APPROVAL,
+    CAPABILITY_ACTION_ERROR,
+    CAPABILITY_ERROR_REASON_KEY,
+    CAPABILITY_REASON_KEY,
+    CAPABILITY_REASON_SENSITIVE_APPROVAL,
+)
 from .hooks import HookDecision, HookEvent, HookRegistry
+from .json_utils import json_schema_errors
+from .lifecycle import RUN_STATUS_AWAITING_APPROVAL
 from .operating_context import permission_allows
 from .runs import RunStore
 from .tools import TURN_CONTEXT, ToolSpec, build_tool_gateway
@@ -33,14 +42,14 @@ def _capability_error(
     facts: dict[str, Any] | None = None,
     terminal: bool = True,
 ) -> CapabilityResult:
-    fact_payload = {"error_reason": error_reason, **observation_facts, **(facts or {})}
+    fact_payload = {CAPABILITY_ERROR_REASON_KEY: error_reason, **observation_facts, **(facts or {})}
     observation_payload = {
-        "error_reason": error_reason,
+        CAPABILITY_ERROR_REASON_KEY: error_reason,
         **observation_facts,
     }
     return CapabilityResult(
         ok=False,
-        action="capability_error",
+        action=CAPABILITY_ACTION_ERROR,
         observation=json.dumps(observation_payload, ensure_ascii=False, sort_keys=True),
         message=message,
         terminal=terminal,
@@ -243,10 +252,20 @@ class CapabilityRegistry:
                     "capability_permission": handler.spec.permission,
                 },
             )
+        call_args = args or {}
+        input_schema_errors = json_schema_errors(call_args, handler.spec.input_schema)
+        if input_schema_errors:
+            return _capability_error(
+                error_reason="schema_mismatch",
+                message=f"capability {name} input schema mismatch",
+                observation_facts={
+                    "tool": name,
+                    "schema_errors": input_schema_errors,
+                },
+            )
         suspended = self._maybe_suspend_for_approval(handler.spec, permission, context)
         if suspended is not None:
             return suspended
-        call_args = args or {}
         before_decisions = self.hooks.run(
             HookEvent(
                 event="before_capability",
@@ -281,6 +300,19 @@ class CapabilityRegistry:
                 observation_facts={"tool": name, "error_type": type(exc).__name__},
                 terminal=False,
             )
+        if result.ok:
+            output_schema_errors = json_schema_errors(result.facts or {}, handler.spec.output_schema)
+            if output_schema_errors:
+                result = _capability_error(
+                    error_reason="schema_mismatch",
+                    message=f"capability {name} output schema mismatch",
+                    observation_facts={
+                        "tool": name,
+                        "schema_errors": output_schema_errors,
+                        "result_action": result.action,
+                    },
+                    terminal=False,
+                )
         self.hooks.run(
             HookEvent(
                 event="after_capability",
@@ -344,19 +376,19 @@ class CapabilityRegistry:
             run_id=run_id,
             action=spec.name,
         )
-        runs.update_run(run_id, status="awaiting_approval", result_summary=message)
+        runs.update_run(run_id, status=RUN_STATUS_AWAITING_APPROVAL, result_summary=message)
         facts = {
             "entity_type": "approval_request",
             "entity_id": approval.id,
             "state_transition": "created",
             "turn_scope": "current",
-            "reason": "sensitive_op_requires_approval",
+            CAPABILITY_REASON_KEY: CAPABILITY_REASON_SENSITIVE_APPROVAL,
             "run_id": run_id,
             "approval": {"code": approval.code, "action": action},
         }
         return CapabilityResult(
             ok=False,
-            action="approval",
+            action=CAPABILITY_ACTION_APPROVAL,
             observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             message=message,
             run_id=run_id,

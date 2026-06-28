@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import re
 import json
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from .json_utils import json_schema_errors
 from .provider import ChatMessage, ModelPool
 from .prompt_os import assemble_planner_system_prompt, assemble_planner_turn_input
 from .tools import ToolSpec
@@ -64,15 +64,8 @@ class ModelSyscallPlanner:
 
     @staticmethod
     def _parse_syscall(response: str) -> ModelSyscall:
-        raw = _extract_json_object(response)
-        if not raw:
-            return ModelSyscall(
-                tool="system.planner_error",
-                args={"raw_response": response.strip()},
-                reason="planner did not return JSON",
-            )
         try:
-            data = json.loads(raw)
+            data = json.loads(response)
         except json.JSONDecodeError:
             return ModelSyscall(
                 tool="system.planner_error",
@@ -83,64 +76,25 @@ class ModelSyscallPlanner:
             return ModelSyscall(
                 tool="system.planner_error", reason="planner JSON was not an object"
             )
-        tool = str(data.get("tool") or "").strip()
-        if not tool:
+        schema_errors = json_schema_errors(data, _syscall_output_schema()["schema"])
+        if schema_errors:
             return ModelSyscall(
-                tool="",
-                args={"raw_response": response.strip()},
-                reason="planner did not select a capability",
+                tool="system.planner_error",
+                args={"schema_errors": schema_errors},
+                reason="planner decision schema mismatch",
             )
-        args = _parse_args(data.get("args"))
+        tool = str(data["tool"]).strip()
+        args = dict(data["args"])
         message = str(args.get("message") or "")
         return ModelSyscall(
             tool=tool,
-            permission=_parse_permission(data.get("permission")),
+            permission=str(data["permission"]).strip(),
             args=args,
-            model_role=str(data.get("model_role") or "responder").strip() or "responder",
+            model_role=str(data["model_role"]).strip(),
             message=message,
             confidence=_confidence(data.get("confidence")),
             reason=str(data.get("reason") or ""),
         )
-
-
-def _extract_json_object(text: str) -> str:
-    stripped = text.strip()
-    if stripped.startswith("{") and stripped.endswith("}"):
-        return stripped
-    fenced_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
-    content = fenced_match.group(1) if fenced_match else text
-
-    start = content.find("{")
-    if start == -1:
-        return ""
-
-    count = 0
-    in_string = False
-    escape = False
-    for i in range(start, len(content)):
-        char = content[i]
-        if escape:
-            escape = False
-            continue
-        if char == "\\":
-            escape = True
-            continue
-        if char == '"':
-            in_string = not in_string
-            continue
-        if not in_string:
-            if char == "{":
-                count += 1
-            elif char == "}":
-                count -= 1
-                if count == 0:
-                    return content[start : i + 1]
-
-    start_outer = text.find("{")
-    end_outer = text.rfind("}")
-    if start_outer >= 0 and end_outer > start_outer:
-        return text[start_outer : end_outer + 1]
-    return ""
 
 
 def _syscall_output_schema() -> dict[str, Any]:
@@ -176,16 +130,3 @@ def _confidence(value: object) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, min(parsed, 1.0))
-
-
-def _parse_permission(value: object) -> str:
-    raw = str(value or "").strip().lower()
-    if raw in {"read", "prepare", "write"}:
-        return raw
-    return "read"
-
-
-def _parse_args(value: object) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    return {str(key): slot for key, slot in value.items() if slot is not None}

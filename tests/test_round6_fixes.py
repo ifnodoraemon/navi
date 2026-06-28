@@ -349,7 +349,7 @@ async def test_remote_policy_failure_observation_is_structured_facts(
 
 
 @pytest.mark.asyncio
-async def test_tool_gateway_failure_observation_uses_error_reason(
+async def test_capability_input_schema_failure_observation_uses_schema_reason(
     tmp_path: Path,
 ) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
@@ -362,10 +362,11 @@ async def test_tool_gateway_failure_observation_uses_error_reason(
     result = await registry.invoke("shell.run", {}, permission="write", context=context)
 
     assert result.ok is False
-    assert result.error_reason == "invalid_arguments"
+    assert result.error_reason == "schema_mismatch"
     observation = json.loads(result.observation)
-    assert observation["error_reason"] == "invalid_arguments"
-    assert observation["facts"]["error_reason"] == "invalid_arguments"
+    assert observation["error_reason"] == "schema_mismatch"
+    assert observation["tool"] == "shell.run"
+    assert observation["schema_errors"] == ["$.command is required"]
     assert "error" not in observation
     assert "Invalid arguments" not in result.observation
 
@@ -413,12 +414,12 @@ async def test_guarded_action_failure_observation_is_structured_facts(
 
     assert result.ok is False
     assert result.error_reason == "schema_mismatch"
-    assert json.loads(result.observation) == {
-        "error_reason": "schema_mismatch",
-        "error_type": "SchemaMismatch",
-    }
+    observation = json.loads(result.observation)
+    assert observation["error_reason"] == "schema_mismatch"
+    assert observation["tool"] == "watch.create"
+    assert observation["schema_errors"] == ["$.prompt is required"]
     assert "requires prompt" not in result.observation.lower()
-    assert "requires prompt" in result.message.lower()
+    assert "input schema mismatch" in result.message.lower()
 
 
 @pytest.mark.asyncio

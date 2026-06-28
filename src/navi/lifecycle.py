@@ -17,7 +17,7 @@ class RunStatus(StrEnum):
     REJECTED = "rejected"
 
 
-# Backwards-compatible string aliases.
+# Centralized run status constants.
 RUN_STATUS_PENDING = RunStatus.PENDING
 RUN_STATUS_PREPARING = RunStatus.PREPARING
 RUN_STATUS_PREPARED = RunStatus.PREPARED
@@ -35,6 +35,21 @@ RUN_TERMINAL_STATUSES = frozenset(
         RUN_STATUS_FAILED,
         RUN_STATUS_BLOCKED,
         RUN_STATUS_REJECTED,
+    }
+)
+RUN_PENDING_STATUSES = frozenset(
+    {
+        RUN_STATUS_PENDING,
+        RUN_STATUS_PREPARING,
+        RUN_STATUS_PREPARED,
+        RUN_STATUS_AWAITING_APPROVAL,
+    }
+)
+RUN_ACTIVE_STATUSES = frozenset(
+    {
+        *RUN_PENDING_STATUSES,
+        RUN_STATUS_QUEUED,
+        RUN_STATUS_RUNNING,
     }
 )
 

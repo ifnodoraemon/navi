@@ -9,6 +9,7 @@ from .event_bus import (
     EventBus,
 )
 from .governance import GovernanceEngine
+from .lifecycle import RUN_STATUS_AWAITING_APPROVAL
 from .runs import RunStore
 
 
@@ -42,7 +43,7 @@ class GovernanceAgent:
                 peer_id=event.peer_id,
                 sender_id=event.sender_id,
             )
-            self.runs.update_run(event.run_id, status="awaiting_approval")
+            self.runs.update_run(event.run_id, status=RUN_STATUS_AWAITING_APPROVAL)
             await self.event_bus.publish(
                 ActionSuspendedEvent(
                     source_agent="governance_agent",

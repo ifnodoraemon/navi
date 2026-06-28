@@ -17,6 +17,7 @@ from .connector_registry import get_connector_adapter
 from .engine import HernessEngine
 from .execution import ExecutionService
 from .goals import GoalStore
+from .lifecycle import RUN_STATUS_FAILED
 from .provider import ModelPool
 from .runtime import AgentRuntime
 from .runs import RunStore
@@ -443,7 +444,7 @@ async def _run_daily_journey(
                     run = runs.create(
                         title,
                         prompt=str(seed.get("prompt") or title),
-                        status="failed",
+                        status=RUN_STATUS_FAILED,
                         source=str(seed.get("source") or "watch"),
                         kind=str(seed.get("kind") or "delegation"),
                         peer_id="daily-eval",
@@ -531,7 +532,7 @@ def _match_daily_expectation(
         if count != int(expect["run_count"]):
             errors.append(f"{prefix}: run_count expected {expect['run_count']!r}, got {count!r}")
     if "failed_run_count" in expect:
-        count = runs.count_runs(status="failed")
+        count = runs.count_runs(status=RUN_STATUS_FAILED)
         if count != int(expect["failed_run_count"]):
             errors.append(
                 f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}"

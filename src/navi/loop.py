@@ -60,18 +60,6 @@ class LoopCheckName(StrEnum):
     WORKFLOW_STEPS_COMPLETED = "workflow_steps_completed"
 
 
-class LoopNextAction(StrEnum):
-    BLOCK_WORKFLOW = "block_workflow"
-    BLOCK_WORKFLOW_STEP = "block_workflow_step"
-    COMPLETE_STEP = "complete_step"
-    CONTINUE = "continue"
-    FAIL_WORKFLOW_STEP = "fail_workflow_step"
-    FINALIZE_STABLE_OBSERVATIONS = "finalize_stable_observations"
-    MARK_WORKFLOW_VERIFIED = "mark_workflow_verified"
-    PLAN_NEXT_STEP = "plan_next_step"
-    WAIT_FOR_APPROVAL = "wait_for_approval"
-
-
 class TracePhase(StrEnum):
     AGENT_ROLE_RESULT = "agent.role_result"
     CAPABILITY_RESULT = "capability.result"
@@ -89,6 +77,17 @@ class TraceOutcome(StrEnum):
     DEGRADED = "degraded"
     FAILURE = "failure"
     UNKNOWN = "unknown"
+
+
+class TraceRunType(StrEnum):
+    CHAIN = "chain"
+    LLM = "llm"
+    TOOL = "tool"
+
+
+class TraceRunStatus(StrEnum):
+    SUCCESS = "success"
+    ERROR = "error"
 
 
 class TraceFailureDomain(StrEnum):
@@ -113,17 +112,17 @@ class LoopSeverity(StrEnum):
 
 @dataclass(frozen=True)
 class LoopCheckResult:
-    name: str
+    name: LoopCheckName | str
     passed: bool
-    severity: str = LoopSeverity.INFO
+    severity: LoopSeverity | str = LoopSeverity.INFO
     reason: str = ""
     evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "name": self.name,
+            "name": str(self.name),
             "passed": self.passed,
-            "severity": self.severity,
+            "severity": str(self.severity),
             "reason": self.reason,
             "evidence": self.evidence,
         }
@@ -131,9 +130,10 @@ class LoopCheckResult:
 
 @dataclass(frozen=True)
 class LoopDecision:
-    decision: str
-    reason: str
-    phase: str = ""
+    decision: LoopDecisionKind | str
+    reason: LoopReason | str
+    phase: LoopPhase | str = ""
+    failure_domain: TraceFailureDomain | str = ""
     tool: str = ""
     run_id: str = ""
     workflow_id: str = ""
@@ -142,14 +142,14 @@ class LoopDecision:
     progress_signature: str = ""
     checker_results: tuple[LoopCheckResult, ...] = ()
     gate_results: tuple[LoopCheckResult, ...] = ()
-    next_action: str = ""
     evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "decision": self.decision,
-            "reason": self.reason,
-            "phase": self.phase,
+            "decision": str(self.decision),
+            "reason": str(self.reason),
+            "phase": str(self.phase),
+            "failure_domain": str(self.failure_domain),
             "tool": self.tool,
             "run_id": self.run_id,
             "workflow_id": self.workflow_id,
@@ -158,7 +158,6 @@ class LoopDecision:
             "progress_signature": self.progress_signature,
             "checker_results": [item.to_dict() for item in self.checker_results],
             "gate_results": [item.to_dict() for item in self.gate_results],
-            "next_action": self.next_action,
             "evidence": self.evidence,
         }
 
@@ -169,14 +168,16 @@ class TraceRunView:
     trace_id: str
     parent_run_id: str
     name: str
-    run_type: str
-    status: str
+    run_type: TraceRunType | str
+    status: TraceRunStatus | str
     start_time: float
     end_time: float
+    thread_id: str = ""
     inputs: dict[str, Any] = field(default_factory=dict)
     outputs: dict[str, Any] = field(default_factory=dict)
     tags: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    feedback: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -184,15 +185,65 @@ class TraceRunView:
             "trace_id": self.trace_id,
             "parent_run_id": self.parent_run_id,
             "name": self.name,
-            "run_type": self.run_type,
-            "status": self.status,
+            "run_type": str(self.run_type),
+            "status": str(self.status),
             "start_time": self.start_time,
             "end_time": self.end_time,
+            "thread_id": self.thread_id,
             "inputs": self.inputs,
             "outputs": self.outputs,
             "tags": list(self.tags),
             "metadata": self.metadata,
+            "feedback": self.feedback,
         }
+
+
+@dataclass(frozen=True)
+class LoopDecisionSummary:
+    decision: str
+    reason: str
+    phase: str
+    failure_domain: str
+    tool: str
+    run_id: str
+    workflow_id: str
+    step_id: str
+    failed_checkers: tuple[str, ...] = ()
+    failed_gates: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "decision": self.decision,
+            "reason": self.reason,
+            "phase": self.phase,
+            "failure_domain": self.failure_domain,
+            "tool": self.tool,
+            "run_id": self.run_id,
+            "workflow_id": self.workflow_id,
+            "step_id": self.step_id,
+            "failed_checkers": list(self.failed_checkers),
+            "failed_gates": list(self.failed_gates),
+        }
+
+
+@dataclass(frozen=True)
+class LoopProgressObservation:
+    signature: str
+    repeated: bool
+
+
+@dataclass
+class LoopProgressGate:
+    seen_signatures: set[str] = field(default_factory=set)
+
+    def observe(self, signature: str) -> LoopProgressObservation:
+        normalized = signature.strip()
+        if not normalized:
+            return LoopProgressObservation(signature="", repeated=False)
+        repeated = normalized in self.seen_signatures
+        if not repeated:
+            self.seen_signatures.add(normalized)
+        return LoopProgressObservation(signature=normalized, repeated=repeated)
 
 
 NON_OK_LOOP_DECISIONS = frozenset(
@@ -204,19 +255,7 @@ APPROVAL_LOOP_DECISIONS = frozenset(
 )
 APPROVAL_LOOP_DECISION_VALUES = frozenset(item.value for item in APPROVAL_LOOP_DECISIONS)
 
-LOOP_FAILURE_DOMAIN_RULES: tuple[tuple[TraceFailureDomain, tuple[str, ...]], ...] = (
-    (TraceFailureDomain.PROVIDER_NO_RESPONSE, ("provider", "response")),
-    (TraceFailureDomain.PLANNER_OR_PARSER, ("planner", "parse", "parser")),
-    (TraceFailureDomain.SAFEGUARD_POLICY, ("safeguard", "policy")),
-    (TraceFailureDomain.CAPABILITY_FAILURE, ("capability", "tool")),
-    (TraceFailureDomain.CHECKER_BLOCKED, ("checker", "completion")),
-)
-LOOP_BLOCKED_DOMAIN_RULES: tuple[tuple[TraceFailureDomain, tuple[str, ...]], ...] = (
-    (TraceFailureDomain.APPROVAL_LOOP, ("approval",)),
-    (TraceFailureDomain.SAFEGUARD_POLICY, ("safeguard", "policy")),
-    (TraceFailureDomain.CAPABILITY_FAILURE, ("capability", "tool")),
-)
-APPROVAL_LOOP_TOKENS = frozenset({"already", "duplicate", "repeated", "pending"})
+TRACE_FAILURE_DOMAIN_VALUES = frozenset(item.value for item in TraceFailureDomain)
 
 
 def loop_decision_ok(decision: LoopDecision) -> bool:
@@ -236,47 +275,59 @@ def failed_loop_result_names(value: Any) -> list[str]:
     return names
 
 
-def loop_reason_text(output: dict[str, Any]) -> str:
-    parts = [
-        str(output.get("decision") or ""),
-        str(output.get("reason") or ""),
-        str(output.get("next_action") or ""),
-        " ".join(failed_loop_result_names(output.get("checker_results"))),
-        " ".join(failed_loop_result_names(output.get("gate_results"))),
-    ]
-    return " ".join(parts).lower()
+def loop_decision_summary(
+    output: dict[str, Any],
+    *,
+    event_tool: str = "",
+    event_run_id: str = "",
+) -> LoopDecisionSummary:
+    return LoopDecisionSummary(
+        decision=str(output.get("decision") or ""),
+        reason=str(output.get("reason") or ""),
+        phase=str(output.get("phase") or ""),
+        failure_domain=trace_failure_domain(output.get("failure_domain")),
+        tool=event_tool or str(output.get("tool") or ""),
+        run_id=event_run_id or str(output.get("run_id") or ""),
+        workflow_id=str(output.get("workflow_id") or ""),
+        step_id=str(output.get("step_id") or ""),
+        failed_checkers=tuple(failed_loop_result_names(output.get("checker_results"))),
+        failed_gates=tuple(failed_loop_result_names(output.get("gate_results"))),
+    )
 
 
 def classify_loop_failure(output: dict[str, Any]) -> TraceFailureDomain:
-    return _classify_by_tokens(
-        loop_reason_text(output),
-        LOOP_FAILURE_DOMAIN_RULES,
-        default=TraceFailureDomain.RUNTIME,
-    )
+    summary = loop_decision_summary(output)
+    if summary.failure_domain and summary.failure_domain != str(TraceFailureDomain.NONE):
+        return TraceFailureDomain(summary.failure_domain)
+    failed = {*summary.failed_checkers, *summary.failed_gates}
+    if str(LoopCheckName.PLANNER_RESULT) in failed:
+        return TraceFailureDomain.PLANNER_OR_PARSER
+    if str(LoopCheckName.CAPABILITY_RESULT) in failed or str(LoopCheckName.WORKFLOW_STEP_CHECKER) in failed:
+        return TraceFailureDomain.CAPABILITY_FAILURE
+    if str(LoopCheckName.COMPLETION_CHECKER) in failed:
+        return TraceFailureDomain.CHECKER_BLOCKED
+    return TraceFailureDomain.RUNTIME
 
 
 def classify_loop_blocked(output: dict[str, Any]) -> TraceFailureDomain:
-    return _classify_by_tokens(
-        loop_reason_text(output),
-        LOOP_BLOCKED_DOMAIN_RULES,
-        default=TraceFailureDomain.CHECKER_BLOCKED,
-    )
+    summary = loop_decision_summary(output)
+    if summary.failure_domain and summary.failure_domain != str(TraceFailureDomain.NONE):
+        return TraceFailureDomain(summary.failure_domain)
+    if str(LoopCheckName.APPROVAL_GATE) in summary.failed_gates:
+        return TraceFailureDomain.APPROVAL_LOOP
+    return TraceFailureDomain.CHECKER_BLOCKED
 
 
 def is_approval_loop_decision(output: dict[str, Any]) -> bool:
-    if str(output.get("decision") or "") not in APPROVAL_LOOP_DECISION_VALUES:
+    summary = loop_decision_summary(output)
+    if summary.decision not in APPROVAL_LOOP_DECISION_VALUES:
         return False
-    text = loop_reason_text(output)
-    return "approval" in text and any(token in text for token in APPROVAL_LOOP_TOKENS)
+    return (
+        summary.failure_domain == str(TraceFailureDomain.APPROVAL_LOOP)
+        or str(LoopCheckName.APPROVAL_GATE) in summary.failed_gates
+    )
 
 
-def _classify_by_tokens(
-    text: str,
-    rules: tuple[tuple[TraceFailureDomain, tuple[str, ...]], ...],
-    *,
-    default: TraceFailureDomain,
-) -> TraceFailureDomain:
-    for domain, tokens in rules:
-        if any(token in text for token in tokens):
-            return domain
-    return default
+def trace_failure_domain(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text in TRACE_FAILURE_DOMAIN_VALUES else ""

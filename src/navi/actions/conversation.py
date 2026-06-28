@@ -8,6 +8,7 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
+from ..conversation_contract import CONVERSATION_ACTION_ASK, CONVERSATION_ACTION_CHAT
 from ..result import SchemaMismatch
 from .helpers import arg_text as _arg_text
 
@@ -25,7 +26,11 @@ class FinalAnswerCapability(BaseCapability):
         if not message:
             raise SchemaMismatch("Missing or empty 'message' argument. You must provide the actual text to send to the user.")
         return CapabilityResult(
-            ok=True, action="chat", observation=message, message=message, terminal=True
+            ok=True,
+            action=CONVERSATION_ACTION_CHAT,
+            observation=message,
+            message=message,
+            terminal=True,
         )
 
 
@@ -53,5 +58,10 @@ class ClarifyCapability(BaseCapability):
             message += "\n" + "\n".join(f"[{i + 1}] {opt}" for i, opt in enumerate(options))
 
         return CapabilityResult(
-            ok=True, action="ask", observation=message, message=message, terminal=True, facts=facts
+            ok=True,
+            action=CONVERSATION_ACTION_ASK,
+            observation=message,
+            message=message,
+            terminal=True,
+            facts=facts,
         )

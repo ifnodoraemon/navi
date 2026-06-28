@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from navi.provider import ChatMessage, ModelPool
+from navi.lifecycle import RUN_STATUS_FAILED
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 
@@ -145,7 +146,7 @@ async def _run_journey(
             run = runs.create(
                 str(seed.get("title") or "failed connector eval task"),
                 prompt=str(seed.get("prompt") or seed.get("title") or "failed connector eval task"),
-                status="failed",
+                status=RUN_STATUS_FAILED,
                 source=str(seed.get("source") or "watch"),
                 kind=str(seed.get("kind") or "delegation"),
                 peer_id="connector-eval-peer",
@@ -257,7 +258,7 @@ def _match_expectation(
         if actual != str(expect["watch_cron"]):
             errors.append(f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}")
     if "failed_run_count" in expect:
-        count = runs.count_runs(status="failed")
+        count = runs.count_runs(status=RUN_STATUS_FAILED)
         if count != int(expect["failed_run_count"]):
             errors.append(
                 f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}"
