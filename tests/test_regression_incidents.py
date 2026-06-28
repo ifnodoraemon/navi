@@ -351,6 +351,32 @@ class _RepeatListProvider:
         return ["planner", "responder"]
 
 
+class _InvalidCapabilityArgsProvider:
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        del messages
+        if role == "planner" and output_schema is not None:
+            return json.dumps(
+                {
+                    "tool": "final.answer",
+                    "permission": "read",
+                    "args": {},
+                    "model_role": "responder",
+                    "confidence": 1.0,
+                    "reason": "attempt final answer",
+                }
+            )
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+
 @pytest.mark.asyncio
 async def test_delegate_spawn_returns_existing_active_run_for_same_fact_scope(tmp_path):
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
@@ -551,6 +577,35 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
         item["decision"] == "converged" and item["reason"] == "repeated_progress_signature"
         for item in loop_decisions
     )
+
+
+@pytest.mark.asyncio
+async def test_capability_input_schema_mismatch_is_planner_domain(tmp_path):
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=_InvalidCapabilityArgsProvider()),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "回答一下",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert result.action == "capability_error"
+    evaluations = TraceStore(tmp_path).list_evaluations(result.trace_id)
+    assert evaluations[0].failure_domain == "planner_or_parser"
+    loop_decisions = [
+        json.loads(event.output_json)
+        for event in TraceStore(tmp_path).list_events(result.trace_id)
+        if event.phase == "loop.decision"
+    ]
+    assert loop_decisions[-1]["failure_domain"] == "planner_or_parser"
+    assert loop_decisions[-1]["checker_results"][0]["name"] == "planner_result"
 
 
 @pytest.mark.asyncio
