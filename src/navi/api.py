@@ -15,6 +15,7 @@ from .engine import HernessEngine
 from .api_paths import api_path
 from .auth import AuthInspector
 from .app_factory import build_runtime
+from .approval_contract import APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT
 from .capabilities import CapabilityContext, CapabilityResult, build_capability_registry
 from .config import load_config, write_default_config
 from .connector_registry import load_connector_adapters
@@ -358,7 +359,10 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.patch(api_path("delegation"))
     async def update_delegation(run_id: str, request: DelegationStatusRequest) -> dict:
-        decision_by_status = {"queued": "approve", "rejected": "reject"}
+        decision_by_status = {
+            "queued": APPROVAL_DECISION_APPROVE,
+            "rejected": APPROVAL_DECISION_REJECT,
+        }
         decision = decision_by_status.get(request.status)
         if decision is None:
             raise HTTPException(
@@ -402,7 +406,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     async def approve_delegation(run_id: str) -> dict:
         result = await capabilities.invoke(
             "approval.resolve",
-            {"decision": "approve", "run_id": run_id},
+            {"decision": APPROVAL_DECISION_APPROVE, "run_id": run_id},
             permission="write",
             context=_local_capability_context(home, project_dir=project_dir),
         )
@@ -463,7 +467,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     async def approve_active_delegation(request: ActiveApprovalRequest) -> dict:
         result = await capabilities.invoke(
             "approval.resolve",
-            {"decision": "approve", "code": request.code},
+            {"decision": APPROVAL_DECISION_APPROVE, "code": request.code},
             permission="write",
             context=CapabilityContext(
                 home=home,
@@ -485,7 +489,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     async def reject_active_delegation(request: ActiveApprovalRequest) -> dict:
         result = await capabilities.invoke(
             "approval.resolve",
-            {"decision": "reject", "code": request.code},
+            {"decision": APPROVAL_DECISION_REJECT, "code": request.code},
             permission="write",
             context=CapabilityContext(
                 home=home,
@@ -699,11 +703,15 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.post(api_path("workflow_approve"))
     async def approve_workflow(workflow_id: str) -> dict:
-        return await _workflow_action("workflow.approve", workflow_id, {"decision": "approve"})
+        return await _workflow_action(
+            "workflow.approve", workflow_id, {"decision": APPROVAL_DECISION_APPROVE}
+        )
 
     @app.post(api_path("workflow_reject"))
     async def reject_workflow(workflow_id: str) -> dict:
-        return await _workflow_action("workflow.approve", workflow_id, {"decision": "reject"})
+        return await _workflow_action(
+            "workflow.approve", workflow_id, {"decision": APPROVAL_DECISION_REJECT}
+        )
 
     @app.post(api_path("workflow_run"))
     async def run_workflow(workflow_id: str, resume: bool = False) -> dict:

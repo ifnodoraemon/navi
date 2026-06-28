@@ -9,6 +9,7 @@ from pathlib import Path
 import typer
 import uvicorn
 
+from .approval_contract import APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT
 from .engine import HernessEngine
 from .api import create_app
 from .app_factory import build_runtime
@@ -907,13 +908,17 @@ def workflow_show(workflow_id: str) -> None:
 @workflow_app.command("approve")
 def workflow_approve(workflow_id: str) -> None:
     """Approve a proposed dynamic workflow."""
-    _workflow_action_cli("workflow.approve", workflow_id, {"decision": "approve"})
+    _workflow_action_cli(
+        "workflow.approve", workflow_id, {"decision": APPROVAL_DECISION_APPROVE}
+    )
 
 
 @workflow_app.command("reject")
 def workflow_reject(workflow_id: str) -> None:
     """Reject a proposed dynamic workflow."""
-    _workflow_action_cli("workflow.approve", workflow_id, {"decision": "reject"})
+    _workflow_action_cli(
+        "workflow.approve", workflow_id, {"decision": APPROVAL_DECISION_REJECT}
+    )
 
 
 @workflow_app.command("run")
