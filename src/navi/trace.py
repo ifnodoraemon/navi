@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from .db import connect, ensure_schema_version
 from .loop import (
+    LoopCheckResult,
     LoopDecision,
     LoopDecisionKind,
     LoopPhase,

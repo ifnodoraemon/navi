@@ -198,9 +198,11 @@ class TraceRunView:
 NON_OK_LOOP_DECISIONS = frozenset(
     {LoopDecisionKind.BLOCKED, LoopDecisionKind.FAILED}
 )
+NON_OK_LOOP_DECISION_VALUES = frozenset(item.value for item in NON_OK_LOOP_DECISIONS)
 APPROVAL_LOOP_DECISIONS = frozenset(
     {LoopDecisionKind.PAUSE_FOR_APPROVAL, LoopDecisionKind.CONTINUE}
 )
+APPROVAL_LOOP_DECISION_VALUES = frozenset(item.value for item in APPROVAL_LOOP_DECISIONS)
 
 LOOP_FAILURE_DOMAIN_RULES: tuple[tuple[TraceFailureDomain, tuple[str, ...]], ...] = (
     (TraceFailureDomain.PROVIDER_NO_RESPONSE, ("provider", "response")),
@@ -218,7 +220,7 @@ APPROVAL_LOOP_TOKENS = frozenset({"already", "duplicate", "repeated", "pending"}
 
 
 def loop_decision_ok(decision: LoopDecision) -> bool:
-    return str(decision.decision) not in {str(item) for item in NON_OK_LOOP_DECISIONS}
+    return str(decision.decision) not in NON_OK_LOOP_DECISION_VALUES
 
 
 def failed_loop_result_names(value: Any) -> list[str]:
@@ -262,7 +264,7 @@ def classify_loop_blocked(output: dict[str, Any]) -> TraceFailureDomain:
 
 
 def is_approval_loop_decision(output: dict[str, Any]) -> bool:
-    if str(output.get("decision") or "") not in {str(item) for item in APPROVAL_LOOP_DECISIONS}:
+    if str(output.get("decision") or "") not in APPROVAL_LOOP_DECISION_VALUES:
         return False
     text = loop_reason_text(output)
     return "approval" in text and any(token in text for token in APPROVAL_LOOP_TOKENS)
