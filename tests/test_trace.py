@@ -35,6 +35,7 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
 
     events = store.list_events(trace_id)
     decisions = store.list_loop_decisions(trace_id)
+    runs = store.list_run_views(trace_id)
 
     assert store.list_trace_ids() == [trace_id]
     assert events[0].phase == "planner.syscall"
@@ -46,6 +47,10 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
     assert json.loads(events[0].output_json)["approval_code"] == "[redacted]"
     assert len(decisions) == 1
     assert json.loads(decisions[0].output_json)["evidence"]["api_key"] == "[redacted]"
+    assert runs[0].id == trace_id
+    assert runs[0].run_type == "chain"
+    assert runs[1].run_type == "llm"
+    assert runs[2].name == "loop.decision"
 
 
 def test_trace_store_reinitializes_schema_drift(tmp_path):
@@ -110,6 +115,22 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
     assert len(decisions) == 1
     assert decisions[0]["decision"]["decision"] == "finalize"
     assert decisions[0]["decision"]["checker_results"][0]["name"] == "terminal_result"
+
+    trace_response = client.get(
+        "/v1/traces/trace-api",
+        headers={"X-API-Key": api_key},
+    )
+    assert trace_response.status_code == 200
+    trace_payload = trace_response.json()
+    assert trace_payload["data"]["runs"][0]["id"] == "trace-api"
+
+    runs_response = client.get(
+        "/v1/traces/trace-api/runs",
+        headers={"X-API-Key": api_key},
+    )
+    assert runs_response.status_code == 200
+    runs_payload = runs_response.json()
+    assert runs_payload["data"]["runs"][0]["run_type"] == "chain"
 
 
 def test_trace_store_evaluates_failure_domains(tmp_path):

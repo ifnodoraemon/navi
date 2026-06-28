@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .db import connect
+from .loop import TracePhase
 from .paths import db_paths
 from typing import Any
 
@@ -151,20 +152,20 @@ _SPEC_FILE_TARGETS: dict[str, tuple[str, str]] = {
 def _summarize_trace_events(events: list[Any]) -> str:
     lines: list[str] = []
     for event in events:
-        if event.phase == "turn.start":
+        if event.phase == TracePhase.TURN_START:
             message = _json_field(event.input_json, "message")
             if message:
                 lines.append(f"user: {message}")
-        elif event.phase == "planner.syscall":
+        elif event.phase == TracePhase.PLANNER_SYSCALL:
             details = _json_object(event.output_json)
             tool = str(details.get("tool") or event.tool or "").strip()
             reason = str(details.get("reason") or event.message or "").strip()
             if tool:
                 lines.append(f"planner selected {tool}: {reason}")
-        elif event.phase == "capability.result":
+        elif event.phase == TracePhase.CAPABILITY_RESULT:
             outcome = "ok" if event.ok else "failed"
             lines.append(f"capability {event.tool} {outcome}: {event.message}".strip())
-        elif event.phase == "turn.final":
+        elif event.phase == TracePhase.TURN_FINAL:
             lines.append(f"assistant: {event.message}")
     return "\n".join(line for line in lines if line)[:12000]
 

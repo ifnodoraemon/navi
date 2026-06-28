@@ -60,8 +60,21 @@ Inspection surfaces:
 
 - `navi trace show TRACE_ID` includes inline loop-decision summaries.
 - `navi trace decisions TRACE_ID` lists only loop decisions.
+- `navi trace runs TRACE_ID` lists a LangSmith-style run/span projection.
 - `GET /v1/traces/{trace_id}` returns both raw `events` and `loop_decisions`.
 - `GET /v1/traces/{trace_id}/decisions` returns only loop decisions.
+- `GET /v1/traces/{trace_id}/runs` returns only run/span projections.
+
+## LangSmith-Style Alignment
+
+Navi traces should move toward a run/span model: a root trace run plus child
+runs for planner calls, capability calls, loop checks, recovery, workflow
+steps, and final responses. Each projected run exposes `name`, `run_type`,
+`status`, `inputs`, `outputs`, `tags`, and `metadata`.
+
+The current implementation provides this as a projection over trace events. A
+future schema pass can persist parent-child run ids directly if the product
+needs richer span timing, nesting, feedback, dataset links, or export parity.
 
 ## Prohibited Surfaces
 
@@ -71,6 +84,10 @@ Navi must not control loop behavior through:
 - Hardcoded `final.answer` fallback text.
 - Visible step-budget or budget-exhausted semantics.
 - Compatibility aliases for obsolete trace failure-domain names.
+
+Machine vocabulary for phases, decision kinds, checker names, next actions,
+and failure domains must live in `src/navi/loop.py`, not as scattered string
+checks in runtime code.
 
 If the model repeats a `delegate.spawn` while the approval is already pending,
 the runtime records `pause_for_approval` with an `approval_gate` result and the

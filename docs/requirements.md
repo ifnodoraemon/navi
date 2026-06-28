@@ -171,6 +171,7 @@ navi graph list
 navi trace list
 navi trace show TRACE_ID
 navi trace decisions TRACE_ID
+navi trace runs TRACE_ID
 navi trace evaluate TRACE_ID
 navi trace evaluations [TRACE_ID]
 
@@ -243,6 +244,7 @@ GET    /v1/graph
 GET    /v1/traces
 GET    /v1/traces/{trace_id}
 GET    /v1/traces/{trace_id}/decisions
+GET    /v1/traces/{trace_id}/runs
 GET    /v1/trace-evaluations
 POST   /v1/traces/{trace_id}/evaluate
 GET    /v1/goals

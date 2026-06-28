@@ -764,6 +764,14 @@ def trace_decisions(trace_id: str) -> None:
             typer.echo(f"  failed={', '.join(failed)}")
 
 
+@trace_app.command("runs")
+def trace_runs(trace_id: str) -> None:
+    """Show LangSmith-style run/span projection for one trace."""
+    for run in TraceStore(ensure_home()).list_run_views(trace_id):
+        parent = f" parent={run.parent_run_id}" if run.parent_run_id else ""
+        typer.echo(f"{run.id} {run.run_type} {run.status} {run.name}{parent}")
+
+
 @trace_app.command("evaluate")
 def trace_evaluate(trace_id: str) -> None:
     """Evaluate a trace to identify the likely optimization target."""

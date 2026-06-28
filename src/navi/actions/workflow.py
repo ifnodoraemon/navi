@@ -23,7 +23,18 @@ from .helpers import (
     failure_result as _failure_result,
 )
 from ..tools import WORKFLOW_STEP_CONTEXT
-from ..trace import LoopCheckResult, LoopDecision, TraceStore
+from ..loop import (
+    LoopCheckName,
+    LoopCheckResult,
+    LoopDecision,
+    LoopDecisionKind,
+    LoopNextAction,
+    LoopPhase,
+    LoopReason,
+    LoopSeverity,
+    TracePhase,
+)
+from ..trace import TraceStore
 from ..workflows import (
     STEP_STATUS_COMPLETED,
     STEP_STATUS_FAILED,
@@ -241,7 +252,7 @@ class WorkflowRunCapability(BaseCapability):
         subagents = SubagentRunStore(self.home)
         run = subagents.start(
             role=step.role,
-            phase="workflow.step",
+            phase=LoopPhase.WORKFLOW_STEP,
             run_id=workflow.id,
             command=["navi", "workflow", "step", workflow.id, step.id],
             input_data={
@@ -416,7 +427,7 @@ class WorkflowRunCapability(BaseCapability):
 
         evidence: list[dict[str, Any]] = []
         for event in TraceStore(self.home).list_events(trace_id):
-            if event.phase != "capability.result":
+            if event.phase != TracePhase.CAPABILITY_RESULT:
                 continue
             evidence.append(
                 {
@@ -440,40 +451,40 @@ class WorkflowRunCapability(BaseCapability):
     ) -> None:
         if not turn_result.trace_id:
             return
-        decision = "finalize"
-        reason = "workflow_step_completed"
+        decision = LoopDecisionKind.FINALIZE
+        reason = LoopReason.WORKFLOW_STEP_COMPLETED
         check_passed = True
-        severity = "info"
-        next_action = "complete_step"
+        severity = LoopSeverity.INFO
+        next_action = LoopNextAction.COMPLETE_STEP
         if turn_result.action in {"ask", "ask.user"}:
-            decision = "blocked"
-            reason = "workflow_step_requested_user_input"
+            decision = LoopDecisionKind.BLOCKED
+            reason = LoopReason.WORKFLOW_STEP_REQUESTED_USER_INPUT
             check_passed = False
-            severity = "error"
-            next_action = "block_workflow_step"
+            severity = LoopSeverity.ERROR
+            next_action = LoopNextAction.BLOCK_WORKFLOW_STEP
         error_reason = ""
         if isinstance(turn_result.facts, dict):
             error_reason = str(turn_result.facts.get("error_reason") or "")
         if turn_result.action == "capability_error" or error_reason:
-            decision = "failed"
-            reason = "workflow_step_capability_failure"
+            decision = LoopDecisionKind.FAILED
+            reason = LoopReason.WORKFLOW_STEP_CAPABILITY_FAILURE
             check_passed = False
-            severity = "error"
-            next_action = "fail_workflow_step"
+            severity = LoopSeverity.ERROR
+            next_action = LoopNextAction.FAIL_WORKFLOW_STEP
         trace = TraceStore(self.home)
         trace.add_loop_decision(
             trace_id=turn_result.trace_id,
             decision=LoopDecision(
                 decision=decision,
                 reason=reason,
-                phase="workflow.step",
+                phase=LoopPhase.WORKFLOW_STEP,
                 tool=turn_result.action,
                 run_id=turn_result.run_id,
                 workflow_id=workflow.id,
                 step_id=step.id,
                 checker_results=(
                     LoopCheckResult(
-                        name="workflow_step_checker",
+                        name=LoopCheckName.WORKFLOW_STEP_CHECKER,
                         passed=check_passed,
                         severity=severity,
                         reason=turn_result.text or reason,
@@ -557,11 +568,11 @@ class WorkflowRunCapability(BaseCapability):
         TraceStore(self.home).add_loop_decision(
             trace_id=context.trace_id,
             decision=LoopDecision(
-                decision="finalize" if decision.passed else "blocked",
-                reason="workflow_verifier_passed"
+                decision=LoopDecisionKind.FINALIZE if decision.passed else LoopDecisionKind.BLOCKED,
+                reason=LoopReason.WORKFLOW_VERIFIER_PASSED
                 if decision.passed
-                else "workflow_verifier_blocked",
-                phase="workflow.verify",
+                else LoopReason.WORKFLOW_VERIFIER_BLOCKED,
+                phase=LoopPhase.WORKFLOW_VERIFY,
                 tool="workflow.run",
                 run_id=workflow.id,
                 workflow_id=workflow.id,
@@ -575,7 +586,11 @@ class WorkflowRunCapability(BaseCapability):
                     )
                     for check in decision.check_results
                 ),
-                next_action="mark_workflow_verified" if decision.passed else "block_workflow",
+                next_action=(
+                    LoopNextAction.MARK_WORKFLOW_VERIFIED
+                    if decision.passed
+                    else LoopNextAction.BLOCK_WORKFLOW
+                ),
                 evidence=decision.output,
             ),
             session_id=context.session_id or "",

@@ -586,6 +586,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         store = TraceStore(home)
         return {
             "events": [event.__dict__ for event in store.list_events(trace_id)],
+            "runs": [run.to_dict() for run in store.list_run_views(trace_id)],
             "loop_decisions": [
                 {
                     **event.__dict__,
@@ -607,6 +608,10 @@ def create_app(home: Path | None = None) -> FastAPI:
                 for event in store.list_loop_decisions(trace_id)
             ]
         }
+
+    @app.get(api_path("trace_runs"))
+    def trace_runs(trace_id: str) -> dict:
+        return {"runs": [run.to_dict() for run in TraceStore(home).list_run_views(trace_id)]}
 
     @app.get(api_path("trace_evaluations"))
     def trace_evaluations(trace_id: str = "", limit: int = 50) -> dict:

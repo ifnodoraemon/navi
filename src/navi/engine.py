@@ -673,7 +673,7 @@ class HernessEngine(EnginePhasesMixin):
 
         self.trace.add_event(
             trace_id=trace_id,
-            phase="planner.call.start",
+            phase=TracePhase.PLANNER_CALL_START,
             session_id=resolved_session_id or "",
             source=source,
             peer_id=peer_id,
@@ -700,7 +700,7 @@ class HernessEngine(EnginePhasesMixin):
         except Exception as exc:
             self.trace.add_event(
                 trace_id=trace_id,
-                phase="planner.call.error",
+                phase=TracePhase.PLANNER_CALL_ERROR,
                 session_id=resolved_session_id or "",
                 source=source,
                 peer_id=peer_id,
@@ -728,7 +728,7 @@ class HernessEngine(EnginePhasesMixin):
         is_parse_failure = syscall.tool == "system.planner_error"
         self.trace.add_event(
             trace_id=trace_id,
-            phase="planner.parse_error" if is_parse_failure else "planner.syscall",
+            phase=TracePhase.PLANNER_PARSE_ERROR if is_parse_failure else TracePhase.PLANNER_SYSCALL,
             session_id=resolved_session_id or "",
             source=source,
             peer_id=peer_id,
@@ -783,7 +783,7 @@ class HernessEngine(EnginePhasesMixin):
 
         self.trace.add_event(
             trace_id=trace_id,
-            phase="capability.result",
+            phase=TracePhase.CAPABILITY_RESULT,
             session_id=resolved_session_id or "",
             run_id=invoked.run_id,
             source=source,
@@ -834,7 +834,7 @@ class HernessEngine(EnginePhasesMixin):
             if block:
                 self.trace.add_event(
                     trace_id=trace_id,
-                    phase="loop.check",
+                    phase=LoopPhase.CHECK,
                     session_id=resolved_session_id or "",
                     run_id=result.run_id,
                     source=source,
@@ -852,7 +852,7 @@ class HernessEngine(EnginePhasesMixin):
                 )
                 self.trace.add_event(
                     trace_id=trace_id,
-                    phase="loop.recovery",
+                    phase=LoopPhase.RECOVERY,
                     session_id=resolved_session_id or "",
                     run_id=result.run_id,
                     source=source,

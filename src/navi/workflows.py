@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import connect, ensure_schema_version
+from .loop import LoopCheckName, LoopSeverity
 from .paths import db_paths
 from .schema import Column, Table, assert_schema_exact
 
@@ -203,9 +204,9 @@ def workflow_verification_decision(
     )
     check_results = (
         WorkflowCheckResult(
-            name="workflow_status_completed",
+            name=LoopCheckName.WORKFLOW_STATUS_COMPLETED,
             passed=status_completed,
-            severity="error" if not status_completed else "info",
+            severity=LoopSeverity.ERROR if not status_completed else LoopSeverity.INFO,
             reason=(
                 "workflow is in a completed status"
                 if status_completed
@@ -214,9 +215,9 @@ def workflow_verification_decision(
             evidence={"status": workflow.status},
         ),
         WorkflowCheckResult(
-            name="workflow_steps_completed",
+            name=LoopCheckName.WORKFLOW_STEPS_COMPLETED,
             passed=not failed_steps,
-            severity="error" if failed_steps else "info",
+            severity=LoopSeverity.ERROR if failed_steps else LoopSeverity.INFO,
             reason=(
                 "all workflow steps completed"
                 if not failed_steps
@@ -225,9 +226,9 @@ def workflow_verification_decision(
             evidence={"failed_steps": [step.id for step in failed_steps]},
         ),
         WorkflowCheckResult(
-            name="workflow_step_evidence_present",
+            name=LoopCheckName.WORKFLOW_STEP_EVIDENCE_PRESENT,
             passed=not empty_evidence,
-            severity="error" if empty_evidence else "info",
+            severity=LoopSeverity.ERROR if empty_evidence else LoopSeverity.INFO,
             reason=(
                 "all workflow steps have evidence"
                 if not empty_evidence
@@ -236,9 +237,9 @@ def workflow_verification_decision(
             evidence={"empty_evidence_steps": empty_evidence},
         ),
         WorkflowCheckResult(
-            name="workflow_capability_evidence_present",
+            name=LoopCheckName.WORKFLOW_CAPABILITY_EVIDENCE_PRESENT,
             passed=not missing_execution_evidence,
-            severity="error" if missing_execution_evidence else "info",
+            severity=LoopSeverity.ERROR if missing_execution_evidence else LoopSeverity.INFO,
             reason=(
                 "workflow has capability execution evidence or is planning-only"
                 if not missing_execution_evidence

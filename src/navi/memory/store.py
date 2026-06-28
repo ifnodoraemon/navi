@@ -12,6 +12,7 @@ from pathlib import Path
 from ..paths import db_paths
 from ..hooks import HookDecision, HookEvent, HookRegistry
 from ..json_utils import parse_first_json_object
+from ..loop import TracePhase
 from ..specs_data import PROMPT_LAYERS_SPEC
 from ..text_utils import truncate_middle
 from .models import (
@@ -615,13 +616,13 @@ class MemoryStore:
 
         logs_text_parts = []
         for e in events[-10:]:
-            if e.phase == "planner.syscall":
+            if e.phase == TracePhase.PLANNER_SYSCALL:
                 tool = e.tool
                 reason = e.message
                 logs_text_parts.append(
                     f"Model Thought -> Tool: {tool}, Reason: {reason}, Args: {e.output_json}"
                 )
-            elif e.phase == "capability.result":
+            elif e.phase == TracePhase.CAPABILITY_RESULT:
                 ok = e.ok
                 msg = e.message
                 logs_text_parts.append(
