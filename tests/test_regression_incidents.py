@@ -8,8 +8,10 @@ import yaml
 
 from navi.engine import HernessEngine
 from navi.evolution import EvolutionEngine, EvolutionLedger
+from navi._engine_phases import EnginePhasesMixin
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
+from navi.control import SurfaceContext
 from navi.engine_types import AgentTurnResult
 from navi.execution import ExecutionService
 from navi.provider import ChatMessage, _extract_anthropic_content, _extract_openai_content
@@ -29,7 +31,7 @@ def test_evolution_ledger_uses_latest_run_id_schema(tmp_path):
     assert "task_id" not in columns
 
 
-def test_provider_recovers_structured_json_from_reasoning_content():
+def test_provider_rejects_structured_json_hidden_in_reasoning_content():
     data = {
         "choices": [
             {
@@ -45,10 +47,8 @@ def test_provider_recovers_structured_json_from_reasoning_content():
         ]
     }
 
-    recovered = json.loads(_extract_openai_content(data))
-
-    assert recovered["tool"] == "final.answer"
-    assert recovered["args"]["message"] == "ok"
+    with pytest.raises(RuntimeError, match="Provider response content is empty"):
+        _extract_openai_content(data)
 
 
 class _PlannerSchemaProvider:
@@ -152,6 +152,56 @@ def test_planner_parser_rejects_missing_schema_fields():
     assert "$.confidence is required" in decision.args["schema_errors"]
 
 
+def test_completion_checker_ignores_unrelated_prepared_runs(tmp_path):
+    runs = RunStore(tmp_path)
+    runs.create(
+        "old prepared task",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="prepared",
+    )
+    current = runs.create(
+        "current task",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="awaiting_approval",
+    )
+
+    class Harness:
+        home = tmp_path
+        governed_workflow_id = ""
+
+    block = EnginePhasesMixin._completion_block_reason(
+        Harness(),
+        [
+            {
+                "tool": "shell.run",
+                "ok": False,
+                "facts": {
+                    "entity_type": "approval_request",
+                    "run_id": current.id,
+                    "state_transition": "created",
+                },
+            }
+        ],
+        state_context=SurfaceContext(
+            home=tmp_path,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+        ),
+        current_run_id=current.id,
+    )
+
+    assert block is None
+
+
 class _StructuredJourneyProvider:
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -196,7 +246,7 @@ class _DeleteExpiredProvider:
         *,
         output_schema: dict | None = None,
     ) -> str:
-        if role == "planner":
+        if role == "planner" and output_schema is not None:
             self.planner_calls += 1
             return json.dumps(
                 {
@@ -218,6 +268,47 @@ class _DeleteExpiredProvider:
             assert '"cleanup_complete": true' in content
             assert '"deleted_count": 1' in content
             return "已删除 1 个过期任务。"
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+
+class _ApproveCodeProvider:
+    def __init__(self, code: str) -> None:
+        self.code = code
+        self.planner_calls = 0
+        self.responder_calls = 0
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        if role == "planner" and output_schema is not None:
+            self.planner_calls += 1
+            return json.dumps(
+                {
+                    "tool": "approval.resolve",
+                    "permission": "write",
+                    "args": {
+                        "decision": "approve",
+                        "selection": "explicit_code",
+                        "code": self.code,
+                    },
+                    "model_role": "planner",
+                    "confidence": 1.0,
+                    "reason": "approve explicit code",
+                }
+            )
+        if role in {"planner", "responder"}:
+            self.responder_calls += 1
+            content = "\n".join(message.content for message in messages)
+            assert '"approval_status": "approved"' in content
+            assert '"completion_evidence": true' in content
+            return "批准成功，任务已进入队列。"
         raise AssertionError(f"unexpected role: {role}")
 
     def list_roles(self) -> list[str]:
@@ -360,6 +451,57 @@ async def test_expired_task_cleanup_finishes_from_completion_facts(tmp_path):
     assert result.text == "已删除 1 个过期任务。"
     assert result.terminal is True
     assert runs.get(expired.id) is None
+    assert provider.planner_calls == 1
+    assert provider.responder_calls == 1
+    events = TraceStore(tmp_path).list_events(result.trace_id)
+    phases = [event.phase for event in events]
+    assert "runtime.converged" not in phases
+    loop_decisions = [
+        json.loads(event.output_json)
+        for event in events
+        if event.phase == "loop.decision"
+    ]
+    assert any(
+        item["decision"] == "finalize" and item["reason"] == "completion_evidence_true"
+        for item in loop_decisions
+    )
+
+
+@pytest.mark.asyncio
+async def test_approval_resolve_finishes_from_completion_facts(tmp_path):
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "approve gated task",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="awaiting_approval",
+    )
+    approval = runs.create_approval(
+        run_id=run.id,
+        peer_id="peer-1",
+        sender_id="sender-1",
+    )
+    provider = _ApproveCodeProvider(approval.code)
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        f"批准 {approval.code}",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert result.text == "批准成功，任务已进入队列。"
+    assert runs.get(run.id).status == "queued"
     assert provider.planner_calls == 1
     assert provider.responder_calls == 1
     events = TraceStore(tmp_path).list_events(result.trace_id)

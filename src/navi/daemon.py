@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import codecs
 import hashlib
-import json
 import logging
 import shutil
 import socket
@@ -12,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .capabilities import CapabilityContext, CapabilityRegistry
+from .capabilities import CapabilityRegistry
 from .cron import next_cron_time
 from .event_bus import ActionApprovedEvent, ApprovalResolvedEvent, EventBus, AgentTurnCompletedEvent
 from .evolution import EvolutionEngine
@@ -329,23 +328,29 @@ class SystemDaemon:
 
         if data_changed:
             await asyncio.to_thread(self.graph.upsert, "Project", project.name, project_data)
-            # FP-5/L10: background daemon mutations to the project graph are
-            # otherwise untraceable. Record a lightweight trace event so the
-            # audit trail covers daemon-initiated state changes.
-            from navi.trace import TraceStore
-
-            trace = TraceStore(self.home)
-            trace.add_event(
-                trace_id=trace.new_trace_id(),
-                phase="daemon.mutation",
-                run_id="",
-                output_data={
-                    "action": "project_graph_upsert",
-                    "project": project.name,
-                    "fields": sorted(project_data.keys()),
-                },
-            )
+            self._record_project_graph_mutation(project.name, project_data)
         return created
+
+    def _record_project_graph_mutation(self, project_name: str, project_data: dict[str, Any]) -> str:
+        # FP-5/L10: background daemon mutations to the project graph are
+        # otherwise untraceable. Record a lightweight trace event so the
+        # audit trail covers daemon-initiated state changes.
+        from navi.trace import TraceStore
+
+        trace = TraceStore(self.home)
+        trace_id = trace.new_trace_id()
+        trace.add_event(
+            trace_id=trace_id,
+            phase="daemon.mutation",
+            run_id="",
+            output_data={
+                "action": "project_graph_upsert",
+                "project": project_name,
+                "fields": sorted(project_data.keys()),
+            },
+        )
+        trace.evaluate_trace(trace_id)
+        return trace_id
 
     def _project_event_detectors(self) -> tuple[EventDetector, ...]:
         return (
@@ -659,63 +664,19 @@ class SystemDaemon:
         if has_active_task:
             return None, changed, project_data
 
-        result = await self._submit_event_to_agent(
-            prompt=self._event_policy_prompt(event),
-            context=CapabilityContext(
-                home=self.home,
-                peer_id="daemon",
-                sender_id="daemon",
-                source=event.source,
-                workspace=workspace,
-            ),
-        )
         return (
-            self._event_result(event, result),
+            self._event_result(event, workspace=workspace),
             changed,
             project_data,
         )
 
-    async def _submit_event_to_agent(self, *, prompt: str, context: CapabilityContext):
-        from .app_factory import build_runtime
-        from .engine import HernessEngine
-
-        agent = HernessEngine(
-            home=self.home,
-            runtime=build_runtime(self.home),
-            project_dir=Path(context.workspace or self.project_dir),
-            event_bus=self.event_bus,
-        )
-        try:
-            return await agent.handle(
-                prompt,
-                peer_id=context.peer_id,
-                sender_id=context.sender_id,
-                source=context.source,
-            )
-        finally:
-            await agent.shutdown(timeout=10.0)
-
     @staticmethod
-    def _event_policy_prompt(event: ProactiveEvent) -> str:
-        payload = {
-            "event": "proactive_runtime_observation",
-            "source": event.source,
-            "summary": event.message,
-            "facts": event.facts,
-        }
-        return "Runtime event facts:\n" + json.dumps(
-            payload,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-
-    @staticmethod
-    def _event_result(event: ProactiveEvent, result: Any) -> dict:
+    def _event_result(event: ProactiveEvent, *, workspace: str) -> dict:
         return {
             "message": event.message,
             "facts": event.facts,
-            "run_id": result.run_id,
-            "action": result.action,
-            "observation": result.observation,
+            "run_id": "",
+            "action": "runtime.observation",
+            "observation": event.message,
+            "workspace": workspace,
         }

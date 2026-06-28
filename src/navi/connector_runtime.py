@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, FrozenSet
@@ -180,37 +179,44 @@ class ConnectorIngressRuntime:
 
         self.event_bus.subscribe("user_intent", on_user_intent)
 
-        from .event_bus import RunCompletedEvent
+        from .event_bus import RunCompletedEvent, ActionSuspendedEvent
+        from .connector_registry import render_approval_reply
+
+        async def on_action_suspended(event: ActionSuspendedEvent) -> None:
+            text = render_approval_reply(
+                event.source,
+                code=event.approval_code,
+                run_id=event.run_id,
+            )
+            await self.event_bus.send_response(
+                ResponseReadyEvent(
+                    source_agent="governance_agent",
+                    correlation_id=event.correlation_id,
+                    peer_id=event.peer_id,
+                    sender_id=event.sender_id,
+                    text=text,
+                    source=event.source,
+                )
+            )
+
+        self.event_bus.subscribe("action_suspended", on_action_suspended)
 
         async def on_run_completed(event: RunCompletedEvent) -> None:
             if event.status == "failed":
-                facts = {
-                    "event": "delegated_subtask_completed",
-                    "run_id": event.run_id,
-                    "status": event.status,
-                    "error": event.error,
-                    "peer_id": event.peer_id,
-                    "sender_id": event.sender_id,
-                }
                 text = (
-                    "Runtime event facts:\n"
-                    + json.dumps(facts, ensure_ascii=False, sort_keys=True)
-                )
-                result = await self.agent.handle(
-                    text,
-                    peer_id=event.peer_id,
-                    sender_id=event.sender_id,
-                    source="system",
-                    session_alias="",
-                )
+                    "delegated_subtask_completed\n"
+                    f"run_id={event.run_id}\n"
+                    f"status={event.status}\n"
+                    f"error={event.error or ''}"
+                ).strip()
                 await self.event_bus.send_response(
                     ResponseReadyEvent(
-                        source_agent="main_agent",
+                        source_agent="runtime",
                         correlation_id=event.correlation_id,
                         peer_id=event.peer_id,
                         sender_id=event.sender_id,
-                        text=result.surfaced_text(),
-                        source="system",
+                        text=text,
+                        source="runtime",
                     )
                 )
 

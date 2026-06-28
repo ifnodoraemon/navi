@@ -241,6 +241,33 @@ def test_connector_failure_fallbacks_do_not_suggest_retry() -> None:
         assert "请稍后" not in text
 
 
+def test_runtime_events_are_not_reingested_as_agent_input() -> None:
+    """System approval events must surface protocol facts directly instead of
+    becoming a synthetic user turn that can auto-resolve approval."""
+    source = (PROJECT_ROOT / "src/navi/connector_runtime.py").read_text(encoding="utf-8")
+    suspended_start = source.index("async def on_action_suspended")
+    suspended_end = source.index('self.event_bus.subscribe("action_suspended"', suspended_start)
+    suspended_block = source[suspended_start:suspended_end]
+    completed_start = source.index("async def on_run_completed")
+    completed_end = source.index('self.event_bus.subscribe("run_completed"', completed_start)
+    completed_block = source[completed_start:completed_end]
+
+    for block in (suspended_block, completed_block):
+        assert "self.agent.handle" not in block
+        assert "Runtime event facts" not in block
+        assert 'source="system"' not in block
+    assert "render_approval_reply" in suspended_block
+
+
+def test_proactive_daemon_events_are_not_submitted_to_agent_loop() -> None:
+    source = (PROJECT_ROOT / "src/navi/daemon.py").read_text(encoding="utf-8")
+
+    assert "_submit_event_to_agent" not in source
+    assert "_event_policy_prompt" not in source
+    assert "proactive_runtime_observation" not in source
+    assert "Runtime event facts" not in source
+
+
 def test_memory_write_hook_block_is_not_overridden_for_non_constraints(tmp_path: Path) -> None:
     """FP-7: hook decisions are lifecycle policy facts. The runtime must not
     silently convert a declared block into observe for non-constraint memories."""

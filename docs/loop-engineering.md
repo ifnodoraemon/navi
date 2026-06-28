@@ -91,6 +91,8 @@ Navi must not control loop behavior through:
 - Hardcoded `final.answer` fallback text.
 - Visible step-budget or budget-exhausted semantics.
 - Aliases for obsolete trace failure-domain names.
+- JSON extraction from markdown fences, surrounding prose, or provider
+  reasoning text for model-owned protocols.
 
 Machine vocabulary for phases, decision kinds, checker names, and failure
 domains must live in `src/navi/loop.py`, not as scattered string checks in

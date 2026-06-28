@@ -347,6 +347,7 @@ ACTION_SPECS = [
                 "run_id": {"type": "string"},
                 "approval_status": {"type": "string"},
                 "run_status": {"type": "string"},
+                "completion_evidence": {"type": "boolean"},
             },
         },
         facts_only=True,

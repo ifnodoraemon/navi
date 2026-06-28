@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .capability_contract import CAPABILITY_ERROR_REASON_KEY
 from .db import connect, ensure_schema_version
 from .json_utils import json_object
 from .loop import (
@@ -578,12 +579,20 @@ def _safeguard_failure_rule(
 def _capability_failure_rule(
     events: list[TraceEvent], evidence: dict[str, Any]
 ) -> TraceEvaluationDraft | None:
-    return _first_failure_rule(
-        events,
-        evidence,
-        phase=TracePhase.CAPABILITY_RESULT,
-        failure_domain=TraceFailureDomain.CAPABILITY_FAILURE,
-        diagnostic="first failed event was a capability result without safeguard decision facts",
+    failure = _first_failure(events)
+    if failure is None or failure.phase != TracePhase.CAPABILITY_RESULT:
+        return None
+    _record_first_failure_evidence(failure, evidence)
+    if _capability_result_is_input_schema_mismatch(failure):
+        return TraceEvaluationDraft(
+            TraceOutcome.FAILURE,
+            TraceFailureDomain.PLANNER_OR_PARSER,
+            "capability input schema mismatch indicates planner arguments did not match declared schema",
+        )
+    return TraceEvaluationDraft(
+        TraceOutcome.FAILURE,
+        TraceFailureDomain.CAPABILITY_FAILURE,
+        "first failed event was a capability result without safeguard decision facts",
     )
 
 
@@ -679,6 +688,16 @@ def _capability_result_has_safeguard_decision(event: TraceEvent) -> bool:
     output = _event_output(event)
     facts = output.get("facts")
     return isinstance(facts, dict) and isinstance(facts.get("hook_decision"), dict)
+
+
+def _capability_result_is_input_schema_mismatch(event: TraceEvent) -> bool:
+    output = _event_output(event)
+    facts = output.get("facts")
+    if not isinstance(facts, dict):
+        return False
+    if facts.get(CAPABILITY_ERROR_REASON_KEY) != "schema_mismatch":
+        return False
+    return "result_action" not in facts
 
 
 def _planner_call_started_without_result(events: list[TraceEvent]) -> bool:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from navi.daemon import SystemDaemon
+from navi.trace import TraceStore
 
 
 def test_read_log_diff_redacts_secrets_in_diff_and_error_lines(tmp_path: Path) -> None:
@@ -42,3 +43,17 @@ def test_read_log_diff_without_secrets_is_unchanged(tmp_path: Path) -> None:
 
     assert diff == body
     assert error_lines == []
+
+
+def test_daemon_mutation_trace_is_evaluated(tmp_path: Path) -> None:
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
+
+    trace_id = daemon._record_project_graph_mutation(
+        str(tmp_path),
+        {"path": str(tmp_path), "last_git_status_hash": "abc"},
+    )
+
+    evaluations = TraceStore(tmp_path).list_evaluations(trace_id)
+    assert len(evaluations) == 1
+    assert evaluations[0].outcome == "success"
+    assert evaluations[0].failure_domain == "none"

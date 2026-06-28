@@ -57,15 +57,26 @@ class EnginePhasesMixin:
         events: list[dict[str, Any]],
         *,
         state_context: SurfaceContext | None = None,
+        current_run_id: str = "",
     ) -> CompletionBlock | None:
         if not events:
             events = []
+        related_run_ids = {current_run_id} if current_run_id else set()
+        for event in events:
+            facts = event.get("facts")
+            if not isinstance(facts, dict):
+                continue
+            run_id = str(facts.get("run_id") or facts.get("task_id") or "").strip()
+            if run_id:
+                related_run_ids.add(run_id)
         latest_run_status: dict[str, str] = {}
         for event in events:
             facts = event.get("facts")
             if not isinstance(facts, dict):
                 continue
             run_id = str(facts.get("run_id") or facts.get("task_id") or "").strip()
+            if related_run_ids and run_id and run_id not in related_run_ids:
+                continue
             status = str(
                 facts.get("status") or facts.get("run_status") or facts.get("task_status") or ""
             ).strip()
@@ -78,6 +89,8 @@ class EnginePhasesMixin:
             if str(facts.get("entity_type") or "") != "delegation_run":
                 continue
             run_id = str(facts.get("run_id") or facts.get("task_id") or "").strip()
+            if related_run_ids and run_id and run_id not in related_run_ids:
+                continue
             status = latest_run_status.get(run_id) or str(facts.get("status") or "").strip()
             if run_id and status in {"pending", "prepared"}:
                 return CompletionBlock(
@@ -112,6 +125,8 @@ class EnginePhasesMixin:
         if state_context is not None:
             state = CurrentStateBuilder(self.home).build(state_context)
             for run in state.active_runs:
+                if related_run_ids and run.id not in related_run_ids:
+                    continue
                 if run.status in {"pending", "preparing", "prepared"}:
                     return CompletionBlock(
                         reason=(

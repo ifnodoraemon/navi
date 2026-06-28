@@ -8,7 +8,6 @@ from typing import Any, Literal
 
 from .approval_contract import (
     APPROVAL_DECISION_APPROVE,
-    APPROVAL_DECISION_REJECT,
     APPROVAL_DECISIONS,
     APPROVAL_STATUS_APPROVED,
     APPROVAL_STATUS_EXPIRED,
@@ -423,10 +422,13 @@ class ApprovalService:
                             "entity_type": "approval_request",
                             "entity_id": candidate.id,
                             "state_transition": "already_resolved",
+                            "turn_scope": "current",
                             "run_id": candidate.run_id,
                             "approval_status": candidate.status,
+                            "run_status": run.status if run else "",
                             "selection": selection,
                             "decision": decision,
+                            "completion_evidence": True,
                         },
                     )
         if candidate is not None:
@@ -514,6 +516,7 @@ class ApprovalService:
             "run_id": resolved_run_id,
             "approval_status": approval.status,
             "run_status": run_status,
+            "completion_evidence": True,
         }
         if decision == APPROVAL_DECISION_APPROVE:
             message = (

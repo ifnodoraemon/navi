@@ -70,6 +70,7 @@ async def test_approval_resolve_already_approved_is_idempotent(
         code=approval.code,
     )
     assert first.ok is True
+    assert first.facts.get("completion_evidence") is True
 
     # Re-submitting the same code must not fail — the planner would otherwise
     # loop on "Approval is not pending; current status is approved."
@@ -88,6 +89,7 @@ async def test_approval_resolve_already_approved_is_idempotent(
     assert "do not" not in second.message.lower()
     assert "re-resolve" not in second.message.lower()
     assert second.facts.get("state_transition") == "already_resolved"
+    assert second.facts.get("completion_evidence") is True
 
 
 # ---------------------------------------------------------------------------

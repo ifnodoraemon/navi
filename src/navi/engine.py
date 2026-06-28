@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ._engine_phases import EnginePhasesMixin
-from .capability_contract import CAPABILITY_ACTION_ERROR
+from .capability_contract import CAPABILITY_ACTION_ERROR, CAPABILITY_ERROR_REASON_KEY
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .context import ContextManager
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
@@ -519,17 +519,30 @@ class HernessEngine(EnginePhasesMixin):
         goal_ids: set[str],
     ) -> LoopDecision:
         if result.action == CAPABILITY_ACTION_ERROR:
+            input_schema_mismatch = _capability_error_is_input_schema_mismatch(facts)
             return LoopDecision(
                 decision=LoopDecisionKind.FAILED,
-                reason=LoopReason.CAPABILITY_FAILURE,
-                phase=LoopPhase.CAPABILITY,
-                failure_domain=TraceFailureDomain.CAPABILITY_FAILURE,
+                reason=(
+                    LoopReason.PLANNER_OR_PARSER_FAILURE
+                    if input_schema_mismatch
+                    else LoopReason.CAPABILITY_FAILURE
+                ),
+                phase=LoopPhase.PLANNER if input_schema_mismatch else LoopPhase.CAPABILITY,
+                failure_domain=(
+                    TraceFailureDomain.PLANNER_OR_PARSER
+                    if input_schema_mismatch
+                    else TraceFailureDomain.CAPABILITY_FAILURE
+                ),
                 tool=tool or result.action,
                 run_id=result.run_id,
                 goal_ids=tuple(sorted(goal_ids)),
                 checker_results=(
                     LoopCheckResult(
-                        name=LoopCheckName.CAPABILITY_RESULT,
+                        name=(
+                            LoopCheckName.PLANNER_RESULT
+                            if input_schema_mismatch
+                            else LoopCheckName.CAPABILITY_RESULT
+                        ),
                         passed=False,
                         severity=LoopSeverity.ERROR,
                         reason=result.text or result.observation,
@@ -852,6 +865,7 @@ class HernessEngine(EnginePhasesMixin):
             block = self._completion_block_reason(
                 completion_events,
                 state_context=state_context,
+                current_run_id=result.run_id,
             )
             if block:
                 self.trace.add_event(
@@ -978,3 +992,11 @@ def _trace_failure_domain_from_facts(
         return default
     value = trace_failure_domain(facts.get("failure_domain"))
     return TraceFailureDomain(value) if value else default
+
+
+def _capability_error_is_input_schema_mismatch(facts: dict[str, Any] | None) -> bool:
+    if not isinstance(facts, dict):
+        return False
+    if facts.get(CAPABILITY_ERROR_REASON_KEY) != "schema_mismatch":
+        return False
+    return "result_action" not in facts

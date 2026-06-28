@@ -120,6 +120,7 @@ Runtime rules:
 - JSON is a first-class machine protocol. Provider structured outputs are parsed and validated against the declared JSON schema, and trace/loop evaluation reads structured fields such as `failure_domain`, `checker_results`, and `gate_results` instead of classifying natural-language reason text.
 - Declared capability input and output schemas are runtime contracts, not planner hints. Action capabilities are rejected before invocation on input schema mismatch and converted to structured `schema_mismatch` facts on output schema mismatch.
 - Planner syscall output must be a complete JSON object matching the declared `planner_decision` schema. Navi must not recover planner decisions from markdown fences, surrounding prose, or parser defaults for missing permission, role, confidence, or argument fields.
+- Model-owned machine protocols, including planner syscalls, internal execution, and memory learning extraction, must be complete JSON payloads. Runtime code must not extract JSON objects from markdown fences, surrounding prose, or provider reasoning text as a compatibility path.
 - Any action that can affect the user's machine, accounts, remote services, repository, files, credentials, or money must be traceable.
 - Connector credentials should be persisted with restrictive file permissions when the OS allows it.
 - Long-context operation must reload durable constraints, governance state, approvals, relevant memory, and goal/workflow state from stores before execution.

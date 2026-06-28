@@ -171,6 +171,39 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     tool_eval = store.evaluate_trace("tool-failure")
 
     store.add_event(
+        trace_id="capability-input-schema",
+        phase="capability.result",
+        ok=False,
+        tool="final.answer",
+        output_data={
+            "facts": {
+                "error_reason": "schema_mismatch",
+                "schema_errors": ["$.message is required"],
+                "tool": "final.answer",
+            }
+        },
+        message="capability final.answer input schema mismatch",
+    )
+    input_schema_eval = store.evaluate_trace("capability-input-schema")
+
+    store.add_event(
+        trace_id="capability-output-schema",
+        phase="capability.result",
+        ok=False,
+        tool="delegate.run",
+        output_data={
+            "facts": {
+                "error_reason": "schema_mismatch",
+                "schema_errors": ["$.run_id is required"],
+                "result_action": "delegation_created",
+                "tool": "delegate.run",
+            }
+        },
+        message="capability delegate.run output schema mismatch",
+    )
+    output_schema_eval = store.evaluate_trace("capability-output-schema")
+
+    store.add_event(
         trace_id="safeguard-failure",
         phase="capability.result",
         ok=False,
@@ -295,6 +328,8 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     assert planner_eval.failure_domain == "planner_or_parser"
     assert json.loads(planner_eval.evidence_json)["first_failure_tool"] == "provider.config"
     assert tool_eval.failure_domain == "capability_failure"
+    assert input_schema_eval.failure_domain == "planner_or_parser"
+    assert output_schema_eval.failure_domain == "capability_failure"
     assert safeguard_eval.outcome == "failure"
     assert safeguard_eval.failure_domain == "safeguard_policy"
     assert "safeguard hook decision" in safeguard_eval.diagnostic
