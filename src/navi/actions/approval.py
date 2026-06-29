@@ -24,7 +24,7 @@ from .helpers import (
 )
 from ..runs import RunStore
 from ..goals import GoalStore
-from ..control import ApprovalService, SurfaceContext
+from ..control import ApprovalService, CurrentStateBuilder, SurfaceContext
 
 
 @capability("approval_request")
@@ -89,20 +89,6 @@ class ApprovalResolveCapability(BaseCapability):
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
         batch_id = _arg_text(args, "batch_id")
         selection = _approval_selection(args, code=code, run_id=run_id, batch_id=batch_id)
-        if code and context.input_text and code not in context.input_text:
-            facts = {
-                "reason": "approval_code_not_in_user_input",
-                "selection": selection,
-                "code_present_in_current_user_input": False,
-            }
-            return _failure_result(
-                "approval",
-                message="approval code was not present in current user input",
-                error_reason="schema_mismatch",
-                terminal=True,
-                facts=facts,
-            )
-
         surface_ctx = SurfaceContext(
             home=self.home,
             peer_id=context.peer_id,
@@ -112,6 +98,26 @@ class ApprovalResolveCapability(BaseCapability):
             session_id=context.session_id,
             input_text=context.input_text,
         )
+        if code and context.input_text and code not in context.input_text:
+            visible = [
+                item.facts(include_code=True)
+                for item in CurrentStateBuilder(self.home).build(surface_ctx).visible_pending_approvals
+            ]
+            facts = {
+                "reason": "approval_code_not_in_user_input",
+                "selection": selection,
+                "code_present_in_current_user_input": False,
+                "visible_pending_approval_count": len(visible),
+                "visible_pending_approvals": visible,
+            }
+            return _failure_result(
+                "approval",
+                message="",
+                error_reason="schema_mismatch",
+                terminal=False,
+                facts=facts,
+            )
+
         service = ApprovalService(self.home)
         res = service.resolve(
             decision=decision,

@@ -289,6 +289,7 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     )
     store.add_event(trace_id="approval-pause", phase="turn.final", ok=True)
     approval_pause_eval = store.evaluate_trace("approval-pause")
+    approval_pause_runs = store.list_run_views("approval-pause")
 
     store.add_event(
         trace_id="completion-verify",
@@ -459,6 +460,8 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
         json.loads(approval_pause_eval.evidence_json)["evaluation_rule"]
         == "approval_pause_recorded"
     )
+    assert approval_pause_runs[0].status == "success"
+    assert approval_pause_runs[1].status == "blocked"
     assert completion_eval.outcome == "failure"
     assert completion_eval.failure_domain == "checker_blocked"
     assert no_response_eval.outcome == "failure"

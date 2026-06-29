@@ -161,7 +161,7 @@ CLI_PROVIDERS_SPEC: Any = [
 # channel's approval prompt wording or reply-command syntax. Each connector
 # declares those in its own connector.yaml; the core holds no default. When no
 # connector matches a source, approval_surface_affordance returns an empty
-# affordance and _run_approval_prompt renders nothing.
+# affordance; user-visible approval wording remains model-owned.
 
 DEFAULTS_SPEC: Any = {
     "service_name": "navi.service",

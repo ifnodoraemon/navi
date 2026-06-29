@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 import yaml
 
-from navi.engine import HernessEngine
+from navi.engine import HernessEngine, _dynamic_intent_facts
 from navi.event_bus import EventBus
 from navi.evolution import EvolutionEngine, EvolutionLedger
 from navi._engine_phases import EnginePhasesMixin
@@ -72,6 +72,87 @@ class _PlannerSchemaProvider:
                 "model_role": "responder",
             }
         )
+
+
+class _PromptCaptureProvider:
+    def __init__(self) -> None:
+        self.planner_user_prompt = ""
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        if role == "planner" and output_schema is not None:
+            self.planner_user_prompt = messages[-1].content
+            return json.dumps(
+                {
+                    "tool": "final.answer",
+                    "permission": "read",
+                    "args": {"message": "你好"},
+                    "model_role": "responder",
+                }
+            )
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+
+def test_dynamic_intent_current_state_is_not_duplicated() -> None:
+    duplicate_state = {
+        "source_agent": "intent_agent",
+        "intent_basis": "current_state_facts",
+        "current_state": {"marker": "duplicate-current-state-marker"},
+    }
+
+    assert _dynamic_intent_facts(duplicate_state) == {}
+
+    filtered = _dynamic_intent_facts(
+        {
+            **duplicate_state,
+            "connector_message": {"message_id": "msg-1"},
+        }
+    )
+
+    assert filtered == {
+        "source_agent": "intent_agent",
+        "intent_basis": "current_state_facts",
+        "connector_message": {"message_id": "msg-1"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_weixin_intent_current_state_is_not_repeated_in_planner_observations(
+    tmp_path,
+) -> None:
+    provider = _PromptCaptureProvider()
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "你好",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+        intent_facts={
+            "source_agent": "intent_agent",
+            "intent_basis": "current_state_facts",
+            "current_state": {"marker": "duplicate-current-state-marker"},
+        },
+    )
+
+    assert result.ok is True
+    assert provider.planner_user_prompt.count('"observation_type": "current_state"') == 1
+    assert '"observation_type": "dynamic_intent"' not in provider.planner_user_prompt
+    assert "duplicate-current-state-marker" not in provider.planner_user_prompt
 
 
 @pytest.mark.asyncio
@@ -337,6 +418,52 @@ class _ApproveCodeProvider:
         return ["planner", "responder"]
 
 
+class _ApproveCodeNotInInputProvider(_ApproveCodeProvider):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        self.planner_calls = 0
+        self.responder_calls = 0
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        if role == "planner" and output_schema is not None:
+            self.planner_calls += 1
+            if self.planner_calls == 1:
+                return json.dumps(
+                    {
+                        "tool": "approval.resolve",
+                        "permission": "write",
+                        "args": {
+                            "decision": "approve",
+                            "selection": "explicit_code",
+                            "code": self.code,
+                        },
+                        "model_role": "planner",
+                        "confidence": 1.0,
+                        "reason": "try visible approval code",
+                    }
+                )
+            content = "\n".join(message.content for message in messages)
+            assert "approval_code_not_in_user_input" in content
+            assert "visible_pending_approvals" in content
+            return json.dumps(
+                {
+                    "tool": "final.answer",
+                    "permission": "read",
+                    "args": {"message": "当前输入没有包含审批码；我只看到了待审批事实。"},
+                    "model_role": "responder",
+                    "confidence": 1.0,
+                    "reason": "report approval facts",
+                }
+            )
+        raise AssertionError(f"unexpected role: {role}")
+
+
 class _RepeatListProvider:
     def __init__(self) -> None:
         self.planner_calls = 0
@@ -429,6 +556,19 @@ class _DelegateSpawnApprovalProvider:
     ) -> str:
         if role == "planner":
             self.planner_calls += 1
+            if self.planner_calls > 1:
+                content = "\n".join(message.content for message in messages)
+                assert "awaiting_approval" in content
+                return json.dumps(
+                    {
+                        "tool": "final.answer",
+                        "permission": "read",
+                        "args": {"message": "需要审批后执行。"},
+                        "model_role": "responder",
+                        "confidence": 1.0,
+                        "reason": "report approval pause facts",
+                    }
+                )
             return json.dumps(
                 {
                     "tool": "delegate.spawn",
@@ -447,8 +587,6 @@ class _DelegateSpawnApprovalProvider:
             )
         if role == "responder":
             self.responder_calls += 1
-            content = "\n".join(message.content for message in messages)
-            assert "awaiting_approval" in content
             return "需要审批后执行。"
         raise AssertionError(f"unexpected role: {role}")
 
@@ -651,6 +789,55 @@ async def test_approval_resolve_finishes_from_completion_facts(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_approval_resolve_without_current_user_code_surfaces_pending_facts(tmp_path):
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "find resume",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="awaiting_approval",
+    )
+    approval = runs.create_approval(
+        run_id=run.id,
+        peer_id="peer-1",
+        sender_id="sender-1",
+    )
+    provider = _ApproveCodeNotInInputProvider(approval.code)
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "把我电脑上的简历发我",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert result.ok is True
+    assert result.text == "当前输入没有包含审批码；我只看到了待审批事实。"
+    events = TraceStore(tmp_path).list_events(result.trace_id)
+    failed_approval = next(
+        event
+        for event in events
+        if event.phase == "capability.result"
+        and event.tool == "approval.resolve"
+        and not event.ok
+    )
+    facts = json.loads(failed_approval.output_json)["facts"]
+    assert facts["reason"] == "approval_code_not_in_user_input"
+    assert facts["visible_pending_approval_count"] == 1
+    assert facts["visible_pending_approvals"][0]["run_id"] == run.id
+
+
+@pytest.mark.asyncio
 async def test_repeated_stable_capability_result_converges(tmp_path):
     provider = _RepeatListProvider()
     engine = HernessEngine(
@@ -731,7 +918,7 @@ async def test_same_status_facts_with_different_args_converges(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_delegate_spawn_awaiting_approval_pauses_without_replanning(tmp_path):
+async def test_delegate_spawn_awaiting_approval_becomes_model_owned_answer(tmp_path):
     provider = _DelegateSpawnApprovalProvider(str(tmp_path))
     engine = HernessEngine(
         home=tmp_path,
@@ -752,15 +939,17 @@ async def test_delegate_spawn_awaiting_approval_pauses_without_replanning(tmp_pa
     finally:
         await engine.shutdown()
 
-    assert provider.planner_calls == 1
+    assert provider.planner_calls == 2
     assert provider.responder_calls == 0
-    assert "approval" in result.facts
+    assert result.action == "chat"
+    assert result.text == "需要审批后执行。"
+    assert TraceStore(tmp_path).list_evaluations(result.trace_id)[0].outcome == "success"
     decisions = [
         json.loads(event.output_json)
         for event in TraceStore(tmp_path).list_loop_decisions(result.trace_id)
     ]
     assert any(
-        item["decision"] == "blocked"
+        item["decision"] == "pause_for_approval"
         and item["reason"] == "approval_required"
         for item in decisions
     )

@@ -14,7 +14,7 @@ from .db import connect, ensure_schema_version
 from .json_utils import json_object
 from .loop import (
     LoopCheckName,
-    LoopCheckResult,
+    LoopCheckResult,  # noqa: F401 - re-exported for trace tests and callers.
     LoopDecision,
     LoopDecisionKind,
     LoopDecisionSummary,
@@ -441,13 +441,16 @@ def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRu
     if not events:
         return []
     first_session_id = next((event.session_id for event in events if event.session_id), "")
+    draft = _evaluate_trace_with_rules(events, _base_trace_evidence(events))
     root = TraceRunView(
         id=trace_id,
         trace_id=trace_id,
         parent_run_id="",
         name="trace",
         run_type=TraceRunType.CHAIN,
-        status=TraceRunStatus.ERROR if any(not event.ok for event in events) else TraceRunStatus.SUCCESS,
+        status=TraceRunStatus.SUCCESS
+        if draft.outcome == str(TraceOutcome.SUCCESS)
+        else TraceRunStatus.ERROR,
         start_time=min(event.created_at for event in events),
         end_time=max(event.created_at for event in events),
         thread_id=first_session_id,
@@ -470,7 +473,7 @@ def _event_run_view(event: TraceEvent, *, parent_run_id: str) -> TraceRunView:
         parent_run_id=parent_run_id,
         name=event.tool or event.phase,
         run_type=_event_run_type(event),
-        status=TraceRunStatus.SUCCESS if event.ok else TraceRunStatus.ERROR,
+        status=_event_trace_run_status(event),
         start_time=event.created_at,
         end_time=event.created_at,
         thread_id=event.session_id,
@@ -487,6 +490,15 @@ def _event_run_view(event: TraceEvent, *, parent_run_id: str) -> TraceRunView:
             "message": event.message,
         },
     )
+
+
+def _event_trace_run_status(event: TraceEvent) -> TraceRunStatus | str:
+    if event.ok:
+        return TraceRunStatus.SUCCESS
+    facts = _event_output(event).get("facts")
+    if event.phase == TracePhase.CAPABILITY_RESULT and _capability_result_is_approval_request(facts):
+        return "blocked"
+    return TraceRunStatus.ERROR
 
 
 _EVENT_RUN_TYPES_BY_PHASE: dict[str, TraceRunType] = {
@@ -750,12 +762,13 @@ def _approval_pause_rule(
     if not _has_approval_required_pause(events):
         return None
     failure = _first_failure(events)
-    if failure is None or failure.phase != TracePhase.CAPABILITY_RESULT:
-        return None
-    facts = _event_output(failure).get("facts")
-    if not _capability_result_is_approval_request(facts):
-        return None
-    _record_first_failure_evidence(failure, evidence)
+    if failure is not None:
+        if failure.phase != TracePhase.CAPABILITY_RESULT:
+            return None
+        facts = _event_output(failure).get("facts")
+        if not _capability_result_is_approval_request(facts):
+            return None
+        _record_first_failure_evidence(failure, evidence)
     evidence["approval_pause_recorded"] = True
     return _evaluation(
         TraceOutcome.SUCCESS,

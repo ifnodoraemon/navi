@@ -134,13 +134,12 @@ class HernessEngine(EnginePhasesMixin):
         )
         current_state = CurrentStateBuilder(self.home).build(state_context)
         observations.append(
-            "Current State Facts:\n"
-            + json.dumps(current_state_facts(current_state), ensure_ascii=False, sort_keys=True)
+            _observation_event("current_state", current_state_facts(current_state))
         )
-        if intent_facts:
+        dynamic_intent_facts = _dynamic_intent_facts(intent_facts)
+        if dynamic_intent_facts:
             observations.append(
-                "Dynamic Intent Facts:\n"
-                + json.dumps(intent_facts, ensure_ascii=False, sort_keys=True)
+                _observation_event("dynamic_intent", dynamic_intent_facts)
             )
 
         return resolved_session_id, trace_id, context, state_context, observations
@@ -743,6 +742,31 @@ class HernessEngine(EnginePhasesMixin):
             return ""
         messages = self.runtime.memory.get_messages(session_id, limit=100)
         return self.context_manager.build_conversation_context(messages)
+
+
+def _dynamic_intent_facts(intent_facts: dict[str, Any] | None) -> dict[str, Any]:
+    if not intent_facts:
+        return {}
+    facts = dict(intent_facts)
+    if (
+        facts.get("source_agent") == "intent_agent"
+        and facts.get("intent_basis") == "current_state_facts"
+    ):
+        facts.pop("current_state", None)
+        if set(facts) <= {"source_agent", "intent_basis"}:
+            return {}
+    return facts
+
+
+def _observation_event(kind: str, facts: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "observation_type": kind,
+            "facts": facts,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
 
 # Deferred import: execution -> capabilities -> connector_runtime -> engine forms a

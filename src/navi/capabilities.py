@@ -16,7 +16,6 @@ from .capabilities_types import (
     CapabilityResult,
 )
 from .capability_contract import (
-    CAPABILITY_ACTION_APPROVAL,
     CAPABILITY_ERROR_REASON_KEY,
     CAPABILITY_REASON_KEY,
     CAPABILITY_REASON_SENSITIVE_APPROVAL,
@@ -384,8 +383,7 @@ class CapabilityRegistry:
                 sender_id=context.sender_id or (task.sender_id if task else ""),
                 action=action,
             )
-        message = f"approval_required code={approval.code} action={spec.name}"
-        runs.update_run(run_id, status=RUN_STATUS_AWAITING_APPROVAL, result_summary=message)
+        runs.update_run(run_id, status=RUN_STATUS_AWAITING_APPROVAL)
         facts = {
             "entity_type": "approval_request",
             "entity_id": approval.id,
@@ -399,7 +397,7 @@ class CapabilityRegistry:
             ok=False,
             action=action,
             observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
-            message=message,
+            message="",
             run_id=run_id,
             terminal=False,
             facts=facts,

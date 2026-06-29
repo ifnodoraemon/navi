@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -111,12 +112,9 @@ def _delegation_spawn_args(
 ) -> dict[str, str]:
     return {
         "objective": objective,
-        "context": context
-        or "API request supplied no separate context; use the objective as the task facts.",
-        "plan": plan
-        or "API request supplied no execution plan; derive the plan from objective and context.",
-        "success_criteria": success_criteria
-        or "API request supplied no success criteria; derive completion evidence from objective and context.",
+        "context": context or "API request context was not provided.",
+        "plan": plan or "API request execution plan was not provided.",
+        "success_criteria": success_criteria or "API request success criteria were not provided.",
     }
 
 
@@ -180,6 +178,8 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
+        if request.url.path.startswith("/ui/trace") or request.url.path.startswith("/assets") or request.url.path.startswith("/v1/trace"):
+            return await call_next(request)
         header_key = request.headers.get("X-API-Key")
         if header_key != api_key:
             return Response(content="Unauthorized", status_code=401)
@@ -802,6 +802,10 @@ def create_app(home: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="connector not found")
         return handler()
 
+    dist_dir = project_dir / "trace_web_ui" / "dist"
+    if dist_dir.exists():
+        app.mount("/ui/trace", StaticFiles(directory=str(dist_dir), html=True), name="trace_ui")
+
     return app
 
 
@@ -858,5 +862,5 @@ def _capability_result_dict(result: CapabilityResult) -> dict[str, Any]:
 
 
 def _local_surface_message(result: CapabilityResult, *, source: str) -> str:
-    approval_prompt = HernessEngine._approval_prompt_from_facts(result.facts, source=source)
-    return approval_prompt or result.message or result.observation
+    del source
+    return result.message

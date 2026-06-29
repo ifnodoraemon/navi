@@ -85,7 +85,7 @@ async def test_executor_suspends_on_sensitive_write(tmp_path):
     assert len(code) == 6
     refetched = runs.get(task.id)
     assert refetched.status == "awaiting_approval"
-    assert code in (refetched.result_summary or "")  # surfaced to user
+    assert code not in (refetched.result_summary or "")
     assert not (tmp_path / "x.txt").exists()  # write did NOT happen
 
 

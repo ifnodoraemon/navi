@@ -622,11 +622,7 @@ def _step_prompt(
         "allowed_tools": allowed_tools,
         "depends_on": _json_list(step.depends_on_json),
         "declared_tool_calls": tool_calls,
-        "instruction": (
-            "Workflow step execution is constrained by the current capability manifest. "
-            "The declared_tool_calls are planner facts from the proposal, not a script to replay. "
-            "Terminal and user-input outcomes must be represented through declared capabilities."
-        ),
+        "declared_tool_calls_are_proposal_facts": True,
     }
     return "Workflow step execution facts:\n" + json.dumps(
         prompt,

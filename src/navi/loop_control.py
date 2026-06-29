@@ -43,7 +43,6 @@ class RuntimeStepFrame:
     progress_signature: str
     goal_ids: set[str]
     observations_count: int
-    pending_approval_prompt: str = ""
 
 
 @dataclass(frozen=True)
@@ -107,21 +106,44 @@ def reduce_runtime_step(
     progress_gate: LoopProgressGate,
 ) -> LoopControlResult:
     if _facts_waiting_for_approval(frame.facts):
-        return LoopControlResult(
-            effect=LoopControlEffect.FINALIZE_STABLE,
-            decisions=(
-                LoopDecision(
-                    decision=LoopDecisionKind.BLOCKED,
+        progress = progress_gate.observe(frame.progress_signature)
+        pause_decision = LoopDecision(
+            decision=LoopDecisionKind.PAUSE_FOR_APPROVAL,
+            reason=LoopReason.APPROVAL_REQUIRED,
+            phase=LoopPhase.PLANNER,
+            failure_domain=TraceFailureDomain.NONE,
+            tool=frame.tool,
+            run_id=frame.result.run_id,
+            evidence=frame.facts,
+            goal_ids=tuple(frame.goal_ids),
+            gate_results=(
+                LoopCheckResult(
+                    name=LoopCheckName.APPROVAL_GATE,
+                    passed=True,
+                    severity=LoopSeverity.INFO,
                     reason=LoopReason.APPROVAL_REQUIRED,
-                    phase=LoopPhase.PLANNER,
-                    failure_domain=TraceFailureDomain.NONE,
-                    tool=frame.tool,
-                    run_id=frame.result.run_id,
-                    evidence=frame.facts,
-                    goal_ids=tuple(frame.goal_ids),
+                    evidence=frame.facts or {},
                 ),
             ),
-            progress_signature=frame.progress_signature,
+        )
+        if progress.repeated:
+            return LoopControlResult(
+                effect=LoopControlEffect.FINALIZE_STABLE,
+                decisions=(
+                    pause_decision,
+                    _converged_decision(
+                        frame,
+                        reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
+                        progress_signature=progress.signature,
+                    ),
+                ),
+                progress_signature=progress.signature,
+                convergence_message="repeated capability result; synthesizing stable observations",
+            )
+        return LoopControlResult(
+            effect=LoopControlEffect.CONTINUE_LOOP,
+            decisions=(pause_decision,),
+            progress_signature=progress.signature,
         )
 
     if _facts_complete_current_request(frame.facts):
@@ -537,6 +559,3 @@ def _capability_error_is_input_schema_mismatch(facts: dict[str, Any] | None) -> 
         and facts.get(CAPABILITY_ERROR_REASON_KEY) == "schema_mismatch"
         and "result_action" not in facts
     )
-
-
-

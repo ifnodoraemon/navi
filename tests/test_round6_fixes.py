@@ -153,6 +153,9 @@ def test_approval_resolve_accepts_visible_batch_id(tmp_path: Path) -> None:
     state = CurrentStateBuilder(tmp_path).build(context)
     facts = current_state_facts(state)
     batch_id = facts["visible_approval_batches"][0]["batch_id"]
+    assert facts["visible_pending_approvals"][0]["code_present"] is True
+    assert "code" in facts["visible_pending_approvals"][0]
+    assert "code" in facts["visible_approval_batches"][0]["approvals"][0]
 
     result = ApprovalService(tmp_path).resolve(
         decision="approve",
