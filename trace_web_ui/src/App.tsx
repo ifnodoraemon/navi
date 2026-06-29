@@ -93,6 +93,7 @@ function App() {
   
   // List Filters
   const [listHasError, setListHasError] = useState(false);
+  const [listShowDaemon, setListShowDaemon] = useState(false);
   const [listLimit, setListLimit] = useState(50);
 
 
@@ -108,7 +109,7 @@ function App() {
       fetchTraceIds(false);
     }, 3000);
     return () => clearInterval(interval);
-  }, [listHasError, listLimit]);
+  }, [listHasError, listShowDaemon, listLimit]);
 
   const fetchTraceIds = async (showRefresh = false) => {
     if (showRefresh) setIsRefreshing(true);
@@ -122,7 +123,8 @@ function App() {
       const rawData = res.data;
       const actualData = (rawData && rawData.data && rawData.data.traces) ? rawData.data : rawData;
       const meta = actualData.traces || [];
-      const sortedMeta = [...meta].sort((a, b) => b.start_time - a.start_time);
+      const filteredMeta = meta.filter((t: TraceMeta) => listShowDaemon || !t.trace_id.startsWith('daemon-trace-'));
+      const sortedMeta = [...filteredMeta].sort((a: TraceMeta, b: TraceMeta) => b.start_time - a.start_time);
       setTracesMeta(sortedMeta);
     } catch (err) {
       console.error('Failed to fetch traces', err);
@@ -177,22 +179,34 @@ function App() {
             <RefreshCw size={16} />
           </button>
         </div>
-        <div style={{ padding: '0 15px 10px', display: 'flex', gap: 8 }}>
-          <button 
-            className={`filter-btn ${listHasError ? 'active error' : ''}`}
-            style={{ flex: 1, padding: '4px 8px', fontSize: '0.75rem' }}
-            onClick={() => setListHasError(!listHasError)}
-          >
-            <XCircle size={12} style={{ marginRight: 4 }} />
-            Failed Only
-          </button>
-          <button 
-            className="filter-btn"
-            style={{ flex: 1, padding: '4px 8px', fontSize: '0.75rem' }}
-            onClick={() => setListLimit(listLimit + 50)}
-          >
-            Load More
-          </button>
+        <div style={{ padding: '0 15px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button 
+              className={`filter-btn ${listHasError ? 'active error' : ''}`}
+              style={{ flex: 1, padding: '4px 8px', fontSize: '0.75rem' }}
+              onClick={() => setListHasError(!listHasError)}
+            >
+              <XCircle size={12} style={{ marginRight: 4 }} />
+              Failed Only
+            </button>
+            <button 
+              className="filter-btn"
+              style={{ flex: 1, padding: '4px 8px', fontSize: '0.75rem' }}
+              onClick={() => setListLimit(listLimit + 50)}
+            >
+              Load More
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button 
+              className={`filter-btn ${listShowDaemon ? 'active' : ''}`}
+              style={{ flex: 1, padding: '4px 8px', fontSize: '0.75rem' }}
+              onClick={() => setListShowDaemon(!listShowDaemon)}
+            >
+              <Activity size={12} style={{ marginRight: 4 }} />
+              {listShowDaemon ? 'Hide Daemon' : 'Show Daemon'}
+            </button>
+          </div>
         </div>
                 <div className="trace-list">
           {tracesMeta.length === 0 && (

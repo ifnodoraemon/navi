@@ -332,9 +332,13 @@ class SystemDaemon:
         # otherwise untraceable. Record a lightweight trace event so the
         # audit trail covers daemon-initiated state changes.
         from navi.trace import TraceStore
+        from datetime import datetime
 
         trace = TraceStore(self.home)
-        trace_id = trace.new_trace_id()
+        # Use a single daily trace ID to prevent polluting the trace database with thousands of traces
+        daily_suffix = datetime.now().strftime("%Y-%m-%d")
+        trace_id = f"daemon-trace-{daily_suffix}"
+        
         trace.add_event(
             trace_id=trace_id,
             phase="daemon.mutation",
@@ -345,6 +349,7 @@ class SystemDaemon:
                 "fields": sorted(project_data.keys()),
             },
         )
+        # Evaluate trace is optional here, but we can keep it
         trace.evaluate_trace(trace_id)
         return trace_id
 
