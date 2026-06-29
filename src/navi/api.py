@@ -583,8 +583,8 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {"nodes": [node.__dict__ for node in GraphStore(home).list()]}
 
     @app.get(api_path("traces"))
-    def traces() -> dict:
-        return {"trace_ids": TraceStore(home).list_trace_ids()}
+    def traces(limit: int = 50, offset: int = 0, has_error: bool | None = None) -> dict:
+        return {"trace_ids": TraceStore(home).list_trace_ids(limit=limit, offset=offset, has_error=has_error)}
 
     @app.get(api_path("trace"))
     def trace(trace_id: str) -> dict:

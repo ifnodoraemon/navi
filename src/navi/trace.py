@@ -114,6 +114,15 @@ class TraceStore:
             )
             conn.execute(TRACE_BLOBS_TABLE.ddl)
             _ensure_schema_current(conn, TRACE_BLOBS_TABLE)
+        self.clean_old_traces()
+
+    def clean_old_traces(self, days: int = 30) -> None:
+        """Deletes traces older than the specified number of days to prevent DB bloat."""
+        cutoff = __import__("time").time() - (days * 24 * 3600)
+        with connect(self.db_path) as conn:
+            conn.execute("DELETE FROM trace_events WHERE created_at < ?", (cutoff,))
+            # We don't clean trace_blobs here since multiple events might reference them, 
+            # or we could delete orphaned blobs later if needed.
 
     @staticmethod
     def new_trace_id() -> str:
@@ -263,15 +272,16 @@ class TraceStore:
         events = [TraceEvent(*row[:10], bool(row[10]), *row[11:]) for row in rows]
         return self._resolve_events_blobs(events)
 
-    def list_trace_ids(self, *, limit: int = 50) -> list[str]:
+    def list_trace_ids(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None) -> list[str]:
+        query = "SELECT trace_id FROM trace_events GROUP BY trace_id"
+        if has_error is True:
+            query += " HAVING MIN(ok) = 0"
+        elif has_error is False:
+            query += " HAVING MIN(ok) != 0"
+        
+        query += " ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?"
         with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT trace_id FROM trace_events
-                GROUP BY trace_id ORDER BY MAX(created_at) DESC LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+            rows = conn.execute(query, (limit, offset)).fetchall()
         return [row[0] for row in rows]
 
     def _fetch_blobs(self, hashes: set[str]) -> dict[str, str]:

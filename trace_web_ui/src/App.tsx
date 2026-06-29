@@ -90,6 +90,11 @@ function App() {
   const [traceData, setTraceData] = useState<TraceData | null>(null);
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  
+  // List Filters
+  const [listHasError, setListHasError] = useState(false);
+  const [listLimit, setListLimit] = useState(50);
+
 
   // Filters & Search
   const [showErrorsOnly, setShowErrorsOnly] = useState(false);
@@ -103,12 +108,16 @@ function App() {
       fetchTraceIds(false);
     }, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [listHasError, listLimit]);
 
   const fetchTraceIds = async (showRefresh = false) => {
     if (showRefresh) setIsRefreshing(true);
     try {
-      const res = await axios.get('/v1/traces');
+      const params: any = { limit: listLimit };
+      if (listHasError) {
+        params.has_error = true;
+      }
+      const res = await axios.get('/v1/traces', { params });
       // Robustly handle both enveloped and raw responses
       const rawData = res.data;
       const actualData = (rawData && rawData.data && rawData.data.trace_ids) ? rawData.data : rawData;
@@ -166,6 +175,23 @@ function App() {
             title="Refresh traces"
           >
             <RefreshCw size={16} />
+          </button>
+        </div>
+        <div style={{ padding: '0 15px 10px', display: 'flex', gap: 8 }}>
+          <button 
+            className={`filter-btn ${listHasError ? 'active error' : ''}`}
+            style={{ flex: 1, padding: '4px 8px', fontSize: '0.75rem' }}
+            onClick={() => setListHasError(!listHasError)}
+          >
+            <XCircle size={12} style={{ marginRight: 4 }} />
+            Failed Only
+          </button>
+          <button 
+            className="filter-btn"
+            style={{ flex: 1, padding: '4px 8px', fontSize: '0.75rem' }}
+            onClick={() => setListLimit(listLimit + 50)}
+          >
+            Load More
           </button>
         </div>
         <div className="trace-list">
