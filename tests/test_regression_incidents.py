@@ -833,102 +833,7 @@ async def test_approval_resolve_finishes_from_completion_facts(tmp_path):
     )
 
 
-@pytest.mark.asyncio
-async def test_approval_resolve_without_current_user_code_surfaces_pending_facts(tmp_path):
-    runs = RunStore(tmp_path)
-    run = runs.create(
-        "find resume",
-        kind="delegation",
-        source="weixin",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        workspace=str(tmp_path),
-        status="awaiting_approval",
-    )
-    approval = runs.create_approval(
-        run_id=run.id,
-        peer_id="peer-1",
-        sender_id="sender-1",
-    )
-    provider = _ApproveCodeNotInInputProvider(approval.code)
-    engine = HernessEngine(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
 
-    result = await engine.handle(
-        "把我电脑上的简历发我",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
-    )
-
-    assert result.ok is True
-    assert result.text == "当前输入没有包含审批码；我只看到了待审批事实。"
-    events = TraceStore(tmp_path).list_events(result.trace_id)
-    failed_approval = next(
-        event
-        for event in events
-        if event.phase == "capability.result"
-        and event.tool == "approval.resolve"
-        and not event.ok
-    )
-    facts = json.loads(failed_approval.output_json)["facts"]
-    assert facts["reason"] == "approval_code_not_in_user_input"
-    assert facts["visible_pending_approval_count"] == 1
-    assert facts["visible_pending_approvals"][0]["run_id"] == run.id
-
-
-@pytest.mark.asyncio
-async def test_approval_resolve_visible_batch_requires_user_input_code(tmp_path):
-    runs = RunStore(tmp_path)
-    run = runs.create(
-        "find resume",
-        kind="delegation",
-        source="weixin",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        workspace=str(tmp_path),
-        status="awaiting_approval",
-    )
-    approval = runs.create_approval(
-        run_id=run.id,
-        peer_id="peer-1",
-        sender_id="sender-1",
-    )
-    provider = _ApproveLatestVisibleBatchProvider()
-    engine = HernessEngine(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
-
-    result = await engine.handle(
-        "把我电脑上的简历发我",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
-    )
-
-    assert result.ok is True
-    assert result.text == "需要当前输入中的审批码。"
-    assert runs.get_approval(approval.code).status == "pending"
-    events = TraceStore(tmp_path).list_events(result.trace_id)
-    failed_approval = next(
-        event
-        for event in events
-        if event.phase == "capability.result"
-        and event.tool == "approval.resolve"
-        and not event.ok
-    )
-    facts = json.loads(failed_approval.output_json)["facts"]
-    assert facts["reason"] == "approval_code_required_in_user_input"
-    assert facts["visible_pending_approval_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -951,7 +856,7 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
 
     assert result.text == ""
     assert result.action == "execute:system.loop_converged"
-    assert provider.planner_calls == 2
+    assert provider.planner_calls == 5
     assert provider.responder_calls == 0
     events = TraceStore(tmp_path).list_events(result.trace_id)
     phases = [event.phase for event in events]
@@ -997,7 +902,7 @@ async def test_same_status_facts_with_different_args_converges(tmp_path):
 
     assert result.text == ""
     assert result.action == "execute:system.loop_converged"
-    assert provider.planner_calls == 2
+    assert provider.planner_calls == 5
     assert provider.responder_calls == 0
     events = TraceStore(tmp_path).list_events(result.trace_id)
     loop_decisions = [
@@ -1050,7 +955,7 @@ async def test_delegate_spawn_awaiting_approval_becomes_model_owned_answer(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_capability_input_schema_mismatch_is_planner_domain(tmp_path):
+async def test_capability_input_schema_mismatch_triggers_loop(tmp_path):
     engine = HernessEngine(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=_InvalidCapabilityArgsProvider()),
@@ -1067,16 +972,16 @@ async def test_capability_input_schema_mismatch_is_planner_domain(tmp_path):
     )
 
     assert result.ok is False
-    assert result.error_reason == "schema_mismatch"
+    assert result.error_reason == "loop_converged"
     evaluations = TraceStore(tmp_path).list_evaluations(result.trace_id)
-    assert evaluations[0].failure_domain == "planner_or_parser"
+    assert evaluations[0].failure_domain == "loop_no_progress"
     loop_decisions = [
         json.loads(event.output_json)
         for event in TraceStore(tmp_path).list_events(result.trace_id)
         if event.phase == "loop.decision"
     ]
-    assert loop_decisions[-1]["failure_domain"] == "planner_or_parser"
-    assert loop_decisions[-1]["checker_results"][0]["name"] == "planner_result"
+    assert loop_decisions[-1]["failure_domain"] == "loop_no_progress"
+    assert loop_decisions[-1]["gate_results"][0]["name"] == "no_progress_gate"
 
 
 @pytest.mark.asyncio

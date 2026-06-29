@@ -170,6 +170,10 @@ class HernessEngine(EnginePhasesMixin):
         progress_gate = LoopProgressGate()
 
         while True:
+            if len(observations) > 6:
+                compacted = await self._compact_observations(observations)
+                observations = [compacted]
+
             step_result = await self._react_step(
                 text=text,
                 trace_id=trace_id,
@@ -224,6 +228,8 @@ class HernessEngine(EnginePhasesMixin):
                     peer_id=peer_id,
                     sender_id=sender_id,
                 )
+                if control.reflection_prompt:
+                    observations.append(control.reflection_prompt)
                 if control.effect == LoopControlEffect.FINALIZE_STABLE:
                     result = step_result.result
                     self.trace.add_event(
@@ -282,7 +288,7 @@ class HernessEngine(EnginePhasesMixin):
             if goal_id:
                 goal_ids.add(goal_id)
 
-            if result.terminal:
+            if result.terminal and result.ok:
                 # Terminal condition met; finalize and return
                 self._record_loop_decision(
                     trace_id,
@@ -336,6 +342,8 @@ class HernessEngine(EnginePhasesMixin):
                 peer_id=peer_id,
                 sender_id=sender_id,
             )
+            if control.reflection_prompt:
+                observations.append(control.reflection_prompt)
             if control.effect == LoopControlEffect.FINALIZE_STABLE:
                 if control.convergence_message:
                     self.trace.add_event(

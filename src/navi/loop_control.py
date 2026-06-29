@@ -33,6 +33,7 @@ class LoopControlResult:
     decisions: tuple[LoopDecision, ...]
     progress_signature: str = ""
     convergence_message: str = ""
+    reflection_prompt: str = ""
 
 
 @dataclass(frozen=True)
@@ -50,9 +51,7 @@ class RecoveryStepFrame(RuntimeStepFrame):
     recovery_observation: str = ""
 
 
-TerminalDecisionBuilder = Callable[
-    [AgentTurnResult, dict[str, Any] | None, set[str], str], LoopDecision | None
-]
+
 
 
 def reduce_recovery_step(
@@ -79,6 +78,14 @@ def reduce_recovery_step(
             ),
         ),
     )
+    if progress.count == 4:
+        return LoopControlResult(
+            effect=LoopControlEffect.CONTINUE_LOOP,
+            decisions=(recovery,),
+            progress_signature=progress.signature,
+            reflection_prompt="[System Warning] You have repeated the exact same failed action 4 times in a row. You are stuck in a loop. Stop repeating this action. Write a brief reflection in your 'reason' field explaining why your previous approach failed, and immediately switch to a different strategy or ask the user for help."
+        )
+
     if progress.repeated:
         return LoopControlResult(
             effect=LoopControlEffect.FINALIZE_STABLE,
@@ -154,6 +161,14 @@ def reduce_runtime_step(
         )
 
     progress = progress_gate.observe(frame.progress_signature)
+    if progress.count == 4:
+        return LoopControlResult(
+            effect=LoopControlEffect.CONTINUE_LOOP,
+            decisions=(),
+            progress_signature=progress.signature,
+            reflection_prompt="[System Warning] You have repeated the exact same failed action 4 times in a row. You are stuck in a loop. Stop repeating this action. Write a brief reflection in your 'reason' field explaining why your previous approach failed, and immediately switch to a different strategy or ask the user for help."
+        )
+
     if progress.repeated:
         return LoopControlResult(
             effect=LoopControlEffect.FINALIZE_STABLE,
@@ -208,10 +223,6 @@ def terminal_loop_decision(
     tool: str,
     goal_ids: set[str],
 ) -> LoopDecision:
-    for builder in TERMINAL_DECISION_BUILDERS:
-        decision = builder(result, facts, goal_ids, tool)
-        if decision is not None:
-            return decision
     return _terminal_result_decision(result, facts, goal_ids, tool)
 
 
@@ -356,53 +367,7 @@ def _converged_decision(
     )
 
 
-def _capability_error_terminal_decision(
-    result: AgentTurnResult,
-    facts: dict[str, Any] | None,
-    goal_ids: set[str],
-    tool: str,
-) -> LoopDecision | None:
-    if getattr(result, "ok", True):
-        return None
-    input_schema_mismatch = _capability_error_is_input_schema_mismatch(facts)
-    reason = (
-        LoopReason.PLANNER_OR_PARSER_FAILURE
-        if input_schema_mismatch
-        else LoopReason.CAPABILITY_FAILURE
-    )
-    return LoopDecision(
-        decision=LoopDecisionKind.FAILED,
-        reason=reason,
-        phase=LoopPhase.PLANNER if input_schema_mismatch else LoopPhase.CAPABILITY,
-        failure_domain=(
-            TraceFailureDomain.PLANNER_OR_PARSER
-            if input_schema_mismatch
-            else TraceFailureDomain.CAPABILITY_FAILURE
-        ),
-        tool=tool or result.action,
-        run_id=result.run_id,
-        goal_ids=tuple(sorted(goal_ids)),
-        checker_results=(
-            LoopCheckResult(
-                name=(
-                    LoopCheckName.PLANNER_RESULT
-                    if input_schema_mismatch
-                    else LoopCheckName.CAPABILITY_RESULT
-                ),
-                passed=False,
-                severity=LoopSeverity.ERROR,
-                reason=str((facts or {}).get(CAPABILITY_ERROR_REASON_KEY) or reason),
-                evidence={
-                    key: value
-                    for key, value in {
-                        CAPABILITY_ERROR_REASON_KEY: (facts or {}).get(CAPABILITY_ERROR_REASON_KEY),
-                        "error_type": (facts or {}).get("error_type"),
-                    }.items()
-                    if value
-                },
-            ),
-        ),
-    )
+
 
 
 
@@ -431,9 +396,7 @@ def _terminal_result_decision(
     )
 
 
-TERMINAL_DECISION_BUILDERS: tuple[TerminalDecisionBuilder, ...] = (
-    _capability_error_terminal_decision,
-)
+
 
 
 WorkflowStepDecisionBuilder = Callable[[AgentTurnResult, str, str], LoopDecision | None]

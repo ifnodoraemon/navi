@@ -24,6 +24,7 @@ class LoopDecisionKind(StrEnum):
     FINALIZE = "finalize"
     BLOCKED = "blocked"
     FAILED = "failed"
+    REFLECT_AND_REPLAN = "reflect_and_replan"
 
 
 class LoopReason(StrEnum):
@@ -230,20 +231,23 @@ class LoopDecisionSummary:
 class LoopProgressObservation:
     signature: str
     repeated: bool
+    count: int = 1
 
 
 @dataclass
 class LoopProgressGate:
-    seen_signatures: set[str] = field(default_factory=set)
+    seen_signatures: dict[str, int] = field(default_factory=dict)
 
     def observe(self, signature: str) -> LoopProgressObservation:
         normalized = signature.strip()
         if not normalized:
-            return LoopProgressObservation(signature="", repeated=False)
-        repeated = normalized in self.seen_signatures
-        if not repeated:
-            self.seen_signatures.add(normalized)
-        return LoopProgressObservation(signature=normalized, repeated=repeated)
+            return LoopProgressObservation(signature="", repeated=False, count=1)
+            
+        self.seen_signatures[normalized] = self.seen_signatures.get(normalized, 0) + 1
+        count = self.seen_signatures[normalized]
+        repeated = count >= 5
+        
+        return LoopProgressObservation(signature=normalized, repeated=repeated, count=count)
 
 
 NON_OK_LOOP_DECISIONS = frozenset(

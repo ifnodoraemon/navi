@@ -63,17 +63,33 @@ class AgentRuntime:
             role=operating_context.role,
         )
 
+        system_prompt = build_system_prompt(
+            home=self.home,
+            memory_context=memory_context,
+            skills_context=skills_context,
+            operating_context=operating_context,
+        )
+        scratchpad = self.get_scratchpad()
+        if scratchpad:
+            system_prompt += f"\n\n# Dynamic Scratchpad (Working Memory)\n{scratchpad}"
+
         messages = [
             ChatMessage(
                 "system",
-                build_system_prompt(
-                    home=self.home,
-                    memory_context=memory_context,
-                    skills_context=skills_context,
-                    operating_context=operating_context,
-                ),
+                system_prompt,
             )
         ]
         for item in self.memory.get_messages(session_id):
             messages.append(ChatMessage(item.role, item.content))
         return messages
+
+    def get_scratchpad(self) -> str:
+        path = self.home / ".navi" / "scratchpad.md"
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
+        return ""
+
+    def update_scratchpad(self, content: str) -> None:
+        path = self.home / ".navi" / "scratchpad.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")

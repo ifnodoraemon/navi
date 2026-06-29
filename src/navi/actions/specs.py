@@ -3,6 +3,33 @@ from ..tools import ToolSpec
 
 ACTION_SPECS = [
     ToolSpec(
+        name="scratchpad.update",
+        capability_class="memory",
+        execution_contexts=("turn", "actuator", "react", "workflow_step"),
+        description="""Updates the dynamic scratchpad that acts as the agent's working memory.""",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The full markdown content to write to the scratchpad.",
+                },
+            },
+            "required": ["content"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "scratchpad_updated": {"type": "boolean"},
+                "content": {"type": "string"},
+            },
+        },
+        facts_only=True,
+        mutates=True,
+        permission="write",
+        source="action",
+    ),
+    ToolSpec(
         name="final.answer",
         capability_class="conversation",
         execution_contexts=("turn", "actuator", "react", "workflow_step"),

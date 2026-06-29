@@ -65,6 +65,30 @@ class MemoryAddCapability(BaseCapability):
         )
 
 
+@capability("scratchpad_update")
+class ScratchpadUpdateCapability(BaseCapability):
+    """Updates the dynamic scratchpad that acts as the agent's working memory."""
+
+    @guarded
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        content = _arg_text(args, "content")
+        if not content:
+            raise SchemaMismatch("scratchpad.update requires content.")
+
+        path = self.home / ".navi" / "scratchpad.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+        facts = {"scratchpad_updated": True, "content": content}
+        return _fact_result("scratchpad", facts, run_id="scratchpad")
+
+
 def _confidence(value: Any) -> float:
     try:
         return max(0.0, min(1.0, float(value)))
