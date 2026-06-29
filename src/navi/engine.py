@@ -760,6 +760,19 @@ class HernessEngine(EnginePhasesMixin):
                 task.cancel()
             await asyncio.gather(*tuple(self._background_tasks), return_exceptions=True)
 
+    async def _compact_observations(self, observations: list[str]) -> str:
+        """Compact a long list of observations to prevent context window overflow."""
+        if len(observations) <= 6:
+            return "\n\n".join(observations)
+        
+        omitted = len(observations) - 5
+        compacted = (
+            observations[:2] 
+            + [f"... ({omitted} intermediate observations compacted) ..."] 
+            + observations[-3:]
+        )
+        return "\n\n".join(compacted)
+
     def _memory_semaphore(self) -> asyncio.Semaphore:
         if self._memory_sem is None:
             self._memory_sem = asyncio.Semaphore(2)
