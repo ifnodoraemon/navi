@@ -429,8 +429,8 @@ SYSCALL_PLANNER_SPEC: Any = {
         "Recent conversation and observations are state inputs; the model selects the next syscall.",
     ],
     "intent_clarification_rules": [
-        "If the user's initial request is vague, extremely short, or missing critical context, YOU MUST FIRST output an `ask.user` syscall to request clarification before calling any other tool. DO NOT guess their intention.",
-        "If the user's initial request implies a complex, multi-step goal (e.g. 'build an app', 'refactor this module'), YOU MUST FIRST output a `scratchpad.update` syscall to break down the goal into a detailed TODO list before executing.",
+        "If the user's initial request is vague, extremely short, or missing critical context, you must request clarification from the user before executing any state-mutating actions. Do not guess their intention.",
+        "If the user's initial request implies a complex, multi-step goal, you must create a detailed step-by-step execution plan in your working memory/scratchpad before executing the first step.",
         "Only skip clarification/pre-planning if the request is unambiguous and immediately actionable as a single step."
     ],
     "prompt_boundaries": [
