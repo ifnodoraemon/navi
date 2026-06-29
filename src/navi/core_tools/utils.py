@@ -28,41 +28,80 @@ def _positive_int(value: Any, *, default: int, maximum: int) -> int:
 
 
 def _web_search(args: dict[str, Any]) -> ToolResult:
-    import urllib.request
     import urllib.parse
-    import json as _json
-
-    query = str(args.get("query") or "").strip()
+    import subprocess
+    import re
+    
+    query = args.get("query")
     if not query:
-        return ToolResult(tool="web.search", ok=False, error="query is required")
-    base_url = (
-        os.environ.get("NAVI_SEARCH_BASE_URL", "https://duckduckgo.com").rstrip("/")
-    )
-    # SSRF guard mirroring http.fetch: the search base URL must resolve to a
-    # public host. Blocks localhost/private/link-local/metadata even if
-    # NAVI_SEARCH_BASE_URL is misconfigured to point inward.
-    parsed_base = urlparse(base_url)
-    base_host = (parsed_base.hostname or "").lower()
-    if (
-        parsed_base.scheme not in ("http", "https")
-        or not base_host
-        or not _is_public_http_host(base_host, port=parsed_base.port)
-    ):
         return ToolResult(
             tool="web.search",
             ok=False,
-            error="search base url must be a public http/https host",
-            facts={"query": query},
+            error="query is required",
+            facts={
+                CAPABILITY_ERROR_REASON_KEY: "missing_required_argument",
+                "provider": "curl_bing",
+            },
         )
-    encoded = urllib.parse.urlencode({"q": query, "format": "json", "no_html": "1"})
-    url = f"{base_url}/?{encoded}"
+    
+    encoded = urllib.parse.quote(query)
+    url = f"https://cn.bing.com/search?q={encoded}"
+    
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Navi/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = _json.loads(resp.read().decode("utf-8", errors="replace"))
-        return ToolResult(tool="web.search", ok=True, facts={"query": query, "response": data})
+        # Use curl to fetch the page, mimicking a standard browser
+        result = subprocess.run(
+            [
+                "curl", "-sL", 
+                "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
+                url
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=15
+        )
+        html = result.stdout
+        
+        # Simple HTML stripping
+        # 1. Remove script, style, SVG, etc.
+        html = re.sub(r'<(script|style|svg|symbol|use|path).*?>.*?</\1>', ' ', html, flags=re.IGNORECASE | re.DOTALL)
+        # 2. Remove tags but keep spaces
+        text = re.sub(r'<[^>]+>', ' ', html)
+        # 3. Collapse whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        facts = {
+            "query": query,
+            "provider": "curl_bing",
+            "response": {
+                "text": text[:15000] # Limit size to prevent blowing up the context window
+            }
+        }
+        
+        return ToolResult(tool="web.search", ok=True, facts=facts)
+    except subprocess.TimeoutExpired:
+        return ToolResult(
+            tool="web.search",
+            ok=False,
+            error="search request timed out",
+            facts={
+                CAPABILITY_ERROR_REASON_KEY: "search_timeout",
+                "query": query,
+                "provider": "curl_bing",
+            },
+        )
     except Exception as exc:
-        return ToolResult(tool="web.search", ok=False, error=str(exc), facts={"query": query})
+        return ToolResult(
+            tool="web.search",
+            ok=False,
+            error=str(exc),
+            facts={
+                CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
+                "query": query,
+                "provider": "curl_bing",
+                "error_type": type(exc).__name__,
+            },
+        )
 
 
 def _http_fetch(args: dict[str, Any]) -> ToolResult:
