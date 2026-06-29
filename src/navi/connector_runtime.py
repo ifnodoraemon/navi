@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, FrozenSet
+from typing import TYPE_CHECKING, Any, FrozenSet
 
 from .engine import HernessEngine
 from .runtime import AgentRuntime
@@ -104,6 +105,7 @@ class ConnectorMessage:
     text: str
     source: str
     session_alias_prefix: str
+    facts: dict[str, Any] = field(default_factory=dict)
 
     @property
     def session_alias(self) -> str:
@@ -111,7 +113,13 @@ class ConnectorMessage:
 
     @property
     def content_key(self) -> str:
-        digest = hashlib.md5(self.text.encode()).hexdigest()
+        payload = json.dumps(
+            {"text": self.text, "facts": self.facts},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        digest = hashlib.md5(payload.encode()).hexdigest()
         return f"content:{self.sender_id}:{digest}"
 
 
@@ -174,14 +182,9 @@ class ConnectorIngressRuntime:
         self.event_bus.subscribe("user_intent", on_user_intent)
 
         from .event_bus import RunCompletedEvent, ActionSuspendedEvent
-        from .connector_registry import render_approval_reply
 
         async def on_action_suspended(event: ActionSuspendedEvent) -> None:
-            text = render_approval_reply(
-                event.source,
-                code=event.approval_code,
-                run_id=event.run_id,
-            )
+            text = f"action_suspended\nrun_id={event.run_id}\napproval_code={event.approval_code}"
             await self.event_bus.send_response(
                 ResponseReadyEvent(
                     source_agent="governance_agent",

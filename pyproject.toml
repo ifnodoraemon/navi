@@ -18,6 +18,7 @@ dependencies = [
     "questionary>=2.0",
     "httpx-sse>=0.4",
     "sse-starlette>=2.0",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]

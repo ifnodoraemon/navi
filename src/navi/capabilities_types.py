@@ -83,6 +83,7 @@ class CapabilityResult:
     facts: dict[str, Any] | None = None
     provenance: str = ""
     error_reason: str = "unknown"
+    yields_control: bool = False
 
 
 @dataclass(frozen=True)

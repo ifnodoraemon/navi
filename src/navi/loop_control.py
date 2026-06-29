@@ -5,8 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable
 
-from .capability_contract import CAPABILITY_ACTION_ERROR, CAPABILITY_ERROR_REASON_KEY
-from .conversation_contract import CONVERSATION_ASK_ACTIONS
+from .capability_contract import CAPABILITY_ERROR_REASON_KEY
 from .engine_types import AgentTurnResult
 from .lifecycle import RUN_STATUS_AWAITING_APPROVAL
 from .loop import (
@@ -53,8 +52,7 @@ class RecoveryStepFrame(RuntimeStepFrame):
 
 
 TerminalDecisionBuilder = Callable[
-    [AgentTurnResult, dict[str, Any] | None, str, set[str], str],
-    LoopDecision | None,
+    [AgentTurnResult, dict[str, Any] | None, set[str], str], LoopDecision | None
 ]
 
 
@@ -108,17 +106,21 @@ def reduce_runtime_step(
     *,
     progress_gate: LoopProgressGate,
 ) -> LoopControlResult:
-    approval_decision = _approval_terminal_decision(
-        frame.result,
-        frame.facts,
-        frame.pending_approval_prompt,
-        frame.goal_ids,
-        frame.tool,
-    )
-    if approval_decision is not None:
+    if _facts_waiting_for_approval(frame.facts):
         return LoopControlResult(
             effect=LoopControlEffect.FINALIZE_STABLE,
-            decisions=(approval_decision,),
+            decisions=(
+                LoopDecision(
+                    decision=LoopDecisionKind.BLOCKED,
+                    reason=LoopReason.APPROVAL_REQUIRED,
+                    phase=LoopPhase.PLANNER,
+                    failure_domain=TraceFailureDomain.NONE,
+                    tool=frame.tool,
+                    run_id=frame.result.run_id,
+                    evidence=frame.facts,
+                    goal_ids=tuple(frame.goal_ids),
+                ),
+            ),
             progress_signature=frame.progress_signature,
         )
 
@@ -181,15 +183,14 @@ def terminal_loop_decision(
     result: AgentTurnResult,
     facts: dict[str, Any] | None,
     *,
-    pending_approval_prompt: str,
     tool: str,
     goal_ids: set[str],
 ) -> LoopDecision:
     for builder in TERMINAL_DECISION_BUILDERS:
-        decision = builder(result, facts, pending_approval_prompt, goal_ids, tool)
+        decision = builder(result, facts, goal_ids, tool)
         if decision is not None:
             return decision
-    return _terminal_result_decision(result, facts, pending_approval_prompt, goal_ids, tool)
+    return _terminal_result_decision(result, facts, goal_ids, tool)
 
 
 def workflow_step_loop_decision(
@@ -206,11 +207,10 @@ def workflow_step_loop_decision(
 
 
 def workflow_step_block_reason(result: AgentTurnResult) -> str:
-    if result.action in CONVERSATION_ASK_ACTIONS:
-        return str(LoopReason.WORKFLOW_STEP_REQUESTED_USER_INPUT)
-    error_reason = _capability_error_reason(result.facts)
-    if result.action == CAPABILITY_ACTION_ERROR or error_reason:
-        return error_reason or str(LoopReason.WORKFLOW_STEP_CAPABILITY_FAILURE)
+    if getattr(result, "yields_control", False):
+        return getattr(result, "error_reason", "") or "user_input_requested"
+    if not getattr(result, "ok", True):
+        return getattr(result, "error_reason", "") or (result.facts or {}).get("error_reason", "")
     return ""
 
 
@@ -337,12 +337,10 @@ def _converged_decision(
 def _capability_error_terminal_decision(
     result: AgentTurnResult,
     facts: dict[str, Any] | None,
-    pending_approval_prompt: str,
     goal_ids: set[str],
     tool: str,
 ) -> LoopDecision | None:
-    del pending_approval_prompt
-    if result.action != CAPABILITY_ACTION_ERROR:
+    if getattr(result, "ok", True):
         return None
     input_schema_mismatch = _capability_error_is_input_schema_mismatch(facts)
     reason = (
@@ -385,49 +383,14 @@ def _capability_error_terminal_decision(
     )
 
 
-def _approval_terminal_decision(
-    result: AgentTurnResult,
-    facts: dict[str, Any] | None,
-    pending_approval_prompt: str,
-    goal_ids: set[str],
-    tool: str,
-) -> LoopDecision | None:
-    if not (_facts_waiting_for_approval(facts) or pending_approval_prompt):
-        return None
-    deduplicated = bool(facts and facts.get("deduplicated"))
-    reason = (
-        LoopReason.APPROVAL_ALREADY_PENDING
-        if deduplicated
-        else LoopReason.APPROVAL_REQUIRED
-    )
-    return LoopDecision(
-        decision=LoopDecisionKind.PAUSE_FOR_APPROVAL,
-        reason=reason,
-        phase=LoopPhase.RUNTIME,
-        failure_domain=TraceFailureDomain.APPROVAL_LOOP if deduplicated else TraceFailureDomain.NONE,
-        tool=tool or result.action,
-        run_id=result.run_id,
-        workflow_id=str((facts or {}).get("workflow_id") or ""),
-        goal_ids=tuple(sorted(goal_ids)),
-        gate_results=(
-            LoopCheckResult(
-                name=LoopCheckName.APPROVAL_GATE,
-                passed=not deduplicated,
-                severity=LoopSeverity.WARNING if deduplicated else LoopSeverity.INFO,
-                reason=reason,
-            ),
-        ),
-    )
-
 
 def _terminal_result_decision(
     result: AgentTurnResult,
     facts: dict[str, Any] | None,
-    pending_approval_prompt: str,
     goal_ids: set[str],
     tool: str,
 ) -> LoopDecision:
-    del facts, pending_approval_prompt
+    del facts
     return LoopDecision(
         decision=LoopDecisionKind.FINALIZE,
         reason=LoopReason.TERMINAL_RESULT,
@@ -448,7 +411,6 @@ def _terminal_result_decision(
 
 TERMINAL_DECISION_BUILDERS: tuple[TerminalDecisionBuilder, ...] = (
     _capability_error_terminal_decision,
-    _approval_terminal_decision,
 )
 
 
@@ -577,7 +539,4 @@ def _capability_error_is_input_schema_mismatch(facts: dict[str, Any] | None) -> 
     )
 
 
-def _capability_error_reason(facts: dict[str, Any] | None) -> str:
-    if not isinstance(facts, dict):
-        return ""
-    return str(facts.get(CAPABILITY_ERROR_REASON_KEY) or "")
+

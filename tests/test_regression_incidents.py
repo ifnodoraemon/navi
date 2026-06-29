@@ -521,6 +521,7 @@ class _AskOnlyEngine:
             action="ask",
             model_role="responder",
             terminal=True,
+            yields_control=True,
         )
 
 
@@ -579,11 +580,11 @@ async def test_expired_task_cleanup_finishes_from_completion_facts(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.text == "已删除 1 个过期任务。"
+    assert result.text == ""
     assert result.terminal is True
     assert runs.get(expired.id) is None
     assert provider.planner_calls == 1
-    assert provider.responder_calls == 1
+    assert provider.responder_calls == 0
     events = TraceStore(tmp_path).list_events(result.trace_id)
     phases = [event.phase for event in events]
     assert "runtime.converged" not in phases
@@ -631,10 +632,10 @@ async def test_approval_resolve_finishes_from_completion_facts(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.text == "批准成功，任务已进入队列。"
+    assert result.text == ""
     assert runs.get(run.id).status == "queued"
     assert provider.planner_calls == 1
-    assert provider.responder_calls == 1
+    assert provider.responder_calls == 0
     events = TraceStore(tmp_path).list_events(result.trace_id)
     phases = [event.phase for event in events]
     assert "runtime.converged" not in phases
@@ -667,9 +668,10 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.text == "当前没有任务。"
+    assert result.text == ""
+    assert result.action == "execute:system.loop_converged"
     assert provider.planner_calls == 2
-    assert provider.responder_calls == 1
+    assert provider.responder_calls == 0
     events = TraceStore(tmp_path).list_events(result.trace_id)
     phases = [event.phase for event in events]
     assert "runtime.converged" in phases
@@ -712,9 +714,10 @@ async def test_same_status_facts_with_different_args_converges(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.text == "任务已过期。"
+    assert result.text == ""
+    assert result.action == "execute:system.loop_converged"
     assert provider.planner_calls == 2
-    assert provider.responder_calls == 1
+    assert provider.responder_calls == 0
     events = TraceStore(tmp_path).list_events(result.trace_id)
     loop_decisions = [
         json.loads(event.output_json)
@@ -750,14 +753,14 @@ async def test_delegate_spawn_awaiting_approval_pauses_without_replanning(tmp_pa
         await engine.shutdown()
 
     assert provider.planner_calls == 1
-    assert provider.responder_calls == 1
-    assert result.approval_affordance
+    assert provider.responder_calls == 0
+    assert "approval" in result.facts
     decisions = [
         json.loads(event.output_json)
         for event in TraceStore(tmp_path).list_loop_decisions(result.trace_id)
     ]
     assert any(
-        item["decision"] == "pause_for_approval"
+        item["decision"] == "blocked"
         and item["reason"] == "approval_required"
         for item in decisions
     )
@@ -780,7 +783,8 @@ async def test_capability_input_schema_mismatch_is_planner_domain(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.action == "capability_error"
+    assert result.ok is False
+    assert result.error_reason == "schema_mismatch"
     evaluations = TraceStore(tmp_path).list_evaluations(result.trace_id)
     assert evaluations[0].failure_domain == "planner_or_parser"
     loop_decisions = [

@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from navi.runtime import AgentRuntime
+from navi.weixin.client import ITEM_FILE, MEDIA_FILE, WeixinClient
+from navi.weixin.config import WeixinConfig
+from navi.weixin.models import WeixinAccount, WeixinUpdate
+from navi.weixin.service import WeixinService
+
+
+class NoModelCalls:
+    async def complete_for(self, role: str, messages: list[Any], **kwargs: Any) -> str:
+        raise AssertionError(f"unexpected model call: {role}")
+
+    def list_roles(self) -> list[str]:
+        return []
+
+
+@pytest.mark.asyncio
+async def test_get_updates_keeps_file_only_messages_as_attachment(monkeypatch: pytest.MonkeyPatch):
+    client = WeixinClient(base_url="https://ilink.example", token="token")
+
+    async def fake_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        assert path == "/ilink/bot/getupdates"
+        return {
+            "msgs": [
+                {
+                    "message_id": "msg-file",
+                    "from_user_id": "wx-user",
+                    "item_list": [
+                        {
+                            "type": ITEM_FILE,
+                            "file_item": {
+                                "file_name": "report.pdf",
+                                "len": "42",
+                                "media": {"encrypt_query_param": "encrypted-media"},
+                            },
+                        }
+                    ],
+                }
+            ],
+            "get_updates_buf": "next",
+        }
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    batch = await client.get_updates("acct", sync_buf="prev")
+
+    assert batch.sync_buf == "next"
+    assert len(batch.updates) == 1
+    update = batch.updates[0]
+    assert update.text == ""
+    assert update.attachments[0].kind == "file"
+    assert update.attachments[0].file_name == "report.pdf"
+    assert update.attachments[0].media_id == "encrypted-media"
+
+
+@pytest.mark.asyncio
+async def test_send_file_uploads_cdn_media_item(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    target = tmp_path / "report.pdf"
+    target.write_bytes(b"%PDF-1.4 test")
+    client = WeixinClient(
+        base_url="https://ilink.example",
+        cdn_base_url="https://cdn.example/c2c",
+        token="token",
+    )
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        del timeout
+        calls.append((path, payload))
+        if path == "/ilink/bot/getuploadurl":
+            assert payload["media_type"] == MEDIA_FILE
+            assert payload["to_user_id"] == "wx-user"
+            assert payload["rawsize"] == target.stat().st_size
+            return {"upload_param": "upload-param"}
+        if path == "/ilink/bot/sendmessage":
+            return {"ret": 0, "errcode": 0}
+        raise AssertionError(f"unexpected path: {path}")
+
+    async def fake_upload_ciphertext(*, upload_url: str, ciphertext: bytes) -> str:
+        assert upload_url.startswith("https://cdn.example/c2c/upload?")
+        assert len(ciphertext) >= target.stat().st_size
+        return "encrypted-query"
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "_upload_ciphertext", fake_upload_ciphertext)
+
+    await client.send_file(
+        account_id="acct",
+        peer_id="wx-user",
+        file_path=target,
+        context_token="ctx",
+    )
+
+    send_payload = calls[-1][1]["msg"]
+    assert send_payload["to_user_id"] == "wx-user"
+    assert send_payload["context_token"] == "ctx"
+    item = send_payload["item_list"][0]
+    assert item["type"] == ITEM_FILE
+    assert item["file_item"]["file_name"] == "report.pdf"
+    assert item["file_item"]["len"] == str(target.stat().st_size)
+    assert item["file_item"]["media"]["encrypt_query_param"] == "encrypted-query"
+
+
+class CaptureWeixinClient:
+    def __init__(self) -> None:
+        self.files: list[dict[str, Any]] = []
+        self.messages: list[dict[str, Any]] = []
+
+    async def get_typing_ticket(self, *, user_id: str, context_token: str = "") -> str:
+        return ""
+
+    async def send_file(self, **kwargs: Any) -> None:
+        self.files.append(kwargs)
+
+    async def send_message(self, **kwargs: Any) -> None:
+        self.messages.append(kwargs)
+
+
+class StaticIngress:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    async def handle(self, message: Any) -> str:
+        return self.text
+
+
+@pytest.mark.asyncio
+async def test_service_sends_media_directive_from_weixin_outbox(tmp_path: Path):
+    outbox = tmp_path / "weixin" / "outbox"
+    outbox.mkdir(parents=True)
+    report = outbox / "report.pdf"
+    report.write_bytes(b"report")
+    client = CaptureWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.ingress = StaticIngress(f"MEDIA:{report}\n已生成报告。")
+
+    handled = await service.handle_update(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
+        WeixinUpdate(
+            message_id="msg-1",
+            peer_id="wx-user",
+            sender_id="wx-user",
+            text="发报告",
+            context_token="ctx",
+        ),
+    )
+
+    assert handled is True
+    assert client.files[0]["file_path"] == report.resolve()
+    assert client.files[0]["context_token"] == "ctx"
+    assert client.messages[0]["text"] == "已生成报告。"

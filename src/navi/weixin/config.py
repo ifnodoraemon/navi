@@ -18,6 +18,7 @@ def _read_yaml(path: Path) -> dict:
 
 _DEFAULTS = _read_yaml(Path(__file__).with_name("specs") / "defaults.yaml")
 DEFAULT_WEIXIN_BASE_URL = str(_DEFAULTS["base_url"])
+DEFAULT_WEIXIN_CDN_BASE_URL = str(_DEFAULTS["cdn_base_url"])
 DEFAULT_WEIXIN_ENABLED = bool(_DEFAULTS["enabled"])
 DEFAULT_WEIXIN_DM_POLICY = str(_DEFAULTS["dm_policy"])
 DEFAULT_WEIXIN_GROUP_POLICY = str(_DEFAULTS["group_policy"])
@@ -29,6 +30,7 @@ class WeixinConfig:
     account_id: str = ""
     token: str = ""
     base_url: str = DEFAULT_WEIXIN_BASE_URL
+    cdn_base_url: str = DEFAULT_WEIXIN_CDN_BASE_URL
     dm_policy: str = DEFAULT_WEIXIN_DM_POLICY
     allowed_users: list[str] = field(default_factory=list)
     group_policy: str = DEFAULT_WEIXIN_GROUP_POLICY
@@ -49,6 +51,9 @@ def load_weixin_config(home: Path) -> WeixinConfig:
         token=str(env.get("WEIXIN_TOKEN", raw.get("token", ""))),
         base_url=str(
             env.get("WEIXIN_BASE_URL", raw.get("base_url", DEFAULT_WEIXIN_BASE_URL))
+        ).rstrip("/"),
+        cdn_base_url=str(
+            env.get("WEIXIN_CDN_BASE_URL", raw.get("cdn_base_url", DEFAULT_WEIXIN_CDN_BASE_URL))
         ).rstrip("/"),
         dm_policy=str(env.get("WEIXIN_DM_POLICY", raw.get("dm_policy", DEFAULT_WEIXIN_DM_POLICY))),
         allowed_users=_split_csv(env.get("WEIXIN_ALLOWED_USERS"))

@@ -17,7 +17,6 @@ from .capabilities_types import (
 )
 from .capability_contract import (
     CAPABILITY_ACTION_APPROVAL,
-    CAPABILITY_ACTION_ERROR,
     CAPABILITY_ERROR_REASON_KEY,
     CAPABILITY_REASON_KEY,
     CAPABILITY_REASON_SENSITIVE_APPROVAL,
@@ -36,6 +35,7 @@ logger = logging.getLogger("navi.capabilities")
 
 def _capability_error(
     *,
+    action: str,
     error_reason: str,
     message: str,
     observation_facts: dict[str, Any],
@@ -49,7 +49,7 @@ def _capability_error(
     }
     return CapabilityResult(
         ok=False,
-        action=CAPABILITY_ACTION_ERROR,
+        action=action,
         observation=json.dumps(observation_payload, ensure_ascii=False, sort_keys=True),
         message=message,
         terminal=terminal,
@@ -169,12 +169,14 @@ class CapabilityRegistry:
         handler = self.handlers.get(name)
         if handler is None:
             return _capability_error(
+                action=f"execute:{name}",
                 error_reason="not_found",
                 message=f"capability not found: {name}",
                 observation_facts={"tool": name},
             )
         if not handler.spec.available_in(self.execution_context):
             return _capability_error(
+                action=f"execute:{name}",
                 error_reason="execution_context_unavailable",
                 message=f"capability {name} is not available in execution context {self.execution_context}",
                 observation_facts={
@@ -191,6 +193,7 @@ class CapabilityRegistry:
         if source_policy is not None:
             if name in source_policy.blocked_tools:
                 return _capability_error(
+                    action=f"execute:{name}",
                     error_reason="remote_tool_blocked",
                     message=f"remote connector policy blocks capability {name}",
                     observation_facts={
@@ -201,6 +204,7 @@ class CapabilityRegistry:
                 )
             if source_policy.allowed_tools and name not in source_policy.allowed_tools:
                 return _capability_error(
+                    action=f"execute:{name}",
                     error_reason="remote_tool_not_allowed",
                     message=f"remote connector policy blocks capability {name}",
                     observation_facts={
@@ -212,6 +216,7 @@ class CapabilityRegistry:
             if handler.spec.capability_class in source_policy.blocked_capability_classes:
                 capability_class = handler.spec.capability_class
                 return _capability_error(
+                    action=f"execute:{name}",
                     error_reason="remote_capability_class_blocked",
                     message=f"remote connector policy blocks capability class {capability_class}",
                     observation_facts={
@@ -224,6 +229,7 @@ class CapabilityRegistry:
             if not permission_allows(permission, source_policy.permission_ceiling):
                 ceiling = source_policy.permission_ceiling
                 return _capability_error(
+                    action=f"execute:{name}",
                     error_reason="remote_permission_ceiling",
                     message=f"remote connector ceiling {ceiling} blocks requested permission {permission}",
                     observation_facts={
@@ -235,6 +241,7 @@ class CapabilityRegistry:
                 )
         if not permission_allows(permission, actual_ceiling):
             return _capability_error(
+                action=f"execute:{name}",
                 error_reason="permission_ceiling",
                 message=f"permission ceiling {actual_ceiling} blocks requested permission {permission}",
                 observation_facts={
@@ -244,18 +251,20 @@ class CapabilityRegistry:
             )
         if not permission_allows(handler.spec.permission, permission):
             return _capability_error(
-                error_reason="permission_mismatch",
-                message=f"capability {name} is not available with permission {permission}",
+                action=f"execute:{name}",
+                error_reason="permission_escalation",
+                message=f"capability {name} requires {handler.spec.permission} but requested {permission}",
                 observation_facts={
                     "tool": name,
-                    "requested_permission": permission,
-                    "capability_permission": handler.spec.permission,
+                    "requested": permission,
+                    "required": handler.spec.permission,
                 },
             )
         call_args = args or {}
         input_schema_errors = json_schema_errors(call_args, handler.spec.input_schema)
         if input_schema_errors:
             return _capability_error(
+                action=f"execute:{name}",
                 error_reason="schema_mismatch",
                 message=f"capability {name} input schema mismatch",
                 observation_facts={
@@ -284,6 +293,7 @@ class CapabilityRegistry:
         if blocked is not None:
             facts = {"hook_decision": asdict(blocked)}
             return _capability_error(
+                action=f"execute:{name}",
                 error_reason="hook_blocked",
                 message=blocked.reason_code or f"hook_blocked:{blocked.hook}",
                 observation_facts={"tool": name, "hook": blocked.hook},
@@ -294,7 +304,8 @@ class CapabilityRegistry:
             result = await handler.invoke(call_args, permission=permission, context=context)
         except Exception as exc:
             logger.exception(f"Unhandled exception in capability {name}: {exc}")
-            result = _capability_error(
+            return _capability_error(
+                action=f"execute:{name}",
                 error_reason="internal_error",
                 message=f"capability {name} crashed: {exc}",
                 observation_facts={"tool": name, "error_type": type(exc).__name__},
@@ -304,6 +315,7 @@ class CapabilityRegistry:
             output_schema_errors = json_schema_errors(result.facts or {}, handler.spec.output_schema)
             if output_schema_errors:
                 result = _capability_error(
+                    action=f"execute:{name}",
                     error_reason="schema_mismatch",
                     message=f"capability {name} output schema mismatch",
                     observation_facts={
@@ -361,21 +373,18 @@ class CapabilityRegistry:
         action = f"execute:{spec.name}"
         if runs.has_approved_action(run_id, action):
             return None
-        task = runs.get(run_id)
-        approval = runs.create_approval(
-            run_id=run_id,
-            peer_id=context.peer_id or (task.peer_id if task else ""),
-            sender_id=context.sender_id or (task.sender_id if task else ""),
-            action=action,
-        )
-        from .connector_registry import render_approval_reply
-
-        message = render_approval_reply(
-            context.source,
-            code=approval.code,
-            run_id=run_id,
-            action=spec.name,
-        )
+        pending = runs.pending_approval_for_run(run_id)
+        if pending and pending.action == action:
+            approval = pending
+        else:
+            task = runs.get(run_id)
+            approval = runs.create_approval(
+                run_id=run_id,
+                peer_id=context.peer_id or (task.peer_id if task else ""),
+                sender_id=context.sender_id or (task.sender_id if task else ""),
+                action=action,
+            )
+        message = f"approval_required code={approval.code} action={spec.name}"
         runs.update_run(run_id, status=RUN_STATUS_AWAITING_APPROVAL, result_summary=message)
         facts = {
             "entity_type": "approval_request",
@@ -388,11 +397,11 @@ class CapabilityRegistry:
         }
         return CapabilityResult(
             ok=False,
-            action=CAPABILITY_ACTION_APPROVAL,
+            action=action,
             observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             message=message,
             run_id=run_id,
-            terminal=True,
+            terminal=False,
             facts=facts,
             error_reason="approval_required",
         )

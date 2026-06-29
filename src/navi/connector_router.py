@@ -36,6 +36,7 @@ class ConnectorRouter:
                 text=message.text,
                 source=message.source,
                 session_alias=message.session_alias,
+                facts=message.facts,
             )
 
             await self.event_bus.publish(event)

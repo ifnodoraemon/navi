@@ -9,14 +9,10 @@ from typing import Any
 
 from .capabilities import CapabilityRegistry
 from .capability_contract import (
-    CAPABILITY_ACTION_APPROVAL,
-    CAPABILITY_ACTION_ERROR,
-    CAPABILITY_ERROR_REASON_KEY,
     CAPABILITY_REASON_KEY,
     CAPABILITY_REASON_SENSITIVE_APPROVAL,
 )
 from .config import load_config
-from .conversation_contract import CONVERSATION_ASK_ACTIONS
 from .governance import GovernanceEngine
 from .evolution import EvolutionLedger
 from .goals import GoalStore
@@ -738,14 +734,11 @@ class ExecutionService:
     @staticmethod
     def _execution_status_from_turn_result(result) -> tuple[str, str]:
         facts = result.facts if isinstance(result.facts, dict) else {}
-        if result.action in CONVERSATION_ASK_ACTIONS:
+        if getattr(result, "yields_control", False):
             return RUN_STATUS_BLOCKED, "execution produced an ask action and is waiting for user input"
-        if (
-            result.action == CAPABILITY_ACTION_APPROVAL
-            or facts.get(CAPABILITY_REASON_KEY) == CAPABILITY_REASON_SENSITIVE_APPROVAL
-        ):
+        if facts.get(CAPABILITY_REASON_KEY) == CAPABILITY_REASON_SENSITIVE_APPROVAL:
             return RUN_STATUS_AWAITING_APPROVAL, "execution suspended for approval"
-        if result.action == CAPABILITY_ACTION_ERROR or facts.get(CAPABILITY_ERROR_REASON_KEY):
+        if not getattr(result, "ok", True):
             return RUN_STATUS_FAILED, "execution ended with capability error facts"
         return RUN_STATUS_COMPLETED, "execution produced terminal completion facts"
 

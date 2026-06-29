@@ -9,13 +9,11 @@ from typing import TYPE_CHECKING, Any
 
 from .completion_checks import completion_block_reason
 from .control import SurfaceContext
-from .engine_approval_prompts import _render_approval_prompt
 from .engine_types import AgentTurnResult
 from .goals import GoalStore
 from .operating_context import OperatingContext
 from .provider import ChatMessage
 from .recovery import CompletionBlock, RecoveryPlanner
-from .specs_data import RESPONDER_OBSERVATIONS_PROMPT
 from .trace import TraceStore
 
 if TYPE_CHECKING:
@@ -101,35 +99,16 @@ class EnginePhasesMixin:
         session_id = session_id or self.runtime.memory.new_session_id()
         self.runtime.memory.add_message(session_id, "user", user_text)
         self.runtime.memory.add_message(session_id, "assistant", result.text)
-        return AgentTurnResult(
-            text=result.text,
+        return replace(
+            result,
             session_id=session_id,
-            run_id=result.run_id,
-            action=result.action,
-            observation=result.observation,
-            model_role=result.model_role,
-            terminal=result.terminal,
-            trace_id=result.trace_id,
-            memory_influence=result.memory_influence,
-            facts=result.facts,
-            approval_affordance=result.approval_affordance,
         )
 
     @staticmethod
     def _with_trace(result: AgentTurnResult, trace_id: str) -> AgentTurnResult:
-        return AgentTurnResult(
-            text=result.text,
-            session_id=result.session_id,
-            run_id=result.run_id,
-            action=result.action,
-            observation=result.observation,
-            model_role=result.model_role,
-            terminal=result.terminal,
-            trace_id=trace_id,
-            memory_influence=result.memory_influence,
-            facts=result.facts,
-            approval_affordance=result.approval_affordance,
-        )
+        if result.trace_id == trace_id:
+            return result
+        return replace(result, trace_id=trace_id)
 
     def _record_trace_final(
         self,
@@ -158,120 +137,4 @@ class EnginePhasesMixin:
         )
         self.trace.evaluate_trace(trace_id)
 
-    async def _finalize_observations(
-        self,
-        user_text: str,
-        observations: list[str],
-        *,
-        session_id: str | None,
-        trace_id: str,
-        source: str,
-        peer_id: str,
-        sender_id: str,
-        action: str,
-        run_id: str = "",
-        model_role: str = "responder",
-        pending_approval_prompt: str = "",
-    ) -> AgentTurnResult:
-        session_id = session_id or self.runtime.memory.new_session_id()
-        observation = "\n\n".join(observations)
-        self.runtime.memory.add_message(session_id, "user", user_text)
-        messages = self.runtime.build_messages(
-            session_id,
-            user_text=user_text,
-            operating_context=OperatingContext(
-                home=self.home,
-                permission_ceiling=self.permission_ceiling,
-                skill_permission_ceiling="read",
-                workspace=str(self.capabilities.gateway.project_dir.resolve()),
-            ),
-        )
-        messages.append(
-            ChatMessage(
-                "system",
-                RESPONDER_OBSERVATIONS_PROMPT,
-            )
-        )
-        messages.append(
-            ChatMessage(
-                "user",
-                "\n".join(
-                    (
-                        f"User request: {user_text}",
-                        "Capability observations:",
-                        observation,
-                    )
-                ),
-            )
-        )
-        answer = await self.runtime.complete(messages, role=model_role)
-        self.trace.add_event(
-            trace_id=trace_id,
-            phase="agent.role_result",
-            session_id=session_id,
-            run_id=run_id,
-            source=source,
-            peer_id=peer_id,
-            sender_id=sender_id,
-            model_role=model_role,
-            ok=True,
-            input_data={"observations_count": len(observations), "action": action},
-            output_data={"response_chars": len(answer)},
-            message=f"{model_role} synthesized response",
-        )
-        approval_affordance = ""
-        if pending_approval_prompt and not self._text_mentions_pending_approval(
-            answer,
-            pending_approval_prompt,
-        ):
-            approval_affordance = pending_approval_prompt
-        self.runtime.memory.add_message(session_id, "assistant", answer)
-        return AgentTurnResult(
-            text=answer,
-            session_id=session_id,
-            run_id=run_id,
-            action=action,
-            observation=observation,
-            model_role=model_role,
-            terminal=True,
-            approval_affordance=approval_affordance,
-        )
 
-    def _with_approval_affordance(
-        self,
-        result: AgentTurnResult,
-        pending_approval_prompt: str,
-    ) -> AgentTurnResult:
-        """Attach the pending approval affordance as a separate field.
-
-        The model's ``text`` is preserved verbatim. The approval affordance
-        is surfaced as a distinct trailing block at the surface boundary
-        (see ``AgentTurnResult.surfaced_text``) rather than rewritten into
-        the model's utterance.
-        """
-        if not pending_approval_prompt or self._text_mentions_pending_approval(
-            result.text,
-            pending_approval_prompt,
-        ):
-            return result
-        return replace(result, approval_affordance=pending_approval_prompt)
-
-    @staticmethod
-    def _append_pending_approval_prompt(text: str, pending_approval_prompt: str) -> str:
-        text = text.strip()
-        return f"{text}\n\n{pending_approval_prompt}" if text else pending_approval_prompt
-
-    @staticmethod
-    def _text_mentions_pending_approval(text: str, pending_approval_prompt: str) -> bool:
-        if pending_approval_prompt in text:
-            return True
-        import re
-        match = re.search(r"`(\d{6})`", pending_approval_prompt)
-        if match:
-            code = match.group(1)
-            return bool(code and code in text)
-        return False
-
-    @staticmethod
-    def _approval_prompt_from_facts(facts: dict[str, Any] | None, *, source: str = "") -> str:
-        return _render_approval_prompt(facts, source=source)

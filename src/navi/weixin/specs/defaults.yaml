@@ -1,4 +1,5 @@
 enabled: false
 base_url: https://ilinkai.weixin.qq.com
+cdn_base_url: https://novac2c.cdn.weixin.qq.com/c2c
 dm_policy: open
 group_policy: disabled

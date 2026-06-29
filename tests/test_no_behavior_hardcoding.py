@@ -5,8 +5,6 @@ from pathlib import Path
 import pytest
 
 from navi.memory import MemoryStore
-from navi.memory.store import _memory_learnings_output_schema
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEXT_SUFFIXES = {".py", ".md", ".toml", ".yaml", ".yml", ".ini"}
@@ -77,16 +75,6 @@ def test_memory_store_requires_source_reason_and_provenance(tmp_path: Path) -> N
     assert item.provenance == "manual"
 
 
-def test_memory_learning_schema_does_not_force_model_rationale() -> None:
-    schema = _memory_learnings_output_schema("test")["schema"]
-    variants = schema["properties"]["learnings"]["items"]["anyOf"]
-
-    assert variants[0]["required"] == ["action", "type", "content"]
-    assert variants[1]["required"] == ["action", "id"]
-    assert "reason" in variants[0]["properties"]
-    assert "confidence" in variants[0]["properties"]
-    assert "reason" in variants[1]["properties"]
-
 
 def _repo_text_files() -> list[tuple[Path, str]]:
     files: list[tuple[Path, str]] = []
@@ -100,16 +88,6 @@ def _repo_text_files() -> list[tuple[Path, str]]:
         files.append((path, path.read_text(encoding="utf-8", errors="ignore")))
     return files
 
-
-def test_core_holds_no_connector_approval_affordance() -> None:
-    """Principle 4: the connector-agnostic core must not declare any channel's
-    approval template or command syntax. Those live only in each connector's spec
-    (e.g. navi/weixin/specs/connector.yaml). With no connector matching a source,
-    the core affordance must be empty so no approval prompt is rendered."""
-    from navi.connector_registry import approval_surface_affordance
-
-    assert approval_surface_affordance("source-with-no-connector") == {}
-    assert approval_surface_affordance("") == {}
 
 
 def test_core_specs_data_has_no_approval_syntax() -> None:
@@ -204,27 +182,6 @@ def test_recovery_runtime_records_facts_not_recommendations() -> None:
             assert token not in source
 
 
-def test_core_does_not_hardcode_workflow_approval_next_step() -> None:
-    """FP-1/FP-6: workflow approval state is a fact. The core must not append
-    fixed CLI approve/reject commands to every surface."""
-    source = (PROJECT_ROOT / "src/navi/engine_approval_prompts.py").read_text(
-        encoding="utf-8"
-    )
-    assert "navi workflow approve" not in source
-    assert "navi workflow reject" not in source
-
-    from navi.engine_approval_prompts import _render_approval_prompt
-
-    rendered = _render_approval_prompt(
-        {
-            "status": "awaiting_approval",
-            "workflow_id": "wf-1",
-            "confirmation_required": True,
-        },
-        source="connector.weixin",
-    )
-    assert rendered == ""
-
 
 def test_missing_binary_error_does_not_emit_candidate_commands(tmp_path: Path) -> None:
     """FP-2: command tools report missing-binary facts instead of suggesting a
@@ -268,7 +225,6 @@ def test_runtime_events_are_not_reingested_as_agent_input() -> None:
         assert "self.agent.handle" not in block
         assert "Runtime event facts" not in block
         assert 'source="system"' not in block
-    assert "render_approval_reply" in suspended_block
 
 
 def test_proactive_daemon_events_are_not_submitted_to_agent_loop() -> None:
@@ -306,23 +262,6 @@ hooks:
             provenance="test",
         )
 
-
-def test_connectorless_approval_reply_contains_facts_not_reply_commands() -> None:
-    """FP-1/FP-6: connectorless approval output should not inject a fixed
-    reply command; it should expose the approval code as a fact."""
-    from navi.connector_registry import render_approval_reply
-
-    rendered = render_approval_reply(
-        "cli",
-        code="ABC123",
-        run_id="run-1",
-        action="execute:file.write",
-    )
-    assert "Approval code: `ABC123`" in rendered
-    assert "Task ID: `run-1`" in rendered
-    assert "Reply `" not in rendered
-    assert "approve ABC123" not in rendered
-    assert "reject ABC123" not in rendered
 
 
 def test_governance_agent_reports_state_not_auto_approval() -> None:

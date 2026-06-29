@@ -606,9 +606,6 @@ class EvolutionEngine:
         reason = "task_reflection_success" if success else "task_reflection_failure"
         events.append(self._update_graph(task, success=success, reason=reason))
 
-        # Active Run Learning reflection
-        logs = self.runs.list_execution_logs(task.id)
-        await self.memory.extract_memories_from_run(task, logs, self.provider)
 
         return self.ledger.list_for_task(task.id)
 

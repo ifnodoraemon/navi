@@ -20,6 +20,7 @@ from navi.connector_runtime import ConnectorMessage
 from navi.control import ApprovalService, SurfaceContext
 from navi.event_bus import EventBus, ResponseReadyEvent
 from navi.runs import RunStore
+from navi.runs._approval_store import DEFAULT_APPROVAL_TTL_SECONDS
 
 
 def _message(text: str = "你好") -> ConnectorMessage:
@@ -78,6 +79,16 @@ async def test_router_times_out_on_true_silence(tmp_path, monkeypatch):
 def test_idle_timeout_default_is_sane():
     # Heartbeat interval (20s) must sit comfortably below the idle window.
     assert IDLE_TIMEOUT_SECONDS >= 60.0
+
+
+def test_default_approval_ttl_supports_slow_remote_reply(tmp_path):
+    runs = RunStore(tmp_path)
+    task = runs.create("需要审批", workspace=str(tmp_path), status="awaiting_approval")
+
+    approval = runs.create_approval(run_id=task.id, peer_id="peer", sender_id="sender")
+
+    assert DEFAULT_APPROVAL_TTL_SECONDS == 3600
+    assert 3590 <= approval.expires_at - approval.created_at <= 3610
 
 
 # ─── Deadlock-side tests ───
@@ -203,4 +214,3 @@ async def test_remote_still_blocks_deleting_running_run(tmp_path):
     res = await _remote_delete(tmp_path, task.id)
     assert res.ok is False
     assert runs.get(task.id) is not None
-

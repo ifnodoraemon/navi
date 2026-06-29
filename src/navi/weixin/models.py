@@ -4,6 +4,18 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class WeixinAttachment:
+    kind: str
+    mime_type: str = ""
+    file_name: str = ""
+    size: int = 0
+    local_path: str = ""
+    media_id: str = ""
+    item_type: int = 0
+    download_error: str = ""
+
+
+@dataclass(frozen=True)
 class WeixinAccount:
     account_id: str
     token: str
@@ -25,6 +37,7 @@ class WeixinUpdate:
     text: str
     context_token: str = ""
     is_group: bool = False
+    attachments: tuple[WeixinAttachment, ...] = ()
 
 
 @dataclass(frozen=True)

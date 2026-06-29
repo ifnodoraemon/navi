@@ -64,4 +64,5 @@ class ClarifyCapability(BaseCapability):
             message=message,
             terminal=True,
             facts=facts,
+            yields_control=True,
         )

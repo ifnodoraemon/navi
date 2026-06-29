@@ -347,14 +347,7 @@ class ApprovalService:
             # expired candidate and re-issuing. Fall back to the normal resolve
             # path, which reports the run's actual current state.
             return None
-        from .connector_registry import render_approval_reply
-
-        message = render_approval_reply(
-            context.source,
-            code=fresh.code,
-            run_id=approval.run_id,
-            action=approval.action,
-        )
+        message = f"reissued approval_code={fresh.code} run_id={approval.run_id}"
         return ApprovalResolution(
             ok=False,
             decision=decision,

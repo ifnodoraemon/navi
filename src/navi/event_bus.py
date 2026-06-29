@@ -31,6 +31,7 @@ class MessageIngressEvent(NaviEvent):
     text: str = ""
     source: str = ""
     session_alias: str = ""
+    facts: dict[str, Any] = field(default_factory=dict)
 
 
 # ─── Router → Agents ───

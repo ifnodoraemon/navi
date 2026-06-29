@@ -8,11 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from ._engine_phases import EnginePhasesMixin
-from .capability_contract import CAPABILITY_ACTION_ERROR
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .context import ContextManager
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
-from .conversation_contract import CONVERSATION_ACTION_CHAT, CONVERSATION_ASK_ACTIONS
 from .engine_types import AgentTurnResult
 from .loop import (
     LoopDecision,
@@ -169,7 +167,7 @@ class HernessEngine(EnginePhasesMixin):
         # Phase 2: Main ReAct loop (observe → plan → execute → reflect)
         completion_events: list[dict[str, Any]] = []
         goal_ids: set[str] = set()
-        pending_approval_prompt = ""
+
         progress_gate = LoopProgressGate()
 
         while True:
@@ -245,38 +243,53 @@ class HernessEngine(EnginePhasesMixin):
                         },
                         message=control.convergence_message,
                     )
-                    return await self._finalize_stable_observations(
-                        text=text,
-                        observations=observations,
-                        result=result,
-                        goal_ids=goal_ids,
-                        resolved_session_id=resolved_session_id,
+                    # We are finalizing the loop. Directly throw the raw facts without summarizing on behalf of the LLM.
+                    obs_lines = observations
+                    if control.convergence_message:
+                        obs_lines = observations + [f"[System Block] {control.convergence_message}"]
+                    final_facts = {}
+                    if control.decisions and control.decisions[0].evidence:
+                        final_facts.update(control.decisions[0].evidence)
+                    if control.convergence_message:
+                        final_facts["convergence_message"] = control.convergence_message
+                    
+                    final_result = AgentTurnResult(
+                        text="",
+                        action="execute:system.loop_converged" if control.convergence_message else "execute:system.task_complete",
+                        observation="\n\n".join(obs_lines),
+                        model_role="planner",
+                        terminal=True,
+                        ok=not bool(control.convergence_message),
+                        error_reason="loop_converged" if control.convergence_message else "",
                         trace_id=trace_id,
-                        source=source,
-                        peer_id=peer_id,
-                        sender_id=sender_id,
-                        pending_approval_prompt=pending_approval_prompt,
+                        facts=final_facts
                     )
+                    self._record_trace_final(final_result, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
+                    turn_res = self._record_turn(text, final_result, session_id=resolved_session_id)
+                    self._attach_goals(
+                        goal_ids,
+                        trace_id=trace_id,
+                        session_id=turn_res.session_id,
+                        evidence={"final_action": turn_res.action},
+                    )
+                    self._trigger_background_memory(turn_res)
+                    return turn_res
                 continue
 
             # Update loop state from successful step
             result = step_result.result
-            approval_prompt = self._approval_prompt_from_facts(step_result.invoked_facts, source=source)
-            if approval_prompt:
-                pending_approval_prompt = approval_prompt
+
             goal_id = str((step_result.invoked_facts or {}).get("goal_id") or "").strip()
             if goal_id:
                 goal_ids.add(goal_id)
 
             if result.terminal:
                 # Terminal condition met; finalize and return
-                result = self._with_approval_affordance(result, pending_approval_prompt)
                 self._record_loop_decision(
                     trace_id,
                     decision=terminal_loop_decision(
                         result,
                         step_result.invoked_facts,
-                        pending_approval_prompt=pending_approval_prompt,
                         tool=step_result.tool,
                         goal_ids=goal_ids,
                     ),
@@ -312,7 +325,6 @@ class HernessEngine(EnginePhasesMixin):
                     progress_signature=step_result.progress_signature,
                     goal_ids=goal_ids,
                     observations_count=len(observations),
-                    pending_approval_prompt=pending_approval_prompt,
                 ),
                 progress_gate=progress_gate,
             )
@@ -343,18 +355,36 @@ class HernessEngine(EnginePhasesMixin):
                         },
                         message=control.convergence_message,
                     )
-                return await self._finalize_stable_observations(
-                    text=text,
-                    observations=observations,
-                    result=result,
-                    goal_ids=goal_ids,
-                    resolved_session_id=resolved_session_id,
+                obs_lines = observations
+                if control.convergence_message:
+                    obs_lines = observations + [f"[System Block] {control.convergence_message}"]
+                final_facts = {}
+                if control.decisions and control.decisions[0].evidence:
+                    final_facts.update(control.decisions[0].evidence)
+                if control.convergence_message:
+                    final_facts["convergence_message"] = control.convergence_message
+                
+                final_result = AgentTurnResult(
+                    text="",
+                    action="execute:system.loop_converged" if control.convergence_message else "execute:system.task_complete",
+                    observation="\n\n".join(obs_lines),
+                    model_role="planner",
+                    terminal=True,
+                    ok=not bool(control.convergence_message),
+                    error_reason="loop_converged" if control.convergence_message else "",
                     trace_id=trace_id,
-                    source=source,
-                    peer_id=peer_id,
-                    sender_id=sender_id,
-                    pending_approval_prompt=pending_approval_prompt,
+                    facts=final_facts
                 )
+                self._record_trace_final(final_result, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
+                turn_res = self._record_turn(text, final_result, session_id=resolved_session_id)
+                self._attach_goals(
+                    goal_ids,
+                    trace_id=trace_id,
+                    session_id=turn_res.session_id,
+                    evidence={"final_action": turn_res.action},
+                )
+                self._trigger_background_memory(turn_res)
+                return turn_res
 
     def _record_loop_decision(
         self,
@@ -401,46 +431,6 @@ class HernessEngine(EnginePhasesMixin):
                 peer_id=peer_id,
                 sender_id=sender_id,
             )
-
-    async def _finalize_stable_observations(
-        self,
-        *,
-        text: str,
-        observations: list[str],
-        result: AgentTurnResult,
-        goal_ids: set[str],
-        resolved_session_id: str | None,
-        trace_id: str,
-        source: str,
-        peer_id: str,
-        sender_id: str,
-        pending_approval_prompt: str,
-    ) -> AgentTurnResult:
-        turn_res = await self._finalize_observations(
-            text,
-            observations,
-            session_id=resolved_session_id,
-            trace_id=trace_id,
-            source=source,
-            peer_id=peer_id,
-            sender_id=sender_id,
-            action=result.action,
-            run_id=result.run_id,
-            model_role=result.model_role,
-            pending_approval_prompt=pending_approval_prompt,
-        )
-        turn_res = self._with_trace(turn_res, trace_id)
-        self._attach_goals(
-            goal_ids,
-            trace_id=trace_id,
-            session_id=turn_res.session_id,
-            evidence={"final_action": turn_res.action},
-        )
-        self._record_trace_final(
-            turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
-        )
-        self._trigger_background_memory(turn_res)
-        return turn_res
 
     @dataclass(frozen=True)
     class _StepResult:
@@ -515,10 +505,12 @@ class HernessEngine(EnginePhasesMixin):
                 message=repr(exc),
             )
             result = AgentTurnResult(
-                text=f"Planner provider failed: {exc!r}",
-                action=CONVERSATION_ACTION_CHAT,
+                text="",
+                action="execute:system.provider_error",
                 model_role="planner",
                 terminal=True,
+                ok=False,
+                error_reason="provider_no_response",
                 trace_id=trace_id,
                 facts={
                     "failure_domain": str(TraceFailureDomain.PROVIDER_NO_RESPONSE),
@@ -555,30 +547,35 @@ class HernessEngine(EnginePhasesMixin):
         if not planner_ok:
             if syscall.tool == "system.planner_error":
                 result = AgentTurnResult(
-                    text=f"Internal Error: Failed to parse planner output - {syscall.reason}",
+                    text="",
                     run_id="",
-                    action=CONVERSATION_ACTION_CHAT,
-                    observation="",
+                    action="execute:system.planner_error",
+                    observation=f"[system.planner_error] {syscall.reason}",
                     model_role="planner",
-                    terminal=True,
+                    terminal=False,
+                    ok=False,
+                    error_reason="planner_parse_failure",
                     trace_id=trace_id,
                     facts={
                         "failure_domain": str(TraceFailureDomain.PLANNER_OR_PARSER),
                         "reason": syscall.reason,
                     },
                 )
-                return self._StepResult(result=result, should_return=True, tool=syscall.tool)
+                return self._StepResult(result=result, should_return=False, tool=syscall.tool)
             result = AgentTurnResult(
-                text=planner_message,
-                action=CAPABILITY_ACTION_ERROR,
+                text="",
+                action=f"execute:{syscall.tool}",
+                observation=f"[{syscall.tool} error] {planner_message}",
                 model_role="planner",
-                terminal=True,
+                terminal=False,
+                ok=False,
+                error_reason="planner_unavailable_tool",
                 facts={
                     "failure_domain": str(TraceFailureDomain.PLANNER_OR_PARSER),
                     "unavailable_tool": syscall.tool,
                 },
             )
-            return self._StepResult(result=result, tool=syscall.tool)
+            return self._StepResult(result=result, should_return=False, tool=syscall.tool)
 
         # Invoke capability
         invoked = await self.capabilities.invoke(
@@ -633,16 +630,19 @@ class HernessEngine(EnginePhasesMixin):
             model_role=syscall.model_role,
             terminal=invoked.terminal,
             facts=invoked.facts,
+            ok=invoked.ok,
+            yields_control=getattr(invoked, "yields_control", False),
+            error_reason=getattr(invoked, "error_reason", ""),
         )
 
-        if result.terminal and observations and result.action == CONVERSATION_ACTION_CHAT:
+        if result.terminal and not result.yields_control and observations:
             # Surface accumulated observations via observation field
             result = replace(
                 result,
                 observation="\n\n".join(observations),
             )
 
-        if result.terminal and result.action not in CONVERSATION_ASK_ACTIONS:
+        if result.terminal and not result.yields_control:
             block = self._completion_block_reason(
                 completion_events,
                 state_context=state_context,

@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import mimetypes
 import secrets
 import struct
 import uuid
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from .models import WeixinAccount, WeixinQr, WeixinUpdate, WeixinUpdateBatch
+from .config import DEFAULT_WEIXIN_CDN_BASE_URL
+from .models import (
+    WeixinAccount,
+    WeixinAttachment,
+    WeixinQr,
+    WeixinUpdate,
+    WeixinUpdateBatch,
+)
 from .store import extract_text, split_text_for_weixin
 
 ILINK_APP_ID = "bot"
@@ -17,6 +29,16 @@ CHANNEL_VERSION = "2.2.0"
 ILINK_APP_CLIENT_VERSION = (2 << 16) | (2 << 8) | 0
 
 ITEM_TEXT = 1
+ITEM_IMAGE = 2
+ITEM_VOICE = 3
+ITEM_FILE = 4
+ITEM_VIDEO = 5
+
+MEDIA_IMAGE = 1
+MEDIA_VIDEO = 2
+MEDIA_FILE = 3
+MEDIA_VOICE = 4
+
 MSG_TYPE_BOT = 2
 MSG_STATE_FINISH = 2
 SESSION_EXPIRED_ERRCODE = -14
@@ -29,9 +51,18 @@ CONFIG_TIMEOUT_SECONDS = 10.0
 
 
 class WeixinClient:
-    def __init__(self, *, base_url: str, token: str = ""):
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        token: str = "",
+        cdn_base_url: str = DEFAULT_WEIXIN_CDN_BASE_URL,
+        media_dir: Path | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
+        self.cdn_base_url = cdn_base_url.rstrip("/")
         self.token = token
+        self.media_dir = media_dir
 
     async def request_qr(self) -> WeixinQr:
         data = await self._get("/ilink/bot/get_bot_qrcode?bot_type=3", timeout=35)
@@ -72,7 +103,9 @@ class WeixinClient:
             if not isinstance(raw, dict):
                 continue
             text = extract_text(raw)
-            if not text:
+            message_id = str(raw.get("message_id") or raw.get("id") or uuid.uuid4().hex)
+            attachments = await self._attachments_from_raw(raw, message_id=message_id)
+            if not text and not attachments:
                 continue
             peer_id, is_group = self._peer_id(raw, account_id)
             sender_id = str(
@@ -80,12 +113,13 @@ class WeixinClient:
             )
             updates.append(
                 WeixinUpdate(
-                    message_id=str(raw.get("message_id") or raw.get("id") or uuid.uuid4().hex),
+                    message_id=message_id,
                     peer_id=peer_id,
                     sender_id=sender_id,
                     text=text,
                     context_token=str(raw.get("context_token") or ""),
                     is_group=is_group,
+                    attachments=tuple(attachments),
                 )
             )
         return WeixinUpdateBatch(
@@ -107,6 +141,49 @@ class WeixinClient:
             await self._send_chunk(peer_id=peer_id, text=chunk, context_token=context_token)
             if index < len(chunks) - 1:
                 await self._sleep_between_chunks()
+
+    async def send_file(
+        self,
+        *,
+        account_id: str,
+        peer_id: str,
+        file_path: str | Path,
+        caption: str = "",
+        context_token: str = "",
+        force_file_attachment: bool = False,
+    ) -> None:
+        del account_id
+        path = Path(file_path).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(f"Weixin file not found: {path}")
+        if not path.is_file():
+            raise ValueError(f"Weixin file path is not a file: {path}")
+        if caption.strip():
+            await self.send_message(
+                account_id="",
+                peer_id=peer_id,
+                text=caption,
+                context_token=context_token,
+            )
+        item = await self._upload_media_item(
+            peer_id=peer_id,
+            path=path,
+            force_file_attachment=force_file_attachment,
+        )
+        client_id = f"navi-weixin-{uuid.uuid4().hex}"
+        response = await self._post(
+            "/ilink/bot/sendmessage",
+            {
+                "msg": self._message_payload(
+                    peer_id=peer_id,
+                    item_list=[item],
+                    context_token=context_token,
+                    client_id=client_id,
+                )
+            },
+            timeout=15,
+        )
+        _raise_ilink_error(response, "sendmessage")
 
     async def get_typing_ticket(self, *, user_id: str, context_token: str = "") -> str:
         payload: dict[str, Any] = {"ilink_user_id": user_id}
@@ -171,19 +248,149 @@ class WeixinClient:
 
     @staticmethod
     def _message_payload(
-        *, peer_id: str, text: str, context_token: str, client_id: str
+        *,
+        peer_id: str,
+        context_token: str,
+        client_id: str,
+        text: str = "",
+        item_list: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        items = (
+            item_list
+            if item_list is not None
+            else [{"type": ITEM_TEXT, "text_item": {"text": text}}]
+        )
         message: dict[str, Any] = {
             "from_user_id": "",
             "to_user_id": peer_id,
             "client_id": client_id,
             "message_type": MSG_TYPE_BOT,
             "message_state": MSG_STATE_FINISH,
-            "item_list": [{"type": ITEM_TEXT, "text_item": {"text": text}}],
+            "item_list": items,
         }
         if context_token:
             message["context_token"] = context_token
         return message
+
+    async def _upload_media_item(
+        self, *, peer_id: str, path: Path, force_file_attachment: bool
+    ) -> dict[str, Any]:
+        plaintext = path.read_bytes()
+        media_type, item_builder = _outbound_media_builder(
+            path, force_file_attachment=force_file_attachment
+        )
+        filekey = secrets.token_hex(16)
+        aes_key = secrets.token_bytes(16)
+        rawsize = len(plaintext)
+        rawfilemd5 = hashlib.md5(plaintext).hexdigest()
+        upload_response = await self._post(
+            "/ilink/bot/getuploadurl",
+            {
+                "filekey": filekey,
+                "media_type": media_type,
+                "to_user_id": peer_id,
+                "rawsize": rawsize,
+                "rawfilemd5": rawfilemd5,
+                "filesize": _aes_padded_size(rawsize),
+                "no_need_thumb": True,
+                "aeskey": aes_key.hex(),
+            },
+            timeout=15,
+        )
+        _raise_ilink_error(upload_response, "getuploadurl")
+        upload_param = str(upload_response.get("upload_param") or "")
+        upload_full_url = str(upload_response.get("upload_full_url") or "")
+        if upload_full_url:
+            upload_url = upload_full_url
+        elif upload_param:
+            upload_url = _cdn_upload_url(self.cdn_base_url, upload_param, filekey)
+        else:
+            raise RuntimeError(
+                f"iLink getuploadurl returned no upload target: {upload_response}"
+            )
+        encrypted_query_param = await self._upload_ciphertext(
+            upload_url=upload_url,
+            ciphertext=_aes128_ecb_encrypt(plaintext, aes_key),
+        )
+        aes_key_for_api = base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii")
+        return item_builder(
+            encrypt_query_param=encrypted_query_param,
+            aes_key_for_api=aes_key_for_api,
+            ciphertext_size=_aes_padded_size(rawsize),
+            plaintext_size=rawsize,
+            filename=path.name,
+            rawfilemd5=rawfilemd5,
+        )
+
+    async def _upload_ciphertext(self, *, upload_url: str, ciphertext: bytes) -> str:
+        async with httpx.AsyncClient(timeout=120, trust_env=True) as client:
+            response = await client.post(
+                upload_url,
+                content=ciphertext,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            response.raise_for_status()
+            encrypted_param = response.headers.get("x-encrypted-param")
+            if encrypted_param:
+                return encrypted_param
+            raise RuntimeError(
+                f"Weixin CDN upload missing x-encrypted-param: {response.text[:200]}"
+            )
+
+    async def _attachments_from_raw(
+        self, raw: dict[str, Any], *, message_id: str
+    ) -> list[WeixinAttachment]:
+        items = raw.get("item_list")
+        if not isinstance(items, list):
+            return []
+        attachments: list[WeixinAttachment] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            attachment = await self._attachment_from_item(
+                item, message_id=message_id, index=index
+            )
+            if attachment is not None:
+                attachments.append(attachment)
+        return attachments
+
+    async def _attachment_from_item(
+        self, item: dict[str, Any], *, message_id: str, index: int
+    ) -> WeixinAttachment | None:
+        item_type = item.get("type")
+        if item_type == ITEM_IMAGE:
+            media = (item.get("image_item") or {}).get("media") or {}
+            return WeixinAttachment(
+                kind="image",
+                mime_type="image/jpeg",
+                file_name=f"{message_id}-{index}.jpg",
+                media_id=_media_id(media),
+                item_type=ITEM_IMAGE,
+            )
+        if item_type == ITEM_VIDEO:
+            video_item = item.get("video_item") or {}
+            media = video_item.get("media") or {}
+            return WeixinAttachment(
+                kind="video",
+                mime_type="video/mp4",
+                file_name=f"{message_id}-{index}.mp4",
+                size=int(video_item.get("video_size") or 0),
+                media_id=_media_id(media),
+                item_type=ITEM_VIDEO,
+            )
+        if item_type == ITEM_FILE:
+            file_item = item.get("file_item") or {}
+            media = file_item.get("media") or {}
+            file_name = str(file_item.get("file_name") or f"{message_id}-{index}.bin")
+            return WeixinAttachment(
+                kind="file",
+                mime_type=mimetypes.guess_type(file_name)[0] or "application/octet-stream",
+                file_name=file_name,
+                size=_coerce_int(file_item.get("len") or file_item.get("size")),
+                media_id=_media_id(media),
+                item_type=ITEM_FILE,
+            )
+        return None
 
     async def _get(self, path: str, *, timeout: float) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=timeout, trust_env=True) as client:
@@ -256,6 +463,94 @@ class WeixinClient:
 def _random_wechat_uin() -> str:
     value = struct.unpack(">I", secrets.token_bytes(4))[0]
     return base64.b64encode(str(value).encode("utf-8")).decode("ascii")
+
+
+def _cdn_upload_url(cdn_base_url: str, upload_param: str, filekey: str) -> str:
+    return (
+        f"{cdn_base_url.rstrip('/')}/upload"
+        f"?encrypted_query_param={quote(upload_param, safe='')}"
+        f"&filekey={quote(filekey, safe='')}"
+    )
+
+
+def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
+    pad_len = block_size - (len(data) % block_size)
+    return data + bytes([pad_len] * pad_len)
+
+
+def _aes128_ecb_encrypt(plaintext: bytes, key: bytes) -> bytes:
+    cipher = Cipher(algorithms.AES(key), modes.ECB())
+    encryptor = cipher.encryptor()
+    return encryptor.update(_pkcs7_pad(plaintext)) + encryptor.finalize()
+
+
+def _aes_padded_size(size: int) -> int:
+    return ((size + 1 + 15) // 16) * 16
+
+
+def _outbound_media_builder(path: Path, *, force_file_attachment: bool = False):
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    if mime.startswith("image/") and not force_file_attachment:
+        return MEDIA_IMAGE, lambda **kw: {
+            "type": ITEM_IMAGE,
+            "image_item": {
+                "media": {
+                    "encrypt_query_param": kw["encrypt_query_param"],
+                    "aes_key": kw["aes_key_for_api"],
+                    "encrypt_type": 1,
+                },
+                "mid_size": kw["ciphertext_size"],
+            },
+        }
+    if mime.startswith("video/") and not force_file_attachment:
+        return MEDIA_VIDEO, lambda **kw: {
+            "type": ITEM_VIDEO,
+            "video_item": {
+                "media": {
+                    "encrypt_query_param": kw["encrypt_query_param"],
+                    "aes_key": kw["aes_key_for_api"],
+                    "encrypt_type": 1,
+                },
+                "video_size": kw["ciphertext_size"],
+                "play_length": 0,
+                "video_md5": kw["rawfilemd5"],
+            },
+        }
+    return MEDIA_FILE, lambda **kw: {
+        "type": ITEM_FILE,
+        "file_item": {
+            "media": {
+                "encrypt_query_param": kw["encrypt_query_param"],
+                "aes_key": kw["aes_key_for_api"],
+                "encrypt_type": 1,
+            },
+            "file_name": kw["filename"],
+            "len": str(kw["plaintext_size"]),
+        },
+    }
+
+
+def _media_id(media: dict[str, Any]) -> str:
+    for key in ("encrypt_query_param", "full_url", "file_id", "media_id"):
+        value = str(media.get(key) or "")
+        if value:
+            return value
+    return ""
+
+
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _raise_ilink_error(response: dict[str, Any], operation: str) -> None:
+    ret = response.get("ret")
+    errcode = response.get("errcode")
+    if ret in (None, 0) and errcode in (None, 0):
+        return
+    raise RuntimeError(f"iLink {operation} error ret={ret} errcode={errcode}: {response}")
 
 
 def _is_rate_limited(ret: Any, errcode: Any) -> bool:

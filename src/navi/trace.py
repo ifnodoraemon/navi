@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
+import hashlib
 from .capability_contract import CAPABILITY_ERROR_REASON_KEY
 from .completion_checks import completion_block_reason, delegation_event_incomplete
 from .db import connect, ensure_schema_version
@@ -111,6 +112,8 @@ class TraceStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_trace_evaluations_trace ON trace_evaluations(trace_id)"
             )
+            conn.execute(TRACE_BLOBS_TABLE.ddl)
+            _ensure_schema_current(conn, TRACE_BLOBS_TABLE)
 
     @staticmethod
     def new_trace_id() -> str:
@@ -133,6 +136,13 @@ class TraceStore:
         output_data: dict[str, Any] | None = None,
         message: str = "",
     ) -> TraceEvent:
+        blobs_to_insert = {}
+        def _insert_blob(h: str, c: str) -> None:
+            blobs_to_insert[h] = c
+
+        input_data_extracted = _extract_blobs(_redact(input_data or {}), _insert_blob)
+        output_data_extracted = _extract_blobs(_redact(output_data or {}), _insert_blob)
+
         event = TraceEvent(
             id=uuid.uuid4().hex,
             trace_id=trace_id,
@@ -145,12 +155,14 @@ class TraceStore:
             tool=tool,
             model_role=model_role,
             ok=ok,
-            input_json=json.dumps(_redact(input_data or {}), ensure_ascii=False, sort_keys=True),
-            output_json=json.dumps(_redact(output_data or {}), ensure_ascii=False, sort_keys=True),
+            input_json=json.dumps(input_data_extracted, ensure_ascii=False, sort_keys=True),
+            output_json=json.dumps(output_data_extracted, ensure_ascii=False, sort_keys=True),
             message=message,
             created_at=time.time(),
         )
         with connect(self.db_path) as conn:
+            for h, c in blobs_to_insert.items():
+                conn.execute("INSERT OR IGNORE INTO trace_blobs(hash, content) VALUES (?, ?)", (h, c))
             values: dict[str, Any] = {
                 "id": event.id,
                 "trace_id": event.trace_id,
@@ -172,7 +184,11 @@ class TraceStore:
                 f"INSERT INTO trace_events({', '.join(_TRACE_EVENT_COLUMNS)}) VALUES ({', '.join('?' for _ in _TRACE_EVENT_COLUMNS)})",
                 tuple(values[name] for name in _TRACE_EVENT_COLUMNS),
             )
-        return event
+        return replace(
+            event,
+            input_json=json.dumps(_redact(input_data or {}), ensure_ascii=False, sort_keys=True),
+            output_json=json.dumps(_redact(output_data or {}), ensure_ascii=False, sort_keys=True),
+        )
 
     def add_loop_decision(
         self,
@@ -212,7 +228,8 @@ class TraceStore:
                 """,
                 (trace_id, limit),
             ).fetchall()
-        return [TraceEvent(*row[:10], bool(row[10]), *row[11:]) for row in rows]
+        events = [TraceEvent(*row[:10], bool(row[10]), *row[11:]) for row in rows]
+        return self._resolve_events_blobs(events)
 
     def list_loop_decisions(self, trace_id: str, *, limit: int = 200) -> list[TraceEvent]:
         return [
@@ -243,7 +260,8 @@ class TraceStore:
                 """,
                 (run_id, session_id, session_id, limit),
             ).fetchall()
-        return [TraceEvent(*row[:10], bool(row[10]), *row[11:]) for row in rows]
+        events = [TraceEvent(*row[:10], bool(row[10]), *row[11:]) for row in rows]
+        return self._resolve_events_blobs(events)
 
     def list_trace_ids(self, *, limit: int = 50) -> list[str]:
         with connect(self.db_path) as conn:
@@ -255,6 +273,77 @@ class TraceStore:
                 (limit,),
             ).fetchall()
         return [row[0] for row in rows]
+
+    def _fetch_blobs(self, hashes: set[str]) -> dict[str, str]:
+        if not hashes:
+            return {}
+        placeholders = ",".join("?" for _ in hashes)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"SELECT hash, content FROM trace_blobs WHERE hash IN ({placeholders})",
+                tuple(hashes),
+            ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    def _resolve_events_blobs(self, events: list[TraceEvent]) -> list[TraceEvent]:
+        hashes = set()
+        parsed_data = []
+        for e in events:
+            if e.input_json and '"$blob"' in e.input_json or e.output_json and '"$blob"' in e.output_json:
+                data = {
+                    "in": json.loads(e.input_json) if e.input_json else None,
+                    "out": json.loads(e.output_json) if e.output_json else None,
+                }
+                parsed_data.append((e, data))
+
+                def _find_hashes(d: Any) -> None:
+                    if isinstance(d, dict):
+                        if len(d) == 1 and "$blob" in d:
+                            hashes.add(d["$blob"])
+                        else:
+                            for v in d.values():
+                                _find_hashes(v)
+                    elif isinstance(d, list):
+                        for v in d:
+                            _find_hashes(v)
+
+                _find_hashes(data)
+            else:
+                parsed_data.append((e, None))
+
+        if not hashes:
+            return events
+
+        blob_map = self._fetch_blobs(hashes)
+
+        def _replace(d: Any) -> Any:
+            if isinstance(d, dict):
+                if len(d) == 1 and "$blob" in d:
+                    h = d["$blob"]
+                    return blob_map.get(h, f"<missing blob: {h}>")
+                return {k: _replace(v) for k, v in d.items()}
+            if isinstance(d, list):
+                return [_replace(v) for v in d]
+            return d
+
+        resolved_events = []
+        for e, data in parsed_data:
+            if data is None:
+                resolved_events.append(e)
+            else:
+                resolved_data = _replace(data)
+                resolved_events.append(
+                    replace(
+                        e,
+                        input_json=json.dumps(resolved_data["in"], ensure_ascii=False, sort_keys=True)
+                        if resolved_data["in"] is not None
+                        else "",
+                        output_json=json.dumps(resolved_data["out"], ensure_ascii=False, sort_keys=True)
+                        if resolved_data["out"] is not None
+                        else "",
+                    )
+                )
+        return resolved_events
 
     def list_evaluations(self, trace_id: str = "", *, limit: int = 50) -> list[TraceEvaluation]:
         if trace_id:
@@ -832,6 +921,46 @@ def _planner_call_started_without_result(events: list[TraceEvent]) -> bool:
         for phase in phases
     )
 
+def _extract_blobs(data: Any, insert_blob: Callable[[str, str], None], max_len: int = 1024) -> Any:
+    if isinstance(data, dict):
+        return {k: _extract_blobs(v, insert_blob, max_len) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_extract_blobs(v, insert_blob, max_len) for v in data]
+    if isinstance(data, str) and len(data) > max_len:
+        digest = hashlib.md5(data.encode("utf-8")).hexdigest()
+        insert_blob(digest, data)
+        return {"$blob": digest}
+    return data
+
+def _resolve_blobs(data: Any, fetch_blobs: Callable[[set[str]], dict[str, str]]) -> Any:
+    hashes = set()
+    def _find_hashes(d: Any) -> None:
+        if isinstance(d, dict):
+            if len(d) == 1 and "$blob" in d:
+                hashes.add(d["$blob"])
+            else:
+                for v in d.values():
+                    _find_hashes(v)
+        elif isinstance(d, list):
+            for v in d:
+                _find_hashes(v)
+    _find_hashes(data)
+    if not hashes:
+        return data
+
+    blob_map = fetch_blobs(hashes)
+
+    def _replace(d: Any) -> Any:
+        if isinstance(d, dict):
+            if len(d) == 1 and "$blob" in d:
+                h = d["$blob"]
+                return blob_map.get(h, f"<missing blob: {h}>")
+            return {k: _replace(v) for k, v in d.items()}
+        if isinstance(d, list):
+            return [_replace(v) for v in d]
+        return d
+    return _replace(data)
+
 
 TRACE_EVENTS_TABLE = Table(
     "trace_events",
@@ -862,6 +991,13 @@ TRACE_EVALUATIONS_TABLE = Table(
         Column("failure_domain", "TEXT", nullable=False),
         Column("evidence_json", "TEXT", nullable=False),
         Column("created_at", "REAL", nullable=False),
+    ],
+)
+TRACE_BLOBS_TABLE = Table(
+    "trace_blobs",
+    [
+        Column("hash", "TEXT", primary_key=True),
+        Column("content", "TEXT", nullable=False),
     ],
 )
 

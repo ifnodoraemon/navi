@@ -56,7 +56,7 @@ Current v1 intentionally excludes:
 - Official Account / 公众号 callback flow as a primary ingress path.
 - A full RAG workbench.
 - Unsupervised high-risk autonomous execution from remote connectors.
-- Raw image/file/video/CDN media handling before text and transcript flows are live-calibrated.
+- Broad rich-media understanding before text, transcript, and guarded file-send flows are live-calibrated.
 
 ## Connector Requirements
 
@@ -81,8 +81,8 @@ Weixin/iLink requirements:
 - Deduplicate inbound messages with a short TTL window.
 - Support DM policies `open`, `allowlist`, `disabled`, and setup-oriented `pairing`.
 - Keep group policy config, defaulted to `disabled`; ordinary WeChat group delivery is not promised unless upstream events are actually delivered.
-- Support text replies, response chunking, optional typing indicators, and voice transcript text when upstream payloads include transcript text.
-- Treat raw images, files, video, CDN decryption, and rich media processing as later work.
+- Support text replies, response chunking, optional typing indicators, voice transcript text when upstream payloads include transcript text, and guarded file/image/video sending through iLink CDN upload.
+- Preserve inbound image/file/video attachment metadata as connector facts; deeper media parsing and arbitrary remote-file access remain governed follow-up work.
 
 Telegram requirements:
 
@@ -392,7 +392,7 @@ Known gaps:
 
 - Real iLink payloads/endpoints need live QR-login and DM calibration.
 - `navi connectors setup weixin` should move from a single QR status poll to a clearer scan/confirm loop with timeout.
-- Raw Weixin image, file, video, and CDN media handling is not implemented.
+- Weixin file/image/video sending and inbound attachment facts have a guarded baseline; live CDN calibration and deeper media parsing remain incomplete.
 - Remote connector policy needs richer per-sender/per-surface configuration before mutating shell/file-write actuators are exposed remotely.
 - MCP/plugin providers still need install-time permission manifests and policy audit before connector exposure.
 - Workflow cost/token telemetry is still shallow metadata; approval UX should show concrete provider usage where available.

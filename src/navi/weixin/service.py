@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -17,7 +18,7 @@ from navi.daemon import SystemDaemon
 from .client import TYPING_START, TYPING_STOP, WeixinClient
 from .config import WeixinConfig
 from .models import WeixinAccount, WeixinUpdate
-from .prompts import NOTIFICATION_SYSTEM_PROMPT
+
 from .store import ContextTokenStore, MessageDeduplicator, WeixinStore
 
 
@@ -62,7 +63,12 @@ class WeixinService:
         if self.config.account_id and not token:
             account = self.store.load_account(self.config.account_id)
             token = account.token if account else ""
-        return WeixinClient(base_url=self.config.base_url, token=token)
+        return WeixinClient(
+            base_url=self.config.base_url,
+            token=token,
+            cdn_base_url=self.config.cdn_base_url,
+            media_dir=self.home / "weixin" / "media" / "inbound",
+        )
 
     def status(self) -> dict:
         configured = bool(self.config.account_id or self.store.list_accounts())
@@ -209,6 +215,7 @@ class WeixinService:
             text=update.text,
             source=self.local_source,
             session_alias_prefix=self.session_alias_prefix,
+            facts=_weixin_message_facts(update),
         )
         if self.dedup.seen(message.content_key):
             self.record_event(
@@ -229,25 +236,30 @@ class WeixinService:
             peer_id=update.peer_id,
             sender_id=update.sender_id,
             text_preview=update.text[:120],
+            attachment_count=len(update.attachments),
         )
         self.context_tokens.put(account.account_id, update.peer_id, update.context_token)
         context_token = self.context_tokens.get(account.account_id, update.peer_id)
         text = await self._handle_with_typing(update, message, context_token=context_token)
-        if not text.strip():
-            text = f"本地处理链路没有生成有效回复；message_id={update.message_id}。"
         try:
-            await self.client.send_message(
-                account_id=account.account_id,
+            delivery = await self._send_reply(
+                account=account,
                 peer_id=update.peer_id,
                 text=text,
                 context_token=context_token,
+                fallback=f"本地处理链路没有生成有效回复；message_id={update.message_id}。",
             )
         except Exception as exc:
             self.record_event(
                 "reply.error", peer_id=update.peer_id, error=f"{type(exc).__name__}: {exc}"
             )
             raise
-        self.record_event("reply.sent", peer_id=update.peer_id, text_preview=text[:120])
+        self.record_event(
+            "reply.sent",
+            peer_id=update.peer_id,
+            text_preview=delivery["text_preview"],
+            media_count=delivery["media_count"],
+        )
         return True
 
     async def _handle_with_typing(
@@ -342,8 +354,8 @@ class WeixinService:
                 },
                 fallback=str(result.get("message") or result.get("observation") or ""),
             )
-            await self.client.send_message(
-                account_id=account.account_id,
+            await self._send_reply(
+                account=account,
                 peer_id=peer_id,
                 text=text,
                 context_token=self.context_tokens.get(account.account_id, peer_id),
@@ -364,8 +376,8 @@ class WeixinService:
                 },
                 fallback=self._task_fallback(task),
             )
-            await self.client.send_message(
-                account_id=account.account_id,
+            await self._send_reply(
+                account=account,
                 peer_id=task.peer_id,
                 text=text,
                 context_token=self.context_tokens.get(account.account_id, task.peer_id),
@@ -382,21 +394,66 @@ class WeixinService:
             raw_result = str(facts.get("raw_result") or "").strip()
             if raw_result:
                 return redact_secrets(raw_result)
-        try:
-            text = await self.runtime.complete(
-                [
-                    ChatMessage(
-                        "system",
-                        NOTIFICATION_SYSTEM_PROMPT,
-                    ),
-                    ChatMessage("user", json.dumps(facts, ensure_ascii=False, sort_keys=True)),
-                ],
-                role="notification",
+        stripped = fallback.strip() or json.dumps(facts, ensure_ascii=False, sort_keys=True)
+        return redact_secrets(stripped)
+
+    async def _send_reply(
+        self,
+        *,
+        account: WeixinAccount,
+        peer_id: str,
+        text: str,
+        context_token: str,
+        fallback: str = "",
+    ) -> dict[str, object]:
+        media_paths, cleaned_text = _extract_media_directives(text)
+        sent_media = 0
+        for media_path in media_paths:
+            allowed_path = self._allowed_outbound_media_path(media_path)
+            if allowed_path is None:
+                self.record_event("reply.media.blocked", peer_id=peer_id, path=media_path)
+                continue
+            await self.client.send_file(
+                account_id=account.account_id,
+                peer_id=peer_id,
+                file_path=allowed_path,
+                context_token=context_token,
             )
-        except Exception:
-            return redact_secrets(fallback)
-        stripped = text.strip()
-        return redact_secrets(stripped or fallback)
+            sent_media += 1
+            self.record_event(
+                "reply.media.sent",
+                peer_id=peer_id,
+                path=str(allowed_path),
+                media_count=sent_media,
+            )
+        outbound_text = cleaned_text.strip()
+        if not outbound_text and sent_media == 0 and fallback:
+            outbound_text = fallback
+        if outbound_text:
+            await self.client.send_message(
+                account_id=account.account_id,
+                peer_id=peer_id,
+                text=outbound_text,
+                context_token=context_token,
+            )
+        return {"media_count": sent_media, "text_preview": outbound_text[:120]}
+
+    def _allowed_outbound_media_path(self, raw_path: str) -> Path | None:
+        try:
+            candidate = Path(raw_path).expanduser().resolve()
+        except OSError:
+            return None
+        allowed_roots = (
+            self.home / "weixin" / "outbox",
+            self.home / "weixin" / "media" / "outbound",
+        )
+        for root in allowed_roots:
+            try:
+                candidate.relative_to(root.resolve())
+            except ValueError:
+                continue
+            return candidate if candidate.is_file() else None
+        return None
 
     @staticmethod
     def _task_fallback(task: Run) -> str:
@@ -467,3 +524,31 @@ def _redact_event_facts(facts: dict) -> dict:
         else:
             redacted[key] = value
     return redacted
+
+
+_MEDIA_DIRECTIVE_RE = re.compile(r"(?m)^\s*MEDIA:(?P<path>\S+)\s*$")
+
+
+def _extract_media_directives(text: str) -> tuple[list[str], str]:
+    media_paths: list[str] = []
+
+    def _capture(match: re.Match[str]) -> str:
+        media_paths.append(match.group("path").strip())
+        return ""
+
+    cleaned = _MEDIA_DIRECTIVE_RE.sub(_capture, text or "")
+    cleaned = "\n".join(line for line in cleaned.splitlines() if line.strip()).strip()
+    return media_paths, cleaned
+
+
+def _weixin_message_facts(update: WeixinUpdate) -> dict[str, object]:
+    attachments = [asdict(attachment) for attachment in update.attachments]
+    return {
+        "connector": "weixin",
+        "message_id": update.message_id,
+        "peer_id": update.peer_id,
+        "sender_id": update.sender_id,
+        "is_group": update.is_group,
+        "attachment_count": len(attachments),
+        "attachments": attachments,
+    }

@@ -43,6 +43,8 @@ class IntentAgent:
             "intent_basis": "current_state_facts",
             "current_state": current_state_facts(state),
         }
+        if event.facts:
+            facts["connector_message"] = event.facts
         logger.info(
             "Published dynamic intent facts for message %s: approvals=%s runs=%s workflows=%s",
             event.message_id,

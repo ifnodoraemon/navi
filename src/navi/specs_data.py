@@ -617,11 +617,3 @@ PROMPT_LAYERS_SPEC: Any = {
 
 
 # Static instruction fed to the responder when finalizing capability
-# observations. Kept in the prompt layer spec (rather than inlined in the
-# engine) so it is governed, versionable, and overridable like other layers
-# (principle 1.1).
-RESPONDER_OBSERVATIONS_PROMPT: str = (
-    "Navi's operating system has produced capability observations.\n"
-    "Use only the observations as the source of truth.\n"
-    "Answer the user based on these facts, following your prompt layer rules."
-)

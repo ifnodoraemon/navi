@@ -31,6 +31,8 @@ APPROVALS_TABLE = Table(
     ],
 )
 
+DEFAULT_APPROVAL_TTL_SECONDS = 3600
+
 
 class ApprovalStoreMixin:
     """Mixin providing approval persistence methods to RunStore.
@@ -48,7 +50,7 @@ class ApprovalStoreMixin:
         peer_id: str,
         sender_id: str,
         action: str = "execute",
-        ttl_seconds: int = 900,
+        ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS,
     ) -> Approval:
         now = time.time()
         approval = Approval(
@@ -94,7 +96,7 @@ class ApprovalStoreMixin:
         peer_id: str,
         sender_id: str,
         action: str = "execute",
-        ttl_seconds: int = 900,
+        ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS,
     ) -> Approval | None:
         """Mint a fresh approval for a run whose prior code expired, and pull the
         run back into awaiting_approval. The recovery path so an expired code is

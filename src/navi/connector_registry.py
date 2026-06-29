@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,8 +19,6 @@ class ConnectorSpec:
     status_description: str
     session_alias_prefix: str
     local_source: str
-    approval_template: str = ""
-    approval_commands: dict[str, list[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -59,75 +58,6 @@ def get_connector_adapter(name: str) -> ConnectorAdapter | None:
             return adapter
     return None
 
-
-def approval_surface_affordance(source: str) -> dict[str, Any]:
-    source = source.strip()
-    for adapter in load_connector_adapters():
-        spec = adapter.spec
-        if source in {spec.name, spec.surface, spec.local_source}:
-            return _approval_affordance_from_spec(spec)
-    # Principle 4: no core default. A source with no matching connector has no
-    # approval affordance, and the caller renders no approval prompt.
-    return {}
-
-
-def _approval_affordance_from_spec(spec: ConnectorSpec) -> dict[str, Any]:
-    return {
-        "approval_template": spec.approval_template,
-        "approval_commands": spec.approval_commands or {},
-    }
-
-
-def _first_command(commands: dict[str, Any], key: str) -> str:
-    raw = commands.get(key)
-    if isinstance(raw, list) and raw:
-        return str(raw[0])
-    return ""
-
-
-def render_approval_reply(
-    source: str,
-    *,
-    code: str,
-    run_id: str = "",
-    action: str = "",
-    expires_at: float = 0.0,
-) -> str:
-    """Render a connector-sourced approval prompt.
-
-    FP-6: the core must not hardcode channel-specific approval verbs (``批准`` /
-    ``拒绝``). The connector affordance provides ``approval_template`` and
-    ``approval_commands``; this helper formats them. When no connector matches
-    the source (CLI/local API), it returns facts only and avoids fixed reply
-    commands."""
-    affordance = approval_surface_affordance(source)
-    commands = (
-        affordance.get("approval_commands")
-        if isinstance(affordance.get("approval_commands"), dict)
-        else {}
-    )
-    approve_command = _first_command(commands, "approve")
-    reject_command = _first_command(commands, "reject")
-    task_line = f"Task ID: `{run_id}`" if run_id else ""
-    if expires_at:
-        try:
-            minutes = max(0, round((float(expires_at) - 0.0) / 60))
-        except (TypeError, ValueError):
-            minutes = 0
-        expiry = f"Approval expires in ~{minutes} minutes." if minutes else ""
-    else:
-        expiry = ""
-    template = str(affordance.get("approval_template") or "")
-    if template:
-        return template.format(
-            task_line=task_line,
-            code=code,
-            expiry=expiry,
-            approve_command=approve_command,
-            reject_command=reject_command,
-        ).strip()
-    head = f"Approval required for `{action}`." if action else "Approval required."
-    return f"{head}\n{task_line}\nApproval code: `{code}`".strip()
 
 
 def _discover_connector_factories() -> list[Callable[[], ConnectorAdapter]]:

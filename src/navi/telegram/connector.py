@@ -23,8 +23,6 @@ def _load_spec() -> ConnectorSpec:
         status_description=str(raw["status_description"]),
         session_alias_prefix=str(raw["session_alias_prefix"]),
         local_source=str(raw["local_source"]),
-        approval_template=str(raw.get("approval_template") or ""),
-        approval_commands=dict(raw.get("approval_commands") or {}),
     )
 
 

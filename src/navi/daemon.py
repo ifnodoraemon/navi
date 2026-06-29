@@ -113,12 +113,6 @@ class SystemDaemon:
                     provider = build_provider(config.model)
                     runtime = AgentRuntime(home=self.home, provider=provider)
 
-                    await runtime.memory.extract_and_consolidate_memories(
-                        session_id=event.session_id,
-                        provider=provider,
-                        run_id=event.run_id,
-                    )
-
                     from navi.goals import GOAL_STATUS_BLOCKED, GoalStore
 
                     goal_store = GoalStore(self.home)
