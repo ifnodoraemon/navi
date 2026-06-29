@@ -7,7 +7,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .control import CurrentStateBuilder, SurfaceContext
+from .completion_checks import completion_block_reason
+from .control import SurfaceContext
 from .engine_approval_prompts import _render_approval_prompt
 from .engine_types import AgentTurnResult
 from .goals import GoalStore
@@ -59,94 +60,13 @@ class EnginePhasesMixin:
         state_context: SurfaceContext | None = None,
         current_run_id: str = "",
     ) -> CompletionBlock | None:
-        if not events:
-            events = []
-        related_run_ids = {current_run_id} if current_run_id else set()
-        for event in events:
-            facts = event.get("facts")
-            if not isinstance(facts, dict):
-                continue
-            run_id = str(facts.get("run_id") or facts.get("task_id") or "").strip()
-            if run_id:
-                related_run_ids.add(run_id)
-        latest_run_status: dict[str, str] = {}
-        for event in events:
-            facts = event.get("facts")
-            if not isinstance(facts, dict):
-                continue
-            run_id = str(facts.get("run_id") or facts.get("task_id") or "").strip()
-            if related_run_ids and run_id and run_id not in related_run_ids:
-                continue
-            status = str(
-                facts.get("status") or facts.get("run_status") or facts.get("task_status") or ""
-            ).strip()
-            if run_id and status:
-                latest_run_status[run_id] = status
-        for event in events:
-            facts = event.get("facts")
-            if not isinstance(facts, dict):
-                continue
-            if str(facts.get("entity_type") or "") != "delegation_run":
-                continue
-            run_id = str(facts.get("run_id") or facts.get("task_id") or "").strip()
-            if related_run_ids and run_id and run_id not in related_run_ids:
-                continue
-            status = latest_run_status.get(run_id) or str(facts.get("status") or "").strip()
-            if run_id and status in {"pending", "prepared"}:
-                return CompletionBlock(
-                    reason=(
-                        "loop checker blocked final answer: "
-                        f"delegation run {run_id} is still {status}."
-                    ),
-                    run_id=run_id,
-                    run_status=status,
-                )
-        latest_cleanup_facts = next(
-            (
-                event.get("facts")
-                for event in reversed(events)
-                if isinstance(event.get("facts"), dict)
-                and event.get("facts", {}).get("entity_type") == "bulk_delete"
-                and "completion_evidence" in event.get("facts", {})
-            ),
-            None,
+        return completion_block_reason(
+            home=self.home,
+            events=events,
+            state_context=state_context,
+            current_run_id=current_run_id,
+            governed_workflow_id=self.governed_workflow_id,
         )
-        if (
-            isinstance(latest_cleanup_facts, dict)
-            and latest_cleanup_facts.get("completion_evidence") is False
-        ):
-            remaining = latest_cleanup_facts.get("remaining_count")
-            return CompletionBlock(
-                reason=(
-                    "loop checker blocked final answer: "
-                    f"bulk_delete completion_evidence=false with remaining_count={remaining}."
-                ),
-            )
-        if state_context is not None:
-            state = CurrentStateBuilder(self.home).build(state_context)
-            for run in state.active_runs:
-                if related_run_ids and run.id not in related_run_ids:
-                    continue
-                if run.status in {"pending", "preparing", "prepared"}:
-                    return CompletionBlock(
-                        reason=(
-                            "loop checker blocked final answer: "
-                            f"delegation run {run.id} is still {run.status}."
-                        ),
-                        run_id=run.id,
-                        run_status=run.status,
-                    )
-            for workflow in state.active_workflows:
-                if workflow.id == self.governed_workflow_id:
-                    continue
-                if workflow.status in {"approved", "running", "interrupted"}:
-                    return CompletionBlock(
-                        reason=(
-                            "loop checker blocked final answer: "
-                            f"workflow {workflow.id} is still {workflow.status}."
-                        ),
-                    )
-        return None
 
     def _trigger_background_memory(self, result: AgentTurnResult) -> None:
         if result.session_id and self.event_bus:

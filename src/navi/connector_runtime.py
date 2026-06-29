@@ -59,7 +59,7 @@ class ConnectorToolPolicy:
     allowed_tools: FrozenSet[str]
     blocked_tools: FrozenSet[str]
     blocked_capability_classes: FrozenSet[str]
-    reason: str
+    reason_code: str
 
     def allowed_tool_names(self) -> set[str] | None:
         if not self.allowed_tools:
@@ -73,7 +73,7 @@ class ConnectorToolPolicy:
             "allowed_tools": sorted(self.allowed_tools),
             "blocked_tools": sorted(self.blocked_tools),
             "blocked_capability_classes": sorted(self.blocked_capability_classes),
-            "reason": self.reason,
+            "reason_code": self.reason_code,
         }
 
 
@@ -83,13 +83,7 @@ REMOTE_CONNECTOR_TOOL_POLICY = ConnectorToolPolicy(
     allowed_tools=frozenset(),
     blocked_tools=REMOTE_BLOCKED_TOOLS,
     blocked_capability_classes=REMOTE_BLOCKED_CAPABILITY_CLASSES,
-    reason=(
-        "Remote connector ingress may use any declared governance / read "
-        "tool directly unless explicitly blocked. Direct local-environment "
-        "capability classes and workflow execution/approval tools are blocked "
-        "from the live remote path; local OS access goes through delegate.spawn "
-        "→ managed execution → approval."
-    ),
+    reason_code="remote_connector_policy",
 )
 
 LOCAL_CONVERSATIONAL_TOOL_POLICY = ConnectorToolPolicy(
@@ -98,7 +92,7 @@ LOCAL_CONVERSATIONAL_TOOL_POLICY = ConnectorToolPolicy(
     allowed_tools=frozenset(),
     blocked_tools=frozenset(),
     blocked_capability_classes=frozenset(),
-    reason="Local conversational loop has full tool access; model decides when to use direct tools vs delegation.",
+    reason_code="local_conversational_policy",
 )
 
 

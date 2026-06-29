@@ -116,9 +116,12 @@ def _syscall_output_schema() -> dict[str, Any]:
                     "description": "Declared role for response synthesis.",
                 },
                 "confidence": {"type": "number"},
-                "reason": {"type": "string"},
+                "reason": {
+                    "type": "string",
+                    "description": "Optional model rationale for audit only; runtime does not consume it for routing.",
+                },
             },
-            "required": ["tool", "permission", "args", "model_role", "confidence", "reason"],
+            "required": ["tool", "permission", "args", "model_role"],
             "additionalProperties": False,
         },
     }

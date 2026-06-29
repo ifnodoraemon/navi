@@ -522,7 +522,7 @@ class EvolutionLedger:
             run_id=proposal.source_run_id,
             target_type=proposal.target_type,
             target_id=proposal.target_id,
-            reason=f"evaluation recorded: {evaluation_result}",
+            reason="proposal_evaluation_recorded",
             before=proposal.evaluation_result,
             after=evaluation_result,
         )
@@ -603,7 +603,7 @@ class EvolutionEngine:
 
     async def reflect_run(self, task: Run, *, success: bool) -> list[EvolutionEvent]:
         events: list[EvolutionEvent] = []
-        reason = "successful task reflection" if success else "failed task reflection"
+        reason = "task_reflection_success" if success else "task_reflection_failure"
         events.append(self._update_graph(task, success=success, reason=reason))
 
         # Active Run Learning reflection
@@ -662,7 +662,7 @@ class EvolutionEngine:
             run_id=run_id,
             target_type="eval_case",
             target_id=str(extracted.get("id") or session_id),
-            reason=f"auto-captured journey eval from session {session_id}",
+            reason="journey_eval_auto_captured",
             before=before,
             after=after,
         )
@@ -694,9 +694,9 @@ class EvolutionEngine:
                 run_id=proposal.source_run_id,
                 target_type=proposal.target_type,
                 target_id=proposal.target_id,
-                reason=f"apply side-effect failed: {exc}",
+                reason="proposal_apply_side_effect_failed",
                 before=event.after,
-                after="",
+                after=json.dumps({"error_type": type(exc).__name__, "error": str(exc)}, sort_keys=True),
             )
             raise
         self.ledger.mark_applied(proposal_id, event.id)

@@ -129,12 +129,14 @@ class SystemDaemon:
                         # Principle 17: enforce the goal's declared stop condition
                         # before doing more work on it, so a long-running goal is
                         # not kept active past its timeout / retry budget.
-                        stop_reason = goal_store.stop_condition_reached(g.id)
+                        stop_facts = goal_store.stop_condition_facts(g.id)
+                        stop_reason = str(stop_facts.get("reason") or "")
                         if stop_reason:
                             goal_store.update_status(
                                 g.id,
                                 GOAL_STATUS_BLOCKED,
                                 blocked_reason=stop_reason,
+                                evidence=stop_facts,
                                 event_type="goal.stop_condition",
                             )
                             continue

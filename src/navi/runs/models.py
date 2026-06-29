@@ -92,7 +92,7 @@ def _require_workspace(workspace: str) -> str:
     return value
 
 
-def _approval_diagnostic_facts(approval: Approval, *, now: float, sender_id: str = "") -> dict:
+def _approval_resolution_facts(approval: Approval, *, now: float, sender_id: str = "") -> dict:
     return {
         "approval_id": approval.id,
         "run_id": approval.run_id,

@@ -22,7 +22,7 @@ from .models import (
     Run,
     ToolCallLog,
     Watch,
-    _approval_diagnostic_facts,
+    _approval_resolution_facts,
     _require_workspace,
 )
 from .store import RUN_STORE_SCHEMA_VERSION, RUNS_TABLE, RunStore
@@ -43,6 +43,6 @@ __all__ = [
     "Run",
     "ToolCallLog",
     "Watch",
-    "_approval_diagnostic_facts",
+    "_approval_resolution_facts",
     "_require_workspace",
 ]

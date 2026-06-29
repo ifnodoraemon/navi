@@ -16,8 +16,12 @@ from ..approval_contract import (
     APPROVAL_DECISIONS,
 )
 from ..capabilities import build_capability_registry
-from ..capability_contract import CAPABILITY_ACTION_ERROR, CAPABILITY_ERROR_REASON_KEY
-from ..conversation_contract import CONVERSATION_ASK_ACTIONS
+from ..capability_contract import CAPABILITY_ERROR_REASON_KEY
+from ..loop_control import (
+    workflow_step_block_reason,
+    workflow_step_loop_decision,
+    workflow_verification_loop_decision,
+)
 from ..tools import ToolSpec
 from .helpers import (
     arg_text as _arg_text,
@@ -31,20 +35,14 @@ from .helpers import (
 )
 from ..tools import WORKFLOW_STEP_CONTEXT
 from ..loop import (
-    LoopCheckName,
-    LoopCheckResult,
-    LoopDecision,
-    LoopDecisionKind,
     LoopPhase,
-    LoopReason,
-    LoopSeverity,
-    TraceFailureDomain,
     TracePhase,
 )
 from ..trace import TraceStore
 from ..workflows import (
     STEP_STATUS_COMPLETED,
     STEP_STATUS_FAILED,
+    STEP_FAILED_STATUSES,
     STEP_STATUS_PENDING,
     STEP_STATUS_RUNNING,
     WORKFLOW_STATUS_APPROVED,
@@ -107,7 +105,7 @@ class WorkflowProposeCapability(BaseCapability):
             steps=steps,
             evidence={
                 "confirmation_required": True,
-                "reason": "Dynamic workflows must be approved before execution.",
+                "reason": "workflow_approval_required",
             },
         )
         facts = {
@@ -318,13 +316,9 @@ class WorkflowRunCapability(BaseCapability):
                 turn_result=turn_result,
                 context=context,
             )
-            if turn_result.action in CONVERSATION_ASK_ACTIONS:
-                raise ValueError(turn_result.text or "workflow step requested user input")
-            error_reason = ""
-            if isinstance(turn_result.facts, dict):
-                error_reason = str(turn_result.facts.get(CAPABILITY_ERROR_REASON_KEY) or "")
-            if turn_result.action == CAPABILITY_ACTION_ERROR or error_reason:
-                raise ValueError(turn_result.text or error_reason or "workflow step failed")
+            block_reason = workflow_step_block_reason(turn_result)
+            if block_reason:
+                raise ValueError(turn_result.text or block_reason)
             output = {
                 "step_id": step.id,
                 "trace_id": turn_result.trace_id,
@@ -482,46 +476,13 @@ class WorkflowRunCapability(BaseCapability):
     ) -> None:
         if not turn_result.trace_id:
             return
-        decision = LoopDecisionKind.FINALIZE
-        reason = LoopReason.WORKFLOW_STEP_COMPLETED
-        failure_domain = TraceFailureDomain.NONE
-        check_passed = True
-        severity = LoopSeverity.INFO
-        if turn_result.action in CONVERSATION_ASK_ACTIONS:
-            decision = LoopDecisionKind.BLOCKED
-            reason = LoopReason.WORKFLOW_STEP_REQUESTED_USER_INPUT
-            failure_domain = TraceFailureDomain.CHECKER_BLOCKED
-            check_passed = False
-            severity = LoopSeverity.ERROR
-        error_reason = ""
-        if isinstance(turn_result.facts, dict):
-            error_reason = str(turn_result.facts.get(CAPABILITY_ERROR_REASON_KEY) or "")
-        if turn_result.action == CAPABILITY_ACTION_ERROR or error_reason:
-            decision = LoopDecisionKind.FAILED
-            reason = LoopReason.WORKFLOW_STEP_CAPABILITY_FAILURE
-            failure_domain = TraceFailureDomain.CAPABILITY_FAILURE
-            check_passed = False
-            severity = LoopSeverity.ERROR
         trace = TraceStore(self.home)
         trace.add_loop_decision(
             trace_id=turn_result.trace_id,
-            decision=LoopDecision(
-                decision=decision,
-                reason=reason,
-                phase=LoopPhase.WORKFLOW_STEP,
-                failure_domain=failure_domain,
-                tool=turn_result.action,
-                run_id=turn_result.run_id,
+            decision=workflow_step_loop_decision(
+                turn_result,
                 workflow_id=workflow.id,
                 step_id=step.id,
-                checker_results=(
-                    LoopCheckResult(
-                        name=LoopCheckName.WORKFLOW_STEP_CHECKER,
-                        passed=check_passed,
-                        severity=severity,
-                        reason=turn_result.text or reason,
-                    ),
-                ),
             ),
             session_id=context.session_id or "",
             run_id=turn_result.run_id or workflow.id,
@@ -598,29 +559,11 @@ class WorkflowRunCapability(BaseCapability):
             return
         TraceStore(self.home).add_loop_decision(
             trace_id=context.trace_id,
-            decision=LoopDecision(
-                decision=LoopDecisionKind.FINALIZE if decision.passed else LoopDecisionKind.BLOCKED,
-                reason=LoopReason.WORKFLOW_VERIFIER_PASSED
-                if decision.passed
-                else LoopReason.WORKFLOW_VERIFIER_BLOCKED,
-                phase=LoopPhase.WORKFLOW_VERIFY,
-                failure_domain=TraceFailureDomain.NONE
-                if decision.passed
-                else TraceFailureDomain.CHECKER_BLOCKED,
-                tool="workflow.run",
-                run_id=workflow.id,
+            decision=workflow_verification_loop_decision(
                 workflow_id=workflow.id,
-                checker_results=tuple(
-                    LoopCheckResult(
-                        name=check.name,
-                        passed=check.passed,
-                        severity=check.severity,
-                        reason=check.reason,
-                        evidence=check.evidence,
-                    )
-                    for check in decision.check_results
-                ),
-                evidence=decision.output,
+                passed=decision.passed,
+                check_results=decision.check_results,
+                output=decision.output,
             ),
             session_id=context.session_id or "",
             run_id=workflow.id,
@@ -719,5 +662,5 @@ def _workflow_counts(store: WorkflowStore, workflow: Workflow) -> dict[str, int]
         "step_count": len(steps),
         "pending_count": len([step for step in steps if step.status == STEP_STATUS_PENDING]),
         "completed_count": len([step for step in steps if step.status == STEP_STATUS_COMPLETED]),
-        "failed_count": len([step for step in steps if step.status in {"failed", "blocked"}]),
+        "failed_count": len([step for step in steps if step.status in STEP_FAILED_STATUSES]),
     }

@@ -411,10 +411,9 @@ class GoalStore:
         )
         return self.get(goal_id)
 
-    def stop_condition_reached(self, goal_id: str) -> str:
-        """Return a non-empty reason when a long-running goal has hit a declared,
-        state-based stop boundary (timeout elapsed or retry ceiling exceeded), or
-        "" when it may continue.
+    def stop_condition_facts(self, goal_id: str) -> dict[str, Any]:
+        """Return structured facts when a long-running goal hits a declared
+        state-based stop boundary.
 
         Principle 17: long-running goals need explicit stop conditions, so a goal
         is not retried or kept active forever. This is a boundary rule over durable
@@ -423,13 +422,17 @@ class GoalStore:
         """
         goal = self.get(goal_id)
         if goal is None:
-            return ""
+            return {}
         if goal.status != GOAL_STATUS_ACTIVE:
-            return ""
+            return {}
         if goal.timeout > 0:
             age = time.time() - goal.created_at
             if age >= goal.timeout:
-                return f"timeout reached: active for {age:.0f}s of {goal.timeout:.0f}s budget"
+                return {
+                    "reason": "timeout_reached",
+                    "age_seconds": int(age),
+                    "timeout_seconds": int(goal.timeout),
+                }
         if goal.max_retries > 0:
             retries = sum(
                 1
@@ -438,8 +441,18 @@ class GoalStore:
                 and event.status in {GOAL_STATUS_BLOCKED, "failed"}
             )
             if retries >= goal.max_retries:
-                return f"retry ceiling reached: {retries} of {goal.max_retries} allowed"
-        return ""
+                return {
+                    "reason": "retry_ceiling_reached",
+                    "retry_count": retries,
+                    "max_retries": goal.max_retries,
+                }
+        return {}
+
+    def stop_condition_reached(self, goal_id: str) -> str:
+        facts = self.stop_condition_facts(goal_id)
+        if not facts:
+            return ""
+        return str(facts.get("reason") or "")
 
     def update_for_run(self, run: Run, *, evidence: dict[str, Any] | None = None) -> Goal | None:
         goal = self.get_by_run(run.id)
@@ -447,9 +460,14 @@ class GoalStore:
             return None
         evidence = evidence or {"run_id": run.id, "run_status": run.status}
         status = _goal_status_for_run(run, evidence=evidence)
-        reason = run.error if status == GOAL_STATUS_BLOCKED else ""
-        if run.status == RUN_STATUS_COMPLETED and status == GOAL_STATUS_BLOCKED and not reason:
-            reason = "critic gate evidence missing or failed"
+        reason = ""
+        if status == GOAL_STATUS_BLOCKED:
+            if run.status == RUN_STATUS_COMPLETED and not run.error:
+                reason = "critic_gate_evidence_missing"
+            else:
+                reason = "run_blocked"
+            if run.error:
+                evidence = {**evidence, "run_error": run.error}
         return self.update_status(
             goal.id,
             status=status,

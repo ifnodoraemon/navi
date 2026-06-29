@@ -279,7 +279,7 @@ trace store.
 
 `POST /v1/memory` accepts a governed memory item shape: `type`, `content`, `scope`, `source`, `status`, `confidence`, and optional `metadata`. `GET /v1/memory` returns structured `items`; memory is not exposed as a flat text dump. `GET /v1/memory/conflicts` returns declared contradiction and supersession relationships so stale or competing facts are visible to operators and agents.
 
-Lifecycle hooks are declared control-plane artifacts. Built-in hooks are loaded from `src/navi/specs_data.py`; local hooks can be added as YAML files under `NAVI_HOME/hooks/*.yaml` with `event`, optional `match`, `decision`, `reason`, and structured `facts`. Local hooks do not execute arbitrary code.
+Lifecycle hooks are declared control-plane artifacts. Built-in hooks are loaded from `src/navi/specs_data.py`; local hooks can be added as YAML files under `NAVI_HOME/hooks/*.yaml` with `event`, optional `match`, `decision`, `reason_code`, and structured `facts`. Local hooks do not execute arbitrary code.
 
 ## Configuration
 

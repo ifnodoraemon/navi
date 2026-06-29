@@ -41,7 +41,8 @@ def test_goal_store_tracks_task_lifecycle_with_evidence(tmp_path):
     blocked = goals.update_for_run(failed)
     assert blocked is not None
     assert blocked.status == GOAL_STATUS_BLOCKED
-    assert blocked.blocked_reason == "execution grant missing"
+    assert blocked.blocked_reason == "run_blocked"
+    assert json.loads(blocked.evidence_json)["run_error"] == "execution grant missing"
 
     rejected = runs.update_run(task.id, status="rejected")
     assert rejected is not None
@@ -77,7 +78,8 @@ def test_goal_stop_condition_reached_on_timeout(tmp_path):
             (goal.created_at - 7200.0, goal.id),
         )
     reason = goals.stop_condition_reached(goal.id)
-    assert "timeout reached" in reason
+    assert reason == "timeout_reached"
+    assert goals.stop_condition_facts(goal.id)["timeout_seconds"] == 3600
 
     # A goal with no declared stop condition never trips the boundary.
     open_goal = goals.create(objective="open goal", workspace=str(tmp_path))
@@ -100,7 +102,8 @@ def test_goal_stop_condition_reached_on_retry_ceiling(tmp_path):
     goals.record_event(goal.id, "goal.run_status", status=GOAL_STATUS_BLOCKED)
 
     reason = goals.stop_condition_reached(goal.id)
-    assert "retry ceiling reached" in reason
+    assert reason == "retry_ceiling_reached"
+    assert goals.stop_condition_facts(goal.id)["retry_count"] == 2
 
 
 def test_goal_store_rejects_schema_drift(tmp_path):

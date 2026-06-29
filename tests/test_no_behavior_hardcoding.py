@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from navi.memory import MemoryStore
+from navi.memory.store import _memory_learnings_output_schema
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +75,17 @@ def test_memory_store_requires_source_reason_and_provenance(tmp_path: Path) -> N
 
     assert item.reason == "User stated this preference"
     assert item.provenance == "manual"
+
+
+def test_memory_learning_schema_does_not_force_model_rationale() -> None:
+    schema = _memory_learnings_output_schema("test")["schema"]
+    variants = schema["properties"]["learnings"]["items"]["anyOf"]
+
+    assert variants[0]["required"] == ["action", "type", "content"]
+    assert variants[1]["required"] == ["action", "id"]
+    assert "reason" in variants[0]["properties"]
+    assert "confidence" in variants[0]["properties"]
+    assert "reason" in variants[1]["properties"]
 
 
 def _repo_text_files() -> list[tuple[Path, str]]:
@@ -279,13 +291,13 @@ hooks:
   - name: block.memory
     event: before_memory_write
     decision: block
-    reason: memory writes disabled by local hook
+    reason_code: memory_write_blocked_by_hook
 """.lstrip(),
         encoding="utf-8",
     )
 
     store = MemoryStore(tmp_path)
-    with pytest.raises(ValueError, match="memory writes disabled by local hook"):
+    with pytest.raises(ValueError, match="memory_write_blocked_by_hook"):
         store.add_item(
             "preference",
             "Prefer short answers",
@@ -317,4 +329,4 @@ def test_governance_agent_reports_state_not_auto_approval() -> None:
     source = (PROJECT_ROOT / "src/navi/governance_agent.py").read_text(encoding="utf-8")
     assert "auto-approved" not in source
     assert "Auto-approved" not in source
-    assert "execution grant allowed by governance state" in source
+    assert "execution_grant_allowed" in source

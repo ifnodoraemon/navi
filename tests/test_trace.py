@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from navi.api import create_app
+from navi.capabilities import build_capability_registry
+from navi.capabilities_types import CapabilityContext
 from navi.db import connect
 from navi.loop import LoopCheckName, LoopDecisionKind, LoopReason, TraceFailureDomain
 from navi.trace import LoopCheckResult, LoopDecision, TraceStore
@@ -108,7 +111,8 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
                 LoopCheckResult(
                     name=LoopCheckName.TERMINAL_RESULT,
                     passed=True,
-                    reason="terminal action chat",
+                    reason=LoopReason.TERMINAL_RESULT,
+                    evidence={"terminal_action": "chat"},
                 ),
             ),
         ),
@@ -147,6 +151,27 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
     runs_payload = runs_response.json()
     assert runs_payload["data"]["runs"][0]["run_type"] == "chain"
     assert "thread_id" in runs_payload["data"]["runs"][0]
+
+
+@pytest.mark.asyncio
+async def test_trace_evaluate_capability_returns_structured_evidence(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_event(trace_id="trace-ok", phase="turn.start")
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path, execution_context="api")
+
+    result = await registry.invoke(
+        "trace.evaluate",
+        {"trace_id": "trace-ok"},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, workspace=str(tmp_path)),
+    )
+
+    assert result.ok
+    assert result.facts is not None
+    evaluation = result.facts["evaluation"]
+    assert "diagnostic" not in evaluation
+    assert "evidence_json" not in evaluation
+    assert evaluation["evidence"]["evaluation_rule"] == "no_failed_or_degraded_rule"
 
 
 def test_trace_store_evaluates_failure_domains(tmp_path):
@@ -230,6 +255,42 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     runtime_eval = store.evaluate_trace("runtime-failure")
 
     store.add_event(
+        trace_id="approval-pause",
+        phase="capability.result",
+        ok=False,
+        tool="shell.run",
+        output_data={
+            "facts": {
+                "approval": {"action": "execute:shell.run", "code": "123456"},
+                "entity_id": "approval-1",
+                "entity_type": "approval_request",
+                "reason": "sensitive_op_requires_approval",
+                "run_id": "run-approval",
+                "state_transition": "created",
+            }
+        },
+        message="approval required",
+    )
+    store.add_loop_decision(
+        trace_id="approval-pause",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.PAUSE_FOR_APPROVAL,
+            reason=LoopReason.APPROVAL_REQUIRED,
+            failure_domain=TraceFailureDomain.NONE,
+            gate_results=(
+                LoopCheckResult(
+                    name=LoopCheckName.APPROVAL_GATE,
+                    passed=True,
+                    severity="info",
+                    reason=LoopReason.APPROVAL_REQUIRED,
+                ),
+            ),
+        ),
+    )
+    store.add_event(trace_id="approval-pause", phase="turn.final", ok=True)
+    approval_pause_eval = store.evaluate_trace("approval-pause")
+
+    store.add_event(
         trace_id="completion-verify",
         phase="loop.check",
         ok=False,
@@ -268,6 +329,32 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     )
     pending_eval = store.evaluate_trace("pending-risk")
 
+    store.add_event(
+        trace_id="pending-resolved",
+        phase="capability.result",
+        ok=True,
+        tool="delegate.status",
+        output_data={
+            "facts": {"entity_type": "delegation_run", "run_id": "task-2", "status": "pending"}
+        },
+    )
+    store.add_event(
+        trace_id="pending-resolved",
+        phase="capability.result",
+        ok=True,
+        tool="delegate.status",
+        output_data={
+            "facts": {"entity_type": "delegation_run", "run_id": "task-2", "status": "completed"}
+        },
+    )
+    store.add_event(
+        trace_id="pending-resolved",
+        phase="turn.final",
+        ok=True,
+        message="done",
+    )
+    pending_resolved_eval = store.evaluate_trace("pending-resolved")
+
     store.add_loop_decision(
         trace_id="loop-failed",
         decision=LoopDecision(
@@ -286,6 +373,38 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     )
     loop_failed_eval = store.evaluate_trace("loop-failed")
 
+    store.add_event(
+        trace_id="loop-input-schema",
+        phase="capability.result",
+        ok=False,
+        tool="file.read",
+        output_data={
+            "facts": {
+                "error_reason": "schema_mismatch",
+                "schema_errors": ["$.path is required"],
+                "tool": "file.read",
+            }
+        },
+        message="capability file.read input schema mismatch",
+    )
+    store.add_loop_decision(
+        trace_id="loop-input-schema",
+        decision=LoopDecision(
+            decision="failed",
+            reason="capability_failure",
+            failure_domain=TraceFailureDomain.CAPABILITY_FAILURE,
+            checker_results=(
+                LoopCheckResult(
+                    name="capability_result",
+                    passed=False,
+                    severity="error",
+                    reason="capability file.read input schema mismatch",
+                ),
+            ),
+        ),
+    )
+    loop_input_schema_eval = store.evaluate_trace("loop-input-schema")
+
     store.add_loop_decision(
         trace_id="loop-approval",
         decision=LoopDecision(
@@ -297,7 +416,7 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
                     name="approval_gate",
                     passed=False,
                     severity="warning",
-                    reason="existing approval is still pending",
+                    reason=LoopReason.APPROVAL_ALREADY_PENDING,
                 ),
             ),
         ),
@@ -315,7 +434,7 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
                     name="no_progress_gate",
                     passed=False,
                     severity="warning",
-                    reason="same capability result signature was observed twice",
+                    reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
                 ),
             ),
         ),
@@ -332,8 +451,14 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     assert output_schema_eval.failure_domain == "capability_failure"
     assert safeguard_eval.outcome == "failure"
     assert safeguard_eval.failure_domain == "safeguard_policy"
-    assert "safeguard hook decision" in safeguard_eval.diagnostic
+    assert json.loads(safeguard_eval.evidence_json)["evaluation_rule"] == "safeguard_hook_decision"
     assert runtime_eval.failure_domain == "runtime"
+    assert approval_pause_eval.outcome == "success"
+    assert approval_pause_eval.failure_domain == "none"
+    assert (
+        json.loads(approval_pause_eval.evidence_json)["evaluation_rule"]
+        == "approval_pause_recorded"
+    )
     assert completion_eval.outcome == "failure"
     assert completion_eval.failure_domain == "checker_blocked"
     assert no_response_eval.outcome == "failure"
@@ -350,8 +475,23 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     assert pending_eval.outcome == "degraded"
     assert pending_eval.failure_domain == "missing_completion_check"
     assert json.loads(pending_eval.evidence_json)["pending_run_completion_risk"] is True
+    assert pending_resolved_eval.outcome == "success"
+    assert pending_resolved_eval.failure_domain == "none"
+    assert (
+        json.loads(pending_resolved_eval.evidence_json)["evaluation_rule"]
+        == "no_failed_or_degraded_rule"
+    )
     assert loop_failed_eval.outcome == "failure"
     assert loop_failed_eval.failure_domain == "planner_or_parser"
+    assert loop_input_schema_eval.failure_domain == "planner_or_parser"
+    assert (
+        json.loads(loop_input_schema_eval.evidence_json)["evaluation_rule"]
+        == "loop_failure_domain_corrected_by_input_schema"
+    )
+    assert (
+        json.loads(loop_input_schema_eval.evidence_json)["failure_domain_corrected_from"]
+        == "capability_failure"
+    )
     assert loop_approval_eval.outcome == "degraded"
     assert loop_approval_eval.failure_domain == "approval_loop"
     assert loop_converged_eval.outcome == "degraded"

@@ -17,7 +17,7 @@ class HookSpec:
     decision_schema: dict[str, Any]
     source: str = "built-in"
     decision: str = "observe"
-    reason: str = ""
+    reason_code: str = ""
     facts: dict[str, Any] | None = None
     match: dict[str, Any] | None = None
 
@@ -33,7 +33,7 @@ class HookDecision:
     hook: str
     event: str
     decision: str
-    reason: str = ""
+    reason_code: str = ""
     facts: dict[str, Any] | None = None
 
 
@@ -66,14 +66,14 @@ class HookRegistry:
                 continue
 
             decision = spec.decision
-            reason = spec.reason
+            reason_code = spec.reason_code
 
             decisions.append(
                 HookDecision(
                     hook=spec.name,
                     event=event.event,
                     decision=decision,
-                    reason=reason,
+                    reason_code=reason_code,
                     facts={"payload_keys": payload_keys, "source": spec.source}
                     | (spec.facts or {}),
                 )
@@ -126,7 +126,7 @@ def _hook_spec_from_mapping(item: Any, *, default_source: str) -> HookSpec:
         decision_schema=dict(item.get("decision_schema") or {"type": "object"}),
         source=str(item.get("source") or default_source),
         decision=decision,
-        reason=str(item.get("reason") or ""),
+        reason_code=str(item.get("reason_code") or ""),
         facts=facts,
         match=match,
     )

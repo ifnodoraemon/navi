@@ -8,25 +8,28 @@ from pathlib import Path
 from typing import Any
 
 from ._engine_phases import EnginePhasesMixin
-from .capability_contract import CAPABILITY_ACTION_ERROR, CAPABILITY_ERROR_REASON_KEY
+from .capability_contract import CAPABILITY_ACTION_ERROR
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .context import ContextManager
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from .conversation_contract import CONVERSATION_ACTION_CHAT, CONVERSATION_ASK_ACTIONS
 from .engine_types import AgentTurnResult
-from .lifecycle import RUN_STATUS_AWAITING_APPROVAL
 from .loop import (
-    LoopCheckName,
-    LoopCheckResult,
     LoopDecision,
-    LoopDecisionKind,
     LoopPhase,
     LoopProgressGate,
-    LoopReason,
-    LoopSeverity,
     TracePhase,
     TraceFailureDomain,
-    trace_failure_domain,
+)
+from .loop_control import (
+    LoopControlEffect,
+    RecoveryStepFrame,
+    RuntimeStepFrame,
+    failure_decision_for_return,
+    reduce_recovery_step,
+    reduce_runtime_step,
+    semantic_progress_signature,
+    terminal_loop_decision,
 )
 from .recovery import RecoveryPlanner
 from .runtime import AgentRuntime
@@ -188,7 +191,7 @@ class HernessEngine(EnginePhasesMixin):
                 result = self._with_trace(step_result.result, trace_id)
                 self._record_loop_decision(
                     trace_id,
-                    decision=self._failure_decision_for_return(result, step_result),
+                    decision=failure_decision_for_return(result, tool=step_result.tool),
                     result=result,
                     resolved_session_id=resolved_session_id,
                     source=source,
@@ -203,61 +206,29 @@ class HernessEngine(EnginePhasesMixin):
             if step_result.should_continue:
                 # Recovery triggered; continue loop with updated observations
                 observations.append(step_result.recovery_observation)
-                progress = progress_gate.observe(step_result.progress_signature)
-                progress_signature = progress.signature
-                self._record_loop_decision(
-                    trace_id,
-                    decision=LoopDecision(
-                        decision=LoopDecisionKind.RECOVER,
-                        reason=LoopReason.COMPLETION_CHECKER_BLOCKED,
-                        phase=LoopPhase.CHECK,
-                        failure_domain=TraceFailureDomain.CHECKER_BLOCKED,
+                control = reduce_recovery_step(
+                    RecoveryStepFrame(
+                        result=step_result.result,
+                        facts=step_result.invoked_facts,
                         tool=step_result.tool,
-                        run_id=step_result.result.run_id,
-                        progress_signature=progress_signature,
-                        checker_results=(
-                            LoopCheckResult(
-                                name=LoopCheckName.COMPLETION_CHECKER,
-                                passed=False,
-                                severity=LoopSeverity.ERROR,
-                                reason=step_result.recovery_observation,
-                            ),
-                        ),
+                        progress_signature=step_result.progress_signature,
+                        goal_ids=goal_ids,
+                        observations_count=len(observations),
+                        recovery_observation=step_result.recovery_observation,
                     ),
+                    progress_gate=progress_gate,
+                )
+                self._record_loop_control(
+                    trace_id,
+                    control,
                     result=step_result.result,
                     resolved_session_id=resolved_session_id,
                     source=source,
                     peer_id=peer_id,
                     sender_id=sender_id,
                 )
-                if progress.repeated:
+                if control.effect == LoopControlEffect.FINALIZE_STABLE:
                     result = step_result.result
-                    self._record_loop_decision(
-                        trace_id,
-                        decision=LoopDecision(
-                            decision=LoopDecisionKind.CONVERGED,
-                            reason=LoopReason.REPEATED_RECOVERY_SIGNATURE,
-                            phase=LoopPhase.RUNTIME,
-                            failure_domain=TraceFailureDomain.LOOP_NO_PROGRESS,
-                            tool=step_result.tool,
-                            run_id=result.run_id,
-                            progress_signature=progress_signature,
-                            gate_results=(
-                                LoopCheckResult(
-                                    name=LoopCheckName.NO_PROGRESS_GATE,
-                                    passed=False,
-                                    severity=LoopSeverity.WARNING,
-                                    reason="same recovery signature was observed twice",
-                                    evidence={"observations_count": len(observations)},
-                                ),
-                            ),
-                        ),
-                        result=result,
-                        resolved_session_id=resolved_session_id,
-                        source=source,
-                        peer_id=peer_id,
-                        sender_id=sender_id,
-                    )
                     self.trace.add_event(
                         trace_id=trace_id,
                         phase=TracePhase.RUNTIME_CONVERGED,
@@ -270,9 +241,9 @@ class HernessEngine(EnginePhasesMixin):
                         ok=True,
                         output_data={
                             "observations_count": len(observations),
-                            "signature": progress_signature,
+                            "signature": control.progress_signature,
                         },
-                        message="repeated recovery result; synthesizing stable observations",
+                        message=control.convergence_message,
                     )
                     return await self._finalize_stable_observations(
                         text=text,
@@ -302,7 +273,7 @@ class HernessEngine(EnginePhasesMixin):
                 result = self._with_approval_affordance(result, pending_approval_prompt)
                 self._record_loop_decision(
                     trace_id,
-                    decision=self._terminal_loop_decision(
+                    decision=terminal_loop_decision(
                         result,
                         step_result.invoked_facts,
                         pending_approval_prompt=pending_approval_prompt,
@@ -333,30 +304,45 @@ class HernessEngine(EnginePhasesMixin):
             if observation:
                 observations.append(observation)
 
-            if self._facts_complete_current_request(step_result.invoked_facts):
-                self._record_loop_decision(
-                    trace_id,
-                    decision=LoopDecision(
-                        decision=LoopDecisionKind.FINALIZE,
-                        reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
-                        phase=LoopPhase.RUNTIME,
-                        tool=step_result.tool,
-                        run_id=result.run_id,
-                        goal_ids=tuple(sorted(goal_ids)),
-                        checker_results=(
-                            LoopCheckResult(
-                                name=LoopCheckName.COMPLETION_EVIDENCE,
-                                passed=True,
-                                reason="capability facts marked current request complete",
-                            ),
-                        ),
-                    ),
+            control = reduce_runtime_step(
+                RuntimeStepFrame(
                     result=result,
-                    resolved_session_id=resolved_session_id,
-                    source=source,
-                    peer_id=peer_id,
-                    sender_id=sender_id,
-                )
+                    facts=step_result.invoked_facts,
+                    tool=step_result.tool,
+                    progress_signature=step_result.progress_signature,
+                    goal_ids=goal_ids,
+                    observations_count=len(observations),
+                    pending_approval_prompt=pending_approval_prompt,
+                ),
+                progress_gate=progress_gate,
+            )
+            self._record_loop_control(
+                trace_id,
+                control,
+                result=result,
+                resolved_session_id=resolved_session_id,
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+            )
+            if control.effect == LoopControlEffect.FINALIZE_STABLE:
+                if control.convergence_message:
+                    self.trace.add_event(
+                        trace_id=trace_id,
+                        phase=TracePhase.RUNTIME_CONVERGED,
+                        session_id=resolved_session_id or "",
+                        run_id=result.run_id,
+                        source=source,
+                        peer_id=peer_id,
+                        sender_id=sender_id,
+                        model_role="runtime",
+                        ok=True,
+                        output_data={
+                            "observations_count": len(observations),
+                            "signature": control.progress_signature,
+                        },
+                        message=control.convergence_message,
+                    )
                 return await self._finalize_stable_observations(
                     text=text,
                     observations=observations,
@@ -368,91 +354,6 @@ class HernessEngine(EnginePhasesMixin):
                     peer_id=peer_id,
                     sender_id=sender_id,
                     pending_approval_prompt=pending_approval_prompt,
-                )
-
-            progress = progress_gate.observe(step_result.progress_signature)
-            progress_signature = progress.signature
-            if progress.repeated:
-                self._record_loop_decision(
-                    trace_id,
-                    decision=LoopDecision(
-                        decision=LoopDecisionKind.CONVERGED,
-                        reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
-                        phase=LoopPhase.RUNTIME,
-                        failure_domain=TraceFailureDomain.LOOP_NO_PROGRESS,
-                        tool=step_result.tool,
-                        run_id=result.run_id,
-                        progress_signature=progress_signature,
-                        goal_ids=tuple(sorted(goal_ids)),
-                        gate_results=(
-                            LoopCheckResult(
-                                name=LoopCheckName.NO_PROGRESS_GATE,
-                                passed=False,
-                                severity=LoopSeverity.WARNING,
-                                reason="same capability result signature was observed twice",
-                                evidence={"observations_count": len(observations)},
-                            ),
-                        ),
-                    ),
-                    result=result,
-                    resolved_session_id=resolved_session_id,
-                    source=source,
-                    peer_id=peer_id,
-                    sender_id=sender_id,
-                )
-                self.trace.add_event(
-                    trace_id=trace_id,
-                    phase=TracePhase.RUNTIME_CONVERGED,
-                    session_id=resolved_session_id or "",
-                    run_id=result.run_id,
-                    source=source,
-                    peer_id=peer_id,
-                    sender_id=sender_id,
-                    model_role="runtime",
-                    ok=True,
-                    output_data={
-                        "observations_count": len(observations),
-                        "signature": progress_signature,
-                    },
-                    message="repeated capability result; synthesizing stable observations",
-                )
-                return await self._finalize_stable_observations(
-                    text=text,
-                    observations=observations,
-                    result=result,
-                    goal_ids=goal_ids,
-                    resolved_session_id=resolved_session_id,
-                    trace_id=trace_id,
-                    source=source,
-                    peer_id=peer_id,
-                    sender_id=sender_id,
-                    pending_approval_prompt=pending_approval_prompt,
-                )
-            if progress_signature:
-                self._record_loop_decision(
-                    trace_id,
-                    decision=LoopDecision(
-                        decision=LoopDecisionKind.CONTINUE,
-                        reason=LoopReason.CAPABILITY_OBSERVATION_APPENDED,
-                        phase=LoopPhase.RUNTIME,
-                        tool=step_result.tool,
-                        run_id=result.run_id,
-                        progress_signature=progress_signature,
-                        goal_ids=tuple(sorted(goal_ids)),
-                        checker_results=(
-                            LoopCheckResult(
-                                name=LoopCheckName.COMPLETION_EVIDENCE,
-                                passed=False,
-                                severity=LoopSeverity.INFO,
-                                reason="capability facts did not complete the current request",
-                            ),
-                        ),
-                    ),
-                    result=result,
-                    resolved_session_id=resolved_session_id,
-                    source=source,
-                    peer_id=peer_id,
-                    sender_id=sender_id,
                 )
 
     def _record_loop_decision(
@@ -479,147 +380,27 @@ class HernessEngine(EnginePhasesMixin):
             sender_id=sender_id,
         )
 
-    @staticmethod
-    def _failure_decision_for_return(
-        result: AgentTurnResult,
-        step_result: Any,
-    ) -> LoopDecision:
-        text = result.text or result.observation
-        reason = LoopReason.PLANNER_OR_PARSER_FAILURE
-        failure_domain = _trace_failure_domain_from_facts(
-            result.facts,
-            default=TraceFailureDomain.PLANNER_OR_PARSER,
-        )
-        if failure_domain == TraceFailureDomain.PROVIDER_NO_RESPONSE:
-            reason = LoopReason.PROVIDER_NO_RESPONSE
-        return LoopDecision(
-            decision=LoopDecisionKind.FAILED,
-            reason=reason,
-            phase=LoopPhase.PLANNER,
-            failure_domain=failure_domain,
-            tool=step_result.tool or result.action,
-            run_id=result.run_id,
-            checker_results=(
-                LoopCheckResult(
-                    name=LoopCheckName.PLANNER_RESULT,
-                    passed=False,
-                    severity=LoopSeverity.ERROR,
-                    reason=text,
-                ),
-            ),
-        )
-
-    @staticmethod
-    def _terminal_loop_decision(
-        result: AgentTurnResult,
-        facts: dict[str, Any] | None,
+    def _record_loop_control(
+        self,
+        trace_id: str,
+        control,
         *,
-        pending_approval_prompt: str,
-        tool: str,
-        goal_ids: set[str],
-    ) -> LoopDecision:
-        if result.action == CAPABILITY_ACTION_ERROR:
-            input_schema_mismatch = _capability_error_is_input_schema_mismatch(facts)
-            return LoopDecision(
-                decision=LoopDecisionKind.FAILED,
-                reason=(
-                    LoopReason.PLANNER_OR_PARSER_FAILURE
-                    if input_schema_mismatch
-                    else LoopReason.CAPABILITY_FAILURE
-                ),
-                phase=LoopPhase.PLANNER if input_schema_mismatch else LoopPhase.CAPABILITY,
-                failure_domain=(
-                    TraceFailureDomain.PLANNER_OR_PARSER
-                    if input_schema_mismatch
-                    else TraceFailureDomain.CAPABILITY_FAILURE
-                ),
-                tool=tool or result.action,
-                run_id=result.run_id,
-                goal_ids=tuple(sorted(goal_ids)),
-                checker_results=(
-                    LoopCheckResult(
-                        name=(
-                            LoopCheckName.PLANNER_RESULT
-                            if input_schema_mismatch
-                            else LoopCheckName.CAPABILITY_RESULT
-                        ),
-                        passed=False,
-                        severity=LoopSeverity.ERROR,
-                        reason=result.text or result.observation,
-                    ),
-                ),
+        result: AgentTurnResult | None,
+        resolved_session_id: str | None,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+    ) -> None:
+        for decision in control.decisions:
+            self._record_loop_decision(
+                trace_id,
+                decision=decision,
+                result=result,
+                resolved_session_id=resolved_session_id,
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
             )
-        if _facts_waiting_for_approval(facts) or pending_approval_prompt:
-            deduplicated = bool(facts and facts.get("deduplicated"))
-            return LoopDecision(
-                decision=LoopDecisionKind.PAUSE_FOR_APPROVAL,
-                reason=(
-                    LoopReason.APPROVAL_ALREADY_PENDING
-                    if deduplicated
-                    else LoopReason.APPROVAL_REQUIRED
-                ),
-                phase=LoopPhase.RUNTIME,
-                failure_domain=(
-                    TraceFailureDomain.APPROVAL_LOOP if deduplicated else TraceFailureDomain.NONE
-                ),
-                tool=tool or result.action,
-                run_id=result.run_id,
-                workflow_id=str((facts or {}).get("workflow_id") or ""),
-                goal_ids=tuple(sorted(goal_ids)),
-                gate_results=(
-                    LoopCheckResult(
-                        name=LoopCheckName.APPROVAL_GATE,
-                        passed=not deduplicated,
-                        severity=LoopSeverity.WARNING if deduplicated else LoopSeverity.INFO,
-                        reason=(
-                            "existing approval is still pending"
-                            if deduplicated
-                            else "mutation requires user approval"
-                        ),
-                    ),
-                ),
-            )
-        return LoopDecision(
-            decision=LoopDecisionKind.FINALIZE,
-            reason=LoopReason.TERMINAL_RESULT,
-            phase=LoopPhase.RUNTIME,
-            tool=tool or result.action,
-            run_id=result.run_id,
-            goal_ids=tuple(sorted(goal_ids)),
-            checker_results=(
-                LoopCheckResult(
-                    name=LoopCheckName.TERMINAL_RESULT,
-                    passed=True,
-                    reason=f"terminal action {result.action}",
-                ),
-            ),
-        )
-
-    @staticmethod
-    def _facts_complete_current_request(facts: dict[str, Any] | None) -> bool:
-        if not isinstance(facts, dict):
-            return False
-        return facts.get("completion_evidence") is True
-
-    @staticmethod
-    def _progress_signature(
-        tool: str,
-        args: dict[str, Any],
-        *,
-        ok: bool,
-        facts: dict[str, Any] | None,
-    ) -> str:
-        return json.dumps(
-            {
-                "tool": tool,
-                "args": args,
-                "ok": ok,
-                "facts": facts or {},
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        )
 
     async def _finalize_stable_observations(
         self,
@@ -879,8 +660,8 @@ class HernessEngine(EnginePhasesMixin):
                     model_role="runtime",
                     ok=False,
                     input_data={"checker": "completion", "events_count": len(completion_events)},
-                    output_data={"checker": "completion", "reason": block.reason},
-                    message=block.reason,
+                    output_data={"checker": "completion", **asdict(block)},
+                    message=block.reason_code,
                 )
                 recovery_plan = self.recovery_planner.plan_completion_failure(
                     block=block,
@@ -898,9 +679,9 @@ class HernessEngine(EnginePhasesMixin):
                     ok=True,
                     input_data={"trigger": recovery_plan.trigger},
                     output_data=asdict(recovery_plan),
-                    message=recovery_plan.reason,
+                    message=recovery_plan.reason_code,
                 )
-                progress_signature = self._progress_signature(
+                progress_signature = semantic_progress_signature(
                     syscall.tool,
                     syscall.args,
                     ok=invoked.ok,
@@ -915,7 +696,7 @@ class HernessEngine(EnginePhasesMixin):
                     tool=syscall.tool,
                 )
 
-        progress_signature = self._progress_signature(
+        progress_signature = semantic_progress_signature(
             syscall.tool,
             syscall.args,
             ok=invoked.ok,
@@ -927,7 +708,6 @@ class HernessEngine(EnginePhasesMixin):
             progress_signature=progress_signature,
             tool=syscall.tool,
         )
-
 
     async def shutdown(self, *, timeout: float = 10.0) -> None:
         if self.event_bus:
@@ -965,38 +745,8 @@ class HernessEngine(EnginePhasesMixin):
         return self.context_manager.build_conversation_context(messages)
 
 
-
 # Deferred import: execution -> capabilities -> connector_runtime -> engine forms a
 # cycle, so we register after HernessEngine is defined to break it.
 from .execution import register_engine_class  # noqa: E402
 
 register_engine_class(HernessEngine)
-
-
-def _facts_waiting_for_approval(facts: dict[str, Any] | None) -> bool:
-    if not isinstance(facts, dict):
-        return False
-    status = str(facts.get("status") or "").strip()
-    if status == RUN_STATUS_AWAITING_APPROVAL:
-        return True
-    approval = facts.get("approval")
-    return isinstance(approval, dict) and str(approval.get("code") or "").strip() != ""
-
-
-def _trace_failure_domain_from_facts(
-    facts: dict[str, Any] | None,
-    *,
-    default: TraceFailureDomain,
-) -> TraceFailureDomain:
-    if not isinstance(facts, dict):
-        return default
-    value = trace_failure_domain(facts.get("failure_domain"))
-    return TraceFailureDomain(value) if value else default
-
-
-def _capability_error_is_input_schema_mismatch(facts: dict[str, Any] | None) -> bool:
-    if not isinstance(facts, dict):
-        return False
-    if facts.get(CAPABILITY_ERROR_REASON_KEY) != "schema_mismatch":
-        return False
-    return "result_action" not in facts

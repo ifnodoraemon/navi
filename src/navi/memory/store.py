@@ -311,7 +311,7 @@ class MemoryStore:
             )
         )
         if blocked is not None:
-            raise ValueError(blocked.reason or f"hook blocked memory write: {blocked.hook}")
+            raise ValueError(blocked.reason_code or f"hook_blocked:{blocked.hook}")
 
     def _parse_json_learnings(self, response_raw: str) -> list[dict]:
         try:
@@ -550,9 +550,7 @@ class MemoryStore:
                     source="conversation_consolidation",
                     provenance=f"conversation:{session_id}",
                     ledger_run_id=run_id or f"session:{session_id}",
-                    add_reason_fallback=(
-                        f"Consolidated from conversation session {session_id}"
-                    ),
+                    add_reason_fallback="conversation_consolidation",
                 )
         finally:
             if lock is not None:
@@ -695,7 +693,7 @@ class MemoryStore:
             source="task_reflection",
             provenance=f"run:{task.id}:trace",
             ledger_run_id=task.id,
-            add_reason_fallback=f"Consolidated from run {task.id}",
+            add_reason_fallback="task_reflection",
         )
 
     # --------------------------------------------------------- apply learnings
@@ -741,7 +739,7 @@ class MemoryStore:
                     run_id=ledger_run_id,
                     target_type="memory_item",
                     target_id=item.id,
-                    reason=f"Extracted learning: {item.content[:60]}",
+                    reason="memory_learning_added",
                     before="",
                     after=json.dumps(item.__dict__, default=str),
                 )
@@ -758,7 +756,7 @@ class MemoryStore:
                         run_id=ledger_run_id,
                         target_type="memory_item",
                         target_id=item_id,
-                        reason=str(learning.get("reason", "Revoked by consolidation")),
+                        reason=str(learning.get("reason") or "memory_learning_revoked"),
                         before=json.dumps(old_item.__dict__, default=str),
                         after="revoked",
                     )
@@ -912,7 +910,7 @@ def _memory_learnings_output_schema(name: str) -> dict:
                                         "description": "IDs of existing active memories that this new memory contradicts.",
                                     },
                                 },
-                                "required": ["action", "type", "content", "confidence", "reason"],
+                                "required": ["action", "type", "content"],
                                 "additionalProperties": False,
                             },
                             {
@@ -922,7 +920,7 @@ def _memory_learnings_output_schema(name: str) -> dict:
                                     "id": {"type": "string"},
                                     "reason": {"type": "string"},
                                 },
-                                "required": ["action", "id", "reason"],
+                                "required": ["action", "id"],
                                 "additionalProperties": False,
                             },
                         ],

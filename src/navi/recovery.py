@@ -10,14 +10,14 @@ from .loop import LoopPhase
 @dataclass(frozen=True)
 class RecoveryFacts:
     trigger: str
-    reason: str
+    reason_code: str
     blocked: bool = True
     details: dict[str, Any] = field(default_factory=dict)
 
     def to_observation(self) -> str:
         facts = {
             "trigger": self.trigger,
-            "reason": self.reason,
+            "reason_code": self.reason_code,
             "blocked": self.blocked,
             **self.details,
         }
@@ -29,17 +29,12 @@ class RecoveryFacts:
 
 @dataclass(frozen=True)
 class CompletionBlock:
-    """Structured completion-verifier block reason.
+    """Structured completion-verifier block facts."""
 
-    Carries both the human-readable ``reason`` (used for traces and recovery
-    plan ``reason``) and the structured ``run_id`` / ``run_status`` fields that
-    the recovery planner consumes directly — instead of regex-parsing the
-    reason string back into fields (a fragile string roundtrip).
-    """
-
-    reason: str
+    reason_code: str
     run_id: str = ""
     run_status: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 class RecoveryPlanner:
@@ -51,25 +46,25 @@ class RecoveryPlanner:
     ) -> RecoveryFacts:
         if block.run_id:
             return self._run_progress_facts(
-                block_reason=block.reason,
+                reason_code=block.reason_code,
                 run_id=block.run_id,
                 run_status=block.run_status,
             )
 
         cleanup_facts = _last_cleanup_facts(events)
         if cleanup_facts:
-            return self._cleanup_facts(block_reason=block.reason, facts=cleanup_facts)
+            return self._cleanup_facts(reason_code=block.reason_code, facts=cleanup_facts)
 
         return RecoveryFacts(
             trigger=LoopPhase.CHECK,
-            reason=block.reason,
-            details={"failure_domain": "checker_blocked"},
+            reason_code=block.reason_code,
+            details={"failure_domain": "checker_blocked", **block.details},
         )
 
     def _run_progress_facts(
         self,
         *,
-        block_reason: str,
+        reason_code: str,
         run_id: str,
         run_status: str,
     ) -> RecoveryFacts:
@@ -80,11 +75,11 @@ class RecoveryPlanner:
         }
         return RecoveryFacts(
             trigger=LoopPhase.CHECK,
-            reason=block_reason,
+            reason_code=reason_code,
             details=details,
         )
 
-    def _cleanup_facts(self, *, block_reason: str, facts: dict[str, Any]) -> RecoveryFacts:
+    def _cleanup_facts(self, *, reason_code: str, facts: dict[str, Any]) -> RecoveryFacts:
         details: dict[str, Any] = {
             "blocked_entity_type": "delegation_cleanup",
             "cleanup_complete": False,
@@ -98,7 +93,7 @@ class RecoveryPlanner:
             details["kind_filter"] = kind
         return RecoveryFacts(
             trigger=LoopPhase.CHECK,
-            reason=block_reason,
+            reason_code=reason_code,
             details=details,
         )
 

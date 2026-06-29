@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from navi.engine import HernessEngine
+from navi.event_bus import EventBus
 from navi.evolution import EvolutionEngine, EvolutionLedger
 from navi._engine_phases import EnginePhasesMixin
 from navi.capabilities import build_capability_registry
@@ -69,8 +70,6 @@ class _PlannerSchemaProvider:
                 "permission": "read",
                 "args": {"message": "ok"},
                 "model_role": "responder",
-                "confidence": 1.0,
-                "reason": "facts available",
             }
         )
 
@@ -83,7 +82,15 @@ async def test_planner_structured_output_wrapper_is_not_a_capability_name():
     decision = await planner.plan("hi", tools=[])
 
     assert provider.output_schema["name"] == "planner_decision"
+    assert provider.output_schema["schema"]["required"] == [
+        "tool",
+        "permission",
+        "args",
+        "model_role",
+    ]
     assert decision.tool == "final.answer"
+    assert decision.confidence == 0.0
+    assert decision.reason == ""
 
 
 def test_anthropic_structured_wrapper_returns_inner_planner_decision():
@@ -134,14 +141,30 @@ def test_planner_parser_rejects_markdown_fenced_json():
     assert decision.reason == "planner returned invalid JSON"
 
 
-def test_planner_parser_rejects_missing_schema_fields():
+def test_planner_parser_accepts_missing_optional_audit_fields():
     decision = ModelSyscallPlanner._parse_syscall(
         json.dumps(
             {
                 "tool": "final.answer",
                 "permission": "read",
                 "args": {"message": "ok"},
-                "reason": "done",
+                "model_role": "responder",
+            }
+        )
+    )
+
+    assert decision.tool == "final.answer"
+    assert decision.confidence == 0.0
+    assert decision.reason == ""
+
+
+def test_planner_parser_rejects_missing_required_schema_fields():
+    decision = ModelSyscallPlanner._parse_syscall(
+        json.dumps(
+            {
+                "tool": "final.answer",
+                "permission": "read",
+                "args": {"message": "ok"},
             }
         )
     )
@@ -149,7 +172,6 @@ def test_planner_parser_rejects_missing_schema_fields():
     assert decision.tool == "system.planner_error"
     assert decision.reason == "planner decision schema mismatch"
     assert "$.model_role is required" in decision.args["schema_errors"]
-    assert "$.confidence is required" in decision.args["schema_errors"]
 
 
 def test_completion_checker_ignores_unrelated_prepared_runs(tmp_path):
@@ -345,6 +367,89 @@ class _RepeatListProvider:
             assert "Runtime convergence" not in content
             assert "Capability observations:" in content
             return "当前没有任务。"
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+
+class _RepeatStatusDifferentArgsProvider:
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        self.planner_calls = 0
+        self.responder_calls = 0
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        if role == "planner":
+            self.planner_calls += 1
+            args = (
+                {"query": f"task {self.run_id} approval history"}
+                if self.planner_calls == 1
+                else {"run_id": self.run_id}
+            )
+            return json.dumps(
+                {
+                    "tool": "delegate.status",
+                    "permission": "read",
+                    "args": args,
+                    "model_role": "responder",
+                    "confidence": 1.0,
+                    "reason": "inspect run facts",
+                }
+            )
+        if role == "responder":
+            self.responder_calls += 1
+            content = "\n".join(message.content for message in messages)
+            assert self.run_id in content
+            return "任务已过期。"
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+
+class _DelegateSpawnApprovalProvider:
+    def __init__(self, workspace: str) -> None:
+        self.workspace = workspace
+        self.planner_calls = 0
+        self.responder_calls = 0
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        if role == "planner":
+            self.planner_calls += 1
+            return json.dumps(
+                {
+                    "tool": "delegate.spawn",
+                    "permission": "prepare",
+                    "args": {
+                        "objective": "在家目录查找简历文件",
+                        "context": "用户明确要求在家目录中查找简历。",
+                        "plan": "在家目录搜索简历文件。",
+                        "success_criteria": "返回找到的简历文件事实或未找到事实。",
+                        "workspace": self.workspace,
+                    },
+                    "model_role": "responder",
+                    "confidence": 1.0,
+                    "reason": "create delegated run",
+                }
+            )
+        if role == "responder":
+            self.responder_calls += 1
+            content = "\n".join(message.content for message in messages)
+            assert "awaiting_approval" in content
+            return "需要审批后执行。"
         raise AssertionError(f"unexpected role: {role}")
 
     def list_roles(self) -> list[str]:
@@ -576,6 +681,85 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
     assert any(
         item["decision"] == "converged" and item["reason"] == "repeated_progress_signature"
         for item in loop_decisions
+    )
+
+
+@pytest.mark.asyncio
+async def test_same_status_facts_with_different_args_converges(tmp_path):
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "find resume",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="expired",
+    )
+    provider = _RepeatStatusDifferentArgsProvider(run.id)
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "我们不是批准了这个任务吗",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert result.text == "任务已过期。"
+    assert provider.planner_calls == 2
+    assert provider.responder_calls == 1
+    events = TraceStore(tmp_path).list_events(result.trace_id)
+    loop_decisions = [
+        json.loads(event.output_json)
+        for event in events
+        if event.phase == "loop.decision"
+    ]
+    assert any(
+        item["decision"] == "converged" and item["reason"] == "repeated_progress_signature"
+        for item in loop_decisions
+    )
+
+
+@pytest.mark.asyncio
+async def test_delegate_spawn_awaiting_approval_pauses_without_replanning(tmp_path):
+    provider = _DelegateSpawnApprovalProvider(str(tmp_path))
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+        event_bus=EventBus(),
+    )
+
+    try:
+        result = await engine.handle(
+            "在家目录查找简历",
+            peer_id="peer-approval",
+            sender_id="sender-approval",
+            source="weixin",
+            session_alias="weixin:peer-approval:sender-approval",
+        )
+    finally:
+        await engine.shutdown()
+
+    assert provider.planner_calls == 1
+    assert provider.responder_calls == 1
+    assert result.approval_affordance
+    decisions = [
+        json.loads(event.output_json)
+        for event in TraceStore(tmp_path).list_loop_decisions(result.trace_id)
+    ]
+    assert any(
+        item["decision"] == "pause_for_approval"
+        and item["reason"] == "approval_required"
+        for item in decisions
     )
 
 

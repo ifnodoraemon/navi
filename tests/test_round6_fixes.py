@@ -450,6 +450,69 @@ async def test_direct_action_failure_observation_uses_failure_facts(
     assert "requires source or kind" not in result.observation.lower()
 
 
+@pytest.mark.asyncio
+async def test_delegate_delete_does_not_require_model_reason_for_single_run(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    run = RunStore(tmp_path).create(
+        "stale delegation",
+        kind="delegation",
+        workspace=str(tmp_path),
+        status="failed",
+    )
+
+    result = await registry.invoke(
+        "delegate.delete",
+        {"run_id": run.id},
+        permission="write",
+        context=context,
+    )
+
+    assert result.ok is True
+    assert result.facts["deleted"] is True
+    assert result.facts["reason"] == ""
+    assert RunStore(tmp_path).get(run.id) is None
+
+
+@pytest.mark.asyncio
+async def test_watch_delete_does_not_require_model_reason(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    watch = RunStore(tmp_path).create_watch(
+        cron="once",
+        prompt="send reminder",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        next_run_at=1.0,
+        workspace=str(tmp_path),
+        kind="once",
+    )
+
+    result = await registry.invoke(
+        "watch.delete",
+        {"watch_id": watch.id},
+        permission="write",
+        context=context,
+    )
+
+    assert result.ok is True
+    assert result.facts["deleted"] is True
+    assert result.facts["reason"] == ""
+    assert RunStore(tmp_path).get_watch(watch.id) is None
+
+
 # ---------------------------------------------------------------------------
 # Fix 4: FallbackProvider always wraps single-provider configs
 # ---------------------------------------------------------------------------

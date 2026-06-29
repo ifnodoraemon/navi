@@ -13,14 +13,14 @@ class CapabilitySafeguard:
     risk_class: str
     sensitive_contexts: tuple[str, ...]
     confirmation_required: bool
-    reason: str
+    reason_code: str
 
     def to_facts(self) -> dict:
         return {
             "risk_class": self.risk_class,
             "sensitive_contexts": list(self.sensitive_contexts),
             "confirmation_required": self.confirmation_required,
-            "reason": self.reason,
+            "reason_code": self.reason_code,
         }
 
 
@@ -30,7 +30,7 @@ def classify_capability(spec: ToolSpec) -> CapabilitySafeguard:
         risk_class=str(raw.get("risk_class") or "low"),
         sensitive_contexts=tuple(str(item) for item in raw.get("sensitive_contexts") or []),
         confirmation_required=bool(raw.get("confirmation_required", False)),
-        reason=str(raw.get("reason") or ""),
+        reason_code=str(raw.get("reason_code") or _safeguard_reason_code(spec)),
     )
 
 
@@ -51,8 +51,12 @@ def _declared_safeguard(spec: ToolSpec) -> dict:
         "risk_class": "high" if spec.mutates else "low",
         "sensitive_contexts": ["local_state"] if spec.mutates else [],
         "confirmation_required": bool(spec.mutates),
-        "reason": "Fallback safeguard for capability without declared metadata.",
     }
+
+
+def _safeguard_reason_code(spec: ToolSpec) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", spec.name.lower()).strip("_")
+    return f"capability_safeguard_{normalized or 'default'}"
 
 
 _SECRET_PATTERNS: list[tuple[str, str]] = [

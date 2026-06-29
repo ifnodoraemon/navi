@@ -439,7 +439,7 @@ class ApprovalService:
                     and context.sender_id
                     and candidate.sender_id != context.sender_id
                 ):
-                    facts = runs.approval_resolution_diagnostic(
+                    facts = runs.approval_resolution_facts(
                         code=code, run_id=run_id, sender_id=context.sender_id
                     )
                     return ApprovalResolution(
@@ -471,7 +471,7 @@ class ApprovalService:
             else governance.resolve_task(run_id=run_id, sender_id=context.sender_id, status=status)
         )
         if approval is None:
-            facts = runs.approval_resolution_diagnostic(
+            facts = runs.approval_resolution_facts(
                 code=code, run_id=run_id, sender_id=context.sender_id
             )
             return ApprovalResolution(

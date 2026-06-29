@@ -47,6 +47,19 @@ STEP_STATUSES = {
     STEP_STATUS_FAILED,
     STEP_STATUS_BLOCKED,
 }
+STEP_TERMINAL_STATUSES = frozenset(
+    {
+        STEP_STATUS_COMPLETED,
+        STEP_STATUS_FAILED,
+        STEP_STATUS_BLOCKED,
+    }
+)
+STEP_FAILED_STATUSES = frozenset(
+    {
+        STEP_STATUS_FAILED,
+        STEP_STATUS_BLOCKED,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -161,7 +174,7 @@ def workflow_batch_transition(
         return WorkflowTransitionDecision(
             status=WORKFLOW_STATUS_BLOCKED,
             event_type="workflow.blocked",
-            blocked_reason="one or more workflow steps failed",
+            blocked_reason="workflow_step_failed",
             evidence={"completed_in_batch": completed, "failed_in_batch": failed},
         )
     if pending_count == 0:
@@ -208,9 +221,9 @@ def workflow_verification_decision(
             passed=status_completed,
             severity=LoopSeverity.ERROR if not status_completed else LoopSeverity.INFO,
             reason=(
-                "workflow is in a completed status"
+                "workflow_status_completed"
                 if status_completed
-                else f"workflow status is {workflow.status}"
+                else "workflow_status_not_completed"
             ),
             evidence={"status": workflow.status},
         ),
@@ -219,9 +232,9 @@ def workflow_verification_decision(
             passed=not failed_steps,
             severity=LoopSeverity.ERROR if failed_steps else LoopSeverity.INFO,
             reason=(
-                "all workflow steps completed"
+                "workflow_steps_completed"
                 if not failed_steps
-                else "one or more workflow steps are not completed"
+                else "workflow_steps_not_completed"
             ),
             evidence={"failed_steps": [step.id for step in failed_steps]},
         ),
@@ -230,9 +243,9 @@ def workflow_verification_decision(
             passed=not empty_evidence,
             severity=LoopSeverity.ERROR if empty_evidence else LoopSeverity.INFO,
             reason=(
-                "all workflow steps have evidence"
+                "workflow_step_evidence_present"
                 if not empty_evidence
-                else "one or more workflow steps have empty evidence"
+                else "workflow_step_evidence_missing"
             ),
             evidence={"empty_evidence_steps": empty_evidence},
         ),
@@ -241,9 +254,9 @@ def workflow_verification_decision(
             passed=not missing_execution_evidence,
             severity=LoopSeverity.ERROR if missing_execution_evidence else LoopSeverity.INFO,
             reason=(
-                "workflow has capability execution evidence or is planning-only"
+                "workflow_capability_evidence_present"
                 if not missing_execution_evidence
-                else "workflow lacks capability execution evidence"
+                else "workflow_capability_evidence_missing"
             ),
             evidence={"capability_step_count": len(capability_steps), "goal_type": goal_type},
         ),
@@ -561,7 +574,7 @@ class WorkflowStore:
         )
         completed_at = (
             now
-            if status in {STEP_STATUS_COMPLETED, STEP_STATUS_FAILED, STEP_STATUS_BLOCKED}
+            if status in STEP_TERMINAL_STATUSES
             else step.completed_at
         )
         with connect(self.db_path) as conn:
@@ -642,9 +655,7 @@ def workflow_facts(store: WorkflowStore, workflow: Workflow) -> dict[str, Any]:
         "step_count": len(steps),
         "pending_count": len([step for step in steps if step.status == STEP_STATUS_PENDING]),
         "completed_count": len([step for step in steps if step.status == STEP_STATUS_COMPLETED]),
-        "failed_count": len(
-            [step for step in steps if step.status in {STEP_STATUS_FAILED, STEP_STATUS_BLOCKED}]
-        ),
+        "failed_count": len([step for step in steps if step.status in STEP_FAILED_STATUSES]),
     }
 
 

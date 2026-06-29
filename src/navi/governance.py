@@ -21,24 +21,28 @@ class GovernanceEngine:
     def execution_allowed(self, task: Run) -> bool:
         if self.runs.has_approved_execution(task.id):
             return self._record_execution_grant(
-                task, allowed=True, reason="Explicit approval found"
+                task,
+                allowed=True,
+                reason="explicit_approval_found",
+                facts={"grant_source": "approval"},
             )
         if task.autonomy_level in {"L3", "L4"}:
             return self._record_execution_grant(
                 task,
                 allowed=True,
-                reason=f"Allowed by explicit autonomy level {task.autonomy_level}",
+                reason="explicit_autonomy_level",
+                facts={"autonomy_level": task.autonomy_level},
             )
-        allowed, reason = self._prepare_protocol_allows_execution(task)
-        return self._record_execution_grant(task, allowed=allowed, reason=reason)
+        allowed, reason, facts = self._prepare_protocol_allows_execution(task)
+        return self._record_execution_grant(task, allowed=allowed, reason=reason, facts=facts)
 
-    def _prepare_protocol_allows_execution(self, task: Run) -> tuple[bool, str]:
+    def _prepare_protocol_allows_execution(self, task: Run) -> tuple[bool, str, dict[str, Any]]:
         protocol = self._latest_prepare_protocol(task)
         if protocol is None:
-            return False, "Blocked: no prepare protocol facts found"
+            return False, "prepare_protocol_missing", {}
         actions = _protocol_actions(protocol)
         if not actions:
-            return False, "Blocked: prepare protocol declared no capability actions"
+            return False, "prepare_protocol_no_actions", {}
 
         from .capabilities import build_capability_registry
         from .safeguards import classify_capability
@@ -52,7 +56,7 @@ class GovernanceEngine:
             tool_name = str(action.get("tool") or "").strip()
             spec = registry.get(tool_name) if tool_name else None
             if spec is None:
-                return False, f"Blocked: prepare protocol references unavailable tool {tool_name}"
+                return False, "prepare_protocol_tool_unavailable", {"tool": tool_name}
             safeguard = classify_capability(spec)
             requested_permission = str(action.get("permission") or spec.permission)
             if (
@@ -62,9 +66,15 @@ class GovernanceEngine:
             ):
                 return (
                     False,
-                    f"Blocked: {tool_name} requires explicit approval ({safeguard.reason})",
+                    "explicit_approval_required",
+                    {
+                        "tool": tool_name,
+                        "requested_permission": requested_permission,
+                        "capability_risk_class": safeguard.risk_class,
+                        "confirmation_required": safeguard.confirmation_required,
+                    },
                 )
-        return True, "Allowed: prepare protocol contains only non-confirmation capability actions"
+        return True, "prepare_protocol_non_confirmation_actions", {"action_count": len(actions)}
 
     def _latest_prepare_protocol(self, task: Run) -> dict[str, Any] | None:
         logs = self.runs.list_execution_logs(task.id)
@@ -84,18 +94,32 @@ class GovernanceEngine:
                 )
         return None
 
-    def _record_execution_grant(self, task: Run, *, allowed: bool, reason: str) -> bool:
+    def _record_execution_grant(
+        self,
+        task: Run,
+        *,
+        allowed: bool,
+        reason: str,
+        facts: dict[str, Any] | None = None,
+    ) -> bool:
         from .evolution import EvolutionLedger
 
-        # Principle 8: an approval failure must say which state is missing,
-        # not pretend the agent has no local capability. Attach the approval
-        # resolution diagnostic so the caller can act (re-issue code, approve,
-        # etc.) instead of guessing.
+        evidence = dict(facts or {})
         if not allowed:
-            diagnostic = self.runs.approval_resolution_diagnostic(
+            evidence["approval_resolution"] = self.runs.approval_resolution_facts(
                 run_id=task.id, sender_id=task.sender_id
             )
-            reason = f"{reason} | approval_state={diagnostic.get('reason', 'unknown')} run_status={task.status}"
+            evidence["run_status"] = task.status
+        before = json.dumps(
+            {"allowed": False, "reason": reason, "facts": evidence},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        after = json.dumps(
+            {"allowed": allowed, "reason": reason, "facts": evidence},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
         logger.info(
             "Execution %s for task %s: %s",
             "allowed" if allowed else "blocked",
@@ -107,8 +131,8 @@ class GovernanceEngine:
             target_type="execution_grant",
             target_id=task.id,
             reason=reason,
-            before="denied",
-            after="allowed" if allowed else "denied",
+            before=before,
+            after=after,
         )
         return allowed
 
@@ -122,7 +146,7 @@ class GovernanceEngine:
                 run_id=approval.run_id,
                 target_type="approval",
                 target_id=approval.id,
-                reason=f"Resolved to {status} by sender {sender_id}",
+                reason="approval_resolved_by_code",
                 before="pending",
                 after=status,
             )
@@ -138,7 +162,7 @@ class GovernanceEngine:
                 run_id=run_id,
                 target_type="approval",
                 target_id=approval.id,
-                reason=f"Task resolved to {status} by sender {sender_id}",
+                reason="approval_resolved_by_run",
                 before="pending",
                 after=status,
             )

@@ -230,7 +230,6 @@ ACTION_SPECS = [
                 "limit": {"type": "integer"},
                 "reason": {"type": "string"},
             },
-            "required": ["reason"],
         },
         output_schema={
             "type": "object",
@@ -288,7 +287,7 @@ ACTION_SPECS = [
                 "watch_id": {"type": "string"},
                 "reason": {"type": "string"},
             },
-            "required": ["watch_id", "reason"],
+            "required": ["watch_id"],
         },
         output_schema={
             "type": "object",
@@ -528,7 +527,7 @@ ACTION_SPECS = [
                 "target_permission": {"type": "string", "enum": ["prepare", "write", "execute"]},
                 "reason": {"type": "string"},
             },
-            "required": ["target_permission", "reason"],
+            "required": ["target_permission"],
         },
         output_schema={
             "type": "object",

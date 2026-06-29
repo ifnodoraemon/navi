@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from ..db import connect
 from ..schema import Column, Table
-from .models import Approval, _approval_diagnostic_facts
+from .models import Approval, _approval_resolution_facts
 
 if TYPE_CHECKING:
     pass
@@ -314,7 +314,7 @@ class ApprovalStoreMixin:
             ).fetchone()
         return Approval(*row) if row else None
 
-    def approval_resolution_diagnostic(
+    def approval_resolution_facts(
         self, *, code: str = "", run_id: str = "", sender_id: str = ""
     ) -> dict:
         now = time.time()
@@ -322,7 +322,7 @@ class ApprovalStoreMixin:
             approval = self.get_approval(code)
             if approval is None:
                 return {"reason": "approval_code_not_found", "code_present": False}
-            facts = _approval_diagnostic_facts(approval, now=now, sender_id=sender_id)
+            facts = _approval_resolution_facts(approval, now=now, sender_id=sender_id)
             if sender_id and approval.sender_id != sender_id:
                 return facts | {"reason": "sender_mismatch"}
             if approval.status != "pending":
@@ -353,14 +353,14 @@ class ApprovalStoreMixin:
                 ]
                 if sender_pending:
                     latest = sender_pending[0]
-                    return _approval_diagnostic_facts(latest, now=now, sender_id=sender_id) | {
+                    return _approval_resolution_facts(latest, now=now, sender_id=sender_id) | {
                         "reason": "approval_expired"
                         if latest.expires_at < now
                         else "approval_pending",
                     }
                 if pending:
                     latest = pending[0]
-                    return _approval_diagnostic_facts(latest, now=now, sender_id=sender_id) | {
+                    return _approval_resolution_facts(latest, now=now, sender_id=sender_id) | {
                         "reason": "sender_mismatch",
                         "run_status": run.status,
                         "approval_count": len(approvals),
@@ -371,7 +371,7 @@ class ApprovalStoreMixin:
                 if latest.status == "pending" and latest.expires_at < now
                 else "approval_not_pending"
             )
-            return _approval_diagnostic_facts(latest, now=now, sender_id=sender_id) | {
+            return _approval_resolution_facts(latest, now=now, sender_id=sender_id) | {
                 "reason": reason,
                 "run_status": run.status,
                 "approval_count": len(approvals),

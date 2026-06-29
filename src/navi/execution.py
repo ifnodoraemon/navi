@@ -150,7 +150,7 @@ class ExecutionProtocol:
         phase: str,
         status: str,
         summary: str,
-        reason: str,
+        reason_code: str,
         action_kind: str,
     ) -> "ExecutionProtocol":
         return cls(
@@ -168,12 +168,12 @@ class ExecutionProtocol:
                             "summary": summary,
                         }
                     ],
-                    "verification": {"checks": [], "reason": reason},
+                    "verification": {"checks": [], "reason_code": reason_code},
                     "status": status,
                 }
             ],
             evidence=[{"kind": "internal_state", "summary": summary}],
-            verification={"status": status, "checks": [], "reason": reason},
+            verification={"status": status, "checks": [], "reason_code": reason_code},
             completion={"status": status, "summary": summary},
         )
 
@@ -183,7 +183,7 @@ def _protocol_dict(payload: dict[str, Any], key: str) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     if key == "verification":
-        return {"status": "proposed", "checks": [], "reason": "verification omitted"}
+        return {"status": "proposed", "checks": [], "reason_code": "verification_omitted"}
     raise ValueError(f"execution protocol {key} must be an object")
 
 
@@ -268,9 +268,9 @@ def _execution_output_schema(phase: str) -> dict[str, Any]:
                                     "type": "object",
                                     "properties": {
                                         "checks": {"type": "array"},
-                                        "reason": {"type": "string"},
+                                        "reason_code": {"type": "string"},
                                     },
-                                    "required": ["checks", "reason"],
+                                    "required": ["checks", "reason_code"],
                                     "additionalProperties": True,
                                 },
                                 "on_failure": {
@@ -288,9 +288,9 @@ def _execution_output_schema(phase: str) -> dict[str, Any]:
                         "properties": {
                             "status": {"type": "string"},
                             "checks": {"type": "array"},
-                            "reason": {"type": "string"},
+                            "reason_code": {"type": "string"},
                         },
-                        "required": ["status", "checks", "reason"],
+                        "required": ["status", "checks", "reason_code"],
                         "additionalProperties": True,
                     },
                     "completion": {
@@ -540,7 +540,7 @@ class NaviExecutionProvider:
                 phase=phase,
                 status=RUN_STATUS_FAILED,
                 summary=str(exc),
-                reason="provider output violated the required execution protocol",
+                reason_code="execution_protocol_invalid",
                 action_kind="execution_error",
             )
         return ExecutionResult(
@@ -574,7 +574,7 @@ class NaviExecutionProvider:
             phase="watch",
             status=RUN_STATUS_COMPLETED if ok else RUN_STATUS_FAILED,
             summary=summary or "scheduled watch completed",
-            reason="scheduled watch notification completed" if ok else "scheduled watch failed",
+            reason_code="watch_notification_completed" if ok else "watch_notification_failed",
             action_kind="watch_notification",
         )
         return ExecutionResult(
@@ -713,7 +713,7 @@ class ExecutionService:
             phase="execute",
             status=execution_status,
             summary=turn_result.text[:1600] if turn_result.text else "",
-            reason=status_reason,
+            reason_code=status_reason,
             action_kind="herness_engine",
         )
         result = ExecutionResult(
@@ -949,7 +949,7 @@ class ExecutionService:
                     phase="prepare",
                     status=RUN_STATUS_FAILED,
                     summary=repr(exc),
-                    reason="execution provider raised an unexpected error",
+                    reason_code="execution_provider_exception",
                     action_kind="execution_error",
                 ),
             )

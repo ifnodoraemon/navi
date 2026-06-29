@@ -285,7 +285,7 @@ class CapabilityRegistry:
             facts = {"hook_decision": asdict(blocked)}
             return _capability_error(
                 error_reason="hook_blocked",
-                message=blocked.reason or f"hook blocked capability: {blocked.hook}",
+                message=blocked.reason_code or f"hook_blocked:{blocked.hook}",
                 observation_facts={"tool": name, "hook": blocked.hook},
                 facts=facts,
             )

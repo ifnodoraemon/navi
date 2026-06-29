@@ -8,10 +8,7 @@ from navi.recovery import CompletionBlock, RecoveryPlanner
 def test_recovery_planner_returns_task_state_facts():
     plan = RecoveryPlanner().plan_completion_failure(
         block=CompletionBlock(
-            reason=(
-                "loop checker blocked final answer: "
-                "delegation run run-1 is still pending."
-            ),
+            reason_code="delegation_run_incomplete",
             run_id="run-1",
             run_status="pending",
         ),
@@ -27,10 +24,7 @@ def test_recovery_planner_returns_task_state_facts():
     assert observation == {
         "blocked": True,
         "blocked_entity_type": "delegation_run",
-        "reason": (
-            "loop checker blocked final answer: "
-            "delegation run run-1 is still pending."
-        ),
+        "reason_code": "delegation_run_incomplete",
         "run_id": "run-1",
         "run_status": "pending",
         "trigger": "loop.check",
@@ -42,10 +36,7 @@ def test_recovery_planner_returns_task_state_facts():
 def test_recovery_planner_returns_cleanup_state_facts():
     plan = RecoveryPlanner().plan_completion_failure(
         block=CompletionBlock(
-            reason=(
-                "loop checker blocked final answer: "
-                "delegate.delete left 2 failed delegation runs."
-            ),
+            reason_code="bulk_delete_incomplete",
         ),
         events=[
             {

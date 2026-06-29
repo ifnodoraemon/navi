@@ -785,16 +785,21 @@ def trace_runs(trace_id: str) -> None:
 def trace_evaluate(trace_id: str) -> None:
     """Evaluate a trace to identify the likely optimization target."""
     evaluation = TraceStore(ensure_home()).evaluate_trace(trace_id)
-    typer.echo(f"{evaluation.outcome} {evaluation.failure_domain}: {evaluation.diagnostic}")
+    typer.echo(_trace_evaluation_line(evaluation))
 
 
 @trace_app.command("evaluations")
 def trace_evaluations(trace_id: str = typer.Argument(""), limit: int = 50) -> None:
     """List trace evaluations as optimization evidence."""
     for evaluation in TraceStore(ensure_home()).list_evaluations(trace_id, limit=limit):
-        typer.echo(
-            f"{evaluation.trace_id} {evaluation.outcome} {evaluation.failure_domain}: {evaluation.diagnostic}"
-        )
+        typer.echo(f"{evaluation.trace_id} {_trace_evaluation_line(evaluation)}")
+
+
+def _trace_evaluation_line(evaluation) -> str:
+    evidence = json.loads(evaluation.evidence_json or "{}")
+    rule = str(evidence.get("evaluation_rule") or "").strip()
+    suffix = f" rule={rule}" if rule else ""
+    return f"{evaluation.outcome} {evaluation.failure_domain}{suffix}"
 
 
 @goal_app.command("list")

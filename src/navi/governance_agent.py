@@ -34,7 +34,7 @@ class GovernanceAgent:
                 ActionApprovedEvent(
                     source_agent="governance_agent",
                     run_id=event.run_id,
-                    reason="execution grant allowed by governance state",
+                    reason="execution_grant_allowed",
                 )
             )
         else:
@@ -49,7 +49,7 @@ class GovernanceAgent:
                     source_agent="governance_agent",
                     correlation_id=event.correlation_id,
                     run_id=event.run_id,
-                    reason="requires approval",
+                    reason="approval_required",
                     approval_code=approval.code,
                     peer_id=event.peer_id,
                     sender_id=event.sender_id,

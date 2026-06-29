@@ -622,7 +622,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     def trace_evaluations(trace_id: str = "", limit: int = 50) -> dict:
         return {
             "evaluations": [
-                item.__dict__ for item in TraceStore(home).list_evaluations(trace_id, limit=limit)
+                item.to_dict() for item in TraceStore(home).list_evaluations(trace_id, limit=limit)
             ]
         }
 

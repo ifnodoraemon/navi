@@ -105,8 +105,8 @@ class WatchDeleteCapability(BaseCapability):
     ) -> CapabilityResult:
         watch_id = _arg_text(args, "watch_id")
         reason = _arg_text(args, "reason")
-        if not watch_id or not reason:
-            raise SchemaMismatch("watch.delete requires watch_id and reason.")
+        if not watch_id:
+            raise SchemaMismatch("watch.delete requires watch_id.")
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         deleted = runs.delete_watch(watch_id)

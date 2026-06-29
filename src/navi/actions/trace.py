@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 
 from ..capabilities_types import (
@@ -31,11 +30,10 @@ class TraceEvaluateCapability(BaseCapability):
         if not trace_id:
             raise SchemaMismatch("trace.evaluate requires trace_id.")
         evaluation = TraceStore(self.home).evaluate_trace(trace_id)
-        evaluation_facts = asdict(evaluation)
         facts = {
             **_transition_facts("trace_evaluation", evaluation.id, "created"),
             "trace_id": trace_id,
             "evaluation_id": evaluation.id,
-            "evaluation": evaluation_facts,
+            "evaluation": evaluation.to_dict(),
         }
         return _fact_result("trace", facts, run_id=trace_id)

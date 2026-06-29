@@ -8,14 +8,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .capability_contract import CAPABILITY_ERROR_REASON_KEY
+from .completion_checks import completion_block_reason, delegation_event_incomplete
 from .db import connect, ensure_schema_version
 from .json_utils import json_object
 from .loop import (
+    LoopCheckName,
     LoopCheckResult,
     LoopDecision,
     LoopDecisionKind,
     LoopDecisionSummary,
     LoopPhase,
+    LoopReason,
     TraceFailureDomain,
     TraceOutcome,
     TracePhase,
@@ -61,19 +64,31 @@ class TraceEvaluation:
     trace_id: str
     outcome: str
     failure_domain: str
-    diagnostic: str
     evidence_json: str
     created_at: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "trace_id": self.trace_id,
+            "outcome": self.outcome,
+            "failure_domain": self.failure_domain,
+            "evidence": json_object(self.evidence_json),
+            "created_at": self.created_at,
+        }
 
 
 @dataclass(frozen=True)
 class TraceEvaluationDraft:
     outcome: str
     failure_domain: str
-    diagnostic: str
 
 
 TraceEvaluationRule = Callable[[list[TraceEvent], dict[str, Any]], TraceEvaluationDraft | None]
+LoopDecisionEvaluationRule = Callable[
+    [LoopDecisionSummary, dict[str, Any], list[TraceEvent], dict[str, Any]],
+    TraceEvaluationDraft | None,
+]
 
 
 class TraceStore:
@@ -244,13 +259,13 @@ class TraceStore:
     def list_evaluations(self, trace_id: str = "", *, limit: int = 50) -> list[TraceEvaluation]:
         if trace_id:
             query = """
-                SELECT id, trace_id, outcome, failure_domain, diagnostic, evidence_json, created_at
+                SELECT id, trace_id, outcome, failure_domain, evidence_json, created_at
                 FROM trace_evaluations WHERE trace_id = ? ORDER BY created_at DESC LIMIT ?
                 """
             params: tuple[Any, ...] = (trace_id, limit)
         else:
             query = """
-                SELECT id, trace_id, outcome, failure_domain, diagnostic, evidence_json, created_at
+                SELECT id, trace_id, outcome, failure_domain, evidence_json, created_at
                 FROM trace_evaluations ORDER BY created_at DESC LIMIT ?
                 """
             params = (limit,)
@@ -267,7 +282,6 @@ class TraceStore:
             trace_id=trace_id,
             outcome=draft.outcome,
             failure_domain=draft.failure_domain,
-            diagnostic=draft.diagnostic,
             evidence=evidence,
         )
 
@@ -277,7 +291,6 @@ class TraceStore:
         trace_id: str,
         outcome: str,
         failure_domain: str,
-        diagnostic: str,
         evidence: dict[str, Any] | None = None,
     ) -> TraceEvaluation:
         evaluation = TraceEvaluation(
@@ -285,7 +298,6 @@ class TraceStore:
             trace_id=trace_id,
             outcome=outcome,
             failure_domain=failure_domain,
-            diagnostic=diagnostic,
             evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
             created_at=time.time(),
         )
@@ -293,17 +305,15 @@ class TraceStore:
             conn.execute(
                 """
                 INSERT INTO trace_evaluations(
-                    id, trace_id, outcome, failure_domain, diagnostic,
-                    evidence_json, created_at
+                    id, trace_id, outcome, failure_domain, evidence_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     evaluation.id,
                     evaluation.trace_id,
                     evaluation.outcome,
                     evaluation.failure_domain,
-                    evaluation.diagnostic,
                     evaluation.evidence_json,
                     evaluation.created_at,
                 ),
@@ -437,10 +447,11 @@ def _evaluate_trace_with_rules(
         draft = rule(events, evidence)
         if draft is not None:
             return draft
-    return TraceEvaluationDraft(
-        outcome=TraceOutcome.SUCCESS,
-        failure_domain=TraceFailureDomain.NONE,
-        diagnostic="trace has no failed or degraded rule match",
+    return _evaluation(
+        TraceOutcome.SUCCESS,
+        TraceFailureDomain.NONE,
+        evidence,
+        rule="no_failed_or_degraded_rule",
     )
 
 
@@ -451,7 +462,17 @@ def _first_failure(events: list[TraceEvent]) -> TraceEvent | None:
 def _record_first_failure_evidence(event: TraceEvent, evidence: dict[str, Any]) -> None:
     evidence["first_failure_phase"] = event.phase
     evidence["first_failure_tool"] = event.tool
-    evidence["first_failure_message"] = event.message
+
+
+def _evaluation(
+    outcome: str,
+    failure_domain: str,
+    evidence: dict[str, Any],
+    *,
+    rule: str,
+) -> TraceEvaluationDraft:
+    evidence["evaluation_rule"] = rule
+    return TraceEvaluationDraft(outcome, failure_domain)
 
 
 def _loop_decision_summary(event: TraceEvent, output: dict[str, Any]) -> dict[str, Any]:
@@ -468,64 +489,99 @@ def _loop_decision_rule(
     decisions = _loop_decision_events(events)
     if not decisions:
         return None
-
-    for event, output in reversed(decisions):
-        summary = loop_decision_summary(
+    decision_items = tuple(
+        (
+            loop_decision_summary(
+                output,
+                event_tool=event.tool,
+                event_run_id=event.run_id,
+            ),
             output,
-            event_tool=event.tool,
-            event_run_id=event.run_id,
         )
-        if summary.decision == LoopDecisionKind.FAILED:
-            return TraceEvaluationDraft(
-                TraceOutcome.FAILURE,
-                classify_loop_failure(output),
-                _loop_diagnostic(summary, "loop ended with an explicit failure decision"),
-            )
+        for event, output in decisions
+    )
 
-    for event, output in reversed(decisions):
-        summary = loop_decision_summary(
-            output,
-            event_tool=event.tool,
-            event_run_id=event.run_id,
-        )
-        if summary.decision == LoopDecisionKind.BLOCKED:
-            return TraceEvaluationDraft(
-                TraceOutcome.FAILURE,
-                classify_loop_blocked(output),
-                _loop_diagnostic(summary, "loop was blocked by a checker or gate"),
-            )
-        if is_approval_loop_decision(output):
-            return TraceEvaluationDraft(
-                TraceOutcome.DEGRADED,
-                TraceFailureDomain.APPROVAL_LOOP,
-                _loop_diagnostic(summary, "loop repeated or re-entered an approval gate"),
-            )
-
-    for event, output in reversed(decisions):
-        summary = loop_decision_summary(
-            output,
-            event_tool=event.tool,
-            event_run_id=event.run_id,
-        )
-        if summary.decision == LoopDecisionKind.CONVERGED:
-            return TraceEvaluationDraft(
-                TraceOutcome.DEGRADED,
-                TraceFailureDomain.LOOP_NO_PROGRESS,
-                _loop_diagnostic(
-                    summary,
-                    "loop converged after repeated stable progress signature",
-                ),
-            )
+    for classifier in LOOP_DECISION_EVALUATION_RULES:
+        for summary, output in reversed(decision_items):
+            draft = classifier(summary, output, events, evidence)
+            if draft is not None:
+                return draft
 
     return None
 
 
-def _loop_diagnostic(summary: LoopDecisionSummary, fallback: str) -> str:
-    if summary.decision and summary.reason:
-        return f"{fallback}: {summary.decision} ({summary.reason})"
-    if summary.reason:
-        return f"{fallback}: {summary.reason}"
-    return fallback
+def _failed_loop_decision_rule(
+    summary: LoopDecisionSummary,
+    output: dict[str, Any],
+    events: list[TraceEvent],
+    evidence: dict[str, Any],
+) -> TraceEvaluationDraft | None:
+    if summary.decision != LoopDecisionKind.FAILED:
+        return None
+    failure_domain = classify_loop_failure(output)
+    rule = "loop_decision_failed"
+    if failure_domain == TraceFailureDomain.CAPABILITY_FAILURE:
+        first_failure = _first_failure(events)
+        if first_failure is not None and _capability_result_is_input_schema_mismatch(first_failure):
+            evidence["failure_domain_corrected_from"] = str(
+                TraceFailureDomain.CAPABILITY_FAILURE
+            )
+            failure_domain = TraceFailureDomain.PLANNER_OR_PARSER
+            rule = "loop_failure_domain_corrected_by_input_schema"
+    return _evaluation(
+        TraceOutcome.FAILURE,
+        failure_domain,
+        evidence,
+        rule=rule,
+    )
+
+
+def _blocked_or_approval_loop_decision_rule(
+    summary: LoopDecisionSummary,
+    output: dict[str, Any],
+    events: list[TraceEvent],
+    evidence: dict[str, Any],
+) -> TraceEvaluationDraft | None:
+    del events
+    if summary.decision == LoopDecisionKind.BLOCKED:
+        return _evaluation(
+            TraceOutcome.FAILURE,
+            classify_loop_blocked(output),
+            evidence,
+            rule="loop_decision_blocked",
+        )
+    if is_approval_loop_decision(output):
+        return _evaluation(
+            TraceOutcome.DEGRADED,
+            TraceFailureDomain.APPROVAL_LOOP,
+            evidence,
+            rule="approval_loop_decision",
+        )
+    return None
+
+
+def _converged_loop_decision_rule(
+    summary: LoopDecisionSummary,
+    output: dict[str, Any],
+    events: list[TraceEvent],
+    evidence: dict[str, Any],
+) -> TraceEvaluationDraft | None:
+    del output, events
+    if summary.decision != LoopDecisionKind.CONVERGED:
+        return None
+    return _evaluation(
+        TraceOutcome.DEGRADED,
+        TraceFailureDomain.LOOP_NO_PROGRESS,
+        evidence,
+        rule="loop_decision_converged",
+    )
+
+
+LOOP_DECISION_EVALUATION_RULES: tuple[LoopDecisionEvaluationRule, ...] = (
+    _failed_loop_decision_rule,
+    _blocked_or_approval_loop_decision_rule,
+    _converged_loop_decision_rule,
+)
 
 
 def _first_failure_rule(
@@ -534,7 +590,7 @@ def _first_failure_rule(
     *,
     phase: str,
     failure_domain: str,
-    diagnostic: str,
+    rule: str,
     predicate: Callable[[TraceEvent], bool] | None = None,
 ) -> TraceEvaluationDraft | None:
     failure = _first_failure(events)
@@ -543,7 +599,7 @@ def _first_failure_rule(
     if predicate is not None and not predicate(failure):
         return None
     _record_first_failure_evidence(failure, evidence)
-    return TraceEvaluationDraft("failure", failure_domain, diagnostic)
+    return _evaluation(TraceOutcome.FAILURE, failure_domain, evidence, rule=rule)
 
 
 def _planner_failure_rule(
@@ -556,10 +612,11 @@ def _planner_failure_rule(
     }:
         return None
     _record_first_failure_evidence(failure, evidence)
-    return TraceEvaluationDraft(
+    return _evaluation(
         TraceOutcome.FAILURE,
         TraceFailureDomain.PLANNER_OR_PARSER,
-        "first failed event was planner syscall parsing or provider tool selection",
+        evidence,
+        rule="planner_failed_event",
     )
 
 
@@ -571,7 +628,7 @@ def _safeguard_failure_rule(
         evidence,
         phase=TracePhase.CAPABILITY_RESULT,
         failure_domain=TraceFailureDomain.SAFEGUARD_POLICY,
-        diagnostic="first failed capability result contains a safeguard hook decision",
+        rule="safeguard_hook_decision",
         predicate=_capability_result_has_safeguard_decision,
     )
 
@@ -584,15 +641,38 @@ def _capability_failure_rule(
         return None
     _record_first_failure_evidence(failure, evidence)
     if _capability_result_is_input_schema_mismatch(failure):
-        return TraceEvaluationDraft(
+        return _evaluation(
             TraceOutcome.FAILURE,
             TraceFailureDomain.PLANNER_OR_PARSER,
-            "capability input schema mismatch indicates planner arguments did not match declared schema",
+            evidence,
+            rule="capability_input_schema_mismatch",
         )
-    return TraceEvaluationDraft(
+    return _evaluation(
         TraceOutcome.FAILURE,
         TraceFailureDomain.CAPABILITY_FAILURE,
-        "first failed event was a capability result without safeguard decision facts",
+        evidence,
+        rule="capability_failed_event",
+    )
+
+
+def _approval_pause_rule(
+    events: list[TraceEvent], evidence: dict[str, Any]
+) -> TraceEvaluationDraft | None:
+    if not _has_approval_required_pause(events):
+        return None
+    failure = _first_failure(events)
+    if failure is None or failure.phase != TracePhase.CAPABILITY_RESULT:
+        return None
+    facts = _event_output(failure).get("facts")
+    if not _capability_result_is_approval_request(facts):
+        return None
+    _record_first_failure_evidence(failure, evidence)
+    evidence["approval_pause_recorded"] = True
+    return _evaluation(
+        TraceOutcome.SUCCESS,
+        TraceFailureDomain.NONE,
+        evidence,
+        rule="approval_pause_recorded",
     )
 
 
@@ -611,11 +691,11 @@ def _checker_failure_rule(
         details = recovery_output.get("details")
         if isinstance(details, dict):
             evidence["recovery_detail_keys"] = sorted(details)
-        diagnostic = "loop checker failed after a recovery plan was recorded"
+        rule = "checker_failed_after_recovery_plan"
     else:
         evidence["recovery_plan_recorded"] = False
-        diagnostic = "loop checker failed before any recovery plan was recorded"
-    return TraceEvaluationDraft(TraceOutcome.FAILURE, TraceFailureDomain.CHECKER_BLOCKED, diagnostic)
+        rule = "checker_failed_without_recovery_plan"
+    return _evaluation(TraceOutcome.FAILURE, TraceFailureDomain.CHECKER_BLOCKED, evidence, rule=rule)
 
 
 def _runtime_failure_rule(
@@ -625,10 +705,11 @@ def _runtime_failure_rule(
     if failure is None:
         return None
     _record_first_failure_evidence(failure, evidence)
-    return TraceEvaluationDraft(
+    return _evaluation(
         TraceOutcome.FAILURE,
         TraceFailureDomain.RUNTIME,
-        "first failed event was outside planner, capability, and loop checker phases",
+        evidence,
+        rule="runtime_failed_event",
     )
 
 
@@ -638,10 +719,11 @@ def _planner_no_response_rule(
     if not _planner_call_started_without_result(events):
         return None
     evidence["planner_call_without_result"] = True
-    return TraceEvaluationDraft(
+    return _evaluation(
         TraceOutcome.FAILURE,
         TraceFailureDomain.PROVIDER_NO_RESPONSE,
-        "planner provider call started without planner syscall, planner error, or turn final event",
+        evidence,
+        rule="planner_call_without_result",
     )
 
 
@@ -651,23 +733,24 @@ def _pending_completion_gap_rule(
     if not _has_unverified_pending_run_completion(events):
         return None
     evidence["pending_run_completion_risk"] = True
-    return TraceEvaluationDraft(
+    return _evaluation(
         TraceOutcome.DEGRADED,
         TraceFailureDomain.MISSING_COMPLETION_CHECK,
-        "turn finished after a delegation run was only pending or prepared",
+        evidence,
+        rule="pending_run_completion_gap",
     )
 
 
 def _missing_trace_rule(
     events: list[TraceEvent], evidence: dict[str, Any]
 ) -> TraceEvaluationDraft | None:
-    del evidence
     if events:
         return None
-    return TraceEvaluationDraft(
+    return _evaluation(
         TraceOutcome.UNKNOWN,
         TraceFailureDomain.TRACE_MISSING,
-        "no trace events were recorded",
+        evidence,
+        rule="trace_missing",
     )
 
 
@@ -675,6 +758,7 @@ TRACE_EVALUATION_RULES: tuple[TraceEvaluationRule, ...] = (
     _loop_decision_rule,
     _planner_failure_rule,
     _safeguard_failure_rule,
+    _approval_pause_rule,
     _capability_failure_rule,
     _checker_failure_rule,
     _runtime_failure_rule,
@@ -690,6 +774,14 @@ def _capability_result_has_safeguard_decision(event: TraceEvent) -> bool:
     return isinstance(facts, dict) and isinstance(facts.get("hook_decision"), dict)
 
 
+def _capability_result_is_approval_request(facts: Any) -> bool:
+    return (
+        isinstance(facts, dict)
+        and str(facts.get("entity_type") or "") == "approval_request"
+        and isinstance(facts.get("approval"), dict)
+    )
+
+
 def _capability_result_is_input_schema_mismatch(event: TraceEvent) -> bool:
     output = _event_output(event)
     facts = output.get("facts")
@@ -698,6 +790,39 @@ def _capability_result_is_input_schema_mismatch(event: TraceEvent) -> bool:
     if facts.get(CAPABILITY_ERROR_REASON_KEY) != "schema_mismatch":
         return False
     return "result_action" not in facts
+
+
+def _has_approval_required_pause(events: list[TraceEvent]) -> bool:
+    for event, output in reversed(_loop_decision_events(events)):
+        summary = loop_decision_summary(
+            output,
+            event_tool=event.tool,
+            event_run_id=event.run_id,
+        )
+        if summary.decision != str(LoopDecisionKind.PAUSE_FOR_APPROVAL):
+            continue
+        if summary.reason != str(LoopReason.APPROVAL_REQUIRED):
+            continue
+        if summary.failure_domain not in {"", str(TraceFailureDomain.NONE)}:
+            continue
+        if _loop_results_include(
+            output.get("gate_results"),
+            name=str(LoopCheckName.APPROVAL_GATE),
+            passed=True,
+        ):
+            return True
+    return False
+
+
+def _loop_results_include(value: Any, *, name: str, passed: bool) -> bool:
+    if not isinstance(value, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and str(item.get("name") or "") == name
+        and item.get("passed") is passed
+        for item in value
+    )
 
 
 def _planner_call_started_without_result(events: list[TraceEvent]) -> bool:
@@ -735,7 +860,6 @@ TRACE_EVALUATIONS_TABLE = Table(
         Column("trace_id", "TEXT", nullable=False),
         Column("outcome", "TEXT", nullable=False),
         Column("failure_domain", "TEXT", nullable=False),
-        Column("diagnostic", "TEXT", nullable=False),
         Column("evidence_json", "TEXT", nullable=False),
         Column("created_at", "REAL", nullable=False),
     ],
@@ -773,14 +897,26 @@ def _has_unverified_pending_run_completion(events: list[TraceEvent]) -> bool:
     )
     if final_event is None:
         return False
+    return (
+        completion_block_reason(
+            home=None,
+            events=_trace_fact_events(events),
+            checks=(delegation_event_incomplete,),
+        )
+        is not None
+    )
+
+
+def _trace_fact_events(events: list[TraceEvent]) -> list[dict[str, Any]]:
+    fact_events: list[dict[str, Any]] = []
     for event in events:
         if event.phase != TracePhase.CAPABILITY_RESULT or not event.ok:
             continue
         facts = _event_output(event).get("facts")
         if not isinstance(facts, dict):
             continue
-        entity_type = str(facts.get("entity_type") or "")
-        status = str(facts.get("status") or "")
-        if entity_type == "delegation_run" and status in {"pending", "prepared"}:
-            return True
-    return False
+        event_facts = dict(facts)
+        if event.run_id and not event_facts.get("run_id"):
+            event_facts["run_id"] = event.run_id
+        fact_events.append({"facts": event_facts})
+    return fact_events

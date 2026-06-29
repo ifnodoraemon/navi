@@ -291,8 +291,6 @@ class DelegateDeleteCapability(BaseCapability):
     ) -> CapabilityResult:
         run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
         reason = _arg_text(args, "reason")
-        if not reason:
-            raise SchemaMismatch("delegate.delete requires reason.")
         if not run_id:
             return self._delete_by_filter(args, context)
         runs = RunStore(self.home)
