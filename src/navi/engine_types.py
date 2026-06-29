@@ -30,5 +30,10 @@ class AgentTurnResult:
         if self.text:
             return self.text
         if not self.ok:
-            return f"[{self.action}] 处理失败：{self.error_reason}"
+            error_msg = ""
+            if self.facts:
+                error_msg = self.facts.get("error") or self.facts.get("error_type") or self.error_reason
+            else:
+                error_msg = self.error_reason
+            return f"[{self.action}] failed: {error_msg}"
         return self.text

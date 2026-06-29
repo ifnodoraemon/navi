@@ -542,6 +542,7 @@ class HernessEngine(EnginePhasesMixin):
                 facts={
                     "failure_domain": str(TraceFailureDomain.PROVIDER_NO_RESPONSE),
                     "error_type": type(exc).__name__,
+                    "error": str(exc),
                 },
             )
             return self._StepResult(result=result, should_return=True, tool="planner")
