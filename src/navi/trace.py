@@ -276,16 +276,24 @@ class TraceStore:
 
     def list_trace_meta(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None) -> list[dict[str, Any]]:
         query = """
-            SELECT trace_id, MIN(ok) as min_ok, MIN(created_at) as start_time, MAX(created_at) as end_time, COUNT(id) as step_count
-            FROM trace_events
-            GROUP BY trace_id
+            SELECT 
+                t.trace_id, 
+                (SELECT ok FROM trace_events WHERE trace_id = t.trace_id ORDER BY created_at DESC LIMIT 1) as final_ok, 
+                t.start_time, 
+                t.end_time, 
+                t.step_count
+            FROM (
+                SELECT trace_id, MIN(created_at) as start_time, MAX(created_at) as end_time, COUNT(id) as step_count
+                FROM trace_events
+                GROUP BY trace_id
+            ) t
         """
         if has_error is True:
-            query += " HAVING MIN(ok) = 0"
+            query += " WHERE final_ok = 0"
         elif has_error is False:
-            query += " HAVING MIN(ok) != 0"
+            query += " WHERE final_ok != 0"
 
-        query += " ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?"
+        query += " ORDER BY t.end_time DESC LIMIT ? OFFSET ?"
         with connect(self.db_path) as conn:
             rows = conn.execute(query, (limit, offset)).fetchall()
 
