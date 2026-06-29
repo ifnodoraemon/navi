@@ -1,83 +1,13 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { format } from 'date-fns';
-import { Activity, Code, CheckCircle2, XCircle, Search, Clock, ChevronDown, ChevronRight, Zap, Copy, Check, RefreshCw, Timer, Hash, ShieldAlert } from 'lucide-react';
-import { JsonView, darkStyles } from 'react-json-view-lite';
+import { Activity, Code, CheckCircle2, XCircle, Search, Clock, ChevronDown, ChevronRight, Zap, Copy, Check, RefreshCw, Timer, Hash, ShieldAlert, UserCheck } from 'lucide-react';
+import { JsonView } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 import ReactMarkdown from 'react-markdown';
 import type { TraceData, TraceEvent } from './types';
 import './App.css';
 
-type EventUiState = {
-  kind: 'success' | 'approval' | 'blocked' | 'error';
-  label: string;
-  message: string | null;
-  bannerTitle: string;
-};
-
-const parseJsonObject = (value: string): Record<string, any> => {
-  try {
-    const parsed = JSON.parse(value || '{}');
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch (e) {
-    return {};
-  }
-};
-
-const textValue = (value: unknown): string => {
-  return typeof value === 'string' ? value : '';
-};
-
-const eventUiState = (event: TraceEvent): EventUiState => {
-  if (event.ok) {
-    return {
-      kind: 'success',
-      label: 'SUCCESS',
-      message: null,
-      bannerTitle: '',
-    };
-  }
-
-  const parsedOut = parseJsonObject(event.output_json);
-  const parsedIn = parseJsonObject(event.input_json);
-  const facts = parsedOut.facts && typeof parsedOut.facts === 'object' ? parsedOut.facts : {};
-  const reason = textValue(facts.reason || parsedOut.reason || parsedOut.error || parsedOut.message || parsedIn.error || parsedIn.reason);
-  const approvalRequired = (
-    event.phase === 'capability.result' &&
-    (
-      facts.entity_type === 'approval_request' ||
-      reason === 'sensitive_op_requires_approval' ||
-      reason === 'workflow_approval_required' ||
-      parsedOut.error_reason === 'approval_required'
-    )
-  );
-  if (approvalRequired) {
-    return {
-      kind: 'approval',
-      label: 'APPROVAL REQUIRED',
-      message: reason || 'approval_required',
-      bannerTitle: 'Action Paused:',
-    };
-  }
-
-  const lowerReason = reason.toLowerCase();
-  const blocked = lowerReason.includes('sandbox') || lowerReason.includes('block') || lowerReason.includes('deny') || lowerReason.includes('denied') || lowerReason.includes('unauthorized') || lowerReason.includes('approval');
-  if (blocked) {
-    return {
-      kind: 'blocked',
-      label: 'BLOCKED',
-      message: reason,
-      bannerTitle: 'Action Intercepted:',
-    };
-  }
-
-  return {
-    kind: 'error',
-    label: 'FAILED',
-    message: reason,
-    bannerTitle: 'Error Detected:',
-  };
-};
 
 const CollapsibleJson = ({ title, jsonStr }: { title: string, jsonStr: string }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -85,10 +15,26 @@ const CollapsibleJson = ({ title, jsonStr }: { title: string, jsonStr: string })
 
   if (!jsonStr || jsonStr === '{}') return null;
 
+  const customJsonStyle = {
+    container: 'jv-container',
+    basicChildStyle: 'jv-child',
+    label: 'jv-label',
+    nullValue: 'jv-null',
+    undefinedValue: 'jv-undefined',
+    stringValue: 'jv-string',
+    booleanValue: 'jv-boolean',
+    numberValue: 'jv-number',
+    otherValue: 'jv-other',
+    punctuation: 'jv-punctuation',
+    collapseIcon: 'jv-icon',
+    expandIcon: 'jv-icon',
+    collapsedContent: 'jv-collapsed',
+  };
+
   const renderJson = () => {
     try {
       const parsed = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
-      return <JsonView data={parsed} shouldExpandNode={(level) => level < 2} style={darkStyles} />;
+      return <JsonView data={parsed} shouldExpandNode={(level) => level < 2} style={customJsonStyle} />;
     } catch (e) {
       return <pre className="code-block" style={{ margin: 0, fontSize: '0.85rem' }}>{jsonStr}</pre>;
     }
@@ -122,7 +68,7 @@ const CollapsibleJson = ({ title, jsonStr }: { title: string, jsonStr: string })
         )}
       </div>
       {isOpen && (
-        <div className="code-container" style={{ overflowX: 'auto', background: '#1e1e1e', padding: '12px 16px' }}>
+        <div className="code-container glass-panel">
           {renderJson()}
         </div>
       )}
@@ -312,6 +258,31 @@ function App() {
 
             <div className="timeline">
               {traceData.events.map((event: TraceEvent, idx: number) => {
+                 let extractedError = null;
+                let isBlocked = false;
+                let isApproval = false;
+                
+                if (!event.ok) {
+                  const phase = (event.phase || '').toLowerCase();
+                  if (phase === 'approval') isApproval = true;
+                  else if (phase === 'sandbox' || phase === 'verifier') isBlocked = true;
+
+                  try {
+                    const parsedOut = JSON.parse(event.output_json || '{}');
+                    const parsedIn = JSON.parse(event.input_json || '{}');
+                    extractedError = parsedOut.error || parsedOut.message || parsedIn.error || parsedIn.reason || null;
+                    
+                    if (extractedError && typeof extractedError === 'string') {
+                      const lowerError = extractedError.toLowerCase();
+                      if (lowerError.includes('approval') || lowerError.includes('human')) {
+                        isApproval = true;
+                        isBlocked = false; // Override block if it specifically asks for approval
+                      } else if (lowerError.includes('sandbox') || lowerError.includes('block') || lowerError.includes('deny') || lowerError.includes('denied') || lowerError.includes('unauthorized')) {
+                        if (!isApproval) isBlocked = true;
+                      }
+                    }
+                  } catch (e) {}
+                }
                 // Deep Search Match logic
                 let matchesSearch = true;
                 if (searchQuery.trim() !== '') {
@@ -343,16 +314,13 @@ function App() {
                   }
                 }
 
-                const uiState = eventUiState(event);
-                const isAttention = uiState.kind === 'approval' || uiState.kind === 'blocked';
-
                 return (
                 <div key={event.id || idx} className="timeline-event fade-in" style={{ animationDelay: `${idx * 0.05}s` }}>
                   <div className="timeline-line"></div>
-                  <div className={`timeline-icon ${uiState.kind} glow-icon-sm`}>
-                    {uiState.kind === 'success' ? <CheckCircle2 size={18} /> : isAttention ? <ShieldAlert size={18} /> : <XCircle size={18} />}
+                  <div className={`timeline-icon ${event.ok ? 'success' : isApproval ? 'approval' : isBlocked ? 'blocked' : 'error'} glow-icon-sm`}>
+                    {event.ok ? <CheckCircle2 size={18} /> : isApproval ? <UserCheck size={18} /> : isBlocked ? <ShieldAlert size={18} /> : <XCircle size={18} />}
                   </div>
-                  <div className="timeline-content glass-panel" style={{ borderColor: !event.ok ? (isAttention ? 'rgba(245, 158, 11, 0.4)' : 'rgba(239, 68, 68, 0.4)') : undefined }}>
+                  <div className="timeline-content glass-panel" style={{ borderColor: !event.ok ? (isApproval ? 'rgba(168, 85, 247, 0.4)' : isBlocked ? 'rgba(245, 158, 11, 0.4)' : 'rgba(239, 68, 68, 0.4)') : undefined }}>
                     <div className="event-header">
                       <div>
                         <h3 className="event-title">
@@ -372,17 +340,17 @@ function App() {
                           Role: <span className="highlight-text">{event.model_role || 'system'}</span>
                         </div>
                       </div>
-                      <div className={`event-status status-${uiState.kind}`}>
-                        {uiState.label}
+                      <div className={`event-status ${event.ok ? 'status-success' : isApproval ? 'status-approval' : isBlocked ? 'status-blocked' : 'status-error'}`}>
+                        {event.ok ? 'SUCCESS' : isApproval ? 'NEEDS APPROVAL' : isBlocked ? 'BLOCKED' : 'FAILED'}
                       </div>
                     </div>
                     
                     <div className="event-body">
                       {/* Critical Error Banner if extracted */}
-                      {uiState.message && (
-                        <div className={isAttention ? "error-banner blocked-banner" : "error-banner"}>
-                          {isAttention ? <ShieldAlert size={16} /> : <XCircle size={16} />}
-                          <strong>{uiState.bannerTitle}</strong> {uiState.message}
+                      {extractedError && (
+                        <div className={isApproval ? "error-banner approval-banner" : isBlocked ? "error-banner blocked-banner" : "error-banner"}>
+                          {isApproval ? <UserCheck size={16} /> : isBlocked ? <ShieldAlert size={16} /> : <XCircle size={16} />}
+                          <strong>{isApproval ? 'Approval Required:' : isBlocked ? 'Action Intercepted:' : 'Error Detected:'}</strong> {String(extractedError)}
                         </div>
                       )}
 

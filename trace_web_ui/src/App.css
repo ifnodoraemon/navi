@@ -509,10 +509,84 @@
   padding: 0;
 }
 
+/* Custom JSON View Styles */
+.code-container {
+  overflow-x: auto;
+  padding: 16px;
+  border-radius: 8px;
+  margin-top: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.jv-container {
+  font-family: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: #e6edf3;
+}
+
+.jv-child {
+  margin-left: 16px;
+}
+
+.jv-label {
+  color: #7dd3fc;
+  margin-right: 6px;
+}
+
+.jv-string {
+  color: #a7f3d0;
+  word-break: break-all;
+}
+
+.jv-number {
+  color: #fca5a5;
+}
+
+.jv-boolean {
+  color: #fde047;
+}
+
+.jv-null, .jv-undefined {
+  color: #9ca3af;
+  font-style: italic;
+}
+
+.jv-punctuation {
+  color: #6b7280;
+}
+
+.jv-icon {
+  cursor: pointer;
+  color: #9ca3af;
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.jv-collapsed {
+  color: #6b7280;
+  cursor: pointer;
+  font-style: italic;
+}
+
+.jv-collapsed:hover {
+  color: #9ca3af;
+}
+
 .blocked-banner {
   background: rgba(245, 158, 11, 0.1);
   border-left-color: #f59e0b;
   color: #fcd34d;
+}
+
+.approval-banner {
+  background: rgba(168, 85, 247, 0.1);
+  border-left-color: #a855f7;
+  color: #d8b4fe;
 }
 
 .timeline-icon.blocked {
@@ -520,7 +594,7 @@
 }
 
 .timeline-icon.approval {
-  color: #f59e0b;
+  color: #a855f7;
 }
 
 .status-blocked {
@@ -530,9 +604,9 @@
 }
 
 .status-approval {
-  background: rgba(245, 158, 11, 0.1);
-  color: #f59e0b;
-  border: 1px solid rgba(245, 158, 11, 0.2);
+  background: rgba(168, 85, 247, 0.1);
+  color: #a855f7;
+  border: 1px solid rgba(168, 85, 247, 0.2);
 }
 
 .metric-box {
