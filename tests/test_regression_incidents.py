@@ -464,6 +464,51 @@ class _ApproveCodeNotInInputProvider(_ApproveCodeProvider):
         raise AssertionError(f"unexpected role: {role}")
 
 
+class _ApproveLatestVisibleBatchProvider:
+    def __init__(self) -> None:
+        self.planner_calls = 0
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        if role == "planner" and output_schema is not None:
+            self.planner_calls += 1
+            if self.planner_calls == 1:
+                return json.dumps(
+                    {
+                        "tool": "approval.resolve",
+                        "permission": "write",
+                        "args": {
+                            "decision": "approve",
+                            "selection": "latest_visible_batch",
+                        },
+                        "model_role": "planner",
+                        "confidence": 1.0,
+                        "reason": "try visible approval selection",
+                    }
+                )
+            content = "\n".join(message.content for message in messages)
+            assert "approval_code_required_in_user_input" in content
+            return json.dumps(
+                {
+                    "tool": "final.answer",
+                    "permission": "read",
+                    "args": {"message": "需要当前输入中的审批码。"},
+                    "model_role": "responder",
+                    "confidence": 1.0,
+                    "reason": "report approval facts",
+                }
+            )
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+
 class _RepeatListProvider:
     def __init__(self) -> None:
         self.planner_calls = 0
@@ -835,6 +880,55 @@ async def test_approval_resolve_without_current_user_code_surfaces_pending_facts
     assert facts["reason"] == "approval_code_not_in_user_input"
     assert facts["visible_pending_approval_count"] == 1
     assert facts["visible_pending_approvals"][0]["run_id"] == run.id
+
+
+@pytest.mark.asyncio
+async def test_approval_resolve_visible_batch_requires_user_input_code(tmp_path):
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "find resume",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="awaiting_approval",
+    )
+    approval = runs.create_approval(
+        run_id=run.id,
+        peer_id="peer-1",
+        sender_id="sender-1",
+    )
+    provider = _ApproveLatestVisibleBatchProvider()
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "把我电脑上的简历发我",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert result.ok is True
+    assert result.text == "需要当前输入中的审批码。"
+    assert runs.get_approval(approval.code).status == "pending"
+    events = TraceStore(tmp_path).list_events(result.trace_id)
+    failed_approval = next(
+        event
+        for event in events
+        if event.phase == "capability.result"
+        and event.tool == "approval.resolve"
+        and not event.ok
+    )
+    facts = json.loads(failed_approval.output_json)["facts"]
+    assert facts["reason"] == "approval_code_required_in_user_input"
+    assert facts["visible_pending_approval_count"] == 1
 
 
 @pytest.mark.asyncio

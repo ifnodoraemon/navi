@@ -98,6 +98,25 @@ class ApprovalResolveCapability(BaseCapability):
             session_id=context.session_id,
             input_text=context.input_text,
         )
+        if context.input_text and not code:
+            visible = [
+                item.facts(include_code=True)
+                for item in CurrentStateBuilder(self.home).build(surface_ctx).visible_pending_approvals
+            ]
+            facts = {
+                "reason": "approval_code_required_in_user_input",
+                "selection": selection,
+                "code_present_in_current_user_input": False,
+                "visible_pending_approval_count": len(visible),
+                "visible_pending_approvals": visible,
+            }
+            return _failure_result(
+                "approval",
+                message="",
+                error_reason="schema_mismatch",
+                terminal=False,
+                facts=facts,
+            )
         if code and context.input_text and code not in context.input_text:
             visible = [
                 item.facts(include_code=True)

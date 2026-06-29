@@ -15,7 +15,8 @@
     "lucide-react": "^1.22.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-json-view-lite": "^2.5.0"
+    "react-json-view-lite": "^2.5.0",
+    "react-markdown": "^10.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",

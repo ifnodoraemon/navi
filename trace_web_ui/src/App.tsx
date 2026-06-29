@@ -4,6 +4,7 @@ import { format } from 'date-fns';
 import { Activity, Code, CheckCircle2, XCircle, Search, Clock, ChevronDown, ChevronRight, Zap, Copy, Check, RefreshCw, Timer, Hash, ShieldAlert } from 'lucide-react';
 import { JsonView, darkStyles } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
+import ReactMarkdown from 'react-markdown';
 import type { TraceData, TraceEvent } from './types';
 import './App.css';
 
@@ -136,9 +137,10 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Filters
+  // Filters & Search
   const [showErrorsOnly, setShowErrorsOnly] = useState(false);
   const [showToolsOnly, setShowToolsOnly] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     fetchTraceIds();
@@ -224,8 +226,8 @@ function App() {
               className={`trace-item ${selectedTrace === id ? 'active' : ''}`}
               onClick={() => loadTrace(id)}
             >
-              <div className="trace-id">{id.substring(16)}</div>
-              <div className="trace-date">
+              <div className="trace-id" style={{ wordBreak: 'break-all', fontSize: '0.75rem', lineHeight: 1.4 }}>{id}</div>
+              <div className="trace-date" style={{ marginTop: 6 }}>
                 <Clock size={12} style={{ display: 'inline', marginRight: 4, opacity: 0.7 }} />
                 {id.substring(0, 8)} {id.substring(9, 15).replace(/(..)(..)(..)/, '$1:$2:$3')}
               </div>
@@ -279,7 +281,7 @@ function App() {
                 </div>
 
                 {/* Filters Row */}
-                <div style={{ marginTop: 20, display: 'flex', gap: 12 }}>
+                <div style={{ marginTop: 20, display: 'flex', gap: 12, alignItems: 'center' }}>
                   <button 
                     className={`filter-btn ${showErrorsOnly ? 'active error' : ''}`}
                     onClick={() => setShowErrorsOnly(!showErrorsOnly)}
@@ -292,13 +294,40 @@ function App() {
                   >
                     <Code size={14} /> Show Tool Calls Only
                   </button>
+                  
+                  {/* Search Bar */}
+                  <div className="search-box glass-panel" style={{ display: 'flex', alignItems: 'center', padding: '6px 12px', borderRadius: 6, flexGrow: 1, marginLeft: 12, border: '1px solid rgba(255, 255, 255, 0.1)', background: 'rgba(0,0,0,0.2)' }}>
+                    <Search size={14} color="var(--text-secondary)" style={{ marginRight: 8 }} />
+                    <input 
+                      type="text" 
+                      placeholder="Deep Search in payloads and messages..." 
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      style={{ background: 'transparent', border: 'none', color: '#fff', width: '100%', outline: 'none', fontSize: '0.85rem' }}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
 
             <div className="timeline">
               {traceData.events.map((event: TraceEvent, idx: number) => {
+                // Deep Search Match logic
+                let matchesSearch = true;
+                if (searchQuery.trim() !== '') {
+                  const q = searchQuery.toLowerCase();
+                  matchesSearch = false;
+                  if (event.tool?.toLowerCase().includes(q) || 
+                      event.phase?.toLowerCase().includes(q) || 
+                      event.message?.toLowerCase().includes(q) || 
+                      event.input_json?.toLowerCase().includes(q) || 
+                      event.output_json?.toLowerCase().includes(q)) {
+                    matchesSearch = true;
+                  }
+                }
+
                 // Apply filters
+                if (!matchesSearch) return null;
                 if (showErrorsOnly && event.ok) return null;
                 if (showToolsOnly && !event.tool) return null;
 
@@ -361,8 +390,10 @@ function App() {
                       <CollapsibleJson title="Output Response" jsonStr={event.output_json} />
 
                       {event.message && (
-                        <div className="message-box">
-                          {event.message}
+                        <div className="message-box markdown-body" style={{ background: 'rgba(0,0,0,0.3)', padding: '16px', borderRadius: '8px', marginTop: '12px', borderLeft: '3px solid var(--accent-color)' }}>
+                          <ReactMarkdown>
+                            {event.message}
+                          </ReactMarkdown>
                         </div>
                       )}
                     </div>
@@ -380,10 +411,23 @@ function App() {
               
               {/* If filtered out everything */}
               {traceData.events && traceData.events.length > 0 && 
-               traceData.events.filter(e => (!showErrorsOnly || !e.ok) && (!showToolsOnly || e.tool)).length === 0 && (
+               traceData.events.filter(e => {
+                  let matchSearch = true;
+                  if (searchQuery.trim() !== '') {
+                    const q = searchQuery.toLowerCase();
+                    if (!e.tool?.toLowerCase().includes(q) && 
+                        !e.phase?.toLowerCase().includes(q) && 
+                        !e.message?.toLowerCase().includes(q) && 
+                        !e.input_json?.toLowerCase().includes(q) && 
+                        !e.output_json?.toLowerCase().includes(q)) {
+                      matchSearch = false;
+                    }
+                  }
+                  return matchSearch && (!showErrorsOnly || !e.ok) && (!showToolsOnly || e.tool);
+               }).length === 0 && (
                 <div className="empty-state glass-panel" style={{ padding: 40, marginTop: 20 }}>
                   <Search size={32} />
-                  <p>All events filtered out by your current filters.</p>
+                  <p>All events filtered out by your current filters or search query.</p>
                 </div>
               )}
             </div>
