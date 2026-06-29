@@ -32,12 +32,20 @@ const CollapsibleJson = ({ title, jsonStr }: { title: string, jsonStr: string })
   };
 
   const renderJson = () => {
+    let parsed;
     try {
-      const parsed = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
-      return <JsonView data={parsed} shouldExpandNode={(level) => level < 2} style={customJsonStyle} />;
+      parsed = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
     } catch (e) {
-      return <pre className="code-block" style={{ margin: 0, fontSize: '0.85rem' }}>{jsonStr}</pre>;
+      // If it's an unquoted string or invalid JSON, treat the raw string as the value
+      parsed = jsonStr;
     }
+    
+    // JsonView expects an object or array. If it's a primitive, wrap it nicely.
+    if (typeof parsed !== 'object' || parsed === null) {
+      parsed = { payload: parsed };
+    }
+
+    return <JsonView data={parsed} shouldExpandNode={(level) => level < 2} style={customJsonStyle} />;
   };
 
   const handleCopy = (e: React.MouseEvent) => {
