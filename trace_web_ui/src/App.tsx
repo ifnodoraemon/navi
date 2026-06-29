@@ -5,7 +5,7 @@ import { Activity, Code, CheckCircle2, XCircle, Search, Clock, ChevronDown, Chev
 import { JsonView } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 import ReactMarkdown from 'react-markdown';
-import type { TraceData, TraceEvent } from './types';
+import type { TraceData, TraceEvent, TraceMeta } from './types';
 import './App.css';
 
 
@@ -85,7 +85,7 @@ const CollapsibleJson = ({ title, jsonStr }: { title: string, jsonStr: string })
 };
 
 function App() {
-  const [traceIds, setTraceIds] = useState<string[]>([]);
+  const [tracesMeta, setTracesMeta] = useState<TraceMeta[]>([]);
   const [selectedTrace, setSelectedTrace] = useState<string | null>(null);
   const [traceData, setTraceData] = useState<TraceData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -120,10 +120,10 @@ function App() {
       const res = await axios.get('/v1/traces', { params });
       // Robustly handle both enveloped and raw responses
       const rawData = res.data;
-      const actualData = (rawData && rawData.data && rawData.data.trace_ids) ? rawData.data : rawData;
-      const ids = actualData.trace_ids || [];
-      const sortedIds = [...ids].sort().reverse();
-      setTraceIds(sortedIds);
+      const actualData = (rawData && rawData.data && rawData.data.traces) ? rawData.data : rawData;
+      const meta = actualData.traces || [];
+      const sortedMeta = [...meta].sort((a, b) => b.start_time - a.start_time);
+      setTracesMeta(sortedMeta);
     } catch (err) {
       console.error('Failed to fetch traces', err);
     } finally {
@@ -194,22 +194,28 @@ function App() {
             Load More
           </button>
         </div>
-        <div className="trace-list">
-          {traceIds.length === 0 && (
+                <div className="trace-list">
+          {tracesMeta.length === 0 && (
             <div style={{ padding: 20, textAlign: 'center', opacity: 0.5, fontSize: '0.85rem' }}>
               No traces recorded yet.
             </div>
           )}
-          {traceIds.map((id) => (
+          {tracesMeta.map((meta) => (
             <div
-              key={id}
-              className={`trace-item ${selectedTrace === id ? 'active' : ''}`}
-              onClick={() => loadTrace(id)}
+              key={meta.trace_id}
+              className={`trace-item ${selectedTrace === meta.trace_id ? 'active' : ''}`}
+              onClick={() => loadTrace(meta.trace_id)}
             >
-              <div className="trace-id" style={{ wordBreak: 'break-all', fontSize: '0.75rem', lineHeight: 1.4 }}>{id}</div>
-              <div className="trace-date" style={{ marginTop: 6 }}>
-                <Clock size={12} style={{ display: 'inline', marginRight: 4, opacity: 0.7 }} />
-                {id.substring(0, 8)} {id.substring(9, 15).replace(/(..)(..)(..)/, '$1:$2:$3')}
+              <div className="trace-id" style={{ wordBreak: 'break-all', fontSize: '0.75rem', lineHeight: 1.4, color: meta.has_error ? 'var(--error-color)' : 'inherit', fontWeight: meta.has_error ? 600 : 'normal' }}>
+                {meta.has_error && <ShieldAlert size={12} style={{display: 'inline', marginRight: 4}}/>}
+                {meta.trace_id}
+              </div>
+              <div className="trace-date" style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
+                <span>
+                  <Clock size={12} style={{ display: 'inline', marginRight: 4, opacity: 0.7 }} />
+                  {meta.trace_id.substring(0, 8)} {meta.trace_id.substring(9, 15).replace(/(..)(..)(..)/, '$1:$2:$3')}
+                </span>
+                {meta.duration > 0 && <span style={{ opacity: 0.8 }}><Timer size={12} style={{ display: 'inline', marginRight: 2 }} /> {meta.duration.toFixed(2)}s</span>}
               </div>
             </div>
           ))}
@@ -293,9 +299,9 @@ function App() {
             <div className="timeline">
               {traceData.events.map((event: TraceEvent, idx: number) => {
                  let extractedError = null;
-                let isBlocked = false;
-                let isApproval = false;
-                
+                 let isBlocked = false;
+                 let isApproval = false;
+
                 if (!event.ok) {
                   const phase = (event.phase || '').toLowerCase();
                   if (phase === 'approval') isApproval = true;
@@ -335,6 +341,17 @@ function App() {
                 if (!matchesSearch) return null;
                 if (showErrorsOnly && event.ok) return null;
                 if (showToolsOnly && !event.tool) return null;
+
+                const firstTime = traceData.events[0]?.created_at || 0;
+                const lastTime = traceData.events[traceData.events.length - 1]?.created_at || firstTime;
+                const traceTotalDuration = Math.max(0.001, lastTime - firstTime);
+                const eventStart = Math.max(0, event.created_at - firstTime);
+                const nextEventTime = idx < traceData.events.length - 1
+                  ? traceData.events[idx + 1].created_at
+                  : event.created_at;
+                const eventDuration = Math.max(0, nextEventTime - event.created_at);
+                const leftPercent = (eventStart / traceTotalDuration) * 100;
+                const widthPercent = Math.max(0.5, (eventDuration / traceTotalDuration) * 100);
 
                 // Calculate duration of THIS event (time since previous event)
                 let eventDurationStr = '';
@@ -379,6 +396,19 @@ function App() {
                       </div>
                     </div>
                     
+                    {/* Waterfall Bar */}
+                    <div className="waterfall-container" style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', marginBottom: '16px', position: 'relative' }} title={`Duration: ${eventDuration.toFixed(3)}s`}>
+                      <div style={{
+                        position: 'absolute',
+                        left: `${leftPercent}%`,
+                        width: `${widthPercent}%`,
+                        height: '100%',
+                        background: event.ok ? 'var(--accent-color)' : 'var(--error-color)',
+                        borderRadius: '2px',
+                        boxShadow: `0 0 8px ${event.ok ? 'var(--accent-color)' : 'var(--error-color)'}`
+                      }} />
+                    </div>
+
                     <div className="event-body">
                       {/* Critical Error Banner if extracted */}
                       {extractedError && (

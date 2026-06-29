@@ -25,3 +25,12 @@ export interface TraceData {
   runs: any[];
   loop_decisions: TraceDecision[];
 }
+
+export interface TraceMeta {
+  trace_id: string;
+  has_error: boolean;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  step_count: number;
+}

@@ -229,8 +229,8 @@ class HernessEngine(EnginePhasesMixin):
                         peer_id=peer_id,
                         sender_id=sender_id,
                     )
-                    if control.reflection_prompt:
-                        observations.append(control.reflection_prompt)
+                    if control.runtime_observation:
+                        observations.append(control.runtime_observation)
                     if control.effect == LoopControlEffect.FINALIZE_STABLE:
                         result = step_result.result
                         self.trace.add_event(
@@ -343,8 +343,8 @@ class HernessEngine(EnginePhasesMixin):
                     peer_id=peer_id,
                     sender_id=sender_id,
                 )
-                if control.reflection_prompt:
-                    observations.append(control.reflection_prompt)
+                if control.runtime_observation:
+                    observations.append(control.runtime_observation)
                 if control.effect == LoopControlEffect.FINALIZE_STABLE:
                     if control.convergence_message:
                         self.trace.add_event(

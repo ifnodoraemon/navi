@@ -584,7 +584,7 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get(api_path("traces"))
     def traces(limit: int = 50, offset: int = 0, has_error: bool | None = None) -> dict:
-        return {"trace_ids": TraceStore(home).list_trace_ids(limit=limit, offset=offset, has_error=has_error)}
+        return {"traces": TraceStore(home).list_trace_meta(limit=limit, offset=offset, has_error=has_error)}
 
     @app.get(api_path("trace"))
     def trace(trace_id: str) -> dict:

@@ -151,6 +151,7 @@ class TraceStore:
 
         input_data_extracted = _extract_blobs(_redact(input_data or {}), _insert_blob)
         output_data_extracted = _extract_blobs(_redact(output_data or {}), _insert_blob)
+        redacted_message = str(_redact(message))
 
         event = TraceEvent(
             id=uuid.uuid4().hex,
@@ -166,7 +167,7 @@ class TraceStore:
             ok=ok,
             input_json=json.dumps(input_data_extracted, ensure_ascii=False, sort_keys=True),
             output_json=json.dumps(output_data_extracted, ensure_ascii=False, sort_keys=True),
-            message=message,
+            message=redacted_message,
             created_at=time.time(),
         )
         with connect(self.db_path) as conn:
@@ -197,6 +198,7 @@ class TraceStore:
             event,
             input_json=json.dumps(_redact(input_data or {}), ensure_ascii=False, sort_keys=True),
             output_json=json.dumps(_redact(output_data or {}), ensure_ascii=False, sort_keys=True),
+            message=redacted_message,
         )
 
     def add_loop_decision(
@@ -272,17 +274,36 @@ class TraceStore:
         events = [TraceEvent(*row[:10], bool(row[10]), *row[11:]) for row in rows]
         return self._resolve_events_blobs(events)
 
-    def list_trace_ids(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None) -> list[str]:
-        query = "SELECT trace_id FROM trace_events GROUP BY trace_id"
+    def list_trace_meta(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None) -> list[dict[str, Any]]:
+        query = """
+            SELECT trace_id, MIN(ok) as min_ok, MIN(created_at) as start_time, MAX(created_at) as end_time, COUNT(id) as step_count
+            FROM trace_events
+            GROUP BY trace_id
+        """
         if has_error is True:
             query += " HAVING MIN(ok) = 0"
         elif has_error is False:
             query += " HAVING MIN(ok) != 0"
-        
+
         query += " ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?"
         with connect(self.db_path) as conn:
             rows = conn.execute(query, (limit, offset)).fetchall()
-        return [row[0] for row in rows]
+
+        return [
+            {
+                "trace_id": row[0],
+                "has_error": row[1] == 0,
+                "start_time": row[2],
+                "end_time": row[3],
+                "duration": max(0.0, row[3] - row[2]),
+                "step_count": row[4]
+            }
+            for row in rows
+        ]
+
+    def list_trace_ids(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None) -> list[str]:
+        return [m["trace_id"] for m in self.list_trace_meta(limit=limit, offset=offset, has_error=has_error)]
+
 
     def _fetch_blobs(self, hashes: set[str]) -> dict[str, str]:
         if not hashes:
@@ -421,7 +442,7 @@ class TraceStore:
 
 
 def _redact(value: Any) -> Any:
-    from .safeguards import redact_secrets
+    from .safeguards import redact_personal_data
 
     if isinstance(value, dict):
         redacted = {}
@@ -435,7 +456,7 @@ def _redact(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact(item) for item in value]
     if isinstance(value, str):
-        return redact_secrets(value)
+        return redact_personal_data(value)
     return value
 
 
