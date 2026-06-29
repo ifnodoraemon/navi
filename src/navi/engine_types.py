@@ -27,4 +27,8 @@ class AgentTurnResult:
 
     def surfaced_text(self) -> str:
         """The text to surface to the user."""
+        if self.text:
+            return self.text
+        if not self.ok:
+            return f"[{self.action}] 处理失败：{self.error_reason}"
         return self.text
