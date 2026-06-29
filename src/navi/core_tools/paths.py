@@ -29,6 +29,8 @@ def _is_blocked_http_host(host: str) -> bool:
         import ipaddress
 
         ip = ipaddress.ip_address(host)
+        if ip in ipaddress.ip_network('198.18.0.0/15'):
+            return False
         return (
             ip.is_private
             or ip.is_loopback
