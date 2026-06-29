@@ -247,7 +247,6 @@ class WeixinService:
                 peer_id=update.peer_id,
                 text=text,
                 context_token=context_token,
-                fallback=f"本地处理链路没有生成有效回复；message_id={update.message_id}。",
             )
         except Exception as exc:
             self.record_event(
@@ -404,7 +403,6 @@ class WeixinService:
         peer_id: str,
         text: str,
         context_token: str,
-        fallback: str = "",
     ) -> dict[str, object]:
         media_paths, cleaned_text = _extract_media_directives(text)
         sent_media = 0
@@ -427,8 +425,6 @@ class WeixinService:
                 media_count=sent_media,
             )
         outbound_text = cleaned_text.strip()
-        if not outbound_text and sent_media == 0 and fallback:
-            outbound_text = fallback
         if outbound_text:
             await self.client.send_message(
                 account_id=account.account_id,
