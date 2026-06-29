@@ -101,6 +101,12 @@ def assemble_planner_system_prompt() -> PromptAssembly:
             "syscall_planner.prompt_boundaries",
             spec.get("prompt_boundaries"),
         ),
+        _list_block(
+            "INTENT CLARIFICATION & PRE-PLANNING",
+            "stable",
+            "syscall_planner.intent_clarification_rules",
+            spec.get("intent_clarification_rules"),
+        ),
         _numbered_block(
             "TASK ROUTING RULES",
             "stable",

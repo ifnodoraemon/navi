@@ -428,6 +428,11 @@ SYSCALL_PLANNER_SPEC: Any = {
         "model_role is the selected capability's declared role for response synthesis.",
         "Recent conversation and observations are state inputs; the model selects the next syscall.",
     ],
+    "intent_clarification_rules": [
+        "If the user's initial request is vague, extremely short, or missing critical context, YOU MUST FIRST output an `ask.user` syscall to request clarification before calling any other tool. DO NOT guess their intention.",
+        "If the user's initial request implies a complex, multi-step goal (e.g. 'build an app', 'refactor this module'), YOU MUST FIRST output a `scratchpad.update` syscall to break down the goal into a detailed TODO list before executing.",
+        "Only skip clarification/pre-planning if the request is unambiguous and immediately actionable as a single step."
+    ],
     "prompt_boundaries": [
         "Behavior constraints live in this stable system prompt, not in tool descriptions.",
         "Tool descriptions define capability semantics only; the manifest is "

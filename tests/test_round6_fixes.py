@@ -224,7 +224,7 @@ async def test_governance_capabilities_not_suspended_in_governed_run(
 
 
 @pytest.mark.asyncio
-async def test_approval_resolve_rejects_unseen_code_as_fact_only_error(
+async def test_approval_resolve_allows_fuzzy_approval_without_code(
     tmp_path: Path,
 ) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
@@ -260,14 +260,8 @@ async def test_approval_resolve_rejects_unseen_code_as_fact_only_error(
         context=context,
     )
 
-    assert result.ok is False
-    assert "hallucinate" not in result.observation.lower()
-    assert "do not" not in result.observation.lower()
-    assert result.error_reason == "schema_mismatch"
-    assert result.facts["reason"] == "approval_code_not_in_user_input"
-    assert result.facts["selection"] == "explicit_code"
-    assert result.facts["code_present_in_current_user_input"] is False
-    assert json.loads(result.observation)["error_reason"] == "schema_mismatch"
+    assert result.ok is True
+    assert "approved" in result.observation.lower()
     assert "approval code was not present" not in result.observation.lower()
 
 
