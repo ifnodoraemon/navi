@@ -169,60 +169,175 @@ class HernessEngine(EnginePhasesMixin):
 
         progress_gate = LoopProgressGate()
 
-        while True:
-            if len(observations) > 6:
-                compacted = await self._compact_observations(observations)
-                observations = [compacted]
+        try:
+            while True:
+                if len(observations) > 6:
+                    compacted = await self._compact_observations(observations)
+                    observations = [compacted]
 
-            step_result = await self._react_step(
-                text=text,
-                trace_id=trace_id,
-                resolved_session_id=resolved_session_id,
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-                context=context,
-                state_context=state_context,
-                observations=observations,
-                completion_events=completion_events,
-            )
-
-            if step_result.should_return:
-                # Terminal result from within step (planner error, parse failure, or early return)
-                result = self._with_trace(step_result.result, trace_id)
-                self._record_loop_decision(
-                    trace_id,
-                    decision=failure_decision_for_return(result, tool=step_result.tool),
-                    result=result,
+                step_result = await self._react_step(
+                    text=text,
+                    trace_id=trace_id,
                     resolved_session_id=resolved_session_id,
                     source=source,
                     peer_id=peer_id,
                     sender_id=sender_id,
+                    context=context,
+                    state_context=state_context,
+                    observations=observations,
+                    completion_events=completion_events,
                 )
-                self._record_trace_final(
-                    result, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
-                )
-                return result
 
-            if step_result.should_continue:
-                # Recovery triggered; continue loop with updated observations
-                observations.append(step_result.recovery_observation)
-                control = reduce_recovery_step(
-                    RecoveryStepFrame(
+                if step_result.should_return:
+                    # Terminal result from within step (planner error, parse failure, or early return)
+                    result = self._with_trace(step_result.result, trace_id)
+                    self._record_loop_decision(
+                        trace_id,
+                        decision=failure_decision_for_return(result, tool=step_result.tool),
+                        result=result,
+                        resolved_session_id=resolved_session_id,
+                        source=source,
+                        peer_id=peer_id,
+                        sender_id=sender_id,
+                    )
+                    self._record_trace_final(
+                        result, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
+                    )
+                    return result
+
+                if step_result.should_continue:
+                    # Recovery triggered; continue loop with updated observations
+                    observations.append(step_result.recovery_observation)
+                    control = reduce_recovery_step(
+                        RecoveryStepFrame(
+                            result=step_result.result,
+                            facts=step_result.invoked_facts,
+                            tool=step_result.tool,
+                            progress_signature=step_result.progress_signature,
+                            goal_ids=goal_ids,
+                            observations_count=len(observations),
+                            recovery_observation=step_result.recovery_observation,
+                        ),
+                        progress_gate=progress_gate,
+                    )
+                    self._record_loop_control(
+                        trace_id,
+                        control,
                         result=step_result.result,
+                        resolved_session_id=resolved_session_id,
+                        source=source,
+                        peer_id=peer_id,
+                        sender_id=sender_id,
+                    )
+                    if control.reflection_prompt:
+                        observations.append(control.reflection_prompt)
+                    if control.effect == LoopControlEffect.FINALIZE_STABLE:
+                        result = step_result.result
+                        self.trace.add_event(
+                            trace_id=trace_id,
+                            phase=TracePhase.RUNTIME_CONVERGED,
+                            session_id=resolved_session_id or "",
+                            run_id=result.run_id,
+                            source=source,
+                            peer_id=peer_id,
+                            sender_id=sender_id,
+                            model_role="runtime",
+                            ok=True,
+                            output_data={
+                                "observations_count": len(observations),
+                                "signature": control.progress_signature,
+                            },
+                            message=control.convergence_message,
+                        )
+                        # We are finalizing the loop. Directly throw the raw facts without summarizing on behalf of the LLM.
+                        obs_lines = observations
+                        if control.convergence_message:
+                            obs_lines = observations + [f"[System Block] {control.convergence_message}"]
+                        final_facts = {}
+                        if control.decisions and control.decisions[0].evidence:
+                            final_facts.update(control.decisions[0].evidence)
+                        if control.convergence_message:
+                            final_facts["convergence_message"] = control.convergence_message
+                        
+                        final_result = AgentTurnResult(
+                            text="",
+                            action="execute:system.loop_converged" if control.convergence_message else "execute:system.task_complete",
+                            observation="\n\n".join(obs_lines),
+                            model_role="planner",
+                            terminal=True,
+                            ok=not bool(control.convergence_message),
+                            error_reason="loop_converged" if control.convergence_message else "",
+                            trace_id=trace_id,
+                            facts=final_facts
+                        )
+                        self._record_trace_final(final_result, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
+                        turn_res = self._record_turn(text, final_result, session_id=resolved_session_id)
+                        self._attach_goals(
+                            goal_ids,
+                            trace_id=trace_id,
+                            session_id=turn_res.session_id,
+                            evidence={"final_action": turn_res.action},
+                        )
+                        self._trigger_background_memory(turn_res)
+                        return turn_res
+                    continue
+
+                # Update loop state from successful step
+                result = step_result.result
+
+                goal_id = str((step_result.invoked_facts or {}).get("goal_id") or "").strip()
+                if goal_id:
+                    goal_ids.add(goal_id)
+
+                if result.terminal and result.ok:
+                    # Terminal condition met; finalize and return
+                    self._record_loop_decision(
+                        trace_id,
+                        decision=terminal_loop_decision(
+                            result,
+                            step_result.invoked_facts,
+                            tool=step_result.tool,
+                            goal_ids=goal_ids,
+                        ),
+                        result=result,
+                        resolved_session_id=resolved_session_id,
+                        source=source,
+                        peer_id=peer_id,
+                        sender_id=sender_id,
+                    )
+                    turn_res = self._record_turn(text, result, session_id=resolved_session_id)
+                    turn_res = self._with_trace(turn_res, trace_id)
+                    self._attach_goals(
+                        goal_ids,
+                        trace_id=trace_id,
+                        session_id=turn_res.session_id,
+                        evidence={"final_action": turn_res.action},
+                    )
+                    self._record_trace_final(
+                        turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
+                    )
+                    self._trigger_background_memory(turn_res)
+                    return turn_res
+
+                observation = result.observation or result.text
+                if observation:
+                    observations.append(observation)
+
+                control = reduce_runtime_step(
+                    RuntimeStepFrame(
+                        result=result,
                         facts=step_result.invoked_facts,
                         tool=step_result.tool,
                         progress_signature=step_result.progress_signature,
                         goal_ids=goal_ids,
                         observations_count=len(observations),
-                        recovery_observation=step_result.recovery_observation,
                     ),
                     progress_gate=progress_gate,
                 )
                 self._record_loop_control(
                     trace_id,
                     control,
-                    result=step_result.result,
+                    result=result,
                     resolved_session_id=resolved_session_id,
                     source=source,
                     peer_id=peer_id,
@@ -231,24 +346,23 @@ class HernessEngine(EnginePhasesMixin):
                 if control.reflection_prompt:
                     observations.append(control.reflection_prompt)
                 if control.effect == LoopControlEffect.FINALIZE_STABLE:
-                    result = step_result.result
-                    self.trace.add_event(
-                        trace_id=trace_id,
-                        phase=TracePhase.RUNTIME_CONVERGED,
-                        session_id=resolved_session_id or "",
-                        run_id=result.run_id,
-                        source=source,
-                        peer_id=peer_id,
-                        sender_id=sender_id,
-                        model_role="runtime",
-                        ok=True,
-                        output_data={
-                            "observations_count": len(observations),
-                            "signature": control.progress_signature,
-                        },
-                        message=control.convergence_message,
-                    )
-                    # We are finalizing the loop. Directly throw the raw facts without summarizing on behalf of the LLM.
+                    if control.convergence_message:
+                        self.trace.add_event(
+                            trace_id=trace_id,
+                            phase=TracePhase.RUNTIME_CONVERGED,
+                            session_id=resolved_session_id or "",
+                            run_id=result.run_id,
+                            source=source,
+                            peer_id=peer_id,
+                            sender_id=sender_id,
+                            model_role="runtime",
+                            ok=True,
+                            output_data={
+                                "observations_count": len(observations),
+                                "signature": control.progress_signature,
+                            },
+                            message=control.convergence_message,
+                        )
                     obs_lines = observations
                     if control.convergence_message:
                         obs_lines = observations + [f"[System Block] {control.convergence_message}"]
@@ -279,119 +393,25 @@ class HernessEngine(EnginePhasesMixin):
                     )
                     self._trigger_background_memory(turn_res)
                     return turn_res
-                continue
-
-            # Update loop state from successful step
-            result = step_result.result
-
-            goal_id = str((step_result.invoked_facts or {}).get("goal_id") or "").strip()
-            if goal_id:
-                goal_ids.add(goal_id)
-
-            if result.terminal and result.ok:
-                # Terminal condition met; finalize and return
-                self._record_loop_decision(
-                    trace_id,
-                    decision=terminal_loop_decision(
-                        result,
-                        step_result.invoked_facts,
-                        tool=step_result.tool,
-                        goal_ids=goal_ids,
-                    ),
-                    result=result,
-                    resolved_session_id=resolved_session_id,
-                    source=source,
-                    peer_id=peer_id,
-                    sender_id=sender_id,
-                )
-                turn_res = self._record_turn(text, result, session_id=resolved_session_id)
-                turn_res = self._with_trace(turn_res, trace_id)
-                self._attach_goals(
-                    goal_ids,
-                    trace_id=trace_id,
-                    session_id=turn_res.session_id,
-                    evidence={"final_action": turn_res.action},
-                )
-                self._record_trace_final(
-                    turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
-                )
-                self._trigger_background_memory(turn_res)
-                return turn_res
-
-            observation = result.observation or result.text
-            if observation:
-                observations.append(observation)
-
-            control = reduce_runtime_step(
-                RuntimeStepFrame(
-                    result=result,
-                    facts=step_result.invoked_facts,
-                    tool=step_result.tool,
-                    progress_signature=step_result.progress_signature,
-                    goal_ids=goal_ids,
-                    observations_count=len(observations),
-                ),
-                progress_gate=progress_gate,
+        except Exception as e:
+            import logging
+            logger = logging.getLogger("navi.engine")
+            logger.error(f"Engine crashed during turn {trace_id}", exc_info=True)
+            
+            crash_result = AgentTurnResult(
+                text=f"Agent engine encountered an internal error: {type(e).__name__}",
+                action="execute:system.engine_crash",
+                observation=f"Engine crash: {e}",
+                model_role="system",
+                terminal=True,
+                ok=False,
+                error_reason="engine_crash",
+                trace_id=trace_id,
+                facts={"error_type": type(e).__name__, "error_message": str(e)},
             )
-            self._record_loop_control(
-                trace_id,
-                control,
-                result=result,
-                resolved_session_id=resolved_session_id,
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-            )
-            if control.reflection_prompt:
-                observations.append(control.reflection_prompt)
-            if control.effect == LoopControlEffect.FINALIZE_STABLE:
-                if control.convergence_message:
-                    self.trace.add_event(
-                        trace_id=trace_id,
-                        phase=TracePhase.RUNTIME_CONVERGED,
-                        session_id=resolved_session_id or "",
-                        run_id=result.run_id,
-                        source=source,
-                        peer_id=peer_id,
-                        sender_id=sender_id,
-                        model_role="runtime",
-                        ok=True,
-                        output_data={
-                            "observations_count": len(observations),
-                            "signature": control.progress_signature,
-                        },
-                        message=control.convergence_message,
-                    )
-                obs_lines = observations
-                if control.convergence_message:
-                    obs_lines = observations + [f"[System Block] {control.convergence_message}"]
-                final_facts = {}
-                if control.decisions and control.decisions[0].evidence:
-                    final_facts.update(control.decisions[0].evidence)
-                if control.convergence_message:
-                    final_facts["convergence_message"] = control.convergence_message
-                
-                final_result = AgentTurnResult(
-                    text="",
-                    action="execute:system.loop_converged" if control.convergence_message else "execute:system.task_complete",
-                    observation="\n\n".join(obs_lines),
-                    model_role="planner",
-                    terminal=True,
-                    ok=not bool(control.convergence_message),
-                    error_reason="loop_converged" if control.convergence_message else "",
-                    trace_id=trace_id,
-                    facts=final_facts
-                )
-                self._record_trace_final(final_result, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
-                turn_res = self._record_turn(text, final_result, session_id=resolved_session_id)
-                self._attach_goals(
-                    goal_ids,
-                    trace_id=trace_id,
-                    session_id=turn_res.session_id,
-                    evidence={"final_action": turn_res.action},
-                )
-                self._trigger_background_memory(turn_res)
-                return turn_res
+            self._record_trace_final(crash_result, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
+            return crash_result
+
 
     def _record_loop_decision(
         self,
