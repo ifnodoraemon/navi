@@ -4,7 +4,7 @@ import importlib
 import pkgutil
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,8 @@ class ConnectorSpec:
     status_description: str
     session_alias_prefix: str
     local_source: str
+    approval_approve_commands: tuple[str, ...] = field(default_factory=tuple)
+    approval_reject_commands: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

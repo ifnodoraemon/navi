@@ -1,12 +1,8 @@
-"""Tests for the auto-loaded remote connector policy.
+"""Tests for the remote connector capability boundary.
 
-The remote connector no longer uses a hand-maintained per-tool allowlist
-(``REMOTE_SAFE_TOOLS``). Instead, the policy is a stable *blocklist* of
-direct-OS capability classes. New governance / read tools auto-load into
-the remote manifest without a central list edit; only direct-OS classes
-(file, shell, browser) are blocked from the live remote path, since they
-would let a prompt-injected message run shell or read local files without
-the delegate.spawn → approval gate.
+Remote connector ingress is an explicit preparation/read allowlist. It can
+converse and create governed prepared state, but newly added mutating tools do
+not become remote-visible by default.
 """
 from __future__ import annotations
 
@@ -16,7 +12,12 @@ import pytest
 
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
-from navi.connector_runtime import REMOTE_BLOCKED_CAPABILITY_CLASSES, REMOTE_BLOCKED_TOOLS
+from navi.connector_runtime import (
+    REMOTE_ALLOWED_TOOLS,
+    REMOTE_BLOCKED_CAPABILITY_CLASSES,
+    REMOTE_BLOCKED_TOOLS,
+    REMOTE_CONNECTOR_TOOL_POLICY,
+)
 
 
 def _remote_ctx(home: Path) -> CapabilityContext:
@@ -45,16 +46,15 @@ async def test_remote_blocks_direct_os_classes(tmp_path: Path) -> None:
             name, args, permission="read", context=context
         )
         assert result.ok is False, f"{name} should be blocked from remote"
-        assert "policy blocks capability class" in result.message, (
-            f"{name} blocked message should name the class"
-        )
+        assert result.error_reason in {
+            "remote_tool_not_allowed",
+            "remote_capability_class_blocked",
+        }
 
 
 @pytest.mark.asyncio
-async def test_remote_autoloads_governance_tools(tmp_path: Path) -> None:
-    """Governance tools (delegate.spawn) auto-load into the remote manifest
-    without being hand-listed. A newly declared governance tool would
-    similarly auto-appear."""
+async def test_remote_allows_declared_preparation_tools(tmp_path: Path) -> None:
+    """The remote manifest exposes only tools declared by policy."""
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     context = _remote_ctx(tmp_path)
     spawned = await registry.invoke(
@@ -82,7 +82,10 @@ async def test_remote_blocks_local_codebase_inspection(tmp_path: Path) -> None:
         "codebase.search", {"query": "resume"}, permission="read", context=context
     )
     assert result.ok is False
-    assert "policy blocks capability class codebase" in result.message
+    assert result.error_reason in {
+        "remote_tool_not_allowed",
+        "remote_capability_class_blocked",
+    }
 
 
 @pytest.mark.asyncio
@@ -110,10 +113,41 @@ async def test_remote_blocks_workflow_execution_tools(tmp_path: Path) -> None:
         assert f"policy blocks capability {name}" in result.message
 
 
+def test_remote_policy_is_explicit_allowlist() -> None:
+    """Remote-visible tools must be named explicitly by policy."""
+    assert REMOTE_CONNECTOR_TOOL_POLICY.permission_ceiling == "prepare"
+    assert REMOTE_CONNECTOR_TOOL_POLICY.allowed_tools == REMOTE_ALLOWED_TOOLS
+    assert REMOTE_ALLOWED_TOOLS == {
+        "final.answer",
+        "ask.user",
+        "delegate.spawn",
+        "delegate.prepare",
+        "delegate.list",
+        "tools.list",
+        "watch.create",
+        "workflow.propose",
+        "workflow.status",
+    }
+
+
+@pytest.mark.asyncio
+async def test_remote_tools_list_returns_filtered_manifest(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = _remote_ctx(tmp_path)
+
+    result = await registry.invoke("tools.list", {}, permission="read", context=context)
+
+    assert result.ok is True
+    names = {tool["name"] for tool in (result.facts or {})["tools"]}
+    assert "delegate.spawn" in names
+    assert "tools.list" in names
+    assert "delegate.run" not in names
+    assert "delegate.delete" not in names
+    assert "approval.resolve" not in names
+
+
 def test_blocked_capability_classes_are_direct_os_only() -> None:
-    """The blocklist contains only direct-OS classes — the stable
-    prompt-injection boundary. It must not contain governance classes
-    (delegation, approval, workflow, memory, session, etc.)."""
+    """The blocklist still documents direct-OS defense-in-depth classes."""
     blocked = REMOTE_BLOCKED_CAPABILITY_CLASSES
     direct_os = {
         "browser",
@@ -129,7 +163,7 @@ def test_blocked_capability_classes_are_direct_os_only() -> None:
         "watch.delete",
     }
     assert blocked == direct_os
-    governance = {"delegation", "approval", "memory", "session", "conversation"}
+    governance = {"delegation", "approval", "memory", "session", "conversation", "workflow"}
     assert not (blocked & governance), (
         "governance classes must not be in the direct-OS blocklist"
     )

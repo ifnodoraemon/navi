@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 from .connector_runtime import ConnectorMessage
@@ -42,6 +43,20 @@ class ConnectorRouter:
         )
 
         try:
+            control_response = self._resolve_connector_control_message(message)
+            if control_response is not None:
+                trace.add_event(
+                    trace_id=correlation_id,
+                    phase=TracePhase.CHANNEL_EGRESS,
+                    run_id="",
+                    source=message.source,
+                    peer_id=message.peer_id,
+                    sender_id=message.sender_id,
+                    output_data={"response": control_response, "control_message": True},
+                    message="Resolved connector control message",
+                )
+                return control_response
+
             event = MessageIngressEvent(
                 source_agent="connector_router",
                 correlation_id=correlation_id,
@@ -98,3 +113,56 @@ class ConnectorRouter:
             if isinstance(item, ResponseReadyEvent):
                 return item.text
             # Heartbeat (or any non-terminal signal): upstream is alive, keep waiting.
+
+    def _resolve_connector_control_message(self, message: ConnectorMessage) -> str | None:
+        command = _parse_connector_approval_command(message)
+        if command is None:
+            return None
+        decision, code = command
+        from .control import ApprovalService, SurfaceContext
+
+        result = ApprovalService(self.home).resolve(
+            decision=decision,
+            selection="explicit_code",
+            context=SurfaceContext(
+                home=self.home,
+                source=message.source,
+                peer_id=message.peer_id,
+                sender_id=message.sender_id,
+                input_text=message.text,
+            ),
+            code=code,
+        )
+        return result.message
+
+
+def _parse_connector_approval_command(message: ConnectorMessage) -> tuple[str, str] | None:
+    # This is a control-envelope check, not natural-language intent parsing.
+    # Only a connector-declared command plus an approval code may bypass the
+    # model loop; every other message remains model-owned user intent.
+    spec = _connector_spec_for_source(message.source)
+    if spec is None:
+        return None
+    match = re.fullmatch(r"\s*(\S+)\s+[`'\"]?([0-9]{6})[`'\"]?\s*", message.text or "")
+    if not match:
+        return None
+    raw_command, code = match.groups()
+    command = raw_command.strip("`'\"").lower()
+    approve = {item.lower() for item in spec.approval_approve_commands}
+    reject = {item.lower() for item in spec.approval_reject_commands}
+    if command in approve:
+        return ("approve", code)
+    if command in reject:
+        return ("reject", code)
+    return None
+
+
+def _connector_spec_for_source(source: str):
+    from .connector_registry import load_connector_adapters
+
+    raw = source.strip()
+    for adapter in load_connector_adapters():
+        spec = adapter.spec
+        if raw in {spec.name, spec.surface, spec.local_source}:
+            return spec
+    return None

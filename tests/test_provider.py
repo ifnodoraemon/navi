@@ -2,7 +2,12 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from navi.provider import OpenAICompatibleProvider, _validate_structured_output
+from navi.provider import (
+    ChatMessage,
+    OpenAICompatibleProvider,
+    _messages_for_response_format,
+    _validate_structured_output,
+)
 
 @patch("navi.provider.resolve_model_config")
 def test_openai_provider_init(mock_resolve):
@@ -62,3 +67,14 @@ def test_structured_output_validation_checks_array_items():
 
     with pytest.raises(RuntimeError, match=r"tool_calls"):
         _validate_structured_output('{"tool_calls":[{"tool":404}]}', output_schema)
+
+
+def test_json_object_mode_does_not_inject_schema_into_prompt():
+    messages = [ChatMessage("user", "hi")]
+    outbound = _messages_for_response_format(messages, {"type": "json_object"})
+
+    assert outbound[0].role == "system"
+    assert "JSON mode is enabled" in outbound[0].content
+    assert "JSON Schema" not in outbound[0].content
+    assert "strictly matches" not in outbound[0].content
+    assert outbound[1:] == messages

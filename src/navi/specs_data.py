@@ -429,9 +429,9 @@ SYSCALL_PLANNER_SPEC: Any = {
         "Recent conversation and observations are state inputs; the model selects the next syscall.",
     ],
     "intent_clarification_rules": [
-        "Clarification, scratchpad updates, and state-mutating work are declared capabilities with manifest schemas, permissions, mutability, and execution contexts.",
+        "Clarification, governed memory writes, and state-mutating work are declared capabilities with manifest schemas, permissions, mutability, and execution contexts.",
         "Initial request text, missing context, ambiguity, task complexity, observed facts, and durable constraints are runtime inputs for the model-owned syscall decision.",
-        "Persisted scratchpad state exists only when the corresponding memory capability result records that state.",
+        "Durable memory state exists only when the governed memory capability result records that state.",
     ],
     "prompt_boundaries": [
         "Behavior constraints live in this stable system prompt, not in tool descriptions.",

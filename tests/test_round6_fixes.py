@@ -40,6 +40,7 @@ from navi.provider import (
     _build_fallback_chain,
 )
 from navi.runs import RunStore
+from navi.tools import API_CONTEXT
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +287,11 @@ def test_completion_surface_text_prefers_capability_surface_message() -> None:
     )
 
 
-def test_completion_surface_text_falls_back_to_transition_facts() -> None:
+def test_completion_surface_text_returns_empty_without_surface_message() -> None:
+    # When a capability provides no surface_message and the model text is
+    # JSON (raw facts), the engine must NOT synthesize a machine-style
+    # "Completed: ..." summary on the model's behalf. Returning empty hands
+    # the facts back to the model so it phrases the natural-language reply.
     result = AgentTurnResult(
         text='{"raw": "facts"}',
         action="delegation",
@@ -302,9 +307,21 @@ def test_completion_surface_text_falls_back_to_transition_facts() -> None:
     )
     control = LoopControlResult(effect=LoopControlEffect.FINALIZE_STABLE, decisions=())
 
-    assert HernessEngine._completion_surface_text(result, control) == (
-        "Completed: bulk_delete completed (runs) [deleted_count=1, remaining_count=0]."
+    assert HernessEngine._completion_surface_text(result, control) == ""
+
+
+def test_completion_surface_text_returns_empty_when_convergence_message() -> None:
+    # A convergence_message means the loop is finalizing on a control-flow
+    # signal rather than a capability result; there is no user-facing surface
+    # text to emit.
+    result = AgentTurnResult(text="anything", action="watch")
+    control = LoopControlResult(
+        effect=LoopControlEffect.FINALIZE_STABLE,
+        decisions=(),
+        convergence_message="loop converged",
     )
+
+    assert HernessEngine._completion_surface_text(result, control) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -319,9 +336,17 @@ async def test_governance_capabilities_not_suspended_in_governed_run(
     """approval.resolve / approval.request must not trigger a second-level
     approval suspension inside a governed background run — otherwise resolving
     an approval requires another approval (infinite loop)."""
-    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    registry = build_capability_registry(
+        tmp_path, project_dir=tmp_path, enforce_connector_source_policy=False
+    )
+    api_registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        execution_context=API_CONTEXT,
+        enforce_connector_source_policy=False,
+    )
     request_spec = registry.get("approval.request")
-    resolve_spec = registry.get("approval.resolve")
+    resolve_spec = api_registry.get("approval.resolve")
     assert request_spec is not None and request_spec.governance_exempt is True
     assert resolve_spec is not None and resolve_spec.governance_exempt is True
 
@@ -329,7 +354,7 @@ async def test_governance_capabilities_not_suspended_in_governed_run(
     run = runs.create(
         "t",
         prompt="p",
-        source="connector.weixin",
+        source="",
         peer_id="weixin-peer",
         sender_id="weixin-user",
         workspace=str(tmp_path),
@@ -338,12 +363,13 @@ async def test_governance_capabilities_not_suspended_in_governed_run(
     # Simulate a governed background run: any mutating capability would be
     # suspended for a second-level approval here.
     registry.governed_run_id = run.id
+    api_registry.governed_run_id = run.id
 
     context = CapabilityContext(
         home=tmp_path,
         peer_id="weixin-peer",
         sender_id="weixin-user",
-        source="connector.weixin",
+        source="",
         permission_ceiling="write",
         workspace=str(tmp_path),
     )
@@ -363,12 +389,14 @@ async def test_governance_capabilities_not_suspended_in_governed_run(
 async def test_approval_resolve_rejects_hidden_code_without_user_evidence(
     tmp_path: Path,
 ) -> None:
-    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    registry = build_capability_registry(
+        tmp_path, project_dir=tmp_path, execution_context=API_CONTEXT
+    )
     runs = RunStore(tmp_path)
     run = runs.create(
         "t",
         prompt="p",
-        source="connector.weixin",
+        source="",
         peer_id="weixin-peer",
         sender_id="weixin-user",
         workspace=str(tmp_path),
@@ -383,7 +411,7 @@ async def test_approval_resolve_rejects_hidden_code_without_user_evidence(
         home=tmp_path,
         peer_id="weixin-peer",
         sender_id="weixin-user",
-        source="connector.weixin",
+        source="",
         permission_ceiling="write",
         workspace=str(tmp_path),
         input_text="全部批准",
@@ -407,7 +435,9 @@ async def test_approval_resolve_rejects_hidden_code_without_user_evidence(
 async def test_approval_resolve_batch_requires_model_supplied_user_evidence(
     tmp_path: Path,
 ) -> None:
-    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    registry = build_capability_registry(
+        tmp_path, project_dir=tmp_path, execution_context=API_CONTEXT
+    )
     runs = RunStore(tmp_path)
     for title in ("a", "b"):
         run = runs.create(
@@ -428,7 +458,7 @@ async def test_approval_resolve_batch_requires_model_supplied_user_evidence(
         home=tmp_path,
         peer_id="weixin-peer",
         sender_id="weixin-user",
-        source="connector.weixin",
+        source="",
         permission_ceiling="write",
         workspace=str(tmp_path),
         input_text="批准最新的",
@@ -471,7 +501,7 @@ async def test_session_elevation_returns_state_facts_without_approval_instructio
         home=tmp_path,
         peer_id="weixin-peer",
         sender_id="weixin-user",
-        source="connector.weixin",
+        source="",
         permission_ceiling="write",
         workspace=str(tmp_path),
     )
@@ -921,8 +951,10 @@ def test_run_command_returns_fact_only_error_for_denied_binary(
 
 
 @pytest.mark.asyncio
-async def test_remote_can_delete_prepared_delegation(tmp_path: Path) -> None:
-    """A run stuck in 'prepared' must be deletable from a remote surface."""
+async def test_remote_model_cannot_delete_prepared_delegation_by_default(
+    tmp_path: Path,
+) -> None:
+    """Remote LLM syscall policy must not expose deletion by default."""
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     context = CapabilityContext(
         home=tmp_path,
@@ -952,5 +984,6 @@ async def test_remote_can_delete_prepared_delegation(tmp_path: Path) -> None:
         permission="write",
         context=context,
     )
-    assert delete_result.ok is True
-    assert runs.get(spawned.run_id) is None
+    assert delete_result.ok is False
+    assert delete_result.error_reason == "remote_tool_not_allowed"
+    assert runs.get(spawned.run_id) is not None

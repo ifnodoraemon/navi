@@ -114,13 +114,19 @@ class CapabilityRegistry:
         self.gateway.refresh()
         self.handlers = self._build_handlers()
 
-    def planner_specs(self, *, permission_ceiling: str | None = None) -> list[ToolSpec]:
+    def planner_specs(
+        self,
+        *,
+        permission_ceiling: str | None = None,
+        context: CapabilityContext | None = None,
+    ) -> list[ToolSpec]:
         ceiling = permission_ceiling or self.permission_ceiling
         return sorted(
             [
                 handler.spec
                 for handler in self.handlers.values()
                 if permission_allows(handler.spec.permission, ceiling)
+                and self._source_policy_allows_spec(handler.spec, context)
             ],
             key=lambda spec: spec.name,
         )
@@ -152,6 +158,22 @@ class CapabilityRegistry:
 
     def list_sources(self) -> list[str]:
         return sorted({handler.spec.source for handler in self.handlers.values()})
+
+    def _source_policy_allows_spec(
+        self, spec: ToolSpec, context: CapabilityContext | None
+    ) -> bool:
+        if context is None or not self.enforce_connector_source_policy:
+            return True
+        source_policy = _connector_policy_for_source(context.source)
+        if source_policy is None:
+            return True
+        if spec.name in source_policy.blocked_tools:
+            return False
+        if spec.capability_class in source_policy.blocked_capability_classes:
+            return False
+        if source_policy.allowed_tools and spec.name not in source_policy.allowed_tools:
+            return False
+        return permission_allows(spec.permission, source_policy.permission_ceiling)
 
     def get(self, name: str) -> ToolSpec | None:
         handler = self.handlers.get(name)
@@ -201,17 +223,6 @@ class CapabilityRegistry:
                         "policy": source_policy.name,
                     },
                 )
-            if source_policy.allowed_tools and name not in source_policy.allowed_tools:
-                return _capability_error(
-                    action=f"execute:{name}",
-                    error_reason="remote_tool_not_allowed",
-                    message=f"remote connector policy blocks capability {name}",
-                    observation_facts={
-                        "tool": name,
-                        "source": context.source,
-                        "policy": source_policy.name,
-                    },
-                )
             if handler.spec.capability_class in source_policy.blocked_capability_classes:
                 capability_class = handler.spec.capability_class
                 return _capability_error(
@@ -221,6 +232,17 @@ class CapabilityRegistry:
                     observation_facts={
                         "tool": name,
                         "capability_class": capability_class,
+                        "source": context.source,
+                        "policy": source_policy.name,
+                    },
+                )
+            if source_policy.allowed_tools and name not in source_policy.allowed_tools:
+                return _capability_error(
+                    action=f"execute:{name}",
+                    error_reason="remote_tool_not_allowed",
+                    message=f"remote connector policy blocks capability {name}",
+                    observation_facts={
+                        "tool": name,
                         "source": context.source,
                         "policy": source_policy.name,
                     },

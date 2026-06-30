@@ -75,26 +75,6 @@ syscall_cases:
       args:
         kind: once
 
-  - id: approval_code_approves
-    source: observed:manual-followup
-    message: "批准 123456"
-    expect:
-      tool: approval.resolve
-      permission: write
-      args:
-        decision: approve
-        code: "123456"
-
-  - id: rejection_code_rejects
-    source: observed:manual-followup
-    message: "拒绝 123456"
-    expect:
-      tool: approval.resolve
-      permission: write
-      args:
-        decision: reject
-        code: "123456"
-
   - id: git_status_uses_git_tool
     source: observed:manual-followup
     message: "检查 navi 仓库状态"

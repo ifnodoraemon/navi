@@ -369,7 +369,7 @@ def create_app(home: Path | None = None) -> FastAPI:
                 status_code=409,
                 detail="delegation status transitions must go through delegation capabilities",
             )
-        result = await capabilities.invoke(
+        result = await api_capabilities.invoke(
             "approval.resolve",
             {"decision": decision, "run_id": run_id},
             permission="write",
@@ -404,7 +404,7 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.post(api_path("delegation_approve"))
     async def approve_delegation(run_id: str) -> dict:
-        result = await capabilities.invoke(
+        result = await api_capabilities.invoke(
             "approval.resolve",
             {"decision": APPROVAL_DECISION_APPROVE, "run_id": run_id},
             permission="write",
@@ -465,7 +465,7 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.post(api_path("active_approve"))
     async def approve_active_delegation(request: ActiveApprovalRequest) -> dict:
-        result = await capabilities.invoke(
+        result = await api_capabilities.invoke(
             "approval.resolve",
             {"decision": APPROVAL_DECISION_APPROVE, "code": request.code},
             permission="write",
@@ -487,7 +487,7 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.post(api_path("active_reject"))
     async def reject_active_delegation(request: ActiveApprovalRequest) -> dict:
-        result = await capabilities.invoke(
+        result = await api_capabilities.invoke(
             "approval.resolve",
             {"decision": APPROVAL_DECISION_REJECT, "code": request.code},
             permission="write",

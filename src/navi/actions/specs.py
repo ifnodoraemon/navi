@@ -1,34 +1,7 @@
 from ..approval_contract import APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT
-from ..tools import ToolSpec
+from ..tools import API_CONTEXT, ToolSpec
 
 ACTION_SPECS = [
-    ToolSpec(
-        name="scratchpad.update",
-        capability_class="memory",
-        execution_contexts=("turn", "actuator", "react", "workflow_step"),
-        description="""Updates the dynamic scratchpad that acts as the agent's working memory.""",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The full markdown content to write to the scratchpad.",
-                },
-            },
-            "required": ["content"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "scratchpad_updated": {"type": "boolean"},
-                "content": {"type": "string"},
-            },
-        },
-        facts_only=True,
-        mutates=True,
-        permission="write",
-        source="action",
-    ),
     ToolSpec(
         name="final.answer",
         capability_class="conversation",
@@ -345,7 +318,7 @@ ACTION_SPECS = [
     ToolSpec(
         name="approval.resolve",
         capability_class="approval",
-        execution_contexts=("turn", "workflow_step"),
+        execution_contexts=(API_CONTEXT,),
         description="""Resolve a pending approval by explicit code, current run id, or an explicit visible approval selection.""",
         input_schema={
             "type": "object",

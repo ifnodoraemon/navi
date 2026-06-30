@@ -59,14 +59,14 @@ class WorkflowStepProvider:
 
 
 @pytest.mark.asyncio
-async def test_remote_connector_full_permissions_but_execution_gated(
+async def test_remote_connector_prepare_allowlist_blocks_execution_and_cleanup(
     tmp_path: Path,
 ) -> None:
-    """Remote connectors have full permissions to governance/read tools
-    (auto-loaded from declared specs, no hand-maintained allowlist). Only
-    direct-OS classes are blocked from the live remote path. delegate.run is
-    invokable but fails without an execution grant — the approval gate still
-    holds even with full connector permissions."""
+    """Remote connectors expose an explicit preparation/read allowlist.
+
+    Execution and cleanup are not remote model syscalls by default; explicit
+    approval/control paths handle those state transitions.
+    """
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     context = CapabilityContext(
         home=tmp_path,
@@ -90,8 +90,6 @@ async def test_remote_connector_full_permissions_but_execution_gated(
     assert spawned.ok is True
     assert spawned.run_id
 
-    # delegate.run is invokable from remote (full permissions), but without
-    # an execution grant (approval) it fails — the approval gate holds.
     run_result = await registry.invoke(
         "delegate.run",
         {"run_id": spawned.run_id},
@@ -99,42 +97,29 @@ async def test_remote_connector_full_permissions_but_execution_gated(
         context=context,
     )
     assert run_result.ok is False
+    assert run_result.error_reason == "remote_tool_not_allowed"
 
-    # A run stuck in the transient ``pending`` state must be deletable from a
-    # remote surface, otherwise it is an undeletable, unapprovable, uncompletable
-    # dead end (the 13 ``delegate.delete`` failures observed in production).
     pending_delete = await registry.invoke(
         "delegate.delete",
         {"run_id": spawned.run_id, "reason": "remote cleanup attempt"},
         permission="write",
         context=context,
     )
-    assert pending_delete.ok is True
-    assert RunStore(tmp_path).get(spawned.run_id) is None
+    assert pending_delete.ok is False
+    assert pending_delete.error_reason == "remote_tool_not_allowed"
+    assert RunStore(tmp_path).get(spawned.run_id) is not None
 
-    # A failed run remains deletable from remote.
-    failed_spawn = await registry.invoke(
-        "delegate.spawn",
-        {
-            "objective": "Prepare another tracked task",
-            "context": "Remote connector requested tracked work.",
-            "plan": "Prepare first; execution needs approval.",
-            "success_criteria": "Task is tracked and governed.",
-        },
-        permission="prepare",
-        context=context,
-    )
     runs = RunStore(tmp_path)
-    runs.update_run(failed_spawn.run_id, status="failed")
+    runs.update_run(spawned.run_id, status="failed")
     failed_delete = await registry.invoke(
         "delegate.delete",
-        {"run_id": failed_spawn.run_id, "reason": "remove failed delegation record"},
+        {"run_id": spawned.run_id, "reason": "remove failed delegation record"},
         permission="write",
         context=context,
     )
-
-    assert failed_delete.ok is True
-    assert runs.get(failed_spawn.run_id) is None
+    assert failed_delete.ok is False
+    assert failed_delete.error_reason == "remote_tool_not_allowed"
+    assert runs.get(spawned.run_id) is not None
 
 
 @pytest.mark.asyncio

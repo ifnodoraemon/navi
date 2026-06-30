@@ -125,11 +125,10 @@ class ToolSpec:
     mutates: bool = False
     permission: str = "read"
     source: str = "core"
-    # Governance primitives (approval.request/approval.resolve) carry their
-    # own first-level guard (the user-supplied approval code) and must not be
-    # suspended by the very approval mechanism they implement — that creates
-    # an infinite approval loop. Declared per-spec so the exemption is
-    # data-driven, not a hardcoded name set (principle 1.1/6).
+    # Governance primitives carry their own first-level guard and must not be
+    # suspended by the approval mechanism they implement — that creates an
+    # infinite approval loop. Declared per-spec so the exemption is data-driven,
+    # not a hardcoded name set (principle 1.1/6).
     governance_exempt: bool = False
 
     def __post_init__(self) -> None:

@@ -37,31 +37,7 @@ from .trace import TraceStore
 
 logger = logging.getLogger("navi.engine")
 
-# Public engine exports.
 __all__ = ["AgentTurnResult", "HernessEngine"]
-
-
-def _fact_text(facts: dict[str, Any], key: str) -> str:
-    value = facts.get(key)
-    return str(value).strip() if value is not None else ""
-
-
-def _completion_detail_parts(facts: dict[str, Any]) -> list[str]:
-    parts: list[str] = []
-    for key in (
-        "run_id",
-        "watch_id",
-        "deleted_count",
-        "remaining_count",
-        "approval_status",
-        "run_status",
-        "cron",
-        "next_run_text",
-    ):
-        value = _fact_text(facts, key)
-        if value:
-            parts.append(f"{key}={value}")
-    return parts
 
 
 class HernessEngine(EnginePhasesMixin):
@@ -122,25 +98,8 @@ class HernessEngine(EnginePhasesMixin):
         text = result.text.strip()
         if text and not text.startswith(("{", "[")):
             return text
-        return HernessEngine._completion_fact_summary(result.action, facts)
-
-    @staticmethod
-    def _completion_fact_summary(action: str, facts: dict[str, Any]) -> str:
-        if not isinstance(facts, dict):
-            return ""
-        entity_type = _fact_text(facts, "entity_type")
-        state_transition = _fact_text(facts, "state_transition")
-        if entity_type and state_transition:
-            entity_id = _fact_text(facts, "entity_id")
-            base = f"Completed: {entity_type} {state_transition}"
-            if entity_id:
-                base += f" ({entity_id})"
-            details = _completion_detail_parts(facts)
-            if details:
-                base += f" [{', '.join(details)}]"
-            return f"{base}."
-        if facts.get("completion_evidence") is True:
-            return f"Completed: {action}."
+        # No surface message and no usable text. The runtime must not synthesize
+        # a natural-language completion on the model's behalf.
         return ""
 
     def _initialize_turn(
@@ -575,7 +534,8 @@ class HernessEngine(EnginePhasesMixin):
         # Principle 12: reload durable constraints at the start of every step
         durable_constraints = self.runtime.memory.render_durable_constraints()
         planner_specs = self.capabilities.planner_specs(
-            permission_ceiling=context.permission_ceiling
+            permission_ceiling=context.permission_ceiling,
+            context=context,
         )
         valid_tools = {spec.name for spec in planner_specs}
 

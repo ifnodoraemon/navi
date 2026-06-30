@@ -17,6 +17,7 @@ def _load_spec() -> ConnectorSpec:
     raw = yaml.safe_load(
         (Path(__file__).with_name("specs") / "connector.yaml").read_text(encoding="utf-8")
     )
+    approval_commands = raw.get("approval_commands") or {}
     return ConnectorSpec(
         name=str(raw["name"]),
         surface=str(raw["surface"]),
@@ -24,6 +25,12 @@ def _load_spec() -> ConnectorSpec:
         status_description=str(raw["status_description"]),
         session_alias_prefix=str(raw["session_alias_prefix"]),
         local_source=str(raw["local_source"]),
+        approval_approve_commands=tuple(
+            str(item) for item in approval_commands.get("approve") or ()
+        ),
+        approval_reject_commands=tuple(
+            str(item) for item in approval_commands.get("reject") or ()
+        ),
     )
 
 

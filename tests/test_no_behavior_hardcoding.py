@@ -75,6 +75,56 @@ def test_memory_store_requires_source_reason_and_provenance(tmp_path: Path) -> N
     assert item.provenance == "manual"
 
 
+def test_scratchpad_prompt_injection_surface_is_removed() -> None:
+    forbidden = ("scratchpad.update", "Dynamic Scratchpad", "scratchpad.md")
+    hits: list[str] = []
+    for rel in (
+        "src/navi/actions/specs.py",
+        "src/navi/actions/memory.py",
+        "src/navi/runtime.py",
+        "src/navi/specs_data.py",
+    ):
+        text = (PROJECT_ROOT / rel).read_text(encoding="utf-8")
+        for token in forbidden:
+            if token in text:
+                hits.append(f"{rel}:{token}")
+
+    assert hits == []
+
+
+def test_approval_resolution_is_not_model_visible_by_default(tmp_path: Path) -> None:
+    from navi.capabilities import build_capability_registry
+    from navi.tools import API_CONTEXT
+
+    turn_registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    api_registry = build_capability_registry(
+        tmp_path, project_dir=tmp_path, execution_context=API_CONTEXT
+    )
+
+    assert turn_registry.get("approval.resolve") is None
+    assert api_registry.get("approval.resolve") is not None
+
+
+def test_remote_source_policy_filters_planner_manifest(tmp_path: Path) -> None:
+    from navi.capabilities import build_capability_registry
+    from navi.capabilities_types import CapabilityContext
+
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    specs = registry.planner_specs(
+        context=CapabilityContext(
+            home=tmp_path,
+            source="connector.weixin",
+            permission_ceiling="write",
+            workspace=str(tmp_path),
+        )
+    )
+    names = {spec.name for spec in specs}
+
+    assert "delegate.spawn" in names
+    assert "delegate.delete" not in names
+    assert "delegate.run" not in names
+    assert "approval.resolve" not in names
+
 
 def _repo_text_files() -> list[tuple[Path, str]]:
     files: list[tuple[Path, str]] = []
@@ -87,7 +137,6 @@ def _repo_text_files() -> list[tuple[Path, str]]:
             continue
         files.append((path, path.read_text(encoding="utf-8", errors="ignore")))
     return files
-
 
 
 def test_core_specs_data_has_no_approval_syntax() -> None:

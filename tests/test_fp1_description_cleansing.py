@@ -131,6 +131,7 @@ def test_memory_prompts_extract_candidates_not_governance_policy() -> None:
     assert "Focus heavily" not in data
     assert "should be learned" not in data
     assert "memory store decides promotion status" in data
+    assert "scratchpad" not in data.lower()
 
 
 def test_execution_prompts_do_not_encode_action_flow_policy() -> None:

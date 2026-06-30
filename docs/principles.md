@@ -15,6 +15,7 @@ Navi gives the model a decision surface, not a script. The model chooses the nex
 - Product behavior must not be hardcoded into prompts or routing tables.
 - Capability discovery happens at runtime from declared specs, not from keyword matching.
 - Keywords may parse narrow structured facts but must not define product behavior.
+- User natural language must not be parsed into intent, tool choice, or action by code. Code may only parse machine protocols and explicit control envelopes such as JSON, config, schemas, URLs, approval codes, or connector-local commands declared by a connector spec.
 - Operates: Core Principles 1, 1.1, 1.2, 3, 3.1.
 
 ### FP-2. Tools Are Fact Sensors, Not Policy Sources

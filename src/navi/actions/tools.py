@@ -97,7 +97,10 @@ class ToolsListCapability:
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        specs = self.registry.planner_specs(permission_ceiling=context.permission_ceiling)
+        specs = self.registry.planner_specs(
+            permission_ceiling=context.permission_ceiling,
+            context=context,
+        )
         facts = {
             "category": "tools",
             "definition": "callable capabilities available in the current permission and source context",

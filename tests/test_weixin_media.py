@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from navi.runtime import AgentRuntime
+from navi.runs import Run
 from navi.weixin.client import ITEM_FILE, MEDIA_FILE, WeixinClient
 from navi.weixin.config import WeixinConfig
 from navi.weixin.models import WeixinAccount, WeixinUpdate
@@ -130,6 +131,17 @@ class StaticIngress:
         return self.text
 
 
+class StaticDaemon:
+    def __init__(self, tasks: list[Run]) -> None:
+        self._tasks = tasks
+
+    async def process_watches_once(self) -> list[dict[str, Any]]:
+        return []
+
+    async def process_queue_once(self) -> list[Run]:
+        return self._tasks
+
+
 @pytest.mark.asyncio
 async def test_service_sends_media_directive_from_weixin_outbox(tmp_path: Path):
     outbox = tmp_path / "weixin" / "outbox"
@@ -161,3 +173,36 @@ async def test_service_sends_media_directive_from_weixin_outbox(tmp_path: Path):
     assert client.files[0]["file_path"] == report.resolve()
     assert client.files[0]["context_token"] == "ctx"
     assert client.messages[0]["text"] == "已生成报告。"
+
+
+@pytest.mark.asyncio
+async def test_background_task_without_surface_text_does_not_synthesize_reply(tmp_path: Path):
+    client = CaptureWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.daemon = StaticDaemon(
+        [
+            Run(
+                id="run-empty",
+                title="empty completed task",
+                status="completed",
+                created_at=1.0,
+                updated_at=1.0,
+                prompt="do work",
+                source="weixin",
+                peer_id="wx-user",
+                sender_id="wx-user",
+            )
+        ]
+    )
+
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    assert client.messages == []

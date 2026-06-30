@@ -67,7 +67,7 @@ Shared connector requirements:
 - Connector packages must expose status facts without secrets.
 - Connector ingress must route plain messages through the bounded observe/plan loop.
 - Connector sessions must be explicit and isolated by connector/sender identity.
-- Connector command syntax and approval phrasing are connector affordances, not base prompt behavior.
+- Connector command syntax and approval phrasing are connector affordances, not base prompt behavior. Connector code may validate explicit control envelopes, such as a declared approval command plus code, but must not parse natural-language user messages into intent, tool choice, or actions.
 - Remote tool visibility must pass through `ConnectorToolPolicy` with permission ceilings, allowed tools, blocked capability classes, and audit facts.
 - Remote connector ingress can propose and inspect workflows by default, but must not approve or run mutating workflows unless explicit policy enables it.
 

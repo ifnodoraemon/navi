@@ -8,8 +8,9 @@ clarification.
 
 Current contract:
 - delegate.spawn's description states only capability semantics.
-- Remote connector policy exposes governed delegation while blocking direct OS
-  classes; the planner prompt must not carry remote-surface routing policy.
+- Remote connector policy explicitly exposes governed delegation while blocking
+  direct OS classes; the planner prompt must not carry remote-surface routing
+  policy.
 """
 
 from __future__ import annotations
@@ -49,6 +50,8 @@ def test_delegate_spawn_description_does_not_carry_routing_policy() -> None:
 
 def test_remote_surface_local_access_is_declared_by_policy_not_prompt() -> None:
     policy = REMOTE_CONNECTOR_TOOL_POLICY
+    assert policy.permission_ceiling == "prepare"
+    assert "delegate.spawn" in policy.allowed_tools
     assert "delegate.spawn" not in policy.blocked_tools
     assert "delegation" not in policy.blocked_capability_classes
     assert {"file.read", "directory", "shell"} <= REMOTE_BLOCKED_CAPABILITY_CLASSES

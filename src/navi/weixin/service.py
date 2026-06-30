@@ -373,8 +373,18 @@ class WeixinService:
                     "event": "run_execution_finished",
                     "task": asdict(task),
                 },
-                fallback=self._task_fallback(task),
+                fallback=self._task_surface_text(task),
             )
+            if not text.strip():
+                self.record_event(
+                    "background.skipped",
+                    peer_id=task.peer_id,
+                    background_event="run_execution_finished",
+                    reason="empty_surface_text",
+                    run_id=task.id,
+                    status=task.status,
+                )
+                continue
             await self._send_reply(
                 account=account,
                 peer_id=task.peer_id,
@@ -393,7 +403,7 @@ class WeixinService:
             raw_result = str(facts.get("raw_result") or "").strip()
             if raw_result:
                 return redact_secrets(raw_result)
-        stripped = fallback.strip() or json.dumps(facts, ensure_ascii=False, sort_keys=True)
+        stripped = fallback.strip()
         return redact_secrets(stripped)
 
     async def _send_reply(
@@ -452,13 +462,14 @@ class WeixinService:
         return None
 
     @staticmethod
-    def _task_fallback(task: Run) -> str:
+    def _task_surface_text(task: Run) -> str:
         # awaiting_approval carries the re-approval prompt (with the fresh code)
         # in result_summary; surface it verbatim rather than the empty error.
         if task.status in ("awaiting_approval", "blocked"):
-            return (task.result_summary or "").strip() or f"Run `{task.id}` {task.status}。"
-        details = task.result_summary if task.status == "completed" else task.error
-        return f"Run `{task.id}` {task.status}. {details or ''}".strip()
+            return (task.result_summary or "").strip()
+        if task.status == "completed":
+            return (task.result_summary or "").strip()
+        return (task.error or "").strip()
 
     def _resolve_account(self) -> WeixinAccount:
         if self.config.account_id:

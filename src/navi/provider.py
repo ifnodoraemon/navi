@@ -82,9 +82,7 @@ class OpenAICompatibleProvider:
         structured_format = _structured_response_format(self.spec, output_schema)
         if structured_format:
             payload["response_format"] = structured_format
-        outbound_messages = _messages_for_response_format(
-            messages, structured_format, output_schema
-        )
+        outbound_messages = _messages_for_response_format(messages, structured_format)
         payload["messages"] = [
             {"role": msg.role, "content": msg.content} for msg in outbound_messages
         ]
@@ -616,16 +614,10 @@ def _anthropic_structured_tool(
 def _messages_for_response_format(
     messages: list[ChatMessage],
     response_format: dict[str, Any] | None,
-    output_schema: dict[str, Any] | None = None,
 ) -> list[ChatMessage]:
     if not response_format or response_format.get("type") != "json_object":
         return messages
-    instructions = ["JSON mode is enabled for this API request."]
-    if output_schema:
-        instructions.append(
-            "You MUST return ONLY a JSON object that strictly matches the following JSON Schema:"
-        )
-        instructions.append(json.dumps(output_schema, ensure_ascii=False, indent=2))
+    instructions = ["JSON mode is enabled for this API request. Return a JSON object."]
     return [
         ChatMessage(
             "system",

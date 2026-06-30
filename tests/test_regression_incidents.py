@@ -382,7 +382,7 @@ class _StructuredJourneyProvider:
         )
 
 
-class _DeleteExpiredProvider:
+class _RemoteDeleteUnavailableProvider:
     def __init__(self) -> None:
         self.planner_calls = 0
         self.responder_calls = 0
@@ -396,195 +396,21 @@ class _DeleteExpiredProvider:
     ) -> str:
         if role == "planner" and output_schema is not None:
             self.planner_calls += 1
-            return json.dumps(
-                {
-                    "tool": "delegate.delete",
-                    "permission": "write",
-                    "args": {
-                        "status": "expired",
-                        "kind": "delegation",
-                        "reason": "delete expired tasks",
-                    },
-                    "model_role": "responder",
-                    "confidence": 1.0,
-                    "reason": "clean up expired delegation runs",
-                }
-            )
-        if role == "responder":
-            self.responder_calls += 1
             content = "\n".join(message.content for message in messages)
-            assert '"cleanup_complete": true' in content
-            assert '"deleted_count": 1' in content
-            return "已删除 1 个过期任务。"
-        raise AssertionError(f"unexpected role: {role}")
-
-    def list_roles(self) -> list[str]:
-        return ["planner", "responder"]
-
-
-class _ApproveCodeProvider:
-    def __init__(self, code: str) -> None:
-        self.code = code
-        self.planner_calls = 0
-        self.responder_calls = 0
-
-    async def complete_for(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        *,
-        output_schema: dict | None = None,
-    ) -> str:
-        if role == "planner" and output_schema is not None:
-            self.planner_calls += 1
-            return json.dumps(
-                {
-                    "tool": "approval.resolve",
-                    "permission": "write",
-                    "args": {
-                        "decision": "approve",
-                        "selection": "explicit_code",
-                        "code": self.code,
-                    },
-                    "model_role": "planner",
-                    "confidence": 1.0,
-                    "reason": "approve explicit code",
-                }
-            )
-        if role in {"planner", "responder"}:
-            self.responder_calls += 1
-            content = "\n".join(message.content for message in messages)
-            assert '"approval_status": "approved"' in content
-            assert '"completion_evidence": true' in content
-            return "批准成功，任务已进入队列。"
-        raise AssertionError(f"unexpected role: {role}")
-
-    def list_roles(self) -> list[str]:
-        return ["planner", "responder"]
-
-
-class _ApproveAllVisibleProvider:
-    def __init__(self) -> None:
-        self.planner_calls = 0
-        self.responder_calls = 0
-
-    async def complete_for(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        *,
-        output_schema: dict | None = None,
-    ) -> str:
-        if role == "planner" and output_schema is not None:
-            self.planner_calls += 1
-            return json.dumps(
-                {
-                    "tool": "approval.resolve",
-                    "permission": "write",
-                    "args": {
-                        "decision": "approve",
-                        "selection": "all_visible",
-                        "approval_evidence": "全部批准",
-                    },
-                    "model_role": "planner",
-                    "confidence": 1.0,
-                    "reason": "approve all visible approvals",
-                }
-            )
-        if role == "responder":
-            self.responder_calls += 1
-            return "approved"
-        raise AssertionError(f"unexpected role: {role}")
-
-    def list_roles(self) -> list[str]:
-        return ["planner", "responder"]
-
-
-class _ApproveCodeNotInInputProvider(_ApproveCodeProvider):
-    def __init__(self, code: str) -> None:
-        self.code = code
-        self.planner_calls = 0
-        self.responder_calls = 0
-
-    async def complete_for(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        *,
-        output_schema: dict | None = None,
-    ) -> str:
-        if role == "planner" and output_schema is not None:
-            self.planner_calls += 1
-            if self.planner_calls == 1:
-                return json.dumps(
-                    {
-                        "tool": "approval.resolve",
-                        "permission": "write",
-                        "args": {
-                            "decision": "approve",
-                            "selection": "explicit_code",
-                            "code": self.code,
-                        },
-                        "model_role": "planner",
-                        "confidence": 1.0,
-                        "reason": "try visible approval code",
-                    }
-                )
-            content = "\n".join(message.content for message in messages)
-            assert "approval_code_not_in_user_input" in content
-            assert "visible_pending_approvals" in content
+            assert "delegate.delete" not in content
             return json.dumps(
                 {
                     "tool": "final.answer",
                     "permission": "read",
-                    "args": {"message": "当前输入没有包含审批码；我只看到了待审批事实。"},
+                    "args": {"message": "remote_delete_not_available"},
                     "model_role": "responder",
                     "confidence": 1.0,
-                    "reason": "report approval facts",
+                    "reason": "delete capability is not visible on remote surface",
                 }
             )
-        raise AssertionError(f"unexpected role: {role}")
-
-
-class _ApproveLatestVisibleBatchProvider:
-    def __init__(self) -> None:
-        self.planner_calls = 0
-
-    async def complete_for(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        *,
-        output_schema: dict | None = None,
-    ) -> str:
-        if role == "planner" and output_schema is not None:
-            self.planner_calls += 1
-            if self.planner_calls == 1:
-                return json.dumps(
-                    {
-                        "tool": "approval.resolve",
-                        "permission": "write",
-                        "args": {
-                            "decision": "approve",
-                            "selection": "latest_visible_batch",
-                        },
-                        "model_role": "planner",
-                        "confidence": 1.0,
-                        "reason": "try visible approval selection",
-                    }
-                )
-            content = "\n".join(message.content for message in messages)
-            assert "approval_code_required_in_user_input" in content
-            return json.dumps(
-                {
-                    "tool": "final.answer",
-                    "permission": "read",
-                    "args": {"message": "需要当前输入中的审批码。"},
-                    "model_role": "responder",
-                    "confidence": 1.0,
-                    "reason": "report approval facts",
-                }
-            )
+        if role == "responder":
+            self.responder_calls += 1
+            return "remote_delete_not_available"
         raise AssertionError(f"unexpected role: {role}")
 
     def list_roles(self) -> list[str]:
@@ -861,7 +687,7 @@ async def test_executor_ask_result_blocks_run_instead_of_marking_completed(
 
 
 @pytest.mark.asyncio
-async def test_expired_task_cleanup_finishes_from_completion_facts(tmp_path):
+async def test_remote_expired_task_cleanup_does_not_expose_delete(tmp_path):
     runs = RunStore(tmp_path)
     expired = runs.create(
         "在用户电脑上找到简历文件并发送给用户",
@@ -872,7 +698,7 @@ async def test_expired_task_cleanup_finishes_from_completion_facts(tmp_path):
         workspace=str(tmp_path),
         status="expired",
     )
-    provider = _DeleteExpiredProvider()
+    provider = _RemoteDeleteUnavailableProvider()
     engine = HernessEngine(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
@@ -888,128 +714,15 @@ async def test_expired_task_cleanup_finishes_from_completion_facts(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.text == (
-        "Completed: bulk_delete completed (runs) [deleted_count=1, remaining_count=0]."
-    )
+    assert result.text == "remote_delete_not_available"
     assert result.terminal is True
-    assert runs.get(expired.id) is None
+    assert runs.get(expired.id) is not None
     assert provider.planner_calls == 1
     assert provider.responder_calls == 0
     events = TraceStore(tmp_path).list_events(result.trace_id)
     phases = [event.phase for event in events]
     assert "runtime.converged" not in phases
-    loop_decisions = [
-        json.loads(event.output_json)
-        for event in events
-        if event.phase == "loop.decision"
-    ]
-    assert any(
-        item["decision"] == "finalize" and item["reason"] == "completion_evidence_true"
-        for item in loop_decisions
-    )
-
-
-@pytest.mark.asyncio
-async def test_approval_resolve_finishes_from_completion_facts(tmp_path):
-    runs = RunStore(tmp_path)
-    run = runs.create(
-        "approve gated task",
-        kind="delegation",
-        source="weixin",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        workspace=str(tmp_path),
-        status="awaiting_approval",
-    )
-    approval = runs.create_approval(
-        run_id=run.id,
-        peer_id="peer-1",
-        sender_id="sender-1",
-    )
-    provider = _ApproveCodeProvider(approval.code)
-    engine = HernessEngine(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
-
-    result = await engine.handle(
-        f"批准 {approval.code}",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
-    )
-
-    assert result.text.startswith("approval_request status=approved")
-    assert run.id in result.text
-    assert runs.get(run.id).status == "queued"
-    assert provider.planner_calls == 1
-    assert provider.responder_calls == 0
-    events = TraceStore(tmp_path).list_events(result.trace_id)
-    phases = [event.phase for event in events]
-    assert "runtime.converged" not in phases
-    loop_decisions = [
-        json.loads(event.output_json)
-        for event in events
-        if event.phase == "loop.decision"
-    ]
-    assert any(
-        item["decision"] == "finalize" and item["reason"] == "completion_evidence_true"
-        for item in loop_decisions
-    )
-
-
-@pytest.mark.asyncio
-async def test_approval_resolve_all_visible_finishes_from_batch_completion_facts(tmp_path):
-    runs = RunStore(tmp_path)
-    for title in ("task one", "task two"):
-        run = runs.create(
-            title,
-            kind="delegation",
-            source="weixin",
-            peer_id="peer-1",
-            sender_id="sender-1",
-            workspace=str(tmp_path),
-            status="awaiting_approval",
-        )
-        runs.create_approval(
-            run_id=run.id,
-            peer_id="peer-1",
-            sender_id="sender-1",
-        )
-    provider = _ApproveAllVisibleProvider()
-    engine = HernessEngine(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
-
-    result = await engine.handle(
-        "全部批准",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
-    )
-
-    assert result.action == "execute:system.task_complete"
-    assert result.ok is True
-    assert result.text == (
-        "approval_batch decision=approve selection=all_visible resolved_count=2 failed_count=0"
-    )
-    assert provider.planner_calls == 1
-    assert provider.responder_calls == 0
-    assert {approval.status for approval in runs.list_approvals(limit=10)} == {"approved"}
-    events = TraceStore(tmp_path).list_events(result.trace_id)
-    assert events[-1].message == result.text
-    assert events[-1].ok is True
-    assert "loop_converged" not in events[-1].message
-
-
-
+    assert all(event.tool != "delegate.delete" for event in events)
 
 
 @pytest.mark.asyncio

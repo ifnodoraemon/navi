@@ -54,7 +54,6 @@ coverage:
   - watch.create
   - delegate.delete
   - watch.delete
-  - approval.resolve
   - delegate.retry
   - connector.telegram.status
   - connector.weixin.status
@@ -729,26 +728,6 @@ cases:
       permission: prepare
     - tool: workflow.propose
       permission: prepare
-- id: approve_code
-  category: approval_lifecycle
-  source: approval
-  message: "\u6279\u51C6 123456"
-  expect:
-    tool: approval.resolve
-    permission: write
-    args:
-      decision: approve
-      code: '123456'
-- id: reject_code
-  category: approval_lifecycle
-  source: approval
-  message: "\u62D2\u7EDD 123456"
-  expect:
-    tool: approval.resolve
-    permission: write
-    args:
-      decision: reject
-      code: '123456'
 - id: request_elevation_when_missing_permission
   category: skill_permission_safety
   source: chat

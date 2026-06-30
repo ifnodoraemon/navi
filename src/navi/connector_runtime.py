@@ -20,13 +20,24 @@ if TYPE_CHECKING:
 HEARTBEAT_INTERVAL_SECONDS = 20.0
 
 
-# The remote-connector security boundary is a *blocklist* of direct-OS
-# capability classes, not a hand-maintained per-tool allowlist. New governance
-# / read tools auto-load into the remote manifest without a central list edit;
-# direct local-environment classes are blocked from the live remote path since
-# they would let a prompt-injected message inspect or mutate local state without
-# the delegate.spawn → approval gate. delegate.spawn remains the governed path
-# to local OS access.
+# The remote-connector security boundary is an explicit preparation/read
+# allowlist. Remote surfaces can converse, ask, propose or inspect governed
+# work, and create prepared delegation/watch state. New mutating capabilities do
+# not become remotely visible unless the policy names them.
+REMOTE_ALLOWED_TOOLS = frozenset(
+    (
+        "final.answer",
+        "ask.user",
+        "delegate.spawn",
+        "delegate.prepare",
+        "delegate.list",
+        "tools.list",
+        "watch.create",
+        "workflow.propose",
+        "workflow.status",
+    )
+)
+
 REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(
     (
         "browser",
@@ -80,8 +91,8 @@ class ConnectorToolPolicy:
 
 REMOTE_CONNECTOR_TOOL_POLICY = ConnectorToolPolicy(
     name="remote_connector_default",
-    permission_ceiling="write",
-    allowed_tools=frozenset(),
+    permission_ceiling="prepare",
+    allowed_tools=REMOTE_ALLOWED_TOOLS,
     blocked_tools=REMOTE_BLOCKED_TOOLS,
     blocked_capability_classes=REMOTE_BLOCKED_CAPABILITY_CLASSES,
     reason_code="remote_connector_policy",
