@@ -353,6 +353,48 @@ class TraceStore:
             )
             if len(metas) >= limit:
                 break
+
+        if metas:
+            import json
+            trace_ids = [m["trace_id"] for m in metas]
+            placeholders = ",".join("?" * len(trace_ids))
+            with connect(self.db_path) as conn:
+                first_events = conn.execute(
+                    f"""
+                    SELECT trace_id, input_json, message
+                    FROM trace_events
+                    WHERE trace_id IN ({placeholders}) AND phase IN ('channel.ingress', 'turn.start')
+                    ORDER BY created_at ASC
+                    """,
+                    trace_ids,
+                ).fetchall()
+
+            first_by_trace = {}
+            for row in first_events:
+                tid = row[0]
+                if tid not in first_by_trace:
+                    first_by_trace[tid] = (row[1], row[2])
+
+            input_hashes = {v[0] for v in first_by_trace.values() if v[0] and v[0].startswith("blob:")}
+            blobs = self._fetch_blobs(input_hashes) if input_hashes else {}
+
+            for meta in metas:
+                tid = meta["trace_id"]
+                preview_text = ""
+                if tid in first_by_trace:
+                    raw_input, msg = first_by_trace[tid]
+                    if raw_input and raw_input.startswith("blob:"):
+                        raw_input = blobs.get(raw_input, raw_input)
+                    if raw_input and raw_input.strip() and raw_input != "{}":
+                        try:
+                            parsed = json.loads(raw_input)
+                            preview_text = parsed.get("text", parsed.get("message", msg))
+                        except Exception:
+                            preview_text = msg
+                    else:
+                        preview_text = msg
+                meta["preview_text"] = str(preview_text or "")
+
         return metas
 
     def list_trace_ids(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None) -> list[str]:
@@ -547,7 +589,7 @@ def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRu
         id=trace_id,
         trace_id=trace_id,
         parent_run_id="",
-        name="trace",
+        name="Trace",
         run_type=TraceRunType.CHAIN,
         status=TraceRunStatus.SUCCESS
         if draft.outcome == str(TraceOutcome.SUCCESS)
@@ -564,8 +606,122 @@ def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRu
             "session_id": first_session_id,
         },
     )
-    return [root, *(_event_run_view(event, parent_run_id=trace_id) for event in events)]
 
+    views: list[TraceRunView] = [root]
+    current_turn_id: str = trace_id
+    current_step_id: str | None = None
+    pending_llm_run: TraceRunView | None = None
+    step_count = 0
+
+    for event in events:
+        if event.phase == str(TracePhase.CHANNEL_INGRESS):
+            ev_view = replace(
+                _event_run_view(event, parent_run_id=trace_id),
+                name="Channel Receive",
+                run_type=TraceRunType.CHAIN,
+            )
+            views.append(ev_view)
+            continue
+
+        if event.phase == str(TracePhase.CHANNEL_EGRESS):
+            ev_view = replace(
+                _event_run_view(event, parent_run_id=trace_id),
+                name="Channel Send",
+                run_type=TraceRunType.CHAIN,
+            )
+            views.append(ev_view)
+            continue
+
+        if event.phase == str(TracePhase.TURN_START):
+            current_turn_id = f"turn_{event.id}"
+            turn_view = replace(
+                _event_run_view(event, parent_run_id=trace_id),
+                id=current_turn_id,
+                name="Turn",
+                run_type=TraceRunType.CHAIN,
+            )
+            views.append(turn_view)
+            current_step_id = None
+            step_count = 0
+            continue
+
+        if event.phase == str(TracePhase.PLANNER_CALL_START):
+            step_count += 1
+            current_step_id = f"step_{event.id}"
+            step_view = TraceRunView(
+                id=current_step_id,
+                trace_id=trace_id,
+                parent_run_id=current_turn_id,
+                name=f"Step {step_count}",
+                run_type=TraceRunType.CHAIN,
+                status=TraceRunStatus.SUCCESS,
+                start_time=event.created_at,
+                end_time=event.created_at,
+            )
+            views.append(step_view)
+
+            pending_llm_run = replace(
+                _event_run_view(event, parent_run_id=current_step_id),
+                id=f"llm_{event.id}",
+                name="Planner Reasoning",
+                run_type=TraceRunType.LLM,
+            )
+            continue
+
+        if event.phase in (str(TracePhase.PLANNER_SYSCALL), str(TracePhase.PLANNER_CALL_ERROR), str(TracePhase.PLANNER_PARSE_ERROR)):
+            if pending_llm_run:
+                pending_llm_run = replace(
+                    pending_llm_run,
+                    end_time=event.created_at,
+                    outputs=_event_output(event),
+                    status=_event_trace_run_status(event),
+                )
+                views.append(pending_llm_run)
+                pending_llm_run = None
+            else:
+                parent = current_step_id or current_turn_id
+                views.append(_event_run_view(event, parent_run_id=parent))
+            continue
+
+        parent = current_step_id or current_turn_id
+        ev_view = _event_run_view(event, parent_run_id=parent)
+
+        if event.phase == LOOP_DECISION_PHASE:
+            decision_val = ev_view.outputs.get("decision", "unknown")
+            ev_view = replace(
+                ev_view,
+                name=f"Decision: {decision_val}",
+                run_type=TraceRunType.CHAIN,
+            )
+        elif event.phase == str(TracePhase.CAPABILITY_RESULT):
+            ev_view = replace(
+                ev_view,
+                name=f"Tool: {event.tool}" if event.tool else "Tool Execution",
+                run_type=TraceRunType.TOOL,
+            )
+
+        views.append(ev_view)
+
+    # Patch end times and status for grouping spans
+    # We iterate multiple times or do it from bottom-up
+    for _ in range(2):
+        for index, v in enumerate(views):
+            if v.run_type == TraceRunType.CHAIN and v.id != trace_id:
+                children = [c for c in views if c.parent_run_id == v.id]
+                if children:
+                    status = v.status
+                    if any(c.status == TraceRunStatus.ERROR for c in children):
+                        status = TraceRunStatus.ERROR
+                    elif any(c.status == "blocked" for c in children):
+                        status = "blocked"
+                    views[index] = replace(
+                        v,
+                        start_time=min(c.start_time for c in children),
+                        end_time=max(c.end_time for c in children),
+                        status=status,
+                    )
+
+    return views
 
 def _event_run_view(event: TraceEvent, *, parent_run_id: str) -> TraceRunView:
     return TraceRunView(

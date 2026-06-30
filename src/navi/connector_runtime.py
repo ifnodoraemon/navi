@@ -234,6 +234,7 @@ class ConnectorIngressRuntime:
                 source=event.source,
                 session_alias=event.session_alias,
                 intent_facts=event.facts,
+                trace_id=event.correlation_id,
             )
         )
 

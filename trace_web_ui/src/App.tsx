@@ -1,19 +1,19 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { format } from 'date-fns';
-import { Activity, Code, CheckCircle2, XCircle, Search, Clock, ChevronDown, ChevronRight, Zap, Copy, Check, RefreshCw, Timer, Hash, ShieldAlert, UserCheck } from 'lucide-react';
+import { Activity, Code, CheckCircle2, XCircle, Search, Clock, ChevronDown, ChevronRight, Zap, Copy, Check, RefreshCw, Timer, ShieldAlert, Layers, Inbox, Send } from 'lucide-react';
 import { JsonView } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 import ReactMarkdown from 'react-markdown';
-import type { TraceData, TraceEvent, TraceMeta } from './types';
+import type { TraceData, TraceMeta, TraceRunView } from './types';
 import './App.css';
 
 
-const CollapsibleJson = ({ title, jsonStr }: { title: string, jsonStr: string }) => {
-  const [isOpen, setIsOpen] = useState(false);
+const CollapsibleJson = ({ title, jsonStr, defaultOpen = false }: { title: string, jsonStr: string | object | null, defaultOpen?: boolean }) => {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
   const [copied, setCopied] = useState(false);
 
-  if (!jsonStr || jsonStr === '{}') return null;
+  if (jsonStr === null || jsonStr === undefined || jsonStr === '' || jsonStr === '{}') return null;
 
   const customJsonStyle = {
     container: 'jv-container',
@@ -36,11 +36,9 @@ const CollapsibleJson = ({ title, jsonStr }: { title: string, jsonStr: string })
     try {
       parsed = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
     } catch (e) {
-      // If it's an unquoted string or invalid JSON, treat the raw string as the value
       parsed = jsonStr;
     }
-    
-    // JsonView expects an object or array. If it's a primitive, wrap it nicely.
+
     if (typeof parsed !== 'object' || parsed === null) {
       parsed = { payload: parsed };
     }
@@ -50,10 +48,12 @@ const CollapsibleJson = ({ title, jsonStr }: { title: string, jsonStr: string })
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
-    let textToCopy = jsonStr;
+    let textToCopy = String(jsonStr);
     try {
       if (typeof jsonStr === 'string') {
         textToCopy = JSON.stringify(JSON.parse(jsonStr), null, 2);
+      } else {
+        textToCopy = JSON.stringify(jsonStr, null, 2);
       }
     } catch (e) {}
     navigator.clipboard.writeText(textToCopy);
@@ -63,7 +63,7 @@ const CollapsibleJson = ({ title, jsonStr }: { title: string, jsonStr: string })
 
   return (
     <div className="data-section">
-      <div className="data-title" onClick={() => setIsOpen(!isOpen)}>
+      <div className="data-title" onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }}>
         <div style={{ display: 'flex', alignItems: 'center' }}>
           {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           <Code size={14} style={{ marginRight: 6, marginLeft: 4 }} />
@@ -76,7 +76,7 @@ const CollapsibleJson = ({ title, jsonStr }: { title: string, jsonStr: string })
         )}
       </div>
       {isOpen && (
-        <div className="code-container glass-panel">
+        <div className="code-container glass-panel" onClick={e => e.stopPropagation()}>
           {renderJson()}
         </div>
       )}
@@ -84,27 +84,183 @@ const CollapsibleJson = ({ title, jsonStr }: { title: string, jsonStr: string })
   );
 };
 
+const RunNode = ({
+  run,
+  allRuns,
+  traceTotalDuration,
+  firstTime,
+  depth = 0,
+  autoExpand = false
+}: {
+  run: TraceRunView,
+  allRuns: TraceRunView[],
+  traceTotalDuration: number,
+  firstTime: number,
+  depth?: number,
+  autoExpand?: boolean
+}) => {
+  const [expanded, setExpanded] = useState(depth < 2 || autoExpand);
+
+  const children = allRuns.filter(r => r.parent_run_id === run.id).sort((a,b) => a.start_time - b.start_time);
+  const hasChildren = children.length > 0;
+
+  const eventStart = Math.max(0, run.start_time - firstTime);
+  const eventDuration = Math.max(0, run.end_time - run.start_time);
+  const leftPercent = traceTotalDuration > 0 ? (eventStart / traceTotalDuration) * 100 : 0;
+  const widthPercent = traceTotalDuration > 0 ? Math.max(0.5, (eventDuration / traceTotalDuration) * 100) : 100;
+
+  const isError = run.status === 'error';
+  const isBlocked = run.status === 'blocked';
+
+  const statusClass = isError ? 'error' : isBlocked ? 'blocked' : 'success';
+  let StatusIcon = isError ? XCircle : isBlocked ? ShieldAlert : CheckCircle2;
+  if (run.name === 'Channel Receive') StatusIcon = Inbox;
+  if (run.name === 'Channel Send') StatusIcon = Send;
+
+  // Custom renders based on run_type
+  let runContent = null;
+  if (!hasChildren && expanded) {
+    if (run.run_type === 'llm') {
+      const inputs = run.inputs || {};
+      const outputs = run.outputs || {};
+      const prompt = inputs.message || inputs.prompt || inputs.system_prompt;
+
+      runContent = (
+        <div className="run-details">
+          {prompt && (
+            <div className="message-box markdown-body" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '6px', marginBottom: '8px', borderLeft: '3px solid var(--text-secondary)' }}>
+              <div style={{ fontSize: '0.75rem', opacity: 0.6, marginBottom: 4, textTransform: 'uppercase' }}>Prompt</div>
+              <ReactMarkdown>{typeof prompt === 'string' ? prompt : JSON.stringify(prompt)}</ReactMarkdown>
+            </div>
+          )}
+          {outputs.text || outputs.message ? (
+             <div className="message-box markdown-body" style={{ background: 'rgba(0,0,0,0.3)', padding: '12px', borderRadius: '6px', borderLeft: '3px solid var(--accent-color)' }}>
+               <div style={{ fontSize: '0.75rem', opacity: 0.6, marginBottom: 4, textTransform: 'uppercase' }}>Completion</div>
+               <ReactMarkdown>{outputs.text || outputs.message}</ReactMarkdown>
+             </div>
+          ) : (
+             <CollapsibleJson title="LLM Output" jsonStr={outputs} defaultOpen={true} />
+          )}
+        </div>
+      );
+    } else if (run.run_type === 'tool') {
+      const args = run.inputs?.args || run.inputs;
+      const result = run.outputs;
+      runContent = (
+        <div className="run-details">
+          <CollapsibleJson title="Arguments" jsonStr={args} defaultOpen={true} />
+          <CollapsibleJson title="Result" jsonStr={result} defaultOpen={isError} />
+        </div>
+      );
+    } else {
+      // Default generic JSON view
+      runContent = (
+        <div className="run-details">
+          <CollapsibleJson title="Inputs" jsonStr={run.inputs} />
+          <CollapsibleJson title="Outputs" jsonStr={run.outputs} />
+        </div>
+      );
+    }
+  }
+
+  const formatDuration = (sec: number) => {
+    if (sec < 1) return `${Math.round(sec * 1000)}ms`;
+    return `${sec.toFixed(2)}s`;
+  };
+
+  let tokenDisplay = null;
+  if (run.run_type === 'llm') {
+    const usage = run.outputs?.usage || run.inputs?.usage;
+    if (usage && usage.total_tokens) {
+      tokenDisplay = (
+        <span style={{ marginLeft: 8, padding: '2px 6px', background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', borderRadius: 4, fontSize: '0.65rem', border: '1px solid rgba(59,130,246,0.3)' }}>
+          {usage.total_tokens} tokens
+        </span>
+      );
+    }
+  }
+
+  return (
+    <div className={`run-node depth-${depth} ${expanded ? 'expanded' : 'collapsed'}`}>
+      <div
+        className={`run-header glass-panel ${statusClass}`}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div className="run-header-content">
+           <div className="run-toggle">
+              {hasChildren ? (expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />) : <span style={{width: 16, display: 'inline-block'}}></span>}
+           </div>
+           <div className={`run-icon ${statusClass}`}>
+              <StatusIcon size={16} />
+           </div>
+           <div className="run-title-area">
+              <div className="run-name">
+                 <span className={`run-type-badge type-${run.run_type}`}>{run.run_type}</span>
+                 {run.name}
+                 {tokenDisplay}
+              </div>
+              <div className="run-meta">
+                 <span>{format(new Date(run.start_time * 1000), 'HH:mm:ss.SSS')}</span>
+                 <span className="separator">•</span>
+                 <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{formatDuration(eventDuration)}</span>
+              </div>
+           </div>
+        </div>
+
+        <div className="run-waterfall-bg">
+          <div
+             className={`run-waterfall-bar ${statusClass}`}
+             style={{
+               left: `${leftPercent}%`,
+               width: `${widthPercent}%`
+             }}
+          />
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="run-body">
+          {runContent}
+          {hasChildren && (
+            <div className="run-children-list">
+              {children.map(child => (
+                <RunNode
+                  key={child.id}
+                  run={child}
+                  allRuns={allRuns}
+                  traceTotalDuration={traceTotalDuration}
+                  firstTime={firstTime}
+                  depth={depth + 1}
+                  autoExpand={autoExpand}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+
 function App() {
   const [tracesMeta, setTracesMeta] = useState<TraceMeta[]>([]);
   const [selectedTrace, setSelectedTrace] = useState<string | null>(null);
   const [traceData, setTraceData] = useState<TraceData | null>(null);
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  
+
   // List Filters
   const [listHasError, setListHasError] = useState(false);
   const [listShowDaemon, setListShowDaemon] = useState(false);
   const [listLimit, setListLimit] = useState(50);
 
-
   // Filters & Search
   const [showErrorsOnly, setShowErrorsOnly] = useState(false);
-  const [showToolsOnly, setShowToolsOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     fetchTraceIds();
-    // Auto polling every 3 seconds
     const interval = setInterval(() => {
       fetchTraceIds(false);
     }, 3000);
@@ -119,7 +275,6 @@ function App() {
         params.has_error = true;
       }
       const res = await axios.get('/v1/traces', { params });
-      // Robustly handle both enveloped and raw responses
       const rawData = res.data;
       const actualData = (rawData && rawData.data && rawData.data.traces) ? rawData.data : rawData;
       const meta = actualData.traces || [];
@@ -151,15 +306,76 @@ function App() {
     }
   };
 
-  // Calculate metrics
   let totalDuration = 0;
-  let eventCount = 0;
+  let rootRuns: TraceRunView[] = [];
+  let allRuns: TraceRunView[] = [];
+  let firstTime = 0;
 
-  if (traceData && traceData.events && traceData.events.length > 0) {
-    eventCount = traceData.events.length;
-    const firstEventTime = traceData.events[0].created_at;
-    const lastEventTime = traceData.events[traceData.events.length - 1].created_at;
-    totalDuration = lastEventTime - firstEventTime;
+  if (traceData && traceData.runs && traceData.runs.length > 0) {
+    allRuns = traceData.runs;
+
+    // Apply filters
+    if (searchQuery.trim() !== '' || showErrorsOnly) {
+       const q = searchQuery.toLowerCase();
+       const matches = new Set<string>();
+
+       const nodeMatches = (r: TraceRunView) => {
+         if (showErrorsOnly && r.status !== 'error') return false;
+         if (q === '') return true;
+         return (
+           r.name.toLowerCase().includes(q) ||
+           r.run_type.toLowerCase().includes(q) ||
+           JSON.stringify(r.inputs).toLowerCase().includes(q) ||
+           JSON.stringify(r.outputs).toLowerCase().includes(q)
+         );
+       };
+
+       allRuns.forEach(r => {
+         if (nodeMatches(r)) {
+           matches.add(r.id);
+           let current = r;
+           while (current.parent_run_id) {
+             const parent = allRuns.find(p => p.id === current.parent_run_id);
+             if (parent) {
+               matches.add(parent.id);
+               current = parent;
+             } else {
+               break;
+             }
+           }
+         }
+       });
+
+       allRuns = allRuns.filter(r => matches.has(r.id));
+    }
+
+    // Find roots
+    rootRuns = allRuns.filter(r => !r.parent_run_id || r.parent_run_id === '').sort((a,b) => a.start_time - b.start_time);
+
+    // Fallback if roots aren't correctly marked
+    if (rootRuns.length === 0 && allRuns.length > 0) {
+       // Find the earliest run that is not a child of anything in the set
+       const runIds = new Set(allRuns.map(r => r.id));
+       rootRuns = allRuns.filter(r => !runIds.has(r.parent_run_id || ''));
+    }
+
+    if (allRuns.length > 0) {
+      firstTime = Math.min(...allRuns.map(r => r.start_time));
+      const lastTime = Math.max(...allRuns.map(r => r.end_time));
+      totalDuration = lastTime - firstTime;
+    }
+  }
+
+  const errorPaths = new Set<string>();
+  if (traceData?.runs) {
+    const expandPath = (runId: string) => {
+      errorPaths.add(runId);
+      const run = traceData.runs.find(r => r.id === runId);
+      if (run && run.parent_run_id) expandPath(run.parent_run_id);
+    };
+    traceData.runs.forEach(r => {
+      if (r.status === 'error') expandPath(r.id);
+    });
   }
 
   return (
@@ -171,7 +387,7 @@ function App() {
             <Zap size={24} color="var(--accent-color)" className="glow-icon" />
             <h2 className="gradient-text">Navi Traces</h2>
           </div>
-          <button 
+          <button
             className={`refresh-btn ${isRefreshing ? 'spinning' : ''}`}
             onClick={() => fetchTraceIds(true)}
             title="Refresh traces"
@@ -181,7 +397,7 @@ function App() {
         </div>
         <div style={{ padding: '0 15px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button 
+            <button
               className={`filter-btn ${listHasError ? 'active error' : ''}`}
               style={{ flex: 1, padding: '4px 8px', fontSize: '0.75rem' }}
               onClick={() => setListHasError(!listHasError)}
@@ -189,7 +405,7 @@ function App() {
               <XCircle size={12} style={{ marginRight: 4 }} />
               Failed Only
             </button>
-            <button 
+            <button
               className="filter-btn"
               style={{ flex: 1, padding: '4px 8px', fontSize: '0.75rem' }}
               onClick={() => setListLimit(listLimit + 50)}
@@ -198,7 +414,7 @@ function App() {
             </button>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button 
+            <button
               className={`filter-btn ${listShowDaemon ? 'active' : ''}`}
               style={{ flex: 1, padding: '4px 8px', fontSize: '0.75rem' }}
               onClick={() => setListShowDaemon(!listShowDaemon)}
@@ -208,7 +424,7 @@ function App() {
             </button>
           </div>
         </div>
-                <div className="trace-list">
+        <div className="trace-list">
           {tracesMeta.length === 0 && (
             <div style={{ padding: 20, textAlign: 'center', opacity: 0.5, fontSize: '0.85rem' }}>
               No traces recorded yet.
@@ -224,6 +440,11 @@ function App() {
                 {meta.has_error && <ShieldAlert size={12} style={{display: 'inline', marginRight: 4}}/>}
                 {meta.trace_id}
               </div>
+              {meta.preview_text && (
+                <div style={{ marginTop: 6, fontSize: '0.8rem', opacity: 0.8, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', color: 'var(--text-secondary)' }}>
+                  {meta.preview_text}
+                </div>
+              )}
               <div className="trace-date" style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
                 <span>
                   <Clock size={12} style={{ display: 'inline', marginRight: 4, opacity: 0.7 }} />
@@ -266,7 +487,7 @@ function App() {
                       <span className="badge">ID</span> <span style={{ fontFamily: 'monospace', opacity: 0.8 }}>{selectedTrace}</span>
                     </div>
                   </div>
-                  
+
                   {/* Metrics Dashboard */}
                   <div style={{ display: 'flex', gap: 24, alignItems: 'center' }}>
                     <div className="metric-box">
@@ -274,33 +495,27 @@ function App() {
                       <div className="metric-value">{(totalDuration).toFixed(2)}s</div>
                     </div>
                     <div className="metric-box">
-                      <div className="metric-label"><Hash size={14} /> Events</div>
-                      <div className="metric-value">{eventCount}</div>
+                      <div className="metric-label"><Layers size={14} /> Total Runs</div>
+                      <div className="metric-value">{allRuns.length}</div>
                     </div>
                   </div>
                 </div>
 
                 {/* Filters Row */}
                 <div style={{ marginTop: 20, display: 'flex', gap: 12, alignItems: 'center' }}>
-                  <button 
+                  <button
                     className={`filter-btn ${showErrorsOnly ? 'active error' : ''}`}
                     onClick={() => setShowErrorsOnly(!showErrorsOnly)}
                   >
                     <XCircle size={14} /> Show Errors Only
                   </button>
-                  <button 
-                    className={`filter-btn ${showToolsOnly ? 'active info' : ''}`}
-                    onClick={() => setShowToolsOnly(!showToolsOnly)}
-                  >
-                    <Code size={14} /> Show Tool Calls Only
-                  </button>
-                  
+
                   {/* Search Bar */}
                   <div className="search-box glass-panel" style={{ display: 'flex', alignItems: 'center', padding: '6px 12px', borderRadius: 6, flexGrow: 1, marginLeft: 12, border: '1px solid rgba(255, 255, 255, 0.1)', background: 'rgba(0,0,0,0.2)' }}>
                     <Search size={14} color="var(--text-secondary)" style={{ marginRight: 8 }} />
-                    <input 
-                      type="text" 
-                      placeholder="Deep Search in payloads and messages..." 
+                    <input
+                      type="text"
+                      placeholder="Search runs..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       style={{ background: 'transparent', border: 'none', color: '#fff', width: '100%', outline: 'none', fontSize: '0.85rem' }}
@@ -310,171 +525,24 @@ function App() {
               </div>
             </div>
 
-            <div className="timeline">
-              {traceData.events.map((event: TraceEvent, idx: number) => {
-                 let extractedError = null;
-                 let isBlocked = false;
-                 let isApproval = false;
-
-                if (!event.ok) {
-                  const phase = (event.phase || '').toLowerCase();
-                  if (phase === 'approval') isApproval = true;
-                  else if (phase === 'sandbox' || phase === 'verifier') isBlocked = true;
-
-                  try {
-                    const parsedOut = JSON.parse(event.output_json || '{}');
-                    const parsedIn = JSON.parse(event.input_json || '{}');
-                    extractedError = parsedOut.error || parsedOut.message || parsedIn.error || parsedIn.reason || null;
-                    
-                    if (extractedError && typeof extractedError === 'string') {
-                      const lowerError = extractedError.toLowerCase();
-                      if (lowerError.includes('approval') || lowerError.includes('human')) {
-                        isApproval = true;
-                        isBlocked = false; // Override block if it specifically asks for approval
-                      } else if (lowerError.includes('sandbox') || lowerError.includes('block') || lowerError.includes('deny') || lowerError.includes('denied') || lowerError.includes('unauthorized')) {
-                        if (!isApproval) isBlocked = true;
-                      }
-                    }
-                  } catch (e) {}
-                }
-                // Deep Search Match logic
-                let matchesSearch = true;
-                if (searchQuery.trim() !== '') {
-                  const q = searchQuery.toLowerCase();
-                  matchesSearch = false;
-                  if (event.tool?.toLowerCase().includes(q) || 
-                      event.phase?.toLowerCase().includes(q) || 
-                      event.message?.toLowerCase().includes(q) || 
-                      event.input_json?.toLowerCase().includes(q) || 
-                      event.output_json?.toLowerCase().includes(q)) {
-                    matchesSearch = true;
-                  }
-                }
-
-                // Apply filters
-                if (!matchesSearch) return null;
-                if (showErrorsOnly && event.ok) return null;
-                if (showToolsOnly && !event.tool) return null;
-
-                const firstTime = traceData.events[0]?.created_at || 0;
-                const lastTime = traceData.events[traceData.events.length - 1]?.created_at || firstTime;
-                const traceTotalDuration = Math.max(0.001, lastTime - firstTime);
-                const eventStart = Math.max(0, event.created_at - firstTime);
-                const nextEventTime = idx < traceData.events.length - 1
-                  ? traceData.events[idx + 1].created_at
-                  : event.created_at;
-                const eventDuration = Math.max(0, nextEventTime - event.created_at);
-                const leftPercent = (eventStart / traceTotalDuration) * 100;
-                const widthPercent = Math.max(0.5, (eventDuration / traceTotalDuration) * 100);
-
-                // Calculate duration of THIS event (time since previous event)
-                let eventDurationStr = '';
-                let isSlow = false;
-                if (idx > 0) {
-                  const prevEvent = traceData.events[idx - 1];
-                  const duration = event.created_at - prevEvent.created_at;
-                  if (duration >= 0.01) {
-                    eventDurationStr = `(+${duration.toFixed(2)}s)`;
-                    if (duration > 3.0) isSlow = true; // Highlight if takes more than 3s
-                  }
-                }
-
-                return (
-                <div key={event.id || idx} className="timeline-event fade-in" style={{ animationDelay: `${idx * 0.05}s` }}>
-                  <div className="timeline-line"></div>
-                  <div className={`timeline-icon ${event.ok ? 'success' : isApproval ? 'approval' : isBlocked ? 'blocked' : 'error'} glow-icon-sm`}>
-                    {event.ok ? <CheckCircle2 size={18} /> : isApproval ? <UserCheck size={18} /> : isBlocked ? <ShieldAlert size={18} /> : <XCircle size={18} />}
-                  </div>
-                  <div className="timeline-content glass-panel" style={{ borderColor: !event.ok ? (isApproval ? 'rgba(168, 85, 247, 0.4)' : isBlocked ? 'rgba(245, 158, 11, 0.4)' : 'rgba(239, 68, 68, 0.4)') : undefined }}>
-                    <div className="event-header">
-                      <div>
-                        <h3 className="event-title">
-                          <span className="phase-badge">{event.phase}</span>
-                          {event.tool && <span className="tool-name">{event.tool}</span>}
-                        </h3>
-                        <div className="event-subtitle">
-                          <span className="time">{format(new Date(event.created_at * 1000), 'HH:mm:ss.SSS')}</span>
-                          {eventDurationStr && (
-                            <span style={{ color: isSlow ? '#fbbf24' : 'var(--text-secondary)', fontWeight: isSlow ? 700 : 400, marginLeft: 6 }}>
-                              {isSlow && '⏳'} {eventDurationStr}
-                            </span>
-                          )}
-                          <span className="separator">•</span>
-                          Source: <span className="highlight-text">{event.source}</span>
-                          <span className="separator">•</span>
-                          Role: <span className="highlight-text">{event.model_role || 'system'}</span>
-                        </div>
-                      </div>
-                      <div className={`event-status ${event.ok ? 'status-success' : isApproval ? 'status-approval' : isBlocked ? 'status-blocked' : 'status-error'}`}>
-                        {event.ok ? 'SUCCESS' : isApproval ? 'NEEDS APPROVAL' : isBlocked ? 'BLOCKED' : 'FAILED'}
-                      </div>
-                    </div>
-                    
-                    {/* Waterfall Bar */}
-                    <div className="waterfall-container" style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', marginBottom: '16px', position: 'relative' }} title={`Duration: ${eventDuration.toFixed(3)}s`}>
-                      <div style={{
-                        position: 'absolute',
-                        left: `${leftPercent}%`,
-                        width: `${widthPercent}%`,
-                        height: '100%',
-                        background: event.ok ? 'var(--accent-color)' : 'var(--error-color)',
-                        borderRadius: '2px',
-                        boxShadow: `0 0 8px ${event.ok ? 'var(--accent-color)' : 'var(--error-color)'}`
-                      }} />
-                    </div>
-
-                    <div className="event-body">
-                      {/* Critical Error Banner if extracted */}
-                      {extractedError && (
-                        <div className={isApproval ? "error-banner approval-banner" : isBlocked ? "error-banner blocked-banner" : "error-banner"}>
-                          {isApproval ? <UserCheck size={16} /> : isBlocked ? <ShieldAlert size={16} /> : <XCircle size={16} />}
-                          <strong>{isApproval ? 'Approval Required:' : isBlocked ? 'Action Intercepted:' : 'Error Detected:'}</strong> {String(extractedError)}
-                        </div>
-                      )}
-
-                      <CollapsibleJson title="Input Payload" jsonStr={event.input_json} />
-                      <CollapsibleJson title="Output Response" jsonStr={event.output_json} />
-
-                      {event.message && (
-                        <div className="message-box markdown-body" style={{ background: 'rgba(0,0,0,0.3)', padding: '16px', borderRadius: '8px', marginTop: '12px', borderLeft: '3px solid var(--accent-color)' }}>
-                          <ReactMarkdown>
-                            {event.message}
-                          </ReactMarkdown>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-              })}
-              
-              {(!traceData.events || traceData.events.length === 0) && (
+            <div className="tree-container">
+              {rootRuns.length === 0 ? (
                 <div className="empty-state glass-panel" style={{ padding: 40, marginTop: 20 }}>
                   <Activity size={32} />
-                  <p>No events found in this trace.</p>
+                  <p>No valid run hierarchy found in this trace.</p>
                 </div>
-              )}
-              
-              {/* If filtered out everything */}
-              {traceData.events && traceData.events.length > 0 && 
-               traceData.events.filter(e => {
-                  let matchSearch = true;
-                  if (searchQuery.trim() !== '') {
-                    const q = searchQuery.toLowerCase();
-                    if (!e.tool?.toLowerCase().includes(q) && 
-                        !e.phase?.toLowerCase().includes(q) && 
-                        !e.message?.toLowerCase().includes(q) && 
-                        !e.input_json?.toLowerCase().includes(q) && 
-                        !e.output_json?.toLowerCase().includes(q)) {
-                      matchSearch = false;
-                    }
-                  }
-                  return matchSearch && (!showErrorsOnly || !e.ok) && (!showToolsOnly || e.tool);
-               }).length === 0 && (
-                <div className="empty-state glass-panel" style={{ padding: 40, marginTop: 20 }}>
-                  <Search size={32} />
-                  <p>All events filtered out by your current filters or search query.</p>
-                </div>
+              ) : (
+                rootRuns.map(rootRun => (
+                   <RunNode
+                      key={rootRun.id}
+                      run={rootRun}
+                      allRuns={allRuns}
+                      traceTotalDuration={totalDuration}
+                      firstTime={firstTime}
+                      depth={0}
+                      autoExpand={errorPaths.has(rootRun.id)}
+                   />
+                ))
               )}
             </div>
           </>

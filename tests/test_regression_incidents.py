@@ -463,6 +463,43 @@ class _ApproveCodeProvider:
         return ["planner", "responder"]
 
 
+class _ApproveAllVisibleProvider:
+    def __init__(self) -> None:
+        self.planner_calls = 0
+        self.responder_calls = 0
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        if role == "planner" and output_schema is not None:
+            self.planner_calls += 1
+            return json.dumps(
+                {
+                    "tool": "approval.resolve",
+                    "permission": "write",
+                    "args": {
+                        "decision": "approve",
+                        "selection": "all_visible",
+                        "approval_evidence": "全部批准",
+                    },
+                    "model_role": "planner",
+                    "confidence": 1.0,
+                    "reason": "approve all visible approvals",
+                }
+            )
+        if role == "responder":
+            self.responder_calls += 1
+            return "approved"
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+
 class _ApproveCodeNotInInputProvider(_ApproveCodeProvider):
     def __init__(self, code: str) -> None:
         self.code = code
@@ -739,6 +776,49 @@ async def test_delegate_spawn_returns_existing_active_run_for_same_fact_scope(tm
     assert len([run for run in runs if run.kind == "delegation"]) == 1
 
 
+@pytest.mark.asyncio
+async def test_delegate_spawn_deduplicates_same_objective_with_rewritten_plan(tmp_path):
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    objective = "在用户电脑上找到简历文件并发送给用户"
+
+    first = await registry.invoke(
+        "delegate.spawn",
+        {
+            "objective": objective,
+            "context": "用户请求发送简历文件。",
+            "plan": "在工作区搜索简历文件。",
+            "success_criteria": "返回搜索事实。",
+        },
+        permission="prepare",
+        context=context,
+    )
+    second = await registry.invoke(
+        "delegate.spawn",
+        {
+            "objective": objective,
+            "context": "用户请求获取电脑上的简历文件，当前系统空闲。",
+            "plan": "在家目录、文档目录和下载目录搜索简历文件。",
+            "success_criteria": "成功找到并发送简历，或说明未找到。",
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    assert first.ok is True
+    assert second.ok is True
+    assert second.run_id == first.run_id
+    assert second.facts["deduplicated"] is True
+    assert len([run for run in RunStore(tmp_path).list(limit=20) if run.kind == "delegation"]) == 1
+
+
 class _AskOnlyEngine:
     def __init__(self, **kwargs):
         pass
@@ -881,6 +961,54 @@ async def test_approval_resolve_finishes_from_completion_facts(tmp_path):
     )
 
 
+@pytest.mark.asyncio
+async def test_approval_resolve_all_visible_finishes_from_batch_completion_facts(tmp_path):
+    runs = RunStore(tmp_path)
+    for title in ("task one", "task two"):
+        run = runs.create(
+            title,
+            kind="delegation",
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+            workspace=str(tmp_path),
+            status="awaiting_approval",
+        )
+        runs.create_approval(
+            run_id=run.id,
+            peer_id="peer-1",
+            sender_id="sender-1",
+        )
+    provider = _ApproveAllVisibleProvider()
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "全部批准",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert result.action == "execute:system.task_complete"
+    assert result.ok is True
+    assert result.text == (
+        "approval_batch decision=approve selection=all_visible resolved_count=2 failed_count=0"
+    )
+    assert provider.planner_calls == 1
+    assert provider.responder_calls == 0
+    assert {approval.status for approval in runs.list_approvals(limit=10)} == {"approved"}
+    events = TraceStore(tmp_path).list_events(result.trace_id)
+    assert events[-1].message == result.text
+    assert events[-1].ok is True
+    assert "loop_converged" not in events[-1].message
+
+
 
 
 
@@ -965,7 +1093,7 @@ async def test_same_status_facts_with_different_args_converges(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_delegate_spawn_awaiting_approval_becomes_model_owned_answer(tmp_path):
+async def test_delegate_spawn_awaiting_approval_returns_approval_facts_without_second_loop(tmp_path):
     provider = _DelegateSpawnApprovalProvider(str(tmp_path))
     engine = HernessEngine(
         home=tmp_path,
@@ -986,10 +1114,11 @@ async def test_delegate_spawn_awaiting_approval_becomes_model_owned_answer(tmp_p
     finally:
         await engine.shutdown()
 
-    assert provider.planner_calls == 2
+    assert provider.planner_calls == 1
     assert provider.responder_calls == 0
-    assert result.action == "chat"
-    assert result.text == "需要审批后执行。"
+    assert result.action == "execute:system.task_complete"
+    assert result.text.startswith("Delegation run is awaiting approval.")
+    assert "approval_code=" in result.text
     assert TraceStore(tmp_path).list_evaluations(result.trace_id)[0].outcome == "success"
     decisions = [
         json.loads(event.output_json)

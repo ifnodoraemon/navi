@@ -92,6 +92,7 @@ class DelegateSpawnCapability(BaseCapability):
 
         existing = self._existing_active_run(
             runs,
+            objective=objective,
             prompt=prompt,
             workspace=workspace,
             context=context,
@@ -113,6 +114,12 @@ class DelegateSpawnCapability(BaseCapability):
                     "code": pending.code,
                     "expires_at": pending.expires_at,
                 }
+                facts["requires_user_approval"] = True
+                facts["surface_message"] = _approval_surface_message(
+                    run_id=existing.id,
+                    approval_code=pending.code,
+                    deduplicated=True,
+                )
             return _fact_result("delegation", facts, run_id=existing.id)
 
         task = runs.create(
@@ -190,6 +197,11 @@ class DelegateSpawnCapability(BaseCapability):
                 "code": approvals[0].code,
                 "expires_at": approvals[0].expires_at,
             }
+            if task.status == "awaiting_approval":
+                facts["surface_message"] = _approval_surface_message(
+                    run_id=task.id,
+                    approval_code=approvals[0].code,
+                )
 
         return _fact_result(
             "delegation",
@@ -201,6 +213,7 @@ class DelegateSpawnCapability(BaseCapability):
     def _existing_active_run(
         runs: RunStore,
         *,
+        objective: str,
         prompt: str,
         workspace: str,
         context: CapabilityContext,
@@ -212,11 +225,25 @@ class DelegateSpawnCapability(BaseCapability):
                 continue
             if run.status not in RUN_ACTIVE_STATUSES:
                 continue
-            if run.prompt != prompt or run.workspace != workspace:
+            if run.workspace != workspace:
+                continue
+            if run.title != objective[:120] and run.prompt != prompt:
                 continue
             if run_matches_context(run, context):
                 return run
         return None
+
+
+def _approval_surface_message(
+    *,
+    run_id: str,
+    approval_code: str,
+    deduplicated: bool = False,
+) -> str:
+    prefix = "Existing delegation run is awaiting approval" if deduplicated else "Delegation run is awaiting approval"
+    if approval_code:
+        return f"{prefix}. run_id={run_id} approval_code={approval_code}."
+    return f"{prefix}. run_id={run_id}."
 
 
 @capability("delegate_prepare")

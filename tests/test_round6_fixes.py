@@ -245,6 +245,33 @@ def test_failed_state_transition_is_not_completion_evidence() -> None:
     assert control.decisions[0].decision == LoopDecisionKind.CONTINUE
 
 
+def test_approval_waiting_facts_pause_without_continuing_loop() -> None:
+    control = reduce_runtime_step(
+        RuntimeStepFrame(
+            result=AgentTurnResult(text="", action="delegation", ok=True, run_id="run-1"),
+            facts={
+                "entity_type": "delegation_run",
+                "entity_id": "run-1",
+                "state_transition": "created",
+                "turn_scope": "current",
+                "run_id": "run-1",
+                "status": "awaiting_approval",
+                "approval": {"code": "123456", "action": "execute"},
+            },
+            tool="delegate.spawn",
+            progress_signature="approval-required",
+            goal_ids=set(),
+            observations_count=2,
+        ),
+        progress_gate=LoopProgressGate(),
+    )
+
+    assert control.effect == LoopControlEffect.FINALIZE_STABLE
+    assert control.decisions[0].decision == LoopDecisionKind.PAUSE_FOR_APPROVAL
+    assert control.decisions[0].reason == LoopReason.APPROVAL_REQUIRED
+    assert control.convergence_message == ""
+
+
 def test_completion_surface_text_prefers_capability_surface_message() -> None:
     result = AgentTurnResult(
         text='{"raw": "facts"}',
@@ -429,6 +456,10 @@ async def test_approval_resolve_batch_requires_model_supplied_user_evidence(
 
     assert approved.ok is True
     assert approved.facts["resolved_count"] == 2
+    assert approved.facts["completion_evidence"] is True
+    assert approved.facts["state_transition"] == "updated"
+    assert approved.facts["turn_scope"] == "current"
+    assert approved.facts["surface_message"].startswith("approval_batch decision=approve")
 
 
 @pytest.mark.asyncio

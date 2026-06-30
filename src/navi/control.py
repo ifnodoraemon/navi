@@ -300,6 +300,9 @@ class ApprovalService:
             run_id=str(resolved[0].get("run_id") or "") if resolved else "",
             facts={
                 "entity_type": "approval_batch",
+                "entity_id": selected_batch.id if selected_batch else selection,
+                "state_transition": "updated",
+                "turn_scope": "current",
                 "selection": selection,
                 "decision": decision,
                 "batch_id": selected_batch.id if selected_batch else "",
@@ -308,6 +311,8 @@ class ApprovalService:
                 ),
                 "resolved_count": len(resolved),
                 "failed_count": len(failures),
+                "completion_evidence": ok,
+                "surface_message": message,
                 "resolved": resolved,
                 "failures": failures,
             },

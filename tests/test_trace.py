@@ -67,7 +67,7 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
     assert runs[0].metadata["event_count"] == 2
     assert runs[1].run_type == "llm"
     assert runs[1].inputs["api_key"] == "[redacted]"
-    assert runs[2].name == "loop.decision"
+    assert runs[2].name == "Decision: finalize"
     assert runs[2].parent_run_id == trace_id
     assert runs[2].feedback == {}
 

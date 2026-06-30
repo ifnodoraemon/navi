@@ -64,6 +64,8 @@ class LoopCheckName(StrEnum):
 class TracePhase(StrEnum):
     AGENT_ROLE_RESULT = "agent.role_result"
     CAPABILITY_RESULT = "capability.result"
+    CHANNEL_INGRESS = "channel.ingress"
+    CHANNEL_EGRESS = "channel.egress"
     PLANNER_CALL_ERROR = "planner.call.error"
     PLANNER_CALL_START = "planner.call.start"
     PLANNER_PARSE_ERROR = "planner.parse_error"

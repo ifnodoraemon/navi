@@ -20,9 +20,25 @@ export interface TraceDecision extends TraceEvent {
   decision: any;
 }
 
+export interface TraceRunView {
+  id: string;
+  trace_id: string;
+  parent_run_id: string;
+  name: string;
+  run_type: string;
+  status: string;
+  start_time: number;
+  end_time: number;
+  thread_id: string;
+  inputs: any;
+  outputs: any;
+  tags: string[];
+  metadata: any;
+}
+
 export interface TraceData {
   events: TraceEvent[];
-  runs: any[];
+  runs: TraceRunView[];
   loop_decisions: TraceDecision[];
 }
 
@@ -33,4 +49,5 @@ export interface TraceMeta {
   end_time: number;
   duration: number;
   step_count: number;
+  preview_text?: string;
 }

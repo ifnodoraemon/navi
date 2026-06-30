@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -19,8 +20,10 @@ from navi.connector_router import ConnectorRouter, IDLE_TIMEOUT_SECONDS
 from navi.connector_runtime import ConnectorMessage
 from navi.control import ApprovalService, SurfaceContext
 from navi.event_bus import EventBus, ResponseReadyEvent
+from navi.loop import TracePhase
 from navi.runs import RunStore
 from navi.runs._approval_store import DEFAULT_APPROVAL_TTL_SECONDS
+from navi.trace import TraceStore
 
 
 def _message(text: str = "你好") -> ConnectorMessage:
@@ -57,6 +60,12 @@ async def test_router_does_not_timeout_while_heartbeats_arrive(tmp_path, monkeyp
     bus.subscribe("message_ingress", on_intent)
     result = await router.route(_message())
     assert result == "done late but alive"
+    channel_events = TraceStore(tmp_path).list_events("msg-x")
+    assert [event.phase for event in channel_events] == [
+        str(TracePhase.CHANNEL_INGRESS),
+        str(TracePhase.CHANNEL_EGRESS),
+    ]
+    assert json.loads(channel_events[-1].output_json)["response"] == result
     await bus.shutdown()
 
 
@@ -73,6 +82,12 @@ async def test_router_times_out_on_true_silence(tmp_path, monkeypatch):
     bus.subscribe("message_ingress", on_intent)
     result = await router.route(_message())
     assert result == "连接器处理超时；correlation_id=msg-x。"
+    channel_events = TraceStore(tmp_path).list_events("msg-x")
+    assert [event.phase for event in channel_events] == [
+        str(TracePhase.CHANNEL_INGRESS),
+        str(TracePhase.CHANNEL_EGRESS),
+    ]
+    assert json.loads(channel_events[-1].output_json)["response"] == result
     await bus.shutdown()
 
 

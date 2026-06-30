@@ -152,12 +152,13 @@ class HernessEngine(EnginePhasesMixin):
         session_id: str | None,
         session_alias: str | None,
         intent_facts: dict[str, Any] | None,
+        trace_id: str | None = None,
     ) -> tuple[str, str, CapabilityContext, SurfaceContext, list[str]]:
         """Initialize turn: resolve session, create trace, build context and observations."""
         resolved_session_id = session_id
         if not resolved_session_id and session_alias:
             resolved_session_id = self.runtime.memory.current_session_id(session_alias)
-        trace_id = self.trace.new_trace_id()
+        trace_id = trace_id or self.trace.new_trace_id()
         self.trace.add_event(
             trace_id=trace_id,
             phase=TracePhase.TURN_START,
@@ -216,10 +217,11 @@ class HernessEngine(EnginePhasesMixin):
         session_id: str | None = None,
         session_alias: str | None = None,
         intent_facts: dict[str, Any] | None = None,
+        trace_id: str | None = None,
     ) -> AgentTurnResult:
         # Phase 1: Setup and initialization
         resolved_session_id, trace_id, context, state_context, observations = (
-            self._initialize_turn(text, peer_id, sender_id, source, session_id, session_alias, intent_facts)
+            self._initialize_turn(text, peer_id, sender_id, source, session_id, session_alias, intent_facts, trace_id)
         )
 
         # Phase 2: Main ReAct loop (observe → plan → execute → reflect)

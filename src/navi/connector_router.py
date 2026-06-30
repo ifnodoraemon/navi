@@ -26,6 +26,21 @@ class ConnectorRouter:
         correlation_id = message.message_id
         channel = self.event_bus.create_response_channel(correlation_id)
 
+        from navi.trace import TraceStore
+        from navi.loop import TracePhase
+        trace = TraceStore(self.home)
+
+        trace.add_event(
+            trace_id=correlation_id,
+            phase=TracePhase.CHANNEL_INGRESS,
+            run_id="",
+            source=message.source,
+            peer_id=message.peer_id,
+            sender_id=message.sender_id,
+            input_data={"text": message.text, "facts": message.facts},
+            message="Received message from channel",
+        )
+
         try:
             event = MessageIngressEvent(
                 source_agent="connector_router",
@@ -40,7 +55,32 @@ class ConnectorRouter:
             )
 
             await self.event_bus.publish(event)
-            return await self._await_response(channel, correlation_id=correlation_id)
+            response = await self._await_response(channel, correlation_id=correlation_id)
+
+            trace.add_event(
+                trace_id=correlation_id,
+                phase=TracePhase.CHANNEL_EGRESS,
+                run_id="",
+                source=message.source,
+                peer_id=message.peer_id,
+                sender_id=message.sender_id,
+                output_data={"response": response},
+                message="Sent response to channel",
+            )
+            return response
+        except Exception as e:
+            trace.add_event(
+                trace_id=correlation_id,
+                phase=TracePhase.CHANNEL_EGRESS,
+                run_id="",
+                source=message.source,
+                peer_id=message.peer_id,
+                sender_id=message.sender_id,
+                output_data={"error": str(e)},
+                message="Error processing message",
+                ok=False,
+            )
+            raise
         finally:
             self.event_bus.remove_response_channel(correlation_id)
 

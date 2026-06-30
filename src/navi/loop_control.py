@@ -113,7 +113,6 @@ def reduce_runtime_step(
     progress_gate: LoopProgressGate,
 ) -> LoopControlResult:
     if _facts_waiting_for_approval(frame.facts):
-        progress = progress_gate.observe(frame.progress_signature)
         pause_decision = LoopDecision(
             decision=LoopDecisionKind.PAUSE_FOR_APPROVAL,
             reason=LoopReason.APPROVAL_REQUIRED,
@@ -133,24 +132,10 @@ def reduce_runtime_step(
                 ),
             ),
         )
-        if progress.repeated:
-            return LoopControlResult(
-                effect=LoopControlEffect.FINALIZE_STABLE,
-                decisions=(
-                    pause_decision,
-                    _converged_decision(
-                        frame,
-                        reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
-                        progress_signature=progress.signature,
-                    ),
-                ),
-                progress_signature=progress.signature,
-                convergence_message="repeated_action_limit_reached",
-            )
         return LoopControlResult(
-            effect=LoopControlEffect.CONTINUE_LOOP,
+            effect=LoopControlEffect.FINALIZE_STABLE,
             decisions=(pause_decision,),
-            progress_signature=progress.signature,
+            progress_signature=frame.progress_signature,
         )
 
     if frame.result.ok and _facts_complete_current_request(frame.facts):
