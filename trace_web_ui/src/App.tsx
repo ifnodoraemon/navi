@@ -362,6 +362,16 @@ const RunNode = ({
 };
 
 
+const stringToColor = (str: string) => {
+  if (!str) return 'transparent';
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 70%, 60%)`;
+};
+
 function App() {
   const [tracesMeta, setTracesMeta] = useState<TraceMeta[]>([]);
   const [selectedTrace, setSelectedTrace] = useState<string | null>(null);
@@ -778,22 +788,32 @@ function App() {
               <div style={{ padding: '12px 16px 4px', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 {group.label}
               </div>
-              {group.traces.map((meta) => (
+              {group.traces.map((meta) => {
+                const threadColor = meta.thread_id ? stringToColor(meta.thread_id) : 'transparent';
+                return (
                 <div
                   key={meta.trace_id}
                   className={`trace-item ${selectedTrace === meta.trace_id ? 'active' : ''}`}
                   onClick={() => loadTrace(meta.trace_id)}
+                  style={meta.thread_id ? { borderLeft: `4px solid ${threadColor}`, paddingLeft: 12, borderTopLeftRadius: 2, borderBottomLeftRadius: 2 } : {}}
                 >
                   <div className="trace-id" style={{ wordBreak: 'break-all', fontSize: '0.75rem', lineHeight: 1.4, color: meta.has_error ? 'var(--error-color)' : 'inherit', fontWeight: meta.has_error ? 600 : 'normal', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
                     <span>
                       {meta.has_error && <ShieldAlert size={12} style={{display: 'inline', marginRight: 4}}/>}
                       {meta.trace_id}
                     </span>
-                    {meta.outcome && meta.outcome !== 'success' && meta.outcome !== 'unknown' && (
-                      <span style={{ fontSize: '0.65rem', padding: '2px 4px', borderRadius: 4, background: meta.outcome === 'failure' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)', color: meta.outcome === 'failure' ? '#fca5a5' : '#fcd34d', whiteSpace: 'nowrap', marginLeft: 6 }}>
-                        {meta.failure_domain ? meta.failure_domain.replace(/_/g, ' ') : meta.outcome}
-                      </span>
-                    )}
+                    <div style={{ display: 'flex', alignItems: 'center' }}>
+                      {meta.thread_id && (
+                         <span style={{ fontSize: '0.65rem', padding: '2px 4px', borderRadius: 4, background: threadColor, color: '#000', whiteSpace: 'nowrap', marginLeft: 6, fontWeight: 700 }} title={`Session: ${meta.thread_id}`}>
+                           SESSION
+                         </span>
+                      )}
+                      {meta.outcome && meta.outcome !== 'success' && meta.outcome !== 'unknown' && (
+                        <span style={{ fontSize: '0.65rem', padding: '2px 4px', borderRadius: 4, background: meta.outcome === 'failure' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)', color: meta.outcome === 'failure' ? '#fca5a5' : '#fcd34d', whiteSpace: 'nowrap', marginLeft: 6 }}>
+                          {meta.failure_domain ? meta.failure_domain.replace(/_/g, ' ') : meta.outcome}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   {meta.preview_text && (
                     <div style={{ marginTop: 6, fontSize: '0.8rem', opacity: 0.8, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', color: 'var(--text-secondary)' }}>
@@ -808,7 +828,7 @@ function App() {
                     {meta.duration > 0 && <span style={{ opacity: 0.8 }}><Timer size={12} style={{ display: 'inline', marginRight: 2 }} /> {meta.duration.toFixed(2)}s</span>}
                   </div>
                 </div>
-              ))}
+              )})}
             </div>
           ))}
         </div>
