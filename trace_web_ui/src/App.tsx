@@ -246,6 +246,16 @@ const RunNode = ({
     }
   }
 
+  let initiator = '';
+  if (run.run_type === 'tool') {
+    const parent = allRuns.find(r => r.id === run.parent_run_id);
+    initiator = (parent && parent.run_type === 'llm') ? 'MODEL CALL' : 'ENGINE CALL';
+  } else if (run.run_type === 'llm') {
+    initiator = 'MODEL';
+  } else if (run.run_type === 'engine') {
+    initiator = 'ENGINE';
+  }
+
   return (
     <div className={`run-node depth-${depth} ${expanded ? 'expanded' : 'collapsed'}`}>
       <div
@@ -257,11 +267,16 @@ const RunNode = ({
               {hasChildren ? (expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />) : <span style={{width: 16, display: 'inline-block'}}></span>}
            </div>
            <div className={`run-icon ${statusClass}`}>
-              <StatusIcon size={16} />
+              {isRunning ? <RefreshCw size={16} className="spin-icon" style={{ color: '#f59e0b' }} /> : <StatusIcon size={16} />}
            </div>
            <div className="run-title-area">
               <div className="run-name">
                  <span className={`run-type-badge type-${run.run_type}`}>{run.run_type}</span>
+                 {initiator && (
+                   <span style={{ marginRight: 8, fontSize: '0.65rem', fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.1)', color: 'var(--text-secondary)', letterSpacing: '0.02em' }}>
+                     {initiator}
+                   </span>
+                 )}
                  {run.name}
                  {tokenDisplay}
               </div>
