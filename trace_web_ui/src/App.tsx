@@ -39,6 +39,22 @@ const CollapsibleJson = ({ title, jsonStr, defaultOpen = false }: { title: strin
       parsed = jsonStr;
     }
 
+    if (typeof parsed === 'string') {
+      if (parsed.includes('\n') || parsed.includes('```') || parsed.includes('**')) {
+        return (
+          <div className="markdown-body" style={{ fontSize: '0.85rem' }}>
+            <ReactMarkdown>{parsed}</ReactMarkdown>
+          </div>
+        );
+      } else {
+        return (
+          <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.8rem', color: '#e5e7eb' }}>
+            {parsed}
+          </div>
+        );
+      }
+    }
+
     if (typeof parsed !== 'object' || parsed === null) {
       parsed = { payload: parsed };
     }
