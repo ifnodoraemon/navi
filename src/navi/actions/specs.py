@@ -224,8 +224,10 @@ ACTION_SPECS = [
                 "cron": {"type": "string"},
                 "kind": {"type": "string"},
                 "prompt": {"type": "string"},
+                "completion_evidence": {"type": "boolean"},
                 "next_run_at": {"type": "number"},
                 "next_run_text": {"type": "string"},
+                "surface_message": {"type": "string"},
             },
         },
         facts_only=True,
@@ -328,6 +330,7 @@ ACTION_SPECS = [
                 "deleted": {"type": "boolean"},
                 "cron": {"type": "string"},
                 "prompt": {"type": "string"},
+                "surface_message": {"type": "string"},
             },
         },
         facts_only=True,
@@ -350,6 +353,10 @@ ACTION_SPECS = [
                 "code": {"type": "string"},
                 "run_id": {"type": "string"},
                 "batch_id": {"type": "string"},
+                "approval_evidence": {
+                    "type": "string",
+                    "description": "Exact substring from the current user input recorded as approval evidence for non-code selections.",
+                },
                 "selection": {
                     "type": "string",
                     "enum": [

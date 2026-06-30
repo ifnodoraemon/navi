@@ -87,8 +87,8 @@ def test_default_approval_ttl_supports_slow_remote_reply(tmp_path):
 
     approval = runs.create_approval(run_id=task.id, peer_id="peer", sender_id="sender")
 
-    assert DEFAULT_APPROVAL_TTL_SECONDS == 3600
-    assert 3590 <= approval.expires_at - approval.created_at <= 3610
+    assert DEFAULT_APPROVAL_TTL_SECONDS == 86400
+    assert 86390 <= approval.expires_at - approval.created_at <= 86410
 
 
 # ─── Deadlock-side tests ───

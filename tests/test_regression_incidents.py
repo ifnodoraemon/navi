@@ -19,6 +19,7 @@ from navi.provider import ChatMessage, _extract_anthropic_content, _extract_open
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 from navi.syscalls import ModelSyscallPlanner
+from navi.tools import ToolSpec
 from navi.trace import TraceStore
 
 
@@ -253,6 +254,50 @@ def test_planner_parser_rejects_missing_required_schema_fields():
     assert decision.tool == "system.planner_error"
     assert decision.reason == "planner decision schema mismatch"
     assert "$.model_role is required" in decision.args["schema_errors"]
+
+
+@pytest.mark.asyncio
+async def test_planner_rejects_selected_capability_args_schema_mismatch():
+    class Provider:
+        async def complete_for(
+            self,
+            role: str,
+            messages: list[ChatMessage],
+            *,
+            output_schema: dict | None = None,
+        ) -> str:
+            del role, messages, output_schema
+            return json.dumps(
+                {
+                    "tool": "final.answer",
+                    "permission": "read",
+                    "args": {},
+                    "model_role": "responder",
+                }
+            )
+
+    decision = await ModelSyscallPlanner(Provider()).plan(
+        "hi",
+        tools=[
+            ToolSpec(
+                name="final.answer",
+                capability_class="conversation",
+                execution_contexts=("turn",),
+                description="Return a final user-facing message.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"],
+                },
+                output_schema={"type": "object", "properties": {}},
+            )
+        ],
+    )
+
+    assert decision.tool == "system.planner_error"
+    assert decision.reason == "planner capability arguments schema mismatch"
+    assert decision.args["selected_tool"] == "final.answer"
+    assert "$.message is required" in decision.args["schema_errors"]
 
 
 def test_completion_checker_ignores_unrelated_prepared_runs(tmp_path):
@@ -763,7 +808,9 @@ async def test_expired_task_cleanup_finishes_from_completion_facts(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.text == ""
+    assert result.text == (
+        "Completed: bulk_delete completed (runs) [deleted_count=1, remaining_count=0]."
+    )
     assert result.terminal is True
     assert runs.get(expired.id) is None
     assert provider.planner_calls == 1
@@ -815,7 +862,8 @@ async def test_approval_resolve_finishes_from_completion_facts(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.text == ""
+    assert result.text.startswith("approval_request status=approved")
+    assert run.id in result.text
     assert runs.get(run.id).status == "queued"
     assert provider.planner_calls == 1
     assert provider.responder_calls == 0
@@ -955,7 +1003,7 @@ async def test_delegate_spawn_awaiting_approval_becomes_model_owned_answer(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_capability_input_schema_mismatch_triggers_loop(tmp_path):
+async def test_planner_capability_args_schema_mismatch_triggers_loop(tmp_path):
     engine = HernessEngine(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=_InvalidCapabilityArgsProvider()),
@@ -975,11 +1023,10 @@ async def test_capability_input_schema_mismatch_triggers_loop(tmp_path):
     assert result.error_reason == "loop_converged"
     evaluations = TraceStore(tmp_path).list_evaluations(result.trace_id)
     assert evaluations[0].failure_domain == "loop_no_progress"
-    loop_decisions = [
-        json.loads(event.output_json)
-        for event in TraceStore(tmp_path).list_events(result.trace_id)
-        if event.phase == "loop.decision"
-    ]
+    events = TraceStore(tmp_path).list_events(result.trace_id)
+    assert any(event.phase == "planner.parse_error" for event in events)
+    assert not any(event.phase == "capability.result" for event in events)
+    loop_decisions = [json.loads(event.output_json) for event in events if event.phase == "loop.decision"]
     assert loop_decisions[-1]["failure_domain"] == "loop_no_progress"
     assert loop_decisions[-1]["gate_results"][0]["name"] == "no_progress_gate"
 

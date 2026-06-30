@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -575,7 +576,15 @@ def render_visible_approvals(state: CurrentState) -> str:
 def current_state_facts(state: CurrentState) -> dict[str, Any]:
     latest_batch = state.latest_visible_batch
     batches = state.visible_approval_batches
+    now = time.time()
+    local_now = datetime.fromtimestamp(now).astimezone()
     return {
+        "current_time": {
+            "unix": now,
+            "iso": local_now.isoformat(),
+            "timezone": local_now.tzname() or "",
+            "utc_offset": local_now.strftime("%z"),
+        },
         "surface": state.surface,
         "peer_id": state.peer_id,
         "sender_id": state.sender_id,

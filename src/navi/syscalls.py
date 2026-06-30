@@ -60,6 +60,16 @@ class ModelSyscallPlanner:
         matching_spec = next((spec for spec in tools if spec.name == syscall.tool), None)
         if matching_spec:
             syscall = replace(syscall, permission=matching_spec.permission)
+            schema_errors = json_schema_errors(syscall.args, matching_spec.input_schema)
+            if schema_errors:
+                return ModelSyscall(
+                    tool="system.planner_error",
+                    args={
+                        "selected_tool": syscall.tool,
+                        "schema_errors": schema_errors,
+                    },
+                    reason="planner capability arguments schema mismatch",
+                )
         return syscall
 
     @staticmethod

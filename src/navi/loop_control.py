@@ -33,7 +33,7 @@ class LoopControlResult:
     decisions: tuple[LoopDecision, ...]
     progress_signature: str = ""
     convergence_message: str = ""
-    reflection_prompt: str = ""
+    runtime_observation: str = ""
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,7 @@ def reduce_recovery_step(
             effect=LoopControlEffect.CONTINUE_LOOP,
             decisions=(recovery,),
             progress_signature=progress.signature,
-            reflection_prompt="[System Warning] You have repeated the exact same failed action 4 times in a row. You are stuck in a loop. Stop repeating this action. Write a brief reflection in your 'reason' field explaining why your previous approach failed, and immediately switch to a different strategy or ask the user for help."
+            runtime_observation="repeated_action_limit_reached",
         )
 
     if progress.repeated:
@@ -98,7 +98,7 @@ def reduce_recovery_step(
                 ),
             ),
             progress_signature=progress.signature,
-            convergence_message="repeated recovery result; synthesizing stable observations",
+            convergence_message="repeated_action_limit_reached",
         )
     return LoopControlResult(
         effect=LoopControlEffect.CONTINUE_LOOP,
@@ -145,7 +145,7 @@ def reduce_runtime_step(
                     ),
                 ),
                 progress_signature=progress.signature,
-                convergence_message="repeated capability result; synthesizing stable observations",
+                convergence_message="repeated_action_limit_reached",
             )
         return LoopControlResult(
             effect=LoopControlEffect.CONTINUE_LOOP,
@@ -153,7 +153,7 @@ def reduce_runtime_step(
             progress_signature=progress.signature,
         )
 
-    if _facts_complete_current_request(frame.facts):
+    if frame.result.ok and _facts_complete_current_request(frame.facts):
         return LoopControlResult(
             effect=LoopControlEffect.FINALIZE_STABLE,
             decisions=(_completion_evidence_decision(frame),),
@@ -166,7 +166,7 @@ def reduce_runtime_step(
             effect=LoopControlEffect.CONTINUE_LOOP,
             decisions=(),
             progress_signature=progress.signature,
-            reflection_prompt="[System Warning] You have repeated the exact same failed action 4 times in a row. You are stuck in a loop. Stop repeating this action. Write a brief reflection in your 'reason' field explaining why your previous approach failed, and immediately switch to a different strategy or ask the user for help."
+            runtime_observation="repeated_action_limit_reached",
         )
 
     if progress.repeated:
@@ -180,7 +180,7 @@ def reduce_runtime_step(
                 ),
             ),
             progress_signature=progress.signature,
-            convergence_message="repeated capability result; synthesizing stable observations",
+            convergence_message="repeated_action_limit_reached",
         )
 
     return LoopControlResult(
@@ -498,7 +498,16 @@ WORKFLOW_STEP_DECISION_BUILDERS: tuple[WorkflowStepDecisionBuilder, ...] = (
 
 
 def _facts_complete_current_request(facts: dict[str, Any] | None) -> bool:
-    return isinstance(facts, dict) and facts.get("completion_evidence") is True
+    if not isinstance(facts, dict):
+        return False
+    if facts.get("completion_evidence") is True:
+        return True
+    return (
+        str(facts.get("turn_scope") or "").strip() == "current"
+        and bool(str(facts.get("state_transition") or "").strip())
+        and bool(str(facts.get("entity_type") or "").strip())
+        and bool(str(facts.get("entity_id") or "").strip())
+    )
 
 
 def _facts_waiting_for_approval(facts: dict[str, Any] | None) -> bool:

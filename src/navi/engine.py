@@ -21,6 +21,7 @@ from .loop import (
 )
 from .loop_control import (
     LoopControlEffect,
+    LoopControlResult,
     RecoveryStepFrame,
     RuntimeStepFrame,
     failure_decision_for_return,
@@ -38,6 +39,29 @@ logger = logging.getLogger("navi.engine")
 
 # Public engine exports.
 __all__ = ["AgentTurnResult", "HernessEngine"]
+
+
+def _fact_text(facts: dict[str, Any], key: str) -> str:
+    value = facts.get(key)
+    return str(value).strip() if value is not None else ""
+
+
+def _completion_detail_parts(facts: dict[str, Any]) -> list[str]:
+    parts: list[str] = []
+    for key in (
+        "run_id",
+        "watch_id",
+        "deleted_count",
+        "remaining_count",
+        "approval_status",
+        "run_status",
+        "cron",
+        "next_run_text",
+    ):
+        value = _fact_text(facts, key)
+        if value:
+            parts.append(f"{key}={value}")
+    return parts
 
 
 class HernessEngine(EnginePhasesMixin):
@@ -83,6 +107,41 @@ class HernessEngine(EnginePhasesMixin):
         self.governed_workflow_id = governed_workflow_id or ""
         self._memory_sem: asyncio.Semaphore | None = None
         self._background_tasks: set[asyncio.Task] = set()
+
+    @staticmethod
+    def _completion_surface_text(
+        result: AgentTurnResult,
+        control: LoopControlResult,
+    ) -> str:
+        if control.convergence_message:
+            return ""
+        facts = result.facts or {}
+        surface_message = facts.get("surface_message")
+        if isinstance(surface_message, str) and surface_message.strip():
+            return surface_message.strip()
+        text = result.text.strip()
+        if text and not text.startswith(("{", "[")):
+            return text
+        return HernessEngine._completion_fact_summary(result.action, facts)
+
+    @staticmethod
+    def _completion_fact_summary(action: str, facts: dict[str, Any]) -> str:
+        if not isinstance(facts, dict):
+            return ""
+        entity_type = _fact_text(facts, "entity_type")
+        state_transition = _fact_text(facts, "state_transition")
+        if entity_type and state_transition:
+            entity_id = _fact_text(facts, "entity_id")
+            base = f"Completed: {entity_type} {state_transition}"
+            if entity_id:
+                base += f" ({entity_id})"
+            details = _completion_detail_parts(facts)
+            if details:
+                base += f" [{', '.join(details)}]"
+            return f"{base}."
+        if facts.get("completion_evidence") is True:
+            return f"Completed: {action}."
+        return ""
 
     def _initialize_turn(
         self,
@@ -252,15 +311,28 @@ class HernessEngine(EnginePhasesMixin):
                         # We are finalizing the loop. Directly throw the raw facts without summarizing on behalf of the LLM.
                         obs_lines = observations
                         if control.convergence_message:
-                            obs_lines = observations + [f"[System Block] {control.convergence_message}"]
+                            obs_lines = observations + [
+                                json.dumps(
+                                    {
+                                        "observation_type": "loop_progress_fact",
+                                        "facts": {
+                                            "reason": "loop_converged",
+                                            "convergence_message": control.convergence_message,
+                                        },
+                                    },
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                )
+                            ]
                         final_facts = {}
                         if control.decisions and control.decisions[0].evidence:
                             final_facts.update(control.decisions[0].evidence)
                         if control.convergence_message:
                             final_facts["convergence_message"] = control.convergence_message
+                        surface_text = self._completion_surface_text(result, control)
                         
                         final_result = AgentTurnResult(
-                            text="",
+                            text=surface_text,
                             action="execute:system.loop_converged" if control.convergence_message else "execute:system.task_complete",
                             observation="\n\n".join(obs_lines),
                             model_role="planner",
@@ -365,15 +437,28 @@ class HernessEngine(EnginePhasesMixin):
                         )
                     obs_lines = observations
                     if control.convergence_message:
-                        obs_lines = observations + [f"[System Block] {control.convergence_message}"]
+                        obs_lines = observations + [
+                            json.dumps(
+                                {
+                                    "observation_type": "loop_progress_fact",
+                                    "facts": {
+                                        "reason": "loop_converged",
+                                        "convergence_message": control.convergence_message,
+                                    },
+                                },
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            )
+                        ]
                     final_facts = {}
                     if control.decisions and control.decisions[0].evidence:
                         final_facts.update(control.decisions[0].evidence)
                     if control.convergence_message:
                         final_facts["convergence_message"] = control.convergence_message
+                    surface_text = self._completion_surface_text(result, control)
                     
                     final_result = AgentTurnResult(
-                        text="",
+                        text=surface_text,
                         action="execute:system.loop_converged" if control.convergence_message else "execute:system.task_complete",
                         observation="\n\n".join(obs_lines),
                         model_role="planner",
@@ -589,7 +674,17 @@ class HernessEngine(EnginePhasesMixin):
                         "reason": syscall.reason,
                     },
                 )
-                return self._StepResult(result=result, should_return=False, tool=syscall.tool)
+                return self._StepResult(
+                    result=result,
+                    should_return=False,
+                    progress_signature=semantic_progress_signature(
+                        syscall.tool,
+                        syscall.args,
+                        ok=False,
+                        facts=result.facts,
+                    ),
+                    tool=syscall.tool,
+                )
             result = AgentTurnResult(
                 text="",
                 action=f"execute:{syscall.tool}",
@@ -603,7 +698,17 @@ class HernessEngine(EnginePhasesMixin):
                     "unavailable_tool": syscall.tool,
                 },
             )
-            return self._StepResult(result=result, should_return=False, tool=syscall.tool)
+            return self._StepResult(
+                result=result,
+                should_return=False,
+                progress_signature=semantic_progress_signature(
+                    syscall.tool,
+                    syscall.args,
+                    ok=False,
+                    facts=result.facts,
+                ),
+                tool=syscall.tool,
+            )
 
         # Invoke capability
         invoked = await self.capabilities.invoke(

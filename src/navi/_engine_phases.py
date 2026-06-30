@@ -98,7 +98,7 @@ class EnginePhasesMixin:
     ) -> AgentTurnResult:
         session_id = session_id or self.runtime.memory.new_session_id()
         self.runtime.memory.add_message(session_id, "user", user_text)
-        self.runtime.memory.add_message(session_id, "assistant", result.text)
+        self.runtime.memory.add_message(session_id, "assistant", result.surfaced_text())
         return replace(
             result,
             session_id=session_id,
@@ -119,6 +119,7 @@ class EnginePhasesMixin:
         peer_id: str,
         sender_id: str,
     ) -> None:
+        surfaced_text = result.surfaced_text()
         self.trace.add_event(
             trace_id=trace_id,
             phase="turn.final",
@@ -128,13 +129,13 @@ class EnginePhasesMixin:
             peer_id=peer_id,
             sender_id=sender_id,
             model_role=result.model_role,
-            ok=True,
+            ok=result.ok,
             output_data={
                 "action": result.action,
                 "terminal": result.terminal,
+                "error_reason": result.error_reason,
             },
-            message=result.text,
+            message=surfaced_text,
         )
         self.trace.evaluate_trace(trace_id)
-
 

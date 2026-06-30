@@ -549,8 +549,14 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
     content_str = str(content).strip()
     if not content_str:
         finish_reason = choice.get("finish_reason", "unknown")
+        response_shape = {
+            "top_level_keys": sorted(str(key) for key in data.keys()),
+            "choice_keys": sorted(str(key) for key in choice.keys()),
+            "message_keys": sorted(str(key) for key in message.keys()),
+        }
         raise RuntimeError(
-            f"Provider response content is empty. Finish reason: {finish_reason}. Raw data: {data}"
+            "Provider response content is empty. "
+            f"Finish reason: {finish_reason}. Response shape: {response_shape}"
         )
     return str(content)
 

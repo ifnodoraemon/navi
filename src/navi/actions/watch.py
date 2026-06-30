@@ -16,6 +16,7 @@ from .helpers import (
     arg_text as _arg_text,
     transition_facts as _transition_facts,
     fact_result as _fact_result,
+    failure_result as _failure_result,
     resolve_workspace as _resolve_workspace,
     float_or_none as _float_or_none,
 )
@@ -49,6 +50,21 @@ class WatchCreateCapability(BaseCapability):
             next_run = _float_or_none(args.get("run_at"))
             if next_run is None:
                 raise SchemaMismatch("watch.create kind=once requires run_at.")
+            now = time.time()
+            if next_run <= now:
+                return _failure_result(
+                    "watch",
+                    "watch.create run_at is not in the future.",
+                    error_reason="schema_mismatch",
+                    facts={
+                        "invalid_field": "run_at",
+                        "invalid_reason": "run_at_not_future",
+                        "provided_run_at": next_run,
+                        "provided_run_text": time.ctime(next_run),
+                        "now": now,
+                        "now_text": time.ctime(now),
+                    },
+                )
             cron = "once"
         else:
             kind = "recurring"
@@ -58,7 +74,18 @@ class WatchCreateCapability(BaseCapability):
                 validate_cron(cron)
                 next_run = next_cron_time(cron)
             except ValueError as exc:
-                raise SchemaMismatch(f"Invalid cron: {exc}") from exc
+                return _failure_result(
+                    "watch",
+                    f"Invalid cron: {exc}",
+                    error_reason="schema_mismatch",
+                    facts={
+                        "invalid_field": "cron",
+                        "invalid_reason": str(exc),
+                        "provided_cron": cron,
+                        "provided_field_count": len(cron.split()),
+                        "expected_format": "5-field cron: minute hour day month weekday",
+                    },
+                )
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         workspace = _resolve_workspace(context.workspace, default=self.project_dir)
@@ -78,6 +105,7 @@ class WatchCreateCapability(BaseCapability):
         )
         facts = {
             **_transition_facts("watch", watch.id, "created"),
+            "completion_evidence": True,
             "watch_id": watch.id,
             "cron": watch.cron,
             "kind": watch.kind,
@@ -85,6 +113,7 @@ class WatchCreateCapability(BaseCapability):
             "next_run_at": watch.next_run_at,
             "next_run_text": time.ctime(watch.next_run_at),
         }
+        facts["surface_message"] = _watch_created_surface_message(facts)
         return _fact_result(
             "watch",
             facts,
@@ -121,9 +150,19 @@ class WatchDeleteCapability(BaseCapability):
             "cron": deleted.cron,
             "prompt": deleted.prompt,
             "reason": reason,
+            "surface_message": f"Watch deleted: {deleted.id}.",
         }
         return _fact_result(
             "watch",
             facts,
             run_id=deleted.id,
         )
+
+
+def _watch_created_surface_message(facts: dict[str, Any]) -> str:
+    next_run_text = str(facts.get("next_run_text") or "").strip()
+    kind = str(facts.get("kind") or "").strip()
+    cron = str(facts.get("cron") or "").strip()
+    if kind == "recurring":
+        return f"Recurring watch created. Next run: {next_run_text}. Cron: {cron}."
+    return f"Watch created. Run at: {next_run_text}."

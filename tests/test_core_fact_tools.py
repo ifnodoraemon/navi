@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
+from navi.core_tools.utils import _web_search
 from navi.tools import build_tool_gateway
 
 
@@ -31,3 +33,48 @@ def test_directory_list_returns_workspace_entries(tmp_path: Path) -> None:
     names = {entry["name"] for entry in result.facts["entries"]}
     assert "visible.txt" in names
     assert ".hidden" not in names
+    assert "response" not in result.facts
+
+
+def test_web_search_uses_reachable_bing_endpoint(monkeypatch) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(cmd, **kwargs):
+        del kwargs
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="<html><body>Search result</body></html>",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = _web_search({"query": "navi smoke"})
+
+    assert result.ok is True
+    assert "https://www.bing.com/search?q=navi%20smoke" in captured["cmd"]
+    assert result.facts["provider"] == "curl_bing"
+    assert "Search result" in result.facts["response"]["text"]
+
+
+def test_web_search_returns_curl_transport_facts(monkeypatch) -> None:
+    def fake_run(cmd, **kwargs):
+        del kwargs
+        return subprocess.CompletedProcess(
+            cmd,
+            35,
+            stdout="",
+            stderr="SSL_ERROR_SYSCALL",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = _web_search({"query": "navi smoke"})
+
+    assert result.ok is False
+    assert result.facts["provider"] == "curl_bing"
+    assert result.facts["error_reason"] == "search_provider_error"
+    assert result.facts["curl_exit_code"] == 35
+    assert result.facts["stderr"] == "SSL_ERROR_SYSCALL"

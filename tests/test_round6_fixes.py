@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,15 @@ from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.control import ApprovalService, CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.core_tools import _resolve_binary_error, _run_command
+from navi.engine import HernessEngine
+from navi.engine_types import AgentTurnResult
+from navi.loop import LoopDecisionKind, LoopProgressGate, LoopReason
+from navi.loop_control import (
+    LoopControlEffect,
+    LoopControlResult,
+    RuntimeStepFrame,
+    reduce_runtime_step,
+)
 from navi.provider import (
     ChatMessage,
     FallbackProvider,
@@ -171,6 +181,105 @@ def test_approval_resolve_accepts_visible_batch_id(tmp_path: Path) -> None:
     assert all(approval.status == "approved" for approval in runs.list_approvals(limit=10))
 
 
+def test_current_state_facts_include_current_time(tmp_path: Path) -> None:
+    context = SurfaceContext(
+        home=tmp_path,
+        source="connector.weixin",
+        peer_id="weixin-peer",
+        sender_id="weixin-user",
+    )
+
+    before = time.time()
+    facts = current_state_facts(CurrentStateBuilder(tmp_path).build(context))
+    after = time.time()
+
+    current_time = facts["current_time"]
+    assert before <= current_time["unix"] <= after
+    assert "T" in current_time["iso"]
+    assert isinstance(current_time["timezone"], str)
+    assert isinstance(current_time["utc_offset"], str)
+
+
+def test_current_turn_state_transition_is_completion_evidence() -> None:
+    control = reduce_runtime_step(
+        RuntimeStepFrame(
+            result=AgentTurnResult(text="", action="watch", ok=True, run_id="watch-1"),
+            facts={
+                "entity_type": "watch",
+                "entity_id": "watch-1",
+                "state_transition": "created",
+                "turn_scope": "current",
+            },
+            tool="watch.create",
+            progress_signature="watch-created",
+            goal_ids=set(),
+            observations_count=2,
+        ),
+        progress_gate=LoopProgressGate(),
+    )
+
+    assert control.effect == LoopControlEffect.FINALIZE_STABLE
+    assert control.decisions[0].decision == LoopDecisionKind.FINALIZE
+    assert control.decisions[0].reason == LoopReason.COMPLETION_EVIDENCE_TRUE
+
+
+def test_failed_state_transition_is_not_completion_evidence() -> None:
+    control = reduce_runtime_step(
+        RuntimeStepFrame(
+            result=AgentTurnResult(text="", action="error", ok=False, error_reason="schema_mismatch"),
+            facts={
+                "entity_type": "watch",
+                "entity_id": "watch-1",
+                "state_transition": "created",
+                "turn_scope": "current",
+            },
+            tool="watch.create",
+            progress_signature="watch-failed",
+            goal_ids=set(),
+            observations_count=2,
+        ),
+        progress_gate=LoopProgressGate(),
+    )
+
+    assert control.effect == LoopControlEffect.CONTINUE_LOOP
+    assert control.decisions[0].decision == LoopDecisionKind.CONTINUE
+
+
+def test_completion_surface_text_prefers_capability_surface_message() -> None:
+    result = AgentTurnResult(
+        text='{"raw": "facts"}',
+        action="watch",
+        facts={"surface_message": "Recurring watch created. Next run: soon."},
+    )
+    control = LoopControlResult(effect=LoopControlEffect.FINALIZE_STABLE, decisions=())
+
+    assert (
+        HernessEngine._completion_surface_text(result, control)
+        == "Recurring watch created. Next run: soon."
+    )
+
+
+def test_completion_surface_text_falls_back_to_transition_facts() -> None:
+    result = AgentTurnResult(
+        text='{"raw": "facts"}',
+        action="delegation",
+        facts={
+            "entity_type": "bulk_delete",
+            "entity_id": "runs",
+            "state_transition": "completed",
+            "turn_scope": "current",
+            "completion_evidence": True,
+            "deleted_count": 1,
+            "remaining_count": 0,
+        },
+    )
+    control = LoopControlResult(effect=LoopControlEffect.FINALIZE_STABLE, decisions=())
+
+    assert HernessEngine._completion_surface_text(result, control) == (
+        "Completed: bulk_delete completed (runs) [deleted_count=1, remaining_count=0]."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fix 3: governance capabilities exempt from second-level approval
 # ---------------------------------------------------------------------------
@@ -224,7 +333,7 @@ async def test_governance_capabilities_not_suspended_in_governed_run(
 
 
 @pytest.mark.asyncio
-async def test_approval_resolve_allows_fuzzy_approval_without_code(
+async def test_approval_resolve_rejects_hidden_code_without_user_evidence(
     tmp_path: Path,
 ) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
@@ -260,9 +369,66 @@ async def test_approval_resolve_allows_fuzzy_approval_without_code(
         context=context,
     )
 
-    assert result.ok is True
-    assert "approved" in result.observation.lower()
-    assert "approval code was not present" not in result.observation.lower()
+    assert result.ok is False
+    assert result.error_reason == "approval_evidence_missing"
+    observation = json.loads(result.observation)
+    assert observation["reason"] == "approval_code_not_in_user_input"
+    assert runs.get(run.id).status != "queued"
+
+
+@pytest.mark.asyncio
+async def test_approval_resolve_batch_requires_model_supplied_user_evidence(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    runs = RunStore(tmp_path)
+    for title in ("a", "b"):
+        run = runs.create(
+            title,
+            prompt=title,
+            source="connector.weixin",
+            peer_id="weixin-peer",
+            sender_id="weixin-user",
+            workspace=str(tmp_path),
+            kind="delegation",
+        )
+        runs.create_approval(
+            run_id=run.id,
+            peer_id="weixin-peer",
+            sender_id="weixin-user",
+        )
+    context = CapabilityContext(
+        home=tmp_path,
+        peer_id="weixin-peer",
+        sender_id="weixin-user",
+        source="connector.weixin",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+        input_text="批准最新的",
+    )
+
+    missing = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "selection": "latest_visible_batch"},
+        permission="write",
+        context=context,
+    )
+    assert missing.ok is False
+    assert json.loads(missing.observation)["reason"] == "approval_user_evidence_required"
+
+    approved = await registry.invoke(
+        "approval.resolve",
+        {
+            "decision": "approve",
+            "selection": "latest_visible_batch",
+            "approval_evidence": "批准最新的",
+        },
+        permission="write",
+        context=context,
+    )
+
+    assert approved.ok is True
+    assert approved.facts["resolved_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -508,6 +674,83 @@ async def test_watch_delete_does_not_require_model_reason(
     assert result.facts["deleted"] is True
     assert result.facts["reason"] == ""
     assert RunStore(tmp_path).get_watch(watch.id) is None
+
+
+@pytest.mark.asyncio
+async def test_watch_create_rejects_past_once_run_at_with_facts(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+
+    result = await registry.invoke(
+        "watch.create",
+        {"kind": "once", "prompt": "send reminder", "run_at": time.time() - 60},
+        permission="prepare",
+        context=context,
+    )
+
+    assert result.ok is False
+    assert result.error_reason == "schema_mismatch"
+    assert result.facts["invalid_field"] == "run_at"
+    assert result.facts["invalid_reason"] == "run_at_not_future"
+    assert result.facts["provided_run_at"] < result.facts["now"]
+
+
+@pytest.mark.asyncio
+async def test_watch_create_invalid_cron_preserves_format_facts(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+
+    result = await registry.invoke(
+        "watch.create",
+        {"kind": "recurring", "prompt": "send reminder", "cron": "0 11 54 * * *"},
+        permission="prepare",
+        context=context,
+    )
+
+    assert result.ok is False
+    assert result.error_reason == "schema_mismatch"
+    assert result.facts["invalid_field"] == "cron"
+    assert result.facts["provided_cron"] == "0 11 54 * * *"
+    assert result.facts["provided_field_count"] == 6
+    assert result.facts["expected_format"] == "5-field cron: minute hour day month weekday"
+
+
+@pytest.mark.asyncio
+async def test_watch_create_success_is_completion_evidence(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+
+    result = await registry.invoke(
+        "watch.create",
+        {"kind": "once", "prompt": "send reminder", "run_at": time.time() + 3600},
+        permission="prepare",
+        context=context,
+    )
+
+    assert result.ok is True
+    assert result.error_reason == ""
+    assert result.facts["state_transition"] == "created"
+    assert result.facts["turn_scope"] == "current"
+    assert result.facts["completion_evidence"] is True
+    assert result.facts["surface_message"].startswith("Watch created.")
 
 
 # ---------------------------------------------------------------------------

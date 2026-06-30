@@ -1,8 +1,12 @@
 """Core tool handlers."""
 from __future__ import annotations
+
 import os
-from urllib.parse import urlparse
 from typing import Any
+from urllib.parse import urlparse
+
+from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY
+
 from .paths import _is_blocked_http_host, _is_public_http_host
 from ..tools import ToolResult
 
@@ -11,6 +15,7 @@ from ..tools import ToolResult
 _FORBIDDEN_FETCH_HEADERS = frozenset(
     {"host", "content-length", "transfer-encoding", "connection"}
 )
+
 
 def _truncate_output(value: str, *, limit: int = 12000) -> str:
     text = str(value or "")
@@ -28,10 +33,10 @@ def _positive_int(value: Any, *, default: int, maximum: int) -> int:
 
 
 def _web_search(args: dict[str, Any]) -> ToolResult:
-    import urllib.parse
-    import subprocess
     import re
-    
+    import subprocess
+    import urllib.parse
+
     query = args.get("query")
     if not query:
         return ToolResult(
@@ -43,41 +48,59 @@ def _web_search(args: dict[str, Any]) -> ToolResult:
                 "provider": "curl_bing",
             },
         )
-    
+
     encoded = urllib.parse.quote(query)
-    url = f"https://cn.bing.com/search?q={encoded}"
-    
+    url = f"https://www.bing.com/search?q={encoded}"
+
     try:
-        # Use curl to fetch the page, mimicking a standard browser
         result = subprocess.run(
             [
-                "curl", "-sL", 
-                "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
-                url
+                "curl",
+                "-sL",
+                "-A",
+                (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                url,
             ],
             capture_output=True,
             text=True,
-            check=True,
-            timeout=15
+            check=False,
+            timeout=15,
         )
+        if result.returncode != 0:
+            stderr = _truncate_output(result.stderr.strip(), limit=2000)
+            return ToolResult(
+                tool="web.search",
+                ok=False,
+                error=stderr or f"curl exited with status {result.returncode}",
+                facts={
+                    CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
+                    "query": query,
+                    "provider": "curl_bing",
+                    "curl_exit_code": result.returncode,
+                    "stderr": stderr,
+                },
+            )
         html = result.stdout
-        
-        # Simple HTML stripping
-        # 1. Remove script, style, SVG, etc.
-        html = re.sub(r'<(script|style|svg|symbol|use|path).*?>.*?</\1>', ' ', html, flags=re.IGNORECASE | re.DOTALL)
-        # 2. Remove tags but keep spaces
-        text = re.sub(r'<[^>]+>', ' ', html)
-        # 3. Collapse whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
-        
+
+        html = re.sub(
+            r"<(script|style|svg|symbol|use|path).*?>.*?</\1>",
+            " ",
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        text = re.sub(r"<[^>]+>", " ", html)
+        text = re.sub(r"\s+", " ", text).strip()
+
         facts = {
             "query": query,
             "provider": "curl_bing",
-            "response": {
-                "text": text[:15000] # Limit size to prevent blowing up the context window
-            }
+            "response": {"text": text[:15000]},
         }
-        
+
         return ToolResult(tool="web.search", ok=True, facts=facts)
     except subprocess.TimeoutExpired:
         return ToolResult(
@@ -207,4 +230,3 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
         return ToolResult(
             tool="http.fetch", ok=False, error=str(exc), facts={"url": url, "method": method}
         )
-

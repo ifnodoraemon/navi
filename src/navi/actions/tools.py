@@ -81,7 +81,7 @@ class ToolCapability:
             observation=observation,
             message=result.error if not result.ok else "",
             facts=facts,
-            error_reason=error_reason or "unknown",
+            error_reason=error_reason,
         )
 
 

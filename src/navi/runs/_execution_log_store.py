@@ -80,14 +80,16 @@ class ExecutionLogStoreMixin:
         started_at: float,
         ended_at: float,
     ) -> ExecutionLog:
+        from ..safeguards import redact_personal_data
+
         log = ExecutionLog(
             id=uuid.uuid4().hex,
             run_id=run_id,
             provider=provider,
             phase=phase,
             command=command,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=redact_personal_data(stdout),
+            stderr=redact_personal_data(stderr),
             exit_code=exit_code,
             started_at=started_at,
             ended_at=ended_at,

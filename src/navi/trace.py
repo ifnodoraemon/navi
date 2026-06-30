@@ -114,6 +114,7 @@ class TraceStore:
             )
             conn.execute(TRACE_BLOBS_TABLE.ddl)
             _ensure_schema_current(conn, TRACE_BLOBS_TABLE)
+        self._redact_existing_trace_data()
         self.clean_old_traces()
 
     def clean_old_traces(self, days: int = 30) -> None:
@@ -121,8 +122,46 @@ class TraceStore:
         cutoff = __import__("time").time() - (days * 24 * 3600)
         with connect(self.db_path) as conn:
             conn.execute("DELETE FROM trace_events WHERE created_at < ?", (cutoff,))
-            # We don't clean trace_blobs here since multiple events might reference them, 
+            # We don't clean trace_blobs here since multiple events might reference them,
             # or we could delete orphaned blobs later if needed.
+
+    def _redact_existing_trace_data(self) -> None:
+        with connect(self.db_path) as conn:
+            for event_id, input_json, output_json, message in conn.execute(
+                "SELECT id, input_json, output_json, message FROM trace_events"
+            ).fetchall():
+                redacted_input = _redact_json_text(input_json)
+                redacted_output = _redact_json_text(output_json)
+                redacted_message = str(_redact(message))
+                if (
+                    redacted_input != input_json
+                    or redacted_output != output_json
+                    or redacted_message != message
+                ):
+                    conn.execute(
+                        """
+                        UPDATE trace_events
+                        SET input_json = ?, output_json = ?, message = ?
+                        WHERE id = ?
+                        """,
+                        (redacted_input, redacted_output, redacted_message, event_id),
+                    )
+            for evaluation_id, evidence_json in conn.execute(
+                "SELECT id, evidence_json FROM trace_evaluations"
+            ).fetchall():
+                redacted_evidence = _redact_json_text(evidence_json)
+                if redacted_evidence != evidence_json:
+                    conn.execute(
+                        "UPDATE trace_evaluations SET evidence_json = ? WHERE id = ?",
+                        (redacted_evidence, evaluation_id),
+                    )
+            for blob_hash, content in conn.execute("SELECT hash, content FROM trace_blobs").fetchall():
+                redacted_content = str(_redact(content))
+                if redacted_content != content:
+                    conn.execute(
+                        "UPDATE trace_blobs SET content = ? WHERE hash = ?",
+                        (redacted_content, blob_hash),
+                    )
 
     @staticmethod
     def new_trace_id() -> str:
@@ -276,42 +315,57 @@ class TraceStore:
 
     def list_trace_meta(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None) -> list[dict[str, Any]]:
         query = """
-            SELECT 
-                t.trace_id, 
-                (SELECT ok FROM trace_events WHERE trace_id = t.trace_id ORDER BY created_at DESC LIMIT 1) as final_ok, 
-                t.start_time, 
-                t.end_time, 
-                t.step_count
-            FROM (
-                SELECT trace_id, MIN(created_at) as start_time, MAX(created_at) as end_time, COUNT(id) as step_count
-                FROM trace_events
-                GROUP BY trace_id
-            ) t
+            SELECT
+                trace_id,
+                MIN(created_at) as start_time,
+                MAX(created_at) as end_time,
+                COUNT(id) as step_count,
+                SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) as failed_event_count
+            FROM trace_events
+            GROUP BY trace_id
+            ORDER BY end_time DESC
         """
-        if has_error is True:
-            query += " WHERE final_ok = 0"
-        elif has_error is False:
-            query += " WHERE final_ok != 0"
-
-        query += " ORDER BY t.end_time DESC LIMIT ? OFFSET ?"
         with connect(self.db_path) as conn:
-            rows = conn.execute(query, (limit, offset)).fetchall()
+            rows = conn.execute(query).fetchall()
 
-        return [
-            {
-                "trace_id": row[0],
-                "has_error": row[1] == 0,
-                "start_time": row[2],
-                "end_time": row[3],
-                "duration": max(0.0, row[3] - row[2]),
-                "step_count": row[4]
-            }
-            for row in rows
-        ]
+        metas: list[dict[str, Any]] = []
+        skipped = 0
+        for trace_id, start_time, end_time, step_count, failed_event_count in rows:
+            outcome, failure_domain = self._trace_list_outcome(trace_id)
+            trace_has_issue = outcome != str(TraceOutcome.SUCCESS)
+            if has_error is not None and trace_has_issue is not has_error:
+                continue
+            if skipped < offset:
+                skipped += 1
+                continue
+            metas.append(
+                {
+                    "trace_id": trace_id,
+                    "has_error": trace_has_issue,
+                    "outcome": outcome,
+                    "failure_domain": failure_domain,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "duration": max(0.0, end_time - start_time),
+                    "step_count": step_count,
+                    "failed_event_count": failed_event_count,
+                }
+            )
+            if len(metas) >= limit:
+                break
+        return metas
 
     def list_trace_ids(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None) -> list[str]:
         return [m["trace_id"] for m in self.list_trace_meta(limit=limit, offset=offset, has_error=has_error)]
 
+    def _trace_list_outcome(self, trace_id: str) -> tuple[str, str]:
+        latest = self.list_evaluations(trace_id, limit=1)
+        if latest:
+            evaluation = latest[0]
+            return evaluation.outcome, evaluation.failure_domain
+        events = self.list_events(trace_id)
+        draft = _evaluate_trace_with_rules(events, _base_trace_evidence(events))
+        return draft.outcome, draft.failure_domain
 
     def _fetch_blobs(self, hashes: set[str]) -> dict[str, str]:
         if not hashes:
@@ -466,6 +520,14 @@ def _redact(value: Any) -> Any:
     if isinstance(value, str):
         return redact_personal_data(value)
     return value
+
+
+def _redact_json_text(text: str) -> str:
+    try:
+        parsed = json.loads(text or "{}")
+    except json.JSONDecodeError:
+        return str(_redact(text or ""))
+    return json.dumps(_redact(parsed), ensure_ascii=False, sort_keys=True)
 
 
 def _event_output(event: TraceEvent) -> dict[str, Any]:

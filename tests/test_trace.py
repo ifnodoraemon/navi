@@ -25,9 +25,14 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
             "api_key": "secret",
             "nested": {"password": "pw"},
             "items": [{"token": "tok"}, {"safe": "value"}],
+            "resume_text": "phone 15709610082 email ifnodoraemon@example.com",
         },
-        output_data={"approval_code": "123456", "safe": "ok"},
-        message="planned",
+        output_data={
+            "approval_code": "123456",
+            "safe": "ok",
+            "contact": "15709610082 ifnodoraemon@example.com",
+        },
+        message="planned for ifnodoraemon@example.com 15709610082",
     )
     store.add_loop_decision(
         trace_id=trace_id,
@@ -48,8 +53,12 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
         "api_key": "[redacted]",
         "items": [{"token": "[redacted]"}, {"safe": "value"}],
         "nested": {"password": "[redacted]"},
+        "resume_text": "phone [REDACTED_PHONE] email [REDACTED_EMAIL]",
     }
     assert json.loads(events[0].output_json)["approval_code"] == "[redacted]"
+    assert "[REDACTED_PHONE]" in json.loads(events[0].output_json)["contact"]
+    assert "[REDACTED_EMAIL]" in json.loads(events[0].output_json)["contact"]
+    assert events[0].message == "planned for [REDACTED_EMAIL] [REDACTED_PHONE]"
     assert len(decisions) == 1
     assert json.loads(decisions[0].output_json)["evidence"]["api_key"] == "[redacted]"
     assert runs[0].id == trace_id
@@ -61,6 +70,80 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
     assert runs[2].name == "loop.decision"
     assert runs[2].parent_run_id == trace_id
     assert runs[2].feedback == {}
+
+
+def test_trace_store_redacts_legacy_rows_on_init(tmp_path):
+    TraceStore(tmp_path)
+    with connect(tmp_path / "traces.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO trace_blobs(hash, content) VALUES (?, ?)
+            """,
+            (
+                "legacy-hash",
+                "简历 电话：15709610082 邮箱：ifnodoraemon@example.com",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO trace_events(
+                id, trace_id, session_id, run_id, phase, source, peer_id,
+                sender_id, tool, model_role, ok, input_json, output_json,
+                message, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "event-legacy",
+                "trace-legacy",
+                "",
+                "",
+                "capability.result",
+                "",
+                "",
+                "",
+                "file.read",
+                "planner",
+                1,
+                json.dumps({"query": "ifnodoraemon@example.com"}),
+                json.dumps({"content": {"$blob": "legacy-hash"}}),
+                "已读取 15709610082 ifnodoraemon@example.com",
+                2_000_000_000.0,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO trace_evaluations(
+                id, trace_id, outcome, failure_domain, evidence_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "eval-legacy",
+                "trace-legacy",
+                "success",
+                "none",
+                json.dumps({"contact": "15709610082 ifnodoraemon@example.com"}),
+                2_000_000_000.0,
+            ),
+        )
+
+    store = TraceStore(tmp_path)
+    event = store.list_events("trace-legacy")[0]
+    evaluation = store.list_evaluations("trace-legacy")[0]
+
+    assert "15709610082" not in event.input_json
+    assert "ifnodoraemon@example.com" not in event.input_json
+    assert "15709610082" not in event.output_json
+    assert "ifnodoraemon@example.com" not in event.output_json
+    assert event.message == "已读取 [REDACTED_PHONE] [REDACTED_EMAIL]"
+    assert "15709610082" not in evaluation.evidence_json
+    assert "ifnodoraemon@example.com" not in evaluation.evidence_json
+    with connect(tmp_path / "traces.db") as conn:
+        blob_content = conn.execute(
+            "SELECT content FROM trace_blobs WHERE hash = ?", ("legacy-hash",)
+        ).fetchone()[0]
+    assert blob_content == "简历 电话：[REDACTED_PHONE] 邮箱：[REDACTED_EMAIL]"
 
 
 def test_trace_store_reinitializes_schema_drift(tmp_path):
@@ -504,3 +587,44 @@ def test_trace_store_evaluates_failure_domains(tmp_path):
     assert loop_evidence["loop_decisions"][0]["failed_gates"] == ["approval_gate"]
     assert missing_eval.outcome == "unknown"
     assert missing_eval.failure_domain == "trace_missing"
+
+
+def test_trace_meta_uses_evaluation_outcome_not_final_event_status(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_event(
+        trace_id="trace-degraded",
+        phase="capability.result",
+        ok=False,
+        tool="web.search",
+        message="search provider failed",
+    )
+    store.add_loop_decision(
+        trace_id="trace-degraded",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.CONVERGED,
+            reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
+            failure_domain=TraceFailureDomain.LOOP_NO_PROGRESS,
+            gate_results=(
+                LoopCheckResult(
+                    name=LoopCheckName.NO_PROGRESS_GATE,
+                    passed=False,
+                    severity="warning",
+                    reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
+                ),
+            ),
+        ),
+    )
+    store.add_event(trace_id="trace-degraded", phase="turn.final", ok=True)
+    store.evaluate_trace("trace-degraded")
+    store.add_event(trace_id="trace-success", phase="turn.start", ok=True)
+    store.add_event(trace_id="trace-success", phase="turn.final", ok=True)
+    store.evaluate_trace("trace-success")
+
+    meta_by_id = {item["trace_id"]: item for item in store.list_trace_meta()}
+
+    assert meta_by_id["trace-degraded"]["has_error"] is True
+    assert meta_by_id["trace-degraded"]["outcome"] == "degraded"
+    assert meta_by_id["trace-degraded"]["failure_domain"] == "loop_no_progress"
+    assert meta_by_id["trace-degraded"]["failed_event_count"] == 1
+    assert set(store.list_trace_ids(has_error=True)) == {"trace-degraded"}
+    assert set(store.list_trace_ids(has_error=False)) == {"trace-success"}

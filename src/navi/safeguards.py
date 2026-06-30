@@ -80,11 +80,28 @@ _SECRET_PATTERNS: list[tuple[str, str]] = [
     (r"(?<=:)[^@\s:]+(?=@)", "[REDACTED]"),
 ]
 
+_PERSONAL_DATA_PATTERNS: list[tuple[str, str]] = [
+    (
+        r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+        "[REDACTED_EMAIL]",
+    ),
+    (r"(?<!\d)1[3-9]\d{9}(?!\d)", "[REDACTED_PHONE]"),
+]
+
 
 def redact_secrets(text: str) -> str:
     if not isinstance(text, str):
         return text
     for pattern, replacement in _SECRET_PATTERNS:
+        text = re.sub(pattern, replacement, text)
+    return text
+
+
+def redact_personal_data(text: str) -> str:
+    if not isinstance(text, str):
+        return text
+    text = redact_secrets(text)
+    for pattern, replacement in _PERSONAL_DATA_PATTERNS:
         text = re.sub(pattern, replacement, text)
     return text
 

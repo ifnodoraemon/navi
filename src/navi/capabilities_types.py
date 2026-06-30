@@ -82,7 +82,7 @@ class CapabilityResult:
     terminal: bool = False
     facts: dict[str, Any] | None = None
     provenance: str = ""
-    error_reason: str = "unknown"
+    error_reason: str = ""
     yields_control: bool = False
 
 

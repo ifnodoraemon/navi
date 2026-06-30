@@ -168,7 +168,9 @@ def test_recovery_runtime_records_facts_not_recommendations() -> None:
     sources = [
         (PROJECT_ROOT / "src/navi/recovery.py").read_text(encoding="utf-8"),
         (PROJECT_ROOT / "src/navi/engine.py").read_text(encoding="utf-8"),
+        (PROJECT_ROOT / "src/navi/loop_control.py").read_text(encoding="utf-8"),
         (PROJECT_ROOT / "src/navi/trace.py").read_text(encoding="utf-8"),
+        (PROJECT_ROOT / "src/navi/actions/delegation.py").read_text(encoding="utf-8"),
     ]
     forbidden = (
         "recommended",
@@ -176,6 +178,17 @@ def test_recovery_runtime_records_facts_not_recommendations() -> None:
         "Retry the last capability",
         "Create a rollback proposal",
         "Report current status",
+        "System Warning",
+        "System Block",
+        "Stop repeating",
+        "switch to a different strategy",
+        "ask the user for help",
+        "reflection_prompt",
+        "synthesizing stable observations",
+        "Please formulate your final reply",
+        "The objective has been successfully met",
+        "DO NOT call delegate.spawn again",
+        "MUST output",
     )
     for source in sources:
         for token in forbidden:

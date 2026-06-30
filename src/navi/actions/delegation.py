@@ -180,6 +180,9 @@ class DelegateSpawnCapability(BaseCapability):
             "autonomy_level": task.autonomy_level,
             "trust_rule_id": task.trust_rule_id,
         }
+
+        if task.status == "awaiting_approval":
+            facts["requires_user_approval"] = True
         approvals = runs._approvals_for_run(task.id)
         if approvals:
             facts["approval"] = {
