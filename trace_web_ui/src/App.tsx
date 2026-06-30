@@ -899,8 +899,8 @@ function App() {
             )}
 
             {viewMode === 'timeline' && (
-              <div className="timeline-view glass-panel" style={{ padding: 20, marginTop: 20, borderRadius: 8, overflowX: 'auto', background: 'rgba(0,0,0,0.4)' }}>
-                <div style={{ position: 'relative', width: '100%', minWidth: 800, minHeight: allRuns.length * 36 + 40 }}>
+              <div className="timeline-view glass-panel" style={{ padding: '30px 20px 20px', marginTop: 20, borderRadius: 8, overflowX: 'auto', background: 'rgba(0,0,0,0.4)' }}>
+                <div style={{ position: 'relative', width: '100%', minWidth: Math.max(1200, totalDuration * 80), minHeight: allRuns.length * 36 + 40 }}>
                   {[0, 25, 50, 75, 100].map(pct => (
                     <div key={pct} style={{ position: 'absolute', left: `${pct}%`, top: 0, bottom: 0, borderLeft: '1px dashed rgba(255,255,255,0.1)', zIndex: 0 }}>
                        <span style={{ position: 'absolute', top: -20, left: -10, fontSize: '0.65rem', color: 'var(--text-secondary)' }}>{((pct / 100) * totalDuration).toFixed(1)}s</span>
