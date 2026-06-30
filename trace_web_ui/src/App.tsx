@@ -5,9 +5,38 @@ import { Activity, Code, CheckCircle2, XCircle, Search, Clock, ChevronDown, Chev
 import { JsonView } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 import ReactMarkdown from 'react-markdown';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import type { TraceData, TraceMeta, TraceRunView } from './types';
 import './App.css';
 
+const SmartMarkdown = ({ children }: { children: string }) => {
+  return (
+    <ReactMarkdown
+      components={{
+        code({node, className, children, ...props}: any) {
+          const match = /language-(\w+)/.exec(className || '')
+          return match ? (
+            <SyntaxHighlighter
+              style={vscDarkPlus as any}
+              language={match[1]}
+              PreTag="div"
+              {...props}
+            >
+              {String(children).replace(/\n$/, '')}
+            </SyntaxHighlighter>
+          ) : (
+            <code className={className} {...props}>
+              {children}
+            </code>
+          )
+        }
+      }}
+    >
+      {children}
+    </ReactMarkdown>
+  );
+};
 
 const CollapsibleJson = ({ title, jsonStr, defaultOpen = false }: { title: string, jsonStr: string | object | null, defaultOpen?: boolean }) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
@@ -43,7 +72,7 @@ const CollapsibleJson = ({ title, jsonStr, defaultOpen = false }: { title: strin
       if (parsed.includes('\n') || parsed.includes('```') || parsed.includes('**')) {
         return (
           <div className="markdown-body" style={{ fontSize: '0.85rem' }}>
-            <ReactMarkdown>{parsed}</ReactMarkdown>
+            <SmartMarkdown>{parsed}</SmartMarkdown>
           </div>
         );
       } else {
@@ -121,7 +150,8 @@ const RunNode = ({
   autoExpand = false,
   showLLM = true,
   showTool = true,
-  showEngine = true
+  showEngine = true,
+  bottleneckRunId = ''
 }: {
   run: TraceRunView,
   allRuns: TraceRunView[],
@@ -131,7 +161,8 @@ const RunNode = ({
   autoExpand?: boolean,
   showLLM?: boolean,
   showTool?: boolean,
-  showEngine?: boolean
+  showEngine?: boolean,
+  bottleneckRunId?: string
 }) => {
   const [expanded, setExpanded] = useState(depth < 2 || autoExpand);
 
@@ -143,13 +174,10 @@ const RunNode = ({
   const leftPercent = traceTotalDuration > 0 ? (eventStart / traceTotalDuration) * 100 : 0;
   const widthPercent = traceTotalDuration > 0 ? Math.max(0.5, (eventDuration / traceTotalDuration) * 100) : 100;
 
-  const isLLM = run.run_type === 'llm';
-  const isTool = run.run_type === 'tool';
-  const isEngine = !isLLM && !isTool && run.name !== 'Trace';
-  const isVisible = (isLLM && showLLM) || (isTool && showTool) || (isEngine && showEngine) || (!isLLM && !isTool && !isEngine);
+  const isVisible = (run.run_type === 'llm' && showLLM) || (run.run_type === 'tool' && showTool) || (run.run_type === 'engine' && showEngine) || (!['llm', 'tool', 'engine'].includes(run.run_type));
 
   const childrenContent = hasChildren ? (
-    <div className="run-children-list">
+    <div className="run-children">
       {children.map(child => (
         <RunNode
           key={child.id}
@@ -162,6 +190,7 @@ const RunNode = ({
           showLLM={showLLM}
           showTool={showTool}
           showEngine={showEngine}
+          bottleneckRunId={bottleneckRunId}
         />
       ))}
     </div>
@@ -207,13 +236,13 @@ const RunNode = ({
                   <Database size={14} /> Copy Raw Prompt
                 </button>
               </div>
-              <ReactMarkdown>{typeof prompt === 'string' ? prompt : JSON.stringify(prompt)}</ReactMarkdown>
+              <SmartMarkdown>{typeof prompt === 'string' ? prompt : JSON.stringify(prompt)}</SmartMarkdown>
             </div>
           )}
           {completionStr ? (
              <div className="message-box markdown-body" style={{ background: 'rgba(0,0,0,0.3)', padding: '12px', borderRadius: '6px', borderLeft: '3px solid var(--accent-color)' }}>
                <div style={{ fontSize: '0.75rem', opacity: 0.6, marginBottom: 4, textTransform: 'uppercase' }}>Completion</div>
-               <ReactMarkdown>{completionStr}</ReactMarkdown>
+               <SmartMarkdown>{completionStr}</SmartMarkdown>
              </div>
           ) : (
              <CollapsibleJson title="LLM Output" jsonStr={outputs} defaultOpen={true} />
@@ -272,6 +301,8 @@ const RunNode = ({
     initiator = 'ENGINE';
   }
 
+  const isBottleneck = run.id === bottleneckRunId;
+
   return (
     <div className={`run-node depth-${depth} ${expanded ? 'expanded' : 'collapsed'}`}>
       <div
@@ -291,6 +322,11 @@ const RunNode = ({
                  {initiator && (
                    <span style={{ marginRight: 8, fontSize: '0.65rem', fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.1)', color: 'var(--text-secondary)', letterSpacing: '0.02em' }}>
                      {initiator}
+                   </span>
+                 )}
+                 {isBottleneck && (
+                   <span style={{ marginRight: 8, fontSize: '0.65rem', fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', letterSpacing: '0.02em', border: '1px solid rgba(239, 68, 68, 0.4)' }} title="This step consumed the most exclusive execution time">
+                     🔥 BOTTLENECK
                    </span>
                  )}
                  {run.name}
@@ -504,9 +540,36 @@ function App() {
   let firstTime = 0;
   let totalTokensInput = 0;
   let totalTokensOutput = 0;
+  let maxExclusiveTime = 0;
+  let bottleneckRunId = '';
 
   if (traceData && traceData.runs && traceData.runs.length > 0) {
     allRuns = traceData.runs;
+
+    const runDurations = new Map<string, number>();
+    const childDurations = new Map<string, number>();
+    
+    allRuns.forEach(r => {
+      const dur = Math.max(0, r.end_time - r.start_time);
+      runDurations.set(r.id, dur);
+      childDurations.set(r.id, 0);
+    });
+    
+    allRuns.forEach(r => {
+      if (r.parent_run_id && childDurations.has(r.parent_run_id)) {
+         childDurations.set(r.parent_run_id, childDurations.get(r.parent_run_id)! + runDurations.get(r.id)!);
+      }
+    });
+    
+    allRuns.forEach(r => {
+       const dur = runDurations.get(r.id)!;
+       const childDur = childDurations.get(r.id)!;
+       const exclusiveTime = Math.max(0, dur - childDur);
+       if (exclusiveTime > maxExclusiveTime && exclusiveTime > 0.5) {
+          maxExclusiveTime = exclusiveTime;
+          bottleneckRunId = r.id;
+       }
+    });
 
     // Apply filters
     if (searchQuery.trim() !== '' || showErrorsOnly) {
@@ -906,7 +969,7 @@ function App() {
                         {isUser ? 'User' : 'Assistant'}
                       </div>
                       <div className="markdown-body" style={{ fontSize: '0.95rem' }}>
-                        <ReactMarkdown>{typeof text === 'string' ? text : JSON.stringify(text)}</ReactMarkdown>
+                        <SmartMarkdown>{typeof text === 'string' ? text : JSON.stringify(text)}</SmartMarkdown>
                       </div>
                     </div>
                   );
@@ -929,13 +992,14 @@ function App() {
                     const widthPercent = totalDuration > 0 ? Math.max(0.5, (eventDuration / totalDuration) * 100) : 100;
                     let bgColor = 'var(--accent-color)';
                     let fgColor = '#fff';
-                    if (r.status === 'error') bgColor = 'var(--error-color)';
+                    if (r.id === bottleneckRunId) { bgColor = '#ef4444'; fgColor = '#fff'; }
+                    else if (r.status === 'error') bgColor = 'var(--error-color)';
                     else if (r.run_type === 'llm') { bgColor = '#fcd34d'; fgColor = '#000'; }
                     else if (r.run_type === 'tool') bgColor = '#60a5fa';
                     
                     return (
-                      <div key={r.id} style={{ position: 'absolute', top: idx * 36 + 20, left: `${leftPercent}%`, width: `${widthPercent}%`, height: 26, background: bgColor, borderRadius: 4, opacity: 0.9, display: 'flex', alignItems: 'center', padding: '0 8px', overflow: 'hidden', whiteSpace: 'nowrap', fontSize: '0.75rem', color: fgColor, cursor: 'pointer', zIndex: 1, boxShadow: '0 2px 4px rgba(0,0,0,0.3)' }} title={`${r.name} (${eventDuration.toFixed(2)}s)`}>
-                        <span style={{ fontWeight: 600 }}>{r.name}</span>
+                      <div key={r.id} style={{ position: 'absolute', top: idx * 36 + 20, left: `${leftPercent}%`, width: `${widthPercent}%`, height: 26, background: bgColor, borderRadius: 4, opacity: 0.9, display: 'flex', alignItems: 'center', padding: '0 8px', overflow: 'hidden', whiteSpace: 'nowrap', fontSize: '0.75rem', color: fgColor, cursor: 'pointer', zIndex: 1, boxShadow: '0 2px 4px rgba(0,0,0,0.3)' }} title={`${r.name} (${eventDuration.toFixed(2)}s)${r.id === bottleneckRunId ? ' - BOTTLENECK' : ''}`}>
+                        <span style={{ fontWeight: 600 }}>{r.id === bottleneckRunId ? '🔥 ' : ''}{r.name}</span>
                       </div>
                     );
                   })}
