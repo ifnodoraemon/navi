@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { format } from 'date-fns';
-import { Activity, Code, CheckCircle2, XCircle, Search, Clock, ChevronDown, ChevronRight, Zap, Copy, Check, RefreshCw, Timer, ShieldAlert, Layers, Inbox, Send, Download, Play, Pause, Trash2, RotateCcw, Rocket, ListTree, MessageSquare, Database } from 'lucide-react';
+import { Activity, Code, CheckCircle2, XCircle, Search, Clock, ChevronDown, ChevronRight, Zap, Copy, Check, RefreshCw, Timer, ShieldAlert, Layers, Inbox, Send, Download, Play, Pause, Trash2, RotateCcw, Rocket, ListTree, MessageSquare, Database, BarChart2 } from 'lucide-react';
 import { JsonView } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 import ReactMarkdown from 'react-markdown';
@@ -157,8 +157,9 @@ const RunNode = ({
 
   const isError = run.status === 'error';
   const isBlocked = run.status === 'blocked';
+  const isRunning = run.status === 'running';
 
-  const statusClass = isError ? 'error' : isBlocked ? 'blocked' : 'success';
+  const statusClass = isError ? 'error' : isBlocked ? 'blocked' : isRunning ? 'running' : 'success';
   let StatusIcon = isError ? XCircle : isBlocked ? ShieldAlert : CheckCircle2;
   if (run.name === 'Channel Receive') StatusIcon = Inbox;
   if (run.name === 'Channel Send') StatusIcon = Send;
@@ -312,7 +313,7 @@ function App() {
   
   // Phase 3 Titan State
   const [globalSearch, setGlobalSearch] = useState('');
-  const [viewMode, setViewMode] = useState<'tree' | 'chat'>('tree');
+  const [viewMode, setViewMode] = useState<'tree' | 'chat' | 'timeline'>('tree');
   const [filterLLM, setFilterLLM] = useState(true);
   const [filterTool, setFilterTool] = useState(true);
   const [filterEngine, setFilterEngine] = useState(true);
@@ -793,6 +794,9 @@ function App() {
                     <button className={`toggle-btn ${viewMode === 'chat' ? 'active' : ''}`} onClick={() => setViewMode('chat')}>
                       <MessageSquare size={14} style={{marginRight: 6}}/> Chat View
                     </button>
+                    <button className={`toggle-btn ${viewMode === 'timeline' ? 'active' : ''}`} onClick={() => setViewMode('timeline')}>
+                      <BarChart2 size={14} style={{marginRight: 6}}/> Timeline View
+                    </button>
                   </div>
                   
                   {viewMode === 'tree' && (
@@ -859,7 +863,7 @@ function App() {
               </div>
             )}
 
-            {viewMode === 'chat' ? (
+            {viewMode === 'chat' && (
               <div className="chat-view-container glass-panel" style={{ padding: 24, borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 16 }}>
                 {allRuns.filter(r => r.name === 'Channel Receive' || r.name === 'Channel Send').sort((a,b) => a.start_time - b.start_time).map(msg => {
                   const isUser = msg.name === 'Channel Receive';
@@ -877,7 +881,38 @@ function App() {
                   );
                 })}
               </div>
-            ) : (
+            )}
+
+            {viewMode === 'timeline' && (
+              <div className="timeline-view glass-panel" style={{ padding: 20, marginTop: 20, borderRadius: 8, overflowX: 'auto', background: 'rgba(0,0,0,0.4)' }}>
+                <div style={{ position: 'relative', width: '100%', minWidth: 800, minHeight: allRuns.length * 36 + 40 }}>
+                  {[0, 25, 50, 75, 100].map(pct => (
+                    <div key={pct} style={{ position: 'absolute', left: `${pct}%`, top: 0, bottom: 0, borderLeft: '1px dashed rgba(255,255,255,0.1)', zIndex: 0 }}>
+                       <span style={{ position: 'absolute', top: -20, left: -10, fontSize: '0.65rem', color: 'var(--text-secondary)' }}>{((pct / 100) * totalDuration).toFixed(1)}s</span>
+                    </div>
+                  ))}
+                  {allRuns.slice().sort((a,b) => a.start_time - b.start_time).map((r, idx) => {
+                    const eventStart = Math.max(0, (r.start_time - firstTime));
+                    const eventDuration = Math.max(0, r.end_time - r.start_time);
+                    const leftPercent = totalDuration > 0 ? (eventStart / totalDuration) * 100 : 0;
+                    const widthPercent = totalDuration > 0 ? Math.max(0.5, (eventDuration / totalDuration) * 100) : 100;
+                    let bgColor = 'var(--accent-color)';
+                    let fgColor = '#fff';
+                    if (r.status === 'error') bgColor = 'var(--error-color)';
+                    else if (r.run_type === 'llm') { bgColor = '#fcd34d'; fgColor = '#000'; }
+                    else if (r.run_type === 'tool') bgColor = '#60a5fa';
+                    
+                    return (
+                      <div key={r.id} style={{ position: 'absolute', top: idx * 36 + 20, left: `${leftPercent}%`, width: `${widthPercent}%`, height: 26, background: bgColor, borderRadius: 4, opacity: 0.9, display: 'flex', alignItems: 'center', padding: '0 8px', overflow: 'hidden', whiteSpace: 'nowrap', fontSize: '0.75rem', color: fgColor, cursor: 'pointer', zIndex: 1, boxShadow: '0 2px 4px rgba(0,0,0,0.3)' }} title={`${r.name} (${eventDuration.toFixed(2)}s)`}>
+                        <span style={{ fontWeight: 600 }}>{r.name}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {viewMode === 'tree' && (
               <div className="tree-container">
                 {rootRuns.length === 0 ? (
                   <div className="empty-state glass-panel" style={{ padding: 40, marginTop: 20 }}>
