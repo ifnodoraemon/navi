@@ -36,10 +36,20 @@ export interface TraceRunView {
   metadata: any;
 }
 
+export interface TraceEvaluation {
+  id: string;
+  trace_id: string;
+  outcome: string;
+  failure_domain: string;
+  evidence: any;
+  created_at: number;
+}
+
 export interface TraceData {
   events: TraceEvent[];
   runs: TraceRunView[];
   loop_decisions: TraceDecision[];
+  evaluations?: TraceEvaluation[];
 }
 
 export interface TraceMeta {

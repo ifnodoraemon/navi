@@ -231,10 +231,16 @@ const RunNode = ({
   if (run.run_type === 'llm') {
     const usage = run.outputs?.usage || run.inputs?.usage;
     if (usage && usage.total_tokens) {
+      const nodeCost = ((usage.prompt_tokens || 0) * 0.005 / 1000) + ((usage.completion_tokens || 0) * 0.015 / 1000);
       tokenDisplay = (
-        <span style={{ marginLeft: 8, padding: '2px 6px', background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', borderRadius: 4, fontSize: '0.65rem', border: '1px solid rgba(59,130,246,0.3)' }}>
-          {usage.total_tokens} tokens
-        </span>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={{ marginLeft: 8, padding: '2px 6px', background: 'rgba(59, 130, 246, 0.1)', color: '#60a5fa', borderRadius: 4, fontSize: '0.65rem', border: '1px solid rgba(59,130,246,0.2)' }} title={`Prompt: ${usage.prompt_tokens || 0} | Completion: ${usage.completion_tokens || 0}`}>
+            {usage.total_tokens} tokens
+          </span>
+          <span style={{ padding: '2px 6px', background: 'rgba(16, 185, 129, 0.1)', color: '#34d399', borderRadius: 4, fontSize: '0.65rem', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+            ${nodeCost.toFixed(5)}
+          </span>
+        </div>
       );
     }
   }
@@ -370,6 +376,28 @@ function App() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!selectedTrace || tracesMeta.length === 0) return;
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
+
+      const currentIndex = tracesMeta.findIndex(m => m.trace_id === selectedTrace);
+      if (currentIndex === -1) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const next = tracesMeta[currentIndex + 1];
+        if (next) loadTrace(next.trace_id);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prev = tracesMeta[currentIndex - 1];
+        if (prev) loadTrace(prev.trace_id);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedTrace, tracesMeta]);
 
   const fetchTraceIds = async (showRefresh = false) => {
     if (showRefresh) setIsRefreshing(true);
@@ -736,6 +764,26 @@ function App() {
                     </div>
                   </div>
                 </div>
+
+                {traceData.evaluations && traceData.evaluations.length > 0 && (
+                  <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <h3 style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Evaluations</h3>
+                    {traceData.evaluations.map((evalItem: any, idx: number) => (
+                      <div key={idx} className="glass-panel" style={{ padding: 12, borderRadius: 8, borderLeft: evalItem.outcome === 'success' ? '4px solid var(--success-color)' : (evalItem.outcome === 'failure' ? '4px solid var(--error-color)' : '4px solid var(--warning-color)') }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <span className="badge" style={{ background: evalItem.outcome === 'success' ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)', color: evalItem.outcome === 'success' ? '#34d399' : '#fca5a5' }}>
+                            {evalItem.outcome.toUpperCase()}
+                          </span>
+                          <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>{evalItem.failure_domain.replace(/_/g, ' ')}</span>
+                          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', opacity: 0.6 }}>
+                            {new Date(evalItem.created_at * 1000).toLocaleString()}
+                          </span>
+                        </div>
+                        <CollapsibleJson title="Evaluation Evidence" jsonStr={evalItem.evidence} defaultOpen={evalItem.outcome !== 'success'} />
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <div style={{ marginTop: 24, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                   <div className="mode-toggle glass-panel" style={{ display: 'flex', padding: 4, borderRadius: 8, background: 'rgba(0,0,0,0.3)' }}>

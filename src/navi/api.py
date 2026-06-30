@@ -609,6 +609,7 @@ def create_app(home: Path | None = None) -> FastAPI:
                 }
                 for event in store.list_loop_decisions(trace_id)
             ],
+            "evaluations": [item.to_dict() for item in store.list_evaluations(trace_id)],
         }
 
     @app.get(api_path("trace_decisions"))
