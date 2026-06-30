@@ -659,9 +659,16 @@ function App() {
                   className={`trace-item ${selectedTrace === meta.trace_id ? 'active' : ''}`}
                   onClick={() => loadTrace(meta.trace_id)}
                 >
-                  <div className="trace-id" style={{ wordBreak: 'break-all', fontSize: '0.75rem', lineHeight: 1.4, color: meta.has_error ? 'var(--error-color)' : 'inherit', fontWeight: meta.has_error ? 600 : 'normal' }}>
-                    {meta.has_error && <ShieldAlert size={12} style={{display: 'inline', marginRight: 4}}/>}
-                    {meta.trace_id}
+                  <div className="trace-id" style={{ wordBreak: 'break-all', fontSize: '0.75rem', lineHeight: 1.4, color: meta.has_error ? 'var(--error-color)' : 'inherit', fontWeight: meta.has_error ? 600 : 'normal', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                    <span>
+                      {meta.has_error && <ShieldAlert size={12} style={{display: 'inline', marginRight: 4}}/>}
+                      {meta.trace_id}
+                    </span>
+                    {meta.outcome && meta.outcome !== 'success' && meta.outcome !== 'unknown' && (
+                      <span style={{ fontSize: '0.65rem', padding: '2px 4px', borderRadius: 4, background: meta.outcome === 'failure' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)', color: meta.outcome === 'failure' ? '#fca5a5' : '#fcd34d', whiteSpace: 'nowrap', marginLeft: 6 }}>
+                        {meta.failure_domain ? meta.failure_domain.replace(/_/g, ' ') : meta.outcome}
+                      </span>
+                    )}
                   </div>
                   {meta.preview_text && (
                     <div style={{ marginTop: 6, fontSize: '0.8rem', opacity: 0.8, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', color: 'var(--text-secondary)' }}>

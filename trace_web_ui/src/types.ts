@@ -45,6 +45,8 @@ export interface TraceData {
 export interface TraceMeta {
   trace_id: string;
   has_error: boolean;
+  outcome: string;
+  failure_domain: string;
   start_time: number;
   end_time: number;
   duration: number;

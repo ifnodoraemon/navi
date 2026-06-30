@@ -122,8 +122,27 @@ class TraceStore:
         cutoff = __import__("time").time() - (days * 24 * 3600)
         with connect(self.db_path) as conn:
             conn.execute("DELETE FROM trace_events WHERE created_at < ?", (cutoff,))
-            # We don't clean trace_blobs here since multiple events might reference them,
-            # or we could delete orphaned blobs later if needed.
+            self._gc_blobs(conn)
+
+    def _gc_blobs(self, conn: Any) -> None:
+        all_blobs = {row[0] for row in conn.execute("SELECT hash FROM trace_blobs").fetchall()}
+        if not all_blobs:
+            return
+            
+        import re
+        blob_pattern = re.compile(r'"\$blob"\s*:\s*"([^"]+)"')
+        used_blobs = set()
+        
+        for row in conn.execute("SELECT input_json, output_json FROM trace_events").fetchall():
+            if row[0]:
+                used_blobs.update(blob_pattern.findall(row[0]))
+            if row[1]:
+                used_blobs.update(blob_pattern.findall(row[1]))
+                
+        orphaned = all_blobs - used_blobs
+        if orphaned:
+            placeholders = ",".join("?" * len(orphaned))
+            conn.execute(f"DELETE FROM trace_blobs WHERE hash IN ({placeholders})", tuple(orphaned))
 
     def _redact_existing_trace_data(self) -> None:
         with connect(self.db_path) as conn:
@@ -415,6 +434,7 @@ class TraceStore:
             if trace_id:
                 conn.execute("DELETE FROM trace_events WHERE trace_id = ?", (trace_id,))
                 conn.execute("DELETE FROM trace_evaluations WHERE trace_id = ?", (trace_id,))
+                self._gc_blobs(conn)
             else:
                 conn.execute("DELETE FROM trace_events")
                 conn.execute("DELETE FROM trace_evaluations")
