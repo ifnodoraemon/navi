@@ -638,10 +638,10 @@ def create_app(home: Path | None = None) -> FastAPI:
         }
 
     @app.post(api_path("trace_evaluate"))
-    async def trace_evaluate(trace_id: str) -> dict:
+    async def trace_evaluate(trace_id: str, session_id: str = "") -> dict:
         result = await api_capabilities.invoke(
             "trace.evaluate",
-            {"trace_id": trace_id},
+            {"trace_id": trace_id, "session_id": session_id},
             permission="write",
             context=_local_capability_context(home, project_dir=project_dir),
         )

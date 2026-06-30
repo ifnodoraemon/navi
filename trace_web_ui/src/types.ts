@@ -62,4 +62,5 @@ export interface TraceMeta {
   duration: number;
   step_count: number;
   preview_text?: string;
+  thread_id?: string;
 }
