@@ -313,8 +313,8 @@ class TraceStore:
         events = [TraceEvent(*row[:10], bool(row[10]), *row[11:]) for row in rows]
         return self._resolve_events_blobs(events)
 
-    def list_trace_meta(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None) -> list[dict[str, Any]]:
-        query = """
+    def list_trace_meta(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None, query: str = "") -> list[dict[str, Any]]:
+        base_query = """
             SELECT
                 trace_id,
                 MIN(created_at) as start_time,
@@ -322,11 +322,19 @@ class TraceStore:
                 COUNT(id) as step_count,
                 SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) as failed_event_count
             FROM trace_events
+        """
+        params = []
+        if query:
+            base_query += " WHERE trace_id IN (SELECT DISTINCT trace_id FROM trace_events WHERE trace_id LIKE ? OR input_json LIKE ? OR message LIKE ?)"
+            like_query = f"%{query}%"
+            params.extend([like_query, like_query, like_query])
+        
+        base_query += """
             GROUP BY trace_id
             ORDER BY end_time DESC
         """
         with connect(self.db_path) as conn:
-            rows = conn.execute(query).fetchall()
+            rows = conn.execute(base_query, params).fetchall()
 
         metas: list[dict[str, Any]] = []
         skipped = 0
@@ -378,24 +386,39 @@ class TraceStore:
             input_hashes = {v[0] for v in first_by_trace.values() if v[0] and v[0].startswith("blob:")}
             blobs = self._fetch_blobs(input_hashes) if input_hashes else {}
 
+            first_event_map = {}
             for meta in metas:
                 tid = meta["trace_id"]
                 preview_text = ""
+                raw_input = None
+                msg = ""
                 if tid in first_by_trace:
                     raw_input, msg = first_by_trace[tid]
                     if raw_input and raw_input.startswith("blob:"):
                         raw_input = blobs.get(raw_input, raw_input)
-                    if raw_input and raw_input.strip() and raw_input != "{}":
-                        try:
-                            parsed = json.loads(raw_input)
-                            preview_text = parsed.get("text", parsed.get("message", msg))
-                        except Exception:
-                            preview_text = msg
-                    else:
-                        preview_text = msg
-                meta["preview_text"] = str(preview_text or "")
+                if raw_input and raw_input.strip() and raw_input != "{}":
+                    try:
+                        parsed = json.loads(raw_input)
+                        preview_text = parsed.get("text", parsed.get("message", msg))
+                    except Exception:
+                        pass
+                if not preview_text:
+                    preview_text = msg
+                first_event_map[tid] = preview_text
+            for meta in metas:
+                meta["preview_text"] = first_event_map.get(meta["trace_id"], "")
 
         return metas
+
+    def delete_traces(self, trace_id: str | None = None) -> None:
+        with connect(self.db_path) as conn:
+            if trace_id:
+                conn.execute("DELETE FROM trace_events WHERE trace_id = ?", (trace_id,))
+                conn.execute("DELETE FROM trace_evaluations WHERE trace_id = ?", (trace_id,))
+            else:
+                conn.execute("DELETE FROM trace_events")
+                conn.execute("DELETE FROM trace_evaluations")
+                conn.execute("DELETE FROM trace_blobs")
 
     def list_trace_ids(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None) -> list[str]:
         return [m["trace_id"] for m in self.list_trace_meta(limit=limit, offset=offset, has_error=has_error)]

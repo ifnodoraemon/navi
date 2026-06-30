@@ -583,8 +583,18 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {"nodes": [node.__dict__ for node in GraphStore(home).list()]}
 
     @app.get(api_path("traces"))
-    def traces(limit: int = 50, offset: int = 0, has_error: bool | None = None) -> dict:
-        return {"traces": TraceStore(home).list_trace_meta(limit=limit, offset=offset, has_error=has_error)}
+    def traces(limit: int = 50, offset: int = 0, has_error: bool | None = None, query: str = "") -> dict:
+        return {"traces": TraceStore(home).list_trace_meta(limit=limit, offset=offset, has_error=has_error, query=query)}
+
+    @app.delete(api_path("traces"))
+    def delete_all_traces() -> dict:
+        TraceStore(home).delete_traces()
+        return {"status": "ok"}
+
+    @app.delete(api_path("traces") + "/{trace_id}")
+    def delete_trace(trace_id: str) -> dict:
+        TraceStore(home).delete_traces(trace_id)
+        return {"status": "ok"}
 
     @app.get(api_path("trace"))
     def trace(trace_id: str) -> dict:

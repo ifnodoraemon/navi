@@ -236,6 +236,45 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
     assert "thread_id" in runs_payload["data"]["runs"][0]
 
 
+def test_trace_delete_api_endpoints(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_event(trace_id="trace-to-delete-1", phase="turn.start")
+    store.add_event(trace_id="trace-to-delete-2", phase="turn.start")
+    
+    app = create_app(tmp_path)
+    api_key = (tmp_path / "api_key").read_text(encoding="utf-8").strip()
+    client = TestClient(app)
+
+    # Verify initial traces exist
+    res = client.get("/v1/traces", headers={"X-API-Key": api_key})
+    assert res.status_code == 200
+    assert res.json()["ok"] is True
+    assert len(res.json()["data"]["traces"]) == 2
+
+    # Delete one trace
+    delete_res = client.delete("/v1/traces/trace-to-delete-1", headers={"X-API-Key": api_key})
+    assert delete_res.status_code == 200
+    assert delete_res.json()["ok"] is True
+    assert delete_res.json()["data"] == {"status": "ok"}
+
+    # Verify only one trace remains
+    res = client.get("/v1/traces", headers={"X-API-Key": api_key})
+    assert res.json()["ok"] is True
+    assert len(res.json()["data"]["traces"]) == 1
+    assert res.json()["data"]["traces"][0]["trace_id"] == "trace-to-delete-2"
+
+    # Clear all traces
+    clear_res = client.delete("/v1/traces", headers={"X-API-Key": api_key})
+    assert clear_res.status_code == 200
+    assert clear_res.json()["ok"] is True
+    assert clear_res.json()["data"] == {"status": "ok"}
+
+    # Verify no traces remain
+    res = client.get("/v1/traces", headers={"X-API-Key": api_key})
+    assert res.json()["ok"] is True
+    assert len(res.json()["data"]["traces"]) == 0
+
+
 @pytest.mark.asyncio
 async def test_trace_evaluate_capability_returns_structured_evidence(tmp_path):
     store = TraceStore(tmp_path)
