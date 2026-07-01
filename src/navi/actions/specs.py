@@ -6,7 +6,7 @@ ACTION_SPECS = [
         name="final.answer",
         capability_class="conversation",
         execution_contexts=("turn", "actuator", "react", "workflow_step"),
-        description="""Return a final user-facing message.""",
+        description="""Return a final user-facing message. This is a terminal action — the current turn ends after answering.""",
         input_schema={
             "type": "object",
             "properties": {"message": {"type": "string"}},
@@ -22,7 +22,7 @@ ACTION_SPECS = [
         name="ask.user",
         capability_class="conversation",
         execution_contexts=("turn", "actuator", "workflow_step"),
-        description="""Ask the user a question to clarify requirements or present multiple choices for a decision, suitable for human-in-the-loop workflows.""",
+        description="""Ask the user a question when you need information or a decision from them. This is a terminal action — the current turn ends after asking.""",
         input_schema={
             "type": "object",
             "properties": {
