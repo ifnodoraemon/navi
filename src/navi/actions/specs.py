@@ -6,7 +6,7 @@ ACTION_SPECS = [
         name="respond",
         capability_class="conversation",
         execution_contexts=("turn", "actuator", "react", "workflow_step"),
-        description="""Send a message to the user. If options are provided, the user is expected to pick one or reply freely — the current turn ends and control is yielded back. If no options are provided, this is a final notification — the current turn ends.""",
+        description="""Send a message to the user. This is a terminal action — no further tools can be called in this turn after responding.""",
         input_schema={
             "type": "object",
             "properties": {
