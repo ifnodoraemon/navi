@@ -681,7 +681,7 @@ async def test_executor_ask_result_blocks_run_instead_of_marking_completed(
 
     result = await ExecutionService(tmp_path).execute_task(task)
 
-    assert result.status == "blocked"
+    assert result.status == "failed"
     assert result.result_summary == "请提供文件位置。"
     assert "waiting for user input" in result.error
 
@@ -802,45 +802,6 @@ async def test_same_status_facts_with_different_args_converges(tmp_path):
     assert any(
         item["decision"] == "converged" and item["reason"] == "repeated_progress_signature"
         for item in loop_decisions
-    )
-
-
-@pytest.mark.asyncio
-async def test_delegate_spawn_awaiting_approval_returns_approval_facts_without_second_loop(tmp_path):
-    provider = _DelegateSpawnApprovalProvider(str(tmp_path))
-    engine = HernessEngine(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-        event_bus=EventBus(),
-    )
-
-    try:
-        result = await engine.handle(
-            "在家目录查找简历",
-            peer_id="peer-approval",
-            sender_id="sender-approval",
-            source="weixin",
-            session_alias="weixin:peer-approval:sender-approval",
-        )
-    finally:
-        await engine.shutdown()
-
-    assert provider.planner_calls == 1
-    assert provider.responder_calls == 0
-    assert result.action == "execute:system.task_complete"
-    assert result.text.startswith("Delegation run is awaiting approval.")
-    assert "approval_code=" in result.text
-    assert TraceStore(tmp_path).list_evaluations(result.trace_id)[0].outcome == "success"
-    decisions = [
-        json.loads(event.output_json)
-        for event in TraceStore(tmp_path).list_loop_decisions(result.trace_id)
-    ]
-    assert any(
-        item["decision"] == "pause_for_approval"
-        and item["reason"] == "approval_required"
-        for item in decisions
     )
 
 

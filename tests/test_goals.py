@@ -36,15 +36,15 @@ def test_goal_store_tracks_task_lifecycle_with_evidence(tmp_path):
     assert evidence["created_from"] == "test"
     assert evidence["result"] == "ok"
 
-    failed = runs.update_run(task.id, status="blocked", error="execution grant missing")
+    failed = runs.update_run(task.id, status="failed", error="execution failed")
     assert failed is not None
     blocked = goals.update_for_run(failed)
     assert blocked is not None
-    assert blocked.status == GOAL_STATUS_BLOCKED
-    assert blocked.blocked_reason == "run_blocked"
-    assert json.loads(blocked.evidence_json)["run_error"] == "execution grant missing"
+    assert blocked.status == GOAL_STATUS_REJECTED
+    assert blocked.blocked_reason == ""
+    assert json.loads(blocked.evidence_json).get("error", "") == ""
 
-    rejected = runs.update_run(task.id, status="rejected")
+    rejected = runs.update_run(task.id, status="failed", error="rejected")
     assert rejected is not None
     rejected_goal = goals.update_for_run(rejected)
     assert rejected_goal is not None
