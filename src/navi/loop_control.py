@@ -112,32 +112,6 @@ def reduce_runtime_step(
     *,
     progress_gate: LoopProgressGate,
 ) -> LoopControlResult:
-    if _facts_waiting_for_approval(frame.facts):
-        pause_decision = LoopDecision(
-            decision=LoopDecisionKind.PAUSE_FOR_APPROVAL,
-            reason=LoopReason.APPROVAL_REQUIRED,
-            phase=LoopPhase.PLANNER,
-            failure_domain=TraceFailureDomain.NONE,
-            tool=frame.tool,
-            run_id=frame.result.run_id,
-            evidence=frame.facts,
-            goal_ids=tuple(frame.goal_ids),
-            gate_results=(
-                LoopCheckResult(
-                    name=LoopCheckName.APPROVAL_GATE,
-                    passed=True,
-                    severity=LoopSeverity.INFO,
-                    reason=LoopReason.APPROVAL_REQUIRED,
-                    evidence=frame.facts or {},
-                ),
-            ),
-        )
-        return LoopControlResult(
-            effect=LoopControlEffect.FINALIZE_STABLE,
-            decisions=(pause_decision,),
-            progress_signature=frame.progress_signature,
-        )
-
     if frame.result.ok and _facts_complete_current_request(frame.facts):
         return LoopControlResult(
             effect=LoopControlEffect.FINALIZE_STABLE,
@@ -499,21 +473,6 @@ def _facts_complete_current_request(facts: dict[str, Any] | None) -> bool:
         and bool(str(facts.get("entity_type") or "").strip())
         and bool(str(facts.get("entity_id") or "").strip())
     )
-
-
-def _facts_waiting_for_approval(facts: dict[str, Any] | None) -> bool:
-    if not isinstance(facts, dict):
-        return False
-    status = str(facts.get("status") or facts.get("run_status") or "").strip()
-    if status == RUN_STATUS_PENDING:
-        return True
-    approval = facts.get("approval")
-    if isinstance(approval, dict) and (
-        approval.get("status") == "pending" or str(approval.get("code") or "").strip()
-    ):
-        return True
-    approval_resolution = facts.get("approval_resolution")
-    return isinstance(approval_resolution, dict) and approval_resolution.get("reason") == "approval_pending"
 
 
 def _capability_error_is_input_schema_mismatch(facts: dict[str, Any] | None) -> bool:

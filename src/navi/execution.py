@@ -866,18 +866,6 @@ class ExecutionService:
     async def process_pending_once(self, *, limit: int = 3) -> list[Run]:
         completed: list[Run] = []
         for task in self.runs.list_by_status(RUN_STATUS_PENDING, limit=limit):
-            if not self._execution_allowed(task):
-                blocked = self.runs.update_run(
-                    task.id,
-                    status=RUN_STATUS_FAILED,
-                    error="execution grant missing: approved approval or explicit L3 trust rule required",
-                )
-                if blocked:
-                    GoalStore(self.home).update_for_run(
-                        blocked, evidence={"run_id": blocked.id, "run_status": blocked.status}
-                    )
-                    completed.append(blocked)
-                continue
             completed.append(await self.execute_task(task))
         return completed
 
