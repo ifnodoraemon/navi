@@ -4,16 +4,17 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .control import CurrentStateBuilder, SurfaceContext
-from .lifecycle import RUN_STATUS_PENDING, RUN_STATUS_PREPARED, RUN_STATUS_PREPARING
+from .lifecycle import RUN_STATUS_RUNNING
 from .recovery import CompletionBlock
 from .workflows import WORKFLOW_RUNNABLE_STATUSES
 
 
 CompletionCheck = Callable[["CompletionCheckFrame"], CompletionBlock | None]
-RUN_EVENT_INCOMPLETE_STATUSES = frozenset({RUN_STATUS_PENDING, RUN_STATUS_PREPARED})
-RUN_ACTIVE_INCOMPLETE_STATUSES = frozenset(
-    {RUN_STATUS_PENDING, RUN_STATUS_PREPARING, RUN_STATUS_PREPARED}
-)
+# Only `running` blocks final.answer — a run that is `pending` (waiting for
+# user confirmation via ask.user) is a normal pause point, not an incomplete
+# delegation. `prepared` was removed in favour of the 4-state model.
+RUN_EVENT_INCOMPLETE_STATUSES = frozenset({RUN_STATUS_RUNNING})
+RUN_ACTIVE_INCOMPLETE_STATUSES = frozenset({RUN_STATUS_RUNNING})
 
 
 @dataclass

@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from .capability_contract import CAPABILITY_ERROR_REASON_KEY
 from .engine_types import AgentTurnResult
-from .lifecycle import RUN_STATUS_AWAITING_APPROVAL
+from .lifecycle import RUN_STATUS_AWAITING_APPROVAL, RUN_STATUS_COMPLETED, RUN_STATUS_FAILED
 from .loop import (
     LoopCheckName,
     LoopCheckResult,
@@ -487,6 +487,12 @@ def _facts_complete_current_request(facts: dict[str, Any] | None) -> bool:
         return False
     if facts.get("completion_evidence") is True:
         return True
+    # Only `completed` (success) and `failed` (terminal) mark the current
+    # request as done. `pending` / `running` are in-progress states that must
+    # not prematurely finalize the loop.
+    status = str(facts.get("status") or facts.get("run_status") or "").strip()
+    if status not in (RUN_STATUS_COMPLETED, RUN_STATUS_FAILED):
+        return False
     return (
         str(facts.get("turn_scope") or "").strip() == "current"
         and bool(str(facts.get("state_transition") or "").strip())
