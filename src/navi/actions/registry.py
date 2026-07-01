@@ -6,13 +6,12 @@ from ..capabilities_types import (
     construct_capability,
     _REGISTRY,
 )
-from ..conversation_contract import CONVERSATION_TOOL_ASK
 
 from .specs import ACTION_SPECS
 
 
 # Spec names whose handler key differs from ``name.replace(".", "_")``.
-_KEY_OVERRIDES = {CONVERSATION_TOOL_ASK: "clarify", "delegate.retry": "execution_retry"}
+_KEY_OVERRIDES = {"respond": "respond", "delegate.retry": "execution_retry"}
 
 
 def get_action_handlers(

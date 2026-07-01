@@ -13,7 +13,7 @@ class AgentTurnResult:
     text: str
     session_id: str = ""
     run_id: str = ""
-    action: str = CONVERSATION_ACTION_CHAT
+    action: str = "chat"
     observation: str = ""
     model_role: str = "responder"
     terminal: bool = False

@@ -26,8 +26,7 @@ HEARTBEAT_INTERVAL_SECONDS = 20.0
 # not become remotely visible unless the policy names them.
 REMOTE_ALLOWED_TOOLS = frozenset(
     (
-        "final.answer",
-        "ask.user",
+        "respond",
         "delegate.spawn",
         "delegate.prepare",
         "delegate.list",

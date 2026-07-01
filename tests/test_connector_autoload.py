@@ -118,8 +118,7 @@ def test_remote_policy_is_explicit_allowlist() -> None:
     assert REMOTE_CONNECTOR_TOOL_POLICY.permission_ceiling == "prepare"
     assert REMOTE_CONNECTOR_TOOL_POLICY.allowed_tools == REMOTE_ALLOWED_TOOLS
     assert REMOTE_ALLOWED_TOOLS == {
-        "final.answer",
-        "ask.user",
+        "respond",
         "delegate.spawn",
         "delegate.prepare",
         "delegate.list",

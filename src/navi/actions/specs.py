@@ -3,37 +3,21 @@ from ..tools import API_CONTEXT, ToolSpec
 
 ACTION_SPECS = [
     ToolSpec(
-        name="final.answer",
+        name="respond",
         capability_class="conversation",
         execution_contexts=("turn", "actuator", "react", "workflow_step"),
-        description="""Return a final user-facing message. This is a terminal action — the current turn ends after answering.""",
-        input_schema={
-            "type": "object",
-            "properties": {"message": {"type": "string"}},
-            "required": ["message"],
-        },
-        output_schema={"type": "object", "properties": {"message": {"type": "string"}}},
-        facts_only=True,
-        mutates=False,
-        permission="read",
-        source="action",
-    ),
-    ToolSpec(
-        name="ask.user",
-        capability_class="conversation",
-        execution_contexts=("turn", "actuator", "workflow_step"),
-        description="""Ask the user a question when you need information or a decision from them. This is a terminal action — the current turn ends after asking.""",
+        description="""Send a message to the user. If options are provided, the user is expected to pick one or reply freely — the current turn ends and control is yielded back. If no options are provided, this is a final notification — the current turn ends.""",
         input_schema={
             "type": "object",
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "The question or context to present to the user. Do not repeat the options here; the system will append them automatically.",
+                    "description": "The message to present to the user.",
                 },
                 "options": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional list of explicit choices for the user to pick from. DO NOT include bullet points, numbers, or emojis in these strings. The system will format and number them automatically.",
+                    "description": "Optional list of explicit choices for the user to pick from.",
                 },
             },
             "required": ["message"],
