@@ -85,6 +85,16 @@ class RunCompletedEvent(NaviEvent):
 
 
 @dataclass(frozen=True)
+class RunSuspendedEvent(NaviEvent):
+    event_type: str = "run_suspended"
+    run_id: str = ""
+    text: str = ""
+    peer_id: str = ""
+    sender_id: str = ""
+    source: str = ""
+
+
+@dataclass(frozen=True)
 class ActionApprovedEvent(NaviEvent):
     event_type: str = "action_approved"
     run_id: str = ""
@@ -228,6 +238,15 @@ class EventBus:
         await self.publish(event)
         channel = self._response_channels.get(event.correlation_id)
         if channel:
+            await channel.put(event)
+
+    async def broadcast_proactive(self, event: ResponseReadyEvent) -> None:
+        """Send a proactive message to all waiting response channels.
+
+        Used when a background delegation run suspends and needs to push
+        a question to whichever connector is listening."""
+        await self.publish(event)
+        for channel in self._response_channels.values():
             await channel.put(event)
 
     async def send_heartbeat(self, correlation_id: str) -> None:

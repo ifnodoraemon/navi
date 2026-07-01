@@ -697,6 +697,22 @@ class ExecutionService:
                 output_data={"exit_code": 0, "summary": turn_result.text},
                 error="",
             )
+            if self.event_bus:
+                import asyncio
+
+                from .event_bus import RunSuspendedEvent
+
+                asyncio.create_task(
+                    self.event_bus.publish(
+                        RunSuspendedEvent(
+                            run_id=task.id,
+                            text=turn_result.text,
+                            peer_id=task.peer_id,
+                            sender_id=task.sender_id,
+                            source=task.source,
+                        )
+                    )
+                )
             return self.runs.get(task.id)
 
         execution_status, status_reason = self._execution_status_from_turn_result(turn_result)

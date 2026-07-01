@@ -230,6 +230,38 @@ class ConnectorIngressRuntime:
 
         self.event_bus.subscribe("run_completed", on_run_completed)
 
+        async def on_run_suspended(event) -> None:
+            from .event_bus import RunSuspendedEvent
+
+            assert isinstance(event, RunSuspendedEvent)
+            await self.event_bus.send_response(
+                ResponseReadyEvent(
+                    source_agent="runtime",
+                    correlation_id="",
+                    peer_id=event.peer_id,
+                    sender_id=event.sender_id,
+                    text=event.text,
+                    source=event.source,
+                )
+            )
+
+        async def on_run_suspended(event) -> None:
+            from .event_bus import RunSuspendedEvent
+
+            assert isinstance(event, RunSuspendedEvent)
+            await self.event_bus.broadcast_proactive(
+                ResponseReadyEvent(
+                    source_agent="runtime",
+                    correlation_id="",
+                    peer_id=event.peer_id,
+                    sender_id=event.sender_id,
+                    text=event.text,
+                    source=event.source,
+                )
+            )
+
+        self.event_bus.subscribe("run_suspended", on_run_suspended)
+
     async def _handle_with_heartbeat(self, event) -> str:
         """Run the agent turn while emitting heartbeats so a slow-but-live turn
         is never mistaken for a stuck upstream by the router's idle timeout.
