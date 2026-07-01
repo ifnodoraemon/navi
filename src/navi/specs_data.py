@@ -456,7 +456,6 @@ SYSCALL_PLANNER_SPEC: Any = {
         "capability call invalid for the current decision.",
         "Dynamic workflows are declared orchestration data, not executable scripts. "
         "Workflow steps run as model-owned loops constrained by declared capability scopes.",
-        "NEVER use a terminal action (like ask.user or final.answer) merely to acknowledge a user's choice before executing the requested action. Execute the necessary capabilities directly. Only use terminal actions to end the turn when the task is complete or you genuinely need new input to proceed."
     ],
     "observation_invariants": [
         "Current-turn observations have higher recency than stale conversation history.",
