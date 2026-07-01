@@ -156,7 +156,7 @@ class DelegateRunCapability(BaseCapability):
         task = runs.get(run_id) if run_id else None
         if task is None:
             raise NotFound(f"delegation run not found: {run_id}")
-        queued = runs.update_run(task.id, status=RUN_STATUS_RUNNING) or task
+        queued = runs.update_run(task.id, status=RUN_STATUS_PENDING) or task
         GoalStore(self.home).update_for_run(
             queued, evidence={"run_id": queued.id, "run_status": queued.status}
         )
