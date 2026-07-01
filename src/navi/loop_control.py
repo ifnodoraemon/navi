@@ -78,27 +78,12 @@ def reduce_recovery_step(
             ),
         ),
     )
-    if progress.count == 4:
+    if progress.repeated:
         return LoopControlResult(
             effect=LoopControlEffect.CONTINUE_LOOP,
             decisions=(recovery,),
             progress_signature=progress.signature,
-            runtime_observation="repeated_action_limit_reached",
-        )
-
-    if progress.repeated:
-        return LoopControlResult(
-            effect=LoopControlEffect.FINALIZE_STABLE,
-            decisions=(
-                recovery,
-                _converged_decision(
-                    frame,
-                    reason=LoopReason.REPEATED_RECOVERY_SIGNATURE,
-                    progress_signature=progress.signature,
-                ),
-            ),
-            progress_signature=progress.signature,
-            convergence_message="repeated_action_limit_reached",
+            runtime_observation=f"repeated_recovery: same recovery attempted {progress.count} times",
         )
     return LoopControlResult(
         effect=LoopControlEffect.CONTINUE_LOOP,
@@ -120,26 +105,13 @@ def reduce_runtime_step(
         )
 
     progress = progress_gate.observe(frame.progress_signature)
-    if progress.count == 4:
+
+    if progress.repeated:
         return LoopControlResult(
             effect=LoopControlEffect.CONTINUE_LOOP,
             decisions=(),
             progress_signature=progress.signature,
-            runtime_observation="repeated_action_limit_reached",
-        )
-
-    if progress.repeated:
-        return LoopControlResult(
-            effect=LoopControlEffect.FINALIZE_STABLE,
-            decisions=(
-                _converged_decision(
-                    frame,
-                    reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
-                    progress_signature=progress.signature,
-                ),
-            ),
-            progress_signature=progress.signature,
-            convergence_message="repeated_action_limit_reached",
+            runtime_observation=f"repeated_action: same operation executed {progress.count} times",
         )
 
     return LoopControlResult(

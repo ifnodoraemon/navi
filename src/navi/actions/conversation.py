@@ -34,6 +34,12 @@ class FinalAnswerCapability(BaseCapability):
         )
 
 
+_EMOJI_NUMBERS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟")
+
+def _number_emoji(n: int) -> str:
+    return _EMOJI_NUMBERS[n - 1] if 1 <= n <= len(_EMOJI_NUMBERS) else f"[{n}]"
+
+
 @capability("clarify")
 class ClarifyCapability(BaseCapability):
 
@@ -55,7 +61,12 @@ class ClarifyCapability(BaseCapability):
             # text (the only field plain text channels deliver). The capability
             # must not branch on the surface name (principle 4).
             facts["options"] = options
-            message += "\n" + "\n".join(f"[{i + 1}] {opt}" for i, opt in enumerate(options))
+            
+            compact_options = " / ".join(f"{i+1}.{opt}" for i, opt in enumerate(options))
+            message = f"[待选择: {compact_options}]\n\n{message}"
+            
+            numbered = "\n".join(f"  {_number_emoji(i + 1)}  {opt}" for i, opt in enumerate(options))
+            message += f"\n\n{numbered}\n\n💬 回复数字选择，或直接说明你的想法"
 
         return CapabilityResult(
             ok=True,

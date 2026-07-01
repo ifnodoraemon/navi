@@ -45,6 +45,11 @@ class IntentAgent:
         }
         if event.facts:
             facts["connector_message"] = event.facts
+
+        pending_ask = self._pending_ask_context(session_id)
+        if pending_ask:
+            facts["pending_ask"] = pending_ask
+
         logger.info(
             "Published dynamic intent facts for message %s: runs=%s workflows=%s",
             event.message_id,
@@ -65,3 +70,21 @@ class IntentAgent:
                 facts=facts,
             )
         )
+
+    def _pending_ask_context(self, session_id: str) -> dict | None:
+        """If the last assistant message was an ask, return its structured context."""
+        if not session_id:
+            return None
+        messages = self.runtime.memory.get_messages(session_id, limit=2)
+        if not messages:
+            return None
+        last = messages[-1]
+        if last.role != "assistant":
+            return None
+        if "[待选择:" in last.content or "💬 回复数字选择" in last.content:
+            return {
+                "type": "ask_reply_context",
+                "last_assistant_message_preview": last.content[:300],
+                "hint": "The user is likely replying to the above question. Interpret their message in that context.",
+            }
+        return None

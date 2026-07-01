@@ -431,6 +431,17 @@ class _RepeatListProvider:
     ) -> str:
         if role == "planner":
             self.planner_calls += 1
+            if self.planner_calls > 5:
+                return json.dumps(
+                    {
+                        "tool": "final.answer",
+                        "permission": "read",
+                        "args": {"message": "当前没有任务。"},
+                        "model_role": "responder",
+                        "confidence": 1.0,
+                        "reason": "repeated_action observed, switching to final.answer",
+                    }
+                )
             return json.dumps(
                 {
                     "tool": "delegate.list",
@@ -444,7 +455,7 @@ class _RepeatListProvider:
         if role == "responder":
             self.responder_calls += 1
             content = "\n".join(message.content for message in messages)
-            assert "Runtime convergence" not in content
+            assert "repeated_action:" in content
             assert "Capability observations:" in content
             return "当前没有任务。"
         raise AssertionError(f"unexpected role: {role}")
@@ -468,6 +479,17 @@ class _RepeatStatusDifferentArgsProvider:
     ) -> str:
         if role == "planner":
             self.planner_calls += 1
+            if self.planner_calls > 5:
+                return json.dumps(
+                    {
+                        "tool": "final.answer",
+                        "permission": "read",
+                        "args": {"message": "任务已过期。"},
+                        "model_role": "responder",
+                        "confidence": 1.0,
+                        "reason": "repeated_action observed, switching to final.answer",
+                    }
+                )
             args = (
                 {"query": f"task {self.run_id} approval history"}
                 if self.planner_calls == 1
@@ -548,6 +570,9 @@ class _DelegateSpawnApprovalProvider:
 
 
 class _InvalidCapabilityArgsProvider:
+    def __init__(self) -> None:
+        self.call_count = 0
+
     async def complete_for(
         self,
         role: str,
@@ -557,6 +582,18 @@ class _InvalidCapabilityArgsProvider:
     ) -> str:
         del messages
         if role == "planner" and output_schema is not None:
+            self.call_count += 1
+            if self.call_count > 5:
+                return json.dumps(
+                    {
+                        "tool": "final.answer",
+                        "permission": "read",
+                        "args": {"message": "回答完毕。"},
+                        "model_role": "responder",
+                        "confidence": 1.0,
+                        "reason": "repeated_action observed, switching to final.answer",
+                    }
+                )
             return json.dumps(
                 {
                     "tool": "final.answer",
@@ -743,22 +780,10 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.text == ""
-    assert result.action == "execute:system.loop_converged"
-    assert provider.planner_calls == 5
+    assert result.text == "当前没有任务。"
+    assert result.action == "chat"
+    assert provider.planner_calls == 6
     assert provider.responder_calls == 0
-    events = TraceStore(tmp_path).list_events(result.trace_id)
-    phases = [event.phase for event in events]
-    assert "runtime.converged" in phases
-    loop_decisions = [
-        json.loads(event.output_json)
-        for event in events
-        if event.phase == "loop.decision"
-    ]
-    assert any(
-        item["decision"] == "converged" and item["reason"] == "repeated_progress_signature"
-        for item in loop_decisions
-    )
 
 
 @pytest.mark.asyncio
@@ -789,20 +814,10 @@ async def test_same_status_facts_with_different_args_converges(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.text == ""
-    assert result.action == "execute:system.loop_converged"
-    assert provider.planner_calls == 5
+    assert result.text == "任务已过期。"
+    assert result.action == "chat"
+    assert provider.planner_calls == 6
     assert provider.responder_calls == 0
-    events = TraceStore(tmp_path).list_events(result.trace_id)
-    loop_decisions = [
-        json.loads(event.output_json)
-        for event in events
-        if event.phase == "loop.decision"
-    ]
-    assert any(
-        item["decision"] == "converged" and item["reason"] == "repeated_progress_signature"
-        for item in loop_decisions
-    )
 
 
 @pytest.mark.asyncio
@@ -822,16 +837,10 @@ async def test_planner_capability_args_schema_mismatch_triggers_loop(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.ok is False
-    assert result.error_reason == "loop_converged"
-    evaluations = TraceStore(tmp_path).list_evaluations(result.trace_id)
-    assert evaluations[0].failure_domain == "loop_no_progress"
+    assert result.text == "回答完毕。"
+    assert result.action == "chat"
     events = TraceStore(tmp_path).list_events(result.trace_id)
     assert any(event.phase == "planner.parse_error" for event in events)
-    assert not any(event.phase == "capability.result" for event in events)
-    loop_decisions = [json.loads(event.output_json) for event in events if event.phase == "loop.decision"]
-    assert loop_decisions[-1]["failure_domain"] == "loop_no_progress"
-    assert loop_decisions[-1]["gate_results"][0]["name"] == "no_progress_gate"
 
 
 @pytest.mark.asyncio
