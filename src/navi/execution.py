@@ -630,10 +630,6 @@ class ExecutionService:
     async def execute_task(self, task: Run) -> Run:
         before_state = self._execution_before_state(task)
 
-        # Resolve the permission ceiling BEFORE flipping the run to RUNNING so
-        # the persisted status never claims full-authority execution while the
-        # turn actually runs under a degraded ("prepare") ceiling. A governance
-        # downgrade is reflected before, not after, the state transition.
         permission_ceiling = "write" if self.execution_allowed(task) else "prepare"
         self.runs.update_run(task.id, status=RUN_STATUS_RUNNING)
 
@@ -652,26 +648,41 @@ class ExecutionService:
             command=["navi", "subagent", SUBAGENT_EXECUTOR_ROLE, "execute", task.id],
             input_data={"workspace": task.workspace, "autonomy_level": task.autonomy_level},
         )
+
+        session_alias = f"executor:{task.id}"
+
+        from .memory import MemoryStore
+
+        memory = MemoryStore(self.home)
+        existing_alias = memory.get_session_alias(session_alias)
+        has_history = False
+        if existing_alias:
+            messages = memory.get_messages(existing_alias.session_id, limit=50)
+            has_history = len(messages) > 0
+
+        if has_history:
+            prompt_text = "Continue executing the task."
+        else:
+            prompt_text = (
+                f"Execute the following task:\n\n{task.prompt}\n\n"
+                "When finished, synthesize a final completion summary."
+            )
+
         engine = HernessEngine(
             home=self.home,
             runtime=runtime,
             project_dir=_task_workspace(task),
             permission_ceiling=permission_ceiling,
             disabled_capability_classes=frozenset({"delegation", "approval"}),
-            # This task already passed governance (execution_allowed). It is
-            # approved background work, not live connector ingress, so it must
-            # not be re-sandboxed by the surface it originated from. Sensitive
-            # (mutating) ops inside it are still gated — they suspend for a fresh
-            # approval rather than running unchecked.
             enforce_connector_source_policy=False,
             governed_run_id=task.id,
         )
         turn_result = await engine.handle(
-            f"Execute the following task:\n\n{task.prompt}\n\nWhen finished, synthesize a final completion summary.",
+            prompt_text,
             peer_id=task.peer_id,
             sender_id=task.sender_id,
             source=task.source,
-            session_alias=f"executor:{task.id}",
+            session_alias=session_alias,
         )
 
         if getattr(turn_result, "yields_control", False):

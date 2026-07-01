@@ -90,17 +90,13 @@ class SystemDaemon:
     def _setup_execution_subscription(self) -> None:
         async def on_action_approved(event: ActionApprovedEvent) -> None:
             task = self.runs.get(event.run_id)
-            if task and task.status in {
-                RUN_STATUS_PENDING,
-                RUN_STATUS_PENDING,
-                RUN_STATUS_PENDING,
-            }:
-                self.runs.update_run(event.run_id, status=RUN_STATUS_PENDING)
+            if task and task.status == RUN_STATUS_PENDING:
+                self.runs.update_run(event.run_id, status=RUN_STATUS_PENDING, result_summary="")
 
         async def on_approval_resolved(event: ApprovalResolvedEvent) -> None:
             task = self.runs.get(event.run_id)
             if task and event.decision == "approved":
-                self.runs.update_run(event.run_id, status=RUN_STATUS_PENDING)
+                self.runs.update_run(event.run_id, status=RUN_STATUS_PENDING, result_summary="")
 
         async def on_turn_completed(event: AgentTurnCompletedEvent) -> None:
             if event.session_id:
