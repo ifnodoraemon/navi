@@ -10,7 +10,6 @@ from typing import Any
 from ..db import connect, ensure_schema_version
 from ..paths import db_paths
 from ..schema import Column, Table, assert_schema_exact
-from ._approval_store import APPROVALS_TABLE, ApprovalStoreMixin
 from ._execution_log_store import (
     EXECUTION_LOGS_TABLE,
     TOOL_CALL_LOGS_TABLE,
@@ -46,7 +45,7 @@ RUNS_TABLE = Table(
 )
 
 
-class RunStore(ApprovalStoreMixin, WatchStoreMixin, ExecutionLogStoreMixin):
+class RunStore(WatchStoreMixin, ExecutionLogStoreMixin):
     def __init__(self, home: Path):
         self.home = home
         self.home.mkdir(parents=True, exist_ok=True)
@@ -58,8 +57,6 @@ class RunStore(ApprovalStoreMixin, WatchStoreMixin, ExecutionLogStoreMixin):
             ensure_schema_version(conn, "runs", RUN_STORE_SCHEMA_VERSION)
             conn.execute(RUNS_TABLE.ddl)
             assert_schema_exact(conn, RUNS_TABLE)
-            conn.execute(APPROVALS_TABLE.ddl)
-            assert_schema_exact(conn, APPROVALS_TABLE)
             conn.execute(WATCHES_TABLE.ddl)
             assert_schema_exact(conn, WATCHES_TABLE)
             conn.execute(EXECUTION_LOGS_TABLE.ddl)
@@ -68,7 +65,6 @@ class RunStore(ApprovalStoreMixin, WatchStoreMixin, ExecutionLogStoreMixin):
             self._migrate_tool_call_logs(conn)
             assert_schema_exact(conn, TOOL_CALL_LOGS_TABLE)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updated_at)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_approvals_code ON approvals(code)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_watches_next ON watches(enabled, next_run_at)"
             )
@@ -263,7 +259,6 @@ class RunStore(ApprovalStoreMixin, WatchStoreMixin, ExecutionLogStoreMixin):
         if run is None:
             return None
         with connect(self.db_path) as conn:
-            conn.execute("DELETE FROM approvals WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM execution_logs WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
         return run

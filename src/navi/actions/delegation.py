@@ -27,31 +27,13 @@ from ..goals import GoalStore
 from ..graph import GraphStore
 from ..lifecycle import (
     RUN_ACTIVE_STATUSES,
-    RUN_STATUS_AWAITING_APPROVAL,
     RUN_STATUS_FAILED,
     RUN_STATUS_PENDING,
-    RUN_STATUS_PREPARED,
-    RUN_STATUS_QUEUED,
+    RUN_STATUS_RUNNING,
 )
 from ..runs import RunStore
 
-
-# Statuses a remote surface (e.g. WeChat) is allowed to delete. A run stuck in
-# awaiting_approval whose code has expired would otherwise be undeletable AND
-# unapprovable — a dead end — so those terminal-for-the-user states are
-# explicitly deletable from remote, not just `failed`. ``pending`` and
-# ``prepared`` are transient pre-approval states: when the planner fails to
-# advance them, the user must be able to clean them up remotely, otherwise the
-# run is an undeletable, unapprovable, uncompletable dead end.
-REMOTE_DELETABLE_STATUSES = frozenset(
-    {
-        RUN_STATUS_FAILED,
-        RUN_STATUS_AWAITING_APPROVAL,
-        "expired",
-        RUN_STATUS_PENDING,
-        RUN_STATUS_PREPARED,
-    }
-)
+REMOTE_DELETABLE_STATUSES = frozenset({RUN_STATUS_FAILED, RUN_STATUS_PENDING, "expired"})
 REMOTE_DELETABLE_KINDS = frozenset({"watch", "delegation"})
 
 
@@ -91,11 +73,7 @@ class DelegateSpawnCapability(BaseCapability):
         workspace = _resolve_workspace(_arg_text(args, "workspace") or context.workspace, default=self.project_dir)
 
         existing = self._existing_active_run(
-            runs,
-            objective=objective,
-            prompt=prompt,
-            workspace=workspace,
-            context=context,
+            runs, objective=objective, prompt=prompt, workspace=workspace, context=context
         )
         if existing is not None:
             facts = {
@@ -106,20 +84,6 @@ class DelegateSpawnCapability(BaseCapability):
                 "trust_rule_id": existing.trust_rule_id,
                 "deduplicated": True,
             }
-            approvals = runs._approvals_for_run(existing.id)
-            pending = next((item for item in approvals if item.status == "pending"), None)
-            if pending is not None:
-                facts["approval"] = {
-                    "action": pending.action,
-                    "code": pending.code,
-                    "expires_at": pending.expires_at,
-                }
-                facts["requires_user_approval"] = True
-                facts["surface_message"] = _approval_surface_message(
-                    run_id=existing.id,
-                    approval_code=pending.code,
-                    deduplicated=True,
-                )
             return _fact_result("delegation", facts, run_id=existing.id)
 
         task = runs.create(
@@ -135,15 +99,8 @@ class DelegateSpawnCapability(BaseCapability):
             trust_rule_id="",
             why_now="trigger=model_capability",
         )
-        graph.upsert(
-            "DelegationRun",
-            task.id,
-            {"objective": task.title, "status": task.status, "prompt": task.prompt},
-        )
+        graph.upsert("DelegationRun", task.id, {"objective": task.title, "status": task.status, "prompt": task.prompt})
         goals = GoalStore(self.home)
-        # Principle 17: delegated goals need explicit stop conditions and
-        # user-visible status, so a delegation cannot block indefinitely
-        # (e.g. waiting on an approval that never comes).
         goal = goals.create(
             objective=task.prompt,
             source=task.source,
@@ -153,31 +110,8 @@ class DelegateSpawnCapability(BaseCapability):
             run_id=task.id,
             timeout=config.execution.timeout_seconds,
             max_retries=3,
-            evidence={
-                "run_id": task.id,
-                "run_status": task.status,
-                "autonomy_level": task.autonomy_level,
-            },
+            evidence={"run_id": task.id, "run_status": task.status, "autonomy_level": task.autonomy_level},
         )
-
-        # Governance intercepts synchronously to create approvals immediately
-        if context.event_bus is not None:
-            from ..event_bus import ActionRequestedEvent
-            from ..governance_agent import GovernanceAgent
-
-            event = ActionRequestedEvent(
-                source_agent="main_agent",
-                correlation_id=task.id,
-                run_id=task.id,
-                peer_id=context.peer_id,
-                sender_id=context.sender_id,
-                source=context.source,
-                autonomy_level=task.autonomy_level,
-            )
-            # Invoke the governance logic directly to avoid event bus deadlocks
-            gov = GovernanceAgent(self.home, context.event_bus)
-            await gov._on_action_requested(event)
-            task = runs.get(task.id) or task
 
         facts = {
             **_transition_facts("delegation_run", task.id, "created"),
@@ -187,37 +121,10 @@ class DelegateSpawnCapability(BaseCapability):
             "autonomy_level": task.autonomy_level,
             "trust_rule_id": task.trust_rule_id,
         }
-
-        if task.status == "awaiting_approval":
-            facts["requires_user_approval"] = True
-        approvals = runs._approvals_for_run(task.id)
-        if approvals:
-            facts["approval"] = {
-                "action": approvals[0].action,
-                "code": approvals[0].code,
-                "expires_at": approvals[0].expires_at,
-            }
-            if task.status == "awaiting_approval":
-                facts["surface_message"] = _approval_surface_message(
-                    run_id=task.id,
-                    approval_code=approvals[0].code,
-                )
-
-        return _fact_result(
-            "delegation",
-            facts,
-            run_id=task.id,
-        )
+        return _fact_result("delegation", facts, run_id=task.id)
 
     @staticmethod
-    def _existing_active_run(
-        runs: RunStore,
-        *,
-        objective: str,
-        prompt: str,
-        workspace: str,
-        context: CapabilityContext,
-    ):
+    def _existing_active_run(runs: RunStore, *, objective: str, prompt: str, workspace: str, context: CapabilityContext):
         from ..control import run_matches_context
 
         for run in runs.list(limit=100):
@@ -232,48 +139,6 @@ class DelegateSpawnCapability(BaseCapability):
             if run_matches_context(run, context):
                 return run
         return None
-
-
-def _approval_surface_message(
-    *,
-    run_id: str,
-    approval_code: str,
-    deduplicated: bool = False,
-) -> str:
-    prefix = "Existing delegation run is awaiting approval" if deduplicated else "Delegation run is awaiting approval"
-    if approval_code:
-        return f"{prefix}. run_id={run_id} approval_code={approval_code}."
-    return f"{prefix}. run_id={run_id}."
-
-
-@capability("delegate_prepare")
-class DelegatePrepareCapability(BaseCapability):
-    @guarded
-    async def invoke(
-        self,
-        args: dict[str, Any],
-        *,
-        permission: str,
-        context: CapabilityContext,
-    ) -> CapabilityResult:
-        run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
-        task = RunStore(self.home).get(run_id) if run_id else None
-        if task is None:
-            raise NotFound(f"delegation run not found: {run_id}")
-        planned = await ExecutionService(self.home).plan_task(task)
-        GoalStore(self.home).update_for_run(
-            planned, evidence={"run_id": planned.id, "run_status": planned.status}
-        )
-        return _fact_result(
-            "delegation",
-            {
-                **_transition_facts("delegation_run", planned.id, "updated"),
-                "run_id": planned.id,
-                "status": planned.status,
-                "plan_summary": planned.plan_summary,
-            },
-            run_id=planned.id,
-        )
 
 
 @capability("delegate_run")
@@ -294,7 +159,7 @@ class DelegateRunCapability(BaseCapability):
         execution = ExecutionService(self.home)
         if not execution.execution_allowed(task):
             raise PermissionDenied("execution grant missing")
-        queued = runs.update_run(task.id, status=RUN_STATUS_QUEUED) or task
+        queued = runs.update_run(task.id, status=RUN_STATUS_RUNNING) or task
         GoalStore(self.home).update_for_run(
             queued, evidence={"run_id": queued.id, "run_status": queued.status}
         )
@@ -334,7 +199,7 @@ class DelegateDeleteCapability(BaseCapability):
         ):
             raise PermissionDenied(
                 "remote delegate.delete can only delete delegation runs that are "
-                "failed, awaiting_approval, expired, pending, or prepared."
+                "failed, pending, or expired."
             )
         deleted = runs.delete_run(run_id)
         if deleted is None:
@@ -354,11 +219,7 @@ class DelegateDeleteCapability(BaseCapability):
             "status": deleted.status,
             "reason": reason,
         }
-        return _fact_result(
-            "delegation",
-            facts,
-            run_id=deleted.id,
-        )
+        return _fact_result("delegation", facts, run_id=deleted.id)
 
     def _delete_by_filter(self, args: dict[str, Any], context: CapabilityContext) -> CapabilityResult:
         status = _arg_text(args, "status") or "failed"
@@ -382,8 +243,7 @@ class DelegateDeleteCapability(BaseCapability):
         ):
             message = (
                 "remote delegate.delete bulk cleanup requires status in "
-                "{failed, awaiting_approval, expired, pending, prepared} "
-                "and kind watch or delegation."
+                "{failed, pending, expired} and kind watch or delegation."
             )
             return _failure_result(
                 "delegation",
@@ -475,15 +335,6 @@ class ExecutionRetryCapability(BaseCapability):
 
 @capability("delegate_list")
 class DelegateListCapability(BaseCapability):
-    """List delegation runs and watches scoped to the caller's context.
-
-    delegate.list used to be a context-blind fact tool that returned every run
-    across all channels, so a remote connector could see (and a user could try
-    to approve) tasks created on other surfaces. As an action capability it has
-    the SurfaceContext and filters to runs that match the caller's
-    peer/sender/source, matching approval visibility (principles 4, 13, 16).
-    """
-
     async def invoke(
         self,
         args: dict[str, Any],

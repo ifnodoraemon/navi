@@ -9,11 +9,11 @@ from typing import Any
 
 from .db import connect, ensure_schema_version
 from .lifecycle import (
-    RUN_STATUS_AWAITING_APPROVAL,
-    RUN_STATUS_BLOCKED,
+    RUN_STATUS_PENDING,
+    RUN_STATUS_FAILED,
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
-    RUN_STATUS_REJECTED,
+    RUN_STATUS_FAILED,
 )
 from .paths import db_paths
 from .runs import Run
@@ -519,11 +519,11 @@ class GoalStore:
 def _goal_status_for_run(run: Run, *, evidence: dict[str, Any] | None = None) -> str:
     if run.status == RUN_STATUS_COMPLETED:
         return GOAL_STATUS_VERIFIED_COMPLETE
-    if run.status == RUN_STATUS_AWAITING_APPROVAL:
+    if run.status == RUN_STATUS_PENDING:
         return GOAL_STATUS_AWAITING_APPROVAL
-    if run.status == RUN_STATUS_REJECTED:
+    if run.status == RUN_STATUS_FAILED:
         return GOAL_STATUS_REJECTED
-    if run.status in {RUN_STATUS_FAILED, RUN_STATUS_BLOCKED}:
+    if run.status in {RUN_STATUS_FAILED, RUN_STATUS_FAILED}:
         return GOAL_STATUS_BLOCKED
     return GOAL_STATUS_ACTIVE
 

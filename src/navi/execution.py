@@ -17,12 +17,12 @@ from .governance import GovernanceEngine
 from .evolution import EvolutionLedger
 from .goals import GoalStore
 from .lifecycle import (
-    RUN_STATUS_AWAITING_APPROVAL,
-    RUN_STATUS_BLOCKED,
+    RUN_STATUS_PENDING,
+    RUN_STATUS_FAILED,
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
-    RUN_STATUS_PREPARING,
-    RUN_STATUS_QUEUED,
+    RUN_STATUS_PENDING,
+    RUN_STATUS_PENDING,
     RUN_STATUS_RUNNING,
     execute_finalize_decision,
     execution_ledger_reason,
@@ -603,7 +603,7 @@ class ExecutionService:
         )
 
     async def plan_task(self, task: Run) -> Run:
-        self.runs.update_run(task.id, status=RUN_STATUS_PREPARING)
+        self.runs.update_run(task.id, status=RUN_STATUS_PENDING)
         result = await self._prepare_with_subagent(task)
         self._log(task, result)
         task_after_prepare = self.runs.get(task.id)
@@ -692,7 +692,7 @@ class ExecutionService:
         # does not overwrite awaiting_approval with completed/failed. The daemon
         # surfaces the new code to the user via the normal background channel.
         suspended = self.runs.get(task.id)
-        if suspended is not None and suspended.status == RUN_STATUS_AWAITING_APPROVAL:
+        if suspended is not None and suspended.status == RUN_STATUS_PENDING:
             self.subagents.finish(
                 subagent_run.id,
                 status=SUBAGENT_STATUS_SUSPENDED,
@@ -717,7 +717,7 @@ class ExecutionService:
             phase="execute",
             command=["navi", "react", task.id],
             stdout=turn_result.text,
-            stderr=status_reason if execution_status == RUN_STATUS_BLOCKED else (turn_result.text if exit_code != 0 else ""),
+            stderr=status_reason if execution_status == RUN_STATUS_FAILED else (turn_result.text if exit_code != 0 else ""),
             exit_code=exit_code,
             started_at=started_at,
             ended_at=time.time(),
@@ -735,9 +735,9 @@ class ExecutionService:
     def _execution_status_from_turn_result(result) -> tuple[str, str]:
         facts = result.facts if isinstance(result.facts, dict) else {}
         if getattr(result, "yields_control", False):
-            return RUN_STATUS_BLOCKED, "execution produced an ask action and is waiting for user input"
+            return RUN_STATUS_FAILED, "execution produced an ask action and is waiting for user input"
         if facts.get(CAPABILITY_REASON_KEY) == CAPABILITY_REASON_SENSITIVE_APPROVAL:
-            return RUN_STATUS_AWAITING_APPROVAL, "execution suspended for approval"
+            return RUN_STATUS_PENDING, "execution suspended for approval"
         if not getattr(result, "ok", True):
             return RUN_STATUS_FAILED, "execution ended with capability error facts"
         return RUN_STATUS_COMPLETED, "execution produced terminal completion facts"
@@ -865,11 +865,11 @@ class ExecutionService:
 
     async def process_pending_once(self, *, limit: int = 3) -> list[Run]:
         completed: list[Run] = []
-        for task in self.runs.list_by_status(RUN_STATUS_QUEUED, limit=limit):
+        for task in self.runs.list_by_status(RUN_STATUS_PENDING, limit=limit):
             if not self._execution_allowed(task):
                 blocked = self.runs.update_run(
                     task.id,
-                    status=RUN_STATUS_BLOCKED,
+                    status=RUN_STATUS_FAILED,
                     error="execution grant missing: approved approval or explicit L3 trust rule required",
                 )
                 if blocked:

@@ -5,27 +5,20 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .runs import Approval, Run, RunStore
+from .runs import Run, RunStore
 
 
 logger = logging.getLogger("navi.governance")
 
 
 class GovernanceEngine:
-    """Single policy boundary for task autonomy and approvals."""
+    """Single policy boundary for task autonomy."""
 
     def __init__(self, home: Path):
         self.home = home
         self.runs = RunStore(home)
 
     def execution_allowed(self, task: Run) -> bool:
-        if self.runs.has_approved_execution(task.id):
-            return self._record_execution_grant(
-                task,
-                allowed=True,
-                reason="explicit_approval_found",
-                facts={"grant_source": "approval"},
-            )
         if task.autonomy_level in {"L3", "L4"}:
             return self._record_execution_grant(
                 task,
@@ -106,9 +99,6 @@ class GovernanceEngine:
 
         evidence = dict(facts or {})
         if not allowed:
-            evidence["approval_resolution"] = self.runs.approval_resolution_facts(
-                run_id=task.id, sender_id=task.sender_id
-            )
             evidence["run_status"] = task.status
         before = json.dumps(
             {"allowed": False, "reason": reason, "facts": evidence},
@@ -135,38 +125,6 @@ class GovernanceEngine:
             after=after,
         )
         return allowed
-
-    def resolve_code(self, *, code: str, sender_id: str, status: str) -> Approval | None:
-        from .evolution import EvolutionLedger
-
-        approval = self.runs.resolve_approval(code, sender_id, status)
-        if approval:
-            logger.info("Resolved code %s to status %s by sender %s", code, status, sender_id)
-            EvolutionLedger(self.home).record(
-                run_id=approval.run_id,
-                target_type="approval",
-                target_id=approval.id,
-                reason="approval_resolved_by_code",
-                before="pending",
-                after=status,
-            )
-        return approval
-
-    def resolve_task(self, *, run_id: str, sender_id: str, status: str) -> Approval | None:
-        from .evolution import EvolutionLedger
-
-        approval = self.runs.resolve_run_approval(run_id, sender_id=sender_id, status=status)
-        if approval:
-            logger.info("Resolved task %s to status %s by sender %s", run_id, status, sender_id)
-            EvolutionLedger(self.home).record(
-                run_id=run_id,
-                target_type="approval",
-                target_id=approval.id,
-                reason="approval_resolved_by_run",
-                before="pending",
-                after=status,
-            )
-        return approval
 
 
 def _protocol_actions(protocol: dict[str, Any]) -> list[dict[str, Any]]:

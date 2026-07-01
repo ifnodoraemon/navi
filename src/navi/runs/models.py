@@ -28,20 +28,6 @@ class Run:
 
 
 @dataclass(frozen=True)
-class Approval:
-    id: str
-    run_id: str
-    code: str
-    action: str
-    peer_id: str
-    sender_id: str
-    status: str
-    expires_at: float
-    created_at: float
-    updated_at: float
-
-
-@dataclass(frozen=True)
 class Watch:
     id: str
     cron: str
@@ -90,17 +76,3 @@ def _require_workspace(workspace: str) -> str:
     if not value:
         raise ValueError("workspace is required")
     return value
-
-
-def _approval_resolution_facts(approval: Approval, *, now: float, sender_id: str = "") -> dict:
-    return {
-        "approval_id": approval.id,
-        "run_id": approval.run_id,
-        "code_present": bool(approval.code),
-        "action": approval.action,
-        "status": approval.status,
-        "sender_matches": not sender_id or approval.sender_id == sender_id,
-        "is_expired": approval.expires_at < now,
-        "expires_at": approval.expires_at,
-        "updated_at": approval.updated_at,
-    }

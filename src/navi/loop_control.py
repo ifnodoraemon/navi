@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from .capability_contract import CAPABILITY_ERROR_REASON_KEY
 from .engine_types import AgentTurnResult
-from .lifecycle import RUN_STATUS_AWAITING_APPROVAL, RUN_STATUS_COMPLETED, RUN_STATUS_FAILED
+from .lifecycle import RUN_STATUS_PENDING, RUN_STATUS_COMPLETED, RUN_STATUS_FAILED
 from .loop import (
     LoopCheckName,
     LoopCheckResult,
@@ -505,7 +505,7 @@ def _facts_waiting_for_approval(facts: dict[str, Any] | None) -> bool:
     if not isinstance(facts, dict):
         return False
     status = str(facts.get("status") or facts.get("run_status") or "").strip()
-    if status == RUN_STATUS_AWAITING_APPROVAL:
+    if status == RUN_STATUS_PENDING:
         return True
     approval = facts.get("approval")
     if isinstance(approval, dict) and (

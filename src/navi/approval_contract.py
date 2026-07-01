@@ -1,13 +1,10 @@
+"""Approval decision constants for workflow approval flows."""
+
 from __future__ import annotations
 
 APPROVAL_DECISION_APPROVE = "approve"
 APPROVAL_DECISION_REJECT = "reject"
-APPROVAL_DECISIONS = frozenset(
-    {
-        APPROVAL_DECISION_APPROVE,
-        APPROVAL_DECISION_REJECT,
-    }
-)
+APPROVAL_DECISIONS = frozenset({APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT})
 
 APPROVAL_STATUS_PENDING = "pending"
 APPROVAL_STATUS_APPROVED = "approved"

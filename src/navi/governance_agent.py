@@ -5,11 +5,9 @@ from pathlib import Path
 from .event_bus import (
     ActionApprovedEvent,
     ActionRequestedEvent,
-    ActionSuspendedEvent,
     EventBus,
 )
 from .governance import GovernanceEngine
-from .lifecycle import RUN_STATUS_AWAITING_APPROVAL
 from .runs import RunStore
 
 
@@ -35,24 +33,5 @@ class GovernanceAgent:
                     source_agent="governance_agent",
                     run_id=event.run_id,
                     reason="execution_grant_allowed",
-                )
-            )
-        else:
-            approval = self.runs.create_approval(
-                run_id=event.run_id,
-                peer_id=event.peer_id,
-                sender_id=event.sender_id,
-            )
-            self.runs.update_run(event.run_id, status=RUN_STATUS_AWAITING_APPROVAL)
-            await self.event_bus.publish(
-                ActionSuspendedEvent(
-                    source_agent="governance_agent",
-                    correlation_id=event.correlation_id,
-                    run_id=event.run_id,
-                    reason="approval_required",
-                    approval_code=approval.code,
-                    peer_id=event.peer_id,
-                    sender_id=event.sender_id,
-                    source=event.source,
                 )
             )

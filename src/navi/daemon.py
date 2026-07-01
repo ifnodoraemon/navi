@@ -19,12 +19,12 @@ from .execution import ExecutionService
 from .governance_agent import GovernanceAgent
 from .graph import GraphNode, GraphStore
 from .lifecycle import (
-    RUN_STATUS_AWAITING_APPROVAL,
+    RUN_STATUS_PENDING,
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     RUN_STATUS_PENDING,
-    RUN_STATUS_PREPARING,
-    RUN_STATUS_QUEUED,
+    RUN_STATUS_PENDING,
+    RUN_STATUS_PENDING,
     RUN_STATUS_RUNNING,
 )
 from .runs import Run, RunStore
@@ -91,16 +91,16 @@ class SystemDaemon:
         async def on_action_approved(event: ActionApprovedEvent) -> None:
             task = self.runs.get(event.run_id)
             if task and task.status in {
-                RUN_STATUS_AWAITING_APPROVAL,
-                RUN_STATUS_QUEUED,
-                RUN_STATUS_PREPARING,
+                RUN_STATUS_PENDING,
+                RUN_STATUS_PENDING,
+                RUN_STATUS_PENDING,
             }:
-                self.runs.update_run(event.run_id, status=RUN_STATUS_QUEUED)
+                self.runs.update_run(event.run_id, status=RUN_STATUS_PENDING)
 
         async def on_approval_resolved(event: ApprovalResolvedEvent) -> None:
             task = self.runs.get(event.run_id)
             if task and event.decision == "approved":
-                self.runs.update_run(event.run_id, status=RUN_STATUS_QUEUED)
+                self.runs.update_run(event.run_id, status=RUN_STATUS_PENDING)
 
         async def on_turn_completed(event: AgentTurnCompletedEvent) -> None:
             if event.session_id:
@@ -377,7 +377,7 @@ class SystemDaemon:
         return {
             self._canonical_path(task.workspace)
             for task in self.runs.list_by_statuses(
-                [RUN_STATUS_RUNNING, RUN_STATUS_QUEUED, RUN_STATUS_PENDING]
+                [RUN_STATUS_RUNNING, RUN_STATUS_PENDING, RUN_STATUS_PENDING]
             )
             if task.workspace
         }

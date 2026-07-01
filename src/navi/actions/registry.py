@@ -21,7 +21,6 @@ def get_action_handlers(
     # Importing the action modules triggers their ``@capability`` decorators,
     # which populate ``_REGISTRY``. No hand-maintained factory dict remains.
     from . import (  # noqa: F401 — imported for side effect
-        approval,
         conversation,
         delegation,
         evolution,

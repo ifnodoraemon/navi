@@ -22,7 +22,7 @@ from .capability_contract import (
 )
 from .hooks import HookDecision, HookEvent, HookRegistry
 from .json_utils import json_schema_errors
-from .lifecycle import RUN_STATUS_AWAITING_APPROVAL
+from .lifecycle import RUN_STATUS_PENDING
 from .operating_context import permission_allows
 from .runs import RunStore
 from .tools import TURN_CONTEXT, ToolSpec, build_tool_gateway
@@ -293,9 +293,6 @@ class CapabilityRegistry:
                     "schema_errors": input_schema_errors,
                 },
             )
-        suspended = self._maybe_suspend_for_approval(handler.spec, permission, context)
-        if suspended is not None:
-            return suspended
         before_decisions = self.hooks.run(
             HookEvent(
                 event="before_capability",
@@ -365,66 +362,6 @@ class CapabilityRegistry:
         if handler.spec.mutates and not isinstance(handler, ToolCapability):
             self._audit_action_capability(handler.spec, call_args, result, started_at=started_at)
         return result
-
-    def _maybe_suspend_for_approval(
-        self, spec: ToolSpec, permission: str, context: CapabilityContext
-    ) -> CapabilityResult | None:
-        """Gate sensitive (mutating) ops inside an approved background run.
-
-        Returns a terminal "needs approval" result (after suspending the run and
-        minting a fresh code) when the op is sensitive and lacks a per-capability
-        grant; returns None when the op may proceed."""
-        run_id = self.governed_run_id
-        if not run_id:
-            return None
-        if spec.governance_exempt:
-            return None
-        from .safeguards import classify_capability
-
-        safeguard = classify_capability(spec)
-        sensitive = (
-            permission == "write"
-            or spec.mutates
-            or safeguard.confirmation_required
-            or safeguard.risk_class == "high"
-        )
-        if not sensitive:
-            return None
-        runs = RunStore(self.home)
-        action = f"execute:{spec.name}"
-        if runs.has_approved_action(run_id, action):
-            return None
-        pending = runs.pending_approval_for_run(run_id)
-        if pending and pending.action == action:
-            approval = pending
-        else:
-            task = runs.get(run_id)
-            approval = runs.create_approval(
-                run_id=run_id,
-                peer_id=context.peer_id or (task.peer_id if task else ""),
-                sender_id=context.sender_id or (task.sender_id if task else ""),
-                action=action,
-            )
-        runs.update_run(run_id, status=RUN_STATUS_AWAITING_APPROVAL)
-        facts = {
-            "entity_type": "approval_request",
-            "entity_id": approval.id,
-            "state_transition": "created",
-            "turn_scope": "current",
-            CAPABILITY_REASON_KEY: CAPABILITY_REASON_SENSITIVE_APPROVAL,
-            "run_id": run_id,
-            "approval": {"code": approval.code, "action": action},
-        }
-        return CapabilityResult(
-            ok=False,
-            action=action,
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
-            message="",
-            run_id=run_id,
-            terminal=False,
-            facts=facts,
-            error_reason="approval_required",
-        )
 
     def _build_handlers(self) -> Mapping[str, Capability]:
         handlers: dict[str, Capability] = {}
