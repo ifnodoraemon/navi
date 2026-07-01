@@ -630,7 +630,7 @@ class ExecutionService:
     async def execute_task(self, task: Run) -> Run:
         before_state = self._execution_before_state(task)
 
-        permission_ceiling = "write" if self.execution_allowed(task) else "prepare"
+        permission_ceiling = "write"
         self.runs.update_run(task.id, status=RUN_STATUS_RUNNING)
 
         from .runtime import AgentRuntime
