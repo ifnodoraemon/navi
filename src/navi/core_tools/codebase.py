@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 from ..tools import ToolResult
-from .paths import _is_safe_path
+
 
 def _project_path(value: Any, *, project_dir: Path) -> tuple[Path | None, str]:
     raw = str(value or "").strip()
@@ -14,8 +14,6 @@ def _project_path(value: Any, *, project_dir: Path) -> tuple[Path | None, str]:
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = project_dir / path
-    if not _is_safe_path(path, project_dir):
-        return None, "path must be within the project directory"
     return path.resolve().absolute(), ""
 
 

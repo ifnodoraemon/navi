@@ -3,16 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import urlparse
 
-def _is_safe_path(path: Path, project_dir: Path) -> bool:
-    try:
-        resolved_path = path.resolve().absolute()
-        resolved_project = project_dir.resolve().absolute()
-        if resolved_project == resolved_path or resolved_project in resolved_path.parents:
-            return True
-        return False
-    except Exception:
-        return False
-
 
 def _is_browser_url(value: str) -> bool:
     parsed = urlparse(value)

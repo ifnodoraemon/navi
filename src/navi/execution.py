@@ -697,22 +697,6 @@ class ExecutionService:
                 output_data={"exit_code": 0, "summary": turn_result.text},
                 error="",
             )
-            if self.event_bus:
-                import asyncio
-
-                from .event_bus import ResponseReadyEvent
-
-                asyncio.create_task(
-                    self.event_bus.publish(
-                        ResponseReadyEvent(
-                            peer_id=task.peer_id,
-                            sender_id=task.sender_id,
-                            source=task.source,
-                            text=turn_result.text,
-                            session_alias=f"connector:{task.source}:{task.peer_id}",
-                        )
-                    )
-                )
             return self.runs.get(task.id)
 
         execution_status, status_reason = self._execution_status_from_turn_result(turn_result)
