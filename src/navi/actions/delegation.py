@@ -120,6 +120,7 @@ class DelegateSpawnCapability(BaseCapability):
             "status": task.status,
             "autonomy_level": task.autonomy_level,
             "trust_rule_id": task.trust_rule_id,
+            "completion_evidence": True,
         }
         return _fact_result("delegation", facts, run_id=task.id)
 

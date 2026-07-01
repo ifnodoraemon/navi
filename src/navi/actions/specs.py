@@ -48,7 +48,7 @@ ACTION_SPECS = [
         name="delegate.spawn",
         capability_class="delegation",
         execution_contexts=("turn", "workflow_step"),
-        description="""Create a narrowly-scoped delegation run whose task executes in Navi's governed local execution context. After creating a task, call final.answer to inform the user the task is pending.""",
+        description="""Create a narrowly-scoped delegation run whose task executes in Navi's governed local execution context.""",
         input_schema={
             "type": "object",
             "properties": {
