@@ -28,7 +28,6 @@ from .loop import (
     TraceRunView,
     classify_loop_blocked,
     classify_loop_failure,
-    is_approval_loop_decision,
     loop_decision_ok,
     loop_decision_summary,
 )
@@ -795,9 +794,6 @@ def _event_run_view(event: TraceEvent, *, parent_run_id: str) -> TraceRunView:
 def _event_trace_run_status(event: TraceEvent) -> TraceRunStatus | str:
     if event.ok:
         return TraceRunStatus.SUCCESS
-    facts = _event_output(event).get("facts")
-    if event.phase == TracePhase.CAPABILITY_RESULT and _capability_result_is_approval_request(facts):
-        return "blocked"
     return TraceRunStatus.ERROR
 
 
@@ -937,7 +933,7 @@ def _failed_loop_decision_rule(
     )
 
 
-def _blocked_or_approval_loop_decision_rule(
+def _blocked_loop_decision_rule(
     summary: LoopDecisionSummary,
     output: dict[str, Any],
     events: list[TraceEvent],
@@ -950,13 +946,6 @@ def _blocked_or_approval_loop_decision_rule(
             classify_loop_blocked(output),
             evidence,
             rule="loop_decision_blocked",
-        )
-    if is_approval_loop_decision(output):
-        return _evaluation(
-            TraceOutcome.DEGRADED,
-            TraceFailureDomain.APPROVAL_LOOP,
-            evidence,
-            rule="approval_loop_decision",
         )
     return None
 
@@ -980,7 +969,7 @@ def _converged_loop_decision_rule(
 
 LOOP_DECISION_EVALUATION_RULES: tuple[LoopDecisionEvaluationRule, ...] = (
     _failed_loop_decision_rule,
-    _blocked_or_approval_loop_decision_rule,
+    _blocked_loop_decision_rule,
     _converged_loop_decision_rule,
 )
 
@@ -1053,28 +1042,6 @@ def _capability_failure_rule(
         TraceFailureDomain.CAPABILITY_FAILURE,
         evidence,
         rule="capability_failed_event",
-    )
-
-
-def _approval_pause_rule(
-    events: list[TraceEvent], evidence: dict[str, Any]
-) -> TraceEvaluationDraft | None:
-    if not _has_approval_required_pause(events):
-        return None
-    failure = _first_failure(events)
-    if failure is not None:
-        if failure.phase != TracePhase.CAPABILITY_RESULT:
-            return None
-        facts = _event_output(failure).get("facts")
-        if not _capability_result_is_approval_request(facts):
-            return None
-        _record_first_failure_evidence(failure, evidence)
-    evidence["approval_pause_recorded"] = True
-    return _evaluation(
-        TraceOutcome.SUCCESS,
-        TraceFailureDomain.NONE,
-        evidence,
-        rule="approval_pause_recorded",
     )
 
 
@@ -1160,7 +1127,6 @@ TRACE_EVALUATION_RULES: tuple[TraceEvaluationRule, ...] = (
     _loop_decision_rule,
     _planner_failure_rule,
     _safeguard_failure_rule,
-    _approval_pause_rule,
     _capability_failure_rule,
     _checker_failure_rule,
     _runtime_failure_rule,

@@ -583,18 +583,8 @@
   color: #fcd34d;
 }
 
-.approval-banner {
-  background: rgba(168, 85, 247, 0.1);
-  border-left-color: #a855f7;
-  color: #d8b4fe;
-}
-
 .timeline-icon.blocked {
   color: #f59e0b;
-}
-
-.timeline-icon.approval {
-  color: #a855f7;
 }
 
 .status-blocked {
@@ -603,8 +593,6 @@
   border: 1px solid rgba(245, 158, 11, 0.2);
 }
 
-.status-approval {
-  background: rgba(168, 85, 247, 0.1);
   color: #a855f7;
   border: 1px solid rgba(168, 85, 247, 0.2);
 }

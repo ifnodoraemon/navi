@@ -19,7 +19,6 @@ class LoopPhase(StrEnum):
 class LoopDecisionKind(StrEnum):
     CONTINUE = "continue"
     RECOVER = "recover"
-    PAUSE_FOR_APPROVAL = "pause_for_approval"
     CONVERGED = "converged"
     FINALIZE = "finalize"
     BLOCKED = "blocked"
@@ -28,8 +27,6 @@ class LoopDecisionKind(StrEnum):
 
 
 class LoopReason(StrEnum):
-    APPROVAL_ALREADY_PENDING = "approval_already_pending"
-    APPROVAL_REQUIRED = "approval_required"
     CAPABILITY_FAILURE = "capability_failure"
     CAPABILITY_OBSERVATION_APPENDED = "capability_observation_appended"
     COMPLETION_CHECKER_BLOCKED = "completion_checker_blocked"
@@ -47,7 +44,6 @@ class LoopReason(StrEnum):
 
 
 class LoopCheckName(StrEnum):
-    APPROVAL_GATE = "approval_gate"
     CAPABILITY_RESULT = "capability_result"
     COMPLETION_CHECKER = "completion_checker"
     COMPLETION_EVIDENCE = "completion_evidence"
@@ -94,7 +90,6 @@ class TraceRunStatus(StrEnum):
 
 
 class TraceFailureDomain(StrEnum):
-    APPROVAL_LOOP = "approval_loop"
     CAPABILITY_FAILURE = "capability_failure"
     CHECKER_BLOCKED = "checker_blocked"
     LOOP_NO_PROGRESS = "loop_no_progress"
@@ -256,11 +251,6 @@ NON_OK_LOOP_DECISIONS = frozenset(
     {LoopDecisionKind.BLOCKED, LoopDecisionKind.FAILED}
 )
 NON_OK_LOOP_DECISION_VALUES = frozenset(item.value for item in NON_OK_LOOP_DECISIONS)
-APPROVAL_LOOP_DECISIONS = frozenset(
-    {LoopDecisionKind.PAUSE_FOR_APPROVAL, LoopDecisionKind.CONTINUE}
-)
-APPROVAL_LOOP_DECISION_VALUES = frozenset(item.value for item in APPROVAL_LOOP_DECISIONS)
-
 TRACE_FAILURE_DOMAIN_VALUES = frozenset(item.value for item in TraceFailureDomain)
 
 
@@ -319,19 +309,12 @@ def classify_loop_blocked(output: dict[str, Any]) -> TraceFailureDomain:
     summary = loop_decision_summary(output)
     if summary.failure_domain and summary.failure_domain != str(TraceFailureDomain.NONE):
         return TraceFailureDomain(summary.failure_domain)
-    if str(LoopCheckName.APPROVAL_GATE) in summary.failed_gates:
-        return TraceFailureDomain.APPROVAL_LOOP
+    if str(LoopCheckName.NO_PROGRESS_GATE) in summary.failed_gates:
+        return TraceFailureDomain.LOOP_NO_PROGRESS
     return TraceFailureDomain.CHECKER_BLOCKED
 
 
-def is_approval_loop_decision(output: dict[str, Any]) -> bool:
-    summary = loop_decision_summary(output)
-    if summary.decision not in APPROVAL_LOOP_DECISION_VALUES:
-        return False
-    return (
-        summary.failure_domain == str(TraceFailureDomain.APPROVAL_LOOP)
-        or str(LoopCheckName.APPROVAL_GATE) in summary.failed_gates
-    )
+
 
 
 def trace_failure_domain(value: Any) -> str:
