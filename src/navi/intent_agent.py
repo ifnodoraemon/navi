@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from .conversation_contract import CONVERSATION_ACTION_ASK
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
-from .event_bus import EventBus, MessageIngressEvent, UserIntentEvent
+from .event_bus import AgentTurnCompletedEvent, EventBus, MessageIngressEvent, UserIntentEvent
 from .runtime import AgentRuntime
 
 logger = logging.getLogger("navi.intent")
@@ -17,10 +18,18 @@ class IntentAgent:
         self.home = home
         self.runtime = runtime
         self.event_bus = event_bus
+        self._pending_asks: dict[str, bool] = {}
         self._subscribe()
 
     def _subscribe(self) -> None:
         self.event_bus.subscribe("message_ingress", self._on_message_ingress)
+        self.event_bus.subscribe("agent_turn_completed", self._on_turn_completed)
+
+    async def _on_turn_completed(self, event: AgentTurnCompletedEvent) -> None:
+        if event.action == CONVERSATION_ACTION_ASK:
+            self._pending_asks[event.session_id] = True
+        else:
+            self._pending_asks.pop(event.session_id, None)
 
     async def _on_message_ingress(self, event: MessageIngressEvent) -> None:
         session_id = (
@@ -46,9 +55,14 @@ class IntentAgent:
         if event.facts:
             facts["connector_message"] = event.facts
 
-        pending_ask = self._pending_ask_context(session_id)
-        if pending_ask:
-            facts["pending_ask"] = pending_ask
+        if session_id and self._pending_asks.pop(session_id, False):
+            messages = self.runtime.memory.get_messages(session_id, limit=2)
+            if messages and messages[-1].role == "assistant":
+                facts["pending_ask"] = {
+                    "type": "ask_reply_context",
+                    "last_assistant_message_preview": messages[-1].content[:300],
+                    "hint": "The last interaction in this session was a clarifying question (ask). Interpret the user's message as a likely reply to that question.",
+                }
 
         logger.info(
             "Published dynamic intent facts for message %s: runs=%s workflows=%s",
@@ -70,21 +84,3 @@ class IntentAgent:
                 facts=facts,
             )
         )
-
-    def _pending_ask_context(self, session_id: str) -> dict | None:
-        """If the last assistant message was an ask, return its structured context."""
-        if not session_id:
-            return None
-        messages = self.runtime.memory.get_messages(session_id, limit=2)
-        if not messages:
-            return None
-        last = messages[-1]
-        if last.role != "assistant":
-            return None
-        if "[待选择:" in last.content or "💬 回复数字选择" in last.content:
-            return {
-                "type": "ask_reply_context",
-                "last_assistant_message_preview": last.content[:300],
-                "hint": "The user is likely replying to the above question. Interpret their message in that context.",
-            }
-        return None
