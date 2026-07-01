@@ -588,7 +588,7 @@ class NaviExecutionProvider:
 
 
 class ExecutionService:
-    def __init__(self, home: Path):
+    def __init__(self, home: Path, *, event_bus=None):
         self.home = home
         config = load_config(home)
         self.config = config.execution
@@ -596,6 +596,7 @@ class ExecutionService:
         self.governance = GovernanceEngine(home)
         self.ledger = EvolutionLedger(home)
         self.subagents = SubagentRunStore(home)
+        self.event_bus = event_bus
         self.provider = NaviExecutionProvider(
             provider=build_provider(config.model),
             timeout_seconds=self.config.timeout_seconds,
@@ -672,6 +673,37 @@ class ExecutionService:
             source=task.source,
             session_alias=f"executor:{task.id}",
         )
+
+        if getattr(turn_result, "yields_control", False):
+            self.runs.update_run(
+                task.id,
+                status=RUN_STATUS_PENDING,
+                result_summary=turn_result.text,
+            )
+            self.subagents.finish(
+                subagent_run.id,
+                status=SUBAGENT_STATUS_SUSPENDED,
+                output_data={"exit_code": 0, "summary": turn_result.text},
+                error="",
+            )
+            if self.event_bus:
+                import asyncio
+
+                from .event_bus import ResponseReadyEvent
+
+                asyncio.create_task(
+                    self.event_bus.publish(
+                        ResponseReadyEvent(
+                            peer_id=task.peer_id,
+                            sender_id=task.sender_id,
+                            source=task.source,
+                            text=turn_result.text,
+                            session_alias=f"connector:{task.source}:{task.peer_id}",
+                        )
+                    )
+                )
+            return self.runs.get(task.id)
+
         execution_status, status_reason = self._execution_status_from_turn_result(turn_result)
         exit_code = 0 if execution_status != RUN_STATUS_FAILED else 1
         self.subagents.finish(
@@ -735,7 +767,7 @@ class ExecutionService:
     def _execution_status_from_turn_result(result) -> tuple[str, str]:
         facts = result.facts if isinstance(result.facts, dict) else {}
         if getattr(result, "yields_control", False):
-            return RUN_STATUS_FAILED, "execution produced an ask action and is waiting for user input"
+            return RUN_STATUS_PENDING, "execution produced an ask action and is waiting for user input"
         if facts.get(CAPABILITY_REASON_KEY) == CAPABILITY_REASON_SENSITIVE_APPROVAL:
             return RUN_STATUS_PENDING, "execution suspended for approval"
         if not getattr(result, "ok", True):
@@ -866,6 +898,8 @@ class ExecutionService:
     async def process_pending_once(self, *, limit: int = 3) -> list[Run]:
         completed: list[Run] = []
         for task in self.runs.list_by_status(RUN_STATUS_PENDING, limit=limit):
+            if task.result_summary:
+                continue
             completed.append(await self.execute_task(task))
         return completed
 

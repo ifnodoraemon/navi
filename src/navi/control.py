@@ -94,6 +94,8 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
                 "peer_id": run.peer_id,
                 "sender_id": run.sender_id,
                 "workspace": run.workspace,
+                "result_summary": run.result_summary,
+                "error": run.error,
                 "updated_at": run.updated_at,
             }
             for run in state.active_runs

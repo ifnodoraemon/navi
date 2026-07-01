@@ -718,9 +718,8 @@ async def test_executor_ask_result_blocks_run_instead_of_marking_completed(
 
     result = await ExecutionService(tmp_path).execute_task(task)
 
-    assert result.status == "failed"
+    assert result.status == "pending"
     assert result.result_summary == "请提供文件位置。"
-    assert "waiting for user input" in result.error
 
 
 @pytest.mark.asyncio

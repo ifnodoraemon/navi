@@ -121,6 +121,31 @@ ACTION_SPECS = [
         source="action",
     ),
     ToolSpec(
+        name="delegate.send_input",
+        capability_class="delegation",
+        execution_contexts=("turn",),
+        description="""Send user input to a pending delegation run that asked a question, then resume it.""",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "message": {"type": "string"},
+            },
+            "required": ["run_id", "message"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "status": {"type": "string"},
+            },
+        },
+        facts_only=True,
+        mutates=True,
+        permission="write",
+        source="action",
+    ),
+    ToolSpec(
         name="watch.create",
         capability_class="watch",
         execution_contexts=("turn", "workflow_step"),

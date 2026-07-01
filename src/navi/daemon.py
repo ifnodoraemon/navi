@@ -71,11 +71,11 @@ class SystemDaemon:
         self.home = home
         self.project_dir = project_dir.resolve()
         self.runs = RunStore(home)
-        self.execution = ExecutionService(home)
+        self.event_bus = EventBus()
+        self.execution = ExecutionService(home, event_bus=self.event_bus)
         self.evolution = EvolutionEngine(home)
         self.capabilities = CapabilityRegistry(home=home, project_dir=self.project_dir)
         self.graph = GraphStore(home)
-        self.event_bus = EventBus()
         self.governance = GovernanceAgent(home, self.event_bus)
 
         self._setup_execution_subscription()

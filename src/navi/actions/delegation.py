@@ -120,7 +120,6 @@ class DelegateSpawnCapability(BaseCapability):
             "status": task.status,
             "autonomy_level": task.autonomy_level,
             "trust_rule_id": task.trust_rule_id,
-            "completion_evidence": True,
         }
         return _fact_result("delegation", facts, run_id=task.id)
 
@@ -157,7 +156,7 @@ class DelegateRunCapability(BaseCapability):
         task = runs.get(run_id) if run_id else None
         if task is None:
             raise NotFound(f"delegation run not found: {run_id}")
-        queued = runs.update_run(task.id, status=RUN_STATUS_PENDING) or task
+        queued = runs.update_run(task.id, status=RUN_STATUS_RUNNING) or task
         GoalStore(self.home).update_for_run(
             queued, evidence={"run_id": queued.id, "run_status": queued.status}
         )
@@ -169,6 +168,53 @@ class DelegateRunCapability(BaseCapability):
                 "status": queued.status,
             },
             run_id=queued.id,
+        )
+
+
+@capability("delegate_send_input")
+class DelegateSendInputCapability(BaseCapability):
+    @guarded
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        run_id = _arg_text(args, "run_id")
+        message = _arg_text(args, "message")
+        if not run_id or not message:
+            raise SchemaMismatch("delegate.send_input requires run_id and message.")
+
+        runs = RunStore(self.home)
+        task = runs.get(run_id) if run_id else None
+        if task is None:
+            raise NotFound(f"delegation run not found: {run_id}")
+        if task.status != RUN_STATUS_PENDING:
+            return _failure_result(
+                "delegation",
+                message=f"Run {run_id} is not awaiting input (status={task.status}).",
+                error_reason="not_awaiting_input",
+                facts={"run_id": run_id, "status": task.status},
+            )
+
+        from ..memory import MemoryStore
+
+        memory = MemoryStore(self.home)
+        session_alias = f"executor:{run_id}"
+        session_id = memory.current_session_id(session_alias)
+        memory.add_message(session_id, "user", message)
+
+        runs.update_run(task.id, status=RUN_STATUS_PENDING, result_summary="")
+
+        return _fact_result(
+            "delegation",
+            {
+                **_transition_facts("delegation_run", run_id, "updated"),
+                "run_id": run_id,
+                "status": RUN_STATUS_PENDING,
+            },
+            run_id=run_id,
         )
 
 
