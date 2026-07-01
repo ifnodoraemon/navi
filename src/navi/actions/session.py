@@ -53,7 +53,6 @@ class SessionRequestElevationCapability(BaseCapability):
 
         runs = RunStore(self.home)
 
-        # Spawn a delegation run representing the elevation request
         task = runs.create(
             f"Elevate session permission to {target_permission}. Reason: {reason}",
             kind="elevation",
@@ -65,10 +64,6 @@ class SessionRequestElevationCapability(BaseCapability):
         task = runs.update_run(
             task.id,
             plan_summary=f"session_elevation:{target_permission}",
-        )
-
-        approval = runs.create_approval(
-            run_id=task.id, peer_id=context.peer_id, sender_id=context.sender_id
         )
 
         return CapabilityResult(
@@ -84,11 +79,6 @@ class SessionRequestElevationCapability(BaseCapability):
                 "status": RUN_STATUS_PENDING,
                 "target_permission": target_permission,
                 "reason": reason,
-                "approval": {
-                    "action": "execute",
-                    "code": approval.code,
-                    "expires_at": approval.expires_at,
-                },
                 "run_id": task.id,
             },
             terminal=True,

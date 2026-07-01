@@ -46,9 +46,8 @@ class IntentAgent:
         if event.facts:
             facts["connector_message"] = event.facts
         logger.info(
-            "Published dynamic intent facts for message %s: approvals=%s runs=%s workflows=%s",
+            "Published dynamic intent facts for message %s: runs=%s workflows=%s",
             event.message_id,
-            facts["current_state"]["visible_pending_approval_count"],
             len(facts["current_state"]["active_runs"]),
             len(facts["current_state"]["active_workflows"]),
         )
