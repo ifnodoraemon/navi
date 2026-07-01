@@ -28,12 +28,12 @@ ACTION_SPECS = [
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "The question or context to present to the user.",
+                    "description": "The question or context to present to the user. Do not repeat the options here; the system will append them automatically.",
                 },
                 "options": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional list of explicit choices for the user to pick from.",
+                    "description": "Optional list of explicit choices for the user to pick from. DO NOT include bullet points, numbers, or emojis in these strings. The system will format and number them automatically.",
                 },
             },
             "required": ["message"],
