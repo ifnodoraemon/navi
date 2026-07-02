@@ -101,7 +101,7 @@ class DelegateSpawnCapability(BaseCapability):
             return CapabilityResult(
                 ok=True,
                 action="delegation",
-                observation=obs + "\n\nSYSTEM_NOTE: The background task is already running asynchronously. Do NOT call delegate.spawn again. You MUST now use the 'respond' capability to notify the user that the task has been dispatched and conclude this turn.",
+                observation=obs,
                 run_id=existing.id,
                 facts=facts,
             )
@@ -145,7 +145,7 @@ class DelegateSpawnCapability(BaseCapability):
         return CapabilityResult(
             ok=True,
             action="delegation",
-            observation=obs + "\n\nSYSTEM_NOTE: The background task has been successfully spawned and is running asynchronously. Do NOT call delegate.spawn again. You MUST now use the 'respond' capability to notify the user that the task has been dispatched and conclude this turn.",
+            observation=obs,
             run_id=task.id,
             facts=facts,
         )
