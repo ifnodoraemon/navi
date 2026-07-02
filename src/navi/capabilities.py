@@ -304,6 +304,8 @@ class CapabilityRegistry:
             if not self.governed_run_id:
                 return CapabilityResult(
                     ok=False,
+                    action=f"execute:{name}",
+                    observation=json.dumps({"error": "missing_governed_run"}),
                     terminal=False,
                     error_reason="missing_governed_run",
                     message="Sensitive capability requires a durable governed run context to mount an approval. Ephemeral conversational turns cannot mount approvals."
