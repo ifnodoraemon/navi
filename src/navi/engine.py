@@ -347,7 +347,7 @@ class HernessEngine(EnginePhasesMixin):
                 if goal_id:
                     goal_ids.add(goal_id)
 
-                if result.terminal and result.ok:
+                if result.terminal:
                     # Terminal condition met; finalize and return
                     self._record_loop_decision(
                         trace_id,
