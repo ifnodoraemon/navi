@@ -97,7 +97,15 @@ class DelegateSpawnCapability(BaseCapability):
                 "trust_rule_id": existing.trust_rule_id,
                 "deduplicated": True,
             }
-            return _fact_result("delegation", facts, run_id=existing.id)
+            return CapabilityResult(
+                ok=True,
+                action="delegation",
+                observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+                run_id=existing.id,
+                facts=facts,
+                terminal=True,
+                message="I have dispatched a fully-privileged background task to handle this request. You will be notified when it completes.",
+            )
 
         task = runs.create(
             title=objective[:120],
@@ -134,7 +142,15 @@ class DelegateSpawnCapability(BaseCapability):
             "autonomy_level": task.autonomy_level,
             "trust_rule_id": task.trust_rule_id,
         }
-        return _fact_result("delegation", facts, run_id=task.id)
+        return CapabilityResult(
+            ok=True,
+            action="delegation",
+            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            run_id=task.id,
+            facts=facts,
+            terminal=True,
+            message="I have dispatched a fully-privileged background task to handle this request. You will be notified when it completes.",
+        )
 
     @staticmethod
     def _existing_active_run(runs: RunStore, *, objective: str, prompt: str, workspace: str, context: CapabilityContext):
