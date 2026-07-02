@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .db import connect, ensure_schema_version
+from .db import connect, check_schema_version, write_schema_version
 from .loop import LoopCheckName, LoopSeverity
 from .paths import db_paths
 from .schema import Column, Table, assert_schema_exact
@@ -317,7 +317,7 @@ class WorkflowStore:
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
-            ensure_schema_version(conn, "workflows", WORKFLOW_STORE_SCHEMA_VERSION)
+            check_schema_version(conn, "workflows", WORKFLOW_STORE_SCHEMA_VERSION)
             conn.execute(WORKFLOWS_TABLE.ddl)
             assert_schema_exact(conn, WORKFLOWS_TABLE)
             conn.execute(WORKFLOW_STEPS_TABLE.ddl)
@@ -333,6 +333,7 @@ class WorkflowStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_workflow_events_workflow ON workflow_events(workflow_id, created_at)"
             )
+            write_schema_version(conn, "workflows", WORKFLOW_STORE_SCHEMA_VERSION)
 
     def create(
         self,

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .db import connect, ensure_schema_version
+from .db import connect, check_schema_version, write_schema_version
 from .lifecycle import (
     RUN_STATUS_PENDING,
     RUN_STATUS_FAILED,
@@ -90,7 +90,7 @@ class GoalStore:
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
-            ensure_schema_version(conn, "goals", GOAL_STORE_SCHEMA_VERSION)
+            check_schema_version(conn, "goals", GOAL_STORE_SCHEMA_VERSION)
             conn.execute(GOALS_TABLE.ddl)
             assert_schema_exact(conn, GOALS_TABLE)
             conn.execute(GOAL_EVENTS_TABLE.ddl)
@@ -100,6 +100,7 @@ class GoalStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_goal_events_goal ON goal_events(goal_id, created_at)"
             )
+            write_schema_version(conn, "goals", GOAL_STORE_SCHEMA_VERSION)
 
     def create(
         self,

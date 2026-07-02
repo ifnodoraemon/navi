@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Protocol
 
-from ..db import connect, ensure_schema_version
+from ..db import connect, check_schema_version, write_schema_version
 from ..schema import Column, Table, assert_schema_exact
 from .models import MemoryItem, SessionAlias, StoredMessage
 
@@ -88,7 +88,7 @@ class SQLiteMemoryProvider:
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
-            ensure_schema_version(conn, "memory", MEMORY_SCHEMA_VERSION)
+            check_schema_version(conn, "memory", MEMORY_SCHEMA_VERSION)
             conn.execute(MESSAGES_TABLE.ddl)
             assert_schema_exact(conn, MESSAGES_TABLE)
             conn.execute(SESSION_ALIASES_TABLE.ddl)
@@ -142,6 +142,7 @@ class SQLiteMemoryProvider:
                 "SELECT id, content FROM memory_items "
                 "WHERE id NOT IN (SELECT id FROM memory_fts)"
             )
+            write_schema_version(conn, "memory", MEMORY_SCHEMA_VERSION)
 
     @staticmethod
     def _migrate_memory_items(conn) -> None:

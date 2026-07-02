@@ -14,7 +14,6 @@ from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from .engine_types import AgentTurnResult
 from .loop import (
     LoopDecision,
-    LoopPhase,
     LoopProgressGate,
     TracePhase,
     TraceFailureDomain,

@@ -28,7 +28,7 @@ def _execute_with_busy_retry(conn: sqlite3.Connection, sql: str) -> None:
             time.sleep(0.05 * (attempt + 1))
 
 
-def ensure_schema_version(conn: sqlite3.Connection, component: str, version: int) -> None:
+def check_schema_version(conn: sqlite3.Connection, component: str, version: int) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_versions (
@@ -45,6 +45,9 @@ def ensure_schema_version(conn: sqlite3.Connection, component: str, version: int
         raise RuntimeError(
             f"{component} schema version {row[0]} is newer than supported version {version}"
         )
+
+
+def write_schema_version(conn: sqlite3.Connection, component: str, version: int) -> None:
     conn.execute(
         """
         INSERT INTO schema_versions(component, version, updated_at)

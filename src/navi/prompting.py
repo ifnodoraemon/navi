@@ -116,10 +116,8 @@ def build_system_prompt_assembly(
             "runtime",
             "\n".join(runtime_lines),
         ),
-        prompt_store.get("authorization"),
         PromptLayer("memory", f"Memory recall:\n{memory_context}" if memory_context else ""),
         PromptLayer("skills", f"Installed skills:\n{skills_context}" if skills_context else ""),
-        prompt_store.get("style"),
     ]
     return assemble_responder_system_prompt(layers, operating_context)
 

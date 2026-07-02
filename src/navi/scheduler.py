@@ -7,7 +7,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .db import connect, ensure_schema_version
+from .db import connect, check_schema_version, write_schema_version
 from .event_bus import EventBus, ScheduledTaskEvent
 
 logger = logging.getLogger("navi.scheduler")
@@ -31,7 +31,8 @@ class SchedulerStore:
                 )
                 """
             )
-            ensure_schema_version(conn, "scheduler", 1)
+            check_schema_version(conn, "scheduler", 1)
+            write_schema_version(conn, "scheduler", 1)
 
     def schedule_task(self, trigger_at: float, action: str, payload: dict) -> str:
         task_id = uuid.uuid4().hex

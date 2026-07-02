@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ..db import connect, ensure_schema_version
+from ..db import connect, check_schema_version, write_schema_version
 from ..paths import db_paths
 from ..schema import Column, Table, assert_schema_exact
 from ._approval_store import APPROVALS_TABLE, ApprovalStoreMixin
@@ -55,7 +55,7 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
-            ensure_schema_version(conn, "runs", RUN_STORE_SCHEMA_VERSION)
+            check_schema_version(conn, "runs", RUN_STORE_SCHEMA_VERSION)
             conn.execute(RUNS_TABLE.ddl)
             assert_schema_exact(conn, RUNS_TABLE)
             conn.execute(WATCHES_TABLE.ddl)
@@ -83,6 +83,7 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_approvals_run ON approvals(run_id, status)"
             )
+            write_schema_version(conn, "runs", RUN_STORE_SCHEMA_VERSION)
 
     def create(
         self,

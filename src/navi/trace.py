@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 import hashlib
 from .capability_contract import CAPABILITY_ERROR_REASON_KEY
-from .db import connect, ensure_schema_version
+from .db import connect, check_schema_version, write_schema_version
 from .json_utils import json_object
 from .loop import (
     LoopCheckName,
@@ -99,7 +99,7 @@ class TraceStore:
 
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
-            ensure_schema_version(conn, "traces", TRACE_STORE_SCHEMA_VERSION)
+            check_schema_version(conn, "traces", TRACE_STORE_SCHEMA_VERSION)
             conn.execute(TRACE_EVENTS_TABLE.ddl)
             _ensure_schema_current(conn, TRACE_EVENTS_TABLE)
             conn.execute(
@@ -112,6 +112,7 @@ class TraceStore:
             )
             conn.execute(TRACE_BLOBS_TABLE.ddl)
             _ensure_schema_current(conn, TRACE_BLOBS_TABLE)
+            write_schema_version(conn, "traces", TRACE_STORE_SCHEMA_VERSION)
         self._redact_existing_trace_data()
         self.clean_old_traces()
 

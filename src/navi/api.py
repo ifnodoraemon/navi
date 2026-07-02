@@ -178,8 +178,6 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     _UNAUTHENTICATED_PATHS = frozenset({"/health", "/v1/auth/status"})
     _UNAUTHENTICATED_PREFIXES = ("/assets", "/ui/trace")
-    _UNAUTHENTICATED_GET_PATHS = frozenset({"/v1/traces", "/v1/trace-evaluations"})
-    _UNAUTHENTICATED_GET_PREFIXES = ("/v1/traces/",)
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
@@ -188,13 +186,9 @@ def create_app(home: Path | None = None) -> FastAPI:
             path.startswith(prefix) for prefix in _UNAUTHENTICATED_PREFIXES
         ):
             return await call_next(request)
-        if request.method == "GET" and (
-            path in _UNAUTHENTICATED_GET_PATHS
-            or any(path.startswith(prefix) for prefix in _UNAUTHENTICATED_GET_PREFIXES)
-        ):
-            return await call_next(request)
+            
         header_key = request.headers.get("X-API-Key")
-        if header_key != api_key:
+        if not header_key or not secrets.compare_digest(header_key, api_key):
             return Response(content="Unauthorized", status_code=401)
         return await call_next(request)
 
