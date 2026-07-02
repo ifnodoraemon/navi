@@ -143,11 +143,6 @@ def _get_escalating_observation(
                 "action_type": action_type,
                 "tool": tool,
                 "progress_signature": progress_signature,
-                "semantic_state": (
-                    f"The capability '{tool}' has been {action_type} {count} times "
-                    f"with identical results. The observation is complete — "
-                    f"repeated calls will not yield new information."
-                ),
             },
         },
         ensure_ascii=False,
