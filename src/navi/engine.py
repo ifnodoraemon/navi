@@ -378,7 +378,7 @@ class HernessEngine(EnginePhasesMixin):
                     return turn_res
 
                 observation = result.observation or result.text
-                if observation:
+                if observation and not loop_warning:
                     observations.append(observation)
 
                 control = reduce_runtime_step(
