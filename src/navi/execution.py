@@ -669,7 +669,7 @@ class ExecutionService:
             has_history = len(messages) > 0
 
         if has_history:
-            prompt_text = "Continue executing the task."
+            prompt_text = ""
         else:
             prompt_text = task.prompt
 
