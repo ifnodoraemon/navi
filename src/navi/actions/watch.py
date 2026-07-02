@@ -113,7 +113,6 @@ class WatchCreateCapability(BaseCapability):
             "next_run_at": watch.next_run_at,
             "next_run_text": time.ctime(watch.next_run_at),
         }
-        facts["surface_message"] = _watch_created_surface_message(facts)
         return _fact_result(
             "watch",
             facts,
@@ -150,19 +149,9 @@ class WatchDeleteCapability(BaseCapability):
             "cron": deleted.cron,
             "prompt": deleted.prompt,
             "reason": reason,
-            "surface_message": f"Watch deleted: {deleted.id}.",
         }
         return _fact_result(
             "watch",
             facts,
             run_id=deleted.id,
         )
-
-
-def _watch_created_surface_message(facts: dict[str, Any]) -> str:
-    next_run_text = str(facts.get("next_run_text") or "").strip()
-    kind = str(facts.get("kind") or "").strip()
-    cron = str(facts.get("cron") or "").strip()
-    if kind == "recurring":
-        return f"Recurring watch created. Next run: {next_run_text}. Cron: {cron}."
-    return f"Watch created. Run at: {next_run_text}."

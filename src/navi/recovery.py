@@ -21,9 +21,13 @@ class RecoveryFacts:
             "blocked": self.blocked,
             **self.details,
         }
-        return (
-            "Loop checker facts:\n"
-            + json.dumps(facts, ensure_ascii=False, sort_keys=True)
+        return json.dumps(
+            {
+                "observation_type": "loop_checker_fact",
+                "facts": facts,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
         )
 
 

@@ -20,8 +20,9 @@ def test_recovery_planner_returns_task_state_facts():
         "run_id": "run-1",
         "run_status": "pending",
     }
-    observation = json.loads(plan.to_observation().split("\n", 1)[1])
-    assert observation == {
+    observation = json.loads(plan.to_observation())
+    assert observation["observation_type"] == "loop_checker_fact"
+    assert observation["facts"] == {
         "blocked": True,
         "blocked_entity_type": "delegation_run",
         "reason_code": "delegation_run_incomplete",
