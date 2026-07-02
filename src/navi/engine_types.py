@@ -30,22 +30,25 @@ class AgentTurnResult:
         if self.text:
             return self.text
         if self.yields_control:
-            if self.facts:
-                res = _surface_facts(self.facts)
-                if self.error_reason:
-                    res += f"\nerror_reason={self.error_reason}"
-                return res
+            if self.facts or self.error_reason:
+                return _surface_result_facts(self)
             if self.observation:
                 return self.observation
-            return self.error_reason
+            return _surface_result_facts(self)
         if not self.ok:
-            error_msg = ""
-            if self.facts:
-                error_msg = self.facts.get("error") or self.facts.get("error_type") or self.error_reason
-            else:
-                error_msg = self.error_reason
-            return f"[{self.action}] failed: {error_msg}"
+            return _surface_result_facts(self)
         return self.text
+
+
+def _surface_result_facts(result: AgentTurnResult) -> str:
+    facts = dict(result.facts or {})
+    facts.setdefault("action", result.action)
+    facts.setdefault("ok", result.ok)
+    if result.error_reason:
+        facts.setdefault("error_reason", result.error_reason)
+    if result.run_id:
+        facts.setdefault("run_id", result.run_id)
+    return _surface_facts(facts)
 
 
 def _surface_facts(facts: dict[str, Any]) -> str:
