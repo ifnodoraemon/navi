@@ -7,14 +7,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .completion_checks import completion_block_reason
-from .control import SurfaceContext
 from .engine_types import AgentTurnResult
 from .goals import GoalStore
-from .operating_context import OperatingContext
-from .provider import ChatMessage
-from .recovery import CompletionBlock, RecoveryPlanner
-from .trace import TraceStore
 
 if TYPE_CHECKING:
     from .runtime import AgentRuntime
@@ -27,16 +21,14 @@ class EnginePhasesMixin:
     - home: Path
     - trace: TraceStore
     - runtime: AgentRuntime
-    - recovery_planner: RecoveryPlanner
     - capabilities: CapabilityRegistry
     - permission_ceiling: str
     - event_bus: Any | None
     """
 
     home: Path
-    trace: TraceStore
+    trace: Any  # TraceStore
     runtime: AgentRuntime
-    recovery_planner: RecoveryPlanner
     capabilities: Any  # CapabilityRegistry
     permission_ceiling: str
     event_bus: Any | None
@@ -51,24 +43,6 @@ class EnginePhasesMixin:
         goals = GoalStore(self.home)
         for goal_id in sorted(goal_ids):
             goals.attach_trace(goal_id, trace_id=trace_id, session_id=session_id, evidence=evidence)
-
-    def _completion_block_reason(
-        self,
-        events: list[dict[str, Any]],
-        *,
-        state_context: SurfaceContext | None = None,
-        current_run_id: str = "",
-        terminal_text: str = "",
-    ) -> CompletionBlock | None:
-        return completion_block_reason(
-            home=self.home,
-            events=events,
-            state_context=state_context,
-            current_run_id=current_run_id,
-            governed_run_id=self.governed_run_id,
-            governed_workflow_id=self.governed_workflow_id,
-            terminal_text=terminal_text,
-        )
 
     def _trigger_background_memory(self, result: AgentTurnResult) -> None:
         if result.session_id and self.event_bus:

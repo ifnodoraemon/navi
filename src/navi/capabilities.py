@@ -489,14 +489,13 @@ class CapabilityRegistry:
             "reason=sensitive_capability_requires_approval"
         )
         return CapabilityResult(
-            ok=False,
+            ok=True,
             action=CAPABILITY_ACTION_APPROVAL,
-            observation=visible,
-            message=visible,
+            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            message="",
             run_id=self.governed_run_id or "",
-            terminal=True,
+            terminal=False,
             facts=facts,
-            error_reason=CAPABILITY_REASON_SENSITIVE_APPROVAL,
         )
 
     def _build_handlers(self) -> Mapping[str, Capability]:

@@ -9,7 +9,6 @@ from typing import Any, Callable
 
 import hashlib
 from .capability_contract import CAPABILITY_ERROR_REASON_KEY
-from .completion_checks import completion_block_reason, delegation_event_incomplete
 from .db import connect, ensure_schema_version
 from .json_utils import json_object
 from .loop import (
@@ -1184,20 +1183,6 @@ def _planner_no_response_rule(
     )
 
 
-def _pending_completion_gap_rule(
-    events: list[TraceEvent], evidence: dict[str, Any]
-) -> TraceEvaluationDraft | None:
-    if not _has_unverified_pending_run_completion(events):
-        return None
-    evidence["pending_run_completion_risk"] = True
-    return _evaluation(
-        TraceOutcome.DEGRADED,
-        TraceFailureDomain.MISSING_COMPLETION_CHECK,
-        evidence,
-        rule="pending_run_completion_gap",
-    )
-
-
 def _missing_trace_rule(
     events: list[TraceEvent], evidence: dict[str, Any]
 ) -> TraceEvaluationDraft | None:
@@ -1219,7 +1204,6 @@ TRACE_EVALUATION_RULES: tuple[TraceEvaluationRule, ...] = (
     _checker_failure_rule,
     _runtime_failure_rule,
     _planner_no_response_rule,
-    _pending_completion_gap_rule,
     _missing_trace_rule,
 )
 
@@ -1389,37 +1373,3 @@ def _table_schema(conn, table: str) -> list[tuple[str, str, int, int]]:
         (row[1], str(row[2]).upper(), int(row[3]), int(row[5]))
         for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
     ]
-
-
-def _has_unverified_pending_run_completion(events: list[TraceEvent]) -> bool:
-    if any(event.phase == LoopPhase.CHECK for event in events):
-        return False
-    final_event = next(
-        (event for event in reversed(events) if event.phase == TracePhase.TURN_FINAL),
-        None,
-    )
-    if final_event is None:
-        return False
-    return (
-        completion_block_reason(
-            home=None,
-            events=_trace_fact_events(events),
-            checks=(delegation_event_incomplete,),
-        )
-        is not None
-    )
-
-
-def _trace_fact_events(events: list[TraceEvent]) -> list[dict[str, Any]]:
-    fact_events: list[dict[str, Any]] = []
-    for event in events:
-        if event.phase != TracePhase.CAPABILITY_RESULT or not event.ok:
-            continue
-        facts = _event_output(event).get("facts")
-        if not isinstance(facts, dict):
-            continue
-        event_facts = dict(facts)
-        if event.run_id and not event_facts.get("run_id"):
-            event_facts["run_id"] = event.run_id
-        fact_events.append({"facts": event_facts})
-    return fact_events

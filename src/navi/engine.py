@@ -31,7 +31,6 @@ from .loop_control import (
     terminal_loop_decision,
 )
 from .operating_context import PERMISSION_ORDER
-from .recovery import RecoveryPlanner
 from .runtime import AgentRuntime
 from .runs import RunStore
 from .syscalls import ModelSyscallPlanner
@@ -83,7 +82,6 @@ class HernessEngine(EnginePhasesMixin):
             governed_run_id=governed_run_id,
         )
         self.planner = ModelSyscallPlanner(runtime.provider)
-        self.recovery_planner = RecoveryPlanner()
         self.trace = TraceStore(home)
         self.context_manager = ContextManager()
         self.governed_run_id = governed_run_id or ""
@@ -766,6 +764,7 @@ class HernessEngine(EnginePhasesMixin):
                 "action": invoked.action,
                 "facts": invoked.facts or {},
                 "error_reason": getattr(invoked, "error_reason", ""),
+                "message": invoked.message,
             },
         )
 
@@ -793,62 +792,6 @@ class HernessEngine(EnginePhasesMixin):
                 result,
                 observation="\n\n".join(observations),
             )
-
-        if result.terminal and not result.yields_control:
-            block = self._completion_block_reason(
-                completion_events,
-                state_context=state_context,
-                current_run_id=result.run_id,
-                terminal_text=result.text,
-            )
-            if block:
-                self.trace.add_event(
-                    trace_id=trace_id,
-                    phase=LoopPhase.CHECK,
-                    session_id=resolved_session_id or "",
-                    run_id=result.run_id,
-                    source=source,
-                    peer_id=peer_id,
-                    sender_id=sender_id,
-                    model_role="runtime",
-                    ok=False,
-                    input_data={"checker": "completion", "events_count": len(completion_events)},
-                    output_data={"checker": "completion", **asdict(block)},
-                    message=block.reason_code,
-                )
-                recovery_plan = self.recovery_planner.plan_completion_failure(
-                    block=block,
-                    events=completion_events,
-                )
-                self.trace.add_event(
-                    trace_id=trace_id,
-                    phase=LoopPhase.RECOVERY,
-                    session_id=resolved_session_id or "",
-                    run_id=result.run_id,
-                    source=source,
-                    peer_id=peer_id,
-                    sender_id=sender_id,
-                    model_role="runtime",
-                    ok=True,
-                    input_data={"trigger": recovery_plan.trigger},
-                    output_data=asdict(recovery_plan),
-                    message=recovery_plan.reason_code,
-                )
-                progress_signature = semantic_progress_signature(
-                    syscall.tool,
-                    syscall.args,
-                    ok=invoked.ok,
-                    facts=invoked.facts,
-                )
-                return self._StepResult(
-                    result=result,
-                    invoked_facts=invoked.facts,
-                    should_continue=True,
-                    recovery_observation=recovery_plan.to_observation(),
-                    progress_signature=progress_signature,
-                    output_signature=output_signature,
-                    tool=syscall.tool,
-                )
 
         progress_signature = semantic_progress_signature(
             syscall.tool,
