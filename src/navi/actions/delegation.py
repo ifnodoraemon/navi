@@ -97,14 +97,13 @@ class DelegateSpawnCapability(BaseCapability):
                 "trust_rule_id": existing.trust_rule_id,
                 "deduplicated": True,
             }
+            obs = json.dumps(facts, ensure_ascii=False, sort_keys=True)
             return CapabilityResult(
                 ok=True,
                 action="delegation",
-                observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+                observation=obs + "\n\nSYSTEM_NOTE: The background task is already running asynchronously. Do NOT call delegate.spawn again. You MUST now use the 'respond' capability to notify the user that the task has been dispatched and conclude this turn.",
                 run_id=existing.id,
                 facts=facts,
-                terminal=True,
-                message="I have dispatched a fully-privileged background task to handle this request. You will be notified when it completes.",
             )
 
         task = runs.create(
@@ -142,14 +141,13 @@ class DelegateSpawnCapability(BaseCapability):
             "autonomy_level": task.autonomy_level,
             "trust_rule_id": task.trust_rule_id,
         }
+        obs = json.dumps(facts, ensure_ascii=False, sort_keys=True)
         return CapabilityResult(
             ok=True,
             action="delegation",
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            observation=obs + "\n\nSYSTEM_NOTE: The background task has been successfully spawned and is running asynchronously. Do NOT call delegate.spawn again. You MUST now use the 'respond' capability to notify the user that the task has been dispatched and conclude this turn.",
             run_id=task.id,
             facts=facts,
-            terminal=True,
-            message="I have dispatched a fully-privileged background task to handle this request. You will be notified when it completes.",
         )
 
     @staticmethod
