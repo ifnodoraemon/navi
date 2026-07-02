@@ -94,15 +94,15 @@ class WatchStoreMixin:
             )
         return watch
 
-    def list_watches(self, *, limit: int = 50) -> list[Watch]:
+    def list_watches(self, *, limit: int = 50, offset: int = 0) -> list[Watch]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, cron, prompt, peer_id, sender_id, enabled,
                        next_run_at, last_run_at, created_at, updated_at, workspace, kind
-                FROM watches ORDER BY updated_at DESC LIMIT ?
+                FROM watches ORDER BY updated_at DESC LIMIT ? OFFSET ?
                 """,
-                (limit,),
+                (limit, offset),
             ).fetchall()
         return [self._watch_from_row(row) for row in rows]
 

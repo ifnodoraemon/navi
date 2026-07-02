@@ -23,18 +23,31 @@ from .helpers import (
 )
 from ..config import load_config
 from ..execution import ExecutionService
-from ..goals import GoalStore
+from ..goals import GOAL_STATUS_BLOCKED, GoalStore
 from ..graph import GraphStore
 from ..lifecycle import (
     RUN_ACTIVE_STATUSES,
     RUN_STATUS_FAILED,
     RUN_STATUS_PENDING,
-    RUN_STATUS_RUNNING,
 )
 from ..runs import RunStore
 
 REMOTE_DELETABLE_STATUSES = frozenset({RUN_STATUS_FAILED, RUN_STATUS_PENDING, "expired"})
 REMOTE_DELETABLE_KINDS = frozenset({"watch", "delegation"})
+
+
+def _block_goal_for_deleted_run(home: Path, run_id: str) -> None:
+    goals = GoalStore(home)
+    goal = goals.get_by_run(run_id)
+    if goal is None:
+        return
+    goals.update_status(
+        goal.id,
+        GOAL_STATUS_BLOCKED,
+        blocked_reason="delegation_run_deleted",
+        evidence={"run_id": run_id, "reason": "delegation_run_deleted"},
+        event_type="goal.run_deleted",
+    )
 
 
 @capability("delegate_spawn")
@@ -156,7 +169,7 @@ class DelegateRunCapability(BaseCapability):
         task = runs.get(run_id) if run_id else None
         if task is None:
             raise NotFound(f"delegation run not found: {run_id}")
-        queued = runs.update_run(task.id, status=RUN_STATUS_RUNNING) or task
+        queued = runs.update_run(task.id, status=RUN_STATUS_PENDING, result_summary="") or task
         GoalStore(self.home).update_for_run(
             queued, evidence={"run_id": queued.id, "run_status": queued.status}
         )
@@ -254,6 +267,7 @@ class DelegateDeleteCapability(BaseCapability):
                 facts={"run_id": run_id},
             )
         graph.delete(deleted.id)
+        _block_goal_for_deleted_run(self.home, deleted.id)
         facts = {
             **_transition_facts("delegation_run", deleted.id, "deleted"),
             "completion_evidence": True,
@@ -306,6 +320,7 @@ class DelegateDeleteCapability(BaseCapability):
             if removed is None:
                 continue
             graph.delete(removed.id)
+            _block_goal_for_deleted_run(self.home, removed.id)
             deleted.append(
                 {
                     "run_id": removed.id,
@@ -390,11 +405,18 @@ class DelegateListCapability(BaseCapability):
         from ..control import run_matches_context
 
         limit = _positive_int(args.get("limit"), default=20, maximum=100)
+
+        try:
+            offset = int(args.get("offset", 0))
+            offset = max(0, min(offset, 10000))
+        except (TypeError, ValueError):
+            offset = 0
+
         store = RunStore(self.home)
-        runs = [run for run in store.list(limit=limit) if run_matches_context(run, context)]
+        runs = [run for run in store.list(limit=limit, offset=offset) if run_matches_context(run, context)]
         watches = [
             watch
-            for watch in store.list_watches(limit=limit)
+            for watch in store.list_watches(limit=limit, offset=offset)
             if run_matches_context(watch, context)
         ]
         status_counts: dict[str, int] = {}
@@ -406,5 +428,6 @@ class DelegateListCapability(BaseCapability):
             "run_status_counts": status_counts,
             "returned_run_count": len(runs),
             "run_limit": limit,
+            "run_offset": offset,
         }
         return _fact_result("delegation", facts)

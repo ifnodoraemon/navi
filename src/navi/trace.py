@@ -121,6 +121,7 @@ class TraceStore:
         cutoff = __import__("time").time() - (days * 24 * 3600)
         with connect(self.db_path) as conn:
             conn.execute("DELETE FROM trace_events WHERE created_at < ?", (cutoff,))
+            conn.execute("DELETE FROM trace_evaluations WHERE created_at < ?", (cutoff,))
             self._gc_blobs(conn)
 
     def _gc_blobs(self, conn: Any) -> None:
@@ -138,10 +139,12 @@ class TraceStore:
             if row[1]:
                 used_blobs.update(blob_pattern.findall(row[1]))
                 
-        orphaned = all_blobs - used_blobs
+        orphaned = list(all_blobs - used_blobs)
         if orphaned:
-            placeholders = ",".join("?" * len(orphaned))
-            conn.execute(f"DELETE FROM trace_blobs WHERE hash IN ({placeholders})", tuple(orphaned))
+            for i in range(0, len(orphaned), 900):
+                chunk = orphaned[i : i + 900]
+                placeholders = ",".join("?" * len(chunk))
+                conn.execute(f"DELETE FROM trace_blobs WHERE hash IN ({placeholders})", tuple(chunk))
 
     def _redact_existing_trace_data(self) -> None:
         with connect(self.db_path) as conn:
@@ -222,8 +225,8 @@ class TraceStore:
             tool=tool,
             model_role=model_role,
             ok=ok,
-            input_json=json.dumps(input_data_extracted, ensure_ascii=False, sort_keys=True),
-            output_json=json.dumps(output_data_extracted, ensure_ascii=False, sort_keys=True),
+            input_json=json.dumps(input_data_extracted, ensure_ascii=False, sort_keys=True, default=str),
+            output_json=json.dumps(output_data_extracted, ensure_ascii=False, sort_keys=True, default=str),
             message=redacted_message,
             created_at=time.time(),
         )
@@ -253,8 +256,8 @@ class TraceStore:
             )
         return replace(
             event,
-            input_json=json.dumps(_redact(input_data or {}), ensure_ascii=False, sort_keys=True),
-            output_json=json.dumps(_redact(output_data or {}), ensure_ascii=False, sort_keys=True),
+            input_json=json.dumps(_redact(input_data or {}), ensure_ascii=False, sort_keys=True, default=str),
+            output_json=json.dumps(_redact(output_data or {}), ensure_ascii=False, sort_keys=True, default=str),
             message=redacted_message,
         )
 
@@ -285,36 +288,37 @@ class TraceStore:
             message=f"{decision.decision}: {decision.reason}",
         )
 
-    def list_events(self, trace_id: str, *, limit: int = 200) -> list[TraceEvent]:
+    def list_events(self, trace_id: str, *, limit: int = 5000, offset: int = 0) -> list[TraceEvent]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, trace_id, session_id, run_id, phase, source, peer_id,
                        sender_id, tool, model_role, ok, input_json, output_json,
                        message, created_at
-                FROM trace_events WHERE trace_id = ? ORDER BY created_at ASC LIMIT ?
+                FROM trace_events WHERE trace_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?
                 """,
-                (trace_id, limit),
+                (trace_id, limit, offset),
             ).fetchall()
         events = [TraceEvent(*row[:10], bool(row[10]), *row[11:]) for row in rows]
         return self._resolve_events_blobs(events)
 
-    def list_loop_decisions(self, trace_id: str, *, limit: int = 200) -> list[TraceEvent]:
+    def list_loop_decisions(self, trace_id: str, *, limit: int = 5000, offset: int = 0) -> list[TraceEvent]:
         return [
             event
-            for event in self.list_events(trace_id, limit=limit)
+            for event in self.list_events(trace_id, limit=limit, offset=offset)
             if event.phase == LOOP_DECISION_PHASE
         ]
 
-    def list_run_views(self, trace_id: str, *, limit: int = 200) -> list[TraceRunView]:
-        return _trace_run_views(self.list_events(trace_id, limit=limit), trace_id=trace_id)
+    def list_run_views(self, trace_id: str, *, limit: int = 5000, offset: int = 0) -> list[TraceRunView]:
+        return _trace_run_views(self.list_events(trace_id, limit=limit, offset=offset), trace_id=trace_id)
 
     def list_events_for_run_or_session(
         self,
         *,
         run_id: str,
         session_id: str = "",
-        limit: int = 200,
+        limit: int = 5000,
+        offset: int = 0,
     ) -> list[TraceEvent]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
@@ -324,9 +328,9 @@ class TraceStore:
                        message, created_at
                 FROM trace_events
                 WHERE run_id = ? OR (? != '' AND session_id = ?)
-                ORDER BY created_at ASC LIMIT ?
+                ORDER BY created_at ASC LIMIT ? OFFSET ?
                 """,
-                (run_id, session_id, session_id, limit),
+                (run_id, session_id, session_id, limit, offset),
             ).fetchall()
         events = [TraceEvent(*row[:10], bool(row[10]), *row[11:]) for row in rows]
         return self._resolve_events_blobs(events)
@@ -358,8 +362,9 @@ class TraceStore:
         skipped = 0
         for trace_id, start_time, end_time, step_count, failed_event_count in rows:
             outcome, failure_domain = self._trace_list_outcome(trace_id)
+            trace_has_error = outcome == str(TraceOutcome.FAILURE)
             trace_has_issue = outcome != str(TraceOutcome.SUCCESS)
-            if has_error is not None and trace_has_issue is not has_error:
+            if has_error is not None and trace_has_error is not has_error:
                 continue
             if skipped < offset:
                 skipped += 1
@@ -367,7 +372,8 @@ class TraceStore:
             metas.append(
                 {
                     "trace_id": trace_id,
-                    "has_error": trace_has_issue,
+                    "has_error": trace_has_error,
+                    "has_issue": trace_has_issue,
                     "outcome": outcome,
                     "failure_domain": failure_domain,
                     "start_time": start_time,
@@ -383,17 +389,21 @@ class TraceStore:
         if metas:
             import json
             trace_ids = [m["trace_id"] for m in metas]
-            placeholders = ",".join("?" * len(trace_ids))
-            with connect(self.db_path) as conn:
-                first_events = conn.execute(
-                    f"""
-                    SELECT trace_id, input_json, message
-                    FROM trace_events
-                    WHERE trace_id IN ({placeholders}) AND phase IN ('channel.ingress', 'turn.start')
-                    ORDER BY created_at ASC
-                    """,
-                    trace_ids,
-                ).fetchall()
+            first_events = []
+            for i in range(0, len(trace_ids), 900):
+                chunk = trace_ids[i : i + 900]
+                placeholders = ",".join("?" * len(chunk))
+                with connect(self.db_path) as conn:
+                    rows = conn.execute(
+                        f"""
+                        SELECT trace_id, input_json, message
+                        FROM trace_events
+                        WHERE trace_id IN ({placeholders}) AND phase IN ('channel.ingress', 'turn.start')
+                        ORDER BY created_at ASC
+                        """,
+                        chunk,
+                    ).fetchall()
+                    first_events.extend(rows)
 
             first_by_trace = {}
             for row in first_events:
@@ -454,13 +464,19 @@ class TraceStore:
     def _fetch_blobs(self, hashes: set[str]) -> dict[str, str]:
         if not hashes:
             return {}
-        placeholders = ",".join("?" for _ in hashes)
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                f"SELECT hash, content FROM trace_blobs WHERE hash IN ({placeholders})",
-                tuple(hashes),
-            ).fetchall()
-        return {row[0]: row[1] for row in rows}
+        hashes_list = list(hashes)
+        result = {}
+        for i in range(0, len(hashes_list), 900):
+            chunk = hashes_list[i : i + 900]
+            placeholders = ",".join("?" for _ in chunk)
+            with connect(self.db_path) as conn:
+                rows = conn.execute(
+                    f"SELECT hash, content FROM trace_blobs WHERE hash IN ({placeholders})",
+                    tuple(chunk),
+                ).fetchall()
+                for row in rows:
+                    result[row[0]] = row[1]
+        return result
 
     def _resolve_events_blobs(self, events: list[TraceEvent]) -> list[TraceEvent]:
         hashes = set()
@@ -564,7 +580,7 @@ class TraceStore:
             trace_id=trace_id,
             outcome=outcome,
             failure_domain=failure_domain,
-            evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
+            evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True, default=str),
             created_at=time.time(),
         )
         with connect(self.db_path) as conn:
@@ -611,7 +627,7 @@ def _redact_json_text(text: str) -> str:
         parsed = json.loads(text or "{}")
     except json.JSONDecodeError:
         return str(_redact(text or ""))
-    return json.dumps(_redact(parsed), ensure_ascii=False, sort_keys=True)
+    return json.dumps(_redact(parsed), ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _event_output(event: TraceEvent) -> dict[str, Any]:
@@ -861,6 +877,51 @@ def _record_first_failure_evidence(event: TraceEvent, evidence: dict[str, Any]) 
     evidence["first_failure_tool"] = event.tool
 
 
+_RECOVERY_COMPLETION_REASONS = frozenset(
+    {
+        str(LoopReason.COMPLETION_EVIDENCE_TRUE),
+        str(LoopReason.TERMINAL_RESULT),
+        str(LoopReason.WORKFLOW_VERIFIER_PASSED),
+    }
+)
+
+
+def _successful_completion_after(
+    events: list[TraceEvent], failure: TraceEvent
+) -> LoopDecisionSummary | None:
+    failure_seen = False
+    for event in events:
+        if event.id == failure.id:
+            failure_seen = True
+            continue
+        if not failure_seen or event.phase != LOOP_DECISION_PHASE or not event.ok:
+            continue
+        output = _event_output(event)
+        if not output:
+            continue
+        summary = loop_decision_summary(
+            output,
+            event_tool=event.tool,
+            event_run_id=event.run_id,
+        )
+        if summary.decision != str(LoopDecisionKind.FINALIZE):
+            continue
+        if summary.failure_domain not in {"", str(TraceFailureDomain.NONE)}:
+            continue
+        if summary.failed_checkers or summary.failed_gates:
+            continue
+        if summary.reason in _RECOVERY_COMPLETION_REASONS:
+            return summary
+    return None
+
+
+def _record_recovery_evidence(
+    recovery: LoopDecisionSummary, evidence: dict[str, Any]
+) -> None:
+    evidence["recovered_after_first_failure"] = True
+    evidence["recovery_decision"] = recovery.to_dict()
+
+
 def _evaluation(
     outcome: str,
     failure_domain: str,
@@ -1002,6 +1063,15 @@ def _planner_failure_rule(
     }:
         return None
     _record_first_failure_evidence(failure, evidence)
+    recovery = _successful_completion_after(events, failure)
+    if recovery is not None:
+        _record_recovery_evidence(recovery, evidence)
+        return _evaluation(
+            TraceOutcome.DEGRADED,
+            TraceFailureDomain.PLANNER_OR_PARSER,
+            evidence,
+            rule="planner_failed_then_recovered",
+        )
     return _evaluation(
         TraceOutcome.FAILURE,
         TraceFailureDomain.PLANNER_OR_PARSER,
@@ -1031,11 +1101,29 @@ def _capability_failure_rule(
         return None
     _record_first_failure_evidence(failure, evidence)
     if _capability_result_is_input_schema_mismatch(failure):
+        recovery = _successful_completion_after(events, failure)
+        if recovery is not None:
+            _record_recovery_evidence(recovery, evidence)
+            return _evaluation(
+                TraceOutcome.DEGRADED,
+                TraceFailureDomain.PLANNER_OR_PARSER,
+                evidence,
+                rule="capability_input_schema_mismatch_then_recovered",
+            )
         return _evaluation(
             TraceOutcome.FAILURE,
             TraceFailureDomain.PLANNER_OR_PARSER,
             evidence,
             rule="capability_input_schema_mismatch",
+        )
+    recovery = _successful_completion_after(events, failure)
+    if recovery is not None:
+        _record_recovery_evidence(recovery, evidence)
+        return _evaluation(
+            TraceOutcome.DEGRADED,
+            TraceFailureDomain.CAPABILITY_FAILURE,
+            evidence,
+            rule="capability_failed_then_recovered",
         )
     return _evaluation(
         TraceOutcome.FAILURE,

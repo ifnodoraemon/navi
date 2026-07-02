@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from .approval_contract import APPROVAL_ACTION_RUN_EXECUTION
 from .runs import Run, RunStore
 
 
@@ -19,6 +20,17 @@ class GovernanceEngine:
         self.runs = RunStore(home)
 
     def execution_allowed(self, task: Run) -> bool:
+        approval = self.runs.approved_approval_for_run(
+            task.id,
+            action=APPROVAL_ACTION_RUN_EXECUTION,
+        )
+        if approval is not None:
+            return self._record_execution_grant(
+                task,
+                allowed=True,
+                reason="approved_run_execution",
+                facts={"approval_id": approval.id, "approved_by": approval.resolved_by},
+            )
         if task.autonomy_level in {"L3", "L4"}:
             return self._record_execution_grant(
                 task,

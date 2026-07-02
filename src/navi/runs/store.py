@@ -10,6 +10,7 @@ from typing import Any
 from ..db import connect, ensure_schema_version
 from ..paths import db_paths
 from ..schema import Column, Table, assert_schema_exact
+from ._approval_store import APPROVALS_TABLE, ApprovalStoreMixin
 from ._execution_log_store import (
     EXECUTION_LOGS_TABLE,
     TOOL_CALL_LOGS_TABLE,
@@ -18,7 +19,7 @@ from ._execution_log_store import (
 from ._watch_store import WATCHES_TABLE, WatchStoreMixin
 from .models import Run, _require_workspace
 
-RUN_STORE_SCHEMA_VERSION = 2
+RUN_STORE_SCHEMA_VERSION = 3
 
 RUNS_TABLE = Table(
     "runs",
@@ -45,7 +46,7 @@ RUNS_TABLE = Table(
 )
 
 
-class RunStore(WatchStoreMixin, ExecutionLogStoreMixin):
+class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
     def __init__(self, home: Path):
         self.home = home
         self.home.mkdir(parents=True, exist_ok=True)
@@ -64,6 +65,8 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin):
             conn.execute(TOOL_CALL_LOGS_TABLE.ddl)
             self._migrate_tool_call_logs(conn)
             assert_schema_exact(conn, TOOL_CALL_LOGS_TABLE)
+            conn.execute(APPROVALS_TABLE.ddl)
+            assert_schema_exact(conn, APPROVALS_TABLE)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updated_at)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_watches_next ON watches(enabled, next_run_at)"
@@ -73,6 +76,12 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin):
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tool_call_logs_run ON tool_call_logs(run_id, started_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_approvals_code ON approvals(code, status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_approvals_run ON approvals(run_id, status)"
             )
 
     def create(
@@ -155,16 +164,16 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin):
             ).fetchone()
         return self._run_from_row(row) if row else None
 
-    def list(self, *, limit: int = 50) -> list[Run]:
+    def list(self, *, limit: int = 50, offset: int = 0) -> list[Run]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT id, title, status, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
-                FROM runs ORDER BY updated_at DESC LIMIT ?
+                FROM runs ORDER BY updated_at DESC LIMIT ? OFFSET ?
                 """,
-                (limit,),
+                (limit, offset),
             ).fetchall()
         return [self._run_from_row(row) for row in rows]
 
@@ -260,6 +269,7 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin):
             return None
         with connect(self.db_path) as conn:
             conn.execute("DELETE FROM execution_logs WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM approvals WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
         return run
 

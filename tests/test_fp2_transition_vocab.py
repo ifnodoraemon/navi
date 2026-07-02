@@ -49,3 +49,36 @@ def test_shell_run_returns_transition_vocab(tmp_path):
     )
     assert result.ok
     _assert_transition_vocab(result.facts, "executed")
+
+
+def test_shell_run_normalizes_escaped_find_grouping_args(tmp_path):
+    target = tmp_path / "resume.docx"
+    target.write_text("doc", encoding="utf-8")
+
+    result = _shell_run(
+        {
+            "command": [
+                "find",
+                str(tmp_path),
+                "-type",
+                "f",
+                r"\(",
+                "-name",
+                "*.docx",
+                "-o",
+                "-name",
+                "*.pdf",
+                r"\)",
+                "-print",
+            ],
+            "cwd": str(tmp_path),
+        },
+        project_dir=tmp_path,
+    )
+
+    assert result.ok, result.error
+    assert "resume.docx" in result.facts["stdout"]
+    assert "(" in result.facts["command"]
+    assert ")" in result.facts["command"]
+    assert r"\(" not in result.facts["command"]
+    assert r"\)" not in result.facts["command"]

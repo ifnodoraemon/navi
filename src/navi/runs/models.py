@@ -71,6 +71,27 @@ class ToolCallLog:
     trace_id: str = ""
 
 
+@dataclass(frozen=True)
+class Approval:
+    id: str
+    run_id: str
+    action: str
+    requested_tool: str
+    requested_permission: str
+    args_json: str
+    source: str
+    peer_id: str
+    sender_id: str
+    status: str
+    code: str
+    expires_at: float
+    created_at: float
+    updated_at: float
+    reason: str = ""
+    decision: str = ""
+    resolved_by: str = ""
+
+
 def _require_workspace(workspace: str) -> str:
     value = workspace.strip()
     if not value:

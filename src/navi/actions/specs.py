@@ -217,7 +217,10 @@ ACTION_SPECS = [
         description="""Return delegation runs and recurring watches for the current caller's context as delegation-management facts. Results are scoped to the caller's surface; tasks created on other channels are not listed.""",
         input_schema={
             "type": "object",
-            "properties": {"limit": {"type": "integer", "default": 20}},
+            "properties": {
+                "limit": {"type": "integer", "default": 20},
+                "offset": {"type": "integer", "default": 0},
+            },
         },
         output_schema={
             "type": "object",
@@ -293,6 +296,80 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+    ),
+    ToolSpec(
+        name="approval.request",
+        capability_class="approval",
+        execution_contexts=("turn", API_CONTEXT),
+        description="""Create a durable approval request for a run, execution grant, or specific sensitive capability call.""",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "action": {"type": "string"},
+                "requested_tool": {"type": "string"},
+                "requested_permission": {"type": "string"},
+                "args": {"type": "object"},
+                "args_json": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["run_id"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "state_transition": {"type": "string"},
+                "turn_scope": {"type": "string"},
+                "run_id": {"type": "string"},
+                "status": {"type": "string"},
+                "approval": {"type": "object"},
+            },
+        },
+        facts_only=True,
+        mutates=True,
+        permission="prepare",
+        source="action",
+        governance_exempt=True,
+    ),
+    ToolSpec(
+        name="approval.resolve",
+        capability_class="approval",
+        execution_contexts=("turn", API_CONTEXT),
+        description="""Approve or reject one pending durable approval request by code or run id.""",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "decision": {
+                    "type": "string",
+                    "enum": [APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT],
+                },
+                "code": {"type": "string"},
+                "run_id": {"type": "string"},
+                "selection": {"type": "string"},
+            },
+            "required": ["decision"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "decision": {"type": "string"},
+                "selection": {"type": "string"},
+                "code_present": {"type": "boolean"},
+                "active_run_count": {"type": "integer"},
+                "run_id": {"type": "string"},
+                "approval_id": {"type": "string"},
+                "status": {"type": "string"},
+                "run_status": {"type": "string"},
+                "approval_resolution": {"type": "object"},
+            },
+        },
+        facts_only=True,
+        mutates=True,
+        permission="write",
+        source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="workflow.propose",
@@ -431,7 +508,7 @@ ACTION_SPECS = [
         name="session.request_elevation",
         capability_class="session",
         execution_contexts=("turn", "workflow_step"),
-        description="""Create a temporary session permission elevation request record.""",
+        description="""Request a temporary elevation of the session's operating permission ceiling (e.g., from 'read' to 'write').""",
         input_schema={
             "type": "object",
             "properties": {

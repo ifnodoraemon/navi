@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,14 +16,19 @@ from .capabilities_types import (
     CapabilityResult,
 )
 from .capability_contract import (
+    CAPABILITY_ACTION_APPROVAL,
     CAPABILITY_ERROR_REASON_KEY,
     CAPABILITY_REASON_KEY,
     CAPABILITY_REASON_SENSITIVE_APPROVAL,
 )
+from .approval_contract import (
+    APPROVAL_ACTION_CAPABILITY,
+    APPROVAL_STATUS_PENDING,
+)
 from .hooks import HookDecision, HookEvent, HookRegistry
 from .json_utils import json_schema_errors
-from .lifecycle import RUN_STATUS_PENDING
-from .operating_context import permission_allows
+from .lifecycle import RUN_STATUS_AWAITING_APPROVAL, RUN_STATUS_PENDING
+from .operating_context import PERMISSION_ORDER, permission_allows
 from .runs import RunStore
 from .tools import TURN_CONTEXT, ToolSpec, build_tool_gateway
 from .actions.registry import ActionCapabilityProvider  # noqa: F401
@@ -101,7 +106,7 @@ class CapabilityRegistry:
             allow_sources=allow_sources,
             allowed_tools=allowed_tools,
             disabled_tools=disabled_tools,
-            permission_ceiling=permission_ceiling,
+            permission_ceiling="write",
         )
         self.providers: tuple[CapabilityProvider, ...] = (
             ActionCapabilityProvider(home=self.home, gateway=self.gateway),
@@ -167,13 +172,14 @@ class CapabilityRegistry:
         source_policy = _connector_policy_for_source(context.source)
         if source_policy is None:
             return True
+        limits = _source_policy_limits(self.home, context, source_policy)
         if spec.name in source_policy.blocked_tools:
             return False
         if spec.capability_class in source_policy.blocked_capability_classes:
             return False
-        if source_policy.allowed_tools and spec.name not in source_policy.allowed_tools:
+        if limits.allowed_tools and spec.name not in limits.allowed_tools:
             return False
-        return permission_allows(spec.permission, source_policy.permission_ceiling)
+        return permission_allows(spec.permission, limits.permission_ceiling)
 
     def get(self, name: str) -> ToolSpec | None:
         handler = self.handlers.get(name)
@@ -212,6 +218,7 @@ class CapabilityRegistry:
             else None
         )
         if source_policy is not None:
+            limits = _source_policy_limits(self.home, context, source_policy)
             if name in source_policy.blocked_tools:
                 return _capability_error(
                     action=f"execute:{name}",
@@ -236,7 +243,7 @@ class CapabilityRegistry:
                         "policy": source_policy.name,
                     },
                 )
-            if source_policy.allowed_tools and name not in source_policy.allowed_tools:
+            if limits.allowed_tools and name not in limits.allowed_tools:
                 return _capability_error(
                     action=f"execute:{name}",
                     error_reason="remote_tool_not_allowed",
@@ -247,8 +254,8 @@ class CapabilityRegistry:
                         "policy": source_policy.name,
                     },
                 )
-            if not permission_allows(permission, source_policy.permission_ceiling):
-                ceiling = source_policy.permission_ceiling
+            if not permission_allows(permission, limits.permission_ceiling):
+                ceiling = limits.permission_ceiling
                 return _capability_error(
                     action=f"execute:{name}",
                     error_reason="remote_permission_ceiling",
@@ -292,6 +299,21 @@ class CapabilityRegistry:
                     "tool": name,
                     "schema_errors": input_schema_errors,
                 },
+            )
+        if self._sensitive_call_needs_approval(handler.spec, name, permission, call_args):
+            if not self.governed_run_id:
+                return CapabilityResult(
+                    ok=False,
+                    terminal=False,
+                    error_reason="missing_governed_run",
+                    message="Sensitive capability requires a durable governed run context to mount an approval. Ephemeral conversational turns cannot mount approvals."
+                )
+            return self._suspend_for_sensitive_approval(
+                handler.spec,
+                name,
+                permission,
+                call_args,
+                context=context,
             )
         before_decisions = self.hooks.run(
             HookEvent(
@@ -363,6 +385,118 @@ class CapabilityRegistry:
             self._audit_action_capability(handler.spec, call_args, result, started_at=started_at)
         return result
 
+    def _sensitive_call_needs_approval(
+        self,
+        spec: ToolSpec,
+        name: str,
+        permission: str,
+        call_args: dict[str, Any],
+    ) -> bool:
+        if spec.governance_exempt:
+            return False
+        if not spec.mutates and spec.permission != "write":
+            return False
+        args_json = _canonical_args_json(call_args)
+        approved = RunStore(self.home).approved_approval_for_run(
+            self.governed_run_id,
+            action=APPROVAL_ACTION_CAPABILITY,
+            requested_tool=name,
+            requested_permission=permission,
+            args_json=args_json,
+        )
+        return approved is None
+
+    def _suspend_for_sensitive_approval(
+        self,
+        spec: ToolSpec,
+        name: str,
+        permission: str,
+        call_args: dict[str, Any],
+        *,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        runs = RunStore(self.home)
+        run = runs.get(self.governed_run_id or "")
+        source = context.source or (run.source if run else "")
+        peer_id = context.peer_id or (run.peer_id if run else "")
+        sender_id = context.sender_id or (run.sender_id if run else "")
+        args_json = _canonical_args_json(call_args)
+        approval = runs.pending_approval_for_run(
+            self.governed_run_id or "",
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            action=APPROVAL_ACTION_CAPABILITY,
+            requested_tool=name,
+            requested_permission=permission,
+            args_json=args_json,
+        )
+        if approval is None:
+            approval = runs.create_approval(
+                run_id=self.governed_run_id or "",
+                action=APPROVAL_ACTION_CAPABILITY,
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+                requested_tool=name,
+                requested_permission=permission,
+                args_json=args_json,
+                reason=f"sensitive capability requires approval: {name}",
+            )
+        runs.update_run(
+            self.governed_run_id or "",
+            status=RUN_STATUS_AWAITING_APPROVAL,
+            result_summary=(
+                "approval_requested\n"
+                f"run_id={self.governed_run_id or ''}\n"
+                f"approval_id={approval.id}\n"
+                f"action={approval.action}\n"
+                f"approval_code={approval.code}\n"
+                f"requested_tool={name}\n"
+                f"requested_permission={permission}\n"
+                f"status={APPROVAL_STATUS_PENDING}"
+            ),
+            error="",
+        )
+        facts = {
+            CAPABILITY_REASON_KEY: CAPABILITY_REASON_SENSITIVE_APPROVAL,
+            "entity_type": "approval_request",
+            "entity_id": approval.id,
+            "state_transition": "created",
+            "turn_scope": "current",
+            "run_id": self.governed_run_id or "",
+            "status": APPROVAL_STATUS_PENDING,
+            "approval": {
+                "id": approval.id,
+                "run_id": approval.run_id,
+                "action": approval.action,
+                "requested_tool": approval.requested_tool,
+                "requested_permission": approval.requested_permission,
+                "code": approval.code,
+                "expires_at": approval.expires_at,
+            },
+        }
+        visible = (
+            "approval_requested\n"
+            f"run_id={self.governed_run_id or ''}\n"
+            f"approval_id={approval.id}\n"
+            f"action={approval.action}\n"
+            f"approval_code={approval.code}\n"
+            f"requested_tool={name}\n"
+            f"requested_permission={permission}\n"
+            "reason=sensitive_capability_requires_approval"
+        )
+        return CapabilityResult(
+            ok=False,
+            action=CAPABILITY_ACTION_APPROVAL,
+            observation=visible,
+            message=visible,
+            run_id=self.governed_run_id or "",
+            terminal=True,
+            facts=facts,
+            error_reason=CAPABILITY_REASON_SENSITIVE_APPROVAL,
+        )
+
     def _build_handlers(self) -> Mapping[str, Capability]:
         handlers: dict[str, Capability] = {}
         for provider in self.providers:
@@ -381,7 +515,6 @@ class CapabilityRegistry:
             and name not in self.disabled_tools
             and not _is_class_blocked(name)
             and (self.allow_sources is None or handler.spec.source in self.allow_sources)
-            and permission_allows(handler.spec.permission, self.permission_ceiling)
             and handler.spec.available_in(self.execution_context)
         }
         tools_list = filtered.get("tools.list")
@@ -425,6 +558,48 @@ class CapabilityRegistry:
 
 def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
     return next((decision for decision in decisions if decision.decision == "block"), None)
+
+
+def _canonical_args_json(value: dict[str, Any]) -> str:
+    from .safeguards import redact_secrets_deep
+
+    return json.dumps(redact_secrets_deep(value or {}), ensure_ascii=False, sort_keys=True)
+
+
+@dataclass(frozen=True)
+class _SourcePolicyLimits:
+    permission_ceiling: str
+    allowed_tools: frozenset[str]
+
+
+def _source_policy_limits(home: Path, context: CapabilityContext, source_policy) -> _SourcePolicyLimits:
+    ceiling = source_policy.permission_ceiling
+    allowed_tools = frozenset(source_policy.allowed_tools)
+    approval = RunStore(home).active_session_elevation(
+        source=context.source,
+        peer_id=context.peer_id,
+        sender_id=context.sender_id,
+    )
+    if approval is None:
+        return _SourcePolicyLimits(permission_ceiling=ceiling, allowed_tools=allowed_tools)
+    ceiling = _max_permission(ceiling, approval.requested_permission)
+    if permission_allows("write", ceiling):
+        allowed_tools = frozenset((*allowed_tools, *_remote_elevated_allowed_tools()))
+    return _SourcePolicyLimits(permission_ceiling=ceiling, allowed_tools=allowed_tools)
+
+
+def _max_permission(current: str, requested: str) -> str:
+    current_level = PERMISSION_ORDER.get(current, 0)
+    requested_level = PERMISSION_ORDER.get(requested, 0)
+    return requested if requested_level > current_level else current
+
+
+def _remote_elevated_allowed_tools() -> frozenset[str]:
+    try:
+        from .connector_runtime import REMOTE_ELEVATED_ALLOWED_TOOLS
+    except ImportError:
+        return frozenset()
+    return REMOTE_ELEVATED_ALLOWED_TOOLS
 
 
 def _connector_policy_for_source(source: str):

@@ -73,7 +73,7 @@ def approval_result_message(message: str, facts: dict[str, Any] | None) -> str:
 
 
 def approval_failure_is_terminal(facts: dict[str, Any] | None) -> bool:
-    return approval_reason(facts) == "approval_code_not_found_in_text"
+    return approval_reason(facts) in {"approval_code_not_found", "approval_code_not_found_in_text"}
 
 
 def approval_error_reason(facts: dict[str, Any] | None) -> str:

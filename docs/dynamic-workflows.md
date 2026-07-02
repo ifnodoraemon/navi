@@ -30,7 +30,7 @@ They are intentionally not executable scripts. A workflow is declarative data:
 ## Safety Rules
 
 - A workflow step cannot call `workflow.*` recursively.
-- A step may only call its `allowed_tools`, plus terminal conversation syscalls such as `final.answer` and `ask.user`.
+- A step may only call its `allowed_tools`, plus the terminal conversation syscall `respond`.
 - Every tool call must request a permission at or below the workflow permission ceiling.
 - Stored `tool_calls` are proposal facts for the model, not an execution script for the runner to replay.
 - Remote connector ingress can propose and inspect workflows, but cannot approve or run them by default.

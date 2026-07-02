@@ -318,7 +318,9 @@ const RunNode = ({
            </div>
            <div className="run-title-area">
               <div className="run-name">
-                 <span className={`run-type-badge type-${run.run_type}`}>{run.run_type}</span>
+                 {run.run_type !== 'chain' && (
+                   <span className={`run-type-badge type-${run.run_type}`}>{run.run_type}</span>
+                 )}
                  {initiator && (
                    <span style={{ marginRight: 8, fontSize: '0.65rem', fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.1)', color: 'var(--text-secondary)', letterSpacing: '0.02em' }}>
                      {initiator}
@@ -376,6 +378,9 @@ function App() {
   const [tracesMeta, setTracesMeta] = useState<TraceMeta[]>([]);
   const [selectedTrace, setSelectedTrace] = useState<string | null>(null);
   const [traceData, setTraceData] = useState<TraceData | null>(null);
+  const [traceOffset, setTraceOffset] = useState(0);
+  const [hasMoreEvents, setHasMoreEvents] = useState(false);
+  const EVENTS_PER_PAGE = 200;
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -528,15 +533,51 @@ function App() {
     }
   };
 
-  const loadTrace = async (id: string) => {
-    setSelectedTrace(id);
+  const loadTrace = async (id: string, append = false) => {
+    if (!append) {
+      setSelectedTrace(id);
+      setTraceData(null);
+      setTraceOffset(0);
+      setHasMoreEvents(false);
+    }
     setLoading(true);
-    setTraceData(null);
+    const currentOffset = append ? traceOffset : 0;
     try {
-      const res = await axios.get(`/v1/traces/${id}`);
+      const res = await axios.get(`/v1/traces/${id}?limit=${EVENTS_PER_PAGE}&offset=${currentOffset}`);
       const rawData = res.data;
-      const actualData = (rawData && rawData.data && rawData.data.events) ? rawData.data : rawData;
-      setTraceData(actualData);
+      const actualData = (rawData && rawData.data && (rawData.data.events || rawData.data.runs)) ? rawData.data : rawData;
+
+      if (append && traceData) {
+        // Merge runs
+        const runMap = new Map<string, TraceRunView>();
+        traceData.runs?.forEach((r: TraceRunView) => runMap.set(r.id, r));
+        actualData.runs?.forEach((r: TraceRunView) => {
+          runMap.set(r.id, r);
+        });
+
+        // Merge loop decisions
+        const decisionMap = new Map<string, any>();
+        traceData.loop_decisions?.forEach((d: any) => decisionMap.set(d.id, d));
+        actualData.loop_decisions?.forEach((d: any) => decisionMap.set(d.id, d));
+
+        setTraceData({
+          events: [...(traceData.events || []), ...(actualData.events || [])],
+          runs: Array.from(runMap.values()),
+          loop_decisions: Array.from(decisionMap.values()),
+          evaluations: actualData.evaluations || traceData.evaluations,
+        });
+      } else {
+        setTraceData(actualData);
+      }
+
+      const receivedCount = (actualData.events?.length || 0);
+      if (receivedCount === EVENTS_PER_PAGE) {
+        setHasMoreEvents(true);
+      } else {
+        setHasMoreEvents(false);
+      }
+      setTraceOffset(currentOffset + receivedCount);
+
     } catch (err) {
       console.error('Failed to load trace', err);
     } finally {
@@ -1052,6 +1093,19 @@ function App() {
                      />
                   ))
                 )}
+              </div>
+            )}
+
+            {hasMoreEvents && (
+              <div style={{ textAlign: 'center', margin: '30px 0', paddingBottom: '20px' }}>
+                <button
+                  className="filter-btn highlight-btn"
+                  onClick={() => loadTrace(selectedTrace!, true)}
+                  disabled={loading}
+                  style={{ background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.3)', color: '#60a5fa', padding: '10px 24px', fontSize: '1rem', cursor: 'pointer' }}
+                >
+                  {loading ? 'Loading More...' : 'Load More Trace Data'}
+                </button>
               </div>
             )}
           </>

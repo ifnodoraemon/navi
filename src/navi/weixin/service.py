@@ -281,11 +281,26 @@ class WeixinService:
                 sender_id=update.sender_id,
                 error=f"{type(exc).__name__}: {exc}",
             )
-            return (
+            fallback_text = (
                 "本地处理链路失败；"
                 f"message_id={update.message_id}；"
                 f"error_type={type(exc).__name__}。"
             )
+            try:
+                from navi.trace import TraceStore, TracePhase
+                TraceStore(self.home).add_event(
+                    trace_id=update.message_id,
+                    phase=TracePhase.CHANNEL_EGRESS,
+                    source=self.local_source,
+                    peer_id=update.peer_id,
+                    sender_id=update.sender_id,
+                    output_data={"response": fallback_text, "error_fallback": True, "error": str(exc)},
+                    message="Error fallback sent to channel",
+                    ok=False,
+                )
+            except Exception:
+                pass
+            return fallback_text
         finally:
             stop_typing.set()
             if typing_task:
@@ -353,6 +368,16 @@ class WeixinService:
                 },
                 fallback=str(result.get("message") or result.get("observation") or ""),
             )
+            if not text.strip():
+                self.record_event(
+                    "background.skipped",
+                    peer_id=peer_id,
+                    background_event="watch_result" if not task else "watch_task_prepared",
+                    reason="empty_surface_text",
+                    run_id=run_id,
+                    status=task.status if task else "",
+                )
+                continue
             await self._send_reply(
                 account=account,
                 peer_id=peer_id,
@@ -365,6 +390,21 @@ class WeixinService:
                 background_event="watch_result" if not task else "watch_task_prepared",
                 text_preview=text[:120],
             )
+            try:
+                from navi.trace import TraceStore, TracePhase
+                import uuid
+                trace_id = run_id or uuid.uuid4().hex
+                TraceStore(self.home).add_event(
+                    trace_id=trace_id,
+                    phase=TracePhase.CHANNEL_EGRESS,
+                    run_id=run_id,
+                    source=self.local_source,
+                    peer_id=peer_id,
+                    output_data={"response": text, "background_event": "watch_result" if not task else "watch_task_prepared"},
+                    message="Sent background watch result to channel",
+                )
+            except Exception:
+                pass
         for task in await self.daemon.process_queue_once():
             if not task.peer_id:
                 continue
@@ -397,6 +437,19 @@ class WeixinService:
                 background_event="run_execution_finished",
                 text_preview=text[:120],
             )
+            try:
+                from navi.trace import TraceStore, TracePhase
+                TraceStore(self.home).add_event(
+                    trace_id=task.id,
+                    phase=TracePhase.CHANNEL_EGRESS,
+                    run_id=task.id,
+                    source=self.local_source,
+                    peer_id=task.peer_id,
+                    output_data={"response": text, "background_event": "run_execution_finished"},
+                    message="Sent background task execution finished to channel",
+                )
+            except Exception:
+                pass
 
     async def _compose_background_message(self, facts: dict, *, fallback: str) -> str:
         if facts.get("event") == "watch_result":

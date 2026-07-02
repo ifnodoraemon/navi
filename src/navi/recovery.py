@@ -53,6 +53,7 @@ class RecoveryPlanner:
                 reason_code=block.reason_code,
                 run_id=block.run_id,
                 run_status=block.run_status,
+                details=block.details,
             )
 
         cleanup_facts = _last_cleanup_facts(events)
@@ -71,16 +72,18 @@ class RecoveryPlanner:
         reason_code: str,
         run_id: str,
         run_status: str,
+        details: dict[str, Any] | None = None,
     ) -> RecoveryFacts:
-        details = {
+        resolved_details = {
             "blocked_entity_type": "delegation_run",
             "run_id": run_id,
             "run_status": run_status,
+            **(details or {}),
         }
         return RecoveryFacts(
             trigger=LoopPhase.CHECK,
             reason_code=reason_code,
-            details=details,
+            details=resolved_details,
         )
 
     def _cleanup_facts(self, *, reason_code: str, facts: dict[str, Any]) -> RecoveryFacts:

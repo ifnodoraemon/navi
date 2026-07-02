@@ -68,6 +68,7 @@ class MemoryProvider(Protocol):
         status: str | None = None,
         last_verified_at: float | None = None,
         updated_at: float | None = None,
+        confidence: float | None = None,
     ) -> None: ...
     def delete_item(self, item_id: str) -> None: ...
     def add_message(self, session_id: str, role: str, content: str, created_at: float) -> None: ...
@@ -336,6 +337,7 @@ class SQLiteMemoryProvider:
         status: str | None = None,
         last_verified_at: float | None = None,
         updated_at: float | None = None,
+        confidence: float | None = None,
     ) -> None:
         sets = []
         values: list[object] = []
@@ -345,6 +347,9 @@ class SQLiteMemoryProvider:
         if last_verified_at is not None:
             sets.append("last_verified_at = ?")
             values.append(last_verified_at)
+        if confidence is not None:
+            sets.append("confidence = ?")
+            values.append(confidence)
         if updated_at is not None:
             sets.append("updated_at = ?")
             values.append(updated_at)

@@ -88,7 +88,7 @@ dataset links, and export/import interoperability.
 Navi must not control loop behavior through:
 
 - Planner prompt rules for a specific approval state.
-- Hardcoded `final.answer` fallback text.
+- Hardcoded `respond` fallback text.
 - Visible step-budget or budget-exhausted semantics.
 - Aliases for obsolete trace failure-domain names.
 - JSON extraction from markdown fences, surrounding prose, or provider

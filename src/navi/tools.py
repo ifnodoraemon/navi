@@ -382,5 +382,9 @@ def _register_connector_tools(registry: ToolRegistry, *, home: Path) -> None:
 
 
 def _permission_allows(required: str, ceiling: str) -> bool:
+    """Deprecated: use :func:`operating_context.permission_allows` instead.
+
+    Kept temporarily to avoid breaking imports during the permission-layer
+    migration. New code should call ``permission_allows`` directly."""
     order = {"read": 0, "prepare": 1, "write": 2}
     return order.get(required, 0) <= order.get(ceiling, 0)

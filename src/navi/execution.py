@@ -20,9 +20,6 @@ from .lifecycle import (
     RUN_STATUS_PENDING,
     RUN_STATUS_FAILED,
     RUN_STATUS_COMPLETED,
-    RUN_STATUS_FAILED,
-    RUN_STATUS_PENDING,
-    RUN_STATUS_PENDING,
     RUN_STATUS_RUNNING,
     execute_finalize_decision,
     execution_ledger_reason,
@@ -602,6 +599,17 @@ class ExecutionService:
             timeout_seconds=self.config.timeout_seconds,
             home=home,
         )
+
+    def recover_stale_runs(self) -> None:
+        """Mark runs stuck in transient states as failed due to system restart."""
+        from .runs import RUN_STATUS_RUNNING, RUN_STATUS_AWAITING_APPROVAL, RUN_STATUS_FAILED
+        
+        stale_statuses = (RUN_STATUS_RUNNING, RUN_STATUS_AWAITING_APPROVAL)
+        for status in stale_statuses:
+            runs = self.runs.db.fetchall("SELECT id FROM runs WHERE status = ?", [status])
+            for (run_id,) in runs:
+                self.runs.update_run(run_id, status=RUN_STATUS_FAILED, error="Run interrupted by system restart.")
+                self.runs.db.execute("UPDATE approvals SET status = 'rejected' WHERE run_id = ? AND status = 'pending'", [run_id])
 
     async def plan_task(self, task: Run) -> Run:
         self.runs.update_run(task.id, status=RUN_STATUS_PENDING)

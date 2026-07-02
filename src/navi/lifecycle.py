@@ -7,17 +7,19 @@ from enum import StrEnum
 class RunStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_APPROVAL = "awaiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
 
 
 RUN_STATUS_PENDING = RunStatus.PENDING
 RUN_STATUS_RUNNING = RunStatus.RUNNING
+RUN_STATUS_AWAITING_APPROVAL = RunStatus.AWAITING_APPROVAL
 RUN_STATUS_COMPLETED = RunStatus.COMPLETED
 RUN_STATUS_FAILED = RunStatus.FAILED
 
 RUN_TERMINAL_STATUSES = frozenset({RUN_STATUS_COMPLETED, RUN_STATUS_FAILED})
-RUN_ACTIVE_STATUSES = frozenset({RUN_STATUS_PENDING, RUN_STATUS_RUNNING})
+RUN_ACTIVE_STATUSES = frozenset({RUN_STATUS_PENDING, RUN_STATUS_RUNNING, RUN_STATUS_AWAITING_APPROVAL})
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ def execution_ledger_reason(exit_code: int) -> str:
 ACCEPTANCE_ADVANCE_BY_STATUS: dict[str, AcceptanceAdvance] = {
     RUN_STATUS_PENDING: AcceptanceAdvance(action="confirm"),
     RUN_STATUS_RUNNING: AcceptanceAdvance(action="check"),
+    RUN_STATUS_AWAITING_APPROVAL: AcceptanceAdvance(action="approve"),
     RUN_STATUS_COMPLETED: AcceptanceAdvance(action="terminal", terminal=True),
     RUN_STATUS_FAILED: AcceptanceAdvance(action="terminal", terminal=True),
 }

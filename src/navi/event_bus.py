@@ -190,7 +190,8 @@ class EventBus:
                 break
             except Exception as e:
                 logger.error(f"Event bus worker queue.get error: {e}", exc_info=True)
-                break
+                await asyncio.sleep(0.1)
+                continue
 
             try:
                 handlers = self._handlers.get(event.event_type, [])

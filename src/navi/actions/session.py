@@ -9,7 +9,8 @@ from ..capabilities_types import (
     capability,
 )
 from ..capability_contract import CAPABILITY_ACTION_APPROVAL
-from ..lifecycle import RUN_STATUS_PENDING
+from ..approval_contract import APPROVAL_ACTION_SESSION_ELEVATION
+from ..lifecycle import RUN_STATUS_AWAITING_APPROVAL
 from .helpers import (
     arg_text as _arg_text,
     fact_result as _fact_result,
@@ -57,29 +58,58 @@ class SessionRequestElevationCapability(BaseCapability):
             f"Elevate session permission to {target_permission}. Reason: {reason}",
             kind="elevation",
             workspace=context.workspace,
+            source=context.source,
             peer_id=context.peer_id,
             sender_id=context.sender_id,
-            status=RUN_STATUS_PENDING,
+            status=RUN_STATUS_AWAITING_APPROVAL,
+        )
+        approval = runs.create_approval(
+            run_id=task.id,
+            action=APPROVAL_ACTION_SESSION_ELEVATION,
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            requested_permission=target_permission,
+            reason=reason,
         )
         task = runs.update_run(
             task.id,
             plan_summary=f"session_elevation:{target_permission}",
+            result_summary=f"approval_code={approval.code}",
+        ) or task
+        facts = {
+            "entity_type": "session",
+            "entity_id": task.id,
+            "state_transition": "elevation_requested",
+            "turn_scope": "current",
+            "status": RUN_STATUS_AWAITING_APPROVAL,
+            "target_permission": target_permission,
+            "reason": reason,
+            "approval": {
+                "id": approval.id,
+                "action": approval.action,
+                "code": approval.code,
+                "expires_at": approval.expires_at,
+            },
+            "run_id": task.id,
+        }
+        visible_facts = "\n".join(
+            [
+                "session_elevation_requested",
+                f"run_id={task.id}",
+                f"approval_code={approval.code}",
+                f"target_permission={target_permission}",
+                f"status={RUN_STATUS_AWAITING_APPROVAL}",
+                f"reason={reason}",
+            ]
         )
 
         return CapabilityResult(
             ok=True,
             action=CAPABILITY_ACTION_APPROVAL,
-            observation="",
+            observation=visible_facts,
+            message=visible_facts,
             run_id=task.id,
-            facts={
-                "entity_type": "session",
-                "entity_id": task.id,
-                "state_transition": "elevation_requested",
-                "turn_scope": "current",
-                "status": RUN_STATUS_PENDING,
-                "target_permission": target_permission,
-                "reason": reason,
-                "run_id": task.id,
-            },
+            facts=facts,
             terminal=True,
         )

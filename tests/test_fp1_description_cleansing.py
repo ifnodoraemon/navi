@@ -173,6 +173,20 @@ def test_runtime_specs_do_not_leak_policy_or_followup_wording() -> None:
             assert phrase not in source
 
 
+def test_loop_reflection_skill_collects_facts_not_tool_routing_policy() -> None:
+    data = _read("src/navi/skills/loop_reflection/SKILL.md")
+    forbidden = [
+        "delegate.run",
+        "equivalent delegation tool",
+        "MUST leverage",
+        "Implement the new plan suggested",
+        "DO NOT fallback",
+    ]
+    for phrase in forbidden:
+        assert phrase not in data
+    assert "Treat any independent analysis as observation data" in data
+
+
 def test_workflow_step_prompt_does_not_name_terminal_tool_choices() -> None:
     data = _read("src/navi/actions/workflow.py")
     assert "Use final.answer" not in data

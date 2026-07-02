@@ -62,3 +62,39 @@ def test_recovery_planner_returns_cleanup_state_facts():
     }
     assert "choices" not in plan.to_observation()
     assert "recommended" not in plan.to_observation()
+
+
+def test_reduce_confidence_lowers_memory_item_confidence(tmp_path):
+    """MemoryStore.reduce_confidence lowers confidence by delta."""
+    from navi.memory.store import MemoryStore
+
+    store = MemoryStore(tmp_path)
+    item = store.add_item(
+        memory_type="preference",
+        content="prefers dark mode",
+        source="test",
+        reason="user stated preference",
+        provenance="test",
+        confidence=0.8,
+    )
+    store.reduce_confidence(item.id, delta=0.3)
+    updated = store.get_item(item.id)
+    assert updated.confidence == 0.5
+
+
+def test_reduce_confidence_clamps_to_zero(tmp_path):
+    """MemoryStore.reduce_confidence clamps confidence at 0.0."""
+    from navi.memory.store import MemoryStore
+
+    store = MemoryStore(tmp_path)
+    item = store.add_item(
+        memory_type="preference",
+        content="prefers tabs",
+        source="test",
+        reason="user stated preference",
+        provenance="test",
+        confidence=0.2,
+    )
+    store.reduce_confidence(item.id, delta=0.5)
+    updated = store.get_item(item.id)
+    assert updated.confidence == 0.0

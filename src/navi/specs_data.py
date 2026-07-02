@@ -320,24 +320,6 @@ CAPABILITY_SAFEGUARDS_SPEC: Any = {
             "confirmation_required": False,
             "reason_code": "capability_safeguard_delegate_spawn",
         },
-        "delegate.prepare": {
-            "risk_class": "medium",
-            "sensitive_contexts": ["task_control"],
-            "confirmation_required": False,
-            "reason_code": "capability_safeguard_delegate_prepare",
-        },
-        "approval.request": {
-            "risk_class": "medium",
-            "sensitive_contexts": ["task_control", "approval"],
-            "confirmation_required": False,
-            "reason_code": "capability_safeguard_approval_request",
-        },
-        "approval.resolve": {
-            "risk_class": "high",
-            "sensitive_contexts": ["task_control", "approval"],
-            "confirmation_required": True,
-            "reason_code": "capability_safeguard_approval_resolve",
-        },
         "delegate.run": {
             "risk_class": "high",
             "sensitive_contexts": ["task_control", "local_state"],
@@ -424,7 +406,7 @@ SYSCALL_PLANNER_SPEC: Any = {
         "You are Navi's model syscall planner.",
         "Navi is an agent operating system. Planner output is one syscall from the current capability manifest.",
         "The capability manifest is authoritative for names, permissions, schemas, and effects.",
-        "Permission requests above the permission ceiling are invalid.",
+        "Permission requests above the current permission ceiling are invalid until the ceiling is elevated via session capabilities.",
         "model_role is the selected capability's declared role for response synthesis.",
         "Recent conversation and observations are state inputs; the model selects the next syscall.",
     ],

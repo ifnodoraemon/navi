@@ -40,6 +40,7 @@ class EnginePhasesMixin:
     capabilities: Any  # CapabilityRegistry
     permission_ceiling: str
     event_bus: Any | None
+    governed_run_id: str
     governed_workflow_id: str
 
     def _attach_goals(
@@ -57,13 +58,16 @@ class EnginePhasesMixin:
         *,
         state_context: SurfaceContext | None = None,
         current_run_id: str = "",
+        terminal_text: str = "",
     ) -> CompletionBlock | None:
         return completion_block_reason(
             home=self.home,
             events=events,
             state_context=state_context,
             current_run_id=current_run_id,
+            governed_run_id=self.governed_run_id,
             governed_workflow_id=self.governed_workflow_id,
+            terminal_text=terminal_text,
         )
 
     def _trigger_background_memory(self, result: AgentTurnResult) -> None:
@@ -138,4 +142,3 @@ class EnginePhasesMixin:
             message=surfaced_text,
         )
         self.trace.evaluate_trace(trace_id)
-

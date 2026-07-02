@@ -30,8 +30,10 @@ from .loop_control import (
     semantic_progress_signature,
     terminal_loop_decision,
 )
+from .operating_context import PERMISSION_ORDER
 from .recovery import RecoveryPlanner
 from .runtime import AgentRuntime
+from .runs import RunStore
 from .syscalls import ModelSyscallPlanner
 from .trace import TraceStore
 
@@ -134,7 +136,11 @@ class HernessEngine(EnginePhasesMixin):
             peer_id=peer_id,
             sender_id=sender_id,
             source=source,
-            permission_ceiling=self._get_effective_permission_ceiling(peer_id, sender_id),
+            permission_ceiling=self._get_effective_permission_ceiling(
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+            ),
             workspace=str(self.project_dir.resolve()),
             session_id=resolved_session_id,
             trace_id=trace_id,
@@ -164,8 +170,21 @@ class HernessEngine(EnginePhasesMixin):
 
         return resolved_session_id, trace_id, context, state_context, observations
 
-    def _get_effective_permission_ceiling(self, peer_id: str, sender_id: str) -> str:
-        return self.permission_ceiling
+    def _get_effective_permission_ceiling(
+        self,
+        *,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+    ) -> str:
+        approval = RunStore(self.home).active_session_elevation(
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+        )
+        if approval is None or not approval.requested_permission:
+            return self.permission_ceiling
+        return _max_permission(self.permission_ceiling, approval.requested_permission)
 
     async def handle(
         self,
@@ -867,11 +886,11 @@ class HernessEngine(EnginePhasesMixin):
         """Compact a long list of observations to prevent context window overflow."""
         if len(observations) <= 6:
             return "\n\n".join(observations)
-        
+
         omitted = len(observations) - 5
         compacted = (
-            observations[:2] 
-            + [f"... ({omitted} intermediate observations compacted) ..."] 
+            observations[:2]
+            + [f"... ({omitted} intermediate observations compacted) ..."]
             + observations[-3:]
         )
         return "\n\n".join(compacted)
@@ -900,6 +919,12 @@ def _dynamic_intent_facts(intent_facts: dict[str, Any] | None) -> dict[str, Any]
         if set(facts) <= {"source_agent", "intent_basis"}:
             return {}
     return facts
+
+
+def _max_permission(current: str, requested: str) -> str:
+    current_level = PERMISSION_ORDER.get(current, 0)
+    requested_level = PERMISSION_ORDER.get(requested, 0)
+    return requested if requested_level > current_level else current
 
 
 def _observation_event(kind: str, facts: dict[str, Any]) -> str:

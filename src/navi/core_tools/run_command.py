@@ -58,6 +58,7 @@ def _binary_denied(command: list[str]) -> str:
 def _run_command(
     command: list[str], *, cwd: Path, timeout: int, allocate_pty: bool = False
 ) -> dict[str, Any]:
+    command = _normalize_argv(command)
     denied = _binary_denied(command)
     if denied:
         return {
@@ -203,6 +204,14 @@ def _run_command(
         "exit_code": result.returncode,
         "timed_out": False,
     }
+
+
+def _normalize_argv(command: list[str]) -> list[str]:
+    replacements = {
+        r"\(": "(",
+        r"\)": ")",
+    }
+    return [replacements.get(arg, arg) for arg in command]
 
 
 def _run_git(path: Path, *args: str) -> dict[str, Any]:

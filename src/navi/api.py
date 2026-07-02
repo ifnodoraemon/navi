@@ -176,9 +176,22 @@ def create_app(home: Path | None = None) -> FastAPI:
             api_key_path.write_text(api_key, encoding="utf-8")
             api_key_path.chmod(0o600)
 
+    _UNAUTHENTICATED_PATHS = frozenset({"/health", "/v1/auth/status"})
+    _UNAUTHENTICATED_PREFIXES = ("/assets", "/ui/trace")
+    _UNAUTHENTICATED_GET_PATHS = frozenset({"/v1/traces", "/v1/trace-evaluations"})
+    _UNAUTHENTICATED_GET_PREFIXES = ("/v1/traces/",)
+
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        if request.url.path.startswith("/ui/trace") or request.url.path.startswith("/assets") or request.url.path.startswith("/v1/trace"):
+        path = request.url.path
+        if path in _UNAUTHENTICATED_PATHS or any(
+            path.startswith(prefix) for prefix in _UNAUTHENTICATED_PREFIXES
+        ):
+            return await call_next(request)
+        if request.method == "GET" and (
+            path in _UNAUTHENTICATED_GET_PATHS
+            or any(path.startswith(prefix) for prefix in _UNAUTHENTICATED_GET_PREFIXES)
+        ):
             return await call_next(request)
         header_key = request.headers.get("X-API-Key")
         if header_key != api_key:
@@ -457,7 +470,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         task = task_store.get(result.run_id) if result.run_id else None
         source = load_config(home).runtime.local_surface
         return {
-            "message": _local_surface_message(result, source=source),
+            "message": _local_result_message(result, source=source),
             "delegation": task.__dict__ if task else None,
             "preparation": task.plan_summary if task else "",
             "facts": result.facts or {},
@@ -478,7 +491,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         )
         task = task_store.get(result.run_id) if result.run_id else None
         return {
-            "message": _local_surface_message(
+            "message": _local_result_message(
                 result, source=load_config(home).runtime.local_surface
             ),
             "delegation": task.__dict__ if task else None,
@@ -499,7 +512,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             ),
         )
         return {
-            "message": _local_surface_message(
+            "message": _local_result_message(
                 result, source=load_config(home).runtime.local_surface
             ),
             "facts": result.facts or {},
@@ -523,7 +536,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         watch_id = str((result.facts or {}).get("watch_id") or "")
         watch = task_store.get_watch(watch_id) if watch_id else None
         return {
-            "message": _local_surface_message(
+            "message": _local_result_message(
                 result, source=load_config(home).runtime.local_surface
             ),
             "watch": watch.__dict__ if watch else None,
@@ -597,18 +610,35 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get(api_path("trace"))
-    def trace(trace_id: str) -> dict:
+    def trace(trace_id: str, limit: int = 5000, offset: int = 0) -> dict:
         store = TraceStore(home)
+        events_page = store.list_events(trace_id, limit=limit, offset=offset)
+
+        # To preserve tree hierarchy and step counts, we must compute runs from the very beginning
+        # up to the end of the current page.
+        from .trace import _trace_run_views
+        all_events = store.list_events(trace_id, limit=offset + limit, offset=0)
+        all_runs = _trace_run_views(all_events, trace_id=trace_id)
+
+        if events_page:
+            first_time = events_page[0].created_at
+            # Only return runs that overlap with or were created during this page's time window
+            page_runs = [run for run in all_runs if run.end_time >= first_time]
+        else:
+            page_runs = []
+
+        loop_decisions = [
+            {
+                **event.__dict__,
+                "decision": json_object(event.output_json),
+            }
+            for event in store.list_loop_decisions(trace_id, limit=limit, offset=offset)
+        ]
+
         return {
-            "events": [event.__dict__ for event in store.list_events(trace_id)],
-            "runs": [run.to_dict() for run in store.list_run_views(trace_id)],
-            "loop_decisions": [
-                {
-                    **event.__dict__,
-                    "decision": json_object(event.output_json),
-                }
-                for event in store.list_loop_decisions(trace_id)
-            ],
+            "events": [event.__dict__ for event in events_page],
+            "runs": [run.to_dict() for run in page_runs],
+            "loop_decisions": loop_decisions,
             "evaluations": [item.to_dict() for item in store.list_evaluations(trace_id)],
         }
 
@@ -825,6 +855,8 @@ def _public_approval(approval) -> dict:
         "id": approval.id,
         "run_id": approval.run_id,
         "action": approval.action,
+        "requested_tool": approval.requested_tool,
+        "requested_permission": approval.requested_permission,
         "peer_id": approval.peer_id,
         "sender_id": approval.sender_id,
         "status": approval.status,
@@ -872,6 +904,6 @@ def _capability_result_dict(result: CapabilityResult) -> dict[str, Any]:
     }
 
 
-def _local_surface_message(result: CapabilityResult, *, source: str) -> str:
+def _local_result_message(result: CapabilityResult, *, source: str) -> str:
     del source
     return result.message

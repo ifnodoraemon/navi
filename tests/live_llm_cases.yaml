@@ -3,7 +3,7 @@ syscall_cases:
     source: observed:.navi/memory.db
     message: "你好"
     expect:
-      tool: final.answer
+      tool: respond
       permission: read
 
   - id: capability_question_stays_chat
@@ -54,7 +54,7 @@ syscall_cases:
     source: observed:.navi/memory.db
     message: "每天晚上上一个通识课给我"
     expect:
-      tool: ask.user
+      tool: respond
       permission: read
 
   - id: exact_morning_watch_creates_watch
@@ -131,7 +131,7 @@ syscall_cases:
           permission: prepare
         - tool: codebase.search
           permission: read
-        - tool: final.answer
+        - tool: respond
           permission: read
 
   - id: regression_terse_fix_follow_up_uses_context

@@ -78,7 +78,11 @@ class SchedulerRunner:
 
     def start(self):
         if self._task is None:
-            self._task = asyncio.create_task(self._loop())
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            self._task = loop.create_task(self._loop())
 
     async def _loop(self):
         while True:

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 
 import pytest
 import yaml
 
 from navi.engine import HernessEngine, _dynamic_intent_facts
+from navi.connector_runtime import ConnectorMessage
+from navi.connector_router import ConnectorRouter
 from navi.event_bus import EventBus
 from navi.evolution import EvolutionEngine, EvolutionLedger
 from navi._engine_phases import EnginePhasesMixin
@@ -15,6 +18,7 @@ from navi.capabilities_types import CapabilityContext
 from navi.control import SurfaceContext
 from navi.engine_types import AgentTurnResult
 from navi.execution import ExecutionService
+from navi.goals import GOAL_STATUS_BLOCKED, GoalStore
 from navi.provider import ChatMessage, _extract_anthropic_content, _extract_openai_content
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
@@ -41,7 +45,7 @@ def test_provider_rejects_structured_json_hidden_in_reasoning_content():
                     "content": "",
                     "reasoning_content": (
                         "reasoning omitted\nresponse"
-                        '{"tool":"final.answer","permission":"read","args":{"message":"ok"}}'
+                        '{"tool":"respond","permission":"read","args":{"message":"ok"}}'
                     ),
                 },
                 "finish_reason": "stop",
@@ -67,7 +71,7 @@ class _PlannerSchemaProvider:
         self.output_schema = output_schema
         return json.dumps(
             {
-                "tool": "final.answer",
+                "tool": "respond",
                 "permission": "read",
                 "args": {"message": "ok"},
                 "model_role": "responder",
@@ -90,7 +94,7 @@ class _PromptCaptureProvider:
             self.planner_user_prompt = messages[-1].content
             return json.dumps(
                 {
-                    "tool": "final.answer",
+                    "tool": "respond",
                     "permission": "read",
                     "args": {"message": "你好"},
                     "model_role": "responder",
@@ -157,6 +161,75 @@ async def test_weixin_intent_current_state_is_not_repeated_in_planner_observatio
 
 
 @pytest.mark.asyncio
+async def test_connector_approval_command_returns_explicit_unresolved_fact(tmp_path):
+    router = ConnectorRouter(tmp_path, EventBus())
+
+    response = await router.route(
+        ConnectorMessage(
+            message_id="msg-approval",
+            peer_id="peer-1",
+            sender_id="sender-1",
+            text="批准 123456",
+            source="weixin",
+            session_alias_prefix="connector:weixin",
+        )
+    )
+
+    assert "approval_not_resolved" in response
+    assert "approval_code_not_found" in response
+
+
+@pytest.mark.asyncio
+async def test_governed_sensitive_shell_call_suspends_until_matching_approval(tmp_path):
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "sensitive command",
+        kind="delegation",
+        source="local",
+        peer_id="local",
+        sender_id="user-1",
+        workspace=str(tmp_path),
+        status="pending",
+    )
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        governed_run_id=run.id,
+    )
+    context = CapabilityContext(
+        home=tmp_path,
+        peer_id="local",
+        sender_id="user-1",
+        source="local",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    args = {"command": ["python", "-c", "print('approved')"]}
+
+    suspended = await registry.invoke("shell.run", args, permission="write", context=context)
+
+    assert suspended.ok is False
+    assert suspended.error_reason == "sensitive_op_requires_approval"
+    approval = RunStore(tmp_path).list_approvals(run_id=run.id)[0]
+    assert approval.action == "capability"
+    assert approval.requested_tool == "shell.run"
+    assert approval.requested_permission == "write"
+    assert RunStore(tmp_path).get(run.id).status == "awaiting_approval"
+
+    resolved = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": approval.code},
+        permission="write",
+        context=context,
+    )
+    assert resolved.ok is True
+
+    executed = await registry.invoke("shell.run", args, permission="write", context=context)
+    assert executed.ok is True
+    assert "approved" in (executed.facts or {}).get("stdout", "")
+
+
+@pytest.mark.asyncio
 async def test_planner_structured_output_wrapper_is_not_a_capability_name():
     provider = _PlannerSchemaProvider()
     planner = ModelSyscallPlanner(provider)
@@ -170,7 +243,7 @@ async def test_planner_structured_output_wrapper_is_not_a_capability_name():
         "args",
         "model_role",
     ]
-    assert decision.tool == "final.answer"
+    assert decision.tool == "respond"
     assert decision.confidence == 0.0
     assert decision.reason == ""
 
@@ -215,7 +288,7 @@ def test_anthropic_direct_tool_call_is_not_reconstructed_as_planner_decision():
 
 def test_planner_parser_rejects_markdown_fenced_json():
     decision = ModelSyscallPlanner._parse_syscall(
-        '```json\n{"tool":"final.answer","permission":"read","args":{},'
+        '```json\n{"tool":"respond","permission":"read","args":{},'
         '"model_role":"responder","confidence":1,"reason":"done"}\n```'
     )
 
@@ -227,7 +300,7 @@ def test_planner_parser_accepts_missing_optional_audit_fields():
     decision = ModelSyscallPlanner._parse_syscall(
         json.dumps(
             {
-                "tool": "final.answer",
+                "tool": "respond",
                 "permission": "read",
                 "args": {"message": "ok"},
                 "model_role": "responder",
@@ -235,7 +308,7 @@ def test_planner_parser_accepts_missing_optional_audit_fields():
         )
     )
 
-    assert decision.tool == "final.answer"
+    assert decision.tool == "respond"
     assert decision.confidence == 0.0
     assert decision.reason == ""
 
@@ -244,7 +317,7 @@ def test_planner_parser_rejects_missing_required_schema_fields():
     decision = ModelSyscallPlanner._parse_syscall(
         json.dumps(
             {
-                "tool": "final.answer",
+                "tool": "respond",
                 "permission": "read",
                 "args": {"message": "ok"},
             }
@@ -269,7 +342,7 @@ async def test_planner_rejects_selected_capability_args_schema_mismatch():
             del role, messages, output_schema
             return json.dumps(
                 {
-                    "tool": "final.answer",
+                    "tool": "respond",
                     "permission": "read",
                     "args": {},
                     "model_role": "responder",
@@ -280,7 +353,7 @@ async def test_planner_rejects_selected_capability_args_schema_mismatch():
         "hi",
         tools=[
             ToolSpec(
-                name="final.answer",
+                name="respond",
                 capability_class="conversation",
                 execution_contexts=("turn",),
                 description="Return a final user-facing message.",
@@ -296,7 +369,7 @@ async def test_planner_rejects_selected_capability_args_schema_mismatch():
 
     assert decision.tool == "system.planner_error"
     assert decision.reason == "planner capability arguments schema mismatch"
-    assert decision.args["selected_tool"] == "final.answer"
+    assert decision.args["selected_tool"] == "respond"
     assert "$.message is required" in decision.args["schema_errors"]
 
 
@@ -323,6 +396,7 @@ def test_completion_checker_ignores_unrelated_prepared_runs(tmp_path):
 
     class Harness:
         home = tmp_path
+        governed_run_id = ""
         governed_workflow_id = ""
 
     block = EnginePhasesMixin._completion_block_reason(
@@ -345,6 +419,117 @@ def test_completion_checker_ignores_unrelated_prepared_runs(tmp_path):
             sender_id="sender-1",
         ),
         current_run_id=current.id,
+    )
+
+    assert block is None
+
+
+def test_completion_checker_ignores_current_governed_executor_run(tmp_path):
+    runs = RunStore(tmp_path)
+    current = runs.create(
+        "current executor task",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="running",
+    )
+
+    class Harness:
+        home = tmp_path
+        governed_run_id = current.id
+        governed_workflow_id = ""
+
+    block = EnginePhasesMixin._completion_block_reason(
+        Harness(),
+        [],
+        state_context=SurfaceContext(
+            home=tmp_path,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+        ),
+        current_run_id=current.id,
+    )
+
+    assert block is None
+
+
+def test_completion_checker_blocks_weixin_media_task_without_media_directive(tmp_path):
+    runs = RunStore(tmp_path)
+    current = runs.create(
+        "在用户电脑上找到简历文件并发送给用户",
+        prompt="Objective:\n找到简历文件并发送给用户",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="running",
+    )
+
+    class Harness:
+        home = tmp_path
+        governed_run_id = current.id
+        governed_workflow_id = ""
+
+    block = EnginePhasesMixin._completion_block_reason(
+        Harness(),
+        [{"tool": "respond", "ok": True, "facts": {}, "action": "respond"}],
+        state_context=SurfaceContext(
+            home=tmp_path,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+        ),
+        current_run_id=current.id,
+        terminal_text="已找到简历文件并发送给您。",
+    )
+
+    assert block is not None
+    assert block.reason_code == "weixin_media_delivery_missing"
+    assert block.details["required_tool"] == "connector.weixin.stage_file"
+
+
+def test_completion_checker_allows_staged_weixin_media_directive(tmp_path):
+    runs = RunStore(tmp_path)
+    current = runs.create(
+        "在用户电脑上找到简历文件并发送给用户",
+        prompt="Objective:\n找到简历文件并发送给用户",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="running",
+    )
+    directive = f"MEDIA:{tmp_path}/weixin/outbox/resume.docx"
+
+    class Harness:
+        home = tmp_path
+        governed_run_id = current.id
+        governed_workflow_id = ""
+
+    block = EnginePhasesMixin._completion_block_reason(
+        Harness(),
+        [
+            {
+                "tool": "connector.weixin.stage_file",
+                "ok": True,
+                "facts": {"media_directive": directive},
+                "action": "fact",
+            },
+            {"tool": "respond", "ok": True, "facts": {}, "action": "respond"},
+        ],
+        state_context=SurfaceContext(
+            home=tmp_path,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+        ),
+        current_run_id=current.id,
+        terminal_text=f"{directive}\n已找到并发送简历。",
     )
 
     assert block is None
@@ -400,7 +585,7 @@ class _RemoteDeleteUnavailableProvider:
             assert "delegate.delete" not in content
             return json.dumps(
                 {
-                    "tool": "final.answer",
+                    "tool": "respond",
                     "permission": "read",
                     "args": {"message": "remote_delete_not_available"},
                     "model_role": "responder",
@@ -434,12 +619,12 @@ class _RepeatListProvider:
             if self.planner_calls > 5:
                 return json.dumps(
                     {
-                        "tool": "final.answer",
+                        "tool": "respond",
                         "permission": "read",
                         "args": {"message": "当前没有任务。"},
                         "model_role": "responder",
                         "confidence": 1.0,
-                        "reason": "repeated_action observed, switching to final.answer",
+                        "reason": "repeated_action observed, switching to respond",
                     }
                 )
             return json.dumps(
@@ -455,7 +640,10 @@ class _RepeatListProvider:
         if role == "responder":
             self.responder_calls += 1
             content = "\n".join(message.content for message in messages)
-            assert "repeated_action:" in content
+            assert '"observation_type": "loop_progress_fact"' in content
+            assert '"reason": "repeated_progress_signature"' in content
+            assert '"tool": "delegate.list"' in content
+            assert "Loop Reflection" not in content
             assert "Capability observations:" in content
             return "当前没有任务。"
         raise AssertionError(f"unexpected role: {role}")
@@ -482,12 +670,12 @@ class _RepeatStatusDifferentArgsProvider:
             if self.planner_calls > 5:
                 return json.dumps(
                     {
-                        "tool": "final.answer",
+                        "tool": "respond",
                         "permission": "read",
                         "args": {"message": "任务已过期。"},
                         "model_role": "responder",
                         "confidence": 1.0,
-                        "reason": "repeated_action observed, switching to final.answer",
+                        "reason": "repeated_action observed, switching to respond",
                     }
                 )
             args = (
@@ -536,7 +724,7 @@ class _DelegateSpawnApprovalProvider:
                 assert "awaiting_approval" in content
                 return json.dumps(
                     {
-                        "tool": "final.answer",
+                        "tool": "respond",
                         "permission": "read",
                         "args": {"message": "需要审批后执行。"},
                         "model_role": "responder",
@@ -572,6 +760,7 @@ class _DelegateSpawnApprovalProvider:
 class _InvalidCapabilityArgsProvider:
     def __init__(self) -> None:
         self.call_count = 0
+        self.last_prompt = ""
 
     async def complete_for(
         self,
@@ -580,28 +769,77 @@ class _InvalidCapabilityArgsProvider:
         *,
         output_schema: dict | None = None,
     ) -> str:
-        del messages
         if role == "planner" and output_schema is not None:
             self.call_count += 1
+            self.last_prompt = "\n".join(message.content for message in messages)
             if self.call_count > 5:
+                assert '"observation_type": "planner_error"' in self.last_prompt
+                assert '"selected_tool": "respond"' in self.last_prompt
+                assert "$.message is required" in self.last_prompt
                 return json.dumps(
                     {
-                        "tool": "final.answer",
+                        "tool": "respond",
                         "permission": "read",
                         "args": {"message": "回答完毕。"},
                         "model_role": "responder",
                         "confidence": 1.0,
-                        "reason": "repeated_action observed, switching to final.answer",
+                        "reason": "repeated_action observed, switching to respond",
                     }
                 )
             return json.dumps(
                 {
-                    "tool": "final.answer",
+                    "tool": "respond",
                     "permission": "read",
                     "args": {},
                     "model_role": "responder",
                     "confidence": 1.0,
                     "reason": "attempt final answer",
+                }
+            )
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+
+class _WatchCreateThenRespondProvider:
+    def __init__(self, run_at: float) -> None:
+        self.run_at = run_at
+        self.planner_calls = 0
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        if role == "planner" and output_schema is not None:
+            self.planner_calls += 1
+            content = "\n".join(message.content for message in messages)
+            if self.planner_calls == 1:
+                return json.dumps(
+                    {
+                        "tool": "watch.create",
+                        "permission": "prepare",
+                        "args": {
+                            "prompt": "检查天气",
+                            "kind": "once",
+                            "run_at": self.run_at,
+                        },
+                        "model_role": "planner",
+                    }
+                )
+            assert '"observation_type": "capability_result"' in content
+            assert '"tool": "watch.create"' in content
+            assert '"completion_evidence": true' in content
+            assert "Watch created" not in content
+            return json.dumps(
+                {
+                    "tool": "respond",
+                    "permission": "read",
+                    "args": {"message": "已创建。"},
+                    "model_role": "responder",
                 }
             )
         raise AssertionError(f"unexpected role: {role}")
@@ -682,6 +920,44 @@ async def test_delegate_spawn_deduplicates_same_objective_with_rewritten_plan(tm
     assert len([run for run in RunStore(tmp_path).list(limit=20) if run.kind == "delegation"]) == 1
 
 
+@pytest.mark.asyncio
+async def test_delegate_delete_blocks_linked_goal(tmp_path):
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="local",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    spawned = await registry.invoke(
+        "delegate.spawn",
+        {
+            "objective": "delete linked goal task",
+            "context": "test",
+            "plan": "test",
+            "success_criteria": "test",
+        },
+        permission="prepare",
+        context=context,
+    )
+    assert spawned.ok is True
+
+    deleted = await registry.invoke(
+        "delegate.delete",
+        {"run_id": spawned.run_id, "reason": "test cleanup"},
+        permission="write",
+        context=context,
+    )
+
+    assert deleted.ok is True
+    goal = GoalStore(tmp_path).get_by_run(spawned.run_id)
+    assert goal is not None
+    assert goal.status == GOAL_STATUS_BLOCKED
+    assert goal.blocked_reason == "delegation_run_deleted"
+
+
 class _AskOnlyEngine:
     def __init__(self, **kwargs):
         pass
@@ -693,6 +969,20 @@ class _AskOnlyEngine:
             model_role="responder",
             terminal=True,
             yields_control=True,
+        )
+
+
+class _CompletedEngine:
+    def __init__(self, **kwargs):
+        pass
+
+    async def handle(self, *args, **kwargs) -> AgentTurnResult:
+        return AgentTurnResult(
+            text="MEDIA:/tmp/resume.docx\n已找到并发送简历。",
+            action="respond",
+            model_role="responder",
+            terminal=True,
+            ok=True,
         )
 
 
@@ -720,6 +1010,32 @@ async def test_executor_ask_result_blocks_run_instead_of_marking_completed(
 
     assert result.status == "pending"
     assert result.result_summary == "请提供文件位置。"
+
+
+@pytest.mark.asyncio
+async def test_executor_terminal_response_marks_governed_run_completed(
+    tmp_path,
+    monkeypatch,
+):
+    import navi.execution as execution_module
+
+    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _CompletedEngine)
+    runs = RunStore(tmp_path)
+    task = runs.create(
+        "在用户电脑上找到简历文件并发送给用户",
+        prompt="Objective:\n找到简历\n\nSuccess Criteria:\n找到并发送",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="pending",
+    )
+
+    result = await ExecutionService(tmp_path).execute_task(task)
+
+    assert result.status == "completed"
+    assert result.result_summary == "MEDIA:/tmp/resume.docx\n已找到并发送简历。"
 
 
 @pytest.mark.asyncio
@@ -762,6 +1078,40 @@ async def test_remote_expired_task_cleanup_does_not_expose_delete(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_completion_evidence_returns_to_model_for_response(tmp_path):
+    provider = _WatchCreateThenRespondProvider(time.time() + 3600)
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "一小时后提醒我检查天气",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert result.text == "已创建。"
+    assert result.action == "chat"
+    assert provider.planner_calls == 2
+    decisions = [
+        json.loads(event.output_json)
+        for event in TraceStore(tmp_path).list_events(result.trace_id)
+        if event.phase == "loop.decision"
+    ]
+    assert any(
+        decision.get("tool") == "watch.create"
+        and decision.get("decision") == "continue"
+        and decision.get("reason") == "completion_evidence_true"
+        for decision in decisions
+    )
+
+
+@pytest.mark.asyncio
 async def test_repeated_stable_capability_result_converges(tmp_path):
     provider = _RepeatListProvider()
     engine = HernessEngine(
@@ -783,6 +1133,16 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
     assert result.action == "chat"
     assert provider.planner_calls == 6
     assert provider.responder_calls == 0
+    decisions = [
+        json.loads(event.output_json)
+        for event in TraceStore(tmp_path).list_events(result.trace_id)
+        if event.phase == "loop.decision"
+    ]
+    assert any(
+        decision.get("tool") == "delegate.list"
+        and decision.get("reason") == "repeated_progress_signature"
+        for decision in decisions
+    )
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,8 @@ from typing import Any
 
 import pytest
 
+from navi.capabilities import build_capability_registry
+from navi.capabilities_types import CapabilityContext
 from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.weixin.client import ITEM_FILE, MEDIA_FILE, WeixinClient
@@ -132,11 +134,13 @@ class StaticIngress:
 
 
 class StaticDaemon:
-    def __init__(self, tasks: list[Run]) -> None:
+    def __init__(self, tasks: list[Run], watch_results: list[dict[str, Any]] | None = None) -> None:
         self._tasks = tasks
+        self._watch_results = list(watch_results or [])
+        self.runs = {task.id: task for task in tasks}
 
     async def process_watches_once(self) -> list[dict[str, Any]]:
-        return []
+        return self._watch_results
 
     async def process_queue_once(self) -> list[Run]:
         return self._tasks
@@ -176,6 +180,28 @@ async def test_service_sends_media_directive_from_weixin_outbox(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_weixin_stage_file_returns_allowed_media_directive(tmp_path: Path):
+    source = tmp_path / "resume.docx"
+    source.write_bytes(b"resume")
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    result = await registry.invoke(
+        "connector.weixin.stage_file",
+        {"path": str(source)},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, source="local", workspace=str(tmp_path)),
+    )
+
+    assert result.ok is True
+    assert result.facts is not None
+    staged = Path(result.facts["outbound_path"])
+    assert staged.is_file()
+    assert staged.read_bytes() == b"resume"
+    assert staged.is_relative_to((tmp_path / "weixin" / "outbox").resolve())
+    assert result.facts["media_directive"] == f"MEDIA:{staged}"
+
+
+@pytest.mark.asyncio
 async def test_background_task_without_surface_text_does_not_synthesize_reply(tmp_path: Path):
     client = CaptureWeixinClient()
     service = WeixinService(
@@ -206,3 +232,25 @@ async def test_background_task_without_surface_text_does_not_synthesize_reply(tm
     )
 
     assert client.messages == []
+
+
+@pytest.mark.asyncio
+async def test_background_watch_without_surface_text_does_not_record_sent_reply(tmp_path: Path):
+    client = CaptureWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(home_channel="wx-home"),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.daemon = StaticDaemon(tasks=[], watch_results=[{"run_id": "watch-empty"}])
+
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    assert client.messages == []
+    events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    assert any('"event": "background.skipped"' in line for line in events)
+    assert not any('"event": "background.sent"' in line for line in events)

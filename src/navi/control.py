@@ -6,7 +6,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .lifecycle import RUN_ACTIVE_STATUSES
+from .approval_contract import (
+    APPROVAL_ACTION_SESSION_ELEVATION,
+    APPROVAL_DECISION_APPROVE,
+    APPROVAL_DECISIONS,
+    APPROVAL_STATUS_APPROVED,
+    APPROVAL_STATUS_REJECTED,
+)
+from .lifecycle import (
+    RUN_ACTIVE_STATUSES,
+    RUN_STATUS_COMPLETED,
+    RUN_STATUS_FAILED,
+    RUN_STATUS_PENDING,
+)
 from .runs import Run, RunStore
 from .workflows import (
     WORKFLOW_STATUS_RUNNING,
@@ -57,30 +69,127 @@ class ApprovalService:
         selection: str,
         context: SurfaceContext,
         code: str = "",
+        run_id: str = "",
     ) -> ApprovalResolution:
-        del selection
         runs = RunStore(self.home)
         candidates = [
             run
             for run in runs.list_by_statuses(sorted(RUN_ACTIVE_STATUSES), limit=100)
             if run_matches_context(run, context)
         ]
+        normalized_decision = decision.strip().lower()
+        if normalized_decision not in APPROVAL_DECISIONS:
+            return _approval_not_resolved(
+                decision=normalized_decision,
+                reason="invalid_decision",
+                code_present=bool(code),
+                active_run_count=len(candidates),
+                selection=selection,
+            )
+
+        approval = None
+        if code:
+            approval = runs.pending_approval_by_code(
+                code,
+                source=context.source,
+                peer_id=context.peer_id,
+                sender_id=context.sender_id,
+            )
+            reason = "approval_code_not_found" if approval is None else ""
+        elif run_id:
+            approval = runs.pending_approval_for_run(
+                run_id,
+                source=context.source,
+                peer_id=context.peer_id,
+                sender_id=context.sender_id,
+            )
+            reason = "run_has_no_approval" if approval is None else ""
+        else:
+            reason = "approval_identifier_missing"
+
+        if approval is None:
+            return _approval_not_resolved(
+                decision=normalized_decision,
+                reason=reason,
+                code_present=bool(code),
+                active_run_count=len(candidates),
+                selection=selection,
+                run_id=run_id,
+            )
+
+        resolved = runs.resolve_approval(
+            approval.id,
+            decision=normalized_decision,
+            resolved_by=context.sender_id,
+        )
+        if resolved is None:
+            return _approval_not_resolved(
+                decision=normalized_decision,
+                reason="approval_not_pending",
+                code_present=bool(code),
+                active_run_count=len(candidates),
+                selection=selection,
+                run_id=approval.run_id,
+                approval_id=approval.id,
+            )
+
+        if normalized_decision == APPROVAL_DECISION_APPROVE:
+            run_status = (
+                RUN_STATUS_COMPLETED
+                if resolved.action == APPROVAL_ACTION_SESSION_ELEVATION
+                else RUN_STATUS_PENDING
+            )
+            runs.update_run(
+                resolved.run_id,
+                status=run_status,
+                result_summary=(
+                    "session_elevation_approved"
+                    if resolved.action == APPROVAL_ACTION_SESSION_ELEVATION
+                    else ""
+                ),
+                error="",
+                trust_rule_id=f"approval:{resolved.id}",
+            )
+            status = APPROVAL_STATUS_APPROVED
+        else:
+            run_status = RUN_STATUS_FAILED
+            runs.update_run(
+                resolved.run_id,
+                status=run_status,
+                result_summary="approval_rejected",
+                error="approval rejected by user",
+            )
+            status = APPROVAL_STATUS_REJECTED
+
         facts = {
-            "decision": decision,
+            "decision": normalized_decision,
+            "selection": selection,
             "code_present": bool(code),
             "active_run_count": len(candidates),
-            "reason": "approval_code_store_unavailable",
+            "run_id": resolved.run_id,
+            "approval_id": resolved.id,
+            "status": status,
+            "run_status": str(run_status),
+            "approval_resolution": {
+                "reason": status,
+                "decision": normalized_decision,
+                "approval_id": resolved.id,
+                "run_id": resolved.run_id,
+                "action": resolved.action,
+                "status": status,
+                "requested_tool": resolved.requested_tool,
+                "requested_permission": resolved.requested_permission,
+            },
         }
-        return ApprovalResolution(
-            ok=False,
-            message=(
-                "approval_not_resolved\n"
-                f"decision={decision}\n"
-                f"reason={facts['reason']}\n"
-                f"active_run_count={len(candidates)}"
-            ),
-            facts=facts,
+        message = (
+            "approval_resolved\n"
+            f"decision={normalized_decision}\n"
+            f"status={status}\n"
+            f"run_id={resolved.run_id}\n"
+            f"approval_id={resolved.id}\n"
+            f"run_status={run_status}"
         )
+        return ApprovalResolution(ok=True, message=message, facts=facts)
 
 
 class CurrentStateBuilder:
@@ -181,3 +290,40 @@ def _workflow_matches_context(workflow: Workflow, context: SurfaceContext) -> bo
     if workflow.source and context.source and workflow.source != context.source:
         return False
     return True
+
+
+def _approval_not_resolved(
+    *,
+    decision: str,
+    reason: str,
+    code_present: bool,
+    active_run_count: int,
+    selection: str,
+    run_id: str = "",
+    approval_id: str = "",
+) -> ApprovalResolution:
+    facts = {
+        "decision": decision,
+        "selection": selection,
+        "code_present": code_present,
+        "active_run_count": active_run_count,
+        "run_id": run_id,
+        "approval_id": approval_id,
+        "reason": reason,
+        "approval_resolution": {
+            "reason": reason,
+            "decision": decision,
+            "run_id": run_id,
+            "approval_id": approval_id,
+        },
+    }
+    return ApprovalResolution(
+        ok=False,
+        message=(
+            "approval_not_resolved\n"
+            f"decision={decision}\n"
+            f"reason={reason}\n"
+            f"active_run_count={active_run_count}"
+        ),
+        facts=facts,
+    )

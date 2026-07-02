@@ -22,9 +22,6 @@ from .lifecycle import (
     RUN_STATUS_PENDING,
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
-    RUN_STATUS_PENDING,
-    RUN_STATUS_PENDING,
-    RUN_STATUS_PENDING,
     RUN_STATUS_RUNNING,
 )
 from .runs import Run, RunStore
@@ -81,11 +78,28 @@ class SystemDaemon:
         self._setup_execution_subscription()
 
     def start(self) -> None:
-        from .scheduler import SchedulerStore, SchedulerRunner
+        """Start background scheduling primitives.
 
-        self.scheduler_store = SchedulerStore(self.home)
-        self.scheduler_runner = SchedulerRunner(self.scheduler_store, self.event_bus)
-        self.scheduler_runner.start()
+        Safe to call from synchronous entry points (CLI, API factory): if no
+        event loop is running we simply skip the scheduler-start (the
+        scheduler will be started lazily when the loop is up, or the daemon
+        will be driven manually via :meth:`process_queue_once`)."""
+        self.execution.recover_stale_runs()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            self.scheduler_runner = None
+            return
+        try:
+            from .scheduler import SchedulerStore, SchedulerRunner
+
+            self.scheduler_store = SchedulerStore(self.home)
+            self.scheduler_runner = SchedulerRunner(self.scheduler_store, self.event_bus)
+            self.scheduler_runner.start()
+        except RuntimeError:
+            # No running event loop - scheduler will not auto-advance.
+            # Callers that drive the daemon manually (process_queue_once) are unaffected.
+            self.scheduler_runner = None
 
     def _setup_execution_subscription(self) -> None:
         async def on_action_approved(event: ActionApprovedEvent) -> None:

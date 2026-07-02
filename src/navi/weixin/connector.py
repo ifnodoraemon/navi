@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +139,44 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
         ),
         lambda args: ToolResult(tool=spec.status_tool, ok=True, facts=_status(home)),
     )
+    registry.register(
+        ToolSpec(
+            name="connector.weixin.stage_file",
+            capability_class="connector.outbound_media",
+            execution_contexts=ALL_EXECUTION_CONTEXTS,
+            description=(
+                "Stage a local file for Weixin outbound delivery. Returns a MEDIA directive "
+                "that a final response can include on its own line so the Weixin connector "
+                "uploads and sends the staged file."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "file_name": {"type": "string"},
+                },
+                "required": ["path"],
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "entity_type": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "state_transition": {"type": "string"},
+                    "turn_scope": {"type": "string"},
+                    "source_path": {"type": "string"},
+                    "outbound_path": {"type": "string"},
+                    "media_directive": {"type": "string"},
+                    "size": {"type": "integer"},
+                },
+            },
+            facts_only=True,
+            mutates=True,
+            permission="write",
+            source=f"connector.{spec.name}",
+        ),
+        lambda args: _stage_outbound_file(home, args),
+    )
 
 
 async def _setup(home: Path, project_dir: Path, timeout_seconds: int, on_qr: Any | None) -> str:
@@ -147,6 +186,79 @@ async def _setup(home: Path, project_dir: Path, timeout_seconds: int, on_qr: Any
 
 async def _run(home: Path, project_dir: Path, once: bool) -> None:
     await _service(home, project_dir).run(once=once)
+
+
+def _stage_outbound_file(home: Path, args: dict[str, Any]):
+    from navi.tools import ToolResult
+
+    raw_path = str(args.get("path") or "").strip()
+    if not raw_path:
+        return ToolResult(tool="connector.weixin.stage_file", ok=False, error="path is required")
+    try:
+        source = Path(raw_path).expanduser().resolve()
+    except OSError as exc:
+        return ToolResult(tool="connector.weixin.stage_file", ok=False, error=str(exc))
+    if not source.exists():
+        return ToolResult(
+            tool="connector.weixin.stage_file",
+            ok=False,
+            error=f"file not found: {source}",
+            facts={"source_path": str(source)},
+        )
+    if not source.is_file():
+        return ToolResult(
+            tool="connector.weixin.stage_file",
+            ok=False,
+            error=f"path is not a file: {source}",
+            facts={"source_path": str(source)},
+        )
+
+    outbox = home / "weixin" / "outbox"
+    outbox.mkdir(parents=True, exist_ok=True)
+    target = _unique_outbound_path(
+        outbox / _safe_outbound_name(str(args.get("file_name") or "") or source.name)
+    )
+    try:
+        shutil.copy2(source, target)
+    except OSError as exc:
+        return ToolResult(
+            tool="connector.weixin.stage_file",
+            ok=False,
+            error=str(exc),
+            facts={"source_path": str(source), "outbound_path": str(target)},
+        )
+
+    return ToolResult(
+        tool="connector.weixin.stage_file",
+        ok=True,
+        facts={
+            "entity_type": "outbound_media",
+            "entity_id": str(target),
+            "state_transition": "staged",
+            "turn_scope": "current",
+            "source_path": str(source),
+            "outbound_path": str(target),
+            "media_directive": f"MEDIA:{target}",
+            "size": target.stat().st_size,
+        },
+    )
+
+
+def _safe_outbound_name(value: str) -> str:
+    candidate = Path(value).name.strip()
+    return candidate or "outbound-file"
+
+
+def _unique_outbound_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem or "outbound-file"
+    suffix = path.suffix
+    for index in range(1, 1000):
+        candidate = path.with_name(f"{stem}-{index}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise OSError(f"could not allocate outbound file path under {path.parent}")
 
 
 def _service(home: Path, project_dir: Path):

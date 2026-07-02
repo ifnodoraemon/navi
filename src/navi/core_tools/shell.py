@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 from ..tools import ToolResult
 from .codebase import _command_list, _project_path
-from .run_command import _run_command
+from .run_command import _normalize_argv, _run_command
 from .utils import _positive_int
 
 
@@ -22,6 +22,7 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
         return ToolResult(tool="shell.run", ok=False, error="cwd must be an existing directory")
     timeout = _positive_int(args.get("timeout_seconds"), default=20, maximum=120)
     allocate_pty = bool(args.get("allocate_pty"))
+    command = _normalize_argv(command)
     result = _run_command(command, cwd=cwd, timeout=timeout, allocate_pty=allocate_pty)
     return ToolResult(
         tool="shell.run",

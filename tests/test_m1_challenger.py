@@ -45,7 +45,7 @@ class WorkflowStepProvider:
             )
         return json.dumps(
             {
-                "tool": "final.answer",
+                "tool": "respond",
                 "permission": "read",
                 "args": {"message": "workflow evidence complete"},
                 "model_role": "auditor",
@@ -241,7 +241,7 @@ async def test_workflow_run_uses_model_owned_step_loop(
 
     evidence = json.loads(steps[0].evidence_json)
     tool_names = [item["tool"] for item in evidence["evidence"]]
-    assert tool_names == ["provider.config", "final.answer"]
+    assert tool_names == ["provider.config", "respond"]
     assert evidence["trace_id"]
     assert evidence["summary"] == "workflow evidence complete"
     outer_decisions = [

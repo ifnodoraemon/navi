@@ -281,6 +281,32 @@ class MemoryStore:
         )
         self.provider.store_item_with_contradictions(normalized)
 
+    def reduce_confidence(self, item_id: str, *, delta: float = 0.1) -> None:
+        """Reduce the confidence of a memory item by ``delta``.
+
+        Used by :class:`EvolutionEngine.rollback` to lower the trust level of
+        a memory item whose originating evolution was rejected.  The write is
+        routed through the ``before_memory_write`` hook so policy can observe
+        or block it (principle 9/10)."""
+        current = self.get_item(item_id)
+        if current is None:
+            return
+        new_confidence = max(0.0, current.confidence - delta)
+        self._assert_memory_write_allowed(
+            memory_type=current.type,
+            status=current.status,
+            scope=current.scope,
+            source=current.source,
+            confidence=new_confidence,
+            content_chars=len(current.content),
+            metadata_keys=sorted(current.metadata.keys()),
+        )
+        self.provider.update_item(
+            item_id,
+            confidence=new_confidence,
+            updated_at=time.time(),
+        )
+
     def _assert_memory_write_allowed(
         self,
         *,

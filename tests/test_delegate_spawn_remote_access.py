@@ -2,15 +2,15 @@
 
 Production symptom: from a WeChat (remote connector) surface, the user asked
 "把我电脑上的简历发我". The planner saw that file.read/directory.list/shell
-were not in its tool manifest and flatly refused with "我无法直接访问您电脑
-上的文件" — instead of either delegating a local search task or asking for
-clarification.
+were not in its tool manifest and flatly returned a generic no-local-access
+refusal instead of either delegating a local search task, requesting session
+elevation, or asking for missing facts only after available facts were exhausted.
 
 Current contract:
 - delegate.spawn's description states only capability semantics.
-- Remote connector policy explicitly exposes governed delegation while blocking
-  direct OS classes; the planner prompt must not carry remote-surface routing
-  policy.
+- Remote connector policy explicitly exposes governed delegation and session
+  elevation requests while blocking direct OS classes; the planner prompt must
+  not carry remote-surface routing policy.
 """
 
 from __future__ import annotations
@@ -52,8 +52,10 @@ def test_remote_surface_local_access_is_declared_by_policy_not_prompt() -> None:
     policy = REMOTE_CONNECTOR_TOOL_POLICY
     assert policy.permission_ceiling == "prepare"
     assert "delegate.spawn" in policy.allowed_tools
+    assert "session.request_elevation" in policy.allowed_tools
     assert "delegate.spawn" not in policy.blocked_tools
     assert "delegation" not in policy.blocked_capability_classes
+    assert "session" not in policy.blocked_capability_classes
     assert {"file.read", "directory", "shell"} <= REMOTE_BLOCKED_CAPABILITY_CLASSES
 
 
