@@ -39,6 +39,50 @@ class CurrentState:
     active_workflows: tuple[Workflow, ...]
 
 
+@dataclass(frozen=True)
+class ApprovalResolution:
+    ok: bool
+    message: str
+    facts: dict[str, Any]
+
+
+class ApprovalService:
+    def __init__(self, home: Path):
+        self.home = home
+
+    def resolve(
+        self,
+        *,
+        decision: str,
+        selection: str,
+        context: SurfaceContext,
+        code: str = "",
+    ) -> ApprovalResolution:
+        del selection
+        runs = RunStore(self.home)
+        candidates = [
+            run
+            for run in runs.list_by_statuses(sorted(RUN_ACTIVE_STATUSES), limit=100)
+            if run_matches_context(run, context)
+        ]
+        facts = {
+            "decision": decision,
+            "code_present": bool(code),
+            "active_run_count": len(candidates),
+            "reason": "approval_code_store_unavailable",
+        }
+        return ApprovalResolution(
+            ok=False,
+            message=(
+                "approval_not_resolved\n"
+                f"decision={decision}\n"
+                f"reason={facts['reason']}\n"
+                f"active_run_count={len(candidates)}"
+            ),
+            facts=facts,
+        )
+
+
 class CurrentStateBuilder:
     def __init__(self, home: Path):
         self.home = home
