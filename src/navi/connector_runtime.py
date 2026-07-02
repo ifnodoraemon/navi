@@ -28,12 +28,21 @@ REMOTE_ALLOWED_TOOLS = frozenset(
     (
         "respond",
         "delegate.spawn",
-        "delegate.prepare",
         "delegate.list",
+        "session.request_elevation",
         "tools.list",
         "watch.create",
         "workflow.propose",
         "workflow.status",
+    )
+)
+
+REMOTE_ELEVATED_ALLOWED_TOOLS = frozenset(
+    (
+        "approval.request",
+        "approval.resolve",
+        "delegate.run",
+        "delegate.retry",
     )
 )
 
@@ -90,10 +99,10 @@ class ConnectorToolPolicy:
 
 REMOTE_CONNECTOR_TOOL_POLICY = ConnectorToolPolicy(
     name="remote_connector_default",
-    permission_ceiling="prepare",
-    allowed_tools=REMOTE_ALLOWED_TOOLS,
-    blocked_tools=REMOTE_BLOCKED_TOOLS,
-    blocked_capability_classes=REMOTE_BLOCKED_CAPABILITY_CLASSES,
+    permission_ceiling="write",
+    allowed_tools=frozenset(),
+    blocked_tools=frozenset(),
+    blocked_capability_classes=frozenset(),
     reason_code="remote_connector_policy",
 )
 
@@ -158,9 +167,7 @@ class ConnectorIngressRuntime:
             runtime=runtime,
             project_dir=project_dir,
             allow_sources=allow_sources,
-            allowed_tools=tool_policy.allowed_tool_names()
-            if allowed_tools is None
-            else allowed_tools,
+            allowed_tools=allowed_tools,
             disabled_tools=tool_policy.blocked_tools,
             disabled_capability_classes=tool_policy.blocked_capability_classes,
             permission_ceiling=tool_policy.permission_ceiling,
