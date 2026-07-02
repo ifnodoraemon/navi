@@ -76,6 +76,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="delegate.run",
@@ -102,6 +103,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="delegate.send_input",
@@ -127,6 +129,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="watch.create",
@@ -163,6 +166,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="delegate.delete",
@@ -209,6 +213,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="delegate.list",
@@ -268,6 +273,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="delegate.retry",
@@ -296,6 +302,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="approval.request",
@@ -412,6 +419,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="workflow.approve",
@@ -444,6 +452,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="workflow.run",
@@ -476,6 +485,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="workflow.status",
@@ -542,6 +552,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="read",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="session.create",
@@ -564,6 +575,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="memory.add",
@@ -599,6 +611,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="trace.evaluate",
@@ -624,6 +637,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="evolution.propose",
@@ -662,6 +676,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="prepare",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="evolution.record_evaluation",
@@ -690,6 +705,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="evolution.apply",
@@ -715,6 +731,7 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
     ToolSpec(
         name="evolution.rollback",
@@ -740,5 +757,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
+        governance_exempt=True,
     ),
 ]
