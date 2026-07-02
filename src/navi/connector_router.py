@@ -4,7 +4,7 @@ import asyncio
 import re
 from pathlib import Path
 
-from .connector_runtime import ConnectorMessage
+from .connector_runtime import ConnectorMessage, connector_fact_text
 from .event_bus import (
     EventBus,
     MessageIngressEvent,
@@ -109,7 +109,10 @@ class ConnectorRouter:
             try:
                 item = await asyncio.wait_for(channel.get(), timeout=IDLE_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
-                return f"连接器处理超时；correlation_id={correlation_id}。"
+                return connector_fact_text(
+                    "connector_response_timeout",
+                    {"correlation_id": correlation_id},
+                )
             if isinstance(item, ResponseReadyEvent):
                 return item.text
             # Heartbeat (or any non-terminal signal): upstream is alive, keep waiting.

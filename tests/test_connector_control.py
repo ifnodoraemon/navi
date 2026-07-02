@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import navi.connector_router as connector_router
 from navi.connector_router import ConnectorRouter
 from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
 from navi.event_bus import EventBus
@@ -68,6 +69,64 @@ async def test_connector_approval_command_returns_not_found_fact(tmp_path):
 
     assert "approval_not_resolved" in response
     assert "approval_code_not_found" in response
+
+
+@pytest.mark.asyncio
+async def test_connector_timeout_surfaces_structured_fact(tmp_path, monkeypatch):
+    monkeypatch.setattr(connector_router, "IDLE_TIMEOUT_SECONDS", 0.01)
+    router = ConnectorRouter(tmp_path, EventBus())
+
+    response = await router.route(
+        ConnectorMessage(
+            message_id="msg-timeout",
+            peer_id="peer-1",
+            sender_id="sender-1",
+            text="hello",
+            source="weixin",
+            session_alias_prefix="connector:weixin",
+        )
+    )
+
+    assert "连接器处理超时" not in response
+    assert "event=connector_response_timeout" in response
+    assert "correlation_id=msg-timeout" in response
+
+
+@pytest.mark.asyncio
+async def test_connector_runtime_exception_surfaces_structured_fact(tmp_path):
+    class NoModelCalls:
+        def list_roles(self) -> list[str]:
+            return ["planner"]
+
+    ingress = ConnectorIngressRuntime(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+    )
+
+    async def fail_handle(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    ingress.agent.handle = fail_handle
+
+    try:
+        response = await ingress.handle(
+            ConnectorMessage(
+                message_id="msg-failure",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                text="hello",
+                source="weixin",
+                session_alias_prefix="connector:weixin",
+            )
+        )
+    finally:
+        await ingress.event_bus.shutdown()
+
+    assert "连接器处理失败" not in response
+    assert "event=connector_turn_failed" in response
+    assert "correlation_id=msg-failure" in response
+    assert "error_type=RuntimeError" in response
 
 
 class ElevationProvider:

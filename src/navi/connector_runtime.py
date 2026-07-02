@@ -20,6 +20,18 @@ if TYPE_CHECKING:
 HEARTBEAT_INTERVAL_SECONDS = 20.0
 
 
+def connector_fact_text(event: str, facts: dict[str, Any]) -> str:
+    payload = {"event": event, **facts}
+    lines: list[str] = []
+    for key, value in sorted(payload.items()):
+        if isinstance(value, (dict, list)):
+            value_text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        else:
+            value_text = str(value)
+        lines.append(f"{key}={value_text}")
+    return "\n".join(lines)
+
+
 # The remote-connector security boundary is an explicit preparation/read
 # allowlist. Remote surfaces can converse, ask, propose or inspect governed
 # work, and create prepared delegation/watch state. New mutating capabilities do
@@ -305,10 +317,12 @@ class ConnectorIngressRuntime:
                 exc,
                 exc_info=True,
             )
-            return (
-                "连接器处理失败；"
-                f"correlation_id={event.correlation_id}；"
-                f"error_type={type(exc).__name__}。"
+            return connector_fact_text(
+                "connector_turn_failed",
+                {
+                    "correlation_id": event.correlation_id,
+                    "error_type": type(exc).__name__,
+                },
             )
         finally:
             heartbeat_task.cancel()
