@@ -144,7 +144,7 @@ class SystemDaemon:
                                 event_type="goal.stop_condition",
                             )
                             continue
-                        await goal_store.compact_events(g.id, provider)
+                        await goal_store.compact_events(g.id, runtime)
 
                     await self.evolution.extract_evals_from_session(
                         event.session_id,

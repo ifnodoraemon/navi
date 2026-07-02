@@ -478,24 +478,16 @@ class CapabilityRegistry:
                 "expires_at": approval.expires_at,
             },
         }
-        visible = (
-            "approval_requested\n"
-            f"run_id={self.governed_run_id or ''}\n"
-            f"approval_id={approval.id}\n"
-            f"action={approval.action}\n"
-            f"approval_code={approval.code}\n"
-            f"requested_tool={name}\n"
-            f"requested_permission={permission}\n"
-            "reason=sensitive_capability_requires_approval"
-        )
         return CapabilityResult(
-            ok=True,
+            ok=False,
             action=CAPABILITY_ACTION_APPROVAL,
             observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             message="",
             run_id=self.governed_run_id or "",
-            terminal=False,
+            terminal=True,
             facts=facts,
+            error_reason=CAPABILITY_REASON_SENSITIVE_APPROVAL,
+            yields_control=True,
         )
 
     def _build_handlers(self) -> Mapping[str, Capability]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..capabilities_types import (
@@ -93,4 +94,14 @@ class SessionRequestElevationCapability(BaseCapability):
             },
             "run_id": task.id,
         }
-        return _fact_result("session", facts, run_id=task.id)
+        return CapabilityResult(
+            ok=False,
+            action=CAPABILITY_ACTION_APPROVAL,
+            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            message="",
+            facts=facts,
+            error_reason="session_elevation_requested",
+            yields_control=True,
+            terminal=True,
+            run_id=task.id,
+        )

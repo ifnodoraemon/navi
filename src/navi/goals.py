@@ -9,11 +9,8 @@ from typing import Any
 
 from .db import connect, check_schema_version, write_schema_version
 from .lifecycle import (
-    RUN_STATUS_PENDING,
     RUN_STATUS_FAILED,
     RUN_STATUS_COMPLETED,
-    RUN_STATUS_FAILED,
-    RUN_STATUS_FAILED,
 )
 from .paths import db_paths
 from .runs import Run
@@ -240,7 +237,7 @@ class GoalStore:
         {GOAL_STATUS_AWAITING_APPROVAL, GOAL_STATUS_BLOCKED, GOAL_STATUS_REJECTED}
     )
 
-    async def compact_events(self, goal_id: str, provider, *, threshold: int = 20) -> bool:
+    async def compact_events(self, goal_id: str, runtime, *, threshold: int = 20) -> bool:
         events = self.list_events(goal_id, limit=1000)
         events.sort(key=lambda x: x.created_at)
         if len(events) <= threshold:
@@ -277,7 +274,7 @@ class GoalStore:
             "unresolved questions, and safety constraints. Do not lose any constraints or pending approvals.\n\n"
             + "\n".join(lines)
         )
-        summary = await provider.complete_for("planner", [ChatMessage("user", prompt)])
+        summary = await runtime.complete([ChatMessage("user", prompt)], role="planner")
 
         event = GoalEvent(
             id=uuid.uuid4().hex,

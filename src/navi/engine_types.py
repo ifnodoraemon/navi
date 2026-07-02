@@ -29,6 +29,15 @@ class AgentTurnResult:
         """The text to surface to the user."""
         if self.text:
             return self.text
+        if self.yields_control:
+            if self.facts:
+                res = _surface_facts(self.facts)
+                if self.error_reason:
+                    res += f"\nerror_reason={self.error_reason}"
+                return res
+            if self.observation:
+                return self.observation
+            return self.error_reason
         if not self.ok:
             error_msg = ""
             if self.facts:
@@ -37,3 +46,16 @@ class AgentTurnResult:
                 error_msg = self.error_reason
             return f"[{self.action}] failed: {error_msg}"
         return self.text
+
+
+def _surface_facts(facts: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for key, value in sorted(facts.items()):
+        if isinstance(value, (dict, list)):
+            import json
+
+            value_text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        else:
+            value_text = str(value)
+        lines.append(f"{key}={value_text}")
+    return "\n".join(lines)
