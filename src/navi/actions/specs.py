@@ -32,7 +32,7 @@ ACTION_SPECS = [
         name="delegate.spawn",
         capability_class="delegation",
         execution_contexts=("turn", "workflow_step"),
-        description="""Create a narrowly-scoped delegation run. The delegated task executes in Navi's fully-privileged local execution context, granting access to local filesystem, shell, and OS capabilities unavailable in sandboxed channels.""",
+        description="""Create a narrowly-scoped delegation run. The delegated task executes in Navi's fully-privileged local execution context, granting access to local filesystem, shell, and OS capabilities unavailable in sandboxed channels. Note: This creates an asynchronous background task that returns immediately with 'status: pending'. Do not attempt to wait for its completion or fetch its results in the current turn. You must conclude the current turn (e.g. by using the 'respond' capability) after successfully spawning it.""",
         input_schema={
             "type": "object",
             "properties": {

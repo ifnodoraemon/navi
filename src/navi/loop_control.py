@@ -327,10 +327,14 @@ def semantic_progress_signature(
     ok: bool,
     facts: dict[str, Any] | None,
 ) -> str:
+    stripped_facts = dict(facts) if facts else {}
+    for k in ("run_id", "entity_id", "goal_id", "approval_id", "task_id", "workflow_id"):
+        stripped_facts.pop(k, None)
+
     payload: dict[str, Any] = {
         "tool": tool,
         "ok": ok,
-        "facts": facts or {},
+        "facts": stripped_facts,
     }
     if not facts:
         payload["args"] = args
