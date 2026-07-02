@@ -173,6 +173,14 @@ def reduce_runtime_step(
         elif progress.reason == "tool_repeated":
             prefix = "tool_repeated_action"
 
+        if progress.count >= 6:
+            return LoopControlResult(
+                effect=LoopControlEffect.FINALIZE_STABLE,
+                decisions=(_converged_decision(frame, reason=LoopReason.REPEATED_PROGRESS_SIGNATURE, progress_signature=progress.signature),),
+                progress_signature=progress.signature,
+                convergence_message=f"Terminated after {progress.count} identical actions without progress.",
+            )
+
         return LoopControlResult(
             effect=LoopControlEffect.CONTINUE_LOOP,
             decisions=(
@@ -199,6 +207,14 @@ def reduce_runtime_step(
             prefix = "chain_repeated_output"
         elif output_progress.reason == "tool_repeated":
             prefix = "tool_repeated_output"
+
+        if output_progress.count >= 6:
+            return LoopControlResult(
+                effect=LoopControlEffect.FINALIZE_STABLE,
+                decisions=(_converged_decision(frame, reason=LoopReason.REPEATED_PROGRESS_SIGNATURE, progress_signature=output_progress.signature),),
+                progress_signature=output_progress.signature,
+                convergence_message=f"Terminated after {output_progress.count} identical outputs without progress.",
+            )
 
         return LoopControlResult(
             effect=LoopControlEffect.CONTINUE_LOOP,
