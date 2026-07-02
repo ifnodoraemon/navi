@@ -671,10 +671,7 @@ class ExecutionService:
         if has_history:
             prompt_text = "Continue executing the task."
         else:
-            prompt_text = (
-                f"Execute the following task:\n\n{task.prompt}\n\n"
-                "When finished, synthesize a final completion summary."
-            )
+            prompt_text = task.prompt
 
         engine = HernessEngine(
             home=self.home,

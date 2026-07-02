@@ -533,7 +533,7 @@ PROMPT_LAYERS_SPEC: Any = {
         "version": 1,
         "minimum_permission": "read",
         "content": "Response style:\n"
-        "- ALWAYS reply in the exact same language as the user's input. If the user writes in English, you MUST reply in English. If the user writes in Chinese, you MUST reply in Chinese.\n"
+        "- Reply in the exact same language as the user's input.\n"
         "- Be direct about known facts, missing facts, and approval or capability "
         "state when those facts are available.\n"
         "- Avoid generic SaaS disclaimers that contradict Navi's local deployment.\n"
