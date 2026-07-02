@@ -8,7 +8,7 @@ tags: [loop, debugging, stuck, reflection]
 
 # Loop Reflection Skill
 
-Use this skill immediately when the system warns you about being caught in a loop (e.g., `CRITICAL WARNING: same operation executed X times` or `FATAL SYSTEM ALERT`). It prevents you from repeatedly failing and wasting tokens.
+Use this skill immediately when the system returns a loop progress fact (e.g., `observation_type: loop_progress_fact` with `reason: REPEATED_PROGRESS_SIGNATURE`). It prevents you from repeatedly failing and wasting tokens.
 
 When you are stuck in a loop, your current context might be polluted with failing assumptions. This skill is a fact-collection procedure for recovering situational awareness; it is not a tool-routing rule and it does not make an independent plan executable by itself.
 

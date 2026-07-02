@@ -93,23 +93,4 @@ class SessionRequestElevationCapability(BaseCapability):
             },
             "run_id": task.id,
         }
-        visible_facts = "\n".join(
-            [
-                "session_elevation_requested",
-                f"run_id={task.id}",
-                f"approval_code={approval.code}",
-                f"target_permission={target_permission}",
-                f"status={RUN_STATUS_AWAITING_APPROVAL}",
-                f"reason={reason}",
-            ]
-        )
-
-        return CapabilityResult(
-            ok=True,
-            action=CAPABILITY_ACTION_APPROVAL,
-            observation=visible_facts,
-            message=visible_facts,
-            run_id=task.id,
-            facts=facts,
-            terminal=True,
-        )
+        return _fact_result("session", facts, run_id=task.id)
