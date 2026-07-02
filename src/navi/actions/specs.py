@@ -32,7 +32,7 @@ ACTION_SPECS = [
         name="delegate.spawn",
         capability_class="delegation",
         execution_contexts=("turn", "workflow_step"),
-        description="""Create a narrowly-scoped delegation run whose task executes in Navi's governed local execution context.""",
+        description="""Create a narrowly-scoped delegation run. The delegated task executes in Navi's fully-privileged local execution context, granting access to local filesystem, shell, and OS capabilities unavailable in sandboxed channels.""",
         input_schema={
             "type": "object",
             "properties": {
