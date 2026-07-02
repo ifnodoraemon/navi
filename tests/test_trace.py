@@ -56,7 +56,7 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
         "nested": {"password": "[redacted]"},
         "resume_text": "phone [REDACTED_PHONE] email [REDACTED_EMAIL]",
     }
-    assert json.loads(events[0].output_json)["approval_code"] == "[redacted]"
+    assert json.loads(events[0].output_json)["approval_code"] == "123456"
     assert "[REDACTED_PHONE]" in json.loads(events[0].output_json)["contact"]
     assert "[REDACTED_EMAIL]" in json.loads(events[0].output_json)["contact"]
     assert events[0].message == "planned for [REDACTED_EMAIL] [REDACTED_PHONE]"

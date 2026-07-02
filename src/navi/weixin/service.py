@@ -572,12 +572,12 @@ def _redact_event_facts(facts: dict) -> dict:
     place, so a user-pasted secret is never persisted verbatim. Field keys
     that name a secret outright are masked regardless of value.
     """
+    from ..safeguards import _REDACT_FIELD_NAMES, redact_secrets
     redacted = {}
-    sensitive_keys = ("token", "secret", "password", "key", "code")
     free_text_keys = ("text_preview", "error", "message", "raw_result", "detail")
     for key, value in facts.items():
         key_text = str(key).lower()
-        if any(token in key_text for token in sensitive_keys):
+        if key_text in _REDACT_FIELD_NAMES:
             redacted[key] = "[redacted]"
         elif key_text in free_text_keys and isinstance(value, str):
             redacted[key] = redact_secrets(value)

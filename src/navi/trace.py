@@ -604,13 +604,13 @@ class TraceStore:
 
 
 def _redact(value: Any) -> Any:
-    from .safeguards import redact_personal_data
+    from .safeguards import redact_personal_data, _REDACT_FIELD_NAMES
 
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
             key_text = str(key).lower()
-            if any(token in key_text for token in ("key", "token", "secret", "password", "code")):
+            if key_text in _REDACT_FIELD_NAMES:
                 redacted[key] = "[redacted]"
             else:
                 redacted[key] = _redact(item)
