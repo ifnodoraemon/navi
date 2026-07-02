@@ -7,6 +7,8 @@ import time
 import pytest
 import yaml
 
+from navi.context import ContextManager
+from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.engine import HernessEngine, _dynamic_intent_facts
 from navi.connector_runtime import ConnectorMessage
 from navi.connector_router import ConnectorRouter
@@ -53,6 +55,102 @@ def test_provider_rejects_structured_json_hidden_in_reasoning_content():
 
     with pytest.raises(RuntimeError, match="Provider response content is empty"):
         _extract_openai_content(data)
+
+
+def test_planner_history_redacts_stale_approval_codes() -> None:
+    class Message:
+        def __init__(self, role: str, content: str) -> None:
+            self.role = role
+            self.content = content
+
+    context = ContextManager(recent_turns=6).build_conversation_context(
+        [
+            Message(
+                "assistant",
+                (
+                    "approval_code=408239\n"
+                    "approval code 408239\n"
+                    "审批码包括：670343, 357979, 408239"
+                ),
+            ),
+            Message("user", "你好"),
+        ]
+    )
+
+    assert "408239" not in context
+    assert "670343" not in context
+    assert "357979" not in context
+    assert "approval_code=[redacted-history-approval-code]" in context
+    assert "approval code [redacted-history-approval-code]" in context
+    assert "审批码包括：[redacted-history-approval-codes]" in context
+
+
+def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "send file",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="awaiting_approval",
+    )
+    runs.update_run(
+        run.id,
+        result_summary="approval_requested\napproval_code=111111\nstatus=pending",
+    )
+    approved = runs.create_approval(
+        run_id=run.id,
+        action="capability",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        requested_tool="connector.weixin.stage_file",
+        requested_permission="write",
+        code="111111",
+    )
+    runs.resolve_approval(approved.id, decision="approve", resolved_by="sender-1")
+    pending = runs.create_approval(
+        run_id=run.id,
+        action="capability",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        requested_tool="connector.weixin.stage_file",
+        requested_permission="write",
+        code="222222",
+    )
+
+    state = CurrentStateBuilder(tmp_path).build(
+        SurfaceContext(
+            home=tmp_path,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+        )
+    )
+    facts = current_state_facts(state)
+
+    assert facts["active_runs"][0]["result_summary"] == "approval_requested\nstatus=pending"
+    assert facts["pending_approvals"] == [
+        {
+            "id": pending.id,
+            "run_id": run.id,
+            "action": "capability",
+            "requested_tool": "connector.weixin.stage_file",
+            "requested_permission": "write",
+            "source": "weixin",
+            "peer_id": "peer-1",
+            "sender_id": "sender-1",
+            "status": "pending",
+            "code": "222222",
+            "expires_at": pending.expires_at,
+            "created_at": pending.created_at,
+            "updated_at": pending.updated_at,
+            "reason": "",
+        }
+    ]
 
 
 class _PlannerSchemaProvider:
@@ -483,6 +581,40 @@ class _RepeatListProvider:
             assert "Capability observations:" in content
             return "当前没有任务。"
         raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+
+class _RepeatCompletionDeleteProvider:
+    def __init__(self) -> None:
+        self.planner_calls = 0
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        assert role == "planner"
+        assert output_schema is not None
+        self.planner_calls += 1
+        return json.dumps(
+            {
+                "tool": "delegate.delete",
+                "permission": "write",
+                "args": {
+                    "source": "weixin",
+                    "kind": "delegation",
+                    "status": "pending",
+                    "reason": "delete all tasks",
+                },
+                "model_role": "planner",
+                "confidence": 1.0,
+                "reason": "delete all tasks",
+            }
+        )
 
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]
@@ -945,6 +1077,37 @@ async def test_completion_evidence_returns_to_model_for_response(tmp_path):
         and decision.get("reason") == "completion_evidence_true"
         for decision in decisions
     )
+
+
+@pytest.mark.asyncio
+async def test_repeated_completion_evidence_finalizes_without_looping(tmp_path):
+    provider = _RepeatCompletionDeleteProvider()
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "删除所有的任务",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert provider.planner_calls == 3
+    assert result.action == "execute:system.task_complete"
+    assert result.ok is True
+    assert result.facts["cleanup_complete"] is True
+    decisions = [
+        json.loads(event.output_json)
+        for event in TraceStore(tmp_path).list_events(result.trace_id)
+        if event.phase == "loop.decision"
+    ]
+    assert decisions[-1]["decision"] == "finalize"
+    assert decisions[-1]["reason"] == "completion_evidence_true"
 
 
 @pytest.mark.asyncio

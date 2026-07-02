@@ -29,6 +29,11 @@ _CJK_RE = re.compile(
 )
 
 _CJK_THRESHOLD = 0.30  # Fraction of CJK chars to trigger CJK mode.
+_APPROVAL_CODE_ASSIGNMENT_RE = re.compile(r"(?i)(approval_code\s*=\s*)\d{4,12}")
+_APPROVAL_CODE_PHRASE_RE = re.compile(r"(?i)(approval code\s*)\d{4,12}")
+_APPROVAL_CODE_LIST_RE = re.compile(
+    r"(审批码(?:包括)?\s*[:：]?\s*)(?:\d{4,12}(?:\s*[,，、]\s*)?)+"
+)
 
 
 def is_cjk_char(ch: str) -> bool:
@@ -150,7 +155,7 @@ class ContextManager:
         recent_lines: list[str] = []
         recent_token_total = 0
         for msg in recent:
-            line = f"{msg.role}: {msg.content}"
+            line = f"{msg.role}: {self._history_content(msg.content)}"
             recent_token_total += self.count_tokens(line)
             recent_lines.append(line)
 
@@ -168,8 +173,9 @@ class ContextManager:
         condensed_tokens = 0
         for msg in older:
             # Produce a short one-liner per message: keep the first 120 chars.
-            snippet = msg.content[:120].replace("\n", " ")
-            if len(msg.content) > 120:
+            content = self._history_content(msg.content)
+            snippet = content[:120].replace("\n", " ")
+            if len(content) > 120:
                 snippet += "…"
             line = f"[{msg.role}] {snippet}"
             line_tokens = self.count_tokens(line)
@@ -186,6 +192,21 @@ class ContextManager:
             parts.append("--- recent messages ---")
         parts.extend(recent_lines)
         return "\n".join(parts)
+
+    @staticmethod
+    def _history_content(content: str) -> str:
+        text = _APPROVAL_CODE_ASSIGNMENT_RE.sub(
+            r"\1[redacted-history-approval-code]",
+            content,
+        )
+        text = _APPROVAL_CODE_PHRASE_RE.sub(
+            r"\1[redacted-history-approval-code]",
+            text,
+        )
+        return _APPROVAL_CODE_LIST_RE.sub(
+            r"\1[redacted-history-approval-codes]",
+            text,
+        )
 
     # ------------------------------------------------------------------
     # Prompt-level estimation

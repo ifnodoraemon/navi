@@ -11,6 +11,7 @@ from .approval_contract import (
     APPROVAL_DECISION_APPROVE,
     APPROVAL_DECISIONS,
     APPROVAL_STATUS_APPROVED,
+    APPROVAL_STATUS_PENDING,
     APPROVAL_STATUS_REJECTED,
 )
 from .lifecycle import (
@@ -20,6 +21,7 @@ from .lifecycle import (
     RUN_STATUS_PENDING,
 )
 from .runs import Run, RunStore
+from .runs.models import Approval
 from .workflows import (
     WORKFLOW_STATUS_RUNNING,
     Workflow,
@@ -48,6 +50,7 @@ class CurrentState:
     session_id: str
     workspace: str
     active_runs: tuple[Run, ...]
+    pending_approvals: tuple[Approval, ...]
     active_workflows: tuple[Workflow, ...]
 
 
@@ -203,6 +206,14 @@ class CurrentStateBuilder:
             for run in runs.list_by_statuses(sorted(RUN_ACTIVE_STATUSES), limit=100)
             if run_matches_context(run, context)
         )
+        pending_approvals = tuple(
+            approval
+            for approval in runs.list_approvals(
+                status=APPROVAL_STATUS_PENDING,
+                limit=100,
+            )
+            if run_matches_context(approval, context)
+        )
         workflows = WorkflowStore(self.home)
         active_workflows = []
         for status in sorted(ACTIVE_WORKFLOW_STATUSES):
@@ -218,6 +229,7 @@ class CurrentStateBuilder:
             session_id=context.session_id or "",
             workspace=context.workspace,
             active_runs=active_runs,
+            pending_approvals=pending_approvals,
             active_workflows=tuple(active_workflows),
         )
 
@@ -247,11 +259,30 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
                 "peer_id": run.peer_id,
                 "sender_id": run.sender_id,
                 "workspace": run.workspace,
-                "result_summary": run.result_summary,
+                "result_summary": _non_authoritative_run_summary(run.result_summary),
                 "error": run.error,
                 "updated_at": run.updated_at,
             }
             for run in state.active_runs
+        ],
+        "pending_approvals": [
+            {
+                "id": approval.id,
+                "run_id": approval.run_id,
+                "action": approval.action,
+                "requested_tool": approval.requested_tool,
+                "requested_permission": approval.requested_permission,
+                "source": approval.source,
+                "peer_id": approval.peer_id,
+                "sender_id": approval.sender_id,
+                "status": approval.status,
+                "code": approval.code,
+                "expires_at": approval.expires_at,
+                "created_at": approval.created_at,
+                "updated_at": approval.updated_at,
+                "reason": approval.reason,
+            }
+            for approval in state.pending_approvals
         ],
         "active_workflows": [
             {
@@ -280,6 +311,18 @@ def run_matches_context(record: Any, context: Any) -> bool:
     if record_source and context.source and record_source != context.source:
         return False
     return True
+
+
+def _non_authoritative_run_summary(summary: str) -> str:
+    text = summary.strip()
+    if not text:
+        return ""
+    lines = [
+        line
+        for line in text.splitlines()
+        if not line.strip().lower().startswith("approval_code=")
+    ]
+    return "\n".join(lines).strip()
 
 
 def _workflow_matches_context(workflow: Workflow, context: SurfaceContext) -> bool:

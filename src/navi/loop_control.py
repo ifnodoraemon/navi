@@ -156,15 +156,31 @@ def reduce_runtime_step(
     progress_gate: LoopProgressGate,
     output_progress_gate: LoopProgressGate,
 ) -> LoopControlResult:
-    if frame.result.ok and _facts_complete_current_request(frame.facts):
-        return LoopControlResult(
-            effect=LoopControlEffect.CONTINUE_LOOP,
-            decisions=(_completion_evidence_decision(frame),),
-            progress_signature=frame.progress_signature,
-        )
-
     progress = progress_gate.observe(frame.progress_signature, tool=frame.tool)
     output_progress = output_progress_gate.observe(frame.output_signature, tool=frame.tool)
+
+    if frame.result.ok and _facts_complete_current_request(frame.facts):
+        repeated = progress.repeated or output_progress.repeated
+        return LoopControlResult(
+            effect=(
+                LoopControlEffect.FINALIZE_STABLE
+                if repeated
+                else LoopControlEffect.CONTINUE_LOOP
+            ),
+            decisions=(
+                _completion_evidence_decision(
+                    frame,
+                    decision=(
+                        LoopDecisionKind.FINALIZE
+                        if repeated
+                        else LoopDecisionKind.CONTINUE
+                    ),
+                    progress_signature=progress.signature,
+                    repeated=repeated,
+                ),
+            ),
+            progress_signature=progress.signature,
+        )
 
     if progress.repeated:
         prefix = "repeated_action"
@@ -336,21 +352,33 @@ def semantic_progress_signature(
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
-def _completion_evidence_decision(frame: RuntimeStepFrame) -> LoopDecision:
+def _completion_evidence_decision(
+    frame: RuntimeStepFrame,
+    *,
+    decision: LoopDecisionKind,
+    progress_signature: str,
+    repeated: bool,
+) -> LoopDecision:
     return LoopDecision(
-        decision=LoopDecisionKind.CONTINUE,
+        decision=decision,
         reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
         phase=LoopPhase.RUNTIME,
         tool=frame.tool,
         run_id=frame.result.run_id,
+        progress_signature=progress_signature,
         goal_ids=tuple(sorted(frame.goal_ids)),
         checker_results=(
             LoopCheckResult(
                 name=LoopCheckName.COMPLETION_EVIDENCE,
                 passed=True,
                 reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
+                evidence={
+                    "repeated": repeated,
+                    "facts": frame.facts or {},
+                },
             ),
         ),
+        evidence=frame.facts or {},
     )
 
 
