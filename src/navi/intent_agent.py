@@ -61,7 +61,6 @@ class IntentAgent:
                 facts["pending_ask"] = {
                     "type": "ask_reply_context",
                     "last_assistant_message_preview": messages[-1].content[:300],
-                    "hint": "The last interaction in this session was a clarifying question (ask). Interpret the user's message as a likely reply to that question.",
                 }
 
         logger.info(
