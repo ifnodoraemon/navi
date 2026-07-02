@@ -281,11 +281,6 @@ class WeixinService:
                 sender_id=update.sender_id,
                 error=f"{type(exc).__name__}: {exc}",
             )
-            fallback_text = (
-                "本地处理链路失败；"
-                f"message_id={update.message_id}；"
-                f"error_type={type(exc).__name__}。"
-            )
             try:
                 from navi.trace import TraceStore, TracePhase
                 TraceStore(self.home).add_event(
@@ -294,13 +289,13 @@ class WeixinService:
                     source=self.local_source,
                     peer_id=update.peer_id,
                     sender_id=update.sender_id,
-                    output_data={"response": fallback_text, "error_fallback": True, "error": str(exc)},
+                    output_data={"error_fallback": True, "error": str(exc)},
                     message="Error fallback sent to channel",
                     ok=False,
                 )
             except Exception:
                 pass
-            return fallback_text
+            return ""
         finally:
             stop_typing.set()
             if typing_task:
