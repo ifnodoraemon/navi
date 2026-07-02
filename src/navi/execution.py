@@ -672,8 +672,8 @@ class ExecutionService:
             prompt_text = "Continue executing the task."
         else:
             prompt_text = (
-                f"Execute the following task:\n\n{task.prompt}\n\n"
-                "When finished, synthesize a final completion summary."
+                f"Execute the following background task:\n\n{task.prompt}\n\n"
+                "When you are finished, you MUST use the 'respond' capability to send a detailed, natural language summary of your results directly to the user. Do NOT just end your turn."
             )
 
         engine = HernessEngine(
