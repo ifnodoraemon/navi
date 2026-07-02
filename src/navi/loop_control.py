@@ -42,6 +42,7 @@ class RuntimeStepFrame:
     facts: dict[str, Any] | None
     tool: str
     progress_signature: str
+    output_signature: str
     goal_ids: set[str]
     observations_count: int
 
@@ -58,8 +59,10 @@ def reduce_recovery_step(
     frame: RecoveryStepFrame,
     *,
     progress_gate: LoopProgressGate,
+    output_progress_gate: LoopProgressGate,
 ) -> LoopControlResult:
-    progress = progress_gate.observe(frame.progress_signature)
+    progress = progress_gate.observe(frame.progress_signature, tool=frame.tool)
+    output_progress = output_progress_gate.observe(frame.output_signature, tool=frame.tool)
     recovery = LoopDecision(
         decision=LoopDecisionKind.RECOVER,
         reason=LoopReason.COMPLETION_CHECKER_BLOCKED,
@@ -79,11 +82,42 @@ def reduce_recovery_step(
         ),
     )
     if progress.repeated:
+        prefix = "repeated_recovery"
+        if progress.reason == "chain_repeated":
+            prefix = "chain_repeated_recovery"
+        elif progress.reason == "tool_repeated":
+            prefix = "tool_repeated_recovery"
+
         return LoopControlResult(
             effect=LoopControlEffect.CONTINUE_LOOP,
             decisions=(recovery,),
             progress_signature=progress.signature,
-            runtime_observation=f"repeated_recovery: same recovery attempted {progress.count} times",
+            runtime_observation=_get_escalating_observation(
+                prefix,
+                progress.count,
+                "attempted",
+                tool=frame.tool,
+                progress_signature=progress.signature,
+            ),
+        )
+    if output_progress.repeated:
+        prefix = "repeated_output"
+        if output_progress.reason == "chain_repeated":
+            prefix = "chain_repeated_output"
+        elif output_progress.reason == "tool_repeated":
+            prefix = "tool_repeated_output"
+
+        return LoopControlResult(
+            effect=LoopControlEffect.CONTINUE_LOOP,
+            decisions=(recovery,),
+            progress_signature=progress.signature,
+            runtime_observation=_get_escalating_observation(
+                prefix,
+                output_progress.count,
+                "generated",
+                tool=frame.tool,
+                progress_signature=output_progress.signature,
+            ),
         )
     return LoopControlResult(
         effect=LoopControlEffect.CONTINUE_LOOP,
@@ -91,27 +125,99 @@ def reduce_recovery_step(
         progress_signature=progress.signature,
     )
 
+def _get_escalating_observation(
+    prefix: str,
+    count: int,
+    action_type: str,
+    *,
+    tool: str,
+    progress_signature: str,
+) -> str:
+    return json.dumps(
+        {
+            "observation_type": "loop_progress_fact",
+            "facts": {
+                "reason": str(LoopReason.REPEATED_PROGRESS_SIGNATURE),
+                "pattern": prefix,
+                "repeat_count": count,
+                "action_type": action_type,
+                "tool": tool,
+                "progress_signature": progress_signature,
+            },
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
 
 def reduce_runtime_step(
     frame: RuntimeStepFrame,
     *,
     progress_gate: LoopProgressGate,
+    output_progress_gate: LoopProgressGate,
 ) -> LoopControlResult:
     if frame.result.ok and _facts_complete_current_request(frame.facts):
         return LoopControlResult(
-            effect=LoopControlEffect.FINALIZE_STABLE,
+            effect=LoopControlEffect.CONTINUE_LOOP,
             decisions=(_completion_evidence_decision(frame),),
             progress_signature=frame.progress_signature,
         )
 
-    progress = progress_gate.observe(frame.progress_signature)
+    progress = progress_gate.observe(frame.progress_signature, tool=frame.tool)
+    output_progress = output_progress_gate.observe(frame.output_signature, tool=frame.tool)
 
     if progress.repeated:
+        prefix = "repeated_action"
+        if progress.reason == "chain_repeated":
+            prefix = "chain_repeated_action"
+        elif progress.reason == "tool_repeated":
+            prefix = "tool_repeated_action"
+
         return LoopControlResult(
             effect=LoopControlEffect.CONTINUE_LOOP,
-            decisions=(),
+            decisions=(
+                _repeated_progress_decision(
+                    frame,
+                    progress_signature=progress.signature,
+                    pattern=prefix,
+                    repeat_count=progress.count,
+                ),
+            ),
             progress_signature=progress.signature,
-            runtime_observation=f"repeated_action: same operation executed {progress.count} times",
+            runtime_observation=_get_escalating_observation(
+                prefix,
+                progress.count,
+                "executed",
+                tool=frame.tool,
+                progress_signature=progress.signature,
+            ),
+        )
+
+    if output_progress.repeated:
+        prefix = "repeated_output"
+        if output_progress.reason == "chain_repeated":
+            prefix = "chain_repeated_output"
+        elif output_progress.reason == "tool_repeated":
+            prefix = "tool_repeated_output"
+
+        return LoopControlResult(
+            effect=LoopControlEffect.CONTINUE_LOOP,
+            decisions=(
+                _repeated_progress_decision(
+                    frame,
+                    progress_signature=output_progress.signature,
+                    pattern=prefix,
+                    repeat_count=output_progress.count,
+                ),
+            ),
+            progress_signature=progress.signature,
+            runtime_observation=_get_escalating_observation(
+                prefix,
+                output_progress.count,
+                "generated",
+                tool=frame.tool,
+                progress_signature=output_progress.signature,
+            ),
         )
 
     return LoopControlResult(
@@ -228,7 +334,7 @@ def semantic_progress_signature(
 
 def _completion_evidence_decision(frame: RuntimeStepFrame) -> LoopDecision:
     return LoopDecision(
-        decision=LoopDecisionKind.FINALIZE,
+        decision=LoopDecisionKind.CONTINUE,
         reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
         phase=LoopPhase.RUNTIME,
         tool=frame.tool,
@@ -268,6 +374,39 @@ def _continue_decision(
     )
 
 
+def _repeated_progress_decision(
+    frame: RuntimeStepFrame,
+    *,
+    progress_signature: str,
+    pattern: str,
+    repeat_count: int,
+) -> LoopDecision:
+    return LoopDecision(
+        decision=LoopDecisionKind.CONTINUE,
+        reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
+        phase=LoopPhase.RUNTIME,
+        failure_domain=TraceFailureDomain.LOOP_NO_PROGRESS,
+        tool=frame.tool,
+        run_id=frame.result.run_id,
+        progress_signature=progress_signature,
+        goal_ids=tuple(sorted(frame.goal_ids)),
+        gate_results=(
+            LoopCheckResult(
+                name=LoopCheckName.NO_PROGRESS_GATE,
+                passed=False,
+                severity=LoopSeverity.WARNING,
+                reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
+                evidence={
+                    "observations_count": frame.observations_count,
+                    "pattern": pattern,
+                    "repeat_count": repeat_count,
+                    "progress_signature": progress_signature,
+                },
+            ),
+        ),
+    )
+
+
 def _converged_decision(
     frame: RuntimeStepFrame,
     *,
@@ -296,10 +435,6 @@ def _converged_decision(
             ),
         ),
     )
-
-
-
-
 
 
 def _terminal_result_decision(

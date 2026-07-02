@@ -37,6 +37,9 @@ from .trace import TraceStore
 
 logger = logging.getLogger("navi.engine")
 
+_MAX_OBSERVATIONS_BEFORE_COMPACT = 6
+_CONVERSATION_CONTEXT_MESSAGE_LIMIT = 100
+
 __all__ = ["AgentTurnResult", "HernessEngine"]
 
 
@@ -61,6 +64,7 @@ class HernessEngine(EnginePhasesMixin):
         governed_workflow_id: str | None = None,
     ):
         self.home = home
+        self.project_dir = project_dir
         self.runtime = runtime
         self.permission_ceiling = permission_ceiling
         self.event_bus = event_bus
@@ -80,6 +84,7 @@ class HernessEngine(EnginePhasesMixin):
         self.recovery_planner = RecoveryPlanner()
         self.trace = TraceStore(home)
         self.context_manager = ContextManager()
+        self.governed_run_id = governed_run_id or ""
         self.governed_workflow_id = governed_workflow_id or ""
         self._memory_sem: asyncio.Semaphore | None = None
         self._background_tasks: set[asyncio.Task] = set()
@@ -91,10 +96,6 @@ class HernessEngine(EnginePhasesMixin):
     ) -> str:
         if control.convergence_message:
             return ""
-        facts = result.facts or {}
-        surface_message = facts.get("surface_message")
-        if isinstance(surface_message, str) and surface_message.strip():
-            return surface_message.strip()
         text = result.text.strip()
         if text and not text.startswith(("{", "[")):
             return text
@@ -134,7 +135,7 @@ class HernessEngine(EnginePhasesMixin):
             sender_id=sender_id,
             source=source,
             permission_ceiling=self._get_effective_permission_ceiling(peer_id, sender_id),
-            workspace=str(self.capabilities.gateway.project_dir.resolve()),
+            workspace=str(self.project_dir.resolve()),
             session_id=resolved_session_id,
             trace_id=trace_id,
             input_text=text,
@@ -188,11 +189,13 @@ class HernessEngine(EnginePhasesMixin):
         goal_ids: set[str] = set()
 
         progress_gate = LoopProgressGate()
+        output_progress_gate = LoopProgressGate()
+        loop_warning = ""
 
         try:
             while True:
-                if len(observations) > 6:
-                    compacted = await self._compact_observations(observations)
+                if len(observations) > _MAX_OBSERVATIONS_BEFORE_COMPACT:
+                    compacted = self._compact_observations(observations)
                     observations = [compacted]
 
                 step_result = await self._react_step(
@@ -204,7 +207,7 @@ class HernessEngine(EnginePhasesMixin):
                     sender_id=sender_id,
                     context=context,
                     state_context=state_context,
-                    observations=observations,
+                    observations=observations + [loop_warning] if loop_warning else observations,
                     completion_events=completion_events,
                 )
 
@@ -239,6 +242,7 @@ class HernessEngine(EnginePhasesMixin):
                             recovery_observation=step_result.recovery_observation,
                         ),
                         progress_gate=progress_gate,
+                        output_progress_gate=output_progress_gate,
                     )
                     self._record_loop_control(
                         trace_id,
@@ -250,7 +254,9 @@ class HernessEngine(EnginePhasesMixin):
                         sender_id=sender_id,
                     )
                     if control.runtime_observation:
-                        observations.append(control.runtime_observation)
+                        loop_warning = control.runtime_observation
+                    else:
+                        loop_warning = ""
                     if control.effect == LoopControlEffect.FINALIZE_STABLE:
                         result = step_result.result
                         self.trace.add_event(
@@ -362,10 +368,12 @@ class HernessEngine(EnginePhasesMixin):
                         facts=step_result.invoked_facts,
                         tool=step_result.tool,
                         progress_signature=step_result.progress_signature,
+                        output_signature=step_result.output_signature,
                         goal_ids=goal_ids,
                         observations_count=len(observations),
                     ),
                     progress_gate=progress_gate,
+                    output_progress_gate=output_progress_gate,
                 )
                 self._record_loop_control(
                     trace_id,
@@ -377,7 +385,9 @@ class HernessEngine(EnginePhasesMixin):
                     sender_id=sender_id,
                 )
                 if control.runtime_observation:
-                    observations.append(control.runtime_observation)
+                    loop_warning = control.runtime_observation
+                else:
+                    loop_warning = ""
                 if control.effect == LoopControlEffect.FINALIZE_STABLE:
                     if control.convergence_message:
                         self.trace.add_event(
@@ -514,6 +524,7 @@ class HernessEngine(EnginePhasesMixin):
         should_continue: bool = False  # True if recovery triggered, continue loop
         recovery_observation: str = ""  # Observation to append if continuing
         progress_signature: str = ""
+        output_signature: str = ""
         tool: str = ""
 
     async def _react_step(
@@ -594,6 +605,13 @@ class HernessEngine(EnginePhasesMixin):
             )
             return self._StepResult(result=result, should_return=True, tool="planner")
 
+        output_signature = semantic_progress_signature(
+            syscall.tool,
+            syscall.args,
+            ok=False,
+            facts=None,
+        )
+
         planner_ok = syscall.tool != "system.planner_error" and syscall.tool in valid_tools
         planner_message = syscall.reason
         if syscall.tool not in {"", "system.planner_error"} and syscall.tool not in valid_tools:
@@ -621,20 +639,22 @@ class HernessEngine(EnginePhasesMixin):
 
         if not planner_ok:
             if syscall.tool == "system.planner_error":
+                error_facts = {
+                    "failure_domain": str(TraceFailureDomain.PLANNER_OR_PARSER),
+                    "reason": syscall.reason,
+                    **syscall.args,
+                }
                 result = AgentTurnResult(
                     text="",
                     run_id="",
                     action="execute:system.planner_error",
-                    observation=f"[system.planner_error] {syscall.reason}",
+                    observation=_observation_event("planner_error", error_facts),
                     model_role="planner",
                     terminal=False,
                     ok=False,
                     error_reason="planner_parse_failure",
                     trace_id=trace_id,
-                    facts={
-                        "failure_domain": str(TraceFailureDomain.PLANNER_OR_PARSER),
-                        "reason": syscall.reason,
-                    },
+                    facts=error_facts,
                 )
                 return self._StepResult(
                     result=result,
@@ -645,12 +665,20 @@ class HernessEngine(EnginePhasesMixin):
                         ok=False,
                         facts=result.facts,
                     ),
+                    output_signature=output_signature,
                     tool=syscall.tool,
                 )
             result = AgentTurnResult(
                 text="",
                 action=f"execute:{syscall.tool}",
-                observation=f"[{syscall.tool} error] {planner_message}",
+                observation=_observation_event(
+                    "planner_error",
+                    {
+                        "failure_domain": str(TraceFailureDomain.PLANNER_OR_PARSER),
+                        "unavailable_tool": syscall.tool,
+                        "reason": planner_message,
+                    },
+                ),
                 model_role="planner",
                 terminal=False,
                 ok=False,
@@ -669,6 +697,7 @@ class HernessEngine(EnginePhasesMixin):
                     ok=False,
                     facts=result.facts,
                 ),
+                output_signature=output_signature,
                 tool=syscall.tool,
             )
 
@@ -709,13 +738,16 @@ class HernessEngine(EnginePhasesMixin):
             message=invoked.message or invoked.observation,
         )
 
-        obs = invoked.observation
-        if invoked.ok:
-            if obs and not obs.startswith("["):
-                obs = f"[{syscall.tool} result] {obs}"
-        else:
-            if obs and not obs.startswith("["):
-                obs = f"[{syscall.tool} error] {obs}"
+        obs = _observation_event(
+            "capability_result",
+            {
+                "tool": syscall.tool,
+                "ok": invoked.ok,
+                "action": invoked.action,
+                "facts": invoked.facts or {},
+                "error_reason": getattr(invoked, "error_reason", ""),
+            },
+        )
 
         result = AgentTurnResult(
             text=invoked.message or invoked.observation,
@@ -742,6 +774,7 @@ class HernessEngine(EnginePhasesMixin):
                 completion_events,
                 state_context=state_context,
                 current_run_id=result.run_id,
+                terminal_text=result.text,
             )
             if block:
                 self.trace.add_event(
@@ -788,6 +821,7 @@ class HernessEngine(EnginePhasesMixin):
                     should_continue=True,
                     recovery_observation=recovery_plan.to_observation(),
                     progress_signature=progress_signature,
+                    output_signature=output_signature,
                     tool=syscall.tool,
                 )
 
@@ -801,6 +835,7 @@ class HernessEngine(EnginePhasesMixin):
             result=result,
             invoked_facts=invoked.facts,
             progress_signature=progress_signature,
+            output_signature=output_signature,
             tool=syscall.tool,
         )
 
@@ -828,7 +863,7 @@ class HernessEngine(EnginePhasesMixin):
                 task.cancel()
             await asyncio.gather(*tuple(self._background_tasks), return_exceptions=True)
 
-    async def _compact_observations(self, observations: list[str]) -> str:
+    def _compact_observations(self, observations: list[str]) -> str:
         """Compact a long list of observations to prevent context window overflow."""
         if len(observations) <= 6:
             return "\n\n".join(observations)
@@ -849,7 +884,7 @@ class HernessEngine(EnginePhasesMixin):
     def _conversation_context(self, session_id: str | None) -> str:
         if not session_id:
             return ""
-        messages = self.runtime.memory.get_messages(session_id, limit=100)
+        messages = self.runtime.memory.get_messages(session_id, limit=_CONVERSATION_CONTEXT_MESSAGE_LIMIT)
         return self.context_manager.build_conversation_context(messages)
 
 
