@@ -475,7 +475,7 @@ class HernessEngine(EnginePhasesMixin):
             logger.error(f"Engine crashed during turn {trace_id}", exc_info=True)
             
             crash_result = AgentTurnResult(
-                text=f"Agent engine encountered an internal error: {type(e).__name__}",
+                text="",
                 action="execute:system.engine_crash",
                 observation=f"Engine crash: {e}",
                 model_role="system",
@@ -770,7 +770,7 @@ class HernessEngine(EnginePhasesMixin):
         )
 
         result = AgentTurnResult(
-            text=invoked.message or invoked.observation,
+            text=invoked.message or "",
             run_id=invoked.run_id,
             action=invoked.action,
             observation=obs,
