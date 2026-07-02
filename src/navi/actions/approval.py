@@ -91,15 +91,7 @@ class ApprovalRequestCapability(BaseCapability):
             "status": APPROVAL_STATUS_PENDING,
             "approval": _approval_facts(approval),
         }
-        return CapabilityResult(
-            ok=True,
-            action="approval",
-            observation=_approval_visible_text(approval),
-            message=_approval_visible_text(approval),
-            run_id=run_id,
-            facts=facts,
-            terminal=True,
-        )
+        return _fact_result("approval", facts, run_id=run_id)
 
 
 @capability("approval_resolve")

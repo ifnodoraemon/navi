@@ -769,8 +769,13 @@ class HernessEngine(EnginePhasesMixin):
             },
         )
 
+        # Only the 'respond' capability is allowed to speak directly to the user.
+        # Other tools may return 'message' for internal logging or UI hints,
+        # but they must not spoof the agent's conversational text.
+        text = invoked.message if syscall.tool in ("respond", "message_user") else ""
+        
         result = AgentTurnResult(
-            text=invoked.message or "",
+            text=text,
             run_id=invoked.run_id,
             action=invoked.action,
             observation=obs,
