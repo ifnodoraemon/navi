@@ -256,6 +256,7 @@ class HernessEngine(EnginePhasesMixin):
                             facts=step_result.invoked_facts,
                             tool=step_result.tool,
                             progress_signature=step_result.progress_signature,
+                            output_signature=step_result.output_signature,
                             goal_ids=goal_ids,
                             observations_count=len(observations),
                             recovery_observation=step_result.recovery_observation,
