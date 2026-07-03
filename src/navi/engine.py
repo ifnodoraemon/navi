@@ -30,6 +30,11 @@ from .loop_control import (
     terminal_loop_decision,
 )
 from .operating_context import PERMISSION_ORDER
+from .prompt_os import (
+    assemble_fact_response_system_prompt,
+    assemble_fact_response_turn_input,
+)
+from .provider import ChatMessage
 from .runtime import AgentRuntime
 from .runs import RunStore
 from .syscalls import ModelSyscallPlanner
@@ -101,6 +106,66 @@ class HernessEngine(EnginePhasesMixin):
         # No surface message and no usable text. The runtime must not synthesize
         # a natural-language completion on the model's behalf.
         return ""
+
+    async def _model_surface_text_from_facts(
+        self,
+        *,
+        user_text: str,
+        facts: dict[str, Any],
+        observations: list[str],
+        trace_id: str,
+        resolved_session_id: str | None,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+    ) -> str:
+        if not facts:
+            return ""
+        messages = [
+            ChatMessage(
+                role="system",
+                content=assemble_fact_response_system_prompt().render(),
+            ),
+            ChatMessage(
+                role="user",
+                content=assemble_fact_response_turn_input(
+                    user_text=user_text,
+                    facts=facts,
+                    observations=observations,
+                ).render(),
+            ),
+        ]
+        try:
+            text = (await self.runtime.complete(messages, role="responder")).strip()
+        except Exception as exc:
+            self.trace.add_event(
+                trace_id=trace_id,
+                phase=TracePhase.AGENT_ROLE_RESULT,
+                session_id=resolved_session_id or "",
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+                model_role="responder",
+                ok=False,
+                input_data={"fact_keys": sorted(facts)},
+                output_data={"error_type": type(exc).__name__, "error": str(exc)},
+                message="",
+            )
+            return ""
+        self.trace.add_event(
+            trace_id=trace_id,
+            phase=TracePhase.AGENT_ROLE_RESULT,
+            session_id=resolved_session_id or "",
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            model_role="responder",
+            ok=bool(text),
+            input_data={"fact_keys": sorted(facts)},
+            output_data={"text_present": bool(text)},
+            message=text[:1600],
+        )
+        return text
 
     def _initialize_turn(
         self,
@@ -314,6 +379,17 @@ class HernessEngine(EnginePhasesMixin):
                         if control.convergence_message:
                             final_facts["convergence_message"] = control.convergence_message
                         surface_text = self._completion_surface_text(result, control)
+                        if not surface_text and final_facts:
+                            surface_text = await self._model_surface_text_from_facts(
+                                user_text=text,
+                                facts=final_facts,
+                                observations=obs_lines,
+                                trace_id=trace_id,
+                                resolved_session_id=resolved_session_id,
+                                source=source,
+                                peer_id=peer_id,
+                                sender_id=sender_id,
+                            )
                         
                         final_result = AgentTurnResult(
                             text=surface_text,
@@ -444,6 +520,17 @@ class HernessEngine(EnginePhasesMixin):
                     if control.convergence_message:
                         final_facts["convergence_message"] = control.convergence_message
                     surface_text = self._completion_surface_text(result, control)
+                    if not surface_text and final_facts:
+                        surface_text = await self._model_surface_text_from_facts(
+                            user_text=text,
+                            facts=final_facts,
+                            observations=obs_lines,
+                            trace_id=trace_id,
+                            resolved_session_id=resolved_session_id,
+                            source=source,
+                            peer_id=peer_id,
+                            sender_id=sender_id,
+                        )
                     
                     final_result = AgentTurnResult(
                         text=surface_text,

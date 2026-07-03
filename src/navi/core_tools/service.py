@@ -26,7 +26,27 @@ def _run_status(home: Path, args: dict[str, Any]) -> ToolResult:
         tool="delegate.status",
         ok=True,
         facts={
-            "run": asdict(run),
+            "run": _run_status_facts(run),
             "logs": [asdict(log) for log in logs],
         },
     )
+
+
+def _run_status_facts(run: Any) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "title": run.title,
+        "status": run.status,
+        "kind": run.kind,
+        "source": run.source,
+        "peer_id": run.peer_id,
+        "sender_id": run.sender_id,
+        "provider": run.provider,
+        "workspace": run.workspace,
+        "autonomy_level": run.autonomy_level,
+        "trust_rule_id": run.trust_rule_id,
+        "why_now": run.why_now,
+        "created_at": run.created_at,
+        "updated_at": run.updated_at,
+        "error": run.error,
+    }

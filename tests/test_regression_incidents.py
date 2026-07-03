@@ -574,11 +574,10 @@ class _RepeatListProvider:
         if role == "responder":
             self.responder_calls += 1
             content = "\n".join(message.content for message in messages)
-            assert '"observation_type": "loop_progress_fact"' in content
             assert '"reason": "repeated_progress_signature"' in content
             assert '"tool": "delegate.list"' in content
             assert "Loop Reflection" not in content
-            assert "Capability observations:" in content
+            assert "Capability observations:" not in content
             return "当前没有任务。"
         raise AssertionError(f"unexpected role: {role}")
 
@@ -589,6 +588,7 @@ class _RepeatListProvider:
 class _RepeatCompletionDeleteProvider:
     def __init__(self) -> None:
         self.planner_calls = 0
+        self.responder_calls = 0
 
     async def complete_for(
         self,
@@ -597,24 +597,30 @@ class _RepeatCompletionDeleteProvider:
         *,
         output_schema: dict | None = None,
     ) -> str:
-        assert role == "planner"
-        assert output_schema is not None
-        self.planner_calls += 1
-        return json.dumps(
-            {
-                "tool": "delegate.delete",
-                "permission": "write",
-                "args": {
-                    "source": "weixin",
-                    "kind": "delegation",
-                    "status": "pending",
+        if role == "planner":
+            assert output_schema is not None
+            self.planner_calls += 1
+            return json.dumps(
+                {
+                    "tool": "delegate.delete",
+                    "permission": "write",
+                    "args": {
+                        "source": "weixin",
+                        "kind": "delegation",
+                        "status": "pending",
+                        "reason": "delete all tasks",
+                    },
+                    "model_role": "planner",
+                    "confidence": 1.0,
                     "reason": "delete all tasks",
-                },
-                "model_role": "planner",
-                "confidence": 1.0,
-                "reason": "delete all tasks",
-            }
-        )
+                }
+            )
+        if role == "responder":
+            self.responder_calls += 1
+            content = "\n".join(message.content for message in messages)
+            assert '"cleanup_complete": true' in content
+            return "任务清理已完成。"
+        raise AssertionError(f"unexpected role: {role}")
 
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]
@@ -728,6 +734,7 @@ class _DelegateSpawnApprovalProvider:
 class _InvalidCapabilityArgsProvider:
     def __init__(self) -> None:
         self.call_count = 0
+        self.responder_calls = 0
         self.last_prompt = ""
 
     async def complete_for(
@@ -764,6 +771,12 @@ class _InvalidCapabilityArgsProvider:
                     "reason": "attempt final answer",
                 }
             )
+        if role == "responder":
+            self.responder_calls += 1
+            content = "\n".join(message.content for message in messages)
+            assert '"tool": "system.planner_error"' in content
+            assert "$.message is required" in content
+            return "回答完毕。"
         raise AssertionError(f"unexpected role: {role}")
 
     def list_roles(self) -> list[str]:
@@ -886,6 +899,48 @@ async def test_delegate_spawn_deduplicates_same_objective_with_rewritten_plan(tm
     assert second.run_id == first.run_id
     assert second.facts["deduplicated"] is True
     assert len([run for run in RunStore(tmp_path).list(limit=20) if run.kind == "delegation"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_delegate_list_facts_omit_prompt_and_control_summaries(tmp_path):
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "needs approval",
+        prompt="Objective:\nrun something\n\nPlan:\napproval_code=123456",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        status="awaiting_approval",
+    )
+    runs.update_run(
+        run.id,
+        plan_summary="Plan:\nwait for approval_code=123456",
+        result_summary="approval_requested\napproval_code=123456\nstatus=pending",
+    )
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        permission_ceiling="read",
+        workspace=str(tmp_path),
+    )
+
+    result = await registry.invoke(
+        "delegate.list",
+        {"limit": 20},
+        permission="read",
+        context=context,
+    )
+
+    run_fact = result.facts["runs"][0]
+    assert "prompt" not in run_fact
+    assert "plan_summary" not in run_fact
+    assert "result_summary" not in run_fact
+    assert "approval_code" not in json.dumps(result.facts, ensure_ascii=False)
 
 
 @pytest.mark.asyncio
@@ -1098,6 +1153,8 @@ async def test_repeated_completion_evidence_finalizes_without_looping(tmp_path):
     )
 
     assert provider.planner_calls == 3
+    assert provider.responder_calls == 1
+    assert result.text == "任务清理已完成。"
     assert result.action == "execute:system.task_complete"
     assert result.ok is True
     assert result.facts["cleanup_complete"] is True
@@ -1129,9 +1186,9 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
     )
 
     assert result.text == "当前没有任务。"
-    assert result.action == "chat"
-    assert provider.planner_calls == 6
-    assert provider.responder_calls == 0
+    assert result.action == "execute:system.task_complete"
+    assert provider.planner_calls == 3
+    assert provider.responder_calls == 1
     decisions = [
         json.loads(event.output_json)
         for event in TraceStore(tmp_path).list_events(result.trace_id)
@@ -1140,6 +1197,7 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
     assert any(
         decision.get("tool") == "delegate.list"
         and decision.get("reason") == "repeated_progress_signature"
+        and decision.get("decision") == "converged"
         for decision in decisions
     )
 
@@ -1173,9 +1231,12 @@ async def test_same_status_facts_with_different_args_converges(tmp_path):
     )
 
     assert result.text == "任务已过期。"
-    assert result.action == "chat"
-    assert provider.planner_calls == 6
-    assert provider.responder_calls == 0
+    assert result.action == "execute:system.task_complete"
+    assert provider.planner_calls == 3
+    assert provider.responder_calls == 1
+    assert "prompt" not in json.dumps(result.facts, ensure_ascii=False)
+    assert "plan_summary" not in json.dumps(result.facts, ensure_ascii=False)
+    assert "result_summary" not in json.dumps(result.facts, ensure_ascii=False)
 
 
 @pytest.mark.asyncio
@@ -1196,7 +1257,9 @@ async def test_planner_capability_args_schema_mismatch_triggers_loop(tmp_path):
     )
 
     assert result.text == "回答完毕。"
-    assert result.action == "chat"
+    assert result.action == "execute:system.task_complete"
+    assert engine.runtime.provider.call_count == 3
+    assert engine.runtime.provider.responder_calls == 1
     events = TraceStore(tmp_path).list_events(result.trace_id)
     assert any(event.phase == "planner.parse_error" for event in events)
 

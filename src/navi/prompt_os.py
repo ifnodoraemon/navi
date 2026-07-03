@@ -248,6 +248,60 @@ def assemble_responder_system_prompt(
     return PromptAssembly("responder_system", tuple(blocks))
 
 
+def assemble_fact_response_system_prompt() -> PromptAssembly:
+    return PromptAssembly(
+        "fact_response_system",
+        (
+            PromptBlock(
+                "FACT RESPONSE BOUNDARY",
+                "stable",
+                "fact_response.boundary",
+                (
+                    "Generate the user-facing reply from the supplied facts only. "
+                    "Do not invent missing state, next actions, or hidden errors."
+                ),
+            ),
+        ),
+    )
+
+
+def assemble_fact_response_turn_input(
+    *,
+    user_text: str,
+    facts: dict[str, Any],
+    observations: list[str],
+) -> PromptAssembly:
+    return PromptAssembly(
+        "fact_response_turn_input",
+        (
+            PromptBlock(
+                "USER MESSAGE",
+                "turn_input",
+                "current_user_message",
+                f"<user_message>\n{user_text}\n</user_message>",
+                trusted=False,
+                mutable=True,
+            ),
+            PromptBlock(
+                "VERIFIED FACTS",
+                "turn_input",
+                "runtime.final_facts",
+                json.dumps(facts, ensure_ascii=False, sort_keys=True, default=str),
+                trusted=False,
+                mutable=True,
+            ),
+            PromptBlock(
+                "RECENT OBSERVATIONS",
+                "turn_input",
+                "runtime.recent_observations",
+                "\n".join(observations[-3:]),
+                trusted=False,
+                mutable=True,
+            ),
+        ),
+    )
+
+
 def planner_prompt_manifest() -> dict[str, Any]:
     return assemble_planner_system_prompt().manifest()
 

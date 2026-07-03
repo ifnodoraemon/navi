@@ -190,7 +190,7 @@ def reduce_runtime_step(
             prefix = "tool_repeated_action"
 
         return LoopControlResult(
-            effect=LoopControlEffect.CONTINUE_LOOP,
+            effect=LoopControlEffect.FINALIZE_STABLE,
             decisions=(
                 _repeated_progress_decision(
                     frame,
@@ -200,13 +200,6 @@ def reduce_runtime_step(
                 ),
             ),
             progress_signature=progress.signature,
-            runtime_observation=_get_escalating_observation(
-                prefix,
-                progress.count,
-                "executed",
-                tool=frame.tool,
-                progress_signature=progress.signature,
-            ),
         )
 
     if output_progress.repeated:
@@ -217,7 +210,7 @@ def reduce_runtime_step(
             prefix = "tool_repeated_output"
 
         return LoopControlResult(
-            effect=LoopControlEffect.CONTINUE_LOOP,
+            effect=LoopControlEffect.FINALIZE_STABLE,
             decisions=(
                 _repeated_progress_decision(
                     frame,
@@ -227,13 +220,6 @@ def reduce_runtime_step(
                 ),
             ),
             progress_signature=progress.signature,
-            runtime_observation=_get_escalating_observation(
-                prefix,
-                output_progress.count,
-                "generated",
-                tool=frame.tool,
-                progress_signature=output_progress.signature,
-            ),
         )
 
     return LoopControlResult(
@@ -414,7 +400,7 @@ def _repeated_progress_decision(
     repeat_count: int,
 ) -> LoopDecision:
     return LoopDecision(
-        decision=LoopDecisionKind.CONTINUE,
+        decision=LoopDecisionKind.CONVERGED,
         reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
         phase=LoopPhase.RUNTIME,
         failure_domain=TraceFailureDomain.LOOP_NO_PROGRESS,
@@ -430,12 +416,25 @@ def _repeated_progress_decision(
                 reason=LoopReason.REPEATED_PROGRESS_SIGNATURE,
                 evidence={
                     "observations_count": frame.observations_count,
+                    "reason": str(LoopReason.REPEATED_PROGRESS_SIGNATURE),
                     "pattern": pattern,
                     "repeat_count": repeat_count,
                     "progress_signature": progress_signature,
+                    "tool": frame.tool,
+                    "action": frame.result.action,
+                    "facts": frame.facts or {},
                 },
             ),
         ),
+        evidence={
+            "reason": str(LoopReason.REPEATED_PROGRESS_SIGNATURE),
+            "pattern": pattern,
+            "repeat_count": repeat_count,
+            "progress_signature": progress_signature,
+            "tool": frame.tool,
+            "action": frame.result.action,
+            "facts": frame.facts or {},
+        },
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -415,7 +416,6 @@ class DelegateListCapability(BaseCapability):
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        from dataclasses import asdict
         from ..control import run_matches_context
 
         limit = _positive_int(args.get("limit"), default=20, maximum=100)
@@ -437,11 +437,46 @@ class DelegateListCapability(BaseCapability):
         for run in runs:
             status_counts[run.status] = status_counts.get(run.status, 0) + 1
         facts = {
-            "runs": [asdict(run) for run in runs],
-            "watches": [asdict(watch) for watch in watches],
+            "runs": [_run_list_facts(run) for run in runs],
+            "watches": [_watch_list_facts(watch) for watch in watches],
             "run_status_counts": status_counts,
             "returned_run_count": len(runs),
             "run_limit": limit,
             "run_offset": offset,
         }
         return _fact_result("delegation", facts)
+
+
+def _run_list_facts(run: Any) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "title": run.title,
+        "status": run.status,
+        "kind": run.kind,
+        "source": run.source,
+        "peer_id": run.peer_id,
+        "sender_id": run.sender_id,
+        "workspace": run.workspace,
+        "autonomy_level": run.autonomy_level,
+        "trust_rule_id": run.trust_rule_id,
+        "why_now": run.why_now,
+        "created_at": run.created_at,
+        "updated_at": run.updated_at,
+        "error": run.error,
+    }
+
+
+def _watch_list_facts(watch: Any) -> dict[str, Any]:
+    return {
+        "id": watch.id,
+        "kind": watch.kind,
+        "peer_id": watch.peer_id,
+        "sender_id": watch.sender_id,
+        "workspace": watch.workspace,
+        "cron": watch.cron,
+        "enabled": watch.enabled,
+        "last_run_at": watch.last_run_at,
+        "next_run_at": watch.next_run_at,
+        "created_at": watch.created_at,
+        "updated_at": watch.updated_at,
+    }
