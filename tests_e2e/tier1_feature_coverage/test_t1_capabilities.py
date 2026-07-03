@@ -40,7 +40,7 @@ class _WorkflowStepProvider:
             )
         return json.dumps(
             {
-                "tool": "final.answer",
+                "tool": "respond",
                 "permission": "read",
                 "args": {"message": "workflow lifecycle complete"},
                 "model_role": "auditor",
@@ -66,12 +66,9 @@ async def test_t1_capabilities_registry_loading(navi_home) -> None:
     planner_spec_names = {spec.name for spec in planner_specs}
     
     expected_capabilities = [
-        "final.answer",
-        "ask.user",
+        "respond",
         "delegate.spawn",
-        "delegate.prepare",
         "approval.request",
-        "delegate.run",
         "watch.create",
         "watch.delete",
         "workflow.propose",
@@ -122,9 +119,9 @@ async def test_t1_conversation_actions_dispatch(navi_home) -> None:
         workspace=str(Path.cwd()),
     )
     
-    # Test final_answer (final.answer)
+    # Test final_answer
     res_final = await registry.invoke(
-        "final.answer",
+        "respond",
         {"message": "Hello Final E2E"},
         permission="read",
         context=context,
@@ -135,9 +132,9 @@ async def test_t1_conversation_actions_dispatch(navi_home) -> None:
     assert res_final.observation == "Hello Final E2E"
     assert res_final.terminal is True
     
-    # Test clarify (ask.user)
+    # Test clarify
     res_clarify = await registry.invoke(
-        "ask.user",
+        "respond",
         {"message": "Please select", "options": ["optionA", "optionB"]},
         permission="read",
         context=context,
@@ -201,21 +198,7 @@ async def test_t1_delegation_actions_flow(navi_home, monkeypatch) -> None:
     run = runs.get(run_id)
     assert run.status == "prepared"
     
-    # Grant execution through an explicit L3 test trust level.
-    runs.update_run(run_id, autonomy_level="L3")
-    
-    # 3. delegate_run
-    run_res = await registry.invoke(
-        "delegate.run",
-        {"run_id": run_id},
-        permission="write",
-        context=context,
-    )
-    assert run_res.ok is True
-    
-    # Verify state in RunStore
-    run = runs.get(run_id)
-    assert run.status == "queued"
+
 
 
 @pytest.mark.asyncio

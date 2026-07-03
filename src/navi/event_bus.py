@@ -78,7 +78,8 @@ class AgentTurnCompletedEvent(NaviEvent):
 class RunCompletedEvent(NaviEvent):
     event_type: str = "run_completed"
     run_id: str = ""
-    status: str = ""
+    phase: str = ""
+    resolution: str = ""
     error: str = ""
     peer_id: str = ""
     sender_id: str = ""

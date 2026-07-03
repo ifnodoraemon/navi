@@ -1,6 +1,8 @@
 from __future__ import annotations
+from .lifecycle import Phase, Governance, Acceptance, Resolution
 
 import json
+import typing
 import time
 import uuid
 from dataclasses import dataclass
@@ -16,13 +18,8 @@ from .paths import db_paths
 from .runs import Run
 from .schema import Column, Table, assert_schema_exact
 
-GOAL_STORE_SCHEMA_VERSION = 1
+GOAL_STORE_SCHEMA_VERSION = 2
 
-GOAL_STATUS_ACTIVE = "active"
-GOAL_STATUS_AWAITING_APPROVAL = "awaiting_approval"
-GOAL_STATUS_VERIFIED_COMPLETE = "verified_complete"
-GOAL_STATUS_BLOCKED = "blocked"
-GOAL_STATUS_REJECTED = "rejected"
 
 
 def _require_workspace(workspace: str) -> str:
@@ -36,7 +33,10 @@ def _require_workspace(workspace: str) -> str:
 class Goal:
     id: str
     objective: str
-    status: str
+    phase: str
+    governance: str
+    acceptance: str
+    resolution: str
     source: str
     peer_id: str
     sender_id: str
@@ -54,16 +54,6 @@ class Goal:
     completed_at: float
 
 
-GOAL_STATUSES = {
-    "active",
-    "completed",
-    "failed",
-    "blocked",
-    "abandoned",
-    "awaiting_approval",
-    "verified_complete",
-    "rejected",
-}
 
 
 @dataclass(frozen=True)
@@ -71,7 +61,10 @@ class GoalEvent:
     id: str
     goal_id: str
     event_type: str
-    status: str
+    phase: str
+    governance: str
+    acceptance: str
+    resolution: str
     run_id: str
     trace_id: str
     evidence_json: str
@@ -92,7 +85,7 @@ class GoalStore:
             assert_schema_exact(conn, GOALS_TABLE)
             conn.execute(GOAL_EVENTS_TABLE.ddl)
             assert_schema_exact(conn, GOAL_EVENTS_TABLE)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status, updated_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(phase, updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_run ON goals(run_id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_goal_events_goal ON goal_events(goal_id, created_at)"
@@ -119,7 +112,7 @@ class GoalStore:
         goal = Goal(
             id=uuid.uuid4().hex,
             objective=objective,
-            status=GOAL_STATUS_ACTIVE,
+            phase=Phase.RUNNING, governance=Governance.APPROVED, acceptance=Acceptance.NONE, resolution=Resolution.NONE,
             source=source,
             peer_id=peer_id,
             sender_id=sender_id,
@@ -140,17 +133,20 @@ class GoalStore:
             conn.execute(
                 """
                 INSERT INTO goals(
-                    id, objective, status, source, peer_id, sender_id, session_id,
+                    id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                     workspace, run_id, trace_id, evidence_json, blocked_reason,
                     stop_condition, timeout, max_retries,
                     created_at, updated_at, completed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     goal.id,
                     goal.objective,
-                    goal.status,
+                    goal.phase,
+                    goal.governance,
+                    goal.acceptance,
+                    goal.resolution,
                     goal.source,
                     goal.peer_id,
                     goal.sender_id,
@@ -171,7 +167,7 @@ class GoalStore:
         self.record_event(
             goal.id,
             "goal.created",
-            status=goal.status,
+            phase=goal.phase, governance=goal.governance, acceptance=goal.acceptance, resolution=goal.resolution,
             run_id=run_id,
             trace_id=trace_id,
             evidence=evidence or {},
@@ -182,7 +178,7 @@ class GoalStore:
         with connect(self.db_path) as conn:
             row = conn.execute(
                 """
-                SELECT id, objective, status, source, peer_id, sender_id, session_id,
+                SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at
@@ -196,7 +192,7 @@ class GoalStore:
         with connect(self.db_path) as conn:
             row = conn.execute(
                 """
-                SELECT id, objective, status, source, peer_id, sender_id, session_id,
+                SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at
@@ -206,19 +202,19 @@ class GoalStore:
             ).fetchone()
         return Goal(*row) if row else None
 
-    def list(self, *, status: str = "", limit: int = 50) -> list[Goal]:
-        if status:
+    def list(self, *, phase: str = "", limit: int = 50) -> typing.List[Goal]:
+        if phase:
             query = """
-                SELECT id, objective, status, source, peer_id, sender_id, session_id,
+                SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at
-                FROM goals WHERE status = ? ORDER BY updated_at DESC LIMIT ?
+                FROM goals WHERE phase = ? ORDER BY updated_at DESC LIMIT ?
                 """
-            params: tuple[Any, ...] = (status, limit)
+            params: tuple[Any, ...] = (phase, limit)
         else:
             query = """
-                SELECT id, objective, status, source, peer_id, sender_id, session_id,
+                SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at
@@ -233,9 +229,8 @@ class GoalStore:
     # compression (principle 12). Pending approvals, denials, rejections, and
     # blocked state cannot be dropped by an LLM summary -- they are reloaded
     # from the store, not trusted to live only inside the model context window.
-    _CONSTRAINT_EVENT_STATUSES = frozenset(
-        {GOAL_STATUS_AWAITING_APPROVAL, GOAL_STATUS_BLOCKED, GOAL_STATUS_REJECTED}
-    )
+    def _is_constraint_event(self, e: GoalEvent) -> bool:
+        return e.governance == Governance.AWAITING_APPROVAL or e.resolution in {Resolution.BLOCKED, Resolution.FAILED}
 
     async def compact_events(self, goal_id: str, runtime, *, threshold: int = 20) -> bool:
         events = self.list_events(goal_id, limit=1000)
@@ -250,24 +245,24 @@ class GoalStore:
             {
                 "id": e.id,
                 "event_type": e.event_type,
-                "status": e.status,
+                "phase": e.phase, "governance": e.governance, "acceptance": e.acceptance, "resolution": e.resolution,
                 "run_id": e.run_id,
                 "trace_id": e.trace_id,
                 "evidence_json": e.evidence_json,
                 "created_at": e.created_at,
             }
             for e in events
-            if e.status in self._CONSTRAINT_EVENT_STATUSES
+            if self._is_constraint_event(e)
         ]
         deletable_ids = [
-            e.id for e in events if e.status not in self._CONSTRAINT_EVENT_STATUSES
+            e.id for e in events if not self._is_constraint_event(e)
         ]
 
         from navi.provider import ChatMessage
 
         lines = []
         for e in events:
-            lines.append(f"[{e.created_at}] {e.event_type} {e.status} {e.evidence_json}")
+            lines.append(f"[{e.created_at}] {e.event_type} {e.phase} {e.evidence_json}")
 
         prompt = (
             "Summarize the following goal events to preserve intent, completed steps, pending approvals, "
@@ -280,7 +275,7 @@ class GoalStore:
             id=uuid.uuid4().hex,
             goal_id=goal_id,
             event_type="goal.compaction",
-            status="active",
+            phase=Phase.RUNNING, governance=Governance.NONE, acceptance=Acceptance.NONE, resolution=Resolution.NONE,
             run_id="",
             trace_id="",
             evidence_json=json.dumps(
@@ -294,14 +289,17 @@ class GoalStore:
         with connect(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO goal_events(id, goal_id, event_type, status, run_id, trace_id, evidence_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO goal_events(id, goal_id, event_type, phase, governance, acceptance, resolution, run_id, trace_id, evidence_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
                     event.goal_id,
                     event.event_type,
-                    event.status,
+                    event.phase,
+                    event.governance,
+                    event.acceptance,
+                    event.resolution,
                     event.run_id,
                     event.trace_id,
                     event.evidence_json,
@@ -315,11 +313,11 @@ class GoalStore:
 
         return True
 
-    def list_events(self, goal_id: str, *, limit: int = 100) -> list[GoalEvent]:
+    def list_events(self, goal_id: str, *, limit: int = 100) -> typing.List[GoalEvent]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, goal_id, event_type, status, run_id, trace_id, evidence_json, created_at
+                SELECT id, goal_id, event_type, phase, governance, acceptance, resolution, run_id, trace_id, evidence_json, created_at
                 FROM goal_events WHERE goal_id = ? ORDER BY created_at ASC LIMIT ?
                 """,
                 (goal_id, limit),
@@ -355,7 +353,7 @@ class GoalStore:
         self.record_event(
             goal_id,
             "goal.trace_attached",
-            status=goal.status,
+            phase=goal.phase, governance=goal.governance, acceptance=goal.acceptance, resolution=goal.resolution,
             run_id=goal.run_id,
             trace_id=trace_id,
             evidence=evidence or {},
@@ -365,14 +363,15 @@ class GoalStore:
     def update_status(
         self,
         goal_id: str,
-        status: str,
         *,
+        phase: str,
+        governance: str,
+        acceptance: str,
+        resolution: str,
         blocked_reason: str = "",
         evidence: dict[str, Any] | None = None,
         event_type: str = "goal.status",
     ) -> Goal | None:
-        if status not in GOAL_STATUSES:
-            raise ValueError(f"Invalid goal status: {status}")
         goal = self.get(goal_id)
         if goal is None:
             return None
@@ -380,18 +379,21 @@ class GoalStore:
         now = time.time()
         completed_at = (
             now
-            if status in {GOAL_STATUS_VERIFIED_COMPLETE, GOAL_STATUS_BLOCKED, GOAL_STATUS_REJECTED}
+            if phase == Phase.ENDED
             else 0.0
         )
         with connect(self.db_path) as conn:
             conn.execute(
                 """
                 UPDATE goals
-                SET status = ?, blocked_reason = ?, evidence_json = ?, updated_at = ?, completed_at = ?
+                SET phase = ?, governance = ?, acceptance = ?, resolution = ?, blocked_reason = ?, evidence_json = ?, updated_at = ?, completed_at = ?
                 WHERE id = ?
                 """,
                 (
-                    status,
+                    phase,
+                    governance,
+                    acceptance,
+                    resolution,
                     blocked_reason,
                     json.dumps(merged_evidence, ensure_ascii=False, sort_keys=True),
                     now,
@@ -402,7 +404,7 @@ class GoalStore:
         self.record_event(
             goal_id,
             event_type,
-            status=status,
+            phase=phase, governance=governance, acceptance=acceptance, resolution=resolution,
             run_id=goal.run_id,
             trace_id=goal.trace_id,
             evidence=evidence or {},
@@ -421,7 +423,7 @@ class GoalStore:
         goal = self.get(goal_id)
         if goal is None:
             return {}
-        if goal.status != GOAL_STATUS_ACTIVE:
+        if goal.phase != Phase.RUNNING:
             return {}
         if goal.timeout > 0:
             age = time.time() - goal.created_at
@@ -436,7 +438,7 @@ class GoalStore:
                 1
                 for event in self.list_events(goal_id, limit=1000)
                 if event.event_type == "goal.run_status"
-                and event.status in {GOAL_STATUS_BLOCKED, "failed"}
+                and event.resolution in {Resolution.BLOCKED, Resolution.FAILED}
             )
             if retries >= goal.max_retries:
                 return {
@@ -457,9 +459,9 @@ class GoalStore:
         if goal is None:
             return None
         evidence = evidence or {"run_id": run.id, "run_status": run.status}
-        status = _goal_status_for_run(run, evidence=evidence)
+        phase, governance, acceptance, resolution = _goal_status_for_run(run, evidence=evidence)
         reason = ""
-        if status == GOAL_STATUS_BLOCKED:
+        if resolution == Resolution.BLOCKED:
             if run.status == RUN_STATUS_COMPLETED and not run.error:
                 reason = "critic_gate_evidence_missing"
             else:
@@ -468,7 +470,7 @@ class GoalStore:
                 evidence = {**evidence, "run_error": run.error}
         return self.update_status(
             goal.id,
-            status=status,
+            phase=phase, governance=governance, acceptance=acceptance, resolution=resolution,
             blocked_reason=reason,
             evidence=evidence,
             event_type="goal.run_status",
@@ -479,7 +481,10 @@ class GoalStore:
         goal_id: str,
         event_type: str,
         *,
-        status: str,
+        phase: str,
+        governance: str,
+        acceptance: str,
+        resolution: str,
         run_id: str = "",
         trace_id: str = "",
         evidence: dict[str, Any] | None = None,
@@ -488,7 +493,7 @@ class GoalStore:
             id=uuid.uuid4().hex,
             goal_id=goal_id,
             event_type=event_type,
-            status=status,
+            phase=phase, governance=governance, acceptance=acceptance, resolution=resolution,
             run_id=run_id,
             trace_id=trace_id,
             evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
@@ -497,14 +502,17 @@ class GoalStore:
         with connect(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO goal_events(id, goal_id, event_type, status, run_id, trace_id, evidence_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO goal_events(id, goal_id, event_type, phase, governance, acceptance, resolution, run_id, trace_id, evidence_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
                     event.goal_id,
                     event.event_type,
-                    event.status,
+                    event.phase,
+                    event.governance,
+                    event.acceptance,
+                    event.resolution,
                     event.run_id,
                     event.trace_id,
                     event.evidence_json,
@@ -514,12 +522,12 @@ class GoalStore:
         return event
 
 
-def _goal_status_for_run(run: Run, *, evidence: dict[str, Any] | None = None) -> str:
+def _goal_status_for_run(run: Run, *, evidence: dict[str, Any] | None = None) -> tuple[str, str, str, str]:
     if run.status == RUN_STATUS_COMPLETED:
-        return GOAL_STATUS_VERIFIED_COMPLETE
+        return (Phase.ENDED, Governance.NONE, Acceptance.NONE, Resolution.SUCCESS)
     if run.status == RUN_STATUS_FAILED:
-        return GOAL_STATUS_REJECTED
-    return GOAL_STATUS_ACTIVE
+        return (Phase.ENDED, Governance.NONE, Acceptance.NONE, Resolution.FAILED)
+    return (Phase.RUNNING, Governance.APPROVED, Acceptance.NONE, Resolution.NONE)
 
 
 def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict[str, Any]:
@@ -539,7 +547,10 @@ GOALS_TABLE = Table(
     [
         Column("id", "TEXT", primary_key=True),
         Column("objective", "TEXT", nullable=False),
-        Column("status", "TEXT", nullable=False),
+        Column("phase", "TEXT", nullable=False),
+        Column("governance", "TEXT", nullable=False),
+        Column("acceptance", "TEXT", nullable=False),
+        Column("resolution", "TEXT", nullable=False),
         Column("source", "TEXT", nullable=False),
         Column("peer_id", "TEXT", nullable=False),
         Column("sender_id", "TEXT", nullable=False),
@@ -564,7 +575,10 @@ GOAL_EVENTS_TABLE = Table(
         Column("id", "TEXT", primary_key=True),
         Column("goal_id", "TEXT", nullable=False),
         Column("event_type", "TEXT", nullable=False),
-        Column("status", "TEXT", nullable=False),
+        Column("phase", "TEXT", nullable=False),
+        Column("governance", "TEXT", nullable=False),
+        Column("acceptance", "TEXT", nullable=False),
+        Column("resolution", "TEXT", nullable=False),
         Column("run_id", "TEXT", nullable=False),
         Column("trace_id", "TEXT", nullable=False),
         Column("evidence_json", "TEXT", nullable=False),

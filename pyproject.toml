@@ -34,6 +34,7 @@ navi = "navi.cli:app"
 
 [tool.setuptools.package-data]
 navi = [
+    "specs.json",
     "specs/*.yaml",
     "skills/*/SKILL.md",
     "telegram/specs/*.yaml",

@@ -24,6 +24,7 @@ class LoopDecisionKind(StrEnum):
     BLOCKED = "blocked"
     FAILED = "failed"
     REFLECT_AND_REPLAN = "reflect_and_replan"
+    PAUSE_FOR_APPROVAL = "pause_for_approval"
 
 
 class LoopReason(StrEnum):
@@ -41,6 +42,7 @@ class LoopReason(StrEnum):
     WORKFLOW_STEP_REQUESTED_USER_INPUT = "workflow_step_requested_user_input"
     WORKFLOW_VERIFIER_BLOCKED = "workflow_verifier_blocked"
     WORKFLOW_VERIFIER_PASSED = "workflow_verifier_passed"
+    APPROVAL_REQUIRED = "approval_required"
 
 
 class LoopCheckName(StrEnum):
@@ -55,6 +57,7 @@ class LoopCheckName(StrEnum):
     WORKFLOW_STEP_CHECKER = "workflow_step_checker"
     WORKFLOW_STEP_EVIDENCE_PRESENT = "workflow_step_evidence_present"
     WORKFLOW_STEPS_COMPLETED = "workflow_steps_completed"
+    APPROVAL_GATE = "approval_gate"
 
 
 class TracePhase(StrEnum):

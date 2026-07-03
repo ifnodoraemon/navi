@@ -1,7 +1,7 @@
 from navi.engine_types import AgentTurnResult
 
 
-def test_failure_surface_is_structured_facts_not_synthesized_sentence() -> None:
+def test_failure_surface_does_not_synthesize_user_text() -> None:
     result = AgentTurnResult(
         text="",
         action="execute:system.provider_error",
@@ -12,8 +12,4 @@ def test_failure_surface_is_structured_facts_not_synthesized_sentence() -> None:
 
     text = result.surfaced_text()
 
-    assert "[execute:system.provider_error] failed" not in text
-    assert "action=execute:system.provider_error" in text
-    assert "error_reason=provider_no_response" in text
-    assert "error_type=RuntimeError" in text
-    assert "ok=False" in text
+    assert text == ""

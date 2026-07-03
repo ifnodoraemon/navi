@@ -3,6 +3,33 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+class Phase(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    PAUSED = "paused"
+    ENDED = "ended"
+
+class Governance(StrEnum):
+    NONE = "none"
+    AWAITING_APPROVAL = "awaiting_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+class Acceptance(StrEnum):
+    NONE = "none"
+    UNVERIFIED = "unverified"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+class Resolution(StrEnum):
+    NONE = "none"
+    SUCCESS = "success"
+    FAILED = "failed"
+    CANCELED = "canceled"
+    BLOCKED = "blocked"
+
+def is_terminal_phase(phase: str) -> bool:
+    return phase == Phase.ENDED
 
 class RunStatus(StrEnum):
     PENDING = "pending"
@@ -18,13 +45,12 @@ RUN_STATUS_AWAITING_APPROVAL = RunStatus.AWAITING_APPROVAL
 RUN_STATUS_COMPLETED = RunStatus.COMPLETED
 RUN_STATUS_FAILED = RunStatus.FAILED
 
-RUN_TERMINAL_STATUSES = frozenset({RUN_STATUS_COMPLETED, RUN_STATUS_FAILED})
-RUN_ACTIVE_STATUSES = frozenset({RUN_STATUS_PENDING, RUN_STATUS_RUNNING, RUN_STATUS_AWAITING_APPROVAL})
 
 
 @dataclass(frozen=True)
 class RunFinalizeDecision:
-    status: str
+    phase: str
+    resolution: str
     error: str
 
 
@@ -40,7 +66,7 @@ def run_is_terminal(status: str) -> bool:
 
 
 def prepare_run_status(*, exit_code: int, current_status: str = "") -> str:
-    return RUN_STATUS_RUNNING if exit_code == 0 else RUN_STATUS_FAILED
+    return "running" if exit_code == 0 else "failed"
 
 
 def execute_finalize_decision(
@@ -50,9 +76,9 @@ def execute_finalize_decision(
     completion_status: str = "",
 ) -> RunFinalizeDecision:
     if exit_code == 0:
-        return RunFinalizeDecision(status=RUN_STATUS_COMPLETED, error="")
+        return RunFinalizeDecision(phase=Phase.ENDED, resolution=Resolution.SUCCESS, error="")
     error = stderr.strip() if stderr else "actuator loop failed"
-    return RunFinalizeDecision(status=RUN_STATUS_FAILED, error=error)
+    return RunFinalizeDecision(phase=Phase.ENDED, resolution=Resolution.FAILED, error=error)
 
 
 def execution_ledger_reason(exit_code: int) -> str:

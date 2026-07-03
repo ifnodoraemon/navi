@@ -5,8 +5,6 @@ converse and create governed prepared state, but newly added mutating tools do
 not become remote-visible by default.
 """
 from __future__ import annotations
-import pytest
-pytestmark = pytest.mark.skip(reason="Remote restrictions lifted per user request to treat remote identical to local")
 
 from pathlib import Path
 
@@ -123,8 +121,10 @@ def test_remote_policy_is_explicit_allowlist() -> None:
     assert REMOTE_CONNECTOR_TOOL_POLICY.allowed_tools == REMOTE_ALLOWED_TOOLS
     assert REMOTE_ALLOWED_TOOLS == {
         "respond",
+        "approval.resolve",
         "delegate.spawn",
         "delegate.list",
+        "delegate.status",
         "session.request_elevation",
         "tools.list",
         "watch.create",
@@ -144,10 +144,10 @@ async def test_remote_tools_list_returns_filtered_manifest(tmp_path: Path) -> No
     names = {tool["name"] for tool in (result.facts or {})["tools"]}
     assert "delegate.spawn" in names
     assert "tools.list" in names
+    assert "approval.resolve" in names
+    assert "delegate.status" in names
     assert "session.request_elevation" in names
-    assert "delegate.run" not in names
     assert "delegate.delete" not in names
-    assert "approval.resolve" not in names
 
 
 @pytest.mark.asyncio
@@ -198,16 +198,17 @@ async def test_remote_can_request_session_elevation(tmp_path: Path) -> None:
         context=context,
     )
 
-    assert result.ok is True
+    assert result.ok is False
     assert result.action == "approval"
+    assert result.yields_control is True
+    assert result.error_reason == "session_elevation_requested"
+    assert result.message == ""
     assert result.facts is not None
     assert result.facts["state_transition"] == "elevation_requested"
     assert result.facts["target_permission"] == "write"
     assert result.facts["status"] == "awaiting_approval"
     assert result.facts["approval"]["action"] == "session_elevation"
-    assert "session_elevation_requested" in result.message
-    assert "approval_code=" in result.message
-    assert f"run_id={result.run_id}" in result.message
+    assert result.facts["run_id"] == result.run_id
 
 
 def test_blocked_capability_classes_are_direct_os_only() -> None:

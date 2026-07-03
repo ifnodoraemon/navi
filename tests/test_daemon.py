@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from navi.daemon import SystemDaemon
+from navi.detectors import ServiceLogDetector
 from navi.trace import TraceStore
 
 
@@ -17,7 +18,7 @@ def test_read_log_diff_redacts_secrets_in_diff_and_error_lines(tmp_path: Path) -
     )
     log.write_text(body, encoding="utf-8")
 
-    diff, error_lines, offset = SystemDaemon._read_log_diff(
+    diff, error_lines, offset = ServiceLogDetector._read_log_diff(
         log, last_size=0, read_end=len(body.encode("utf-8"))
     )
 
@@ -37,7 +38,7 @@ def test_read_log_diff_without_secrets_is_unchanged(tmp_path: Path) -> None:
     body = "info: request handled in 12ms\ninfo: cache warm\n"
     log.write_text(body, encoding="utf-8")
 
-    diff, error_lines, _ = SystemDaemon._read_log_diff(
+    diff, error_lines, _ = ServiceLogDetector._read_log_diff(
         log, last_size=0, read_end=len(body.encode("utf-8"))
     )
 

@@ -60,7 +60,7 @@ def test_specs_data_does_not_hardcode_scheduling_tool_routing() -> None:
     """FP-1: planner policy must not hardcode tool names like
     watch.create or shell.run. The model discovers the right tool from the
     manifest."""
-    data = _read("src/navi/specs_data.py")
+    data = _read("src/navi/specs.json")
     # The scheduling routing rule previously named watch.create and shell.run.
     # After cleansing it refers only to "the scheduling capability".
     assert "call watch.create" not in data
@@ -71,7 +71,7 @@ def test_planner_rules_do_not_encode_scenario_routing_policy() -> None:
     """FP-1: planner policy can state generic syscall constraints, but it must
     not carry product-flow patches for remote access, delegation, scheduling, or
     tool inventory questions."""
-    data = _read("src/navi/specs_data.py")
+    data = _read("src/navi/specs.json")
     forbidden = [
         "Default to taking action",
         "Prefer action over clarification",
@@ -97,7 +97,7 @@ def test_planner_rules_do_not_encode_scenario_routing_policy() -> None:
 def test_planner_contract_states_facts_not_action_advice() -> None:
     """Planner contract should expose validity/fact boundaries, not tell the
     model which fallback behavior to pick."""
-    data = _read("src/navi/specs_data.py")
+    data = _read("src/navi/specs.json")
     forbidden = [
         "Never request a permission above the permission ceiling",
         "Choose one declared capability",
@@ -113,7 +113,7 @@ def test_planner_contract_states_facts_not_action_advice() -> None:
 
 
 def test_responder_style_does_not_encode_product_flow_patches() -> None:
-    data = _read("src/navi/specs_data.py")
+    data = _read("src/navi/specs.json")
     forbidden = [
         "what the next action should be",
         "Navi can run the requested inspection",
@@ -126,7 +126,7 @@ def test_responder_style_does_not_encode_product_flow_patches() -> None:
 
 
 def test_memory_prompts_extract_candidates_not_governance_policy() -> None:
-    data = _read("src/navi/specs_data.py")
+    data = _read("src/navi/specs.json")
     assert "learning agent" not in data
     assert "Focus heavily" not in data
     assert "should be learned" not in data
@@ -135,7 +135,7 @@ def test_memory_prompts_extract_candidates_not_governance_policy() -> None:
 
 
 def test_execution_prompts_do_not_encode_action_flow_policy() -> None:
-    data = _read("src/navi/specs_data.py")
+    data = _read("src/navi/specs.json")
     forbidden = [
         "expected capability actions",
         "Do not create tasks",
@@ -159,7 +159,7 @@ def test_runtime_specs_do_not_leak_policy_or_followup_wording() -> None:
     runtime_sources = [
         _read("src/navi/actions/specs.py"),
         _read("src/navi/agent_roles.py"),
-        _read("src/navi/specs_data.py"),
+        _read("src/navi/specs.json"),
         _read("src/navi/syscalls.py"),
     ]
     forbidden = [
@@ -176,7 +176,6 @@ def test_runtime_specs_do_not_leak_policy_or_followup_wording() -> None:
 def test_loop_reflection_skill_collects_facts_not_tool_routing_policy() -> None:
     data = _read("src/navi/skills/loop_reflection/SKILL.md")
     forbidden = [
-        "delegate.run",
         "equivalent delegation tool",
         "MUST leverage",
         "Implement the new plan suggested",
@@ -197,7 +196,9 @@ def test_workflow_step_prompt_does_not_name_terminal_tool_choices() -> None:
 def test_model_json_protocols_do_not_extract_json_from_prose() -> None:
     for relative in (
         "src/navi/json_utils.py",
-        "src/navi/execution.py",
+        "src/navi/execution/protocol.py",
+        "src/navi/execution/provider.py",
+        "src/navi/execution/service.py",
         "src/navi/memory/store.py",
         "src/navi/provider.py",
     ):

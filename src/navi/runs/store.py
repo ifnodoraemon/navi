@@ -19,14 +19,17 @@ from ._execution_log_store import (
 from ._watch_store import WATCHES_TABLE, WatchStoreMixin
 from .models import Run, _require_workspace
 
-RUN_STORE_SCHEMA_VERSION = 3
+RUN_STORE_SCHEMA_VERSION = 4
 
 RUNS_TABLE = Table(
     "runs",
     [
         Column("id", "TEXT", primary_key=True),
         Column("title", "TEXT", nullable=False),
-        Column("status", "TEXT", nullable=False),
+        Column("phase", "TEXT", nullable=False),
+        Column("governance", "TEXT", nullable=False),
+        Column("acceptance", "TEXT", nullable=False),
+        Column("resolution", "TEXT", nullable=False),
         Column("created_at", "REAL", nullable=False),
         Column("updated_at", "REAL", nullable=False),
         Column("kind", "TEXT", nullable=False),
@@ -67,7 +70,7 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
             assert_schema_exact(conn, TOOL_CALL_LOGS_TABLE)
             conn.execute(APPROVALS_TABLE.ddl)
             assert_schema_exact(conn, APPROVALS_TABLE)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updated_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_phase ON runs(phase, updated_at)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_watches_next ON watches(enabled, next_run_at)"
             )
@@ -99,13 +102,19 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
         autonomy_level: str = "L2",
         trust_rule_id: str = "",
         why_now: str = "",
-        status: str = "pending",
+        phase: str = "pending",
+        governance: str = "none",
+        acceptance: str = "none",
+        resolution: str = "none",
     ) -> Run:
         now = time.time()
         run = Run(
             id=uuid.uuid4().hex,
             title=title,
-            status=status,
+            phase=phase,
+            governance=governance,
+            acceptance=acceptance,
+            resolution=resolution,
             created_at=now,
             updated_at=now,
             kind=kind,
@@ -132,7 +141,10 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
                 (
                     run.id,
                     run.title,
-                    run.status,
+                    run.phase,
+                    run.governance,
+                    run.acceptance,
+                    run.resolution,
                     run.created_at,
                     run.updated_at,
                     run.kind,
@@ -156,7 +168,7 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
         with connect(self.db_path) as conn:
             row = conn.execute(
                 """
-                SELECT id, title, status, created_at, updated_at, kind, prompt, source,
+                SELECT id, title, phase, governance, acceptance, resolution, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
                 FROM runs WHERE id = ?
@@ -165,11 +177,11 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
             ).fetchone()
         return self._run_from_row(row) if row else None
 
-    def list(self, *, limit: int = 50, offset: int = 0) -> list[Run]:
+    def list(self, *, limit: int = 50, offset: int = 0) -> typing.List[Run]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, title, status, created_at, updated_at, kind, prompt, source,
+                SELECT id, title, phase, governance, acceptance, resolution, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
                 FROM runs ORDER BY updated_at DESC LIMIT ? OFFSET ?
@@ -178,16 +190,16 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
             ).fetchall()
         return [self._run_from_row(row) for row in rows]
 
-    def list_by_status(self, status: str, *, limit: int = 20) -> list[Run]:
+    def list_by_phase(self, phase: str, *, limit: int = 20) -> typing.List[Run]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, title, status, created_at, updated_at, kind, prompt, source,
+                SELECT id, title, phase, governance, acceptance, resolution, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
-                FROM runs WHERE status = ? ORDER BY updated_at ASC LIMIT ?
+                FROM runs WHERE phase = ? ORDER BY updated_at ASC LIMIT ?
                 """,
-                (status, limit),
+                (phase, limit),
             ).fetchall()
         return [self._run_from_row(row) for row in rows]
 
@@ -198,8 +210,8 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
         source: str = "",
         kind: str = "",
         limit: int | None = None,
-    ) -> list[Run]:
-        clauses = ["status = ?"]
+    ) -> typing.List[Run]:
+        clauses = ["phase = ?"]
         params: list[Any] = [status]
         if source:
             clauses.append("source = ?")
@@ -214,7 +226,7 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
-                SELECT id, title, status, created_at, updated_at, kind, prompt, source,
+                SELECT id, title, phase, governance, acceptance, resolution, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
                 FROM runs WHERE {" AND ".join(clauses)} ORDER BY updated_at ASC{limit_clause}
@@ -223,11 +235,11 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
             ).fetchall()
         return [self._run_from_row(row) for row in rows]
 
-    def count_runs(self, *, status: str = "", source: str = "", kind: str = "") -> int:
+    def count_runs(self, *, phase: str = "", source: str = "", kind: str = "") -> int:
         clauses: list[str] = []
         params: list[Any] = []
-        if status:
-            clauses.append("status = ?")
+        if phase:
+            clauses.append("phase = ?")
             params.append(status)
         if source:
             clauses.append("source = ?")
@@ -240,19 +252,19 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
             row = conn.execute(f"SELECT COUNT(*) FROM runs{where}", params).fetchone()
         return int(row[0] if row else 0)
 
-    def count_runs_by_status(self) -> dict[str, int]:
+    def count_runs_by_phase(self) -> dict[str, int]:
         with connect(self.db_path) as conn:
-            rows = conn.execute("SELECT status, COUNT(*) FROM runs GROUP BY status").fetchall()
+            rows = conn.execute("SELECT phase, COUNT(*) FROM runs GROUP BY phase").fetchall()
         return {str(row[0]): int(row[1]) for row in rows}
 
-    def list_by_statuses(self, statuses: list[str], *, limit: int = 60) -> list[Run]:
-        if not statuses:
+    def list_by_phases(self, phases: list[str], *, limit: int = 60) -> typing.List[Run]:
+        if not phases:
             return []
         placeholders = ", ".join("?" for _ in statuses)
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
-                SELECT id, title, status, created_at, updated_at, kind, prompt, source,
+                SELECT id, title, phase, governance, acceptance, resolution, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
                 FROM runs WHERE status IN ({placeholders}) ORDER BY updated_at ASC LIMIT ?
@@ -278,7 +290,10 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
         self,
         run_id: str,
         *,
-        status: str | None = None,
+        phase: str | None = None,
+        governance: str | None = None,
+        acceptance: str | None = None,
+        resolution: str | None = None,
         plan_summary: str | None = None,
         result_summary: str | None = None,
         error: str | None = None,
@@ -289,7 +304,10 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
         if run is None:
             return None
         values = {
-            "status": run.status if status is None else status,
+            "phase": run.phase if phase is None else phase,
+            "governance": run.governance if governance is None else governance,
+            "acceptance": run.acceptance if acceptance is None else acceptance,
+            "resolution": run.resolution if resolution is None else resolution,
             "plan_summary": run.plan_summary if plan_summary is None else plan_summary,
             "result_summary": run.result_summary if result_summary is None else result_summary,
             "error": run.error if error is None else error,
@@ -301,12 +319,15 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
             conn.execute(
                 """
                 UPDATE runs
-                SET status = ?, plan_summary = ?, result_summary = ?, error = ?,
+                SET phase = ?, governance = ?, acceptance = ?, resolution = ?, plan_summary = ?, result_summary = ?, error = ?,
                     trust_rule_id = ?, autonomy_level = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
-                    values["status"],
+                    values["phase"],
+                    values["governance"],
+                    values["acceptance"],
+                    values["resolution"],
                     values["plan_summary"],
                     values["result_summary"],
                     values["error"],

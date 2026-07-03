@@ -90,14 +90,6 @@ async def test_remote_connector_prepare_allowlist_blocks_execution_and_cleanup(
     assert spawned.ok is True
     assert spawned.run_id
 
-    run_result = await registry.invoke(
-        "delegate.run",
-        {"run_id": spawned.run_id},
-        permission="write",
-        context=context,
-    )
-    assert run_result.ok is False
-    assert run_result.error_reason == "remote_tool_not_allowed"
 
     pending_delete = await registry.invoke(
         "delegate.delete",

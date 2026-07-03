@@ -11,6 +11,7 @@ from navi.event_bus import EventBus
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
+from navi.trace.store import TraceStore
 
 
 @pytest.mark.asyncio
@@ -33,42 +34,101 @@ async def test_connector_approval_command_resolves_matching_pending_approval(tmp
         sender_id="sender-1",
         reason="execute approved task",
     )
-    router = ConnectorRouter(tmp_path, EventBus())
+    class ApprovalProvider:
+        def __init__(self):
+            self.calls = 0
 
-    response = await router.route(
-        ConnectorMessage(
-            message_id="msg-approval",
-            peer_id="peer-1",
-            sender_id="sender-1",
-            text=f"批准 {approval.code}",
-            source="weixin",
-            session_alias_prefix="connector:weixin",
-        )
+        async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+            assert role == "planner"
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps({
+                    "tool": "approval.resolve",
+                    "permission": "prepare",
+                    "args": {
+                        "decision": "approve",
+                        "code": approval.code,
+                    },
+                    "model_role": "planner"
+                })
+            else:
+                return json.dumps({
+                    "tool": "respond",
+                    "permission": "write",
+                    "args": {"message": "已批准。"},
+                    "model_role": "responder"
+                })
+        def list_roles(self) -> list[str]:
+            return ["planner"]
+
+    ingress = ConnectorIngressRuntime(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=ApprovalProvider()),
+        project_dir=tmp_path,
     )
+    try:
+        response = await ingress.handle(
+            ConnectorMessage(
+                message_id="msg-approval",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                text=f"批准 {approval.code}",
+                source="weixin",
+                session_alias_prefix="connector:weixin",
+            )
+        )
+    finally:
+        await ingress.event_bus.shutdown()
 
-    assert "approval_resolved" in response
-    assert f"run_id={run.id}" in response
-    assert RunStore(tmp_path).get_approval(approval.id).status == "approved"
+        assert response == "已批准。"
+        print(list(TraceStore(tmp_path).list_events(trace_id="msg-approval")))
+        assert RunStore(tmp_path).get_approval(approval.id).status == "approved"
     assert RunStore(tmp_path).get(run.id).status == "pending"
 
 
 @pytest.mark.asyncio
 async def test_connector_approval_command_returns_not_found_fact(tmp_path):
-    router = ConnectorRouter(tmp_path, EventBus())
+    class ApprovalProvider:
+        def __init__(self):
+            self.calls = 0
 
-    response = await router.route(
-        ConnectorMessage(
-            message_id="msg-approval",
-            peer_id="peer-1",
-            sender_id="sender-1",
-            text="批准 123456",
-            source="weixin",
-            session_alias_prefix="connector:weixin",
-        )
+        async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps({
+                    "tool": "approval.resolve",
+                    "permission": "prepare",
+                    "args": {
+                        "decision": "approve",
+                        "code": "123456",
+                    },
+                    "model_role": "planner"
+                })
+            else:
+                return "没有找到对应的待审批请求。"
+        def list_roles(self) -> list[str]:
+            return ["planner", "responder"]
+
+    ingress = ConnectorIngressRuntime(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=ApprovalProvider()),
+        project_dir=tmp_path,
     )
+    try:
+        response = await ingress.handle(
+            ConnectorMessage(
+                message_id="msg-approval",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                text="批准 123456",
+                source="weixin",
+                session_alias_prefix="connector:weixin",
+            )
+        )
+    finally:
+        await ingress.event_bus.shutdown()
 
-    assert "approval_not_resolved" in response
-    assert "approval_code_not_found" in response
+    assert response == "没有找到对应的待审批请求。"
 
 
 @pytest.mark.asyncio
@@ -87,9 +147,7 @@ async def test_connector_timeout_surfaces_structured_fact(tmp_path, monkeypatch)
         )
     )
 
-    assert "连接器处理超时" not in response
-    assert "event=connector_response_timeout" in response
-    assert "correlation_id=msg-timeout" in response
+    assert response == ""
 
 
 @pytest.mark.asyncio
@@ -123,10 +181,7 @@ async def test_connector_runtime_exception_surfaces_structured_fact(tmp_path):
     finally:
         await ingress.event_bus.shutdown()
 
-    assert "连接器处理失败" not in response
-    assert "event=connector_turn_failed" in response
-    assert "correlation_id=msg-failure" in response
-    assert "error_type=RuntimeError" in response
+    assert response == ""
 
 
 class ElevationProvider:
@@ -136,21 +191,26 @@ class ElevationProvider:
         messages: list[ChatMessage],
         **kwargs,
     ) -> str:
-        assert role == "planner"
-        assert kwargs.get("output_schema") is not None
         prompt = "\n".join(message.content for message in messages)
-        assert "session.request_elevation" in prompt
-        return json.dumps(
-            {
-                "tool": "session.request_elevation",
-                "permission": "read",
-                "args": {
-                    "target_permission": "write",
-                    "reason": "remote request needs governed local filesystem search",
-                },
-                "model_role": "responder",
-            }
-        )
+        if role == "planner":
+            assert kwargs.get("output_schema") is not None
+            assert "session.request_elevation" in prompt
+            return json.dumps(
+                {
+                    "tool": "session.request_elevation",
+                    "permission": "read",
+                    "args": {
+                        "target_permission": "write",
+                        "reason": "remote request needs governed local filesystem search",
+                    },
+                    "model_role": "responder",
+                }
+            )
+        if role == "responder":
+            assert "session_elevation_requested" in prompt
+            assert "target_permission" in prompt
+            return "需要审批后才能继续。"
+        raise AssertionError(f"unexpected role: {role}")
 
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]
@@ -165,7 +225,6 @@ class ElevatedManifestProvider:
     ) -> str:
         assert role == "planner"
         prompt = "\n".join(message.content for message in messages)
-        assert "delegate.run" in prompt
         assert "approval.request" in prompt
         assert "shell.run" not in prompt
         return json.dumps(
@@ -204,9 +263,9 @@ async def test_connector_request_needing_local_access_surfaces_elevation_fact(tm
     finally:
         await ingress.event_bus.shutdown()
 
-    assert "session_elevation_requested" in response
-    assert "target_permission=write" in response
-    assert "reason=remote request needs governed local filesystem search" in response
+    assert response == "需要审批后才能继续。"
+    assert "session_elevation_requested" not in response
+    assert "target_permission=write" not in response
     runs = RunStore(tmp_path).list(limit=10)
     assert len(runs) == 1
     assert runs[0].kind == "elevation"

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from navi.lifecycle import Phase, Governance, Acceptance, Resolution
 
 import json
 from dataclasses import dataclass, field

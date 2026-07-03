@@ -1,6 +1,8 @@
 from __future__ import annotations
+from .lifecycle import Phase, Governance, Acceptance, Resolution
 
 import json
+import typing
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -13,60 +15,18 @@ from .paths import db_paths
 from .schema import Column, Table, assert_schema_exact
 
 
-WORKFLOW_STORE_SCHEMA_VERSION = 1
+WORKFLOW_STORE_SCHEMA_VERSION = 2
 
-WORKFLOW_STATUS_AWAITING_APPROVAL = "awaiting_approval"
-WORKFLOW_STATUS_APPROVED = "approved"
-WORKFLOW_STATUS_RUNNING = "running"
-WORKFLOW_STATUS_INTERRUPTED = "interrupted"
-WORKFLOW_STATUS_COMPLETED = "completed"
-WORKFLOW_STATUS_VERIFIED_COMPLETE = "verified_complete"
-WORKFLOW_STATUS_BLOCKED = "blocked"
-WORKFLOW_STATUS_REJECTED = "rejected"
-
-STEP_STATUS_PENDING = "pending"
-STEP_STATUS_RUNNING = "running"
-STEP_STATUS_COMPLETED = "completed"
-STEP_STATUS_FAILED = "failed"
-STEP_STATUS_BLOCKED = "blocked"
-
-WORKFLOW_STATUSES = {
-    WORKFLOW_STATUS_AWAITING_APPROVAL,
-    WORKFLOW_STATUS_APPROVED,
-    WORKFLOW_STATUS_RUNNING,
-    WORKFLOW_STATUS_INTERRUPTED,
-    WORKFLOW_STATUS_COMPLETED,
-    WORKFLOW_STATUS_VERIFIED_COMPLETE,
-    WORKFLOW_STATUS_BLOCKED,
-    WORKFLOW_STATUS_REJECTED,
-}
-STEP_STATUSES = {
-    STEP_STATUS_PENDING,
-    STEP_STATUS_RUNNING,
-    STEP_STATUS_COMPLETED,
-    STEP_STATUS_FAILED,
-    STEP_STATUS_BLOCKED,
-}
-STEP_TERMINAL_STATUSES = frozenset(
-    {
-        STEP_STATUS_COMPLETED,
-        STEP_STATUS_FAILED,
-        STEP_STATUS_BLOCKED,
-    }
-)
-STEP_FAILED_STATUSES = frozenset(
-    {
-        STEP_STATUS_FAILED,
-        STEP_STATUS_BLOCKED,
-    }
-)
 
 
 @dataclass(frozen=True)
 class Workflow:
     id: str
     objective: str
-    status: str
+    phase: str
+    governance: str
+    acceptance: str
+    resolution: str
     source: str
     peer_id: str
     sender_id: str
@@ -93,7 +53,10 @@ class WorkflowStep:
     seq: int
     role: str
     objective: str
-    status: str
+    phase: str
+    governance: str
+    acceptance: str
+    resolution: str
     depends_on_json: str
     allowed_tools_json: str
     tool_calls_json: str
@@ -109,7 +72,10 @@ class WorkflowEvent:
     id: str
     workflow_id: str
     event_type: str
-    status: str
+    phase: str
+    governance: str
+    acceptance: str
+    resolution: str
     step_id: str
     evidence_json: str
     created_at: float
@@ -117,7 +83,10 @@ class WorkflowEvent:
 
 @dataclass(frozen=True)
 class WorkflowTransitionDecision:
-    status: str
+    phase: str
+    governance: str
+    acceptance: str
+    resolution: str
     event_type: str
     blocked_reason: str = ""
     evidence: dict[str, Any] | None = None
@@ -126,7 +95,10 @@ class WorkflowTransitionDecision:
 @dataclass(frozen=True)
 class WorkflowVerificationDecision:
     passed: bool
-    status: str
+    phase: str
+    governance: str
+    acceptance: str
+    resolution: str
     event_type: str
     blocked_reason: str
     output: dict[str, Any]
@@ -151,17 +123,8 @@ class WorkflowCheckResult:
         }
 
 
-WORKFLOW_RUNNABLE_STATUSES = frozenset(
-    {
-        WORKFLOW_STATUS_APPROVED,
-        WORKFLOW_STATUS_RUNNING,
-        WORKFLOW_STATUS_INTERRUPTED,
-    }
-)
-
-
-def workflow_can_run(status: str) -> bool:
-    return status in WORKFLOW_RUNNABLE_STATUSES
+def workflow_can_run(phase: str, governance: str) -> bool:
+    return governance == Governance.APPROVED and phase in (Phase.RUNNING, Phase.PAUSED)
 
 
 def workflow_batch_transition(
@@ -172,19 +135,19 @@ def workflow_batch_transition(
 ) -> WorkflowTransitionDecision:
     if failed:
         return WorkflowTransitionDecision(
-            status=WORKFLOW_STATUS_BLOCKED,
+            phase=Phase.ENDED, governance=Governance.NONE, acceptance=Acceptance.NONE, resolution=Resolution.BLOCKED,
             event_type="workflow.blocked",
             blocked_reason="workflow_step_failed",
             evidence={"completed_in_batch": completed, "failed_in_batch": failed},
         )
     if pending_count == 0:
         return WorkflowTransitionDecision(
-            status=WORKFLOW_STATUS_COMPLETED,
+            phase=Phase.ENDED, governance=Governance.NONE, acceptance=Acceptance.NONE, resolution=Resolution.SUCCESS,
             event_type="workflow.completed",
             evidence={"completed_in_batch": completed},
         )
     return WorkflowTransitionDecision(
-        status=WORKFLOW_STATUS_INTERRUPTED,
+        phase=Phase.PAUSED, governance=Governance.NONE, acceptance=Acceptance.NONE, resolution=Resolution.BLOCKED,
         event_type="workflow.interrupted",
         evidence={"completed_in_batch": completed, "pending_count": pending_count},
     )
@@ -193,7 +156,7 @@ def workflow_batch_transition(
 def workflow_idle_transition(counts: dict[str, int]) -> WorkflowTransitionDecision | None:
     if counts.get("pending_count") == 0 and counts.get("failed_count") == 0:
         return WorkflowTransitionDecision(
-            status=WORKFLOW_STATUS_COMPLETED,
+            phase=Phase.ENDED, governance=Governance.NONE, acceptance=Acceptance.NONE, resolution=Resolution.SUCCESS,
             event_type="workflow.completed",
             evidence=counts,
         )
@@ -203,18 +166,15 @@ def workflow_idle_transition(counts: dict[str, int]) -> WorkflowTransitionDecisi
 def workflow_verification_decision(
     *,
     workflow: Workflow,
-    steps: list[WorkflowStep],
+    steps: list["WorkflowStep"],
 ) -> WorkflowVerificationDecision:
     workflow_plan = _json_dict(workflow.plan_json)
     goal_type = str(workflow_plan.get("goal_type") or "").strip().lower()
-    failed_steps = [step for step in steps if step.status != STEP_STATUS_COMPLETED]
+    failed_steps = [step for step in steps if step.phase != Resolution.SUCCESS]
     empty_evidence = [step.id for step in steps if not _json_dict(step.evidence_json)]
     capability_steps = [step.id for step in steps if _step_has_execution_evidence(step)]
     missing_execution_evidence = not capability_steps and goal_type != "planning"
-    status_completed = workflow.status in (
-        WORKFLOW_STATUS_COMPLETED,
-        WORKFLOW_STATUS_VERIFIED_COMPLETE,
-    )
+    status_completed = workflow.phase == Phase.ENDED and workflow.resolution == Resolution.SUCCESS
     check_results = (
         WorkflowCheckResult(
             name=LoopCheckName.WORKFLOW_STATUS_COMPLETED,
@@ -225,7 +185,7 @@ def workflow_verification_decision(
                 if status_completed
                 else "workflow_status_not_completed"
             ),
-            evidence={"status": workflow.status},
+            evidence={"status": workflow.phase},
         ),
         WorkflowCheckResult(
             name=LoopCheckName.WORKFLOW_STEPS_COMPLETED,
@@ -277,7 +237,7 @@ def workflow_verification_decision(
     }
     return WorkflowVerificationDecision(
         passed=passed,
-        status=WORKFLOW_STATUS_VERIFIED_COMPLETE if passed else WORKFLOW_STATUS_BLOCKED,
+        phase=Phase.ENDED, governance=Governance.NONE, acceptance=Acceptance.ACCEPTED, resolution=Resolution.SUCCESS if passed else Resolution.BLOCKED,
         event_type="workflow.verified" if passed else "workflow.verifier_blocked",
         blocked_reason=blocked_reason,
         output=output,
@@ -325,7 +285,7 @@ class WorkflowStore:
             conn.execute(WORKFLOW_EVENTS_TABLE.ddl)
             assert_schema_exact(conn, WORKFLOW_EVENTS_TABLE)
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status, updated_at)"
+                "CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(phase, updated_at)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow ON workflow_steps(workflow_id, seq)"
@@ -391,7 +351,7 @@ class WorkflowStore:
         workflow = Workflow(
             id=workflow_id,
             objective=objective.strip(),
-            status=WORKFLOW_STATUS_AWAITING_APPROVAL,
+            phase=Phase.PAUSED, governance=Governance.AWAITING_APPROVAL, acceptance=Acceptance.NONE, resolution=Resolution.NONE,
             source=source,
             peer_id=peer_id,
             sender_id=sender_id,
@@ -415,17 +375,20 @@ class WorkflowStore:
             conn.execute(
                 """
                 INSERT INTO workflows(
-                    id, objective, status, source, peer_id, sender_id, workspace,
+                    id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, workspace,
                     permission_ceiling, max_concurrency, total_subagent_limit,
                     risk_class, estimated_cost, stop_condition, verification_strategy,
                     plan_json, evidence_json, blocked_reason, created_at, updated_at, completed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     workflow.id,
                     workflow.objective,
-                    workflow.status,
+                    workflow.phase,
+                    workflow.governance,
+                    workflow.acceptance,
+                    workflow.resolution,
                     workflow.source,
                     workflow.peer_id,
                     workflow.sender_id,
@@ -449,11 +412,11 @@ class WorkflowStore:
                 conn.execute(
                     """
                     INSERT INTO workflow_steps(
-                        id, workflow_id, seq, role, objective, status, depends_on_json,
+                        id, workflow_id, seq, role, objective, phase, governance, acceptance, resolution, depends_on_json,
                         allowed_tools_json, tool_calls_json, evidence_json, error,
                         started_at, updated_at, completed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         step.id,
@@ -461,7 +424,10 @@ class WorkflowStore:
                         step.seq,
                         step.role,
                         step.objective,
-                        step.status,
+                        step.phase,
+                        step.governance,
+                        step.acceptance,
+                        step.resolution,
                         step.depends_on_json,
                         step.allowed_tools_json,
                         step.tool_calls_json,
@@ -473,7 +439,7 @@ class WorkflowStore:
                     ),
                 )
         self.record_event(
-            workflow.id, "workflow.proposed", status=workflow.status, evidence=evidence or {}
+            workflow.id, "workflow.proposed", phase=workflow.phase, governance=workflow.governance, acceptance=workflow.acceptance, resolution=workflow.resolution, evidence=evidence or {}
         )
         return workflow
 
@@ -482,10 +448,10 @@ class WorkflowStore:
             row = conn.execute(_SELECT_WORKFLOW + " WHERE id = ?", (workflow_id,)).fetchone()
         return Workflow(*row) if row else None
 
-    def list(self, *, status: str = "", limit: int = 50) -> list[Workflow]:
-        if status:
-            query = _SELECT_WORKFLOW + " WHERE status = ? ORDER BY updated_at DESC LIMIT ?"
-            params: tuple[Any, ...] = (status, limit)
+    def list(self, *, phase: str = "", limit: int = 50) -> typing.List["Workflow"]:
+        if phase:
+            query = _SELECT_WORKFLOW + " WHERE phase = ? ORDER BY updated_at DESC LIMIT ?"
+            params: tuple[Any, ...] = (phase, limit)
         else:
             query = _SELECT_WORKFLOW + " ORDER BY updated_at DESC LIMIT ?"
             params = (limit,)
@@ -493,14 +459,14 @@ class WorkflowStore:
             rows = conn.execute(query, params).fetchall()
         return [Workflow(*row) for row in rows]
 
-    def list_steps(self, workflow_id: str) -> list[WorkflowStep]:
+    def list_steps(self, workflow_id: str) -> typing.List["WorkflowStep"]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 _SELECT_STEP + " WHERE workflow_id = ? ORDER BY seq ASC", (workflow_id,)
             ).fetchall()
         return [WorkflowStep(*row) for row in rows]
 
-    def list_events(self, workflow_id: str, *, limit: int = 200) -> list[WorkflowEvent]:
+    def list_events(self, workflow_id: str, *, limit: int = 200) -> typing.List["WorkflowEvent"]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 _SELECT_EVENT + " WHERE workflow_id = ? ORDER BY created_at ASC LIMIT ?",
@@ -512,13 +478,14 @@ class WorkflowStore:
         self,
         workflow_id: str,
         *,
-        status: str,
+        phase: str,
+        governance: str,
+        acceptance: str,
+        resolution: str,
         blocked_reason: str = "",
         evidence: dict[str, Any] | None = None,
-        event_type: str = "workflow.status",
+        event_type: str = "workflow.phase",
     ) -> Workflow | None:
-        if status not in WORKFLOW_STATUSES:
-            raise ValueError(f"unsupported workflow status: {status}")
         workflow = self.get(workflow_id)
         if workflow is None:
             return None
@@ -526,25 +493,23 @@ class WorkflowStore:
         now = time.time()
         completed_at = (
             now
-            if status
-            in {
-                WORKFLOW_STATUS_VERIFIED_COMPLETE,
-                WORKFLOW_STATUS_BLOCKED,
-                WORKFLOW_STATUS_REJECTED,
-            }
+            if phase == Phase.ENDED
             else workflow.completed_at
         )
-        if status == WORKFLOW_STATUS_COMPLETED and not completed_at:
+        if resolution == Resolution.SUCCESS and not completed_at:
             completed_at = now
         with connect(self.db_path) as conn:
             conn.execute(
                 """
                 UPDATE workflows
-                SET status = ?, blocked_reason = ?, evidence_json = ?, updated_at = ?, completed_at = ?
+                SET phase = ?, governance = ?, acceptance = ?, resolution = ?, blocked_reason = ?, evidence_json = ?, updated_at = ?, completed_at = ?
                 WHERE id = ?
                 """,
                 (
-                    status,
+                    phase,
+                    governance,
+                    acceptance,
+                    resolution,
                     blocked_reason,
                     json.dumps(merged, ensure_ascii=False, sort_keys=True),
                     now,
@@ -552,41 +517,45 @@ class WorkflowStore:
                     workflow_id,
                 ),
             )
-        self.record_event(workflow_id, event_type, status=status, evidence=evidence or {})
+        self.record_event(workflow_id, event_type, phase=phase, governance=governance, acceptance=acceptance, resolution=resolution, evidence=evidence or {})
         return self.get(workflow_id)
 
     def update_step(
         self,
         step_id: str,
         *,
-        status: str,
+        phase: str,
+        governance: str,
+        acceptance: str,
+        resolution: str,
         evidence: dict[str, Any] | None = None,
         error: str = "",
     ) -> WorkflowStep | None:
-        if status not in STEP_STATUSES:
-            raise ValueError(f"unsupported workflow step status: {status}")
         step = self.get_step(step_id)
         if step is None:
             return None
         merged = _merge_evidence(step.evidence_json, evidence)
         now = time.time()
         started_at = (
-            now if step.started_at == 0.0 and status == STEP_STATUS_RUNNING else step.started_at
+            now if step.started_at == 0.0 and phase == Phase.RUNNING else step.started_at
         )
         completed_at = (
             now
-            if status in STEP_TERMINAL_STATUSES
+            if phase == Phase.ENDED
             else step.completed_at
         )
         with connect(self.db_path) as conn:
             conn.execute(
                 """
                 UPDATE workflow_steps
-                SET status = ?, evidence_json = ?, error = ?, started_at = ?, updated_at = ?, completed_at = ?
+                SET phase = ?, governance = ?, acceptance = ?, resolution = ?, evidence_json = ?, error = ?, started_at = ?, updated_at = ?, completed_at = ?
                 WHERE id = ?
                 """,
                 (
-                    status,
+                    phase,
+                    governance,
+                    acceptance,
+                    resolution,
                     json.dumps(merged, ensure_ascii=False, sort_keys=True),
                     error,
                     started_at,
@@ -597,8 +566,11 @@ class WorkflowStore:
             )
         self.record_event(
             step.workflow_id,
-            f"workflow.step.{status}",
-            status=status,
+            f"workflow.step.{phase}_{resolution}",
+            phase=phase,
+            governance=governance,
+            acceptance=acceptance,
+            resolution=resolution,
             step_id=step_id,
             evidence=evidence or {},
         )
@@ -614,7 +586,10 @@ class WorkflowStore:
         workflow_id: str,
         event_type: str,
         *,
-        status: str,
+        phase: str,
+        governance: str,
+        acceptance: str,
+        resolution: str,
         step_id: str = "",
         evidence: dict[str, Any] | None = None,
     ) -> WorkflowEvent:
@@ -622,7 +597,10 @@ class WorkflowStore:
             id=uuid.uuid4().hex,
             workflow_id=workflow_id,
             event_type=event_type,
-            status=status,
+            phase=phase,
+            governance=governance,
+            acceptance=acceptance,
+            resolution=resolution,
             step_id=step_id,
             evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
             created_at=time.time(),
@@ -630,14 +608,17 @@ class WorkflowStore:
         with connect(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO workflow_events(id, workflow_id, event_type, status, step_id, evidence_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO workflow_events(id, workflow_id, event_type, phase, governance, acceptance, resolution, step_id, evidence_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
                     event.workflow_id,
                     event.event_type,
-                    event.status,
+                    event.phase,
+                    event.governance,
+                    event.acceptance,
+                    event.resolution,
                     event.step_id,
                     event.evidence_json,
                     event.created_at,
@@ -654,9 +635,9 @@ def workflow_facts(store: WorkflowStore, workflow: Workflow) -> dict[str, Any]:
         "steps": [_step_dict(step) for step in steps],
         "events": [_event_dict(event) for event in events],
         "step_count": len(steps),
-        "pending_count": len([step for step in steps if step.status == STEP_STATUS_PENDING]),
-        "completed_count": len([step for step in steps if step.status == STEP_STATUS_COMPLETED]),
-        "failed_count": len([step for step in steps if step.status in STEP_FAILED_STATUSES]),
+        "pending_count": len([step for step in steps if step.phase == Phase.PENDING]),
+        "completed_count": len([step for step in steps if step.phase == Phase.ENDED and step.resolution == Resolution.SUCCESS]),
+        "failed_count": len([step for step in steps if step.phase == Phase.ENDED and step.resolution in {Resolution.FAILED, Resolution.BLOCKED}]),
     }
 
 
@@ -669,9 +650,9 @@ def _workflow_dict(workflow: Workflow) -> dict[str, Any]:
 
 def _step_dict(step: WorkflowStep) -> dict[str, Any]:
     data = step.__dict__.copy()
-    data["depends_on"] = _loads(step.depends_on_json, [])
-    data["allowed_tools"] = _loads(step.allowed_tools_json, [])
-    data["tool_calls"] = _loads(step.tool_calls_json, [])
+    data["depends_on"] = _loads(step.depends_on_json, []) or []
+    data["allowed_tools"] = _loads(step.allowed_tools_json, []) or []
+    data["tool_calls"] = _loads(step.tool_calls_json, []) or []
     data["evidence"] = _loads(step.evidence_json, {})
     return data
 
@@ -684,8 +665,8 @@ def _event_dict(event: WorkflowEvent) -> dict[str, Any]:
 
 def _normalize_steps(
     raw_steps: list[dict[str, Any]], *, workflow_id: str, total_limit: int
-) -> list[WorkflowStep]:
-    steps: list[WorkflowStep] = []
+) -> typing.List["WorkflowStep"]:
+    steps: list["WorkflowStep"] = []
     now = time.time()
     for index, raw in enumerate(raw_steps[: max(1, min(int(total_limit or 32), 1000))], start=1):
         if not isinstance(raw, dict):
@@ -706,7 +687,7 @@ def _normalize_steps(
                 seq=int(raw.get("seq") or index),
                 role=role[:64],
                 objective=objective,
-                status=STEP_STATUS_PENDING,
+                phase=Phase.PENDING, governance=Governance.NONE, acceptance=Acceptance.NONE, resolution=Resolution.NONE,
                 depends_on_json=json.dumps(
                     [str(item) for item in depends_on], ensure_ascii=False, sort_keys=True
                 ),
@@ -755,7 +736,7 @@ def _loads(value: str, default: Any) -> Any:
         return default
 
 
-def _json_list(value: str) -> list[Any]:
+def _json_list(value: str) -> typing.List[Any]:
     parsed = _loads(value, [])
     return parsed if isinstance(parsed, list) else []
 
@@ -774,7 +755,10 @@ WORKFLOWS_TABLE = Table(
     [
         Column("id", "TEXT", primary_key=True),
         Column("objective", "TEXT", nullable=False),
-        Column("status", "TEXT", nullable=False),
+        Column("phase", "TEXT", nullable=False),
+        Column("governance", "TEXT", nullable=False),
+        Column("acceptance", "TEXT", nullable=False),
+        Column("resolution", "TEXT", nullable=False),
         Column("source", "TEXT", nullable=False),
         Column("peer_id", "TEXT", nullable=False),
         Column("sender_id", "TEXT", nullable=False),
@@ -802,7 +786,10 @@ WORKFLOW_STEPS_TABLE = Table(
         Column("seq", "INTEGER", nullable=False),
         Column("role", "TEXT", nullable=False),
         Column("objective", "TEXT", nullable=False),
-        Column("status", "TEXT", nullable=False),
+        Column("phase", "TEXT", nullable=False),
+        Column("governance", "TEXT", nullable=False),
+        Column("acceptance", "TEXT", nullable=False),
+        Column("resolution", "TEXT", nullable=False),
         Column("depends_on_json", "TEXT", nullable=False),
         Column("allowed_tools_json", "TEXT", nullable=False),
         Column("tool_calls_json", "TEXT", nullable=False),
@@ -819,26 +806,29 @@ WORKFLOW_EVENTS_TABLE = Table(
         Column("id", "TEXT", primary_key=True),
         Column("workflow_id", "TEXT", nullable=False),
         Column("event_type", "TEXT", nullable=False),
-        Column("status", "TEXT", nullable=False),
+        Column("phase", "TEXT", nullable=False),
+        Column("governance", "TEXT", nullable=False),
+        Column("acceptance", "TEXT", nullable=False),
+        Column("resolution", "TEXT", nullable=False),
         Column("step_id", "TEXT", nullable=False),
         Column("evidence_json", "TEXT", nullable=False),
         Column("created_at", "REAL", nullable=False),
     ],
 )
 _SELECT_WORKFLOW = """
-    SELECT id, objective, status, source, peer_id, sender_id, workspace,
+    SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, workspace,
            permission_ceiling, max_concurrency, total_subagent_limit,
            risk_class, estimated_cost, stop_condition, verification_strategy,
            plan_json, evidence_json, blocked_reason, created_at, updated_at, completed_at
     FROM workflows
 """
 _SELECT_STEP = """
-    SELECT id, workflow_id, seq, role, objective, status, depends_on_json,
+    SELECT id, workflow_id, seq, role, objective, phase, governance, acceptance, resolution, depends_on_json,
            allowed_tools_json, tool_calls_json, evidence_json, error,
            started_at, updated_at, completed_at
     FROM workflow_steps
 """
 _SELECT_EVENT = """
-    SELECT id, workflow_id, event_type, status, step_id, evidence_json, created_at
+    SELECT id, workflow_id, event_type, phase, governance, acceptance, resolution, step_id, evidence_json, created_at
     FROM workflow_events
 """

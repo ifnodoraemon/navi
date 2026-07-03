@@ -183,7 +183,7 @@ async def test_service_sends_media_directive_from_weixin_outbox(tmp_path: Path):
 async def test_weixin_stage_file_returns_allowed_media_directive(tmp_path: Path):
     source = tmp_path / "resume.docx"
     source.write_bytes(b"resume")
-    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path, governed_run_id="test-run")
 
     result = await registry.invoke(
         "connector.weixin.stage_file",

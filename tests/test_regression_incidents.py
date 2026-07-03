@@ -9,8 +9,9 @@ import yaml
 
 from navi.context import ContextManager
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
-from navi.engine import HernessEngine, _dynamic_intent_facts
-from navi.connector_runtime import ConnectorMessage
+from navi.engine import HernessEngine
+from navi.core.context_builder import _dynamic_intent_facts
+from navi.connector_runtime import ConnectorMessage, ConnectorIngressRuntime
 from navi.connector_router import ConnectorRouter
 from navi.event_bus import EventBus
 from navi.evolution import EvolutionEngine, EvolutionLedger
@@ -258,18 +259,50 @@ async def test_weixin_intent_current_state_is_not_repeated_in_planner_observatio
 
 @pytest.mark.asyncio
 async def test_connector_approval_command_returns_explicit_unresolved_fact(tmp_path):
-    router = ConnectorRouter(tmp_path, EventBus())
+    class ApprovalProvider:
+        def __init__(self):
+            self.calls = 0
 
-    response = await router.route(
-        ConnectorMessage(
-            message_id="msg-approval",
-            peer_id="peer-1",
-            sender_id="sender-1",
-            text="批准 123456",
-            source="weixin",
-            session_alias_prefix="connector:weixin",
-        )
+        async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+            if role == "intent":
+                return json.dumps({"intent_type": "command", "intent_text": "批准 123456", "original_text": "批准 123456"})
+            if role == "responder":
+                return "approval_not_resolved\napproval_code_not_found"
+            assert role == "planner"
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps({
+                    "tool": "approval.resolve",
+                    "permission": "prepare",
+                    "args": {
+                        "decision": "approve",
+                        "code": "123456",
+                    },
+                    "model_role": "planner"
+                })
+            else:
+                return "approval_not_resolved\napproval_code_not_found"
+        def list_roles(self) -> list[str]:
+            return ["planner"]
+
+    ingress = ConnectorIngressRuntime(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=ApprovalProvider()),
+        project_dir=tmp_path,
     )
+    try:
+        response = await ingress.handle(
+            ConnectorMessage(
+                message_id="msg-approval",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                text="批准 123456",
+                source="weixin",
+                session_alias_prefix="connector:weixin",
+            )
+        )
+    finally:
+        await ingress.event_bus.shutdown()
 
     assert "approval_not_resolved" in response
     assert "approval_code_not_found" in response
@@ -618,7 +651,11 @@ class _RepeatCompletionDeleteProvider:
         if role == "responder":
             self.responder_calls += 1
             content = "\n".join(message.content for message in messages)
-            assert '"cleanup_complete": true' in content
+            if '"cleanup_complete": true' not in content:
+                assert '"reason": "repeated_progress_signature"' in content
+                assert '"tool": "delegate.delete"' in content
+                assert '"ok": false' in content
+                return "当前渠道不能直接删除这些任务。"
             return "任务清理已完成。"
         raise AssertionError(f"unexpected role: {role}")
 
@@ -1014,9 +1051,9 @@ async def test_executor_ask_result_blocks_run_instead_of_marking_completed(
     tmp_path,
     monkeypatch,
 ):
-    import navi.execution as execution_module
+    import navi.execution.provider as provider_module
 
-    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _AskOnlyEngine)
+    monkeypatch.setattr(provider_module, "get_engine_class", lambda: _AskOnlyEngine)
     runs = RunStore(tmp_path)
     task = runs.create(
         "在用户电脑上找到简历文件并发送给用户",
@@ -1040,9 +1077,9 @@ async def test_executor_terminal_response_marks_governed_run_completed(
     tmp_path,
     monkeypatch,
 ):
-    import navi.execution as execution_module
+    import navi.execution.provider as provider_module
 
-    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _CompletedEngine)
+    monkeypatch.setattr(provider_module, "get_engine_class", lambda: _CompletedEngine)
     runs = RunStore(tmp_path)
     task = runs.create(
         "在用户电脑上找到简历文件并发送给用户",
@@ -1146,10 +1183,10 @@ async def test_repeated_completion_evidence_finalizes_without_looping(tmp_path):
 
     result = await engine.handle(
         "删除所有的任务",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
+        peer_id="local",
+        sender_id="local",
+        source="local",
+        session_alias="local:peer-1:sender-1",
     )
 
     assert provider.planner_calls == 3
@@ -1165,6 +1202,40 @@ async def test_repeated_completion_evidence_finalizes_without_looping(tmp_path):
     ]
     assert decisions[-1]["decision"] == "finalize"
     assert decisions[-1]["reason"] == "completion_evidence_true"
+
+
+@pytest.mark.asyncio
+async def test_repeated_unavailable_remote_tool_does_not_complete_task(tmp_path):
+    provider = _RepeatCompletionDeleteProvider()
+    engine = HernessEngine(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "删除所有的任务",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert provider.planner_calls == 3
+    assert provider.responder_calls == 1
+    assert result.text == "当前渠道不能直接删除这些任务。"
+    assert result.action == "execute:system.loop_converged"
+    assert result.ok is False
+    assert result.error_reason == "loop_no_progress"
+    decisions = [
+        json.loads(event.output_json)
+        for event in TraceStore(tmp_path).list_events(result.trace_id)
+        if event.phase == "loop.decision"
+    ]
+    assert decisions[-1]["decision"] == "converged"
+    assert decisions[-1]["reason"] == "repeated_progress_signature"
+    assert decisions[-1]["failure_domain"] == "loop_no_progress"
 
 
 @pytest.mark.asyncio
@@ -1257,11 +1328,20 @@ async def test_planner_capability_args_schema_mismatch_triggers_loop(tmp_path):
     )
 
     assert result.text == "回答完毕。"
-    assert result.action == "execute:system.task_complete"
+    assert result.action == "execute:system.loop_converged"
+    assert result.ok is False
+    assert result.error_reason == "loop_no_progress"
     assert engine.runtime.provider.call_count == 3
     assert engine.runtime.provider.responder_calls == 1
     events = TraceStore(tmp_path).list_events(result.trace_id)
     assert any(event.phase == "planner.parse_error" for event in events)
+    decisions = [
+        json.loads(event.output_json)
+        for event in events
+        if event.phase == "loop.decision"
+    ]
+    assert decisions[-1]["decision"] == "converged"
+    assert decisions[-1]["failure_domain"] == "loop_no_progress"
 
 
 @pytest.mark.asyncio

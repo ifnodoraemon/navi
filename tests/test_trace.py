@@ -11,7 +11,8 @@ from navi.capabilities_types import CapabilityContext
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY
 from navi.db import connect
 from navi.loop import LoopCheckName, LoopDecisionKind, LoopReason, TraceFailureDomain
-from navi.trace import LoopCheckResult, LoopDecision, TraceStore
+from navi.trace import LoopCheckResult, TraceStore
+from navi.loop import LoopDecision
 
 
 def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):

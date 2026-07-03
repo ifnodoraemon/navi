@@ -1,4 +1,5 @@
 from __future__ import annotations
+from navi.lifecycle import Phase, Governance, Acceptance, Resolution
 
 import json
 import time
@@ -502,7 +503,7 @@ class TraceStore:
 
                 _find_hashes(data)
             else:
-                parsed_data.append((e, None))
+                parsed_data.append((e, {}))
 
         if not hashes:
             return events

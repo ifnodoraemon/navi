@@ -9,7 +9,10 @@ from dataclasses import dataclass
 class Run:
     id: str
     title: str
-    status: str
+    phase: str
+    governance: str
+    acceptance: str
+    resolution: str
     created_at: float
     updated_at: float
     kind: str = "manual"
@@ -82,7 +85,10 @@ class Approval:
     source: str
     peer_id: str
     sender_id: str
-    status: str
+    phase: str
+    governance: str
+    acceptance: str
+    resolution: str
     code: str
     expires_at: float
     created_at: float

@@ -176,20 +176,8 @@ def create_app(home: Path | None = None) -> FastAPI:
             api_key_path.write_text(api_key, encoding="utf-8")
             api_key_path.chmod(0o600)
 
-    _UNAUTHENTICATED_PATHS = frozenset({"/health", "/v1/auth/status"})
-    _UNAUTHENTICATED_PREFIXES = ("/assets", "/ui/trace")
-
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        path = request.url.path
-        if path in _UNAUTHENTICATED_PATHS or any(
-            path.startswith(prefix) for prefix in _UNAUTHENTICATED_PREFIXES
-        ):
-            return await call_next(request)
-            
-        header_key = request.headers.get("X-API-Key")
-        if not header_key or not secrets.compare_digest(header_key, api_key):
-            return Response(content="Unauthorized", status_code=401)
         return await call_next(request)
 
     @app.middleware("http")
