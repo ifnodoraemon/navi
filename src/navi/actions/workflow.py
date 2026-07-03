@@ -40,16 +40,8 @@ from ..loop import (
     TracePhase,
 )
 from ..trace import TraceStore
+from ..lifecycle import Phase, Governance, Acceptance, Resolution
 from ..workflows import (
-    STEP_STATUS_COMPLETED,
-    STEP_STATUS_FAILED,
-    STEP_FAILED_STATUSES,
-    STEP_STATUS_PENDING,
-    STEP_STATUS_RUNNING,
-    WORKFLOW_STATUS_APPROVED,
-    WORKFLOW_STATUS_COMPLETED,
-    WORKFLOW_STATUS_REJECTED,
-    WORKFLOW_STATUS_RUNNING,
     Workflow,
     WorkflowStep,
     WorkflowStore,
@@ -112,7 +104,7 @@ class WorkflowProposeCapability(BaseCapability):
         facts = {
             **_transition_facts("workflow", workflow.id, "created"),
             "workflow_id": workflow.id,
-            "status": workflow.status,
+            "phase": workflow.phase, "governance": workflow.governance, "acceptance": workflow.acceptance, "resolution": workflow.resolution,
             "confirmation_required": True,
             "permission_ceiling": workflow.permission_ceiling,
             "max_concurrency": workflow.max_concurrency,
@@ -163,21 +155,21 @@ class WorkflowApproveCapability(BaseCapability):
                     "current_sender_id": context.sender_id,
                 },
             )
-        status = (
-            WORKFLOW_STATUS_APPROVED
+        governance = (
+            Governance.APPROVED
             if decision == APPROVAL_DECISION_APPROVE
-            else WORKFLOW_STATUS_REJECTED
+            else Governance.REJECTED
         )
         updated = store.update_status(
             workflow.id,
-            status=status,
+            governance=governance,
             evidence={"approved_by": context.sender_id, "decision": decision},
             event_type=f"workflow.{decision}",
         )
         facts = {
             **_transition_facts("workflow", workflow.id, "updated"),
             "workflow_id": workflow.id,
-            "status": status,
+            "governance": governance,
         }
         if updated:
             facts["workflow"] = workflow_facts(store, updated)["workflow"]
@@ -203,15 +195,15 @@ class WorkflowRunCapability(BaseCapability):
         workflow = store.get(workflow_id) if workflow_id else None
         if workflow is None:
             raise NotFound(f"workflow not found: {workflow_id}")
-        if not workflow_can_run(workflow.status):
+        if not workflow_can_run(workflow.phase, workflow.governance):
             raise SchemaMismatch(
-                f"workflow {workflow.id} is {workflow.status}; "
+                f"workflow {workflow.id} is {workflow.phase} / {workflow.governance}; "
                 "approve or resume only supported running states."
             )
         resume = bool(args.get("resume"))
         store.update_status(
             workflow.id,
-            status=WORKFLOW_STATUS_RUNNING,
+            phase=Phase.RUNNING,
             evidence={"resume": resume, "runner": context.sender_id},
             event_type="workflow.resume" if resume else "workflow.run",
         )
@@ -231,7 +223,7 @@ class WorkflowRunCapability(BaseCapability):
                 break
         workflow = store.get(workflow.id) or workflow
         pending_count = len(
-            [step for step in store.list_steps(workflow.id) if step.status == STEP_STATUS_PENDING]
+            [step for step in store.list_steps(workflow.id) if step.phase == Phase.PENDING]
         )
         if pending_count == 0 and failed == 0:
             return self._finish_if_possible(store, workflow, context=context)
@@ -244,7 +236,7 @@ class WorkflowRunCapability(BaseCapability):
         workflow = (
             store.update_status(
                 workflow.id,
-                status=transition.status,
+                phase=transition.phase, governance=transition.governance, acceptance=transition.acceptance, resolution=transition.resolution,
                 blocked_reason=transition.blocked_reason,
                 evidence=transition.evidence,
                 event_type=transition.event_type,
@@ -254,7 +246,7 @@ class WorkflowRunCapability(BaseCapability):
         facts = {
             **_transition_facts("workflow", workflow.id, "updated"),
             "workflow_id": workflow.id,
-            "status": workflow.status,
+            "phase": workflow.phase, "governance": workflow.governance, "acceptance": workflow.acceptance, "resolution": workflow.resolution,
             **_workflow_counts(store, workflow),
         }
         return _fact_result("workflow", facts, run_id=workflow.id)
@@ -280,7 +272,7 @@ class WorkflowRunCapability(BaseCapability):
                 "permission_ceiling": workflow.permission_ceiling,
             },
         )
-        store.update_step(step.id, status=STEP_STATUS_RUNNING, evidence={"subagent_id": run.id})
+        store.update_step(step.id, phase=Phase.RUNNING, evidence={"subagent_id": run.id})
         tool_calls = _json_list(step.tool_calls_json)
         allowed_tools = set(_json_list(step.allowed_tools_json))
         evidence: list[dict[str, Any]] = []
@@ -328,7 +320,7 @@ class WorkflowRunCapability(BaseCapability):
                 "evidence": evidence,
             }
             subagents.finish(run.id, status=SUBAGENT_STATUS_COMPLETED, output_data=output)
-            store.update_step(step.id, status=STEP_STATUS_COMPLETED, evidence=output)
+            store.update_step(step.id, phase=Phase.ENDED, resolution=Resolution.SUCCESS, evidence=output)
             return CapabilityResult(
                 ok=True,
                 action="workflow",
@@ -343,7 +335,7 @@ class WorkflowRunCapability(BaseCapability):
                 output_data=output,
                 error=str(exc),
             )
-            store.update_step(step.id, status=STEP_STATUS_FAILED, evidence=output, error=str(exc))
+            store.update_step(step.id, phase=Phase.ENDED, resolution=Resolution.FAILED, evidence=output, error=str(exc))
             return _failure_result(
                 "workflow",
                 str(exc),
@@ -509,11 +501,11 @@ class WorkflowRunCapability(BaseCapability):
         counts = _workflow_counts(store, workflow)
         transition = workflow_idle_transition(counts)
         if transition is not None:
-            if transition.status == WORKFLOW_STATUS_COMPLETED:
+            if transition.phase == Phase.ENDED:
                 from dataclasses import replace
 
                 decision = workflow_verification_decision(
-                    workflow=replace(workflow, status=WORKFLOW_STATUS_COMPLETED),
+                    workflow=replace(workflow, phase=Phase.ENDED, resolution=Resolution.SUCCESS),
                     steps=store.list_steps(workflow.id),
                 )
                 self._record_workflow_verification_loop_decision(
@@ -524,7 +516,7 @@ class WorkflowRunCapability(BaseCapability):
                 workflow = (
                     store.update_status(
                         workflow.id,
-                        status=decision.status,
+                        phase=decision.phase, governance=decision.governance, acceptance=decision.acceptance, resolution=decision.resolution,
                         blocked_reason=decision.blocked_reason,
                         evidence=decision.output,
                         event_type=decision.event_type,
@@ -535,7 +527,7 @@ class WorkflowRunCapability(BaseCapability):
                 workflow = (
                     store.update_status(
                         workflow.id,
-                        status=transition.status,
+                        phase=transition.phase, governance=transition.governance, acceptance=transition.acceptance, resolution=transition.resolution,
                         evidence=transition.evidence,
                         event_type=transition.event_type,
                     )
@@ -544,7 +536,7 @@ class WorkflowRunCapability(BaseCapability):
         facts = {
             **_transition_facts("workflow", workflow.id, "updated"),
             "workflow_id": workflow.id,
-            "status": workflow.status,
+            "phase": workflow.phase, "governance": workflow.governance, "acceptance": workflow.acceptance, "resolution": workflow.resolution,
             **counts,
         }
         return _fact_result("workflow", facts, run_id=workflow.id)
@@ -595,10 +587,10 @@ class WorkflowStatusCapability(BaseCapability):
 
 
 def _runnable_steps(steps: list[WorkflowStep]) -> list[WorkflowStep]:
-    completed_ids = {step.id for step in steps if step.status == STEP_STATUS_COMPLETED}
+    completed_ids = {step.id for step in steps if step.phase == Phase.ENDED and step.resolution == Resolution.SUCCESS}
     runnable: list[WorkflowStep] = []
     for step in steps:
-        if step.status != STEP_STATUS_PENDING:
+        if step.phase != Phase.PENDING:
             continue
         dependencies = set(_json_list(step.depends_on_json))
         if dependencies <= completed_ids:
@@ -657,7 +649,7 @@ def _workflow_counts(store: WorkflowStore, workflow: Workflow) -> dict[str, int]
     steps = store.list_steps(workflow.id)
     return {
         "step_count": len(steps),
-        "pending_count": len([step for step in steps if step.status == STEP_STATUS_PENDING]),
-        "completed_count": len([step for step in steps if step.status == STEP_STATUS_COMPLETED]),
-        "failed_count": len([step for step in steps if step.status in STEP_FAILED_STATUSES]),
+        "pending_count": len([step for step in steps if step.phase == Phase.PENDING]),
+        "completed_count": len([step for step in steps if step.phase == Phase.ENDED and step.resolution == Resolution.SUCCESS]),
+        "failed_count": len([step for step in steps if step.phase == Phase.ENDED and step.resolution == Resolution.FAILED]),
     }

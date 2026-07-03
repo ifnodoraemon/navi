@@ -79,16 +79,13 @@ class Approval:
     id: str
     run_id: str
     action: str
+    status: str
     requested_tool: str
     requested_permission: str
     args_json: str
     source: str
     peer_id: str
     sender_id: str
-    phase: str
-    governance: str
-    acceptance: str
-    resolution: str
     code: str
     expires_at: float
     created_at: float

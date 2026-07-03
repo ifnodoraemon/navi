@@ -15,7 +15,7 @@ from ..capabilities_types import (
     capability,
 )
 from ..control import ApprovalService, SurfaceContext
-from ..lifecycle import RUN_STATUS_AWAITING_APPROVAL
+from ..lifecycle import Phase, Governance, Acceptance, Resolution
 from ..result import NotFound, SchemaMismatch, guarded
 from ..runs import RunStore
 from .helpers import (
@@ -23,6 +23,7 @@ from .helpers import (
     approval_failure_is_terminal as _approval_failure_is_terminal,
     approval_result_message as _approval_result_message,
     approval_selection as _approval_selection,
+    fact_result as _fact_result,
     arg_text as _arg_text,
 )
 
@@ -77,7 +78,7 @@ class ApprovalRequestCapability(BaseCapability):
         )
         runs.update_run(
             run_id,
-            status=RUN_STATUS_AWAITING_APPROVAL,
+            phase=Phase.PAUSED, resolution=Resolution.BLOCKED,
             result_summary=_approval_visible_text(approval),
             error="",
         )

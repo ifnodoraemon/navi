@@ -24,16 +24,13 @@ from .helpers import (
 )
 from ..config import load_config
 from ..execution import ExecutionService
-from ..goals import GOAL_STATUS_BLOCKED, GoalStore
+from ..goals import GoalStore
+from ..lifecycle import Phase, Governance, Acceptance, Resolution
 from ..graph import GraphStore
-from ..lifecycle import (
-    RUN_ACTIVE_STATUSES,
-    RUN_STATUS_FAILED,
-    RUN_STATUS_PENDING,
-)
+
 from ..runs import RunStore
 
-REMOTE_DELETABLE_STATUSES = frozenset({RUN_STATUS_FAILED, RUN_STATUS_PENDING, "expired"})
+REMOTE_DELETABLE_PHASES = frozenset({Phase.PENDING, Phase.ENDED})
 REMOTE_DELETABLE_KINDS = frozenset({"watch", "delegation"})
 
 
@@ -44,7 +41,7 @@ def _block_goal_for_deleted_run(home: Path, run_id: str) -> None:
         return
     goals.update_status(
         goal.id,
-        GOAL_STATUS_BLOCKED,
+        
         blocked_reason="delegation_run_deleted",
         evidence={"run_id": run_id, "reason": "delegation_run_deleted"},
         event_type="goal.run_deleted",
@@ -93,7 +90,7 @@ class DelegateSpawnCapability(BaseCapability):
             facts = {
                 **_transition_facts("delegation_run", existing.id, "existing"),
                 "run_id": existing.id,
-                "status": existing.status,
+                "phase": existing.phase,
                 "autonomy_level": existing.autonomy_level,
                 "trust_rule_id": existing.trust_rule_id,
                 "deduplicated": True,
@@ -120,7 +117,7 @@ class DelegateSpawnCapability(BaseCapability):
             trust_rule_id="",
             why_now="trigger=model_capability",
         )
-        graph.upsert("DelegationRun", task.id, {"objective": task.title, "status": task.status, "prompt": task.prompt})
+        graph.upsert("DelegationRun", task.id, {"objective": task.title, "phase": task.phase, "prompt": task.prompt})
         goals = GoalStore(self.home)
         goal = goals.create(
             objective=task.prompt,
@@ -131,14 +128,14 @@ class DelegateSpawnCapability(BaseCapability):
             run_id=task.id,
             timeout=config.execution.timeout_seconds,
             max_retries=3,
-            evidence={"run_id": task.id, "run_status": task.status, "autonomy_level": task.autonomy_level},
+            evidence={"run_id": task.id, "run_phase": task.phase, "autonomy_level": task.autonomy_level},
         )
 
         facts = {
             **_transition_facts("delegation_run", task.id, "created"),
             "goal_id": goal.id,
             "run_id": task.id,
-            "status": task.status,
+            "phase": task.phase,
             "autonomy_level": task.autonomy_level,
             "trust_rule_id": task.trust_rule_id,
         }
@@ -158,7 +155,7 @@ class DelegateSpawnCapability(BaseCapability):
         for run in runs.list(limit=100):
             if run.kind != "delegation":
                 continue
-            if run.status not in RUN_ACTIVE_STATUSES:
+            if run.phase == Phase.ENDED:
                 continue
             if run.workspace != workspace:
                 continue
@@ -184,16 +181,16 @@ class DelegateRunCapability(BaseCapability):
         task = runs.get(run_id) if run_id else None
         if task is None:
             raise NotFound(f"delegation run not found: {run_id}")
-        queued = runs.update_run(task.id, status=RUN_STATUS_PENDING, result_summary="") or task
+        queued = runs.update_run(task.id, phase=Phase.PENDING, result_summary="") or task
         GoalStore(self.home).update_for_run(
-            queued, evidence={"run_id": queued.id, "run_status": queued.status}
+            queued, evidence={"run_id": queued.id, "run_phase": queued.phase}
         )
         return _fact_result(
             "delegation",
             {
                 **_transition_facts("delegation_run", queued.id, "updated"),
                 "run_id": queued.id,
-                "status": queued.status,
+                "phase": queued.phase,
             },
             run_id=queued.id,
         )
@@ -218,12 +215,12 @@ class DelegateSendInputCapability(BaseCapability):
         task = runs.get(run_id) if run_id else None
         if task is None:
             raise NotFound(f"delegation run not found: {run_id}")
-        if task.status != RUN_STATUS_PENDING:
+        if task.phase != Phase.PENDING:
             return _failure_result(
                 "delegation",
-                message=f"Run {run_id} is not awaiting input (status={task.status}).",
+                message=f"Run {run_id} is not awaiting input (phase={task.phase}).",
                 error_reason="not_awaiting_input",
-                facts={"run_id": run_id, "status": task.status},
+                facts={"run_id": run_id, "phase": task.phase},
             )
 
         from ..memory import MemoryStore
@@ -233,14 +230,14 @@ class DelegateSendInputCapability(BaseCapability):
         session_id = memory.current_session_id(session_alias)
         memory.add_message(session_id, "user", message)
 
-        runs.update_run(task.id, status=RUN_STATUS_PENDING, result_summary="")
+        runs.update_run(task.id, phase=Phase.PENDING, result_summary="")
 
         return _fact_result(
             "delegation",
             {
                 **_transition_facts("delegation_run", run_id, "updated"),
                 "run_id": run_id,
-                "status": RUN_STATUS_PENDING,
+                "phase": Phase.PENDING,
             },
             run_id=run_id,
         )
@@ -266,7 +263,7 @@ class DelegateDeleteCapability(BaseCapability):
         if task is None:
             raise NotFound(f"delegation run not found: {run_id}")
         if _remote_source(context.source) and (
-            task.status not in REMOTE_DELETABLE_STATUSES
+            task.phase not in REMOTE_DELETABLE_PHASES
             or task.kind not in REMOTE_DELETABLE_KINDS
         ):
             raise PermissionDenied(
@@ -289,13 +286,13 @@ class DelegateDeleteCapability(BaseCapability):
             "deleted": True,
             "run_id": deleted.id,
             "title": deleted.title,
-            "status": deleted.status,
+            "phase": deleted.phase,
             "reason": reason,
         }
         return _fact_result("delegation", facts, run_id=deleted.id)
 
     def _delete_by_filter(self, args: dict[str, Any], context: CapabilityContext) -> CapabilityResult:
-        status = _arg_text(args, "status") or "failed"
+        phase = _arg_text(args, "phase") or Phase.ENDED
         raw_limit = args.get("limit")
         limit = (
             _positive_int(raw_limit, default=5000, maximum=5000) if raw_limit is not None else None
@@ -307,28 +304,28 @@ class DelegateDeleteCapability(BaseCapability):
                 "delegation",
                 message="delegate.delete bulk cleanup requires source or kind scope.",
                 error_reason="scope_required",
-                facts={"status": status, "source": source, "kind": kind},
+                facts={"phase": phase, "source": source, "kind": kind},
             )
         if _remote_source(context.source) and not kind:
             kind = "delegation"
         if _remote_source(context.source) and (
-            status not in REMOTE_DELETABLE_STATUSES or kind not in REMOTE_DELETABLE_KINDS
+            phase not in REMOTE_DELETABLE_PHASES or kind not in REMOTE_DELETABLE_KINDS
         ):
             message = (
-                "remote delegate.delete bulk cleanup requires status in "
+                "remote delegate.delete bulk cleanup requires phase in "
                 "{failed, pending, expired} and kind watch or delegation."
             )
             return _failure_result(
                 "delegation",
                 message,
                 error_reason="remote_scope_denied",
-                facts={"status": status, "source": source, "kind": kind},
+                facts={"phase": phase, "source": source, "kind": kind},
             )
 
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
-        before_count = runs.count_runs(status=status, source=source, kind=kind)
-        candidates = runs.list_by_status_filtered(status, source=source, kind=kind, limit=limit)
+        before_count = runs.count_runs(phase=phase, source=source, kind=kind)
+        candidates = runs.list_by_status_filtered(phase, source=source, kind=kind, limit=limit)
         deleted = []
         for task in candidates:
             removed = runs.delete_run(task.id)
@@ -345,7 +342,7 @@ class DelegateDeleteCapability(BaseCapability):
                     "updated_at": removed.updated_at,
                 }
             )
-        remaining_count = runs.count_runs(status=status, source=source, kind=kind)
+        remaining_count = runs.count_runs(phase=phase, source=source, kind=kind)
         facts = {
             **_transition_facts("bulk_delete", "runs", "completed"),
             "completion_evidence": remaining_count == 0,
@@ -355,7 +352,7 @@ class DelegateDeleteCapability(BaseCapability):
             "deleted_runs": deleted,
             "remaining_count": remaining_count,
             "cleanup_complete": remaining_count == 0,
-            "status_filter": status,
+            "phase_filter": phase,
             "source_filter": source,
             "kind_filter": kind,
             "limit_filter": limit,
@@ -400,7 +397,7 @@ class ExecutionRetryCapability(BaseCapability):
         facts = {
             **_transition_facts("execution_attempt", result.id, "created"),
             "run_id": result.id,
-            "status": result.status,
+            "phase": result.phase, "resolution": result.resolution,
             "result_summary": result.result_summary,
             "error": result.error,
         }
@@ -433,13 +430,13 @@ class DelegateListCapability(BaseCapability):
             for watch in store.list_watches(limit=limit, offset=offset)
             if run_matches_context(watch, context)
         ]
-        status_counts: dict[str, int] = {}
+        phase_counts: dict[str, int] = {}
         for run in runs:
-            status_counts[run.status] = status_counts.get(run.status, 0) + 1
+            phase_counts[run.phase] = phase_counts.get(run.phase, 0) + 1
         facts = {
             "runs": [_run_list_facts(run) for run in runs],
             "watches": [_watch_list_facts(watch) for watch in watches],
-            "run_status_counts": status_counts,
+            "run_phase_counts": phase_counts,
             "returned_run_count": len(runs),
             "run_limit": limit,
             "run_offset": offset,
@@ -451,7 +448,7 @@ def _run_list_facts(run: Any) -> dict[str, Any]:
     return {
         "id": run.id,
         "title": run.title,
-        "status": run.status,
+        "phase": run.phase, "resolution": run.resolution,
         "kind": run.kind,
         "source": run.source,
         "peer_id": run.peer_id,

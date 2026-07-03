@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import typing
 import uuid
 from pathlib import Path
 from typing import Any
@@ -240,7 +241,7 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
         params: list[Any] = []
         if phase:
             clauses.append("phase = ?")
-            params.append(status)
+            params.append(phase)
         if source:
             clauses.append("source = ?")
             params.append(source)
@@ -257,24 +258,24 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
             rows = conn.execute("SELECT phase, COUNT(*) FROM runs GROUP BY phase").fetchall()
         return {str(row[0]): int(row[1]) for row in rows}
 
-    def list_by_phases(self, phases: list[str], *, limit: int = 60) -> typing.List[Run]:
+    def list_by_phases(self, phases: typing.List[str], *, limit: int = 60) -> typing.List[Run]:
         if not phases:
             return []
-        placeholders = ", ".join("?" for _ in statuses)
+        placeholders = ", ".join("?" for _ in phases)
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
                 SELECT id, title, phase, governance, acceptance, resolution, created_at, updated_at, kind, prompt, source,
                        peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
                        why_now, plan_summary, result_summary, error
-                FROM runs WHERE status IN ({placeholders}) ORDER BY updated_at ASC LIMIT ?
+                FROM runs WHERE phase IN ({placeholders}) ORDER BY updated_at ASC LIMIT ?
                 """,
-                [*statuses, limit],
+                [*phases, limit],
             ).fetchall()
         return [self._run_from_row(row) for row in rows]
 
     def update_status(self, run_id: str, status: str) -> Run | None:
-        return self.update_run(run_id, status=status)
+        return self.update_run(run_id, phase=status)
 
     def delete_run(self, run_id: str) -> Run | None:
         run = self.get(run_id)

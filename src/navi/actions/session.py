@@ -11,7 +11,7 @@ from ..capabilities_types import (
 )
 from ..capability_contract import CAPABILITY_ACTION_APPROVAL
 from ..approval_contract import APPROVAL_ACTION_SESSION_ELEVATION
-from ..lifecycle import RUN_STATUS_AWAITING_APPROVAL
+from ..lifecycle import Phase, Governance, Acceptance, Resolution
 from .helpers import (
     arg_text as _arg_text,
     fact_result as _fact_result,
@@ -62,7 +62,7 @@ class SessionRequestElevationCapability(BaseCapability):
             source=context.source,
             peer_id=context.peer_id,
             sender_id=context.sender_id,
-            status=RUN_STATUS_AWAITING_APPROVAL,
+            phase=Phase.PAUSED,
         )
         approval = runs.create_approval(
             run_id=task.id,
@@ -83,7 +83,7 @@ class SessionRequestElevationCapability(BaseCapability):
             "entity_id": task.id,
             "state_transition": "elevation_requested",
             "turn_scope": "current",
-            "status": RUN_STATUS_AWAITING_APPROVAL,
+            "phase": Phase.PAUSED,
             "target_permission": target_permission,
             "reason": reason,
             "approval": {
