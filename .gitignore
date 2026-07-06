@@ -12,6 +12,9 @@ evals/auto_captured_journeys.yaml
 data/
 api.log
 run.log
+latest_trace.json
+traces.db
+analyze_trace.py
 fix_engine.py
 refactor.py
 split_engine.py

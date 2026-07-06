@@ -4,7 +4,7 @@ from navi.lifecycle import Phase, Resolution
 import json
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Callable
+from typing import Any
 
 from .capability_contract import CAPABILITY_ERROR_REASON_KEY
 from .engine_types import AgentTurnResult

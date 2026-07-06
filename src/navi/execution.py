@@ -83,6 +83,16 @@ def _execution_failure_reason(facts: dict[str, Any]) -> str:
     return ""
 
 
+def _turn_result_summary(result) -> str:
+    text = str(getattr(result, "text", "") or "").strip()
+    facts = result.facts if isinstance(result.facts, dict) else {}
+    if getattr(result, "action", "") == "connector_outbound":
+        outbound_path = str(facts.get("outbound_path") or "").strip()
+        if outbound_path:
+            return "\n".join(part for part in (f"MEDIA:{outbound_path}", text) if part)
+    return text
+
+
 @dataclass(frozen=True)
 class ExecutionProtocol:
     version: str = EXECUTION_PROTOCOL_VERSION
@@ -722,6 +732,7 @@ class ExecutionService:
             sender_id=task.sender_id,
             source=task.source,
             session_alias=session_alias,
+            trace_id=task.id,
         )
 
         if getattr(turn_result, "yields_control", False):
@@ -766,6 +777,7 @@ class ExecutionService:
             )
             return suspended
 
+        turn_summary = _turn_result_summary(turn_result)
         execution_status, status_reason = self._execution_status_from_turn_result(turn_result)
         exit_code = 0 if execution_status != Resolution.FAILED.value else 1
         self.subagents.finish(
@@ -774,12 +786,12 @@ class ExecutionService:
             output_data={
                 "exit_code": exit_code,
                 "execution_status": execution_status,
-                "summary": turn_result.text,
+                "summary": turn_summary,
                 "provider": "react",
                 "model_role": turn_result.model_role,
                 "trace_id": turn_result.trace_id,
             },
-            error=turn_result.text if exit_code != 0 else "",
+            error=turn_summary if exit_code != 0 else "",
         )
         # A sensitive op inside the run may have suspended it for a fresh
         # approval. That state is intentional — return it as-is so the finalizer
@@ -807,7 +819,7 @@ class ExecutionService:
             run_id=task.id,
             phase="execute",
             status=execution_status,
-            summary=turn_result.text[:1600] if turn_result.text else "",
+            summary=turn_summary[:1600] if turn_summary else "",
             reason_code=status_reason,
             action_kind="herness_engine",
         )
@@ -815,8 +827,8 @@ class ExecutionService:
             provider="react",
             phase="execute",
             command=["navi", "react", task.id],
-            stdout=turn_result.text,
-            stderr=status_reason if execution_status == Resolution.FAILED.value else (turn_result.text if exit_code != 0 else ""),
+            stdout=turn_summary,
+            stderr=status_reason if execution_status == Resolution.FAILED.value else (turn_summary if exit_code != 0 else ""),
             exit_code=exit_code,
             started_at=started_at,
             ended_at=time.time(),

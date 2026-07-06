@@ -47,10 +47,6 @@ def _capability_error(
     terminal: bool = True,
 ) -> CapabilityResult:
     fact_payload = {CAPABILITY_ERROR_REASON_KEY: error_reason, **observation_facts, **(facts or {})}
-    observation_payload = {
-        CAPABILITY_ERROR_REASON_KEY: error_reason,
-        **observation_facts,
-    }
     return CapabilityResult(
         ok=False,
         action=action,

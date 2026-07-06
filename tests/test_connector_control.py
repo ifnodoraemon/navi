@@ -15,8 +15,9 @@ from navi.trace import TraceStore
 from navi.lifecycle import Governance, Phase, Resolution
 
 
+@pytest.mark.parametrize("approval_text", ["批准 {code}", "批准{code}", "approve {code}", "approve{code}"])
 @pytest.mark.asyncio
-async def test_connector_approval_command_resolves_matching_pending_approval(tmp_path):
+async def test_connector_approval_command_resolves_matching_pending_approval(tmp_path, approval_text):
     runs = RunStore(tmp_path)
     run = runs.create(
         "needs approval",
@@ -58,7 +59,7 @@ async def test_connector_approval_command_resolves_matching_pending_approval(tmp
                 message_id="msg-approval",
                 peer_id="peer-1",
                 sender_id="sender-1",
-                text=f"批准 {approval.code}",
+                text=approval_text.format(code=approval.code),
                 source="weixin",
                 session_alias_prefix="connector:weixin",
             )

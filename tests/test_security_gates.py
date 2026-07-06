@@ -13,7 +13,6 @@ import pytest
 
 from navi.capabilities_types import CapabilityContext
 from navi.evolution import EvolutionLedger
-from navi.tools import ToolSpec
 
 
 def _ctx(home: Path, *, sender_id: str = "creator1") -> CapabilityContext:

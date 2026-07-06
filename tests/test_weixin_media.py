@@ -9,6 +9,7 @@ import pytest
 from navi.approval_contract import APPROVAL_ACTION_CAPABILITY, APPROVAL_DECISION_APPROVE
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
+from navi.event_bus import ResponseReadyEvent
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
 from navi.runtime import AgentRuntime
 from navi.runs import Run, RunStore
@@ -132,8 +133,8 @@ class StaticIngress:
     def __init__(self, text: str) -> None:
         self.text = text
 
-    async def handle(self, message: Any) -> str:
-        return self.text
+    async def handle(self, message: Any) -> "ResponseReadyEvent":
+        return ResponseReadyEvent(text=self.text, source="weixin")
 
 
 class StaticDaemon:
@@ -180,6 +181,51 @@ async def test_service_sends_media_directive_from_weixin_outbox(tmp_path: Path):
     assert client.files[0]["file_path"] == report.resolve()
     assert client.files[0]["context_token"] == "ctx"
     assert client.messages[0]["text"] == "已生成报告。"
+
+
+@pytest.mark.asyncio
+async def test_background_completed_task_sends_media_directive_from_outbox(tmp_path: Path):
+    outbox = tmp_path / "weixin" / "outbox"
+    outbox.mkdir(parents=True)
+    resume = outbox / "resume.docx"
+    resume.write_bytes(b"resume")
+    client = CaptureWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.daemon = StaticDaemon(
+        [
+            Run(
+                id="run-media",
+                title="send resume",
+                phase=Phase.ENDED,
+                governance=Governance.APPROVED,
+                acceptance=Acceptance.NONE,
+                resolution=Resolution.SUCCESS,
+                created_at=1.0,
+                updated_at=1.0,
+                prompt="send resume",
+                source="weixin",
+                peer_id="wx-user",
+                sender_id="wx-user",
+                result_summary=f"MEDIA:{resume}\nHere is your resume file found in the home directory.",
+            )
+        ]
+    )
+
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    assert client.files[0]["file_path"] == resume.resolve()
+    assert client.messages[0]["text"] == "Here is your resume file found in the home directory."
+    events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    assert any('"event": "reply.media.sent"' in line for line in events)
+    assert any('"event": "background.sent"' in line and '"media_count": 1' in line for line in events)
 
 
 @pytest.mark.asyncio

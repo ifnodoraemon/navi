@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import time
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ from .runs import RunStore
 
 
 logger = logging.getLogger(__name__)
-ToolHandler = Callable[[dict[str, Any]], "ToolResult"]
+ToolHandler = Callable[[dict[str, Any]], "Awaitable[ToolResult] | ToolResult"]
 TURN_CONTEXT = "turn"
 ACTUATOR_CONTEXT = "actuator"
 REACT_CONTEXT = "react"
@@ -214,7 +215,7 @@ class ToolRegistry:
         tool = self._tools.get(name)
         return tool.spec if tool else None
 
-    def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
+    async def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
         tool = self._tools.get(name)
         started_at = time.time()
         if tool is None:
@@ -241,7 +242,10 @@ class ToolRegistry:
                 self._audit_call(args or {}, result)
                 return result
         try:
-            result = tool.handler(args or {})
+            handler_result = tool.handler(args or {})
+            if inspect.isawaitable(handler_result):
+                handler_result = await handler_result
+            result = handler_result
         except Exception as exc:  # pragma: no cover - defensive boundary for plugins.
             result = ToolResult(
                 tool=name,
@@ -322,8 +326,8 @@ class ToolGateway:
     def get(self, name: str) -> ToolSpec | None:
         return self.registry.get(name)
 
-    def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
-        return self.registry.call(name, args)
+    async def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
+        return await self.registry.call(name, args)
 
 
 def load_tool_providers(home: Path, *, project_dir: Path) -> list[ToolProvider]:

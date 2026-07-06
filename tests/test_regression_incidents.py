@@ -12,8 +12,6 @@ from navi.context import ContextManager
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.engine import LoopEngine, _dynamic_intent_facts
 from navi.connector_runtime import ConnectorMessage, ConnectorIngressRuntime
-from navi.connector_router import ConnectorRouter
-from navi.event_bus import EventBus
 from navi.evolution import EvolutionEngine, EvolutionLedger
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
@@ -178,7 +176,7 @@ def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
         source="weixin",
         peer_id="peer-1",
         sender_id="sender-1",
-        requested_tool="connector.weixin.stage_file",
+        requested_tool="connector.weixin.send_file",
         requested_permission="write",
         code="111111",
     )
@@ -189,7 +187,7 @@ def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
         source="weixin",
         peer_id="peer-1",
         sender_id="sender-1",
-        requested_tool="connector.weixin.stage_file",
+        requested_tool="connector.weixin.send_file",
         requested_permission="write",
         code="222222",
     )
@@ -210,7 +208,7 @@ def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
             "id": pending.id,
             "run_id": run.id,
             "action": "capability",
-            "requested_tool": "connector.weixin.stage_file",
+            "requested_tool": "connector.weixin.send_file",
             "requested_permission": "write",
             "source": "weixin",
             "peer_id": "peer-1",
@@ -1011,6 +1009,51 @@ async def test_delegate_spawn_deduplicates_same_objective_with_rewritten_plan(tm
 
 
 @pytest.mark.asyncio
+async def test_delegate_spawn_deduplicates_rewritten_objective_when_context_references_active_run(tmp_path):
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+
+    first = await registry.invoke(
+        "delegate.spawn",
+        {
+            "objective": "Locate the user's resume file in the home directory and send it to the user via WeChat.",
+            "context": "The user clarified the resume is in the home directory.",
+            "plan": "List the home directory, identify the resume file, and send it through WeChat.",
+            "success_criteria": "The resume file is sent to the requesting WeChat user.",
+        },
+        permission="prepare",
+        context=context,
+    )
+    second = await registry.invoke(
+        "delegate.spawn",
+        {
+            "objective": "Locate the resume file in the user's home directory and send it to the user via WeChat.",
+            "context": (
+                f"A delegation run ({first.run_id}) was created for this same user request. "
+                "The user has clarified the location as the home directory."
+            ),
+            "plan": "Continue the existing resume delivery task from the home directory.",
+            "success_criteria": "The existing task sends the resume or reports a concrete blocking fact.",
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    assert first.ok is True
+    assert second.ok is True
+    assert second.run_id == first.run_id
+    assert second.facts["deduplicated"] is True
+    assert len([run for run in RunStore(tmp_path).list(limit=20) if run.kind == "delegation"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_delegate_list_facts_omit_prompt_and_control_summaries(tmp_path):
     runs = RunStore(tmp_path)
     run = runs.create(
@@ -1173,6 +1216,99 @@ async def test_executor_terminal_response_marks_governed_run_completed(
     assert result.phase == Phase.ENDED
     assert result.resolution == Resolution.SUCCESS
     assert result.result_summary == "MEDIA:/tmp/resume.docx\n已找到并发送简历。"
+
+
+@pytest.mark.asyncio
+async def test_executor_preserves_connector_outbound_media_directive(
+    tmp_path,
+    monkeypatch,
+):
+    import navi.execution as execution_module
+
+    outbound = tmp_path / "weixin" / "outbox" / "resume.docx"
+    outbound.parent.mkdir(parents=True)
+    outbound.write_bytes(b"resume")
+
+    class _ConnectorOutboundEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        async def handle(self, *args, **kwargs) -> AgentTurnResult:
+            return AgentTurnResult(
+                text="Here is your resume file found in the home directory.",
+                action="connector_outbound",
+                model_role="planner",
+                terminal=True,
+                ok=True,
+                facts={
+                    "entity_type": "outbound_media",
+                    "outbound_path": str(outbound),
+                },
+            )
+
+    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _ConnectorOutboundEngine)
+    runs = RunStore(tmp_path)
+    task = runs.create(
+        "在用户电脑上找到简历文件并发送给用户",
+        prompt="Objective:\n找到简历\n\nSuccess Criteria:\n找到并发送",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        phase=Phase.PENDING,
+    )
+
+    result = await ExecutionService(tmp_path).execute_task(task)
+
+    assert result.phase == Phase.ENDED
+    assert result.resolution == Resolution.SUCCESS
+    assert (
+        result.result_summary
+        == f"MEDIA:{outbound}\nHere is your resume file found in the home directory."
+    )
+
+
+@pytest.mark.asyncio
+async def test_executor_uses_run_id_as_trace_id_for_delegated_turn(
+    tmp_path,
+    monkeypatch,
+):
+    import navi.execution as execution_module
+
+    seen_trace_ids: list[str | None] = []
+
+    class _TraceCapturingEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        async def handle(self, *args, **kwargs) -> AgentTurnResult:
+            seen_trace_ids.append(kwargs.get("trace_id"))
+            return AgentTurnResult(
+                text="done",
+                action="respond",
+                model_role="responder",
+                terminal=True,
+                ok=True,
+            )
+
+    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _TraceCapturingEngine)
+    runs = RunStore(tmp_path)
+    task = runs.create(
+        "trace correlated execution",
+        prompt="Objective:\nwork\n\nSuccess Criteria:\ndone",
+        kind="delegation",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        phase=Phase.PENDING,
+    )
+
+    result = await ExecutionService(tmp_path).execute_task(task)
+
+    assert result.phase == Phase.ENDED
+    assert seen_trace_ids == [task.id]
 
 
 @pytest.mark.asyncio

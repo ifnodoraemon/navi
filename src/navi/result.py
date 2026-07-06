@@ -15,7 +15,6 @@ The decorator catches :class:`NaviError` subclasses and converts them to
 from __future__ import annotations
 
 import functools
-import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, TypeVar, cast

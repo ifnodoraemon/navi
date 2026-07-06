@@ -13,7 +13,7 @@ from navi.connector_runtime import (
     ConnectorIngressRuntime,
     ConnectorMessage,
 )
-from navi.event_bus import EventBus, ResponseReadyEvent
+from navi.event_bus import ResponseReadyEvent
 from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.safeguards import redact_secrets
@@ -313,7 +313,7 @@ class WeixinService:
                 )
             except Exception:
                 pass
-            return ""
+            return None
         finally:
             stop_typing.set()
             if typing_task:
@@ -444,7 +444,7 @@ class WeixinService:
                     resolution=task.resolution,
                 )
                 continue
-            await self._send_reply(
+            delivery = await self._send_reply(
                 account=account,
                 peer_id=task.peer_id,
                 text=text,
@@ -456,7 +456,8 @@ class WeixinService:
                 "background.sent",
                 peer_id=task.peer_id,
                 background_event="run_execution_finished",
-                text_preview=text[:120],
+                text_preview=delivery["text_preview"],
+                media_count=delivery["media_count"],
             )
             try:
                 from navi.trace import TraceStore, TracePhase
@@ -466,7 +467,11 @@ class WeixinService:
                     run_id=task.id,
                     source=self.local_source,
                     peer_id=task.peer_id,
-                    output_data={"response": text, "background_event": "run_execution_finished"},
+                    output_data={
+                        "response": delivery["text_preview"],
+                        "background_event": "run_execution_finished",
+                        "media_count": delivery["media_count"],
+                    },
                     message="Sent background task execution finished to channel",
                 )
             except Exception:

@@ -15,7 +15,7 @@ from .engine_types import AgentTurnResult
 from .runtime import AgentRuntime
 
 if TYPE_CHECKING:
-    from .event_bus import EventBus, NaviEvent
+    from .event_bus import EventBus, NaviEvent, ResponseReadyEvent
 
 
 # How often a still-running turn signals liveness on its response channel. Must
@@ -139,7 +139,6 @@ REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(
     )
 )
 
-from typing import FrozenSet
 REMOTE_BLOCKED_TOOLS: FrozenSet[str] = frozenset()
 
 

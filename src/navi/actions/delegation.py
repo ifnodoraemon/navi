@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,21 @@ from ..runs import RunStore
 
 REMOTE_DELETABLE_PHASES = frozenset({Phase.PENDING, Phase.ENDED})
 REMOTE_DELETABLE_KINDS = frozenset({"watch", "delegation"})
+_RUN_ID_RE = re.compile(r"\b[0-9a-fA-F]{32}\b")
+
+
+def _run_ids_in_text(text: str) -> tuple[str, ...]:
+    if not text:
+        return ()
+    seen: set[str] = set()
+    ids: list[str] = []
+    for match in _RUN_ID_RE.finditer(text):
+        run_id = match.group(0).lower()
+        if run_id in seen:
+            continue
+        seen.add(run_id)
+        ids.append(run_id)
+    return tuple(ids)
 
 
 def _block_goal_for_deleted_run(home: Path, run_id: str) -> None:
@@ -86,7 +102,12 @@ class DelegateSpawnCapability(BaseCapability):
         workspace = _resolve_workspace(_arg_text(args, "workspace") or context.workspace, default=self.project_dir)
 
         existing = self._existing_active_run(
-            runs, objective=objective, prompt=prompt, workspace=workspace, context=context
+            runs,
+            objective=objective,
+            prompt=prompt,
+            reference_text="\n".join((objective, context_str, plan, success_criteria)),
+            workspace=workspace,
+            context=context,
         )
         if existing is not None:
             facts = {
@@ -153,7 +174,15 @@ class DelegateSpawnCapability(BaseCapability):
         )
 
     @staticmethod
-    def _existing_active_run(runs: RunStore, *, objective: str, prompt: str, workspace: str, context: CapabilityContext):
+    def _existing_active_run(
+        runs: RunStore,
+        *,
+        objective: str,
+        prompt: str,
+        reference_text: str,
+        workspace: str,
+        context: CapabilityContext,
+    ):
         from ..control import run_matches_context
 
         for run in runs.list(limit=100):
@@ -164,6 +193,18 @@ class DelegateSpawnCapability(BaseCapability):
             if run.workspace != workspace:
                 continue
             if run.title != objective[:120] and run.prompt != prompt:
+                continue
+            if run_matches_context(run, context):
+                return run
+        for run_id in _run_ids_in_text(reference_text):
+            run = runs.get(run_id)
+            if run is None:
+                continue
+            if run.kind != "delegation":
+                continue
+            if run.phase == Phase.ENDED:
+                continue
+            if run.workspace != workspace:
                 continue
             if run_matches_context(run, context):
                 return run

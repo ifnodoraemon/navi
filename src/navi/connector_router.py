@@ -152,17 +152,27 @@ def _parse_connector_approval_command(message: ConnectorMessage) -> tuple[str, s
     spec = _connector_spec_for_source(message.source)
     if spec is None:
         return None
-    match = re.fullmatch(r"\s*(\S+)\s+[`'\"]?([0-9]{6})[`'\"]?\s*", message.text or "")
-    if not match:
-        return None
-    raw_command, code = match.groups()
-    command = raw_command.strip("`'\"").lower()
-    approve = {item.lower() for item in spec.approval_approve_commands}
-    reject = {item.lower() for item in spec.approval_reject_commands}
-    if command in approve:
+    code = _approval_code_for_declared_command(
+        message.text or "",
+        spec.approval_approve_commands,
+    )
+    if code:
         return ("approve", code)
-    if command in reject:
+    code = _approval_code_for_declared_command(
+        message.text or "",
+        spec.approval_reject_commands,
+    )
+    if code:
         return ("reject", code)
+    return None
+
+
+def _approval_code_for_declared_command(text: str, commands: tuple[str, ...]) -> str | None:
+    for command in sorted((item.strip() for item in commands if item.strip()), key=len, reverse=True):
+        pattern = rf"\s*[`'\"]?{re.escape(command)}[`'\"]?\s*[`'\"]?([0-9]{{6}})[`'\"]?\s*"
+        match = re.fullmatch(pattern, text)
+        if match:
+            return match.group(1)
     return None
 
 

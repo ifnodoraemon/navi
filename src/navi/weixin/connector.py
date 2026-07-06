@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -172,6 +171,7 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
             facts_only=True,
             mutates=True,
             permission="write",
+            governance_exempt=True,
             source=f"connector.{spec.name}",
         ),
         lambda args: _send_file_handler(home, args),
@@ -189,7 +189,6 @@ async def _run(home: Path, project_dir: Path, once: bool) -> None:
 
 def _send_file_handler(home: Path, args: dict[str, Any]):
     from navi.tools import ToolResult
-    import json
     import shutil
     
     text = args.get("text") or ""

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any, Mapping
 
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY
@@ -56,7 +55,7 @@ class ToolCapability:
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        result = self.gateway.call(self.spec.name, args)
+        result = await self.gateway.call(self.spec.name, args)
         facts = dict(result.facts or {})
         error_reason = ""
         if not result.ok:
@@ -69,12 +68,6 @@ class ToolCapability:
         }
         if error_reason:
             payload[CAPABILITY_ERROR_REASON_KEY] = error_reason
-        observation = json.dumps(
-            payload,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
         return CapabilityResult(
             ok=result.ok,
             action=result.action,
