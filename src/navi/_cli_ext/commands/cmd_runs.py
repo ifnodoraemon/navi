@@ -76,12 +76,33 @@ def chat() -> None:
         pending_options = options if isinstance(options, list) and options else []
 
 @app.command()
-def api(host: str = DEFAULT_API_HOST, port: int = DEFAULT_API_PORT) -> None:
+def api(
+    host: str = DEFAULT_API_HOST,
+    port: int = DEFAULT_API_PORT,
+    with_background: bool = typer.Option(
+        False,
+        "--with-background",
+        help="Start API-owned background scheduling primitives.",
+    ),
+    with_connectors: bool = typer.Option(
+        False,
+        "--with-connectors",
+        help="Start enabled connector polling loops inside the API process.",
+    ),
+) -> None:
     """Run the headless local API."""
     home = ensure_home()
     write_default_config(home)
     typer.echo(f"Navi API: http://{host}:{port}")
-    uvicorn.run(create_app(home), host=host, port=port)
+    uvicorn.run(
+        create_app(
+            home,
+            start_background=with_background,
+            start_connectors=with_connectors,
+        ),
+        host=host,
+        port=port,
+    )
 
 @app.command()
 def status() -> None:

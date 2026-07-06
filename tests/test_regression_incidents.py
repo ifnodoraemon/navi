@@ -10,8 +10,7 @@ import yaml
 
 from navi.context import ContextManager
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
-from navi.engine import HernessEngine
-from navi.core.context_builder import _dynamic_intent_facts
+from navi.engine import HernessEngine, _dynamic_intent_facts
 from navi.connector_runtime import ConnectorMessage, ConnectorIngressRuntime
 from navi.connector_router import ConnectorRouter
 from navi.event_bus import EventBus
@@ -336,23 +335,8 @@ async def test_connector_approval_command_returns_explicit_unresolved_fact(tmp_p
             self.calls = 0
 
         async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
-            if role == "intent":
-                return json.dumps({"intent_type": "command", "intent_text": "批准 123456", "original_text": "批准 123456"})
-            if role == "responder":
-                return "没有找到对应的待审批请求。"
-            assert role == "planner"
             self.calls += 1
-            if self.calls == 1:
-                return json.dumps({
-                    "tool": "approval.resolve",
-                    "permission": "prepare",
-                    "args": {
-                        "decision": "approve",
-                        "code": "123456",
-                    },
-                    "model_role": "planner"
-                })
-            return "没有找到对应的待审批请求。"
+            raise AssertionError("connector approval control envelope should not call the model")
         def list_roles(self) -> list[str]:
             return ["planner"]
 
@@ -375,7 +359,9 @@ async def test_connector_approval_command_returns_explicit_unresolved_fact(tmp_p
     finally:
         await ingress.event_bus.shutdown()
 
-    assert response == "没有找到对应的待审批请求。"
+    assert response.startswith("approval_not_resolved\n")
+    assert "reason=approval_code_not_found" in response
+    assert ingress.agent.runtime.provider.calls == 0
 
 
 @pytest.mark.asyncio

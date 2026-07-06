@@ -99,22 +99,6 @@ class ContextTokenStore:
         _atomic_json_write(self.path, self._tokens)
 
 
-class MessageDeduplicator:
-    def __init__(self, ttl_seconds: int = 300):
-        self.ttl_seconds = ttl_seconds
-        self._seen: dict[str, float] = {}
-
-    def seen(self, key: str) -> bool:
-        now = time.time()
-        self._seen = {
-            existing: expires_at for existing, expires_at in self._seen.items() if expires_at > now
-        }
-        if key in self._seen:
-            return True
-        self._seen[key] = now + self.ttl_seconds
-        return False
-
-
 def extract_text(payload: dict[str, Any]) -> str:
     item_list = payload.get("item_list")
     if isinstance(item_list, list):

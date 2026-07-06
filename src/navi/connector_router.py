@@ -133,9 +133,7 @@ class ConnectorRouter:
             ),
             code=code,
         )
-        if result.ok:
-            return "已批准。" if decision == "approve" else "已拒绝。"
-        return "没有找到对应的待审批请求。"
+        return result.message
 
 
 def _parse_connector_approval_command(message: ConnectorMessage) -> tuple[str, str] | None:

@@ -42,25 +42,8 @@ async def test_connector_approval_command_resolves_matching_pending_approval(tmp
             self.calls = 0
 
         async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
-            assert role == "planner"
             self.calls += 1
-            if self.calls == 1:
-                return json.dumps({
-                    "tool": "approval.resolve",
-                    "permission": "prepare",
-                    "args": {
-                        "decision": "approve",
-                        "code": approval.code,
-                    },
-                    "model_role": "planner"
-                })
-            else:
-                return json.dumps({
-                    "tool": "respond",
-                    "permission": "write",
-                    "args": {"message": "已批准。"},
-                    "model_role": "responder"
-                })
+            raise AssertionError("connector approval control envelope should not call the model")
         def list_roles(self) -> list[str]:
             return ["planner"]
 
@@ -83,7 +66,11 @@ async def test_connector_approval_command_resolves_matching_pending_approval(tmp
     finally:
         await ingress.event_bus.shutdown()
 
-        assert response == "已批准。"
+        assert response.startswith("approval_resolved\n")
+        assert f"approval_id={approval.id}" in response
+        assert "decision=approve" in response
+        assert "status=approved" in response
+        assert ingress.agent.runtime.provider.calls == 0
         print(list(TraceStore(tmp_path).list_events(trace_id="msg-approval")))
         assert RunStore(tmp_path).get_approval(approval.id).status == "approved"
     updated = RunStore(tmp_path).get(run.id)
@@ -100,18 +87,7 @@ async def test_connector_approval_command_returns_not_found_fact(tmp_path):
 
         async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
             self.calls += 1
-            if self.calls == 1:
-                return json.dumps({
-                    "tool": "approval.resolve",
-                    "permission": "prepare",
-                    "args": {
-                        "decision": "approve",
-                        "code": "123456",
-                    },
-                    "model_role": "planner"
-                })
-            else:
-                return "没有找到对应的待审批请求。"
+            raise AssertionError("connector approval control envelope should not call the model")
         def list_roles(self) -> list[str]:
             return ["planner", "responder"]
 
@@ -134,7 +110,9 @@ async def test_connector_approval_command_returns_not_found_fact(tmp_path):
     finally:
         await ingress.event_bus.shutdown()
 
-    assert response == "没有找到对应的待审批请求。"
+    assert response.startswith("approval_not_resolved\n")
+    assert "reason=approval_code_not_found" in response
+    assert ingress.agent.runtime.provider.calls == 0
 
 
 @pytest.mark.asyncio

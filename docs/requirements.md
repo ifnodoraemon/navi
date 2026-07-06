@@ -131,6 +131,7 @@ Runtime rules:
 - Deterministic parsers may only parse narrow structured facts such as ids, times, explicit command syntax, and provider/tool protocol envelopes.
 - Deterministic routing must not invent missing facts such as default times, paths, service names, task ids, or permissions.
 - Task and workflow goals are subordinate to user intent, durable constraints, approval state, permission ceilings, and safeguard policy.
+- `navi api` is a headless local control surface by default and must not start connector polling or daemon work unless the operator explicitly opts in.
 - Skills provide promptable procedures, plugins provide installed capabilities/integrations, and hooks observe or gate lifecycle events.
 - Anything with credentials, network calls, filesystem mutation, daemon behavior, providers, or connector surfaces must be a plugin/capability package rather than a skill.
 
@@ -140,7 +141,7 @@ Current CLI surface:
 
 ```bash
 navi chat
-navi api
+navi api [--with-background] [--with-connectors]
 navi status
 navi doctor [--connectivity]
 navi run [--once] [--connector CONNECTOR]
@@ -363,6 +364,7 @@ Navi stores local state under `.navi/` or `NAVI_HOME`:
 ├── subagents.db
 ├── traces.db
 ├── workflows.db
+├── connectors/
 ├── hooks/
 ├── skills/
 ├── telegram/

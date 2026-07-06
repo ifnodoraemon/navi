@@ -153,7 +153,12 @@ def _is_public_request(request: Request) -> bool:
     return False
 
 
-def create_app(home: Path | None = None) -> FastAPI:
+def create_app(
+    home: Path | None = None,
+    *,
+    start_background: bool = False,
+    start_connectors: bool = False,
+) -> FastAPI:
     home = home or ensure_home()
     project_dir = Path.cwd().resolve()
     write_default_config(home)
@@ -178,15 +183,14 @@ def create_app(home: Path | None = None) -> FastAPI:
     }
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Start the background daemon
-        daemon.start()
+        if start_background:
+            daemon.start()
 
-        # Start connector adapters (e.g. WeChat)
         setup_tasks = []
-        for adapter in connector_adapters:
-            if adapter.setup and adapter.enabled(home):
-                # Using 60s timeout; no interactive QR code here, so on_qr=None
-                setup_tasks.append(adapter.setup(home, project_dir, 60, None))
+        if start_connectors:
+            for adapter in connector_adapters:
+                if adapter.setup and adapter.enabled(home):
+                    setup_tasks.append(adapter.setup(home, project_dir, 60, None))
 
         if setup_tasks:
             await asyncio.gather(*setup_tasks, return_exceptions=True)
@@ -200,13 +204,13 @@ def create_app(home: Path | None = None) -> FastAPI:
                 print(f"ERROR STARTING ADAPTER {adapter_to_run.name}: {e}")
 
         run_tasks: list[asyncio.Task] = []
-        for adapter in connector_adapters:
-            if adapter.run and adapter.enabled(home):
-                run_tasks.append(asyncio.create_task(_run_wrapper(adapter)))
+        if start_connectors:
+            for adapter in connector_adapters:
+                if adapter.run and adapter.enabled(home):
+                    run_tasks.append(asyncio.create_task(_run_wrapper(adapter)))
 
         yield
 
-        # daemon.stop()
         for task in run_tasks:
             task.cancel()
 

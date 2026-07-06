@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, FrozenSet
@@ -147,13 +150,113 @@ class ConnectorMessage:
     @property
     def content_key(self) -> str:
         payload = json.dumps(
-            {"text": self.text, "facts": self.facts},
+            {
+                "source": self.source,
+                "peer_id": self.peer_id,
+                "sender_id": self.sender_id,
+                "text": self.text,
+                "facts": self.facts,
+            },
             ensure_ascii=False,
             sort_keys=True,
             default=str,
         )
         digest = hashlib.md5(payload.encode()).hexdigest()
-        return f"content:{self.sender_id}:{digest}"
+        return f"content:{self.source}:{self.peer_id}:{self.sender_id}:{digest}"
+
+
+@dataclass(frozen=True)
+class ConnectorDedupResult:
+    duplicate: bool
+    reason: str = ""
+    key: str = ""
+
+
+class ConnectorIngressDeduplicator:
+    """Shared connector ingress idempotency boundary.
+
+    The agent loop should see each connector message once per source/message id
+    or source/content key, even if an upstream long-poll endpoint redelivers it
+    or a connector service object is recreated.
+    """
+
+    def __init__(self, home: Path, *, ttl_seconds: int = 300):
+        self.path = home / "connectors" / "ingress-dedup.json"
+        self.ttl_seconds = ttl_seconds
+
+    def check(self, message: ConnectorMessage) -> ConnectorDedupResult:
+        now = time.time()
+        keys = self._keys(message)
+        if not keys:
+            return ConnectorDedupResult(False)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        try:
+            import fcntl
+
+            with lock_path.open("a+", encoding="utf-8") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                seen = self._pruned(self._load_seen(), now=now)
+                duplicate_key = next((key for key in keys if key in seen), "")
+                for key in keys:
+                    seen[key] = now + self.ttl_seconds
+                _atomic_json_write(self.path, seen)
+                if duplicate_key:
+                    return ConnectorDedupResult(
+                        True,
+                        reason="message_id" if duplicate_key.startswith("id:") else "content",
+                        key=duplicate_key,
+                    )
+                return ConnectorDedupResult(False)
+        except OSError:
+            return ConnectorDedupResult(False)
+
+    @staticmethod
+    def _keys(message: ConnectorMessage) -> list[str]:
+        source = message.source.strip() or "unknown"
+        peer_id = message.peer_id.strip() or "unknown"
+        sender_id = message.sender_id.strip() or "unknown"
+        keys: list[str] = []
+        if message.message_id:
+            keys.append(f"id:{source}:{peer_id}:{sender_id}:{message.message_id}")
+        keys.append(message.content_key)
+        return keys
+
+    @staticmethod
+    def _pruned(seen: dict[str, float], *, now: float) -> dict[str, float]:
+        return {key: expires_at for key, expires_at in seen.items() if expires_at > now}
+
+    def _load_seen(self) -> dict[str, float]:
+        if not self.path.exists():
+            return {}
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        seen: dict[str, float] = {}
+        for key, value in raw.items():
+            try:
+                seen[str(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        return seen
+
+
+def _atomic_json_write(path: Path, payload: dict[str, float]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True, indent=2)
+            handle.write("\n")
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            Path(tmp_name).unlink()
+        except FileNotFoundError:
+            pass
 
 
 class ConnectorIngressRuntime:

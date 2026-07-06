@@ -183,6 +183,46 @@ async def test_service_sends_media_directive_from_weixin_outbox(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_service_deduplicates_message_id_across_instances(tmp_path: Path):
+    account = WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    update = WeixinUpdate(
+        message_id="msg-repeat",
+        peer_id="wx-user",
+        sender_id="wx-user",
+        text="你好",
+        context_token="ctx",
+    )
+
+    first_client = CaptureWeixinClient()
+    first = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=first_client,
+    )
+    first.ingress = StaticIngress("第一次回复")
+
+    second_client = CaptureWeixinClient()
+    second = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=second_client,
+    )
+    second.ingress = StaticIngress("第二次不应回复")
+
+    assert await first.handle_update(account, update) is True
+    assert await second.handle_update(account, update) is False
+    assert first_client.messages[0]["text"] == "第一次回复"
+    assert second_client.messages == []
+
+    events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8")
+    assert '"event": "message.duplicate"' in events
+
+
+@pytest.mark.asyncio
 async def test_weixin_stage_file_returns_allowed_media_directive(tmp_path: Path):
     source = tmp_path / "resume.docx"
     source.write_bytes(b"resume")

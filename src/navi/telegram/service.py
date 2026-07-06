@@ -3,7 +3,11 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
+from navi.connector_runtime import (
+    ConnectorIngressDeduplicator,
+    ConnectorIngressRuntime,
+    ConnectorMessage,
+)
 from navi.runtime import AgentRuntime
 
 from .client import TelegramClient
@@ -30,7 +34,7 @@ class TelegramService:
         self.local_source = local_source
         self.session_alias_prefix = session_alias_prefix
         self.client = client if client is not None else self._build_client()
-        self.seen: set[str] = set()
+        self.dedup = ConnectorIngressDeduplicator(home)
         self.ingress = ConnectorIngressRuntime(
             home=home,
             runtime=runtime,
@@ -138,9 +142,8 @@ class TelegramService:
             source=self.local_source,
             session_alias_prefix=self.session_alias_prefix,
         )
-        if message_key in self.seen or message.content_key in self.seen:
+        if self.dedup.check(message).duplicate:
             return False
-        self.seen.update({message_key, message.content_key})
         if not self._allowed(update):
             return False
         text = await self.ingress.handle(message)

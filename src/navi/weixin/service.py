@@ -8,7 +8,11 @@ from dataclasses import asdict
 from pathlib import Path
 from collections.abc import Callable
 
-from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
+from navi.connector_runtime import (
+    ConnectorIngressDeduplicator,
+    ConnectorIngressRuntime,
+    ConnectorMessage,
+)
 from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.safeguards import redact_secrets
@@ -18,7 +22,7 @@ from .client import TYPING_START, TYPING_STOP, WeixinClient
 from .config import WeixinConfig
 from .models import WeixinAccount, WeixinUpdate
 
-from .store import ContextTokenStore, MessageDeduplicator, WeixinStore
+from .store import ContextTokenStore, WeixinStore
 
 
 class WeixinService:
@@ -42,7 +46,7 @@ class WeixinService:
         self.session_alias_prefix = session_alias_prefix
         self.store = WeixinStore(home)
         self.context_tokens = ContextTokenStore(home)
-        self.dedup = MessageDeduplicator()
+        self.dedup = ConnectorIngressDeduplicator(home)
         self.client = client if client is not None else self._build_client()
         self.typing_tickets: dict[str, str] = {}
         self.daemon = SystemDaemon(home, project_dir=self.project_dir)
@@ -208,11 +212,6 @@ class WeixinService:
             await asyncio.sleep(sleep_time)
 
     async def handle_update(self, account: WeixinAccount, update: WeixinUpdate) -> bool:
-        if self.dedup.seen(update.message_id):
-            self.record_event(
-                "message.duplicate", message_id=update.message_id, peer_id=update.peer_id
-            )
-            return False
         message = ConnectorMessage(
             message_id=update.message_id,
             peer_id=update.peer_id,
@@ -222,9 +221,18 @@ class WeixinService:
             session_alias_prefix=self.session_alias_prefix,
             facts=_weixin_message_facts(update),
         )
-        if self.dedup.seen(message.content_key):
+        duplicate = self.dedup.check(message)
+        if duplicate.duplicate:
+            event_name = (
+                "message.duplicate"
+                if duplicate.reason == "message_id"
+                else "message.duplicate_content"
+            )
             self.record_event(
-                "message.duplicate_content", message_id=update.message_id, peer_id=update.peer_id
+                event_name,
+                message_id=update.message_id,
+                peer_id=update.peer_id,
+                dedup_key=duplicate.key,
             )
             return False
         if not self._allowed(update):
