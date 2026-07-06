@@ -72,7 +72,7 @@ async def _run_daily_journey(
     provider: Any | None = None,
 ) -> DailyJourneyResult:
     from ..app_factory import build_runtime
-    from ..engine import HernessEngine
+    from ..engine import LoopEngine
     from ..runtime import AgentRuntime
     from ..runs import RunStore
 
@@ -96,7 +96,7 @@ async def _run_daily_journey(
     event_bus = EventBus()
     GovernanceAgent(home, event_bus)
 
-    engine = HernessEngine(
+    engine = LoopEngine(
         home=home,
         runtime=runtime,
         project_dir=project_dir,

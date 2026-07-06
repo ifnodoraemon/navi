@@ -140,7 +140,7 @@ def test_t1_no_lazy_imports_in_capabilities() -> None:
 
 
 def test_t1_runtime_isolation_init() -> None:
-    """Use Python subprocess.run to execute a script that imports HernessEngine and initializes it."""
+    """Use Python subprocess.run to execute a script that imports LoopEngine and initializes it."""
     src_dir = str(Path(__file__).resolve().parents[2] / "src")
     code = f"""
 import sys
@@ -153,25 +153,39 @@ from navi.runtime import AgentRuntime
 from navi.provider import ModelPool, build_provider
 from navi.config import ModelConfig
 
-with tempfile.TemporaryDirectory() as tmpdir:
-    home = Path(tmpdir) / "home"
-    project_dir = Path(tmpdir) / "project"
-    home.mkdir()
-    project_dir.mkdir()
-    
-    config = ModelConfig(provider="openai-compatible", model="dummy", api_key="dummy", api_base_url="dummy", kind="openai-compatible", timeout_seconds=1.0, fallbacks=[], routes=dict())
-    provider = ModelPool(default=build_provider(config))
-    runtime = AgentRuntime(home=home, provider=provider)
-    engine = HernessEngine(
-        home=home,
-        runtime=runtime,
-        project_dir=project_dir,
-    )
-    print("Successfully initialized HernessEngine")
+from pathlib import Path
+import sys
+
+def main():
+    try:
+        from navi.provider import build_provider
+        provider = build_provider(dict())
+        runtime = AgentRuntime(home=Path("/tmp/navi_home"), provider=provider)
+        
+        # This will trigger the deferred registry of LoopEngine and resolve dependencies
+        engine = LoopEngine(
+            home=Path("/tmp/navi_home"),
+            runtime=runtime,
+            project_dir=Path("/tmp")
+        )
+        print("Successfully initialized LoopEngine")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
 """
-    env = dict(os.environ, PYTHONPATH=src_dir)
-    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
-    assert res.returncode == 0, f"Failed to initialize HernessEngine: stdout={res.stdout}, stderr={res.stderr}"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = src_dir
+    res = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True
+    )
+    assert res.returncode == 0, f"Failed to initialize LoopEngine: stdout={res.stdout}, stderr={res.stderr}"
 
 
 def test_t1_package_import_all() -> None:

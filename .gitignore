@@ -10,3 +10,8 @@ dist/
 eval_output.*
 evals/auto_captured_journeys.yaml
 data/
+api.log
+run.log
+fix_engine.py
+refactor.py
+split_engine.py

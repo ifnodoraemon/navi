@@ -54,13 +54,15 @@ def register_engine_class(cls: type) -> None:
 
 def get_engine_class() -> type:
     if _engine_class is None:
-        raise RuntimeError("HernessEngine class has not been registered yet.")
+        raise RuntimeError("LoopEngine class has not been registered yet.")
     return _engine_class
 
 
 def _execution_failure_reason(facts: dict[str, Any]) -> str:
-    nested = facts.get("facts") if isinstance(facts.get("facts"), dict) else {}
+    nested: Any = facts.get("facts") if isinstance(facts.get("facts"), dict) else {}
     for payload in (facts, nested):
+        if not isinstance(payload, dict):
+            continue
         reason = str(
             payload.get(CAPABILITY_ERROR_REASON_KEY)
             or payload.get("error_reason")
@@ -675,7 +677,7 @@ class ExecutionService:
 
         from .runtime import AgentRuntime
 
-        HernessEngine = get_engine_class()
+        LoopEngine = get_engine_class()
 
         config = load_config(self.home)
         runtime = AgentRuntime(home=self.home, provider=build_provider(config.model))
@@ -705,7 +707,7 @@ class ExecutionService:
         else:
             prompt_text = task.prompt
 
-        engine = HernessEngine(
+        engine = LoopEngine(
             home=self.home,
             runtime=runtime,
             project_dir=_task_workspace(task),

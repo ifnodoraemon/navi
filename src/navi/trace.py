@@ -901,7 +901,6 @@ _RECOVERY_COMPLETION_REASONS = frozenset(
     {
         str(LoopReason.COMPLETION_EVIDENCE_TRUE),
         str(LoopReason.TERMINAL_RESULT),
-        str(LoopReason.WORKFLOW_VERIFIER_PASSED),
     }
 )
 

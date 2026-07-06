@@ -10,7 +10,7 @@ import yaml
 
 from navi.context import ContextManager
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
-from navi.engine import HernessEngine, _dynamic_intent_facts
+from navi.engine import LoopEngine, _dynamic_intent_facts
 from navi.connector_runtime import ConnectorMessage, ConnectorIngressRuntime
 from navi.connector_router import ConnectorRouter
 from navi.event_bus import EventBus
@@ -302,7 +302,7 @@ async def test_weixin_intent_current_state_is_not_repeated_in_planner_observatio
     tmp_path,
 ) -> None:
     provider = _PromptCaptureProvider()
-    engine = HernessEngine(
+    engine = LoopEngine(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1189,7 +1189,7 @@ async def test_remote_expired_task_cleanup_does_not_expose_delete(tmp_path):
         resolution=Resolution.BLOCKED,
     )
     provider = _RemoteDeleteUnavailableProvider()
-    engine = HernessEngine(
+    engine = LoopEngine(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1218,7 +1218,7 @@ async def test_remote_expired_task_cleanup_does_not_expose_delete(tmp_path):
 @pytest.mark.asyncio
 async def test_completion_evidence_returns_to_model_for_response(tmp_path):
     provider = _WatchCreateThenRespondProvider(time.time() + 3600)
-    engine = HernessEngine(
+    engine = LoopEngine(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1252,7 +1252,7 @@ async def test_completion_evidence_returns_to_model_for_response(tmp_path):
 @pytest.mark.asyncio
 async def test_repeated_completion_evidence_finalizes_without_looping(tmp_path):
     provider = _RepeatCompletionDeleteProvider()
-    engine = HernessEngine(
+    engine = LoopEngine(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1285,7 +1285,7 @@ async def test_repeated_completion_evidence_finalizes_without_looping(tmp_path):
 @pytest.mark.asyncio
 async def test_repeated_unavailable_remote_tool_does_not_complete_task(tmp_path):
     provider = _RepeatCompletionDeleteProvider()
-    engine = HernessEngine(
+    engine = LoopEngine(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1319,7 +1319,7 @@ async def test_repeated_unavailable_remote_tool_does_not_complete_task(tmp_path)
 @pytest.mark.asyncio
 async def test_repeated_stable_capability_result_converges(tmp_path):
     provider = _RepeatListProvider()
-    engine = HernessEngine(
+    engine = LoopEngine(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1365,7 +1365,7 @@ async def test_same_state_facts_with_different_args_converges(tmp_path):
         resolution=Resolution.BLOCKED,
     )
     provider = _RepeatStatusDifferentArgsProvider(run.id)
-    engine = HernessEngine(
+    engine = LoopEngine(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1391,7 +1391,7 @@ async def test_same_state_facts_with_different_args_converges(tmp_path):
 
 @pytest.mark.asyncio
 async def test_planner_capability_args_schema_mismatch_triggers_loop(tmp_path):
-    engine = HernessEngine(
+    engine = LoopEngine(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=_InvalidCapabilityArgsProvider()),
         project_dir=tmp_path,

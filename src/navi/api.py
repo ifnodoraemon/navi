@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .engine import HernessEngine
+from .engine import LoopEngine
 from .api_paths import api_path
 from .auth import AuthInspector
 from .app_factory import build_runtime
@@ -153,7 +153,7 @@ def create_app(
     goal_store = GoalStore(home)
     subagent_store = SubagentRunStore(home)
     daemon = SystemDaemon(home, project_dir=project_dir)
-    agent = HernessEngine(
+    agent = LoopEngine(
         home=home, runtime=runtime, project_dir=project_dir, event_bus=daemon.event_bus
     )
     capabilities = build_capability_registry(home, project_dir=project_dir)
@@ -184,9 +184,8 @@ def create_app(
             try:
                 await adapter_to_run.run(home, project_dir, False)
             except Exception as e:
-                import traceback
-                traceback.print_exc()
-                print(f"ERROR STARTING ADAPTER {adapter_to_run.name}: {e}")
+                import logging
+                logging.getLogger(__name__).exception(f"ERROR STARTING ADAPTER {adapter_to_run.name}: {e}")
 
         run_tasks: list[asyncio.Task] = []
         if start_connectors:
@@ -858,7 +857,6 @@ def _capability_result_dict(result: CapabilityResult) -> dict[str, Any]:
     return {
         "ok": result.ok,
         "action": result.action,
-        "observation": result.observation,
         "message": result.message,
         "run_id": result.run_id,
         "terminal": result.terminal,

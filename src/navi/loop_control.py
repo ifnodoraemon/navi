@@ -265,56 +265,7 @@ def terminal_loop_decision(
     return _terminal_result_decision(result, facts, goal_ids, tool)
 
 
-def workflow_step_loop_decision(
-    result: AgentTurnResult,
-    *,
-    workflow_id: str,
-    step_id: str,
-) -> LoopDecision:
-    for builder in WORKFLOW_STEP_DECISION_BUILDERS:
-        decision = builder(result, workflow_id, step_id)
-        if decision is not None:
-            return decision
-    return _workflow_step_completed_decision(result, workflow_id, step_id)
 
-
-def workflow_step_block_reason(result: AgentTurnResult) -> str:
-    if getattr(result, "yields_control", False):
-        return getattr(result, "error_reason", "") or "user_input_requested"
-    if not getattr(result, "ok", True):
-        return getattr(result, "error_reason", "") or (result.facts or {}).get("error_reason", "")
-    return ""
-
-
-def workflow_verification_loop_decision(
-    *,
-    workflow_id: str,
-    passed: bool,
-    check_results: Any,
-    output: dict[str, Any],
-) -> LoopDecision:
-    return LoopDecision(
-        decision=LoopDecisionKind.FINALIZE if passed else LoopDecisionKind.BLOCKED,
-        reason=LoopReason.WORKFLOW_VERIFIER_PASSED
-        if passed
-        else LoopReason.WORKFLOW_VERIFIER_BLOCKED,
-        phase=LoopPhase.WORKFLOW_VERIFY,
-        failure_domain=TraceFailureDomain.NONE if passed else TraceFailureDomain.CHECKER_BLOCKED,
-        tool="workflow.run",
-        run_id=workflow_id,
-        workflow_id=workflow_id,
-        checker_results=tuple(
-            LoopCheckResult(
-                name=check.name,
-                passed=check.passed,
-                severity=check.severity,
-                reason=check.reason,
-                evidence=check.evidence,
-            )
-            for check in check_results
-        ),
-        evidence=output,
-    )
 
 
 def semantic_progress_signature(
@@ -325,7 +276,7 @@ def semantic_progress_signature(
     facts: dict[str, Any] | None,
 ) -> str:
     stripped_facts = dict(facts) if facts else {}
-    for k in ("run_id", "entity_id", "goal_id", "approval_id", "task_id", "workflow_id"):
+    for k in ("run_id", "entity_id", "goal_id", "approval_id", "task_id"):
         stripped_facts.pop(k, None)
 
     payload: dict[str, Any] = {
@@ -496,102 +447,7 @@ def _terminal_result_decision(
 
 
 
-WorkflowStepDecisionBuilder = Callable[[AgentTurnResult, str, str], LoopDecision | None]
 
-
-def _workflow_step_user_input_decision(
-    result: AgentTurnResult,
-    workflow_id: str,
-    step_id: str,
-) -> LoopDecision | None:
-    if workflow_step_block_reason(result) != str(LoopReason.WORKFLOW_STEP_REQUESTED_USER_INPUT):
-        return None
-    return _workflow_step_decision(
-        result,
-        workflow_id=workflow_id,
-        step_id=step_id,
-        decision=LoopDecisionKind.BLOCKED,
-        reason=LoopReason.WORKFLOW_STEP_REQUESTED_USER_INPUT,
-        failure_domain=TraceFailureDomain.CHECKER_BLOCKED,
-        check_passed=False,
-        severity=LoopSeverity.ERROR,
-    )
-
-
-def _workflow_step_capability_failure_decision(
-    result: AgentTurnResult,
-    workflow_id: str,
-    step_id: str,
-) -> LoopDecision | None:
-    error_reason = workflow_step_block_reason(result)
-    if not error_reason:
-        return None
-    return _workflow_step_decision(
-        result,
-        workflow_id=workflow_id,
-        step_id=step_id,
-        decision=LoopDecisionKind.FAILED,
-        reason=LoopReason.WORKFLOW_STEP_CAPABILITY_FAILURE,
-        failure_domain=TraceFailureDomain.CAPABILITY_FAILURE,
-        check_passed=False,
-        severity=LoopSeverity.ERROR,
-        check_reason=error_reason or str(LoopReason.WORKFLOW_STEP_CAPABILITY_FAILURE),
-    )
-
-
-def _workflow_step_completed_decision(
-    result: AgentTurnResult,
-    workflow_id: str,
-    step_id: str,
-) -> LoopDecision:
-    return _workflow_step_decision(
-        result,
-        workflow_id=workflow_id,
-        step_id=step_id,
-        decision=LoopDecisionKind.FINALIZE,
-        reason=LoopReason.WORKFLOW_STEP_COMPLETED,
-        failure_domain=TraceFailureDomain.NONE,
-        check_passed=True,
-        severity=LoopSeverity.INFO,
-    )
-
-
-def _workflow_step_decision(
-    result: AgentTurnResult,
-    *,
-    workflow_id: str,
-    step_id: str,
-    decision: LoopDecisionKind,
-    reason: LoopReason,
-    failure_domain: TraceFailureDomain,
-    check_passed: bool,
-    severity: LoopSeverity,
-    check_reason: str = "",
-) -> LoopDecision:
-    return LoopDecision(
-        decision=decision,
-        reason=reason,
-        phase=LoopPhase.WORKFLOW_STEP,
-        failure_domain=failure_domain,
-        tool=result.action,
-        run_id=result.run_id,
-        workflow_id=workflow_id,
-        step_id=step_id,
-        checker_results=(
-            LoopCheckResult(
-                name=LoopCheckName.WORKFLOW_STEP_CHECKER,
-                passed=check_passed,
-                severity=severity,
-                reason=check_reason or str(reason),
-            ),
-        ),
-    )
-
-
-WORKFLOW_STEP_DECISION_BUILDERS: tuple[WorkflowStepDecisionBuilder, ...] = (
-    _workflow_step_user_input_decision,
-    _workflow_step_capability_failure_decision,
-)
 
 
 def _facts_complete_current_request(facts: dict[str, Any] | None) -> bool:

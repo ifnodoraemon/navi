@@ -102,10 +102,6 @@ class CapabilityRegistry:
         self.gateway = build_tool_gateway(
             home,
             project_dir=project_dir,
-            allow_sources=allow_sources,
-            allowed_tools=allowed_tools,
-            disabled_tools=disabled_tools,
-            permission_ceiling="write",
         )
         self.providers: tuple[CapabilityProvider, ...] = (
             ActionCapabilityProvider(home=self.home, gateway=self.gateway),
@@ -537,7 +533,7 @@ class CapabilityRegistry:
                 facts_json=json.dumps(
                     redact_secrets_deep(facts), ensure_ascii=False, sort_keys=True
                 ),
-                error="" if result.ok else redact_secrets(result.message or result.observation),
+                error="" if result.ok else redact_secrets(result.message or result.error_reason),
                 started_at=started_at,
                 ended_at=time.time(),
                 run_id=self.governed_run_id or "",

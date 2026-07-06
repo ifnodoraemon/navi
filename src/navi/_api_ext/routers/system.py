@@ -34,7 +34,6 @@ def _capability_result_dict(result) -> dict[str, Any]:
     return {
         "ok": result.ok,
         "action": result.action,
-        "observation": result.observation,
         "message": result.message,
         "run_id": result.run_id,
         "terminal": result.terminal,

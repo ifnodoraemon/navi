@@ -7,7 +7,7 @@ from pathlib import Path
 
 import typer
 
-from ..engine import HernessEngine
+from ..engine import LoopEngine
 from ..capabilities import CapabilityContext, build_capability_registry
 from ..connector_registry import get_connector_adapter, load_connector_adapters
 from ..paths import ensure_home
@@ -34,12 +34,12 @@ def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CO
         )
     )
     if not result.ok:
-        raise typer.BadParameter(result.message or result.observation or "capability failed")
+        raise typer.BadParameter(result.message or "capability failed")
     return result.facts or {}
 
 
 async def _run_chat_turn(
-    agent: HernessEngine,
+    agent: LoopEngine,
     text: str,
     *,
     peer_id: str,

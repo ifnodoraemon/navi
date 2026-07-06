@@ -1,4 +1,4 @@
-"""Engine phases mixin for HernessEngine handling turn lifecycle management."""
+"""Engine phases mixin for LoopEngine handling turn lifecycle management."""
 
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ if TYPE_CHECKING:
 
 
 class EnginePhasesMixin:
-    """Mixin providing turn lifecycle phases for HernessEngine.
+    """Mixin providing turn lifecycle phases for LoopEngine.
 
-    Requires instance attributes (provided by HernessEngine.__init__):
+    Requires instance attributes (provided by LoopEngine.__init__):
     - home: Path
     - trace: TraceStore
     - runtime: AgentRuntime
@@ -33,7 +33,6 @@ class EnginePhasesMixin:
     permission_ceiling: str
     event_bus: Any | None
     governed_run_id: str
-    governed_workflow_id: str
     _background_tasks: set[asyncio.Task[Any]]
 
     def _attach_goals(

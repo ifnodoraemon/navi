@@ -1,4 +1,4 @@
-"""Type definitions for the HernessEngine."""
+"""Type definitions for the LoopEngine."""
 
 from __future__ import annotations
 

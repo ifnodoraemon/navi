@@ -17,13 +17,11 @@ ToolHandler = Callable[[dict[str, Any]], "ToolResult"]
 TURN_CONTEXT = "turn"
 ACTUATOR_CONTEXT = "actuator"
 REACT_CONTEXT = "react"
-WORKFLOW_STEP_CONTEXT = "workflow_step"
 API_CONTEXT = "api"
 ALL_EXECUTION_CONTEXTS = (
     TURN_CONTEXT,
     ACTUATOR_CONTEXT,
     REACT_CONTEXT,
-    WORKFLOW_STEP_CONTEXT,
 )
 
 
@@ -294,18 +292,10 @@ class ToolGateway:
         home: Path,
         project_dir: Path,
         providers: list[ToolProvider] | None = None,
-        allow_sources: set[str] | None = None,
-        allowed_tools: set[str] | None = None,
-        disabled_tools: set[str] | None = None,
-        permission_ceiling: str = "write",
     ):
         self.home = home
         self.project_dir = project_dir
         self.providers = providers or load_tool_providers(home, project_dir=self.project_dir)
-        self.allow_sources = allow_sources
-        self.allowed_tools = allowed_tools
-        self.disabled_tools = disabled_tools or set()
-        self.permission_ceiling = permission_ceiling
         self.registry = ToolRegistry(home=home, project_dir=self.project_dir)
         self.refresh()
 
@@ -315,14 +305,6 @@ class ToolGateway:
             provider.register(raw)
         self.registry = ToolRegistry(home=self.home, project_dir=self.project_dir)
         for tool in raw.registered_tools():
-            if self.allow_sources is not None and tool.spec.source not in self.allow_sources:
-                continue
-            if self.allowed_tools is not None and tool.spec.name not in self.allowed_tools:
-                continue
-            if tool.spec.name in self.disabled_tools:
-                continue
-            if not _permission_allows(tool.spec.permission, self.permission_ceiling):
-                continue
             self.registry.register(tool.spec, tool.handler)
 
     def list_specs(self) -> list[ToolSpec]:
@@ -357,18 +339,10 @@ def build_tool_gateway(
     home: Path,
     *,
     project_dir: Path,
-    allow_sources: set[str] | None = None,
-    allowed_tools: set[str] | None = None,
-    disabled_tools: set[str] | None = None,
-    permission_ceiling: str = "write",
 ) -> ToolGateway:
     return ToolGateway(
         home=home,
         project_dir=project_dir,
-        allow_sources=allow_sources,
-        allowed_tools=allowed_tools,
-        disabled_tools=disabled_tools,
-        permission_ceiling=permission_ceiling,
     )
 
 

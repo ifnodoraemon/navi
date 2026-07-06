@@ -15,9 +15,8 @@
 
 3. **核心计算引擎与 Loop 层 (Core Engine & Loop Control)**
    原本的上帝类已被肢解，现在严格遵循《Loop Engineering》文章中的 Runtime Contract 规范：
-   * **`HernessEngine`**: 降级为外部调用的总控外观（Facade）。
-   * **`ContextBuilder`**: 负责在每轮对话前计算 Token 预算，组装 Prompt。
-   * **`TurnExecutor` (Observe-Plan-Act)**: 负责实际的单步推导与执行。
+   * **`LoopEngine` (Observe-Plan-Act)**: 负责外部调用总控入口以及实际的单步推导与执行。
+   * **`ContextManager`**: 负责在每轮对话前计算 Token 预算，过滤上下文噪音，压实历史记录。
    * **`LoopControl` & Checkers/Gates (Loop 引擎)**: **独立的第一等公民！** 它不通过 Prompt 规则控制模型，而是通过代码中硬编码的 Gates（进度校验、死循环检测 `loop_no_progress`、审批拦截）和 Checkers（最终结果验证）。每次循环都会严格产出明确的 `LoopDecision`（如 `continue`, `recover`, `blocked`, `failed`）。
 
 4. **能力拓展与工具层 (Capabilities, Skills & MCP)**
@@ -59,9 +58,8 @@ graph TD
     class Service layerFill
 
     subgraph CoreEngine ["核心计算与 Loop 引擎层"]
-        Engine["HernessEngine (Facade)"]
-        ContextBuilder["ContextBuilder"]
-        TurnExecutor["TurnExecutor\n(Observe-Plan-Act)"]
+        Engine["LoopEngine\n(Observe-Plan-Act)"]
+        ContextManager["ContextManager"]
         
         %% Loop Engineering 核心组件
         LoopControl["Loop Control Engine\n(loop_control.py)"]
@@ -123,6 +121,6 @@ graph TD
 
 相较于重构前，此架构图体现了几个关键的改变：
 1. **Loop 引擎独立化 (Runtime Contract)**：彻底贯彻了 `loop-engineering.md` 的指导思想，Loop 控制不再是散落在代码里的字符串检查，而是由独立的 `LoopControl` 产生明确的 `continue/recover/blocked/failed` 决策。
-2. **单一入口点**：所有的用户输入流（API、CLI、IM）都会汇聚到 `HernessEngine`，消除了原本在连接器层的正则硬编码拦截。
+2. **单一入口点**：所有的用户输入流（API、CLI、IM）都会汇聚到 `LoopEngine`，消除了原本在连接器层的正则硬编码拦截。
 3. **隔离的存储访问**：组件不再直接手写 `sqlite3.connect()`，全部经由 DAO 层路由。
 4. **统一的能力网关**：无论是内置原生 Tool，还是外置的 `MCP` 协议服务器，亦或是用于增强背景知识的 `Skill`，均统一挂载在 `CapabilityRegistry` 下集中管理安全边界。

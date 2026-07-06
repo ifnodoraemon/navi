@@ -15,10 +15,7 @@ def create_router(home, project_dir, api_capabilities):
 
     @router.get(api_path("traces"))
     def traces(limit: int = 50, offset: int = 0, has_error: bool | None = None, query: str = "") -> dict:
-        print("Traces route called", flush=True)
-        res = {"traces": TraceStore(home).list_trace_meta(limit=limit, offset=offset, has_error=has_error, query=query)}
-        print("Traces route finished", flush=True)
-        return res
+        return {"traces": TraceStore(home).list_trace_meta(limit=limit, offset=offset, has_error=has_error, query=query)}
 
     @router.delete(api_path("traces"))
     def delete_all_traces() -> dict:

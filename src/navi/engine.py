@@ -45,11 +45,10 @@ logger = logging.getLogger("navi.engine")
 _MAX_OBSERVATIONS_BEFORE_COMPACT = 6
 _CONVERSATION_CONTEXT_MESSAGE_LIMIT = 100
 
-__all__ = ["AgentTurnResult", "HernessEngine"]
+__all__ = ["AgentTurnResult", "LoopEngine"]
 
-
-class HernessEngine(EnginePhasesMixin):
-    """Model-owned observe/plan/syscall/observe loop."""
+class LoopEngine(EnginePhasesMixin):
+    """Model-owned observe/plan/syscall/observe loop. Refactored from God Object."""
 
     def __init__(
         self,
@@ -979,9 +978,5 @@ def _observation_event(kind: str, facts: dict[str, Any]) -> str:
         sort_keys=True,
     )
 
-
-# Deferred import: execution -> capabilities -> connector_runtime -> engine forms a
-# cycle, so we register after HernessEngine is defined to break it.
 from .execution import register_engine_class  # noqa: E402
-
-register_engine_class(HernessEngine)
+register_engine_class(LoopEngine)

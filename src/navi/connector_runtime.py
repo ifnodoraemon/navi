@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, FrozenSet
 
-from .engine import HernessEngine
+from .engine import LoopEngine
 from .runtime import AgentRuntime
 
 if TYPE_CHECKING:
@@ -76,7 +76,8 @@ REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(
     )
 )
 
-REMOTE_BLOCKED_TOOLS = frozenset()
+from typing import FrozenSet
+REMOTE_BLOCKED_TOOLS: FrozenSet[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -271,7 +272,7 @@ class ConnectorIngressRuntime:
         self.tool_policy = tool_policy
         self.event_bus = event_bus or _EventBus()
         self.router = ConnectorRouter(home, self.event_bus)
-        self.agent = HernessEngine(
+        self.agent = LoopEngine(
             home=home,
             runtime=runtime,
             project_dir=project_dir,

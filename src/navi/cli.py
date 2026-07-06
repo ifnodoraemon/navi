@@ -9,7 +9,7 @@ from pathlib import Path
 import typer
 import uvicorn
 
-from .engine import HernessEngine
+from .engine import LoopEngine
 from .api import create_app
 from .app_factory import build_runtime
 from .acceptance import load_acceptance_scenario, report_to_text, run_product_acceptance
@@ -70,7 +70,7 @@ def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CO
         )
     )
     if not result.ok:
-        raise typer.BadParameter(result.message or result.observation or "capability failed")
+        raise typer.BadParameter(result.message or "capability failed")
     return result.facts or {}
 
 
@@ -114,7 +114,7 @@ def chat() -> None:
     config = load_config(home)
     daemon = SystemDaemon(home, project_dir=Path.cwd())
     daemon.start()
-    agent = HernessEngine(
+    agent = LoopEngine(
         home=home,
         runtime=runtime,
         project_dir=Path.cwd(),
@@ -160,7 +160,7 @@ def chat() -> None:
 
 
 async def _run_chat_turn(
-    agent: HernessEngine,
+    agent: LoopEngine,
     text: str,
     *,
     peer_id: str,
@@ -474,7 +474,6 @@ def tools_call(name: str, args_json: str = "{}") -> None:
             {
                 "ok": result.ok,
                 "action": result.action,
-                "observation": result.observation,
                 "message": result.message,
                 "run_id": result.run_id,
                 "facts": result.facts or {},

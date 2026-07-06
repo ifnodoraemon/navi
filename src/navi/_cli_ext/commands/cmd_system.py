@@ -78,7 +78,6 @@ def tools_call(name: str, args_json: str = "{}") -> None:
             {
                 "ok": result.ok,
                 "action": result.action,
-                "observation": result.observation,
                 "message": result.message,
                 "run_id": result.run_id,
                 "facts": result.facts or {},

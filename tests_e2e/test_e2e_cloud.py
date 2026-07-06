@@ -4,7 +4,7 @@ from pathlib import Path
 from navi.config import load_config
 from navi.provider import build_provider
 from navi.runtime import AgentRuntime
-from navi.engine import HernessEngine
+from navi.engine import LoopEngine
 
 
 @pytest.mark.asyncio
@@ -23,7 +23,7 @@ async def test_e2e_cloud_agent_run(navi_home, monkeypatch):
     provider = build_provider(config.model)
     
     runtime = AgentRuntime(home=navi_home, provider=provider)
-    engine = HernessEngine(
+    engine = LoopEngine(
         home=navi_home,
         runtime=runtime,
         project_dir=Path.cwd(),

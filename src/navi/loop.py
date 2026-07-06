@@ -12,8 +12,6 @@ class LoopPhase(StrEnum):
     RUNTIME = "runtime"
     PLANNER = "planner"
     CAPABILITY = "capability"
-    WORKFLOW_STEP = "workflow.step"
-    WORKFLOW_VERIFY = "workflow.verify"
 
 
 class LoopDecisionKind(StrEnum):
@@ -37,11 +35,6 @@ class LoopReason(StrEnum):
     REPEATED_PROGRESS_SIGNATURE = "repeated_progress_signature"
     REPEATED_RECOVERY_SIGNATURE = "repeated_recovery_signature"
     TERMINAL_RESULT = "terminal_result"
-    WORKFLOW_STEP_CAPABILITY_FAILURE = "workflow_step_capability_failure"
-    WORKFLOW_STEP_COMPLETED = "workflow_step_completed"
-    WORKFLOW_STEP_REQUESTED_USER_INPUT = "workflow_step_requested_user_input"
-    WORKFLOW_VERIFIER_BLOCKED = "workflow_verifier_blocked"
-    WORKFLOW_VERIFIER_PASSED = "workflow_verifier_passed"
     APPROVAL_REQUIRED = "approval_required"
 
 
@@ -52,11 +45,6 @@ class LoopCheckName(StrEnum):
     NO_PROGRESS_GATE = "no_progress_gate"
     PLANNER_RESULT = "planner_result"
     TERMINAL_RESULT = "terminal_result"
-    WORKFLOW_CAPABILITY_EVIDENCE_PRESENT = "workflow_capability_evidence_present"
-    WORKFLOW_RESOLUTION_SUCCESS = "workflow_resolution_success"
-    WORKFLOW_STEP_CHECKER = "workflow_step_checker"
-    WORKFLOW_STEP_EVIDENCE_PRESENT = "workflow_step_evidence_present"
-    WORKFLOW_STEPS_COMPLETED = "workflow_steps_completed"
     APPROVAL_GATE = "approval_gate"
 
 
@@ -137,7 +125,6 @@ class LoopDecision:
     failure_domain: TraceFailureDomain | str = ""
     tool: str = ""
     run_id: str = ""
-    workflow_id: str = ""
     step_id: str = ""
     goal_ids: tuple[str, ...] = ()
     progress_signature: str = ""
@@ -153,7 +140,6 @@ class LoopDecision:
             "failure_domain": str(self.failure_domain),
             "tool": self.tool,
             "run_id": self.run_id,
-            "workflow_id": self.workflow_id,
             "step_id": self.step_id,
             "goal_ids": list(self.goal_ids),
             "progress_signature": self.progress_signature,
@@ -207,7 +193,6 @@ class LoopDecisionSummary:
     failure_domain: str
     tool: str
     run_id: str
-    workflow_id: str
     step_id: str
     failed_checkers: tuple[str, ...] = ()
     failed_gates: tuple[str, ...] = ()
@@ -220,7 +205,6 @@ class LoopDecisionSummary:
             "failure_domain": self.failure_domain,
             "tool": self.tool,
             "run_id": self.run_id,
-            "workflow_id": self.workflow_id,
             "step_id": self.step_id,
             "failed_checkers": list(self.failed_checkers),
             "failed_gates": list(self.failed_gates),
@@ -316,7 +300,6 @@ def loop_decision_summary(
         failure_domain=trace_failure_domain(output.get("failure_domain")),
         tool=event_tool or str(output.get("tool") or ""),
         run_id=event_run_id or str(output.get("run_id") or ""),
-        workflow_id=str(output.get("workflow_id") or ""),
         step_id=str(output.get("step_id") or ""),
         failed_checkers=tuple(failed_loop_result_names(output.get("checker_results"))),
         failed_gates=tuple(failed_loop_result_names(output.get("gate_results"))),
@@ -330,7 +313,7 @@ def classify_loop_failure(output: dict[str, Any]) -> TraceFailureDomain:
     failed = {*summary.failed_checkers, *summary.failed_gates}
     if str(LoopCheckName.PLANNER_RESULT) in failed:
         return TraceFailureDomain.PLANNER_OR_PARSER
-    if str(LoopCheckName.CAPABILITY_RESULT) in failed or str(LoopCheckName.WORKFLOW_STEP_CHECKER) in failed:
+    if str(LoopCheckName.CAPABILITY_RESULT) in failed:
         return TraceFailureDomain.CAPABILITY_FAILURE
     if str(LoopCheckName.COMPLETION_CHECKER) in failed:
         return TraceFailureDomain.CHECKER_BLOCKED
