@@ -186,11 +186,12 @@ def test_loop_reflection_skill_collects_facts_not_tool_routing_policy() -> None:
     assert "Treat any independent analysis as observation data" in data
 
 
-def test_workflow_step_prompt_does_not_name_terminal_tool_choices() -> None:
-    data = _read("src/navi/actions/workflow.py")
-    assert "Use final.answer" not in data
-    assert "ask.user only" not in data
-    assert '{"final.answer", "ask.user"}' not in data
+def test_workflow_actions_are_not_registered_after_removal() -> None:
+    assert not (PROJECT_ROOT / "src/navi/actions/workflow.py").exists()
+    assert not (PROJECT_ROOT / "src/navi/workflows.py").exists()
+    specs = _read("src/navi/actions/specs.py")
+    assert "workflow.propose" not in specs
+    assert "workflow.state" not in specs
 
 
 def test_model_json_protocols_do_not_extract_json_from_prose() -> None:

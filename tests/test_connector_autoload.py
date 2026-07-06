@@ -92,28 +92,20 @@ async def test_remote_blocks_local_codebase_inspection(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_remote_blocks_workflow_execution_tools(tmp_path: Path) -> None:
-    """Remote connectors may propose/inspect workflows by default, but cannot
-    directly approve or run them."""
+async def test_removed_workflow_tools_are_not_available(tmp_path: Path) -> None:
+    """Workflow capabilities were removed; remote ingress must not rediscover
+    them through either tools.list or direct invocation."""
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     context = _remote_ctx(tmp_path)
-    proposed = await registry.invoke(
-        "workflow.propose",
-        {"objective": "audit remote policy"},
-        permission="prepare",
-        context=context,
-    )
-    assert proposed.ok is True
-    workflow_id = str((proposed.facts or {}).get("workflow_id") or "")
-    assert workflow_id
+    manifest = await registry.invoke("tools.list", {}, permission="read", context=context)
+    assert manifest.ok is True
+    names = {tool["name"] for tool in (manifest.facts or {})["tools"]}
+    assert not {name for name in names if name.startswith("workflow.")}
 
-    for name, args in [
-        ("workflow.approve", {"workflow_id": workflow_id, "decision": "approve"}),
-        ("workflow.run", {"workflow_id": workflow_id}),
-    ]:
-        result = await registry.invoke(name, args, permission="write", context=context)
+    for name in ("workflow.propose", "workflow.state", "workflow.approve", "workflow.run"):
+        result = await registry.invoke(name, {}, permission="prepare", context=context)
         assert result.ok is False
-        assert f"policy blocks capability {name}" in result.message
+        assert result.error_reason == "not_found"
 
 
 def test_remote_policy_is_explicit_allowlist() -> None:
@@ -129,8 +121,6 @@ def test_remote_policy_is_explicit_allowlist() -> None:
         "session.request_elevation",
         "tools.list",
         "watch.create",
-        "workflow.propose",
-        "workflow.state",
     }
 
 
@@ -148,6 +138,7 @@ async def test_remote_tools_list_returns_filtered_manifest(tmp_path: Path) -> No
     assert "approval.resolve" in names
     assert "delegate.state" in names
     assert "session.request_elevation" in names
+    assert "delegate.run" not in names
     assert "delegate.delete" not in names
 
 
@@ -233,11 +224,8 @@ def test_blocked_capability_classes_are_direct_os_only() -> None:
         "watch.delete",
     }
     assert blocked == direct_os
-    governance = {"delegation", "approval", "memory", "session", "conversation", "workflow"}
+    governance = {"delegation", "approval", "memory", "session", "conversation"}
     assert not (blocked & governance), (
         "governance classes must not be in the direct-OS blocklist"
     )
-    assert REMOTE_BLOCKED_TOOLS == {
-        "workflow.approve",
-        "workflow.run",
-    }
+    assert REMOTE_BLOCKED_TOOLS == frozenset()

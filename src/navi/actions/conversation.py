@@ -33,7 +33,6 @@ class RespondCapability(BaseCapability):
             return CapabilityResult(
                 ok=True,
                 action=CONVERSATION_ACTION_ASK,
-                observation=message,
                 message=message,
                 terminal=True,
                 yields_control=True,
@@ -43,7 +42,6 @@ class RespondCapability(BaseCapability):
         return CapabilityResult(
             ok=True,
             action=CONVERSATION_ACTION_CHAT,
-            observation=message,
             message=message,
             terminal=True,
         )

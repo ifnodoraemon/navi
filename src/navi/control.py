@@ -18,9 +18,6 @@ from .approval_contract import (
 from .lifecycle import Acceptance, Governance, Phase, Resolution
 from .runs import Run, RunStore
 from .runs.models import Approval
-from .workflows import Workflow, WorkflowStore
-
-
 
 
 @dataclass(frozen=True)
@@ -43,7 +40,6 @@ class CurrentState:
     workspace: str
     active_runs: tuple[Run, ...]
     pending_approvals: tuple[Approval, ...]
-    active_workflows: tuple[Workflow, ...]
 
 
 @dataclass(frozen=True)
@@ -227,13 +223,6 @@ class CurrentStateBuilder:
             )
             if run_matches_context(approval, context)
         )
-        workflows = WorkflowStore(self.home)
-        active_workflows: list[Workflow] = []
-        active_workflows.extend(
-            workflow
-            for workflow in workflows.list(phase="running", limit=100)
-            if _workflow_matches_context(workflow, context)
-        )
         return CurrentState(
             surface=context.source,
             peer_id=context.peer_id,
@@ -242,7 +231,6 @@ class CurrentStateBuilder:
             workspace=context.workspace,
             active_runs=active_runs,
             pending_approvals=pending_approvals,
-            active_workflows=tuple(active_workflows),
         )
 
 
@@ -299,22 +287,6 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
             }
             for approval in state.pending_approvals
         ],
-        "active_workflows": [
-            {
-                "id": workflow.id,
-                "objective": workflow.objective,
-                "phase": workflow.phase,
-                "governance": workflow.governance,
-                "acceptance": workflow.acceptance,
-                "resolution": workflow.resolution,
-                "source": workflow.source,
-                "peer_id": workflow.peer_id,
-                "sender_id": workflow.sender_id,
-                "workspace": workflow.workspace,
-                "updated_at": workflow.updated_at,
-            }
-            for workflow in state.active_workflows
-        ],
     }
 
 
@@ -341,16 +313,6 @@ def _non_authoritative_run_summary(summary: str) -> str:
         if not line.strip().lower().startswith("approval_code=")
     ]
     return "\n".join(lines).strip()
-
-
-def _workflow_matches_context(workflow: Workflow, context: SurfaceContext) -> bool:
-    if workflow.sender_id and context.sender_id and workflow.sender_id != context.sender_id:
-        return False
-    if workflow.peer_id and context.peer_id and workflow.peer_id != context.peer_id:
-        return False
-    if workflow.source and context.source and workflow.source != context.source:
-        return False
-    return True
 
 
 def _approval_not_resolved(

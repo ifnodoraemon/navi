@@ -14,7 +14,6 @@ def fact_result(action: str, facts: dict[str, Any], *, run_id: str = "") -> Capa
     return CapabilityResult(
         ok=True,
         action=action,
-        observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
         run_id=run_id,
         facts=facts,
     )
@@ -33,7 +32,6 @@ def failure_result(
     return CapabilityResult(
         ok=False,
         action=action,
-        observation=json.dumps(payload, ensure_ascii=False, sort_keys=True),
         message=message,
         run_id=run_id,
         terminal=terminal,
@@ -105,15 +103,6 @@ def positive_int(value: Any, *, default: int, maximum: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, min(parsed, maximum))
-
-
-def workflow_not_found(workflow_id: str) -> CapabilityResult:
-    return failure_result(
-        "workflow",
-        f"workflow not found: {workflow_id}",
-        error_reason="not_found",
-        facts={"workflow_id": workflow_id, "reason": "workflow_not_found"},
-    )
 
 
 json_dict = json_object

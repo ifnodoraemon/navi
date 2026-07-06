@@ -28,7 +28,6 @@ def get_action_handlers(
         session,
         trace,
         watch,
-        workflow,
     )
 
     specs = {spec.name: spec for spec in ACTION_SPECS}

@@ -44,4 +44,4 @@ Every stage bump should include:
 
 ## Current Stage
 
-`1.1.2` is the current v1 stage. It keeps the governed dynamic workflow contract from `1.1.x` and adds principle-aligned hardening: remote connector execution policy blocks local-environment probes and workflow approval/run capabilities, declared environment fact tools are available to governed delegation evals, provider fallback retries preserve compatible call signatures, and workflow docs/evals reflect the current `workflow.run(resume=true)` and verifier-backed completion model.
+`1.1.2` is the current v1 stage. It keeps governed delegation, approval, trace, and connector policy contracts as the active long-running task surface. Remote connector execution policy blocks local-environment probes and unlisted mutating tools, declared environment fact tools are available to governed delegation evals, and provider fallback retries preserve compatible call signatures.

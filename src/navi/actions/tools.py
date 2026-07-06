@@ -78,7 +78,6 @@ class ToolCapability:
         return CapabilityResult(
             ok=result.ok,
             action="tool",
-            observation=observation,
             message=result.error if not result.ok else "",
             facts=facts,
             error_reason=error_reason,
@@ -124,11 +123,5 @@ class ToolsListCapability:
         return CapabilityResult(
             ok=True,
             action="tool",
-            observation=json.dumps(
-                {"capability": self.spec.name, "facts": facts},
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            ),
             facts=facts,
         )

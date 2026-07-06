@@ -846,7 +846,7 @@ class HernessEngine(EnginePhasesMixin):
                 "facts": invoked.facts or {},
                 "terminal": invoked.terminal,
             },
-            message=invoked.message or invoked.observation,
+            message=invoked.message,
         )
 
         obs = _observation_event(

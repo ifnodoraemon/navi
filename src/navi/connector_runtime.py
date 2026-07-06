@@ -49,8 +49,6 @@ REMOTE_ALLOWED_TOOLS = frozenset(
         "session.request_elevation",
         "tools.list",
         "watch.create",
-        "workflow.propose",
-        "workflow.state",
     )
 )
 
@@ -58,7 +56,6 @@ REMOTE_ELEVATED_ALLOWED_TOOLS = frozenset(
     (
         "approval.request",
         "approval.resolve",
-        "delegate.run",
         "delegate.retry",
     )
 )
@@ -79,12 +76,7 @@ REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(
     )
 )
 
-REMOTE_BLOCKED_TOOLS = frozenset(
-    (
-        "workflow.approve",
-        "workflow.run",
-    )
-)
+REMOTE_BLOCKED_TOOLS = frozenset()
 
 
 @dataclass(frozen=True)
@@ -116,10 +108,10 @@ class ConnectorToolPolicy:
 
 REMOTE_CONNECTOR_TOOL_POLICY = ConnectorToolPolicy(
     name="remote_connector_default",
-    permission_ceiling="write",
-    allowed_tools=frozenset(),
-    blocked_tools=frozenset(),
-    blocked_capability_classes=frozenset(),
+    permission_ceiling="prepare",
+    allowed_tools=REMOTE_ALLOWED_TOOLS,
+    blocked_tools=REMOTE_BLOCKED_TOOLS,
+    blocked_capability_classes=REMOTE_BLOCKED_CAPABILITY_CLASSES,
     reason_code="remote_connector_policy",
 )
 

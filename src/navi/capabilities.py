@@ -54,7 +54,6 @@ def _capability_error(
     return CapabilityResult(
         ok=False,
         action=action,
-        observation=json.dumps(observation_payload, ensure_ascii=False, sort_keys=True),
         message=message,
         terminal=terminal,
         facts=fact_payload,
@@ -305,7 +304,6 @@ class CapabilityRegistry:
                 return CapabilityResult(
                     ok=False,
                     action=f"execute:{name}",
-                    observation=json.dumps({"error": "missing_governed_run"}),
                     terminal=True,
                     error_reason="missing_governed_run",
                     message="Sensitive capability requires a durable governed run context to mount an approval. Ephemeral conversational turns cannot mount approvals."
@@ -483,7 +481,6 @@ class CapabilityRegistry:
         return CapabilityResult(
             ok=False,
             action=CAPABILITY_ACTION_APPROVAL,
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             message="",
             run_id=self.governed_run_id or "",
             terminal=True,

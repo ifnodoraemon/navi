@@ -131,7 +131,6 @@ class ApprovalResolveCapability(BaseCapability):
         return CapabilityResult(
             ok=resolved.ok,
             action="approval",
-            observation=resolved.message,
             message="",
             run_id=str(facts.get("run_id") or ""),
             facts=facts,

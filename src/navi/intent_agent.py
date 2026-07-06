@@ -73,10 +73,10 @@ class IntentAgent:
                 }
 
         logger.info(
-            "Published dynamic intent facts for message %s: runs=%s workflows=%s",
+            "Published dynamic intent facts for message %s: runs=%s approvals=%s",
             event.message_id,
             len(current_state["active_runs"]),
-            len(current_state["active_workflows"]),
+            len(current_state["pending_approvals"]),
         )
         await self.event_bus.publish(
             UserIntentEvent(

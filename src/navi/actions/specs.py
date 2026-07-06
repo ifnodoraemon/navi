@@ -5,7 +5,7 @@ ACTION_SPECS = [
     ToolSpec(
         name="respond",
         capability_class="conversation",
-        execution_contexts=("turn", "actuator", "react", "workflow_step"),
+        execution_contexts=("turn", "actuator", "react"),
         description="""Send a message to the user. This is a terminal action — no further tools can be called in this turn after responding.""",
         input_schema={
             "type": "object",
@@ -31,7 +31,7 @@ ACTION_SPECS = [
     ToolSpec(
         name="delegate.spawn",
         capability_class="delegation",
-        execution_contexts=("turn", "workflow_step"),
+        execution_contexts=("turn",),
         description="""Create a narrowly-scoped delegation run. The delegated task executes in Navi's fully-privileged local execution context, granting access to local filesystem, shell, and OS capabilities unavailable in sandboxed channels.""",
         input_schema={
             "type": "object",
@@ -84,7 +84,7 @@ ACTION_SPECS = [
     ToolSpec(
         name="delegate.run",
         capability_class="delegation",
-        execution_contexts=("turn", "workflow_step"),
+        execution_contexts=("turn",),
         description="""Queue a delegation run that has an execution grant.""",
         input_schema={
             "type": "object",
@@ -103,6 +103,9 @@ ACTION_SPECS = [
                 "governance": {"type": "string"},
                 "acceptance": {"type": "string"},
                 "resolution": {"type": "string"},
+                "background_execution": {"type": "string"},
+                "queue_state": {"type": "string"},
+                "completion_evidence": {"type": "boolean"},
             },
         },
         facts_only=True,
@@ -110,6 +113,30 @@ ACTION_SPECS = [
         permission="prepare",
         source="action",
         governance_exempt=True,
+    ),
+    ToolSpec(
+        name="delegate.state",
+        capability_class="delegation",
+        execution_contexts=("turn",),
+        description="""Return state facts for one delegation run by id, scoped to the caller's surface.""",
+        input_schema={
+            "type": "object",
+            "properties": {"run_id": {"type": "string"}},
+            "required": ["run_id"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "run_id": {"type": "string"},
+                "run": {"type": "object"},
+            },
+        },
+        facts_only=True,
+        mutates=False,
+        permission="read",
+        source="action",
     ),
     ToolSpec(
         name="delegate.send_input",
@@ -143,7 +170,7 @@ ACTION_SPECS = [
     ToolSpec(
         name="watch.create",
         capability_class="watch",
-        execution_contexts=("turn", "workflow_step"),
+        execution_contexts=("turn",),
         description="""Create a scheduled watch record.""",
         input_schema={
             "type": "object",
@@ -180,7 +207,7 @@ ACTION_SPECS = [
     ToolSpec(
         name="delegate.delete",
         capability_class="delegation",
-        execution_contexts=("turn", "workflow_step"),
+        execution_contexts=("turn",),
         description="""Delete delegation run records by id or by explicit cleanup scope.""",
         input_schema={
             "type": "object",
@@ -227,7 +254,7 @@ ACTION_SPECS = [
     ToolSpec(
         name="delegate.list",
         capability_class="delegation",
-        execution_contexts=("turn", "workflow_step"),
+        execution_contexts=("turn",),
         description="""Return delegation runs and recurring watches for the current caller's context as delegation-management facts. Results are scoped to the caller's surface; tasks created on other channels are not listed.""",
         input_schema={
             "type": "object",
@@ -254,7 +281,7 @@ ACTION_SPECS = [
     ToolSpec(
         name="watch.delete",
         capability_class="watch.delete",
-        execution_contexts=("turn", "workflow_step"),
+        execution_contexts=("turn",),
         description="""Permanently delete a watch or task (recurring or one-time) by watch id.""",
         input_schema={
             "type": "object",
@@ -287,7 +314,7 @@ ACTION_SPECS = [
     ToolSpec(
         name="delegate.retry",
         capability_class="delegation",
-        execution_contexts=("turn", "workflow_step"),
+        execution_contexts=("turn",),
         description="""Execute one retry attempt for a delegation run.""",
         input_schema={
             "type": "object",
@@ -392,154 +419,9 @@ ACTION_SPECS = [
         governance_exempt=True,
     ),
     ToolSpec(
-        name="workflow.propose",
-        capability_class="workflow",
-        execution_contexts=("turn",),
-        description="""Propose a governed dynamic workflow with declared subagent steps and verification strategy.""",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "objective": {"type": "string"},
-                "permission_ceiling": {"type": "string"},
-                "max_concurrency": {"type": "integer"},
-                "total_subagent_limit": {"type": "integer"},
-                "risk_class": {"type": "string"},
-                "estimated_cost": {"type": "string"},
-                "stop_condition": {"type": "string"},
-                "verification_strategy": {"type": "string"},
-                "plan": {"type": "object"},
-                "steps": {"type": "array", "items": {"type": "object"}},
-            },
-            "required": ["objective"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "entity_type": {"type": "string"},
-                "entity_id": {"type": "string"},
-                "state_transition": {"type": "string"},
-                "turn_scope": {"type": "string"},
-                "workflow_id": {"type": "string"},
-                "phase": {"type": "string"},
-                "governance": {"type": "string"},
-                "acceptance": {"type": "string"},
-                "resolution": {"type": "string"},
-                "confirmation_required": {"type": "boolean"},
-                "permission_ceiling": {"type": "string"},
-                "max_concurrency": {"type": "integer"},
-                "total_subagent_limit": {"type": "integer"},
-                "step_count": {"type": "integer"},
-            },
-        },
-        facts_only=True,
-        mutates=True,
-        permission="prepare",
-        source="action",
-        governance_exempt=True,
-    ),
-    ToolSpec(
-        name="workflow.approve",
-        capability_class="workflow",
-        execution_contexts=("turn",),
-        description="""Approve or reject a proposed dynamic workflow before it can run.""",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "workflow_id": {"type": "string"},
-                "decision": {
-                    "type": "string",
-                    "enum": [APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT],
-                },
-            },
-            "required": ["workflow_id", "decision"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "entity_type": {"type": "string"},
-                "entity_id": {"type": "string"},
-                "state_transition": {"type": "string"},
-                "turn_scope": {"type": "string"},
-                "workflow_id": {"type": "string"},
-                "phase": {"type": "string"},
-                "governance": {"type": "string"},
-                "acceptance": {"type": "string"},
-                "resolution": {"type": "string"},
-            },
-        },
-        facts_only=True,
-        mutates=True,
-        permission="write",
-        source="action",
-        governance_exempt=True,
-    ),
-    ToolSpec(
-        name="workflow.run",
-        capability_class="workflow",
-        execution_contexts=("turn",),
-        description="""Run the next bounded batch of an approved dynamic workflow as model-owned step loops constrained by each step's declared tool scope. When all steps are complete, the verifier runs automatically and the workflow transitions to verified or blocked. Set resume=true to resume an interrupted workflow.""",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "workflow_id": {"type": "string"},
-                "resume": {"type": "boolean", "default": False},
-            },
-            "required": ["workflow_id"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "entity_type": {"type": "string"},
-                "entity_id": {"type": "string"},
-                "state_transition": {"type": "string"},
-                "turn_scope": {"type": "string"},
-                "workflow_id": {"type": "string"},
-                "phase": {"type": "string"},
-                "governance": {"type": "string"},
-                "acceptance": {"type": "string"},
-                "resolution": {"type": "string"},
-                "completed_count": {"type": "integer"},
-                "failed_count": {"type": "integer"},
-                "pending_count": {"type": "integer"},
-            },
-        },
-        facts_only=True,
-        mutates=True,
-        permission="write",
-        source="action",
-        governance_exempt=True,
-    ),
-    ToolSpec(
-        name="workflow.state",
-        capability_class="workflow",
-        execution_contexts=("turn",),
-        description="""Inspect one dynamic workflow, including step state, evidence, and lifecycle events.""",
-        input_schema={
-            "type": "object",
-            "properties": {"workflow_id": {"type": "string"}},
-            "required": ["workflow_id"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "workflow": {"type": "object"},
-                "steps": {"type": "array", "items": {"type": "object"}},
-                "events": {"type": "array", "items": {"type": "object"}},
-                "step_count": {"type": "integer"},
-                "pending_count": {"type": "integer"},
-                "completed_count": {"type": "integer"},
-                "failed_count": {"type": "integer"},
-            },
-        },
-        facts_only=True,
-        mutates=False,
-        permission="read",
-        source="action",
-    ),
-    ToolSpec(
         name="session.request_elevation",
         capability_class="session",
-        execution_contexts=("turn", "workflow_step"),
+        execution_contexts=("turn",),
         description="""Request a temporary elevation of the session's operating permission ceiling (e.g., from 'read' to 'write').""",
         input_schema={
             "type": "object",

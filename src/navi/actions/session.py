@@ -73,7 +73,6 @@ class SessionRequestElevationCapability(BaseCapability):
             return CapabilityResult(
                 ok=False,
                 action=CAPABILITY_ACTION_APPROVAL,
-                observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
                 message="",
                 facts=facts,
                 error_reason="session_elevation_requested",
@@ -117,7 +116,6 @@ class SessionRequestElevationCapability(BaseCapability):
         return CapabilityResult(
             ok=False,
             action=CAPABILITY_ACTION_APPROVAL,
-            observation=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             message="",
             facts=facts,
             error_reason="session_elevation_requested",

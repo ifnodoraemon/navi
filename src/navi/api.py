@@ -34,7 +34,6 @@ from .runs import RunStore
 from .subagents import SubagentRunStore
 from .trace import TraceStore
 from .tools import API_CONTEXT
-from .workflows import WorkflowStore, workflow_facts
 from . import __version__
 
 
@@ -90,19 +89,6 @@ class WatchRequest(BaseModel):
     prompt: str
     peer_id: str = DEFAULT_LOCAL_SURFACE
     sender_id: str = DEFAULT_LOCAL_SURFACE
-
-
-class WorkflowRequest(BaseModel):
-    objective: str
-    permission_ceiling: str = "read"
-    max_concurrency: int = 4
-    total_subagent_limit: int = 32
-    risk_class: str = ""
-    estimated_cost: str = ""
-    stop_condition: str = ""
-    verification_strategy: str = ""
-    plan: dict[str, Any] = Field(default_factory=dict)
-    steps: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _delegation_spawn_args(
@@ -166,7 +152,6 @@ def create_app(
     task_store = RunStore(home)
     goal_store = GoalStore(home)
     subagent_store = SubagentRunStore(home)
-    workflow_store = WorkflowStore(home)
     daemon = SystemDaemon(home, project_dir=project_dir)
     agent = HernessEngine(
         home=home, runtime=runtime, project_dir=project_dir, event_bus=daemon.event_bus
@@ -749,69 +734,6 @@ def create_app(
         if subagent is None:
             raise HTTPException(status_code=404, detail="subagent run not found")
         return {"subagent": subagent.__dict__}
-
-    @app.get(api_path("workflows"))
-    def list_workflows(phase: str = "", limit: int = 50) -> dict:
-        return {
-            "workflows": [
-                workflow.__dict__ for workflow in workflow_store.list(phase=phase, limit=limit)
-            ]
-        }
-
-    @app.post(api_path("workflows"))
-    async def create_workflow(request: WorkflowRequest) -> dict:
-        result = await capabilities.invoke(
-            "workflow.propose",
-            request.model_dump(),
-            permission="prepare",
-            context=_local_capability_context(home, project_dir=project_dir),
-        )
-        _raise_capability_error(result)
-        workflow_id = str((result.facts or {}).get("workflow_id") or result.run_id)
-        workflow = workflow_store.get(workflow_id)
-        if workflow is None:
-            raise HTTPException(
-                status_code=500, detail="workflow.propose did not create a workflow"
-            )
-        return workflow_facts(workflow_store, workflow)
-
-    @app.get(api_path("workflow"))
-    def get_workflow(workflow_id: str) -> dict:
-        workflow = workflow_store.get(workflow_id)
-        if workflow is None:
-            raise HTTPException(status_code=404, detail="workflow not found")
-        return workflow_facts(workflow_store, workflow)
-
-    @app.post(api_path("workflow_approve"))
-    async def approve_workflow(workflow_id: str) -> dict:
-        return await _workflow_action(
-            "workflow.approve", workflow_id, {"decision": APPROVAL_DECISION_APPROVE}
-        )
-
-    @app.post(api_path("workflow_reject"))
-    async def reject_workflow(workflow_id: str) -> dict:
-        return await _workflow_action(
-            "workflow.approve", workflow_id, {"decision": APPROVAL_DECISION_REJECT}
-        )
-
-    @app.post(api_path("workflow_run"))
-    async def run_workflow(workflow_id: str, resume: bool = False) -> dict:
-        return await _workflow_action("workflow.run", workflow_id, {"resume": resume})
-
-    async def _workflow_action(
-        tool: str, workflow_id: str, extra_args: dict[str, Any] | None = None
-    ) -> dict:
-        result = await capabilities.invoke(
-            tool,
-            {"workflow_id": workflow_id, **(extra_args or {})},
-            permission="write",
-            context=_local_capability_context(home, project_dir=project_dir),
-        )
-        _raise_capability_error(result, not_found_status=404)
-        workflow = workflow_store.get(workflow_id)
-        if workflow is None:
-            raise HTTPException(status_code=404, detail="workflow not found")
-        return workflow_facts(workflow_store, workflow)
 
     @app.get(api_path("evolution_events"))
     def evolution_events() -> dict:

@@ -28,7 +28,7 @@
 5. **持久化与追踪层 (DAO, Persistence & Trace)**
    * **`BaseRepository`**: 全新的数据库基类（DAO 模式）。
    * **`TraceStore`**: 核心监控模块。与 Loop 引擎深度绑定，负责记录结构化的 `trace_events` 和 `loop_decisions`（而非单纯看抛错），支持基于 LangSmith Span/Run 模型的轨迹分析。
-   * **周边 Stores**: `RunStore`, `WorkflowStore`, `GoalStore`。
+   * **周边 Stores**: `RunStore`, `GoalStore`, `SubagentRunStore`。
 
 ---
 
@@ -89,7 +89,7 @@ graph TD
 
     subgraph Persistence ["持久化与追踪层 (Data & Trace)"]
         BaseRepo["BaseRepository\n(SQLite DAO)"]
-        Stores["Stores\n(Run, Workflow)"]
+        Stores["Stores\n(Run, Goal, Subagent)"]
         TraceStore["TraceStore\n(Trace Eval / LangSmith Spans)"]
         
         Stores -- Inherits --> BaseRepo

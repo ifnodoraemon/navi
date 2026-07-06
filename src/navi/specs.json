@@ -94,11 +94,6 @@
     "goal": "/v1/goals/{goal_id}",
     "subagents": "/v1/subagents",
     "subagent": "/v1/subagents/{subagent_id}",
-    "workflows": "/v1/workflows",
-    "workflow": "/v1/workflows/{workflow_id}",
-    "workflow_approve": "/v1/workflows/{workflow_id}/approve",
-    "workflow_reject": "/v1/workflows/{workflow_id}/reject",
-    "workflow_run": "/v1/workflows/{workflow_id}/run",
     "evolution_events": "/v1/evolution-events",
     "evolution_rollback": "/v1/evolution-events/{event_id}/rollback",
     "evolution_targets": "/v1/evolution-targets",
@@ -202,7 +197,6 @@
         "confirmation_required": false,
         "reason_code": "capability_safeguard_delegate_spawn"
       },
-
       "delegate.delete": {
         "risk_class": "high",
         "sensitive_contexts": [
@@ -251,42 +245,6 @@
         ],
         "confirmation_required": true,
         "reason_code": "capability_safeguard_watch_delete"
-      },
-      "workflow.propose": {
-        "risk_class": "medium",
-        "sensitive_contexts": [
-          "dynamic_workflow",
-          "task_control"
-        ],
-        "confirmation_required": false,
-        "reason_code": "capability_safeguard_workflow_propose"
-      },
-      "workflow.approve": {
-        "risk_class": "high",
-        "sensitive_contexts": [
-          "dynamic_workflow",
-          "approval"
-        ],
-        "confirmation_required": true,
-        "reason_code": "capability_safeguard_workflow_approve"
-      },
-      "workflow.run": {
-        "risk_class": "high",
-        "sensitive_contexts": [
-          "dynamic_workflow",
-          "task_control",
-          "local_state"
-        ],
-        "confirmation_required": true,
-        "reason_code": "capability_safeguard_workflow_run"
-      },
-      "workflow.state": {
-        "risk_class": "medium",
-        "sensitive_contexts": [
-          "dynamic_workflow"
-        ],
-        "confirmation_required": false,
-        "reason_code": "capability_safeguard_workflow_state"
       },
       "web.search": {
         "risk_class": "low",

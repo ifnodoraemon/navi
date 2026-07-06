@@ -76,7 +76,6 @@ class CapabilityContext:
 class CapabilityResult:
     ok: bool
     action: str
-    observation: str
     message: str = ""
     run_id: str = ""
     terminal: bool = False

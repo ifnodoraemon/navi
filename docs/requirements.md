@@ -37,12 +37,12 @@ Current v1 includes:
 - Model provider abstraction with `openai-compatible`, `deepseek`, and `anthropic` provider specs.
 - Persistent local state under `.navi/` or `NAVI_HOME`.
 - Typed memory control system plus SQLite conversation sessions.
-- Task, watch, goal, approval, execution, recovery, subagent, trace, evolution, and workflow state.
+- Task, watch, goal, approval, execution, recovery, subagent, trace, and evolution state.
 - Structured loop-decision traces for continue, recover, approval pause,
   convergence, finalization, blocked, and failed runtime transitions.
 - Action/control capabilities declared in `src/navi/actions/specs.py`.
 - Core fact tools and gateway-loaded tools exposed through the unified capability registry.
-- Governed dynamic workflows with approval, dependency-aware execution, resumable state, step evidence, and verifier-backed completion.
+- Governed delegation runs with approval, background execution, status facts, and goal-linked evidence.
 - Declarative hooks loaded from built-in specs and local YAML files.
 - Skill discovery from built-in skills and `.navi/skills/*/SKILL.md`.
 - Connector registry with Weixin/iLink and Telegram adapters.
@@ -69,7 +69,7 @@ Shared connector requirements:
 - Connector sessions must be explicit and isolated by connector/sender identity.
 - Connector command syntax and approval phrasing are connector affordances, not base prompt behavior. Connector code may validate explicit control envelopes, such as a declared approval command plus code, but must not parse natural-language user messages into intent, tool choice, or actions.
 - Remote tool visibility must pass through `ConnectorToolPolicy` with permission ceilings, allowed tools, blocked capability classes, and audit facts.
-- Remote connector ingress can propose and inspect workflows by default, but must not approve or run mutating workflows unless explicit policy enables it.
+- Remote connector ingress can create prepared delegation/watch state and inspect delegation facts through the explicit connector tool policy. Direct local filesystem, shell, service, test, and cleanup tools remain unavailable unless policy explicitly grants them.
 
 Weixin/iLink requirements:
 
@@ -101,7 +101,7 @@ Keep the code small, explicit, and inspectable:
 - `navi.actions.specs` and `navi.actions.*`: planner-visible action/control capability specs and handlers.
 - `navi.capabilities` and `navi.capabilities_types`: unified capability registry, permission ceilings, contexts, and result envelopes.
 - `navi.core_tools`, `navi.fact_tools`, and `navi.tools`: core fact tools, gateway loading, filtering, schema validation, and audit behavior.
-- `navi.runs`, `navi.goals`, `navi.workflows`, `navi.subagents`, `navi.trace`, and `navi.recovery`: durable execution, goal, workflow, role, trace, and recovery stores.
+- `navi.runs`, `navi.goals`, `navi.subagents`, `navi.trace`, and `navi.recovery`: durable execution, goal, role, trace, and recovery stores.
 - `navi.agent_roles` and generated role specs in `navi.specs_data`: planner, responder, executor, critic, and notification role contracts with traceable evidence requirements.
 - `navi.memory`: governed memory items plus SQLite conversation sessions.
 - `navi.skills`: governed skill discovery and metadata.
@@ -256,12 +256,6 @@ GET    /v1/goals
 GET    /v1/goals/{goal_id}
 GET    /v1/subagents
 GET    /v1/subagents/{subagent_id}
-GET    /v1/workflows
-POST   /v1/workflows
-GET    /v1/workflows/{workflow_id}
-POST   /v1/workflows/{workflow_id}/approve
-POST   /v1/workflows/{workflow_id}/reject
-POST   /v1/workflows/{workflow_id}/run[?resume=true]
 GET    /v1/evolution-events
 POST   /v1/evolution-events/{event_id}/rollback
 GET    /v1/evolution-targets
@@ -363,7 +357,6 @@ Navi stores local state under `.navi/` or `NAVI_HOME`:
 ├── runs.db
 ├── subagents.db
 ├── traces.db
-├── workflows.db
 ├── connectors/
 ├── hooks/
 ├── skills/
@@ -383,12 +376,12 @@ Implemented:
 - Core fact tools for providers, skills, tools, hooks, memory, files, shell, tests, web, service, and system facts.
 - Internal execution through the structured `navi.actuator.v1` protocol; protocol actions must be capability calls and must produce capability-result evidence.
 - Planner, executor, critic, and notification role executions recorded as subagent runtime records.
-- Governed dynamic workflows persisted in `workflows.db` and exposed through `workflow.*`, CLI, and API surfaces.
+- Governed delegation runs persisted in `runs.db` and exposed through `delegate.*`, goal, approval, CLI, and API surfaces.
 - Local memory, session, task/watch, approval, goal, trace, evolution, hook, and graph stores.
 - Connector registry plus Weixin and Telegram connector packages.
 - Weixin account store, context-token store, deduplication, policy checks, HTTP client skeleton, typing indicators, chunked text replies, voice transcript extraction, and inbound-to-agent service flow.
 - Telegram bot adapter with config, status diagnostics, policy checks, and inbound-to-agent service flow.
-- Tests for config, runtime, memory, providers, capabilities, workflows, goals, traces, hooks, connector runtime, Weixin, Telegram, CLI coverage, API flow, and eval datasets.
+- Tests for config, runtime, memory, providers, capabilities, delegation, goals, traces, hooks, connector runtime, Weixin, Telegram, CLI coverage, API flow, and eval datasets.
 
 Known gaps:
 
@@ -397,8 +390,8 @@ Known gaps:
 - Weixin file/image/video sending and inbound attachment facts have a guarded baseline; live CDN calibration and deeper media parsing remain incomplete.
 - Remote connector policy needs richer per-sender/per-surface configuration before mutating shell/file-write actuators are exposed remotely.
 - MCP/plugin providers still need install-time permission manifests and policy audit before connector exposure.
-- Workflow cost/token telemetry is still shallow metadata; approval UX should show concrete provider usage where available.
-- Long-running goal/workflow compaction needs richer evidence preservation and replay.
+- Delegation cost/token telemetry is still shallow metadata; approval UX should show concrete provider usage where available.
+- Long-running goal/delegation compaction needs richer evidence preservation and replay.
 - Verifier policies should grow beyond basic evidence checks into structured diffs, command-specific assertions, test result interpretation, and rollback proposals.
 - Incident response CLI/API should group traces, failed safeguards, remediation proposals, and regression links.
 - Browser UI is intentionally removed from this codebase.

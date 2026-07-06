@@ -9,13 +9,14 @@ Date: 2026-06-25
 
 Patch release for principle-aligned runtime hardening and docs/eval reconciliation.
 
-- Blocks remote connector ingress from local-environment fact tools and workflow execution/approval capabilities while preserving governed proposal and safe memory surfaces.
+- Blocks remote connector ingress from local-environment fact tools and unlisted mutating capabilities while preserving governed delegation, approval, and safe memory surfaces.
 - Adds declared core fact tools for delegation validation: `directory.list`, `git.status`, `system.info`, `service.status`, and `test.run`.
 - Fixes `codebase.search` registration by using the current RAG import path, storing its cache under Navi home, and returning the declared `results` schema.
 - Fixes provider fallback retries so schema validation only passes optional call arguments accepted by the concrete provider implementation.
 - Redacts secret-bearing action capability arguments and errors in audit logs.
 - Removes routing policy from the `delegate.spawn` tool description and keeps remote/local access behavior declared through runtime policy and capability facts.
-- Aligns dynamic workflow docs and evals with the current runtime contract: resume uses `workflow.run(resume=true)`, and verification is runtime-backed completion rather than a separate public tool.
+- Removes the dynamic workflow public surface from current docs, API metadata, CLI, action specs, and delegation evals; governed long-running work now uses delegation runs, goals, approvals, and `delegate.state`.
+- Adds queue-state facts to `delegate.run` and keeps executor loop/error facts from being marked as successful task completion.
 
 Verification:
 

@@ -9,6 +9,7 @@ from typing import Any
 
 from .capabilities import CapabilityRegistry
 from .capability_contract import (
+    CAPABILITY_ERROR_REASON_KEY,
     CAPABILITY_REASON_KEY,
     CAPABILITY_REASON_SENSITIVE_APPROVAL,
 )
@@ -55,6 +56,29 @@ def get_engine_class() -> type:
     if _engine_class is None:
         raise RuntimeError("HernessEngine class has not been registered yet.")
     return _engine_class
+
+
+def _execution_failure_reason(facts: dict[str, Any]) -> str:
+    nested = facts.get("facts") if isinstance(facts.get("facts"), dict) else {}
+    for payload in (facts, nested):
+        reason = str(
+            payload.get(CAPABILITY_ERROR_REASON_KEY)
+            or payload.get("error_reason")
+            or ""
+        ).strip()
+        if reason:
+            return reason
+    if facts.get("action") == "error":
+        return str(facts.get("reason") or "execution_error")
+    if facts.get("reason") == "repeated_progress_signature":
+        phase = str(nested.get("phase") or "")
+        resolution = str(nested.get("resolution") or "")
+        if phase in {Phase.PENDING, Phase.RUNNING, Phase.PAUSED} and resolution in {
+            "",
+            Resolution.NONE,
+        }:
+            return "delegation_run_incomplete"
+    return ""
 
 
 @dataclass(frozen=True)
@@ -811,6 +835,9 @@ class ExecutionService:
             return Phase.PENDING.value, "execution produced an ask action and is waiting for user input"
         if facts.get(CAPABILITY_REASON_KEY) == CAPABILITY_REASON_SENSITIVE_APPROVAL:
             return Phase.PENDING.value, "execution suspended for approval"
+        failure_reason = _execution_failure_reason(facts)
+        if failure_reason:
+            return Resolution.FAILED.value, failure_reason
         if not getattr(result, "ok", True):
             return Resolution.FAILED.value, "execution ended with capability error facts"
         return Resolution.SUCCESS.value, "execution produced terminal completion facts"

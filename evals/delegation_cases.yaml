@@ -70,10 +70,6 @@ coverage:
   - browser.screenshot
   - delegate.list
   - delegate.state
-  - workflow.propose
-  - workflow.approve
-  - workflow.run
-  - workflow.state
   - test.run
   - session.request_elevation
   - codebase.search
@@ -506,85 +502,12 @@ cases:
     allowed_decisions:
     - tool: delegate.spawn
       permission: prepare
-    - tool: workflow.propose
-      permission: prepare
     - tool: directory.list
       permission: read
     - tool: codebase.search
       permission: read
     - tool: git.status
       permission: read
-- id: propose_dynamic_workflow_for_repo_audit
-  category: engineering_work
-  source: anthropic:dynamic-workflows
-  message: "\u4E3A\u5F53\u524D\u4ED3\u5E93\u505A\u4E00\u6B21\u52A8\u6001 workflow\
-    \ \u5BA1\u8BA1\u8BA1\u5212\uFF0C\u62C6\u6210\u5E76\u884C subagent \u68C0\u67E5\
-    \u3001\u8BC1\u636E\u6C47\u603B\u548C\u72EC\u7ACB\u9A8C\u8BC1\uFF0C\u5148\u4E0D\
-    \u8981\u6267\u884C"
-  expect:
-    tool: workflow.propose
-    permission: prepare
-- id: inspect_dynamic_workflow_state
-  category: delegation_lifecycle
-  source: architecture:dynamic-workflows
-  message: "\u67E5\u770B workflow wf_123 \u5F53\u524D\u8DD1\u5230\u54EA\u4E00\u6B65\
-    \u4E86"
-  expect:
-    tool: workflow.state
-    permission: read
-    args:
-      workflow_id: wf_123
-- id: approve_dynamic_workflow
-  category: approval_lifecycle
-  source: architecture:dynamic-workflows
-  message: "\u6279\u51C6 workflow wf_123"
-  expect:
-    tool: workflow.approve
-    permission: write
-    args:
-      workflow_id: wf_123
-      decision: approve
-- id: run_approved_dynamic_workflow
-  category: delegation_lifecycle
-  source: architecture:dynamic-workflows
-  message: "\u8FD0\u884C\u5DF2\u7ECF\u6279\u51C6\u7684 workflow wf_123"
-  expect:
-    tool: workflow.run
-    permission: write
-    args:
-      workflow_id: wf_123
-- id: resume_interrupted_dynamic_workflow
-  category: delegation_lifecycle
-  source: architecture:dynamic-workflows
-  message: "\u7EE7\u7EED\u521A\u624D\u4E2D\u65AD\u7684 workflow wf_123"
-  expect:
-    tool: workflow.run
-    permission: write
-    args:
-      workflow_id: wf_123
-      resume: true
-- id: verify_completed_dynamic_workflow
-  category: delegation_lifecycle
-  source: architecture:dynamic-workflows
-  message: "\u5BF9 workflow wf_123 \u505A\u72EC\u7ACB\u9A8C\u8BC1\uFF0C\u786E\u8BA4\
-    \u80FD\u5426\u6807\u8BB0\u5B8C\u6210"
-  expect:
-    tool: workflow.state
-    permission: read
-    args:
-      workflow_id: wf_123
-- id: verify_workflow_after_state_facts
-  category: delegation_lifecycle
-  source: architecture:dynamic-workflows
-  message: "\u6839\u636E\u4E0A\u9762\u7684 workflow \u72B6\u6001\u4E8B\u5B9E\uFF0C\
-    \u73B0\u5728\u5BF9 workflow wf_123 \u505A\u72EC\u7ACB\u9A8C\u8BC1"
-  conversation_context: "assistant: workflow.state facts for wf_123: phase=running;\
-    \ all steps completed; no failed steps; approval already granted."
-  expect:
-    tool: workflow.state
-    permission: read
-    args:
-      workflow_id: wf_123
 - id: coding_debugging_becomes_task
   category: coding_debugging
   source: synthetic:developer-github-issue-pr-usage
@@ -712,8 +635,6 @@ cases:
     - tool: codebase.search
       permission: read
     - tool: delegate.spawn
-      permission: prepare
-    - tool: workflow.propose
       permission: prepare
 - id: request_elevation_when_missing_permission
   category: skill_permission_safety

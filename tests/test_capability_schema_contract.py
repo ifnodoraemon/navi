@@ -29,7 +29,6 @@ class _SchemaTestCapability:
         return CapabilityResult(
             ok=True,
             action="schema.test",
-            observation=json.dumps(self.facts, ensure_ascii=False, sort_keys=True),
             facts=self.facts,
         )
 
@@ -74,9 +73,9 @@ async def test_action_capability_input_schema_is_runtime_contract(tmp_path: Path
     assert handler.called is False
     assert result.ok is False
     assert result.error_reason == "schema_mismatch"
-    observation = json.loads(result.observation)
-    assert observation["tool"] == spec.name
-    assert observation["schema_errors"] == ["$.count expected integer"]
+    assert result.facts is not None
+    assert result.facts["tool"] == spec.name
+    assert result.facts["schema_errors"] == ["$.count expected integer"]
 
 
 @pytest.mark.asyncio
@@ -96,7 +95,7 @@ async def test_action_capability_output_schema_is_runtime_contract(tmp_path: Pat
     assert handler.called is True
     assert result.ok is False
     assert result.error_reason == "schema_mismatch"
-    observation = json.loads(result.observation)
-    assert observation["tool"] == spec.name
-    assert observation["result_action"] == "schema.test"
-    assert observation["schema_errors"] == ["$.value expected integer"]
+    assert result.facts is not None
+    assert result.facts["tool"] == spec.name
+    assert result.facts["result_action"] == "schema.test"
+    assert result.facts["schema_errors"] == ["$.value expected integer"]

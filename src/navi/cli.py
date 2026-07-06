@@ -9,7 +9,6 @@ from pathlib import Path
 import typer
 import uvicorn
 
-from .approval_contract import APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT
 from .engine import HernessEngine
 from .api import create_app
 from .app_factory import build_runtime
@@ -51,7 +50,6 @@ from .service import build_systemd_user_unit, install_systemd_user_unit
 from .subagents import SubagentRunStore
 from .trace import TraceStore
 from .tools import API_CONTEXT
-from .workflows import WorkflowStore, workflow_facts
 
 def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CONTEXT) -> dict:
     """Invoke a capability through the unified registry (same path the API
@@ -84,7 +82,6 @@ evolution_app = typer.Typer(help="Evolution ledger")
 trace_app = typer.Typer(help="Full-flow traces and evaluations")
 goal_app = typer.Typer(help="Durable goal lifecycle")
 subagent_app = typer.Typer(help="Sub-agent runtime records")
-workflow_app = typer.Typer(help="Governed dynamic workflows")
 service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
@@ -99,7 +96,6 @@ app.add_typer(evolution_app, name="evolution")
 app.add_typer(trace_app, name="trace")
 app.add_typer(goal_app, name="goal")
 app.add_typer(subagent_app, name="subagent")
-app.add_typer(workflow_app, name="workflow")
 app.add_typer(service_app, name="service")
 app.add_typer(memory_app, name="memory")
 app.add_typer(session_app, name="session")
@@ -877,117 +873,6 @@ def subagent_show(subagent_id: str) -> None:
     if item.error:
         typer.echo(f"error: {item.error}")
     typer.echo(item.output_json)
-
-
-@workflow_app.command("propose")
-def workflow_propose(
-    objective: str,
-    steps_json: str = "[]",
-    permission_ceiling: str = "read",
-    max_concurrency: int = 4,
-    estimated_cost: str = "",
-) -> None:
-    """Propose a governed dynamic workflow from declared step JSON."""
-    try:
-        steps = json.loads(steps_json)
-    except json.JSONDecodeError as exc:
-        raise typer.BadParameter(f"invalid steps_json: {exc}") from exc
-    if not isinstance(steps, list):
-        raise typer.BadParameter("steps_json must be a JSON array")
-    home = ensure_home()
-    capabilities = build_capability_registry(home, project_dir=Path.cwd())
-    result = asyncio.run(
-        capabilities.invoke(
-            "workflow.propose",
-            {
-                "objective": objective,
-                "steps": steps,
-                "permission_ceiling": permission_ceiling,
-                "max_concurrency": max_concurrency,
-                "estimated_cost": estimated_cost,
-            },
-            permission="prepare",
-            context=CapabilityContext(
-                home=home, peer_id="cli", sender_id="cli", source="cli", workspace=str(Path.cwd())
-            ),
-        )
-    )
-    if not result.ok:
-        raise typer.BadParameter(result.message or result.observation)
-    facts = result.facts or {}
-    raw_workflow = facts.get("workflow")
-    workflow = raw_workflow if isinstance(raw_workflow, dict) else {}
-    typer.echo(
-        f"{facts.get('workflow_id')} phase={workflow.get('phase')} "
-        f"resolution={workflow.get('resolution')} steps={facts.get('step_count')}"
-    )
-
-
-@workflow_app.command("list")
-def workflow_list(phase: str = "", limit: int = 50) -> None:
-    """List dynamic workflows."""
-    for workflow in WorkflowStore(ensure_home()).list(phase=phase, limit=limit):
-        typer.echo(
-            f"{workflow.id} phase={workflow.phase} governance={workflow.governance} "
-            f"resolution={workflow.resolution} ceiling={workflow.permission_ceiling} {workflow.objective}"
-        )
-
-
-@workflow_app.command("show")
-def workflow_show(workflow_id: str) -> None:
-    """Show one dynamic workflow with steps and events."""
-    store = WorkflowStore(ensure_home())
-    workflow = store.get(workflow_id)
-    if workflow is None:
-        raise typer.BadParameter("workflow not found")
-    facts = workflow_facts(store, workflow)
-    typer.echo(json.dumps(facts, ensure_ascii=False, indent=2, sort_keys=True))
-
-
-@workflow_app.command("approve")
-def workflow_approve(workflow_id: str) -> None:
-    """Approve a proposed dynamic workflow."""
-    _workflow_action_cli(
-        "workflow.approve", workflow_id, {"decision": APPROVAL_DECISION_APPROVE}
-    )
-
-
-@workflow_app.command("reject")
-def workflow_reject(workflow_id: str) -> None:
-    """Reject a proposed dynamic workflow."""
-    _workflow_action_cli(
-        "workflow.approve", workflow_id, {"decision": APPROVAL_DECISION_REJECT}
-    )
-
-
-@workflow_app.command("run")
-def workflow_run(workflow_id: str, resume: bool = False) -> None:
-    """Run the next bounded batch of an approved dynamic workflow."""
-    _workflow_action_cli("workflow.run", workflow_id, {"resume": resume})
-
-
-def _workflow_action_cli(tool: str, workflow_id: str, extra_args: dict | None = None) -> None:
-    home = ensure_home()
-    capabilities = build_capability_registry(home, project_dir=Path.cwd())
-    result = asyncio.run(
-        capabilities.invoke(
-            tool,
-            {"workflow_id": workflow_id, **(extra_args or {})},
-            permission="write",
-            context=CapabilityContext(
-                home=home, peer_id="cli", sender_id="cli", source="cli", workspace=str(Path.cwd())
-            ),
-        )
-    )
-    if not result.ok:
-        raise typer.BadParameter(result.message or result.observation)
-    workflow = WorkflowStore(home).get(workflow_id)
-    if workflow:
-        typer.echo(
-            f"{workflow_id} phase={workflow.phase} governance={workflow.governance} resolution={workflow.resolution}"
-        )
-    else:
-        typer.echo(f"{workflow_id} {json.dumps(result.facts or {}, ensure_ascii=False, sort_keys=True)}")
 
 
 @evolution_app.command("list")

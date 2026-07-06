@@ -1,24 +1,16 @@
-from navi.approval_contract import APPROVAL_DECISION_REJECT
 from navi.evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
 from navi.memory.store import MemoryStore
-from navi.workflows import workflow_facts
 from navi.goals import GoalStore
 from navi.graph import GraphStore
-from navi.approval_contract import APPROVAL_DECISION_APPROVE
 from navi.subagents import SubagentRunStore
 import typer
-import asyncio
 import json
-from pathlib import Path
-from navi.capabilities import build_capability_registry, CapabilityContext
-from navi.workflows import WorkflowStore
 from navi.paths import ensure_home
-from ..common import _invoke_capability, _workflow_action_cli
+from ..common import _invoke_capability
 
 
 goal_app = typer.Typer(help="Durable goal lifecycle")
 subagent_app = typer.Typer(help="Sub-agent runtime records")
-workflow_app = typer.Typer(help="Governed dynamic workflows")
 evolution_app = typer.Typer(help="Evolution ledger")
 memory_app = typer.Typer(help="Typed memory control system")
 graph_app = typer.Typer(help="Personal graph")
@@ -170,86 +162,6 @@ def subagent_show(subagent_id: str) -> None:
     if item.error:
         typer.echo(f"error: {item.error}")
     typer.echo(item.output_json)
-
-@workflow_app.command("propose")
-def workflow_propose(
-    objective: str,
-    steps_json: str = "[]",
-    permission_ceiling: str = "read",
-    max_concurrency: int = 4,
-    estimated_cost: str = "",
-) -> None:
-    """Propose a governed dynamic workflow from declared step JSON."""
-    try:
-        steps = json.loads(steps_json)
-    except json.JSONDecodeError as exc:
-        raise typer.BadParameter(f"invalid steps_json: {exc}") from exc
-    if not isinstance(steps, list):
-        raise typer.BadParameter("steps_json must be a JSON array")
-    home = ensure_home()
-    capabilities = build_capability_registry(home, project_dir=Path.cwd())
-    result = asyncio.run(
-        capabilities.invoke(
-            "workflow.propose",
-            {
-                "objective": objective,
-                "steps": steps,
-                "permission_ceiling": permission_ceiling,
-                "max_concurrency": max_concurrency,
-                "estimated_cost": estimated_cost,
-            },
-            permission="prepare",
-            context=CapabilityContext(
-                home=home, peer_id="cli", sender_id="cli", source="cli", workspace=str(Path.cwd())
-            ),
-        )
-    )
-    if not result.ok:
-        raise typer.BadParameter(result.message or result.observation)
-    facts = result.facts or {}
-    raw_workflow = facts.get("workflow")
-    workflow = raw_workflow if isinstance(raw_workflow, dict) else {}
-    typer.echo(
-        f"{facts.get('workflow_id')} phase={workflow.get('phase')} "
-        f"resolution={workflow.get('resolution')} steps={facts.get('step_count')}"
-    )
-
-@workflow_app.command("list")
-def workflow_list(phase: str = "", limit: int = 50) -> None:
-    """List dynamic workflows."""
-    for workflow in WorkflowStore(ensure_home()).list(phase=phase, limit=limit):
-        typer.echo(
-            f"{workflow.id} phase={workflow.phase} resolution={workflow.resolution} ceiling={workflow.permission_ceiling} {workflow.objective}"
-        )
-
-@workflow_app.command("show")
-def workflow_show(workflow_id: str) -> None:
-    """Show one dynamic workflow with steps and events."""
-    store = WorkflowStore(ensure_home())
-    workflow = store.get(workflow_id)
-    if workflow is None:
-        raise typer.BadParameter("workflow not found")
-    facts = workflow_facts(store, workflow)
-    typer.echo(json.dumps(facts, ensure_ascii=False, indent=2, sort_keys=True))
-
-@workflow_app.command("approve")
-def workflow_approve(workflow_id: str) -> None:
-    """Approve a proposed dynamic workflow."""
-    _workflow_action_cli(
-        "workflow.approve", workflow_id, {"decision": APPROVAL_DECISION_APPROVE}
-    )
-
-@workflow_app.command("reject")
-def workflow_reject(workflow_id: str) -> None:
-    """Reject a proposed dynamic workflow."""
-    _workflow_action_cli(
-        "workflow.approve", workflow_id, {"decision": APPROVAL_DECISION_REJECT}
-    )
-
-@workflow_app.command("run")
-def workflow_run(workflow_id: str, resume: bool = False) -> None:
-    """Run the next bounded batch of an approved dynamic workflow."""
-    _workflow_action_cli("workflow.run", workflow_id, {"resume": resume})
 
 @evolution_app.command("list")
 def evolution_list() -> None:

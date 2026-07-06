@@ -34,7 +34,6 @@ class DbPaths:
 
     runs: Path
     goals: Path
-    workflows: Path
     traces: Path
     evolution: Path
     memory: Path
@@ -47,7 +46,6 @@ def db_paths(home: Path) -> DbPaths:
     return DbPaths(
         runs=home / "runs.db",
         goals=home / "goals.db",
-        workflows=home / "workflows.db",
         traces=home / "traces.db",
         evolution=home / "evolution.db",
         memory=home / "memory.db",

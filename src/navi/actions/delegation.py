@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -101,11 +100,9 @@ class DelegateSpawnCapability(BaseCapability):
                 "trust_rule_id": existing.trust_rule_id,
                 "deduplicated": True,
             }
-            obs = json.dumps(facts, ensure_ascii=False, sort_keys=True)
             return CapabilityResult(
                 ok=True,
                 action="delegation",
-                observation=obs,
                 run_id=existing.id,
                 facts=facts,
             )
@@ -148,11 +145,9 @@ class DelegateSpawnCapability(BaseCapability):
             "autonomy_level": task.autonomy_level,
             "trust_rule_id": task.trust_rule_id,
         }
-        obs = json.dumps(facts, ensure_ascii=False, sort_keys=True)
         return CapabilityResult(
             ok=True,
             action="delegation",
-            observation=obs,
             run_id=task.id,
             facts=facts,
         )
@@ -194,18 +189,46 @@ class DelegateRunCapability(BaseCapability):
         GoalStore(self.home).update_for_run(
             queued, evidence={"run_id": queued.id, "run_phase": queued.phase}
         )
-        return _fact_result(
-            "delegation",
-            {
-                **_transition_facts("delegation_run", queued.id, "updated"),
-                "run_id": queued.id,
-                "phase": queued.phase,
-                "governance": queued.governance,
-                "acceptance": queued.acceptance,
-                "resolution": queued.resolution,
-            },
-            run_id=queued.id,
-        )
+        facts = {
+            **_transition_facts("delegation_run", queued.id, "updated"),
+            "run_id": queued.id,
+            "phase": queued.phase,
+            "governance": queued.governance,
+            "acceptance": queued.acceptance,
+            "resolution": queued.resolution,
+            "background_execution": "queued",
+            "queue_state": "queued_for_background_execution",
+            "completion_evidence": True,
+        }
+        return _fact_result("delegation", facts, run_id=queued.id)
+
+
+@capability("delegate_state")
+class DelegateStateCapability(BaseCapability):
+    @guarded
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        from ..control import run_matches_context
+
+        run_id = _arg_text(args, "run_id") or _arg_text(args, "task_id")
+        if not run_id:
+            raise SchemaMismatch("delegate.state requires run_id.")
+        runs = RunStore(self.home)
+        task = runs.get(run_id)
+        if task is None or not run_matches_context(task, context):
+            raise NotFound(f"delegation run not found: {run_id}")
+        facts = {
+            "entity_type": "delegation_run",
+            "entity_id": task.id,
+            "run_id": task.id,
+            "run": _run_list_facts(task),
+        }
+        return _fact_result("delegation", facts, run_id=task.id)
 
 
 @capability("delegate_send_input")

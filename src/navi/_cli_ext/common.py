@@ -12,7 +12,6 @@ from ..capabilities import CapabilityContext, build_capability_registry
 from ..connector_registry import get_connector_adapter, load_connector_adapters
 from ..paths import ensure_home
 from ..tools import API_CONTEXT
-from ..workflows import WorkflowStore
 
 
 
@@ -63,26 +62,6 @@ def _trace_evaluation_line(evaluation) -> str:
     rule = str(evidence.get("evaluation_rule") or "").strip()
     suffix = f" rule={rule}" if rule else ""
     return f"{evaluation.outcome} {evaluation.failure_domain}{suffix}"
-
-
-def _workflow_action_cli(tool: str, workflow_id: str, extra_args: dict | None = None) -> None:
-    home = ensure_home()
-    capabilities = build_capability_registry(home, project_dir=Path.cwd())
-    result = asyncio.run(
-        capabilities.invoke(
-            tool,
-            {"workflow_id": workflow_id, **(extra_args or {})},
-            permission="write",
-            context=CapabilityContext(
-                home=home, peer_id="cli", sender_id="cli", source="cli", workspace=str(Path.cwd())
-            ),
-        )
-    )
-    if not result.ok:
-        raise typer.BadParameter(result.message or result.observation)
-    workflow = WorkflowStore(home).get(workflow_id)
-    status = workflow.phase if workflow else str((result.facts or {}).get("status") or "unknown")
-    typer.echo(f"{workflow_id} {status}")
 
 
 def _require_connector(name: str):
@@ -146,4 +125,3 @@ def _cli_service_active(name: str) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return "Active: active (running)" in status.stdout
-
