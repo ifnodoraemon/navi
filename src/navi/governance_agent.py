@@ -6,6 +6,7 @@ from .event_bus import (
     ActionApprovedEvent,
     ActionRequestedEvent,
     EventBus,
+    NaviEvent,
 )
 from .governance import GovernanceEngine
 from .runs import RunStore
@@ -22,7 +23,8 @@ class GovernanceAgent:
     def _subscribe(self) -> None:
         self.event_bus.subscribe("action_requested", self._on_action_requested)
 
-    async def _on_action_requested(self, event: ActionRequestedEvent) -> None:
+    async def _on_action_requested(self, event: NaviEvent) -> None:
+        assert isinstance(event, ActionRequestedEvent)
         task = self.runs.get(event.run_id)
         if not task:
             return

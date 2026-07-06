@@ -34,6 +34,7 @@ class EnginePhasesMixin:
     event_bus: Any | None
     governed_run_id: str
     governed_workflow_id: str
+    _background_tasks: set[asyncio.Task[Any]]
 
     def _attach_goals(
         self, goal_ids: set[str], *, trace_id: str, session_id: str, evidence: dict[str, Any]
@@ -57,7 +58,9 @@ class EnginePhasesMixin:
 
         logger = logging.getLogger("navi.engine")
         try:
-            await self.event_bus.publish(
+            event_bus = self.event_bus
+            assert event_bus is not None
+            await event_bus.publish(
                 AgentTurnCompletedEvent(
                     session_id=result.session_id,
                     run_id=result.run_id,

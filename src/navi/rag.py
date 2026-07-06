@@ -113,7 +113,7 @@ class CodebaseRAG:
 
     def search(self, query: str, limit: int = 5) -> list[SearchResult]:
         self.index()
-        results = []
+        results: list[SearchResult] = []
 
         # Simple trigram-like query matching using FTS5 match syntax
         match_query = " OR ".join(f'"{token}"*' for token in query.split() if token.strip())

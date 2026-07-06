@@ -1,5 +1,5 @@
 from __future__ import annotations
-from navi.lifecycle import Phase, Governance, Acceptance, Resolution
+from navi.lifecycle import Phase, Resolution
 
 import json
 from dataclasses import dataclass
@@ -8,7 +8,6 @@ from typing import Any, Callable
 
 from .capability_contract import CAPABILITY_ERROR_REASON_KEY
 from .engine_types import AgentTurnResult
-from .lifecycle import RUN_STATUS_PENDING, RUN_STATUS_COMPLETED, RUN_STATUS_FAILED
 from .loop import (
     LoopCheckName,
     LoopCheckResult,
@@ -600,11 +599,11 @@ def _facts_complete_current_request(facts: dict[str, Any] | None) -> bool:
         return False
     if facts.get("completion_evidence") is True:
         return True
-    # Only `completed` (success) and `failed` (terminal) mark the current
-    # request as done. `pending` / `running` are in-progress states that must
-    # not prematurely finalize the loop.
-    status = str(facts.get("status") or facts.get("run_status") or "").strip()
-    if status not in (RUN_STATUS_COMPLETED, RUN_STATUS_FAILED):
+    # Only an ended run with a terminal resolution marks the current request as
+    # done. Pending/running/paused are in-progress states.
+    phase = str(facts.get("phase") or facts.get("run_phase") or "").strip()
+    resolution = str(facts.get("resolution") or facts.get("run_resolution") or "").strip()
+    if phase != Phase.ENDED or resolution not in {Resolution.SUCCESS, Resolution.FAILED}:
         return False
     return (
         str(facts.get("turn_scope") or "").strip() == "current"

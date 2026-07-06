@@ -57,7 +57,7 @@ class WeixinStore:
         return [
             path.stem
             for path in sorted(self.dir.glob("*.json"))
-            if not path.name.endswith(".context-tokens.json")
+            if not path.name.endswith(".context-tokens.json") and not path.name.endswith(".sync.json")
         ]
 
     def sync_path(self, account_id: str) -> Path:

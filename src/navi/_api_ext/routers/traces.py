@@ -35,7 +35,7 @@ def create_router(home, project_dir, api_capabilities):
         store = TraceStore(home)
         events_page = store.list_events(trace_id, limit=limit, offset=offset)
 
-        from navi.trace.queries import _trace_run_views
+        from navi.trace import _trace_run_views
         all_events = store.list_events(trace_id, limit=offset + limit, offset=0)
         all_runs = _trace_run_views(all_events, trace_id=trace_id)
 

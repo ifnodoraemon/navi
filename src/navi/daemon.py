@@ -9,21 +9,23 @@ import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from subprocess import SubprocessError
 from typing import Any, Awaitable, Callable
 
 from .capabilities import CapabilityRegistry
 from .cron import next_cron_time
-from .event_bus import ActionApprovedEvent, ApprovalResolvedEvent, EventBus, AgentTurnCompletedEvent
+from .event_bus import (
+    ActionApprovedEvent,
+    AgentTurnCompletedEvent,
+    ApprovalResolvedEvent,
+    EventBus,
+    NaviEvent,
+)
 from .evolution import EvolutionEngine
 from .execution import ExecutionService
 from .governance_agent import GovernanceAgent
 from .graph import GraphNode, GraphStore
-from .lifecycle import (
-    RUN_STATUS_PENDING,
-    RUN_STATUS_COMPLETED,
-    RUN_STATUS_FAILED,
-    RUN_STATUS_RUNNING,
-)
+from .lifecycle import Governance, Phase, Resolution
 from .runs import Run, RunStore
 from .safeguards import redact_secrets
 from .text_utils import truncate_middle
@@ -102,17 +104,26 @@ class SystemDaemon:
             self.scheduler_runner = None
 
     def _setup_execution_subscription(self) -> None:
-        async def on_action_approved(event: ActionApprovedEvent) -> None:
+        async def on_action_approved(event: NaviEvent) -> None:
+            assert isinstance(event, ActionApprovedEvent)
             task = self.runs.get(event.run_id)
-            if task and task.status == RUN_STATUS_PENDING:
-                self.runs.update_run(event.run_id, status=RUN_STATUS_PENDING, result_summary="")
+            if task and task.phase == Phase.PENDING:
+                self.runs.update_run(event.run_id, phase=Phase.PENDING, result_summary="")
 
-        async def on_approval_resolved(event: ApprovalResolvedEvent) -> None:
+        async def on_approval_resolved(event: NaviEvent) -> None:
+            assert isinstance(event, ApprovalResolvedEvent)
             task = self.runs.get(event.run_id)
             if task and event.decision == "approved":
-                self.runs.update_run(event.run_id, status=RUN_STATUS_PENDING, result_summary="")
+                self.runs.update_run(
+                    event.run_id,
+                    phase=Phase.PENDING,
+                    governance=Governance.APPROVED,
+                    resolution=Resolution.NONE,
+                    result_summary="",
+                )
 
-        async def on_turn_completed(event: AgentTurnCompletedEvent) -> None:
+        async def on_turn_completed(event: NaviEvent) -> None:
+            assert isinstance(event, AgentTurnCompletedEvent)
             if event.session_id:
                 try:
                     from .config import load_config
@@ -123,10 +134,11 @@ class SystemDaemon:
                     provider = build_provider(config.model)
                     runtime = AgentRuntime(home=self.home, provider=provider)
 
-                    from navi.goals import GOAL_STATUS_BLOCKED, GoalStore
+                    from navi.lifecycle import Phase, Resolution
+                    from navi.goals import GoalStore
 
                     goal_store = GoalStore(self.home)
-                    goals = goal_store.list(status="active")
+                    goals = [g for g in goal_store.list() if g.phase in (Phase.PENDING, Phase.RUNNING, Phase.PAUSED)]
                     for g in goals:
                         if g.session_id != event.session_id:
                             continue
@@ -136,9 +148,10 @@ class SystemDaemon:
                         stop_facts = goal_store.stop_condition_facts(g.id)
                         stop_reason = str(stop_facts.get("reason") or "")
                         if stop_reason:
-                            goal_store.update_status(
+                            goal_store.update_state(
                                 g.id,
-                                GOAL_STATUS_BLOCKED,
+                                phase=Phase.ENDED,
+                                resolution=Resolution.BLOCKED,
                                 blocked_reason=stop_reason,
                                 evidence=stop_facts,
                                 event_type="goal.stop_condition",
@@ -162,12 +175,14 @@ class SystemDaemon:
 
         completed = await self.execution.process_pending_once()
         for task in completed:
-            await self.evolution.reflect_run(task, success=task.status == RUN_STATUS_COMPLETED)
-            if task.status in (RUN_STATUS_COMPLETED, RUN_STATUS_FAILED):
+            success = task.phase == Phase.ENDED and task.resolution == Resolution.SUCCESS
+            await self.evolution.reflect_run(task, success=success)
+            if task.phase == Phase.ENDED:
                 await self.event_bus.publish(
                     RunCompletedEvent(
                         run_id=task.id,
-                        status=task.status,
+                        phase=task.phase,
+                        resolution=task.resolution,
                         error=task.error,
                         peer_id=task.peer_id,
                         sender_id=task.sender_id,
@@ -218,15 +233,11 @@ class SystemDaemon:
         self, *, keep_latest: int = MAX_FAILED_WATCH_RUN_RECORDS
     ) -> int:
         keep_latest = max(0, keep_latest)
-        total = self.runs.count_runs(
-            status=RUN_STATUS_FAILED, source="watch", kind="delegation"
-        )
+        total = len(self._failed_watch_delegate_runs(limit=10_000))
         excess = max(0, total - keep_latest)
         if excess == 0:
             return 0
-        stale = self.runs.list_by_status_filtered(
-            RUN_STATUS_FAILED, source="watch", kind="delegation", limit=excess
-        )
+        stale = self._failed_watch_delegate_runs(limit=excess)
         pruned = 0
         from navi.trace import TraceStore
         trace = TraceStore(self.home)
@@ -272,7 +283,7 @@ class SystemDaemon:
             return_exceptions=True,
         )
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning(
                     "Error processing proactive project events: %s",
                     result,
@@ -309,7 +320,7 @@ class SystemDaemon:
         )
 
         for event_batch in event_batches:
-            if isinstance(event_batch, Exception):
+            if isinstance(event_batch, BaseException):
                 logger.warning(
                     "Error running proactive event detector for %s: %s",
                     project_path,
@@ -386,11 +397,20 @@ class SystemDaemon:
     def _active_workspaces(self) -> set[str]:
         return {
             self._canonical_path(task.workspace)
-            for task in self.runs.list_by_statuses(
-                [RUN_STATUS_RUNNING, RUN_STATUS_PENDING, RUN_STATUS_PENDING]
+            for task in self.runs.list_by_phases(
+                [Phase.RUNNING, Phase.PENDING, Phase.PAUSED]
             )
             if task.workspace
         }
+
+    def _failed_watch_delegate_runs(self, *, limit: int) -> list[Run]:
+        return [
+            run
+            for run in self.runs.list_by_phase(Phase.ENDED, limit=limit)
+            if run.resolution == Resolution.FAILED
+            and run.source == "watch"
+            and run.kind == "delegation"
+        ]
 
     @staticmethod
     def _canonical_path(path: str) -> str:
@@ -474,7 +494,7 @@ class SystemDaemon:
                     suppressed_state_updates={"last_git_status_hash": current_hash},
                 )
             )
-        except (OSError, asyncio.SubprocessError) as e:
+        except (OSError, SubprocessError) as e:
             logger.warning("Error checking git status for %s: %s", project_path, e)
         return events, {}
 

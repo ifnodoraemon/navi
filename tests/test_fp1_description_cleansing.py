@@ -34,11 +34,11 @@ def test_delegate_delete_bulk_constraint_moved_to_schema() -> None:
     specs = _read("src/navi/actions/specs.py")
     # The description no longer carries the bulk-cleanup guardrail prose...
     assert (
-        "Bulk cleanup must include source or kind so status-only filters"
+        "Bulk cleanup must include source or kind so phase-only filters"
         not in specs
     )
     # ...but the constraint survives in the input_schema field descriptions.
-    assert "Status-only filters are rejected" in specs
+    assert "Phase-only filters are rejected" in specs
 
 
 def test_watch_delete_description_drops_approval_safeguard() -> None:
@@ -196,9 +196,7 @@ def test_workflow_step_prompt_does_not_name_terminal_tool_choices() -> None:
 def test_model_json_protocols_do_not_extract_json_from_prose() -> None:
     for relative in (
         "src/navi/json_utils.py",
-        "src/navi/execution/protocol.py",
-        "src/navi/execution/provider.py",
-        "src/navi/execution/service.py",
+        "src/navi/execution.py",
         "src/navi/memory/store.py",
         "src/navi/provider.py",
     ):

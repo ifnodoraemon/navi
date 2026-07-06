@@ -23,6 +23,8 @@ __all__ = [
     "EvolutionLedger",
     "EvolutionProposal",
     "EvolutionTarget",
+    "_EVALUATION_RESULTS",
+    "_SPEC_FILE_TARGETS",
     "known_evolution_target",
     "known_ledger_target_type",
     "list_evolution_targets",

@@ -23,10 +23,10 @@ def create_router(home, project_dir, capabilities, workflow_store):
     router = APIRouter()
 
     @router.get(api_path("workflows"))
-    def list_workflows(status: str = "", limit: int = 50) -> dict:
+    def list_workflows(phase: str = "", limit: int = 50) -> dict:
         return {
             "workflows": [
-                workflow.__dict__ for workflow in workflow_store.list(status=status, limit=limit)
+                workflow.__dict__ for workflow in workflow_store.list(phase=phase, limit=limit)
             ]
         }
 

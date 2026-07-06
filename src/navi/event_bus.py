@@ -189,9 +189,16 @@ class EventBus:
                 event = await self._queue.get()
             except asyncio.CancelledError:
                 break
+            except (GeneratorExit, RuntimeError) as e:
+                if isinstance(e, GeneratorExit) or "Event loop is closed" in str(e):
+                    break
+                raise
             except Exception as e:
                 logger.error(f"Event bus worker queue.get error: {e}", exc_info=True)
-                await asyncio.sleep(0.1)
+                try:
+                    await asyncio.sleep(0.1)
+                except (asyncio.CancelledError, GeneratorExit, RuntimeError):
+                    break
                 continue
 
             try:

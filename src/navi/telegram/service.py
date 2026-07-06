@@ -98,7 +98,7 @@ class TelegramService:
                 # Check for activity to adapt sleep time
                 now = time.time()
                 if now - last_tasks_check >= 2.0:
-                    active_runs = runs.list_by_statuses(["queued", "running", "preparing"])
+                    active_runs = runs.list_by_phases(["queued", "running", "preparing"])
                     has_active_runs = len(active_runs) > 0
                     last_tasks_check = now
 

@@ -6,8 +6,8 @@ def create_router(goal_store, subagent_store):
     router = APIRouter()
 
     @router.get(api_path("goals"))
-    def list_goals(status: str = "", limit: int = 50) -> dict:
-        return {"goals": [goal.__dict__ for goal in goal_store.list(status=status, limit=limit)]}
+    def list_goals(phase: str = "", limit: int = 50) -> dict:
+        return {"goals": [goal.__dict__ for goal in goal_store.list(phase=phase, limit=limit)]}
 
     @router.get(api_path("goal"))
     def get_goal(goal_id: str) -> dict:

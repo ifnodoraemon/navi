@@ -12,9 +12,10 @@ from .app_factory import build_runtime
 from .connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
 from .daemon import SystemDaemon
 from .engine import AgentTurnResult, HernessEngine
-from .goals import GOAL_STATUS_VERIFIED_COMPLETE, GoalStore
+from .goals import GoalStore
 from .lifecycle import (
-    RUN_STATUS_COMPLETED,
+    Phase,
+    Resolution,
     acceptance_advance,
     acceptance_outcome,
 )
@@ -42,8 +43,10 @@ class AcceptanceReport:
     workspace: str
     run_id: str = ""
     trace_id: str = ""
-    run_status: str = ""
-    goal_status: str = ""
+    run_phase: str = ""
+    run_resolution: str = ""
+    goal_phase: str = ""
+    goal_resolution: str = ""
     turns: list[dict[str, Any]] = field(default_factory=list)
     progress: list[dict[str, Any]] = field(default_factory=list)
     checks: list[dict[str, Any]] = field(default_factory=list)
@@ -66,7 +69,8 @@ def load_acceptance_scenario(path: Path) -> AcceptanceScenario:
     request = str(data.get("request") or "").strip()
     if not request:
         raise ValueError("acceptance scenario requires request")
-    expected = data.get("expected") if isinstance(data.get("expected"), dict) else {}
+    raw_expected = data.get("expected")
+    expected = raw_expected if isinstance(raw_expected, dict) else {}
     return AcceptanceScenario(
         id=scenario_id,
         request=request,
@@ -131,7 +135,11 @@ async def run_product_acceptance(
         if run is None:
             errors.append("run disappeared")
             break
-        advance = acceptance_advance(run.status)
+        advance = acceptance_advance(
+            phase=run.phase,
+            governance=run.governance,
+            resolution=run.resolution,
+        )
         if advance.terminal:
             break
         if advance.action == "approve":
@@ -192,9 +200,13 @@ def report_to_text(report: AcceptanceReport) -> str:
         f"workspace={report.workspace}",
     ]
     if report.run_id:
-        lines.append(f"run={report.run_id} status={report.run_status or '-'}")
-    if report.goal_status:
-        lines.append(f"goal_status={report.goal_status}")
+        lines.append(
+            f"run={report.run_id} phase={report.run_phase or '-'} resolution={report.run_resolution or '-'}"
+        )
+    if report.goal_phase:
+        lines.append(
+            f"goal_phase={report.goal_phase} goal_resolution={report.goal_resolution or '-'}"
+        )
     if report.errors:
         lines.append("errors:")
         lines.extend(f"- {error}" for error in report.errors)
@@ -226,12 +238,15 @@ def _evaluate_acceptance(
         scenario.expected,
         workspace=workspace,
         run=run,
-        goal_status=goal.status if goal else "",
+        goal_phase=goal.phase if goal else "",
+        goal_resolution=goal.resolution if goal else "",
         protocol=protocol,
     )
     all_checks_ok = all(bool(check.get("ok")) for check in checks)
-    run_status = run.status if run else ""
-    goal_status = goal.status if goal else ""
+    run_phase = run.phase if run else ""
+    run_resolution = run.resolution if run else ""
+    goal_phase = goal.phase if goal else ""
+    goal_resolution = goal.resolution if goal else ""
     protocol_completion = _dict_path(protocol, "completion", "status")
     protocol_verification = _dict_path(protocol, "verification", "status")
     failed_evidence = _failed_evidence(protocol)
@@ -247,21 +262,25 @@ def _evaluate_acceptance(
 
     accepted = (
         not errors
-        and run_status == RUN_STATUS_COMPLETED
-        and goal_status == GOAL_STATUS_VERIFIED_COMPLETE
-        and protocol_completion == RUN_STATUS_COMPLETED
+        and run_phase == Phase.ENDED
+        and run_resolution == Resolution.SUCCESS
+        and goal_phase == Phase.ENDED
+        and goal_resolution == Resolution.SUCCESS
+        and protocol_completion == Resolution.SUCCESS
         and protocol_verification == "verified"
         and all_checks_ok
     )
 
     reason = "product objective completed with verified evidence"
-    outcome = acceptance_outcome(accepted=accepted, run_status=run_status)
+    outcome = acceptance_outcome(accepted=accepted, run_phase=run_phase)
     if not accepted:
         reason = _acceptance_failure_reason(
             errors=errors,
             checks=checks,
-            run_status=run_status,
-            goal_status=goal_status,
+            run_phase=run_phase,
+            run_resolution=run_resolution,
+            goal_phase=goal_phase,
+            goal_resolution=goal_resolution,
             protocol_completion=protocol_completion,
             protocol_verification=protocol_verification,
         )
@@ -277,8 +296,10 @@ def _evaluate_acceptance(
         errors=errors,
         run_id=run_id,
         trace_id=trace_id,
-        run_status=run_status,
-        goal_status=goal_status,
+        run_phase=run_phase,
+        run_resolution=run_resolution,
+        goal_phase=goal_phase,
+        goal_resolution=goal_resolution,
         checks=checks,
         evidence={
             "protocol": _compact_protocol(protocol),
@@ -299,8 +320,10 @@ def _report(
     errors: list[str],
     run_id: str = "",
     trace_id: str = "",
-    run_status: str = "",
-    goal_status: str = "",
+    run_phase: str = "",
+    run_resolution: str = "",
+    goal_phase: str = "",
+    goal_resolution: str = "",
     checks: list[dict[str, Any]] | None = None,
     evidence: dict[str, Any] | None = None,
 ) -> AcceptanceReport:
@@ -312,8 +335,10 @@ def _report(
         workspace=str(workspace),
         run_id=run_id,
         trace_id=trace_id,
-        run_status=run_status,
-        goal_status=goal_status,
+        run_phase=run_phase,
+        run_resolution=run_resolution,
+        goal_phase=goal_phase,
+        goal_resolution=goal_resolution,
         turns=turns,
         progress=progress,
         checks=checks or [],
@@ -360,7 +385,9 @@ def _state_snapshot(runs: RunStore, run_id: str) -> dict[str, Any]:
     logs = runs.list_execution_logs(run_id, limit=200)
     approvals = [item for item in runs.list_approvals(limit=200) if item.run_id == run_id]
     return {
-        "run_status": run.status if run else "",
+        "run_phase": run.phase if run else "",
+        "run_governance": run.governance if run else "",
+        "run_resolution": run.resolution if run else "",
         "approval_statuses": [item.status for item in approvals],
         "log_count": len(logs),
         "last_log_exit_code": logs[0].exit_code if logs else None,
@@ -372,12 +399,14 @@ def _acceptance_checks(
     *,
     workspace: Path,
     run: Any,
-    goal_status: str,
+    goal_phase: str,
+    goal_resolution: str,
     protocol: dict[str, Any],
 ) -> list[dict[str, Any]]:
     context = {
         "run": run,
-        "goal_status": goal_status,
+        "goal_phase": goal_phase,
+        "goal_resolution": goal_resolution,
         "protocol": protocol,
     }
     checks = [rule(context) for rule in ACCEPTANCE_CHECK_RULES]
@@ -392,23 +421,37 @@ def _acceptance_checks(
 
 def _acceptance_run_completed(context: dict[str, Any]) -> dict[str, Any]:
     run = context.get("run")
-    status = run.status if run else ""
-    return _check("run.completed", status == RUN_STATUS_COMPLETED, status)
+    phase = run.phase if run else ""
+    resolution = run.resolution if run else ""
+    detail = f"phase={phase} resolution={resolution}"
+    return _check(
+        "run.completed",
+        phase == Phase.ENDED and resolution == Resolution.SUCCESS,
+        detail,
+    )
 
 
 def _acceptance_goal_verified(context: dict[str, Any]) -> dict[str, Any]:
-    goal_status = str(context.get("goal_status") or "")
-    return _check("goal.verified", goal_status == GOAL_STATUS_VERIFIED_COMPLETE, goal_status)
+    phase = str(context.get("goal_phase") or "")
+    resolution = str(context.get("goal_resolution") or "")
+    detail = f"phase={phase} resolution={resolution}"
+    return _check(
+        "goal.verified",
+        phase == Phase.ENDED and resolution == Resolution.SUCCESS,
+        detail,
+    )
 
 
 def _acceptance_protocol_completed(context: dict[str, Any]) -> dict[str, Any]:
-    protocol = context.get("protocol") if isinstance(context.get("protocol"), dict) else {}
+    raw_protocol = context.get("protocol")
+    protocol = raw_protocol if isinstance(raw_protocol, dict) else {}
     status = str(_dict_path(protocol, "completion", "status") or "")
-    return _check("protocol.completed", status == RUN_STATUS_COMPLETED, status)
+    return _check("protocol.completed", status == Resolution.SUCCESS, status)
 
 
 def _acceptance_protocol_verified(context: dict[str, Any]) -> dict[str, Any]:
-    protocol = context.get("protocol") if isinstance(context.get("protocol"), dict) else {}
+    raw_protocol = context.get("protocol")
+    protocol = raw_protocol if isinstance(raw_protocol, dict) else {}
     status = str(_dict_path(protocol, "verification", "status") or "")
     return _check("protocol.verified", status == "verified", status)
 
@@ -494,7 +537,8 @@ def _dict_path(data: dict[str, Any], *keys: str) -> Any:
 def _compact_protocol(protocol: dict[str, Any]) -> dict[str, Any]:
     if not protocol:
         return {}
-    evidence = protocol.get("evidence") if isinstance(protocol.get("evidence"), list) else []
+    raw_evidence = protocol.get("evidence")
+    evidence = raw_evidence if isinstance(raw_evidence, list) else []
     return {
         "phase": protocol.get("phase"),
         "completion": protocol.get("completion"),
@@ -518,12 +562,14 @@ def _acceptance_failure_reason(
     *,
     errors: list[str],
     checks: list[dict[str, Any]],
-    run_status: str,
-    goal_status: str,
+    run_phase: str,
+    run_resolution: str,
+    goal_phase: str,
+    goal_resolution: str,
     protocol_completion: str,
     protocol_verification: str,
 ) -> str:
-    del run_status, goal_status, protocol_completion, protocol_verification
+    del run_phase, run_resolution, goal_phase, goal_resolution, protocol_completion, protocol_verification
     if errors:
         return errors[0]
     failed = [check for check in checks if not check.get("ok")]

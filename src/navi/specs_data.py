@@ -46,7 +46,7 @@ AGENT_ROLES_SPEC: Any = {
             "when_to_use": [
                 "High-risk local mutation.",
                 "Verifier failure.",
-                "Before marking long-running goals verified_complete.",
+                "Before marking long-running goals accepted with success resolution.",
             ],
             "evidence_required": [
                 "agent.role_result trace event with reviewed target, findings, and verdict."
@@ -338,11 +338,11 @@ CAPABILITY_SAFEGUARDS_SPEC: Any = {
             "confirmation_required": True,
             "reason_code": "capability_safeguard_delegate_retry",
         },
-        "delegate.status": {
+        "delegate.state": {
             "risk_class": "medium",
             "sensitive_contexts": ["task_control"],
             "confirmation_required": False,
-            "reason_code": "capability_safeguard_delegate_status",
+            "reason_code": "capability_safeguard_delegate_state",
         },
         "delegate.list": {
             "risk_class": "medium",
@@ -380,11 +380,11 @@ CAPABILITY_SAFEGUARDS_SPEC: Any = {
             "confirmation_required": True,
             "reason_code": "capability_safeguard_workflow_run",
         },
-        "workflow.status": {
+        "workflow.state": {
             "risk_class": "medium",
             "sensitive_contexts": ["dynamic_workflow"],
             "confirmation_required": False,
-            "reason_code": "capability_safeguard_workflow_status",
+            "reason_code": "capability_safeguard_workflow_state",
         },
         "web.search": {
             "risk_class": "low",

@@ -6,12 +6,12 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 
 import yaml
 
-from navi.provider import ChatMessage, ModelPool
-from navi.lifecycle import RUN_STATUS_FAILED
+from navi.provider import ChatMessage, ModelPool, ProviderUsage
+from navi.lifecycle import Phase, Resolution
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 
@@ -62,9 +62,28 @@ class WeixinJourneyResult:
     events: list[dict[str, Any]]
 
 
-class _FailingEvalProvider():
-    async def complete(self, messages: list[ChatMessage]) -> str:
+class _FailingEvalProvider:
+    last_usage: ProviderUsage | None = None
+
+    async def complete(
+        self,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict[str, Any] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
         raise RuntimeError("eval provider failure")
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncGenerator[str, None]:
+        result = await self.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        yield result
 
 
 def load_journey_eval_dataset(path: Path) -> dict[str, Any]:
@@ -120,7 +139,10 @@ async def _run_journey(
         if journey.get("provider") == "failing"
         else provider
     )
-    runtime = AgentRuntime(home=home, provider=model_provider or ModelPool(default=()))
+    runtime = AgentRuntime(
+        home=home,
+        provider=model_provider or ModelPool(default=_FailingEvalProvider()),
+    )
     service = WeixinService(
         home=home,
         config=WeixinConfig(dm_policy="open"),
@@ -146,14 +168,15 @@ async def _run_journey(
             run = runs.create(
                 str(seed.get("title") or "failed connector eval task"),
                 prompt=str(seed.get("prompt") or seed.get("title") or "failed connector eval task"),
-                status=RUN_STATUS_FAILED,
+                phase=Phase.ENDED,
+                resolution=Resolution.FAILED,
                 source=str(seed.get("source") or "watch"),
                 kind=str(seed.get("kind") or "delegation"),
                 peer_id="connector-eval-peer",
                 sender_id="connector-eval-sender",
                 workspace=str(project_dir),
             )
-            event = {"kind": "seed_failed_run", "run_id": run.id}
+            event: dict[str, Any] = {"kind": "seed_failed_run", "run_id": run.id}
         elif "inbound" in step:
             inbound = step.get("inbound") or {}
             message_index += 1
@@ -258,7 +281,13 @@ def _match_expectation(
         if actual != str(expect["watch_cron"]):
             errors.append(f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}")
     if "failed_run_count" in expect:
-        count = runs.count_runs(status=RUN_STATUS_FAILED)
+        count = len(
+            [
+                run
+                for run in runs.list_by_phase(Phase.ENDED, limit=500)
+                if run.resolution == Resolution.FAILED
+            ]
+        )
         if count != int(expect["failed_run_count"]):
             errors.append(
                 f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}"

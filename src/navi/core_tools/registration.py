@@ -16,7 +16,7 @@ from .files import _file_read, _file_write
 from .hooks import _hooks_list
 from .memory import _memory_conflicts, _memory_list, _memory_recall
 from .provider import _provider_config
-from .service import _run_status
+from .service import _run_state
 from .shell import _shell_run
 from .skills import _skills_list, _skills_view
 from .tools_list import _tools_list
@@ -38,7 +38,7 @@ def _array_of_objects() -> dict[str, Any]:
 def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     registry.register(
         _core_tool_spec(
-            name="delegate.status",
+            name="delegate.state",
             capability_class="delegation",
             description="Return delegation run, approval, and execution log facts.",
             input_schema={
@@ -53,7 +53,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 }
             ),
         ),
-        lambda args: _run_status(home, args),
+        lambda args: _run_state(home, args),
     )
     registry.register(
         _core_tool_spec(

@@ -53,6 +53,9 @@ markers = [
 line-length = 100
 target-version = "py313"
 
+[tool.mypy]
+mypy_path = "typings"
+
 [tool.coverage.run]
 branch = true
 source = ["src/navi"]
@@ -74,7 +77,6 @@ omit = [
     "src/navi/daemon.py",
     "src/navi/diagnostics.py",
     "src/navi/db.py",
-    "src/navi/engine_approval_prompts.py",
     "src/navi/engine_types.py",
     "src/navi/evals.py",
     "src/navi/evolution.py",

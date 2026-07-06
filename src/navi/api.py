@@ -1,4 +1,6 @@
 from __future__ import annotations
+import asyncio
+from contextlib import asynccontextmanager
 
 import json
 import os
@@ -141,6 +143,16 @@ class EvolutionEvaluationRequest(BaseModel):
     evaluation_result: str
 
 
+def _is_public_request(request: Request) -> bool:
+    path = request.url.path.rstrip("/") or "/"
+    if path == "/ui/trace" or path.startswith("/ui/trace/"):
+        return True
+    traces_path = api_path("traces")
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return path == traces_path or path.startswith(f"{traces_path}/")
+    return False
+
+
 def create_app(home: Path | None = None) -> FastAPI:
     home = home or ensure_home()
     project_dir = Path.cwd().resolve()
@@ -164,7 +176,41 @@ def create_app(home: Path | None = None) -> FastAPI:
     connector_status_handlers = {
         adapter.name: (lambda item=adapter: item.status(home)) for adapter in connector_adapters
     }
-    app = FastAPI(title="Navi", version=__version__)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Start the background daemon
+        daemon.start()
+
+        # Start connector adapters (e.g. WeChat)
+        setup_tasks = []
+        for adapter in connector_adapters:
+            if adapter.setup and adapter.enabled(home):
+                # Using 60s timeout; no interactive QR code here, so on_qr=None
+                setup_tasks.append(adapter.setup(home, project_dir, 60, None))
+
+        if setup_tasks:
+            await asyncio.gather(*setup_tasks, return_exceptions=True)
+
+        async def _run_wrapper(adapter_to_run):
+            try:
+                await adapter_to_run.run(home, project_dir, False)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"ERROR STARTING ADAPTER {adapter_to_run.name}: {e}")
+
+        run_tasks: list[asyncio.Task] = []
+        for adapter in connector_adapters:
+            if adapter.run and adapter.enabled(home):
+                run_tasks.append(asyncio.create_task(_run_wrapper(adapter)))
+
+        yield
+
+        # daemon.stop()
+        for task in run_tasks:
+            task.cancel()
+
+    app = FastAPI(title="Navi", version=__version__, lifespan=lifespan)
 
     api_key = os.environ.get("NAVI_API_KEY")
     if not api_key:
@@ -178,6 +224,11 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
+        if _is_public_request(request):
+            return await call_next(request)
+        provided_key = request.headers.get("X-API-Key", "")
+        if not provided_key or not secrets.compare_digest(provided_key, api_key):
+            return Response("Unauthorized", status_code=401)
         return await call_next(request)
 
     @app.middleware("http")
@@ -195,8 +246,11 @@ def create_app(home: Path | None = None) -> FastAPI:
         if not content_type.startswith("application/json"):
             return response
         chunks: list[bytes] = []
-        async for chunk in response.body_iterator:
-            chunks.append(chunk)
+        if hasattr(response, "body_iterator"):
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+        else:
+            chunks.append(getattr(response, "body", b""))
         body = b"".join(chunks)
         if not body:
             return response
@@ -661,8 +715,8 @@ def create_app(home: Path | None = None) -> FastAPI:
         return (result.facts or {}).get("evaluation", {})
 
     @app.get(api_path("goals"))
-    def list_goals(status: str = "", limit: int = 50) -> dict:
-        return {"goals": [goal.__dict__ for goal in goal_store.list(status=status, limit=limit)]}
+    def list_goals(phase: str = "", limit: int = 50) -> dict:
+        return {"goals": [goal.__dict__ for goal in goal_store.list(phase=phase, limit=limit)]}
 
     @app.get(api_path("goal"))
     def get_goal(goal_id: str) -> dict:
@@ -693,10 +747,10 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {"subagent": subagent.__dict__}
 
     @app.get(api_path("workflows"))
-    def list_workflows(status: str = "", limit: int = 50) -> dict:
+    def list_workflows(phase: str = "", limit: int = 50) -> dict:
         return {
             "workflows": [
-                workflow.__dict__ for workflow in workflow_store.list(status=status, limit=limit)
+                workflow.__dict__ for workflow in workflow_store.list(phase=phase, limit=limit)
             ]
         }
 
@@ -765,11 +819,11 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get(api_path("evolution_proposals"))
     def evolution_proposals(status: str | None = None) -> dict:
+        proposals = EvolutionLedger(home).list_proposals(status=status)
         return {
             "proposals": [
-                proposal.__dict__
-                for proposal in EvolutionLedger(home).list_proposals(status=status)
-            ]
+                p.__dict__ for p in proposals  # type: ignore[union-attr]
+            ] if proposals else []
         }
 
     @app.post(api_path("evolution_proposals"))

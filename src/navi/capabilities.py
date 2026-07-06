@@ -27,7 +27,7 @@ from .approval_contract import (
 )
 from .hooks import HookDecision, HookEvent, HookRegistry
 from .json_utils import json_schema_errors
-from .lifecycle import RUN_STATUS_AWAITING_APPROVAL, RUN_STATUS_PENDING
+from .lifecycle import Governance, Phase, Resolution
 from .operating_context import PERMISSION_ORDER, permission_allows
 from .runs import RunStore
 from .tools import TURN_CONTEXT, ToolSpec, build_tool_gateway
@@ -99,7 +99,7 @@ class CapabilityRegistry:
         # run. Sensitive (mutating) ops are then gated by a per-capability
         # approval: the first such op suspends the run for a fresh code instead
         # of running unchecked. Replay after approval passes the recorded grant.
-        self.governed_run_id = governed_run_id
+        self.governed_run_id = governed_run_id or ""
         self.gateway = build_tool_gateway(
             home,
             project_dir=project_dir,
@@ -306,7 +306,7 @@ class CapabilityRegistry:
                     ok=False,
                     action=f"execute:{name}",
                     observation=json.dumps({"error": "missing_governed_run"}),
-                    terminal=False,
+                    terminal=True,
                     error_reason="missing_governed_run",
                     message="Sensitive capability requires a durable governed run context to mount an approval. Ephemeral conversational turns cannot mount approvals."
                 )
@@ -447,7 +447,9 @@ class CapabilityRegistry:
             )
         runs.update_run(
             self.governed_run_id or "",
-            status=RUN_STATUS_AWAITING_APPROVAL,
+            phase=Phase.PAUSED,
+            governance=Governance.AWAITING_APPROVAL,
+            resolution=Resolution.BLOCKED,
             result_summary=(
                 "approval_requested\n"
                 f"run_id={self.governed_run_id or ''}\n"
@@ -556,7 +558,12 @@ def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
 def _canonical_args_json(value: dict[str, Any]) -> str:
     from .safeguards import redact_secrets_deep
 
-    return json.dumps(redact_secrets_deep(value or {}), ensure_ascii=False, sort_keys=True)
+    if isinstance(value, dict):
+        filtered = {k: v for k, v in value.items() if k not in {"_thought", "thought", "reasoning", "rationale"}}
+    else:
+        filtered = value or {}
+
+    return json.dumps(redact_secrets_deep(filtered), ensure_ascii=False, sort_keys=True)
 
 
 @dataclass(frozen=True)
@@ -577,7 +584,10 @@ def _source_policy_limits(home: Path, context: CapabilityContext, source_policy)
         return _SourcePolicyLimits(permission_ceiling=ceiling, allowed_tools=allowed_tools)
     ceiling = _max_permission(ceiling, approval.requested_permission)
     if permission_allows("write", ceiling):
-        allowed_tools = frozenset((*allowed_tools, *_remote_elevated_allowed_tools()))
+        if allowed_tools:
+            allowed_tools = frozenset((*allowed_tools, *_remote_elevated_allowed_tools()))
+        else:
+            allowed_tools = _remote_default_allowed_tools() | _remote_elevated_allowed_tools()
     return _SourcePolicyLimits(permission_ceiling=ceiling, allowed_tools=allowed_tools)
 
 
@@ -593,6 +603,14 @@ def _remote_elevated_allowed_tools() -> frozenset[str]:
     except ImportError:
         return frozenset()
     return REMOTE_ELEVATED_ALLOWED_TOOLS
+
+
+def _remote_default_allowed_tools() -> frozenset[str]:
+    try:
+        from .connector_runtime import REMOTE_ALLOWED_TOOLS
+    except ImportError:
+        return frozenset()
+    return REMOTE_ALLOWED_TOOLS
 
 
 def _connector_policy_for_source(source: str):

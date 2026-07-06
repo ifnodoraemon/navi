@@ -133,11 +133,12 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
             conn.execute(
                 """
                 INSERT INTO runs(
-                    id, title, status, created_at, updated_at, kind, prompt, source,
+                    id, title, phase, governance, acceptance, resolution,
+                    created_at, updated_at, kind, prompt, source,
                     peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id, why_now,
                     plan_summary, result_summary, error
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.id,
@@ -204,16 +205,16 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
             ).fetchall()
         return [self._run_from_row(row) for row in rows]
 
-    def list_by_status_filtered(
+    def list_by_phase_filtered(
         self,
-        status: str,
+        phase: str,
         *,
         source: str = "",
         kind: str = "",
         limit: int | None = None,
     ) -> typing.List[Run]:
         clauses = ["phase = ?"]
-        params: list[Any] = [status]
+        params: list[Any] = [phase]
         if source:
             clauses.append("source = ?")
             params.append(source)
@@ -273,9 +274,6 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
                 [*phases, limit],
             ).fetchall()
         return [self._run_from_row(row) for row in rows]
-
-    def update_status(self, run_id: str, status: str) -> Run | None:
-        return self.update_run(run_id, phase=status)
 
     def delete_run(self, run_id: str) -> Run | None:
         run = self.get(run_id)
@@ -339,6 +337,72 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
                 ),
             )
         return self.get(run_id)
+
+    def update_run_in_transaction(
+        self,
+        conn,
+        run_id: str,
+        *,
+        phase: str | None = None,
+        governance: str | None = None,
+        acceptance: str | None = None,
+        resolution: str | None = None,
+        plan_summary: str | None = None,
+        result_summary: str | None = None,
+        error: str | None = None,
+        trust_rule_id: str | None = None,
+        autonomy_level: str | None = None,
+    ) -> Run | None:
+        run = self._get_with_connection(conn, run_id)
+        if run is None:
+            return None
+        values = {
+            "phase": run.phase if phase is None else phase,
+            "governance": run.governance if governance is None else governance,
+            "acceptance": run.acceptance if acceptance is None else acceptance,
+            "resolution": run.resolution if resolution is None else resolution,
+            "plan_summary": run.plan_summary if plan_summary is None else plan_summary,
+            "result_summary": run.result_summary if result_summary is None else result_summary,
+            "error": run.error if error is None else error,
+            "trust_rule_id": run.trust_rule_id if trust_rule_id is None else trust_rule_id,
+            "autonomy_level": run.autonomy_level if autonomy_level is None else autonomy_level,
+            "updated_at": time.time(),
+        }
+        conn.execute(
+            """
+            UPDATE runs
+            SET phase = ?, governance = ?, acceptance = ?, resolution = ?, plan_summary = ?, result_summary = ?, error = ?,
+                trust_rule_id = ?, autonomy_level = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                values["phase"],
+                values["governance"],
+                values["acceptance"],
+                values["resolution"],
+                values["plan_summary"],
+                values["result_summary"],
+                values["error"],
+                values["trust_rule_id"],
+                values["autonomy_level"],
+                values["updated_at"],
+                run_id,
+            ),
+        )
+        return self._get_with_connection(conn, run_id)
+
+    @staticmethod
+    def _get_with_connection(conn, run_id: str) -> Run | None:
+        row = conn.execute(
+            """
+            SELECT id, title, phase, governance, acceptance, resolution, created_at, updated_at, kind, prompt, source,
+                   peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
+                   why_now, plan_summary, result_summary, error
+            FROM runs WHERE id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        return RunStore._run_from_row(row) if row else None
 
     # ------------------------------------------------------------- row mappers
 

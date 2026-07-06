@@ -17,13 +17,12 @@ from .governance import GovernanceEngine
 from .evolution import EvolutionLedger
 from .goals import GoalStore
 from .lifecycle import (
-    RUN_STATUS_PENDING,
-    RUN_STATUS_FAILED,
-    RUN_STATUS_COMPLETED,
-    RUN_STATUS_RUNNING,
+    Phase,
+    Resolution,
+    Governance,
+    Acceptance,
     execute_finalize_decision,
     execution_ledger_reason,
-    prepare_run_status,
 )
 from .provider import ChatMessage, ModelPool, build_provider
 from .runs import Run, RunStore
@@ -110,6 +109,8 @@ class ExecutionProtocol:
             if isinstance(parsed.get("navi_execution"), dict)
             else parsed
         )
+        if not isinstance(payload, dict):
+            raise ValueError("execution protocol must be a JSON object")
         version = str(payload.get("version") or "")
         if version != EXECUTION_PROTOCOL_VERSION:
             raise ValueError(f"execution protocol version must be {EXECUTION_PROTOCOL_VERSION}")
@@ -119,6 +120,7 @@ class ExecutionProtocol:
         payload_run_id = str(payload.get("run_id") or run_id)
         if run_id and payload_run_id != run_id:
             raise ValueError("execution protocol run_id does not match task")
+        assert isinstance(payload, dict)
         steps = _protocol_steps(payload)
         completion = _protocol_dict(payload, "completion")
         summary = str(completion.get("summary") or "").strip()
@@ -531,7 +533,7 @@ class NaviExecutionProvider:
             protocol = ExecutionProtocol.internal_status(
                 run_id=run_id,
                 phase=phase,
-                status=RUN_STATUS_FAILED,
+                status=Resolution.FAILED.value,
                 summary=str(exc),
                 reason_code="execution_protocol_invalid",
                 action_kind="execution_error",
@@ -565,7 +567,7 @@ class NaviExecutionProvider:
         protocol = ExecutionProtocol.internal_status(
             run_id="",
             phase="watch",
-            status=RUN_STATUS_COMPLETED if ok else RUN_STATUS_FAILED,
+            status=Resolution.SUCCESS.value if ok else Resolution.FAILED.value,
             summary=summary or "scheduled watch completed",
             reason_code="watch_notification_completed" if ok else "watch_notification_failed",
             action_kind="watch_notification",
@@ -602,28 +604,29 @@ class ExecutionService:
 
     def recover_stale_runs(self) -> None:
         """Mark runs stuck in transient states as failed due to system restart."""
-        from .runs import RUN_STATUS_RUNNING, RUN_STATUS_AWAITING_APPROVAL, RUN_STATUS_FAILED
-        
-        stale_statuses = (RUN_STATUS_RUNNING, RUN_STATUS_AWAITING_APPROVAL)
-        for status in stale_statuses:
-            runs = self.runs.db.fetchall("SELECT id FROM runs WHERE status = ?", [status])
-            for (run_id,) in runs:
-                self.runs.update_run(run_id, status=RUN_STATUS_FAILED, error="Run interrupted by system restart.")
-                self.runs.db.execute("UPDATE approvals SET status = 'rejected' WHERE run_id = ? AND status = 'pending'", [run_id])
+        stale_phases = (Phase.RUNNING, Phase.PAUSED)
+        for run in self.runs.list_by_phases(list(stale_phases), limit=500):
+            self.runs.update_run(
+                run.id,
+                phase=Phase.ENDED,
+                governance=Governance.NONE,
+                acceptance=Acceptance.REJECTED,
+                resolution=Resolution.FAILED,
+                error="Run interrupted by system restart.",
+            )
+            self.runs.reject_pending_approvals_for_run(run.id)
 
     async def plan_task(self, task: Run) -> Run:
-        self.runs.update_run(task.id, status=RUN_STATUS_PENDING)
+        self.runs.update_run(task.id, phase=Phase.PENDING.value)
         result = await self._prepare_with_subagent(task)
         self._log(task, result)
-        task_after_prepare = self.runs.get(task.id)
-        status = prepare_run_status(
-            exit_code=result.exit_code,
-            current_status=task_after_prepare.status if task_after_prepare else "",
-        )
+        next_phase = Phase.RUNNING if result.exit_code == 0 else Phase.ENDED
+        next_resolution = Resolution.NONE if result.exit_code == 0 else Resolution.FAILED
         updated = (
             self.runs.update_run(
                 task.id,
-                status=status,
+                phase=next_phase,
+                resolution=next_resolution,
                 plan_summary=result.summary,
                 error="" if result.exit_code == 0 else result.stderr,
             )
@@ -631,7 +634,12 @@ class ExecutionService:
         )
         GoalStore(self.home).update_for_run(
             updated,
-            evidence={"run_id": updated.id, "run_status": updated.status, "phase": "prepare"},
+            evidence={
+                "run_id": updated.id,
+                "run_phase": updated.phase,
+                "run_resolution": updated.resolution,
+                "execution_phase": "prepare",
+            },
         )
         return updated
 
@@ -639,7 +647,7 @@ class ExecutionService:
         before_state = self._execution_before_state(task)
 
         permission_ceiling = "write"
-        self.runs.update_run(task.id, status=RUN_STATUS_RUNNING)
+        self.runs.update_run(task.id, phase=Phase.RUNNING.value)
 
         from .runtime import AgentRuntime
 
@@ -691,15 +699,18 @@ class ExecutionService:
         )
 
         if getattr(turn_result, "yields_control", False):
-            self.runs.update_run(
-                task.id,
-                status=RUN_STATUS_PENDING,
-                result_summary=turn_result.text,
-            )
+            suspended = self.runs.get(task.id)
+            if suspended is None or suspended.governance != Governance.AWAITING_APPROVAL:
+                suspended = self.runs.update_run(
+                    task.id,
+                    phase=Phase.PAUSED,
+                    resolution=Resolution.BLOCKED,
+                    result_summary=turn_result.text,
+                ) or task
             self.subagents.finish(
                 subagent_run.id,
                 status=SUBAGENT_STATUS_SUSPENDED,
-                output_data={"exit_code": 0, "summary": turn_result.text},
+                output_data={"exit_code": 0, "summary": suspended.result_summary},
                 error="",
             )
             if self.event_bus:
@@ -718,10 +729,19 @@ class ExecutionService:
                         )
                     )
                 )
-            return self.runs.get(task.id)
+            GoalStore(self.home).update_for_run(
+                suspended,
+                evidence={
+                    "run_id": suspended.id,
+                    "run_phase": suspended.phase,
+                    "run_governance": suspended.governance,
+                    "run_resolution": suspended.resolution,
+                },
+            )
+            return suspended
 
         execution_status, status_reason = self._execution_status_from_turn_result(turn_result)
-        exit_code = 0 if execution_status != RUN_STATUS_FAILED else 1
+        exit_code = 0 if execution_status != Resolution.FAILED.value else 1
         self.subagents.finish(
             subagent_run.id,
             status=SUBAGENT_STATUS_FAILED if exit_code else SUBAGENT_STATUS_COMPLETED,
@@ -740,7 +760,7 @@ class ExecutionService:
         # does not overwrite awaiting_approval with completed/failed. The daemon
         # surfaces the new code to the user via the normal background channel.
         suspended = self.runs.get(task.id)
-        if suspended is not None and suspended.status == RUN_STATUS_PENDING:
+        if suspended is not None and suspended.governance == Governance.AWAITING_APPROVAL:
             self.subagents.finish(
                 subagent_run.id,
                 status=SUBAGENT_STATUS_SUSPENDED,
@@ -749,7 +769,12 @@ class ExecutionService:
             )
             GoalStore(self.home).update_for_run(
                 suspended,
-                evidence={"run_id": suspended.id, "run_status": suspended.status},
+                evidence={
+                    "run_id": suspended.id,
+                    "run_phase": suspended.phase,
+                    "run_governance": suspended.governance,
+                    "run_resolution": suspended.resolution,
+                },
             )
             return suspended
         protocol = ExecutionProtocol.internal_status(
@@ -765,7 +790,7 @@ class ExecutionService:
             phase="execute",
             command=["navi", "react", task.id],
             stdout=turn_result.text,
-            stderr=status_reason if execution_status == RUN_STATUS_FAILED else (turn_result.text if exit_code != 0 else ""),
+            stderr=status_reason if execution_status == Resolution.FAILED.value else (turn_result.text if exit_code != 0 else ""),
             exit_code=exit_code,
             started_at=started_at,
             ended_at=time.time(),
@@ -783,18 +808,21 @@ class ExecutionService:
     def _execution_status_from_turn_result(result) -> tuple[str, str]:
         facts = result.facts if isinstance(result.facts, dict) else {}
         if getattr(result, "yields_control", False):
-            return RUN_STATUS_PENDING, "execution produced an ask action and is waiting for user input"
+            return Phase.PENDING.value, "execution produced an ask action and is waiting for user input"
         if facts.get(CAPABILITY_REASON_KEY) == CAPABILITY_REASON_SENSITIVE_APPROVAL:
-            return RUN_STATUS_PENDING, "execution suspended for approval"
+            return Phase.PENDING.value, "execution suspended for approval"
         if not getattr(result, "ok", True):
-            return RUN_STATUS_FAILED, "execution ended with capability error facts"
-        return RUN_STATUS_COMPLETED, "execution produced terminal completion facts"
+            return Resolution.FAILED.value, "execution ended with capability error facts"
+        return Resolution.SUCCESS.value, "execution produced terminal completion facts"
 
     def _execution_before_state(self, task: Run) -> str:
         task_before = self.runs.get(task.id)
         return json.dumps(
             {
-                "status": task_before.status if task_before else "queued",
+                "phase": task_before.phase if task_before else "queued",
+                "governance": task_before.governance if task_before else "none",
+                "acceptance": task_before.acceptance if task_before else "none",
+                "resolution": task_before.resolution if task_before else "none",
                 "result_summary": task_before.result_summary if task_before else "",
                 "error": task_before.error if task_before else "",
             },
@@ -814,12 +842,12 @@ class ExecutionService:
         finalize = execute_finalize_decision(
             exit_code=result.exit_code,
             stderr=result.stderr,
-            completion_status=str((result.protocol.completion if result.protocol else {}).get("status") or ""),
         )
         updated_task = (
             self.runs.update_run(
                 task.id,
-                status=finalize.status,
+                phase=finalize.phase,
+                resolution=finalize.resolution,
                 result_summary=result.summary,
                 error=finalize.error,
             )
@@ -829,7 +857,10 @@ class ExecutionService:
         # Record the evolution event
         after_state = json.dumps(
             {
-                "status": updated_task.status,
+                "phase": updated_task.phase,
+                "governance": updated_task.governance,
+                "acceptance": updated_task.acceptance,
+                "resolution": updated_task.resolution,
                 "result_summary": updated_task.result_summary,
                 "error": updated_task.error,
             },
@@ -848,8 +879,10 @@ class ExecutionService:
             updated_task,
             evidence={
                 "run_id": updated_task.id,
-                "run_status": updated_task.status,
-                "phase": "execute",
+                "run_phase": updated_task.phase,
+                "run_governance": updated_task.governance,
+                "run_resolution": updated_task.resolution,
+                "execution_phase": "execute",
                 "summary": updated_task.result_summary,
             },
         )
@@ -863,7 +896,10 @@ class ExecutionService:
         watch_task = Run(
             id="",
             title=prompt[:120],
-            status=RUN_STATUS_RUNNING,
+            phase=Phase.RUNNING.value,
+            governance="none",
+            acceptance="none",
+            resolution="none",
             created_at=time.time(),
             updated_at=time.time(),
             kind="watch",
@@ -913,7 +949,7 @@ class ExecutionService:
 
     async def process_pending_once(self, *, limit: int = 3) -> list[Run]:
         completed: list[Run] = []
-        for task in self.runs.list_by_status(RUN_STATUS_PENDING, limit=limit):
+        for task in self.runs.list_by_phase(Phase.PENDING.value, limit=limit):
             if task.result_summary:
                 continue
             completed.append(await self.execute_task(task))
@@ -978,7 +1014,7 @@ class ExecutionService:
                 protocol=ExecutionProtocol.internal_status(
                     run_id=task.id,
                     phase="prepare",
-                    status=RUN_STATUS_FAILED,
+                    status=Resolution.FAILED.value,
                     summary=repr(exc),
                     reason_code="execution_provider_exception",
                     action_kind="execution_error",

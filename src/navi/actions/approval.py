@@ -15,13 +15,12 @@ from ..capabilities_types import (
     capability,
 )
 from ..control import ApprovalService, SurfaceContext
-from ..lifecycle import Phase, Governance, Acceptance, Resolution
+from ..lifecycle import Phase, Governance, Resolution
 from ..result import NotFound, SchemaMismatch, guarded
 from ..runs import RunStore
 from .helpers import (
     approval_error_reason as _approval_error_reason,
     approval_failure_is_terminal as _approval_failure_is_terminal,
-    approval_result_message as _approval_result_message,
     approval_selection as _approval_selection,
     fact_result as _fact_result,
     arg_text as _arg_text,
@@ -78,7 +77,9 @@ class ApprovalRequestCapability(BaseCapability):
         )
         runs.update_run(
             run_id,
-            phase=Phase.PAUSED, resolution=Resolution.BLOCKED,
+            phase=Phase.PAUSED,
+            governance=Governance.AWAITING_APPROVAL,
+            resolution=Resolution.BLOCKED,
             result_summary=_approval_visible_text(approval),
             error="",
         )
@@ -131,7 +132,7 @@ class ApprovalResolveCapability(BaseCapability):
             ok=resolved.ok,
             action="approval",
             observation=resolved.message,
-            message=_approval_result_message(resolved.message, facts),
+            message="",
             run_id=str(facts.get("run_id") or ""),
             facts=facts,
             terminal=_approval_failure_is_terminal(facts),
@@ -140,19 +141,19 @@ class ApprovalResolveCapability(BaseCapability):
 
 
 def _canonical_args_json(value: Any) -> str:
-    if not value:
-        return ""
-    from ..safeguards import redact_secrets_deep
-
-    if isinstance(value, str):
+    if not isinstance(value, dict):
+        if value is None:
+            return "{}"
         try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            from ..safeguards import redact_secrets
-
-            return redact_secrets(value)
-        return json.dumps(redact_secrets_deep(parsed), ensure_ascii=False, sort_keys=True)
-    return json.dumps(redact_secrets_deep(value), ensure_ascii=False, sort_keys=True)
+            value = json.loads(value)
+            if not isinstance(value, dict):
+                return json.dumps(value, sort_keys=True)
+        except Exception:
+            return str(value)
+            
+    filtered = {k: v for k, v in value.items() if k not in {"_thought", "thought", "reasoning", "rationale"}}
+    from ..safeguards import redact_secrets_deep
+    return json.dumps(redact_secrets_deep(filtered), ensure_ascii=False, sort_keys=True)
 
 
 def _approval_visible_text(approval) -> str:

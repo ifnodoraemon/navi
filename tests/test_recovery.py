@@ -10,7 +10,7 @@ def test_recovery_planner_returns_task_state_facts():
         block=CompletionBlock(
             reason_code="delegation_run_incomplete",
             run_id="run-1",
-            run_status="pending",
+            run_phase="pending",
         ),
         events=[],
     )
@@ -18,7 +18,7 @@ def test_recovery_planner_returns_task_state_facts():
     assert plan.details == {
         "blocked_entity_type": "delegation_run",
         "run_id": "run-1",
-        "run_status": "pending",
+        "run_phase": "pending",
     }
     observation = json.loads(plan.to_observation())
     assert observation["observation_type"] == "loop_checker_fact"
@@ -27,7 +27,7 @@ def test_recovery_planner_returns_task_state_facts():
         "blocked_entity_type": "delegation_run",
         "reason_code": "delegation_run_incomplete",
         "run_id": "run-1",
-        "run_status": "pending",
+        "run_phase": "pending",
         "trigger": "loop.check",
     }
     assert "choices" not in observation

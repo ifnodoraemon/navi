@@ -1,5 +1,4 @@
 from __future__ import annotations
-from navi.lifecycle import Phase, Governance, Acceptance, Resolution
 
 import asyncio
 import json
@@ -129,7 +128,7 @@ def chat() -> None:
     session_id: str | None = None
     typer.echo("Navi chat. Type /exit to quit.")
 
-    pending_options = []
+    pending_options: list[str] = []
 
     while True:
         if pending_options:
@@ -805,12 +804,14 @@ def _trace_evaluation_line(evaluation) -> str:
 
 
 @goal_app.command("list")
-def goal_list(status: str = "", limit: int = 50) -> None:
+def goal_list(phase: str = "", limit: int = 50) -> None:
     """List durable goals as facts."""
-    for goal in GoalStore(ensure_home()).list(status=status, limit=limit):
+    for goal in GoalStore(ensure_home()).list(phase=phase, limit=limit):
         task = f" task={goal.run_id}" if goal.run_id else ""
         trace = f" trace={goal.trace_id}" if goal.trace_id else ""
-        typer.echo(f"{goal.id} {goal.status}{task}{trace} {goal.objective}")
+        typer.echo(
+            f"{goal.id} phase={goal.phase} governance={goal.governance} resolution={goal.resolution}{task}{trace} {goal.objective}"
+        )
 
 
 @goal_app.command("show")
@@ -820,13 +821,17 @@ def goal_show(goal_id: str) -> None:
     goal = store.get(goal_id)
     if goal is None:
         raise typer.BadParameter("goal not found")
-    typer.echo(f"{goal.id} {goal.status} task={goal.run_id or '-'} trace={goal.trace_id or '-'}")
+    typer.echo(
+        f"{goal.id} phase={goal.phase} governance={goal.governance} resolution={goal.resolution} "
+        f"task={goal.run_id or '-'} trace={goal.trace_id or '-'}"
+    )
     typer.echo(goal.objective)
     if goal.blocked_reason:
         typer.echo(f"blocked: {goal.blocked_reason}")
     for event in store.list_events(goal_id):
         typer.echo(
-            f"- {event.event_type} {event.status} task={event.run_id or '-'} trace={event.trace_id or '-'}"
+            f"- {event.event_type} phase={event.phase} governance={event.governance} "
+            f"resolution={event.resolution} task={event.run_id or '-'} trace={event.trace_id or '-'}"
         )
 
 
@@ -889,15 +894,21 @@ def workflow_propose(
     if not result.ok:
         raise typer.BadParameter(result.message or result.observation)
     facts = result.facts or {}
-    typer.echo(f"{facts.get('workflow_id')} {facts.get('status')} steps={facts.get('step_count')}")
+    raw_workflow = facts.get("workflow")
+    workflow = raw_workflow if isinstance(raw_workflow, dict) else {}
+    typer.echo(
+        f"{facts.get('workflow_id')} phase={workflow.get('phase')} "
+        f"resolution={workflow.get('resolution')} steps={facts.get('step_count')}"
+    )
 
 
 @workflow_app.command("list")
-def workflow_list(status: str = "", limit: int = 50) -> None:
+def workflow_list(phase: str = "", limit: int = 50) -> None:
     """List dynamic workflows."""
-    for workflow in WorkflowStore(ensure_home()).list(status=status, limit=limit):
+    for workflow in WorkflowStore(ensure_home()).list(phase=phase, limit=limit):
         typer.echo(
-            f"{workflow.id} {workflow.status} ceiling={workflow.permission_ceiling} {workflow.objective}"
+            f"{workflow.id} phase={workflow.phase} governance={workflow.governance} "
+            f"resolution={workflow.resolution} ceiling={workflow.permission_ceiling} {workflow.objective}"
         )
 
 
@@ -950,8 +961,12 @@ def _workflow_action_cli(tool: str, workflow_id: str, extra_args: dict | None = 
     if not result.ok:
         raise typer.BadParameter(result.message or result.observation)
     workflow = WorkflowStore(home).get(workflow_id)
-    status = workflow.status if workflow else str((result.facts or {}).get("status") or "unknown")
-    typer.echo(f"{workflow_id} {status}")
+    if workflow:
+        typer.echo(
+            f"{workflow_id} phase={workflow.phase} governance={workflow.governance} resolution={workflow.resolution}"
+        )
+    else:
+        typer.echo(f"{workflow_id} {json.dumps(result.facts or {}, ensure_ascii=False, sort_keys=True)}")
 
 
 @evolution_app.command("list")

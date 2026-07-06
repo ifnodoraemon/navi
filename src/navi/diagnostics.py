@@ -287,7 +287,8 @@ def _service_runtime_check(name: str) -> DiagnosticCheck:
         facts = _service_facts(name)
     except Exception as exc:
         return DiagnosticCheck("service.runtime", "warn", f"{exc.__class__.__name__}")
-    properties = facts["properties"]
+    raw_properties = facts["properties"]
+    properties = raw_properties if isinstance(raw_properties, dict) else {}
     active = properties.get("ActiveState") or "unknown"
     substate = properties.get("SubState") or "unknown"
     if facts["exit_code"] == 0 and active == "active":

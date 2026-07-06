@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from ..lifecycle import Phase, Resolution
 from ._utils import _eval_run_id, _safe_path_name
 
 
@@ -100,7 +101,7 @@ async def _run_daily_journey(
         runtime=runtime,
         project_dir=project_dir,
         permission_ceiling=ceiling,
-        disabled_tools=disabled_tools,
+        disabled_tools=set(disabled_tools),
         disabled_capability_classes=disabled_capability_classes,
         event_bus=event_bus,
     )
@@ -144,7 +145,7 @@ async def _run_daily_journey(
                     )
                     session_id = turn.session_id
                     latest_run_id = turn.run_id or latest_run_id or _latest_run_id(runs)
-                    event = {
+                    event: dict[str, Any] = {
                         "kind": "user",
                         "message": message,
                         "action": turn.action,
@@ -165,7 +166,8 @@ async def _run_daily_journey(
                     run = runs.create(
                         title,
                         prompt=str(seed.get("prompt") or title),
-                        status="failed",
+                        phase=Phase.ENDED,
+                        resolution=Resolution.FAILED,
                         source=str(seed.get("source") or "watch"),
                         kind=str(seed.get("kind") or "delegation"),
                         peer_id="daily-eval",
@@ -354,12 +356,12 @@ def _match_daily_expectation(
             errors.append(
                 f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}"
             )
-    if "run_status" in expect:
+    if "run_phase" in expect:
         run = runs.get(latest_run_id)
         actual = run.phase if run else ""
-        if actual != expect["run_status"]:
+        if actual != expect["run_phase"]:
             errors.append(
-                f"{prefix}: run_status expected {expect['run_status']!r}, got {actual!r}"
+                f"{prefix}: run_phase expected {expect['run_phase']!r}, got {actual!r}"
             )
     return errors
 

@@ -7,6 +7,7 @@ import json
 import time
 import uuid
 from pathlib import Path
+from typing import List
 
 from ..db import connect
 from ..paths import db_paths
@@ -143,7 +144,7 @@ class EvolutionLedger:
             )
         return event
 
-    def list(self, *, limit: int = 100) -> list[EvolutionEvent]:
+    def list(self, *, limit: int = 100) -> List[EvolutionEvent]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -155,7 +156,7 @@ class EvolutionLedger:
             ).fetchall()
         return [EvolutionEvent(*row) for row in rows]
 
-    def list_for_task(self, run_id: str) -> list[EvolutionEvent]:
+    def list_for_task(self, run_id: str) -> List[EvolutionEvent]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -201,7 +202,7 @@ class EvolutionLedger:
         required_approval_level: str = "L2",
         evidence: str = "",
         source_run_id: str = "",
-        eval_cases: list[str] | None = None,
+        eval_cases: List[str] | None = None,
     ) -> EvolutionProposal:
         if not known_evolution_target(target_type):
             raise ValueError(f"unknown evolution target type: {target_type}")
@@ -252,7 +253,7 @@ class EvolutionLedger:
 
     def list_proposals(
         self, *, status: str | None = None, limit: int = 100
-    ) -> list[EvolutionProposal]:
+    ) -> List[EvolutionProposal]:
         with connect(self.db_path) as conn:
             if status:
                 rows = conn.execute(

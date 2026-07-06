@@ -49,7 +49,7 @@ def construct_capability(
     else (``spec``) is positional. This keeps the registry free of per-class
     construction metadata.
     """
-    params = inspect.signature(cls.__init__).parameters
+    params = inspect.signature(cls).parameters
     kwargs: dict[str, Any] = {}
     if "home" in params:
         kwargs["home"] = home

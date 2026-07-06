@@ -69,11 +69,11 @@ coverage:
   - memory.conflicts
   - browser.screenshot
   - delegate.list
-  - delegate.status
+  - delegate.state
   - workflow.propose
   - workflow.approve
   - workflow.run
-  - workflow.status
+  - workflow.state
   - test.run
   - session.request_elevation
   - codebase.search
@@ -249,7 +249,7 @@ cases:
     tool: delegate.delete
     permission: write
     args:
-      status: failed
+      phase: ended
       source: watch
 - id: delete_watch_from_recent_list
   category: delegation_lifecycle
@@ -264,13 +264,13 @@ cases:
     permission: write
     args:
       watch_id: 60a4729579fc4a55af3d2dee77ba53cc
-- id: delegation_status_by_id
+- id: delegation_state_by_id
   category: delegation_lifecycle
   source: observed
   message: "`8f59a0dcc92948c49f88de2df055dabf` \u4E3A\u4EC0\u4E48\u8FD9\u4E2A delegation\
     \ run \u6CA1\u6709\u6267\u884C"
   expect:
-    tool: delegate.status
+    tool: delegate.state
     permission: read
     args:
       run_id: 8f59a0dcc92948c49f88de2df055dabf
@@ -289,7 +289,7 @@ cases:
   message: "\u5BF9delegation run 8f59a0dcc92948c49f88de2df055dabf \u505A\u4E00\u6B21\
     \u51C6\u5907\u5206\u6790\uFF0C\u5148\u4E0D\u8981\u6392\u961F"
   expect:
-    tool: delegate.status
+    tool: delegate.state
     permission: read
     args:
       run_id: 8f59a0dcc92948c49f88de2df055dabf
@@ -524,13 +524,13 @@ cases:
   expect:
     tool: workflow.propose
     permission: prepare
-- id: inspect_dynamic_workflow_status
+- id: inspect_dynamic_workflow_state
   category: delegation_lifecycle
   source: architecture:dynamic-workflows
   message: "\u67E5\u770B workflow wf_123 \u5F53\u524D\u8DD1\u5230\u54EA\u4E00\u6B65\
     \u4E86"
   expect:
-    tool: workflow.status
+    tool: workflow.state
     permission: read
     args:
       workflow_id: wf_123
@@ -569,19 +569,19 @@ cases:
   message: "\u5BF9 workflow wf_123 \u505A\u72EC\u7ACB\u9A8C\u8BC1\uFF0C\u786E\u8BA4\
     \u80FD\u5426\u6807\u8BB0\u5B8C\u6210"
   expect:
-    tool: workflow.status
+    tool: workflow.state
     permission: read
     args:
       workflow_id: wf_123
-- id: verify_workflow_after_status_facts
+- id: verify_workflow_after_state_facts
   category: delegation_lifecycle
   source: architecture:dynamic-workflows
   message: "\u6839\u636E\u4E0A\u9762\u7684 workflow \u72B6\u6001\u4E8B\u5B9E\uFF0C\
     \u73B0\u5728\u5BF9 workflow wf_123 \u505A\u72EC\u7ACB\u9A8C\u8BC1"
-  conversation_context: "assistant: workflow.status facts for wf_123: status=running;\
+  conversation_context: "assistant: workflow.state facts for wf_123: phase=running;\
     \ all steps completed; no failed steps; approval already granted."
   expect:
-    tool: workflow.status
+    tool: workflow.state
     permission: read
     args:
       workflow_id: wf_123

@@ -1,4 +1,4 @@
-"""Delegation status tool handler."""
+"""Delegation state tool handler."""
 from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
@@ -7,7 +7,7 @@ from ..runs import RunStore
 from ..tools import ToolResult
 
 
-def _run_status(home: Path, args: dict[str, Any]) -> ToolResult:
+def _run_state(home: Path, args: dict[str, Any]) -> ToolResult:
     run_id = args.get("run_id")
     store = RunStore(home)
     run = store.get(str(run_id)) if run_id else None
@@ -16,27 +16,30 @@ def _run_status(home: Path, args: dict[str, Any]) -> ToolResult:
         run = runs[0] if runs else None
     if run is None:
         return ToolResult(
-            tool="delegate.status",
+            tool="delegate.state",
             ok=False,
             facts={"run": None, "logs": []},
             error="delegation run not found",
         )
     logs = store.list_execution_logs(run.id, limit=20)
     return ToolResult(
-        tool="delegate.status",
+        tool="delegate.state",
         ok=True,
         facts={
-            "run": _run_status_facts(run),
+            "run": _run_state_facts(run),
             "logs": [asdict(log) for log in logs],
         },
     )
 
 
-def _run_status_facts(run: Any) -> dict[str, Any]:
+def _run_state_facts(run: Any) -> dict[str, Any]:
     return {
         "id": run.id,
         "title": run.title,
-        "status": run.status,
+        "phase": run.phase,
+        "governance": run.governance,
+        "acceptance": run.acceptance,
+        "resolution": run.resolution,
         "kind": run.kind,
         "source": run.source,
         "peer_id": run.peer_id,

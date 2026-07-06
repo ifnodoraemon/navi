@@ -1,5 +1,4 @@
 from __future__ import annotations
-from navi.lifecycle import Phase, Governance, Acceptance, Resolution
 
 import asyncio
 import json
@@ -163,7 +162,10 @@ class HernessEngine(EnginePhasesMixin):
             model_role="responder",
             ok=bool(text),
             input_data={"fact_keys": sorted(facts)},
-            output_data={"text_present": bool(text)},
+            output_data={
+                "text_present": bool(text),
+                "provider_usage": self.runtime.usage_for("responder"),
+            },
             message=text[:1600],
         )
         return text
@@ -183,11 +185,12 @@ class HernessEngine(EnginePhasesMixin):
         resolved_session_id = session_id
         if not resolved_session_id and session_alias:
             resolved_session_id = self.runtime.memory.current_session_id(session_alias)
+        resolved_session_id = resolved_session_id or ""
         trace_id = trace_id or self.trace.new_trace_id()
         self.trace.add_event(
             trace_id=trace_id,
             phase=TracePhase.TURN_START,
-            session_id=resolved_session_id or "",
+            session_id=resolved_session_id,
             source=source,
             peer_id=peer_id,
             sender_id=sender_id,
@@ -738,7 +741,10 @@ class HernessEngine(EnginePhasesMixin):
                 "observations_count": len(observations),
                 "permission_ceiling": context.permission_ceiling,
             },
-            output_data=asdict(syscall),
+            output_data={
+                **asdict(syscall),
+                "provider_usage": self.runtime.usage_for("planner"),
+            },
             message=planner_message,
         )
 

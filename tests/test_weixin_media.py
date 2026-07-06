@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from navi.approval_contract import APPROVAL_ACTION_CAPABILITY, APPROVAL_DECISION_APPROVE
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
+from navi.lifecycle import Acceptance, Governance, Phase, Resolution
 from navi.runtime import AgentRuntime
-from navi.runs import Run
+from navi.runs import Run, RunStore
 from navi.weixin.client import ITEM_FILE, MEDIA_FILE, WeixinClient
 from navi.weixin.config import WeixinConfig
 from navi.weixin.models import WeixinAccount, WeixinUpdate
@@ -183,11 +186,30 @@ async def test_service_sends_media_directive_from_weixin_outbox(tmp_path: Path):
 async def test_weixin_stage_file_returns_allowed_media_directive(tmp_path: Path):
     source = tmp_path / "resume.docx"
     source.write_bytes(b"resume")
-    registry = build_capability_registry(tmp_path, project_dir=tmp_path, governed_run_id="test-run")
+    args = {"path": str(source)}
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "stage weixin file",
+        kind="delegation",
+        source="local",
+        workspace=str(tmp_path),
+        phase=Phase.RUNNING,
+        governance=Governance.APPROVED,
+    )
+    approval = runs.create_approval(
+        run_id=run.id,
+        action=APPROVAL_ACTION_CAPABILITY,
+        requested_tool="connector.weixin.stage_file",
+        requested_permission="write",
+        args_json=json.dumps(args, ensure_ascii=False, sort_keys=True),
+        reason="test approved outbound media staging",
+    )
+    runs.resolve_approval(approval.id, decision=APPROVAL_DECISION_APPROVE, resolved_by="test")
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path, governed_run_id=run.id)
 
     result = await registry.invoke(
         "connector.weixin.stage_file",
-        {"path": str(source)},
+        args,
         permission="write",
         context=CapabilityContext(home=tmp_path, source="local", workspace=str(tmp_path)),
     )
@@ -216,7 +238,10 @@ async def test_background_task_without_surface_text_does_not_synthesize_reply(tm
             Run(
                 id="run-empty",
                 title="empty completed task",
-                status="completed",
+                phase=Phase.ENDED,
+                governance=Governance.NONE,
+                acceptance=Acceptance.NONE,
+                resolution=Resolution.SUCCESS,
                 created_at=1.0,
                 updated_at=1.0,
                 prompt="do work",

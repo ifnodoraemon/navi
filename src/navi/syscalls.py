@@ -138,6 +138,8 @@ def _syscall_output_schema() -> dict[str, Any]:
 
 
 def _confidence(value: object) -> float:
+    if not isinstance(value, (str, int, float)):
+        return 0.0
     try:
         parsed = float(value)
     except (TypeError, ValueError):

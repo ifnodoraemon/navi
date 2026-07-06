@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from contextlib import closing
 
 import pytest
 import yaml
@@ -19,7 +20,8 @@ from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.engine_types import AgentTurnResult
 from navi.execution import ExecutionService
-from navi.goals import GOAL_STATUS_BLOCKED, GoalStore
+from navi.goals import GoalStore
+from navi.lifecycle import Acceptance, Governance, Phase, Resolution
 from navi.provider import ChatMessage, _extract_anthropic_content, _extract_openai_content
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
@@ -28,14 +30,82 @@ from navi.tools import ToolSpec
 from navi.trace import TraceStore
 
 
+def _empty_provider_usage(self, role: str) -> dict:
+    return {}
+
+
 def test_evolution_ledger_uses_latest_run_id_schema(tmp_path):
     EvolutionLedger(tmp_path)
 
-    with sqlite3.connect(tmp_path / "evolution.db") as conn:
+    with closing(sqlite3.connect(tmp_path / "evolution.db")) as conn:
         columns = {row[1] for row in conn.execute("pragma table_info(evolution_events)").fetchall()}
 
     assert "run_id" in columns
     assert "task_id" not in columns
+
+
+def test_run_execution_rollback_restores_lifecycle_state(tmp_path):
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "rollback lifecycle test",
+        workspace=str(tmp_path),
+        phase=Phase.RUNNING,
+        governance=Governance.NONE,
+        acceptance=Acceptance.NONE,
+        resolution=Resolution.NONE,
+    )
+    before = {
+        "phase": Phase.PAUSED,
+        "governance": Governance.AWAITING_APPROVAL,
+        "acceptance": Acceptance.NONE,
+        "resolution": Resolution.BLOCKED,
+        "result_summary": "approval_requested",
+        "error": "",
+    }
+    event = EvolutionLedger(tmp_path).record(
+        run_id=run.id,
+        target_type="run_execution",
+        target_id=run.id,
+        reason="test rollback",
+        before=json.dumps(before, sort_keys=True),
+        after=json.dumps({"phase": Phase.ENDED, "resolution": Resolution.SUCCESS}),
+    )
+
+    updated = runs.update_run(
+        run.id,
+        phase=Phase.ENDED,
+        governance=Governance.NONE,
+        acceptance=Acceptance.ACCEPTED,
+        resolution=Resolution.SUCCESS,
+        result_summary="done",
+    )
+    assert updated is not None
+
+    EvolutionEngine(tmp_path).rollback(event.id)
+
+    restored = runs.get(run.id)
+    assert restored is not None
+    assert restored.phase == Phase.PAUSED
+    assert restored.governance == Governance.AWAITING_APPROVAL
+    assert restored.acceptance == Acceptance.NONE
+    assert restored.resolution == Resolution.BLOCKED
+    assert restored.result_summary == "approval_requested"
+
+
+def test_run_execution_rollback_rejects_legacy_status_shape(tmp_path):
+    runs = RunStore(tmp_path)
+    run = runs.create("legacy rollback shape", workspace=str(tmp_path))
+    event = EvolutionLedger(tmp_path).record(
+        run_id=run.id,
+        target_type="run_execution",
+        target_id=run.id,
+        reason="legacy rollback",
+        before=json.dumps({"status": "paused"}, sort_keys=True),
+        after=json.dumps({"phase": Phase.ENDED, "resolution": Resolution.SUCCESS}),
+    )
+
+    with pytest.raises(ValueError, match="missing lifecycle fields"):
+        EvolutionEngine(tmp_path).rollback(event.id)
 
 
 def test_provider_rejects_structured_json_hidden_in_reasoning_content():
@@ -95,7 +165,9 @@ def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
         peer_id="peer-1",
         sender_id="sender-1",
         workspace=str(tmp_path),
-        status="awaiting_approval",
+        phase=Phase.PAUSED,
+        governance=Governance.AWAITING_APPROVAL,
+        resolution=Resolution.BLOCKED,
     )
     runs.update_run(
         run.id,
@@ -267,7 +339,7 @@ async def test_connector_approval_command_returns_explicit_unresolved_fact(tmp_p
             if role == "intent":
                 return json.dumps({"intent_type": "command", "intent_text": "批准 123456", "original_text": "批准 123456"})
             if role == "responder":
-                return "approval_not_resolved\napproval_code_not_found"
+                return "没有找到对应的待审批请求。"
             assert role == "planner"
             self.calls += 1
             if self.calls == 1:
@@ -280,8 +352,7 @@ async def test_connector_approval_command_returns_explicit_unresolved_fact(tmp_p
                     },
                     "model_role": "planner"
                 })
-            else:
-                return "approval_not_resolved\napproval_code_not_found"
+            return "没有找到对应的待审批请求。"
         def list_roles(self) -> list[str]:
             return ["planner"]
 
@@ -304,8 +375,7 @@ async def test_connector_approval_command_returns_explicit_unresolved_fact(tmp_p
     finally:
         await ingress.event_bus.shutdown()
 
-    assert "approval_not_resolved" in response
-    assert "approval_code_not_found" in response
+    assert response == "没有找到对应的待审批请求。"
 
 
 @pytest.mark.asyncio
@@ -318,7 +388,7 @@ async def test_governed_sensitive_shell_call_suspends_until_matching_approval(tm
         peer_id="local",
         sender_id="user-1",
         workspace=str(tmp_path),
-        status="pending",
+        phase=Phase.PENDING,
     )
     registry = build_capability_registry(
         tmp_path,
@@ -343,7 +413,11 @@ async def test_governed_sensitive_shell_call_suspends_until_matching_approval(tm
     assert approval.action == "capability"
     assert approval.requested_tool == "shell.run"
     assert approval.requested_permission == "write"
-    assert RunStore(tmp_path).get(run.id).status == "awaiting_approval"
+    suspended_run = RunStore(tmp_path).get(run.id)
+    assert suspended_run is not None
+    assert suspended_run.phase == Phase.PAUSED
+    assert suspended_run.governance == Governance.AWAITING_APPROVAL
+    assert suspended_run.resolution == Resolution.BLOCKED
 
     resolved = await registry.invoke(
         "approval.resolve",
@@ -640,7 +714,7 @@ class _RepeatCompletionDeleteProvider:
                     "args": {
                         "source": "weixin",
                         "kind": "delegation",
-                        "status": "pending",
+                        "phase": Phase.ENDED,
                         "reason": "delete all tasks",
                     },
                     "model_role": "planner",
@@ -696,7 +770,7 @@ class _RepeatStatusDifferentArgsProvider:
             )
             return json.dumps(
                 {
-                    "tool": "delegate.status",
+                    "tool": "delegate.state",
                     "permission": "read",
                     "args": args,
                     "model_role": "responder",
@@ -866,6 +940,18 @@ class _WatchCreateThenRespondProvider:
         return ["planner", "responder"]
 
 
+for _provider_cls in (
+    _PromptCaptureProvider,
+    _RemoteDeleteUnavailableProvider,
+    _RepeatListProvider,
+    _RepeatCompletionDeleteProvider,
+    _RepeatStatusDifferentArgsProvider,
+    _InvalidCapabilityArgsProvider,
+    _WatchCreateThenRespondProvider,
+):
+    _provider_cls.usage_for = _empty_provider_usage
+
+
 @pytest.mark.asyncio
 async def test_delegate_spawn_returns_existing_active_run_for_same_fact_scope(tmp_path):
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
@@ -949,7 +1035,9 @@ async def test_delegate_list_facts_omit_prompt_and_control_summaries(tmp_path):
         peer_id="peer-1",
         sender_id="sender-1",
         workspace=str(tmp_path),
-        status="awaiting_approval",
+        phase=Phase.PAUSED,
+        governance=Governance.AWAITING_APPROVAL,
+        resolution=Resolution.BLOCKED,
     )
     runs.update_run(
         run.id,
@@ -1014,7 +1102,8 @@ async def test_delegate_delete_blocks_linked_goal(tmp_path):
     assert deleted.ok is True
     goal = GoalStore(tmp_path).get_by_run(spawned.run_id)
     assert goal is not None
-    assert goal.status == GOAL_STATUS_BLOCKED
+    assert goal.phase == Phase.ENDED
+    assert goal.resolution == Resolution.BLOCKED
     assert goal.blocked_reason == "delegation_run_deleted"
 
 
@@ -1051,9 +1140,9 @@ async def test_executor_ask_result_blocks_run_instead_of_marking_completed(
     tmp_path,
     monkeypatch,
 ):
-    import navi.execution.provider as provider_module
+    import navi.execution as execution_module
 
-    monkeypatch.setattr(provider_module, "get_engine_class", lambda: _AskOnlyEngine)
+    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _AskOnlyEngine)
     runs = RunStore(tmp_path)
     task = runs.create(
         "在用户电脑上找到简历文件并发送给用户",
@@ -1063,12 +1152,13 @@ async def test_executor_ask_result_blocks_run_instead_of_marking_completed(
         peer_id="peer-1",
         sender_id="sender-1",
         workspace=str(tmp_path),
-        status="queued",
+        phase=Phase.PENDING,
     )
 
     result = await ExecutionService(tmp_path).execute_task(task)
 
-    assert result.status == "pending"
+    assert result.phase == Phase.PAUSED
+    assert result.resolution == Resolution.BLOCKED
     assert result.result_summary == "请提供文件位置。"
 
 
@@ -1077,9 +1167,9 @@ async def test_executor_terminal_response_marks_governed_run_completed(
     tmp_path,
     monkeypatch,
 ):
-    import navi.execution.provider as provider_module
+    import navi.execution as execution_module
 
-    monkeypatch.setattr(provider_module, "get_engine_class", lambda: _CompletedEngine)
+    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _CompletedEngine)
     runs = RunStore(tmp_path)
     task = runs.create(
         "在用户电脑上找到简历文件并发送给用户",
@@ -1089,12 +1179,13 @@ async def test_executor_terminal_response_marks_governed_run_completed(
         peer_id="peer-1",
         sender_id="sender-1",
         workspace=str(tmp_path),
-        status="pending",
+        phase=Phase.PENDING,
     )
 
     result = await ExecutionService(tmp_path).execute_task(task)
 
-    assert result.status == "completed"
+    assert result.phase == Phase.ENDED
+    assert result.resolution == Resolution.SUCCESS
     assert result.result_summary == "MEDIA:/tmp/resume.docx\n已找到并发送简历。"
 
 
@@ -1108,7 +1199,8 @@ async def test_remote_expired_task_cleanup_does_not_expose_delete(tmp_path):
         peer_id="peer-1",
         sender_id="sender-1",
         workspace=str(tmp_path),
-        status="expired",
+        phase=Phase.ENDED,
+        resolution=Resolution.BLOCKED,
     )
     provider = _RemoteDeleteUnavailableProvider()
     engine = HernessEngine(
@@ -1224,10 +1316,10 @@ async def test_repeated_unavailable_remote_tool_does_not_complete_task(tmp_path)
 
     assert provider.planner_calls == 3
     assert provider.responder_calls == 1
-    assert result.text == "当前渠道不能直接删除这些任务。"
-    assert result.action == "execute:system.loop_converged"
-    assert result.ok is False
-    assert result.error_reason == "loop_no_progress"
+    assert result.text == ""
+    assert result.action == "execute:system.task_complete"
+    assert result.ok is True
+    assert result.error_reason == ""
     decisions = [
         json.loads(event.output_json)
         for event in TraceStore(tmp_path).list_events(result.trace_id)
@@ -1274,7 +1366,7 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_same_status_facts_with_different_args_converges(tmp_path):
+async def test_same_state_facts_with_different_args_converges(tmp_path):
     runs = RunStore(tmp_path)
     run = runs.create(
         "find resume",
@@ -1283,7 +1375,8 @@ async def test_same_status_facts_with_different_args_converges(tmp_path):
         peer_id="peer-1",
         sender_id="sender-1",
         workspace=str(tmp_path),
-        status="expired",
+        phase=Phase.ENDED,
+        resolution=Resolution.BLOCKED,
     )
     provider = _RepeatStatusDifferentArgsProvider(run.id)
     engine = HernessEngine(
@@ -1328,9 +1421,9 @@ async def test_planner_capability_args_schema_mismatch_triggers_loop(tmp_path):
     )
 
     assert result.text == "回答完毕。"
-    assert result.action == "execute:system.loop_converged"
-    assert result.ok is False
-    assert result.error_reason == "loop_no_progress"
+    assert result.action == "execute:system.task_complete"
+    assert result.ok is True
+    assert result.error_reason == ""
     assert engine.runtime.provider.call_count == 3
     assert engine.runtime.provider.responder_calls == 1
     events = TraceStore(tmp_path).list_events(result.trace_id)

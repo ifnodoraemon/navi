@@ -11,7 +11,7 @@ from .engine import HernessEngine
 from .runtime import AgentRuntime
 
 if TYPE_CHECKING:
-    from .event_bus import EventBus
+    from .event_bus import EventBus, NaviEvent
 
 
 # How often a still-running turn signals liveness on its response channel. Must
@@ -39,13 +39,15 @@ def connector_fact_text(event: str, facts: dict[str, Any]) -> str:
 REMOTE_ALLOWED_TOOLS = frozenset(
     (
         "respond",
+        "approval.resolve",
         "delegate.spawn",
         "delegate.list",
+        "delegate.state",
         "session.request_elevation",
         "tools.list",
         "watch.create",
         "workflow.propose",
-        "workflow.status",
+        "workflow.state",
     )
 )
 
@@ -180,7 +182,7 @@ class ConnectorIngressRuntime:
             project_dir=project_dir,
             allow_sources=allow_sources,
             allowed_tools=allowed_tools,
-            disabled_tools=tool_policy.blocked_tools,
+            disabled_tools=set(tool_policy.blocked_tools),
             disabled_capability_classes=tool_policy.blocked_capability_classes,
             permission_ceiling=tool_policy.permission_ceiling,
             event_bus=self.event_bus,
@@ -195,7 +197,8 @@ class ConnectorIngressRuntime:
         self._governance = GovernanceAgent(self.agent.home, self.event_bus)
         self._intent = IntentAgent(self.agent.home, self.agent.runtime, self.event_bus)
 
-        async def on_user_intent(event: UserIntentEvent) -> None:
+        async def on_user_intent(event: "NaviEvent") -> None:
+            assert isinstance(event, UserIntentEvent)
             text = await self._handle_with_heartbeat(event)
             await self.event_bus.send_response(
                 ResponseReadyEvent(
@@ -212,7 +215,8 @@ class ConnectorIngressRuntime:
 
         from .event_bus import RunCompletedEvent, ActionSuspendedEvent
 
-        async def on_action_suspended(event: ActionSuspendedEvent) -> None:
+        async def on_action_suspended(event: "NaviEvent") -> None:
+            assert isinstance(event, ActionSuspendedEvent)
             text = f"action_suspended\nrun_id={event.run_id}\napproval_code={event.approval_code}"
             await self.event_bus.send_response(
                 ResponseReadyEvent(
@@ -227,12 +231,14 @@ class ConnectorIngressRuntime:
 
         self.event_bus.subscribe("action_suspended", on_action_suspended)
 
-        async def on_run_completed(event: RunCompletedEvent) -> None:
-            if event.status == "failed":
+        async def on_run_completed(event: "NaviEvent") -> None:
+            assert isinstance(event, RunCompletedEvent)
+            if event.resolution == "failed":
                 text = (
                     "delegated_subtask_completed\n"
                     f"run_id={event.run_id}\n"
-                    f"status={event.status}\n"
+                    f"phase={event.phase}\n"
+                    f"resolution={event.resolution}\n"
                     f"error={event.error or ''}"
                 ).strip()
                 await self.event_bus.send_response(
@@ -247,21 +253,6 @@ class ConnectorIngressRuntime:
                 )
 
         self.event_bus.subscribe("run_completed", on_run_completed)
-
-        async def on_run_suspended(event) -> None:
-            from .event_bus import RunSuspendedEvent
-
-            assert isinstance(event, RunSuspendedEvent)
-            await self.event_bus.send_response(
-                ResponseReadyEvent(
-                    source_agent="runtime",
-                    correlation_id="",
-                    peer_id=event.peer_id,
-                    sender_id=event.sender_id,
-                    text=event.text,
-                    source=event.source,
-                )
-            )
 
         async def on_run_suspended(event) -> None:
             from .event_bus import RunSuspendedEvent
@@ -317,13 +308,7 @@ class ConnectorIngressRuntime:
                 exc,
                 exc_info=True,
             )
-            return connector_fact_text(
-                "connector_turn_failed",
-                {
-                    "correlation_id": event.correlation_id,
-                    "error_type": type(exc).__name__,
-                },
-            )
+            return ""
         finally:
             heartbeat_task.cancel()
 

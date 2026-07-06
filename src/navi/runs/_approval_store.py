@@ -138,8 +138,8 @@ class ApprovalStoreMixin:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
-                SELECT id, run_id, action, requested_tool, requested_permission, args_json,
-                       source, peer_id, sender_id, status, code,
+                SELECT id, run_id, action, status, requested_tool, requested_permission, args_json,
+                       source, peer_id, sender_id, code,
                        expires_at, created_at, updated_at, reason, decision, resolved_by
                 FROM approvals{where}
                 ORDER BY created_at DESC LIMIT ?
@@ -274,18 +274,65 @@ class ApprovalStoreMixin:
             )
         return self.get_approval(approval_id)
 
+    def resolve_approval_in_transaction(
+        self,
+        conn,
+        approval_id: str,
+        *,
+        decision: str,
+        resolved_by: str = "",
+    ) -> Approval | None:
+        status = _status_for_decision(decision)
+        if status is None:
+            return None
+        now = time.time()
+        conn.execute(
+            """
+            UPDATE approvals
+            SET status = ?, decision = ?, resolved_by = ?, updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                status,
+                decision,
+                resolved_by,
+                now,
+                approval_id,
+                APPROVAL_STATUS_PENDING,
+            ),
+        )
+        return self._get_approval_with_connection(conn, approval_id)
+
     def get_approval(self, approval_id: str) -> Approval | None:
         with connect(self.db_path) as conn:
-            row = conn.execute(
-                """
-                SELECT id, run_id, action, requested_tool, requested_permission, args_json,
-                       source, peer_id, sender_id, status, code,
-                       expires_at, created_at, updated_at, reason, decision, resolved_by
-                FROM approvals WHERE id = ?
-                """,
-                (approval_id,),
-            ).fetchone()
+            row = self._select_approval_row(conn, "id = ?", [approval_id])
         return self._approval_from_row(row) if row else None
+
+    def reject_pending_approvals_for_run(
+        self,
+        run_id: str,
+        *,
+        resolved_by: str = "system",
+        decision: str = APPROVAL_DECISION_REJECT,
+    ) -> int:
+        now = time.time()
+        with connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE approvals
+                SET status = ?, decision = ?, resolved_by = ?, updated_at = ?
+                WHERE run_id = ? AND status = ?
+                """,
+                (
+                    APPROVAL_STATUS_REJECTED,
+                    decision,
+                    resolved_by,
+                    now,
+                    run_id,
+                    APPROVAL_STATUS_PENDING,
+                ),
+            )
+            return int(cursor.rowcount or 0)
 
     def expire_pending_approvals(self, *, now: float | None = None) -> int:
         threshold = time.time() if now is None else now
@@ -302,17 +349,25 @@ class ApprovalStoreMixin:
 
     def _approval_where(self, clauses: list[str], params: list[object]) -> Approval | None:
         with connect(self.db_path) as conn:
-            row = conn.execute(
-                f"""
-                SELECT id, run_id, action, requested_tool, requested_permission, args_json,
-                       source, peer_id, sender_id, status, code,
-                       expires_at, created_at, updated_at, reason, decision, resolved_by
-                FROM approvals
-                WHERE {" AND ".join(clauses)}
-                ORDER BY created_at DESC LIMIT 1
-                """,
-                params,
-            ).fetchone()
+            row = self._select_approval_row(conn, " AND ".join(clauses), params)
+        return self._approval_from_row(row) if row else None
+
+    @staticmethod
+    def _select_approval_row(conn, where: str, params: list[object] | tuple[object, ...]):
+        return conn.execute(
+            f"""
+            SELECT id, run_id, action, status, requested_tool, requested_permission, args_json,
+                   source, peer_id, sender_id, code,
+                   expires_at, created_at, updated_at, reason, decision, resolved_by
+            FROM approvals
+            WHERE {where}
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            params,
+        ).fetchone()
+
+    def _get_approval_with_connection(self, conn, approval_id: str) -> Approval | None:
+        row = self._select_approval_row(conn, "id = ?", [approval_id])
         return self._approval_from_row(row) if row else None
 
     @staticmethod

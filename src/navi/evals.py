@@ -17,7 +17,7 @@ from .connector_registry import get_connector_adapter
 from .engine import HernessEngine
 from .execution import ExecutionService
 from .goals import GoalStore
-from .lifecycle import RUN_STATUS_FAILED
+from .lifecycle import Phase, Resolution
 from .provider import ModelPool
 from .runtime import AgentRuntime
 from .runs import RunStore
@@ -377,7 +377,7 @@ async def _run_daily_journey(
         runtime=runtime,
         project_dir=project_dir,
         permission_ceiling=ceiling,
-        disabled_tools=disabled_tools,
+        disabled_tools=set(disabled_tools),
         disabled_capability_classes=disabled_capability_classes,
         event_bus=event_bus,
     )
@@ -423,7 +423,7 @@ async def _run_daily_journey(
                     )
                     session_id = turn.session_id
                     latest_run_id = turn.run_id or latest_run_id or _latest_run_id(runs)
-                    event = {
+                    event: dict[str, Any] = {
                         "kind": "user",
                         "message": message,
                         "action": turn.action,
@@ -444,7 +444,8 @@ async def _run_daily_journey(
                     run = runs.create(
                         title,
                         prompt=str(seed.get("prompt") or title),
-                        status=RUN_STATUS_FAILED,
+                        phase=Phase.ENDED,
+                        resolution=Resolution.FAILED,
                         source=str(seed.get("source") or "watch"),
                         kind=str(seed.get("kind") or "delegation"),
                         peer_id="daily-eval",
@@ -532,7 +533,13 @@ def _match_daily_expectation(
         if count != int(expect["run_count"]):
             errors.append(f"{prefix}: run_count expected {expect['run_count']!r}, got {count!r}")
     if "failed_run_count" in expect:
-        count = runs.count_runs(status=RUN_STATUS_FAILED)
+        count = len(
+            [
+                run
+                for run in runs.list_by_phase(Phase.ENDED, limit=500)
+                if run.resolution == Resolution.FAILED
+            ]
+        )
         if count != int(expect["failed_run_count"]):
             errors.append(
                 f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}"
@@ -559,17 +566,24 @@ def _match_daily_expectation(
         actual = watches[0].cron if watches else ""
         if actual != str(expect["watch_cron"]):
             errors.append(f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}")
-    if "run_status" in expect:
+    if "run_phase" in expect:
         run = runs.get(latest_run_id)
-        actual = run.status if run else ""
-        if actual != expect["run_status"]:
-            errors.append(f"{prefix}: run_status expected {expect['run_status']!r}, got {actual!r}")
-    if "goal_status" in expect:
-        goal = goals.get_by_run(latest_run_id)
-        actual = goal.status if goal else ""
-        if actual != expect["goal_status"]:
+        actual = run.phase if run else ""
+        if actual != expect["run_phase"]:
+            errors.append(f"{prefix}: run_phase expected {expect['run_phase']!r}, got {actual!r}")
+    if "run_resolution" in expect:
+        run = runs.get(latest_run_id)
+        actual = run.resolution if run else ""
+        if actual != expect["run_resolution"]:
             errors.append(
-                f"{prefix}: goal_status expected {expect['goal_status']!r}, got {actual!r}"
+                f"{prefix}: run_resolution expected {expect['run_resolution']!r}, got {actual!r}"
+            )
+    if "goal_phase" in expect:
+        goal = goals.get_by_run(latest_run_id)
+        actual = goal.phase if goal else ""
+        if actual != expect["goal_phase"]:
+            errors.append(
+                f"{prefix}: goal_phase expected {expect['goal_phase']!r}, got {actual!r}"
             )
     return errors
 

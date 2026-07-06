@@ -33,6 +33,8 @@ def validate_schema(data: Any, schema: dict[str, Any], path: str = "") -> list[s
     if not isinstance(schema, dict):
         return errors
     expected_type = schema.get("type")
+    if not isinstance(expected_type, str):
+        return errors
     validator = _TYPE_VALIDATORS.get(expected_type)
     if validator is None:
         return errors

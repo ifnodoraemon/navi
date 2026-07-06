@@ -1,24 +1,33 @@
-from navi.lifecycle import Phase, Governance, Acceptance, Resolution
 from dataclasses import asdict
-from navi.trace.store import TraceStore
-from navi.evals.delegation import load_delegation_eval_dataset
+from navi.trace import TraceStore
 from navi.loop import loop_decision_summary
-from navi.evals.delegation import validate_delegation_eval_dataset
 from navi.loop import LoopPhase
-from navi.evals.delegation import results_to_json
 from navi.provider import build_provider
 from navi.acceptance import report_to_text
 from navi.acceptance import load_acceptance_scenario
 from navi.json_utils import json_object
-from navi.evals.daily_journey import load_daily_journey_eval_dataset
-from navi.evals.claw import load_claw_eval_dataset
 import typer
 import asyncio
 import json
 from pathlib import Path
-from ..common import *
+from navi.paths import ensure_home
+from navi.evals import (
+    claw_results_to_json,
+    delegation_eval_tools,
+    load_claw_eval_dataset,
+    load_connector_journey_eval_dataset,
+    load_daily_journey_eval_dataset,
+    load_delegation_eval_dataset,
+    results_to_json,
+    run_claw_eval_dataset,
+    run_connector_journey_eval_dataset,
+    run_daily_journey_eval_dataset,
+    run_delegation_eval_dataset,
+    validate_delegation_eval_dataset,
+)
+from navi.config import load_config
+from navi.acceptance import run_product_acceptance
 from ..common import _trace_evaluation_line
-from ...evals import load_connector_journey_eval_dataset
 
 
 trace_app = typer.Typer(help="Full-flow traces and evaluations")
@@ -284,7 +293,7 @@ def trace_runs(trace_id: str) -> None:
     """Show LangSmith-style run/span projection for one trace."""
     for run in TraceStore(ensure_home()).list_run_views(trace_id):
         parent = f" parent={run.parent_run_id}" if run.parent_run_id else ""
-        typer.echo(f"{run.id} {run.run_type} {run.phase} {run.name}{parent}")
+        typer.echo(f"{run.id} {run.run_type} {run.status} {run.name}{parent}")
 
 @trace_app.command("evaluate")
 def trace_evaluate(trace_id: str) -> None:

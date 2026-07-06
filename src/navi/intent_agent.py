@@ -5,7 +5,13 @@ from pathlib import Path
 
 from .conversation_contract import CONVERSATION_ACTION_ASK
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
-from .event_bus import AgentTurnCompletedEvent, EventBus, MessageIngressEvent, UserIntentEvent
+from .event_bus import (
+    AgentTurnCompletedEvent,
+    EventBus,
+    MessageIngressEvent,
+    NaviEvent,
+    UserIntentEvent,
+)
 from .runtime import AgentRuntime
 
 logger = logging.getLogger("navi.intent")
@@ -25,13 +31,15 @@ class IntentAgent:
         self.event_bus.subscribe("message_ingress", self._on_message_ingress)
         self.event_bus.subscribe("agent_turn_completed", self._on_turn_completed)
 
-    async def _on_turn_completed(self, event: AgentTurnCompletedEvent) -> None:
+    async def _on_turn_completed(self, event: NaviEvent) -> None:
+        assert isinstance(event, AgentTurnCompletedEvent)
         if event.action == CONVERSATION_ACTION_ASK:
             self._pending_asks[event.session_id] = True
         else:
             self._pending_asks.pop(event.session_id, None)
 
-    async def _on_message_ingress(self, event: MessageIngressEvent) -> None:
+    async def _on_message_ingress(self, event: NaviEvent) -> None:
+        assert isinstance(event, MessageIngressEvent)
         session_id = (
             self.runtime.memory.current_session_id(event.session_alias)
             if event.session_alias
@@ -47,10 +55,11 @@ class IntentAgent:
                 input_text=event.text,
             )
         )
+        current_state = current_state_facts(state)
         facts = {
             "source_agent": "intent_agent",
             "intent_basis": "current_state_facts",
-            "current_state": current_state_facts(state),
+            "current_state": current_state,
         }
         if event.facts:
             facts["connector_message"] = event.facts
@@ -66,8 +75,8 @@ class IntentAgent:
         logger.info(
             "Published dynamic intent facts for message %s: runs=%s workflows=%s",
             event.message_id,
-            len(facts["current_state"]["active_runs"]),
-            len(facts["current_state"]["active_workflows"]),
+            len(current_state["active_runs"]),
+            len(current_state["active_workflows"]),
         )
         await self.event_bus.publish(
             UserIntentEvent(

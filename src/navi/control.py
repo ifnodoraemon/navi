@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .db import connect
 from .approval_contract import (
     APPROVAL_ACTION_SESSION_ELEVATION,
     APPROVAL_DECISION_APPROVE,
@@ -14,21 +15,12 @@ from .approval_contract import (
     APPROVAL_STATUS_PENDING,
     APPROVAL_STATUS_REJECTED,
 )
-from .lifecycle import (
-    RUN_ACTIVE_STATUSES,
-    RUN_STATUS_COMPLETED,
-    RUN_STATUS_FAILED,
-    RUN_STATUS_PENDING,
-)
+from .lifecycle import Acceptance, Governance, Phase, Resolution
 from .runs import Run, RunStore
 from .runs.models import Approval
-from .workflows import (
-    WORKFLOW_STATUS_RUNNING,
-    Workflow,
-    WorkflowStore,
-)
+from .workflows import Workflow, WorkflowStore
 
-ACTIVE_WORKFLOW_STATUSES = frozenset({WORKFLOW_STATUS_RUNNING})
+
 
 
 @dataclass(frozen=True)
@@ -77,7 +69,7 @@ class ApprovalService:
         runs = RunStore(self.home)
         candidates = [
             run
-            for run in runs.list_by_statuses(sorted(RUN_ACTIVE_STATUSES), limit=100)
+            for run in runs.list_by_phases([Phase.PENDING, Phase.RUNNING, Phase.PAUSED], limit=100)
             if run_matches_context(run, context)
         ]
         normalized_decision = decision.strip().lower()
@@ -120,49 +112,65 @@ class ApprovalService:
                 run_id=run_id,
             )
 
-        resolved = runs.resolve_approval(
-            approval.id,
-            decision=normalized_decision,
-            resolved_by=context.sender_id,
-        )
-        if resolved is None:
-            return _approval_not_resolved(
+        with connect(runs.db_path) as conn:
+            resolved = runs.resolve_approval_in_transaction(
+                conn,
+                approval.id,
                 decision=normalized_decision,
-                reason="approval_not_pending",
-                code_present=bool(code),
-                active_run_count=len(candidates),
-                selection=selection,
-                run_id=approval.run_id,
-                approval_id=approval.id,
+                resolved_by=context.sender_id,
             )
+            if resolved is None:
+                return _approval_not_resolved(
+                    decision=normalized_decision,
+                    reason="approval_not_pending",
+                    code_present=bool(code),
+                    active_run_count=len(candidates),
+                    selection=selection,
+                    run_id=approval.run_id,
+                    approval_id=approval.id,
+                )
 
-        if normalized_decision == APPROVAL_DECISION_APPROVE:
-            run_status = (
-                RUN_STATUS_COMPLETED
-                if resolved.action == APPROVAL_ACTION_SESSION_ELEVATION
-                else RUN_STATUS_PENDING
-            )
-            runs.update_run(
-                resolved.run_id,
-                status=run_status,
-                result_summary=(
-                    "session_elevation_approved"
-                    if resolved.action == APPROVAL_ACTION_SESSION_ELEVATION
-                    else ""
-                ),
-                error="",
-                trust_rule_id=f"approval:{resolved.id}",
-            )
-            status = APPROVAL_STATUS_APPROVED
-        else:
-            run_status = RUN_STATUS_FAILED
-            runs.update_run(
-                resolved.run_id,
-                status=run_status,
-                result_summary="approval_rejected",
-                error="approval rejected by user",
-            )
-            status = APPROVAL_STATUS_REJECTED
+            if normalized_decision == APPROVAL_DECISION_APPROVE:
+                if resolved.action == APPROVAL_ACTION_SESSION_ELEVATION:
+                    phase = Phase.ENDED
+                    governance = Governance.APPROVED
+                    acceptance = Acceptance.ACCEPTED
+                    resolution = Resolution.SUCCESS
+                    result_summary = "session_elevation_approved"
+                else:
+                    phase = Phase.PENDING
+                    governance = Governance.APPROVED
+                    acceptance = Acceptance.NONE
+                    resolution = Resolution.NONE
+                    result_summary = ""
+                runs.update_run_in_transaction(
+                    conn,
+                    resolved.run_id,
+                    phase=phase,
+                    governance=governance,
+                    acceptance=acceptance,
+                    resolution=resolution,
+                    result_summary=result_summary,
+                    error="",
+                    trust_rule_id=f"approval:{resolved.id}",
+                )
+                status = APPROVAL_STATUS_APPROVED
+            else:
+                phase = Phase.ENDED
+                governance = Governance.REJECTED
+                acceptance = Acceptance.REJECTED
+                resolution = Resolution.FAILED
+                runs.update_run_in_transaction(
+                    conn,
+                    resolved.run_id,
+                    phase=phase,
+                    governance=governance,
+                    acceptance=acceptance,
+                    resolution=resolution,
+                    result_summary="approval_rejected",
+                    error="approval rejected by user",
+                )
+                status = APPROVAL_STATUS_REJECTED
 
         facts = {
             "decision": normalized_decision,
@@ -172,7 +180,10 @@ class ApprovalService:
             "run_id": resolved.run_id,
             "approval_id": resolved.id,
             "status": status,
-            "run_status": str(run_status),
+            "run_phase": str(phase),
+            "run_governance": str(governance),
+            "run_acceptance": str(acceptance),
+            "run_resolution": str(resolution),
             "approval_resolution": {
                 "reason": status,
                 "decision": normalized_decision,
@@ -190,7 +201,9 @@ class ApprovalService:
             f"status={status}\n"
             f"run_id={resolved.run_id}\n"
             f"approval_id={resolved.id}\n"
-            f"run_status={run_status}"
+            f"run_phase={phase}\n"
+            f"run_governance={governance}\n"
+            f"run_resolution={resolution}"
         )
         return ApprovalResolution(ok=True, message=message, facts=facts)
 
@@ -203,7 +216,7 @@ class CurrentStateBuilder:
         runs = RunStore(self.home)
         active_runs = tuple(
             run
-            for run in runs.list_by_statuses(sorted(RUN_ACTIVE_STATUSES), limit=100)
+            for run in runs.list_by_phases([Phase.PENDING, Phase.RUNNING, Phase.PAUSED], limit=100)
             if run_matches_context(run, context)
         )
         pending_approvals = tuple(
@@ -215,13 +228,12 @@ class CurrentStateBuilder:
             if run_matches_context(approval, context)
         )
         workflows = WorkflowStore(self.home)
-        active_workflows = []
-        for status in sorted(ACTIVE_WORKFLOW_STATUSES):
-            active_workflows.extend(
-                workflow
-                for workflow in workflows.list(status=status, limit=100)
-                if _workflow_matches_context(workflow, context)
-            )
+        active_workflows: list[Workflow] = []
+        active_workflows.extend(
+            workflow
+            for workflow in workflows.list(phase="running", limit=100)
+            if _workflow_matches_context(workflow, context)
+        )
         return CurrentState(
             surface=context.source,
             peer_id=context.peer_id,
@@ -253,7 +265,10 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
             {
                 "id": run.id,
                 "title": run.title,
-                "status": run.status,
+                "phase": run.phase,
+                "governance": run.governance,
+                "acceptance": run.acceptance,
+                "resolution": run.resolution,
                 "kind": run.kind,
                 "source": run.source,
                 "peer_id": run.peer_id,
@@ -288,7 +303,10 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
             {
                 "id": workflow.id,
                 "objective": workflow.objective,
-                "status": workflow.status,
+                "phase": workflow.phase,
+                "governance": workflow.governance,
+                "acceptance": workflow.acceptance,
+                "resolution": workflow.resolution,
                 "source": workflow.source,
                 "peer_id": workflow.peer_id,
                 "sender_id": workflow.sender_id,

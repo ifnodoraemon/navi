@@ -1,11 +1,10 @@
 from __future__ import annotations
-from navi.lifecycle import Phase, Governance, Acceptance, Resolution
 
 import asyncio
 import re
 from pathlib import Path
 
-from .connector_runtime import ConnectorMessage, connector_fact_text
+from .connector_runtime import ConnectorMessage
 from .event_bus import (
     EventBus,
     MessageIngressEvent,
@@ -110,10 +109,7 @@ class ConnectorRouter:
             try:
                 item = await asyncio.wait_for(channel.get(), timeout=IDLE_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
-                return connector_fact_text(
-                    "connector_response_timeout",
-                    {"correlation_id": correlation_id},
-                )
+                return ""
             if isinstance(item, ResponseReadyEvent):
                 return item.text
             # Heartbeat (or any non-terminal signal): upstream is alive, keep waiting.
@@ -137,7 +133,9 @@ class ConnectorRouter:
             ),
             code=code,
         )
-        return result.message
+        if result.ok:
+            return "已批准。" if decision == "approve" else "已拒绝。"
+        return "没有找到对应的待审批请求。"
 
 
 def _parse_connector_approval_command(message: ConnectorMessage) -> tuple[str, str] | None:

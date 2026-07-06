@@ -41,17 +41,17 @@ tasks:
           expect:
             action: approval
             run_count_delta: 1
-            run_status: awaiting_approval
-            goal_status: awaiting_approval
+            run_phase: paused
+            goal_phase: paused
         - user: "批准 {{approval_code}}"
           expect:
             action: approval
             run_count_delta: 0
-            run_status: queued
+            run_phase: pending
         - process_pending: true
           expect:
-            run_status: completed
-            goal_status: verified_complete
+            run_phase: ended
+            goal_phase: ended
 
   - task_id: navi_general_task_status_query
     split: general
@@ -66,15 +66,15 @@ tasks:
           expect:
             action: approval
             run_count_delta: 1
-            run_status: awaiting_approval
+            run_phase: paused
         - user: "现在有哪些任务"
           expect:
             action: tool
             run_count: 1
             text_contains_any:
               - "runs"
-              - "awaiting_approval"
-              - "awaiting approval"
+              - "phase"
+              - "governance"
 
   - task_id: navi_general_reject_pending_task
     split: general
@@ -89,13 +89,13 @@ tasks:
           expect:
             action: approval
             run_count_delta: 1
-            run_status: awaiting_approval
+            run_phase: paused
         - user: "拒绝 {{approval_code}}"
           expect:
             action: approval
             run_count_delta: 0
-            run_status: rejected
-            goal_status: rejected
+            run_phase: ended
+            goal_phase: ended
 
   - task_id: navi_general_failed_task_cleanup
     split: general
@@ -223,8 +223,8 @@ tasks:
           expect:
             action: approval
             run_count_delta: 1
-            run_status: awaiting_approval
-            goal_status: awaiting_approval
+            run_phase: paused
+            goal_phase: paused
 
   - task_id: navi_public_hermes_provider_route_drift_check
     split: general
@@ -256,7 +256,7 @@ tasks:
           expect:
             action: approval
             run_count_delta: 1
-            run_status: awaiting_approval
+            run_phase: paused
 
   - task_id: navi_public_openclaw_privacy_redaction
     split: general
@@ -271,7 +271,7 @@ tasks:
           expect:
             action: approval
             run_count_delta: 1
-            run_status: awaiting_approval
+            run_phase: paused
 
   - task_id: navi_public_openclaw_memory_follow_up
     split: multi_turn
@@ -290,7 +290,7 @@ tasks:
           expect:
             action: approval
             run_count_delta: 1
-            run_status: awaiting_approval
+            run_phase: paused
 
   - task_id: navi_public_openclaw_broad_permission_boundary
     split: general
@@ -362,7 +362,7 @@ tasks:
           expect:
             action: approval
             run_count_delta: 1
-            run_status: awaiting_approval
+            run_phase: paused
 
   - task_id: navi_public_enterprise_customer_support_triage
     split: general
@@ -377,7 +377,7 @@ tasks:
           expect:
             action: approval
             run_count_delta: 1
-            run_status: awaiting_approval
+            run_phase: paused
 
   - task_id: navi_public_enterprise_it_issue_resolution
     split: general
@@ -392,7 +392,7 @@ tasks:
           expect:
             action: approval
             run_count_delta: 1
-            run_status: awaiting_approval
+            run_phase: paused
 
   - task_id: navi_public_information_practices_local_identifying
     split: general

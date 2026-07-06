@@ -40,7 +40,6 @@ from ..loop import (
     TracePhase,
 )
 from ..trace import TraceStore
-from ..lifecycle import Phase, Governance, Acceptance, Resolution
 from ..workflows import (
     Workflow,
     WorkflowStep,
@@ -155,21 +154,33 @@ class WorkflowApproveCapability(BaseCapability):
                     "current_sender_id": context.sender_id,
                 },
             )
-        governance = (
-            Governance.APPROVED
-            if decision == APPROVAL_DECISION_APPROVE
-            else Governance.REJECTED
-        )
-        updated = store.update_status(
+        if decision == APPROVAL_DECISION_APPROVE:
+            phase = workflow.phase
+            governance = Governance.APPROVED
+            acceptance = workflow.acceptance
+            resolution = workflow.resolution
+        else:
+            phase = Phase.ENDED
+            governance = Governance.REJECTED
+            acceptance = Acceptance.REJECTED
+            resolution = Resolution.FAILED
+        updated = store.update_state(
             workflow.id,
+            phase=phase,
             governance=governance,
+            acceptance=acceptance,
+            resolution=resolution,
             evidence={"approved_by": context.sender_id, "decision": decision},
             event_type=f"workflow.{decision}",
         )
+        workflow_state = updated or workflow
         facts = {
             **_transition_facts("workflow", workflow.id, "updated"),
             "workflow_id": workflow.id,
-            "governance": governance,
+            "phase": workflow_state.phase,
+            "governance": workflow_state.governance,
+            "acceptance": workflow_state.acceptance,
+            "resolution": workflow_state.resolution,
         }
         if updated:
             facts["workflow"] = workflow_facts(store, updated)["workflow"]
@@ -201,7 +212,7 @@ class WorkflowRunCapability(BaseCapability):
                 "approve or resume only supported running states."
             )
         resume = bool(args.get("resume"))
-        store.update_status(
+        store.update_state(
             workflow.id,
             phase=Phase.RUNNING,
             evidence={"resume": resume, "runner": context.sender_id},
@@ -234,7 +245,7 @@ class WorkflowRunCapability(BaseCapability):
             pending_count=pending_count,
         )
         workflow = (
-            store.update_status(
+            store.update_state(
                 workflow.id,
                 phase=transition.phase, governance=transition.governance, acceptance=transition.acceptance, resolution=transition.resolution,
                 blocked_reason=transition.blocked_reason,
@@ -445,18 +456,29 @@ class WorkflowRunCapability(BaseCapability):
 
         evidence: list[dict[str, Any]] = []
         for event in TraceStore(self.home).list_events(trace_id):
-            if event.phase != TracePhase.CAPABILITY_RESULT:
+            output = _json_dict(event.output_json)
+            if event.phase == TracePhase.CAPABILITY_RESULT:
+                evidence.append(
+                    {
+                        "tool": event.tool,
+                        "ok": event.ok,
+                        "input": _json_dict(event.input_json),
+                        "output": output,
+                        "message": event.message,
+                        "model_role": event.model_role,
+                    }
+                )
                 continue
-            evidence.append(
-                {
-                    "tool": event.tool,
-                    "ok": event.ok,
-                    "input": _json_dict(event.input_json),
-                    "output": _json_dict(event.output_json),
-                    "message": event.message,
-                    "model_role": event.model_role,
-                }
-            )
+            provider_usage = output.get("provider_usage")
+            if isinstance(provider_usage, dict) and provider_usage:
+                evidence.append(
+                    {
+                        "kind": "provider_usage",
+                        "phase": event.phase,
+                        "model_role": event.model_role,
+                        "usage": provider_usage,
+                    }
+                )
         return evidence
 
     def _record_step_loop_decision(
@@ -514,7 +536,7 @@ class WorkflowRunCapability(BaseCapability):
                     context=context,
                 )
                 workflow = (
-                    store.update_status(
+                    store.update_state(
                         workflow.id,
                         phase=decision.phase, governance=decision.governance, acceptance=decision.acceptance, resolution=decision.resolution,
                         blocked_reason=decision.blocked_reason,
@@ -525,7 +547,7 @@ class WorkflowRunCapability(BaseCapability):
                 )
             else:
                 workflow = (
-                    store.update_status(
+                    store.update_state(
                         workflow.id,
                         phase=transition.phase, governance=transition.governance, acceptance=transition.acceptance, resolution=transition.resolution,
                         evidence=transition.evidence,
@@ -566,8 +588,8 @@ class WorkflowRunCapability(BaseCapability):
         )
 
 
-@capability("workflow_status")
-class WorkflowStatusCapability(BaseCapability):
+@capability("workflow_state")
+class WorkflowStateCapability(BaseCapability):
 
     @guarded
     async def invoke(

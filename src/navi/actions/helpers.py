@@ -7,7 +7,7 @@ from typing import Any
 from ..capabilities_types import CapabilityResult
 from ..connector_registry import load_connector_adapters
 from ..capability_contract import CAPABILITY_ERROR_REASON_KEY
-from ..json_utils import json_list, json_object
+from ..json_utils import json_object
 
 
 def fact_result(action: str, facts: dict[str, Any], *, run_id: str = "") -> CapabilityResult:
@@ -117,6 +117,14 @@ def workflow_not_found(workflow_id: str) -> CapabilityResult:
 
 
 json_dict = json_object
+
+
+def json_list(value: str) -> list[Any]:
+    try:
+        parsed = json.loads(value or "[]")
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def remote_source(source: str) -> bool:

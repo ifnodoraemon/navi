@@ -170,22 +170,25 @@ def workflow_verification_decision(
 ) -> WorkflowVerificationDecision:
     workflow_plan = _json_dict(workflow.plan_json)
     goal_type = str(workflow_plan.get("goal_type") or "").strip().lower()
-    failed_steps = [step for step in steps if step.phase != Resolution.SUCCESS]
+    failed_steps = [
+        step for step in steps
+        if step.phase != Phase.ENDED or step.resolution != Resolution.SUCCESS
+    ]
     empty_evidence = [step.id for step in steps if not _json_dict(step.evidence_json)]
     capability_steps = [step.id for step in steps if _step_has_execution_evidence(step)]
     missing_execution_evidence = not capability_steps and goal_type != "planning"
-    status_completed = workflow.phase == Phase.ENDED and workflow.resolution == Resolution.SUCCESS
+    workflow_succeeded = workflow.phase == Phase.ENDED and workflow.resolution == Resolution.SUCCESS
     check_results = (
         WorkflowCheckResult(
-            name=LoopCheckName.WORKFLOW_STATUS_COMPLETED,
-            passed=status_completed,
-            severity=LoopSeverity.ERROR if not status_completed else LoopSeverity.INFO,
+            name=LoopCheckName.WORKFLOW_RESOLUTION_SUCCESS,
+            passed=workflow_succeeded,
+            severity=LoopSeverity.ERROR if not workflow_succeeded else LoopSeverity.INFO,
             reason=(
-                "workflow_status_completed"
-                if status_completed
-                else "workflow_status_not_completed"
+                "workflow_resolution_success"
+                if workflow_succeeded
+                else "workflow_resolution_not_success"
             ),
-            evidence={"status": workflow.phase},
+            evidence={"phase": workflow.phase, "resolution": workflow.resolution},
         ),
         WorkflowCheckResult(
             name=LoopCheckName.WORKFLOW_STEPS_COMPLETED,
@@ -474,14 +477,14 @@ class WorkflowStore:
             ).fetchall()
         return [WorkflowEvent(*row) for row in rows]
 
-    def update_status(
+    def update_state(
         self,
         workflow_id: str,
         *,
-        phase: str,
-        governance: str,
-        acceptance: str,
-        resolution: str,
+        phase: str | None = None,
+        governance: str | None = None,
+        acceptance: str | None = None,
+        resolution: str | None = None,
         blocked_reason: str = "",
         evidence: dict[str, Any] | None = None,
         event_type: str = "workflow.phase",
@@ -489,6 +492,10 @@ class WorkflowStore:
         workflow = self.get(workflow_id)
         if workflow is None:
             return None
+        phase = phase if phase is not None else workflow.phase
+        governance = governance if governance is not None else workflow.governance
+        acceptance = acceptance if acceptance is not None else workflow.acceptance
+        resolution = resolution if resolution is not None else workflow.resolution
         merged = _merge_evidence(workflow.evidence_json, evidence)
         now = time.time()
         completed_at = (
@@ -524,16 +531,20 @@ class WorkflowStore:
         self,
         step_id: str,
         *,
-        phase: str,
-        governance: str,
-        acceptance: str,
-        resolution: str,
+        phase: str | None = None,
+        governance: str | None = None,
+        acceptance: str | None = None,
+        resolution: str | None = None,
         evidence: dict[str, Any] | None = None,
         error: str = "",
     ) -> WorkflowStep | None:
         step = self.get_step(step_id)
         if step is None:
             return None
+        phase = phase if phase is not None else step.phase
+        governance = governance if governance is not None else step.governance
+        acceptance = acceptance if acceptance is not None else step.acceptance
+        resolution = resolution if resolution is not None else step.resolution
         merged = _merge_evidence(step.evidence_json, evidence)
         now = time.time()
         started_at = (
@@ -675,11 +686,12 @@ def _normalize_steps(
         if not objective:
             continue
         role = str(raw.get("role") or "worker").strip() or "worker"
-        depends_on = raw.get("depends_on") if isinstance(raw.get("depends_on"), list) else []
-        allowed_tools = (
-            raw.get("allowed_tools") if isinstance(raw.get("allowed_tools"), list) else []
-        )
-        tool_calls = raw.get("tool_calls") if isinstance(raw.get("tool_calls"), list) else []
+        raw_depends_on = raw.get("depends_on")
+        depends_on = raw_depends_on if isinstance(raw_depends_on, list) else []
+        raw_allowed_tools = raw.get("allowed_tools")
+        allowed_tools = raw_allowed_tools if isinstance(raw_allowed_tools, list) else []
+        raw_tool_calls = raw.get("tool_calls")
+        tool_calls = raw_tool_calls if isinstance(raw_tool_calls, list) else []
         steps.append(
             WorkflowStep(
                 id=str(raw.get("id") or uuid.uuid4().hex),

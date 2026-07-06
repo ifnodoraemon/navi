@@ -1,4 +1,3 @@
-from navi.lifecycle import Phase, Governance, Acceptance, Resolution
 import json
 from pathlib import Path
 from typing import Any, Tuple, List, Dict
@@ -89,11 +88,12 @@ class ContextBuilder:
         resolved_session_id = session_id
         if not resolved_session_id and session_alias:
             resolved_session_id = self.runtime.memory.current_session_id(session_alias)
+        resolved_session_id = resolved_session_id or ""
         trace_id = trace_id or self.trace.new_trace_id()
         self.trace.add_event(
             trace_id=trace_id,
             phase=TracePhase.TURN_START,
-            session_id=resolved_session_id or "",
+            session_id=resolved_session_id,
             source=source,
             peer_id=peer_id,
             sender_id=sender_id,

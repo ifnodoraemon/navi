@@ -4,7 +4,7 @@ import json
 import os
 import re
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections.abc import AsyncGenerator, Callable
 from typing import Any, Protocol
 
@@ -28,7 +28,33 @@ class ChatMessage:
     content: str
 
 
+@dataclass(frozen=True)
+class ProviderUsage:
+    provider: str
+    model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_facts(self, *, role: str = "") -> dict[str, Any]:
+        facts = {
+            "provider": self.provider,
+            "model": self.model,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+        }
+        if role:
+            facts["role"] = role
+        if self.raw:
+            facts["raw"] = self.raw
+        return facts
+
+
 class ChatProvider(Protocol):
+    last_usage: ProviderUsage | None
+
     async def complete(
         self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
         temperature: float | None = None, max_tokens: int | None = None
@@ -65,6 +91,7 @@ class OpenAICompatibleProvider:
         self.config = resolve_model_config(config)
         self.spec = spec
         self.transport = transport
+        self.last_usage: ProviderUsage | None = None
 
     async def complete(
         self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
@@ -73,7 +100,7 @@ class OpenAICompatibleProvider:
         if not self.config.api_key:
             env_hint = " or ".join(self.spec.api_key_env) or "NAVI_MODEL_API_KEY"
             raise RuntimeError(f"{env_hint} is required for {self.config.provider} provider")
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
             "temperature": 0 if temperature is None else temperature,
@@ -97,6 +124,7 @@ class OpenAICompatibleProvider:
             )
             response.raise_for_status()
             data = response.json()
+        self.last_usage = _openai_usage_facts(self.config, data)
         return _extract_openai_content(data)
 
     async def stream(
@@ -153,6 +181,7 @@ class AnthropicCompatibleProvider:
         self.config = resolve_model_config(config)
         self.spec = spec
         self.transport = transport
+        self.last_usage: ProviderUsage | None = None
 
     async def complete(
         self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
@@ -181,6 +210,7 @@ class AnthropicCompatibleProvider:
             )
             response.raise_for_status()
             data = response.json()
+        self.last_usage = _anthropic_usage_facts(self.config, data)
         return _extract_anthropic_content(
             data,
             tool_name=structured_tool["name"] if structured_tool else "",
@@ -238,6 +268,7 @@ class AnthropicCompatibleProvider:
 class FallbackProvider:
     def __init__(self, providers: list[ChatProvider]):
         self.providers = providers
+        self.last_usage: ProviderUsage | None = None
 
     async def complete(
         self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
@@ -254,10 +285,12 @@ class FallbackProvider:
         for provider in self.providers:
             for attempt in range(max_retries):
                 try:
-                    return await _complete_with_optional_schema(
+                    result = await _complete_with_optional_schema(
                         provider, messages, output_schema=output_schema,
                         temperature=temperature, max_tokens=max_tokens
                     )
+                    self.last_usage = provider.last_usage
+                    return result
                 except Exception as exc:
                     if isinstance(exc, httpx.HTTPStatusError):
                         status = exc.response.status_code
@@ -333,6 +366,7 @@ class ModelPool:
         self.default = default
         self.routes = routes or {}
         self.config = config
+        self._usage_by_role: dict[str, dict[str, Any]] = {}
 
     async def complete_for(
         self,
@@ -345,10 +379,16 @@ class ModelPool:
         params = self.config.get_role_params(role) if self.config else {}
         temperature = params.get("temperature")
         max_tokens = params.get("max_tokens")
-        return await _complete_with_optional_schema(
+        result = await _complete_with_optional_schema(
             provider, messages, output_schema=output_schema,
             temperature=temperature, max_tokens=max_tokens
         )
+        usage = provider.last_usage
+        if usage is not None:
+            self._usage_by_role[role] = usage.to_facts(role=role)
+        else:
+            self._usage_by_role.pop(role, None)
+        return result
 
     async def stream_for(
         self,
@@ -369,6 +409,9 @@ class ModelPool:
         from .agent_roles import list_agent_role_names
 
         return sorted({"default", *list_agent_role_names(), *self.routes})
+
+    def usage_for(self, role: str) -> dict[str, Any]:
+        return dict(self._usage_by_role.get(role) or {})
 
 
 PROVIDER_ADAPTERS: tuple[ProviderAdapter, ...] = (
@@ -557,6 +600,48 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
             f"Finish reason: {finish_reason}. Response shape: {response_shape}"
         )
     return str(content)
+
+
+def _openai_usage_facts(config: ModelConfig, data: dict[str, Any]) -> ProviderUsage | None:
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = _int_usage(usage.get("prompt_tokens"))
+    output_tokens = _int_usage(usage.get("completion_tokens"))
+    total_tokens = _int_usage(usage.get("total_tokens"))
+    return ProviderUsage(
+        provider=config.provider,
+        model=config.model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        raw={str(key): value for key, value in usage.items()},
+    )
+
+
+def _anthropic_usage_facts(config: ModelConfig, data: dict[str, Any]) -> ProviderUsage | None:
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = _int_usage(usage.get("input_tokens"))
+    output_tokens = _int_usage(usage.get("output_tokens"))
+    return ProviderUsage(
+        provider=config.provider,
+        model=config.model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+        raw={str(key): value for key, value in usage.items()},
+    )
+
+
+def _int_usage(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _structured_response_format(

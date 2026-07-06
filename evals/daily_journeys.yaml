@@ -22,8 +22,8 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
-          goal_status: awaiting_approval
+          run_phase: paused
+          goal_phase: paused
           text_contains: "审批码"
 
   - id: approval_then_background_execution_completes_goal
@@ -33,17 +33,17 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
-          goal_status: awaiting_approval
+          run_phase: paused
+          goal_phase: paused
       - user: "批准 {{approval_code}}"
         expect:
           action: approval
           run_count_delta: 0
-          run_status: queued
+          run_phase: pending
       - process_pending: true
         expect:
-          run_status: completed
-          goal_status: verified_complete
+          run_phase: ended
+          goal_phase: ended
 
   - id: recurring_evening_lesson_creates_watch
     user_goal: Schedule a recurring daily lesson with an exact time.
@@ -69,15 +69,15 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
       - user: "现在有哪些任务"
         expect:
           action: tool
           run_count: 1
           text_contains_any:
             - "runs"
-            - "awaiting_approval"
-            - "awaiting approval"
+            - "phase"
+            - "governance"
             - "任务"
             - "审批"
 
@@ -88,14 +88,14 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
       - user: "{{run_id}} 为什么还没执行"
         expect:
           action: tool
           run_count: 1
           text_contains_any:
-            - "awaiting_approval"
-            - "awaiting approval"
+            - "phase"
+            - "governance"
             - "approvals"
             - "等待"
             - "审批"
@@ -107,13 +107,13 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
       - user: "拒绝 {{approval_code}}"
         expect:
           action: approval
           run_count_delta: 0
-          run_status: rejected
-          goal_status: rejected
+          run_phase: ended
+          goal_phase: ended
 
   - id: user_can_clean_failed_tasks
     user_goal: Clean up failed task leftovers after Navi reports them.
@@ -200,8 +200,8 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
-          goal_status: awaiting_approval
+          run_phase: paused
+          goal_phase: paused
 
   - id: customer_support_triage_needs_approval
     user_goal: Turn a local support-ticket corpus into a structured triage workflow.
@@ -211,7 +211,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: privacy_redaction_needs_approval
     user_goal: Redact possible secrets in local logs through controlled work.
@@ -221,7 +221,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: exact_one_shot_reminder_creates_once_watch
     user_goal: Create a concrete one-shot reminder without converting it into a recurring watch.
@@ -260,7 +260,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: customer_scenario_code_formatting
     user_goal: Ask Navi to format Python files.
@@ -270,7 +270,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: customer_scenario_search_codebase
     user_goal: Search codebase without mutating anything.
@@ -308,7 +308,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: hr_scenario_resume_screening
     user_goal: Screen resumes based on JD.
@@ -318,7 +318,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: hr_scenario_attendance_analysis
     user_goal: Analyze employee attendance data and write drafts.
@@ -328,7 +328,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: admin_scenario_market_research
     user_goal: Research market trends and summarize into a report.
@@ -338,7 +338,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: admin_scenario_team_building
     user_goal: Plan an event based on constraints.
@@ -348,7 +348,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: hr_scenario_policy_conflict_check
     user_goal: Compare external regulations with internal policies.
@@ -358,7 +358,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: vague_engineering_error_report
     user_goal: Report a vague engineering error and expect clarification.
@@ -405,4 +405,4 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused

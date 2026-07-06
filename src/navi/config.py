@@ -161,6 +161,8 @@ def write_default_config(home: Path | None = None) -> Path:
 
 
 def _float_env(value: object, *, default: float) -> float:
+    if not isinstance(value, (str, int, float)):
+        return default
     try:
         return max(1.0, float(value))
     except (TypeError, ValueError):

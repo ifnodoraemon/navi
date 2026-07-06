@@ -1,5 +1,4 @@
 from __future__ import annotations
-from navi.lifecycle import Phase, Governance, Acceptance, Resolution
 
 import difflib
 import json
@@ -8,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
 from .db import connect
 from .graph import GraphStore
@@ -327,7 +326,7 @@ class EvolutionLedger:
             )
         return event
 
-    def list(self, *, limit: int = 100) -> list[EvolutionEvent]:
+    def list(self, *, limit: int = 100) -> List[EvolutionEvent]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -339,7 +338,7 @@ class EvolutionLedger:
             ).fetchall()
         return [EvolutionEvent(*row) for row in rows]
 
-    def list_for_task(self, run_id: str) -> list[EvolutionEvent]:
+    def list_for_task(self, run_id: str) -> List[EvolutionEvent]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -385,7 +384,7 @@ class EvolutionLedger:
         required_approval_level: str = "L2",
         evidence: str = "",
         source_run_id: str = "",
-        eval_cases: list[str] | None = None,
+        eval_cases: List[str] | None = None,
     ) -> EvolutionProposal:
         if not known_evolution_target(target_type):
             raise ValueError(f"unknown evolution target type: {target_type}")
@@ -436,7 +435,7 @@ class EvolutionLedger:
 
     def list_proposals(
         self, *, status: str | None = None, limit: int = 100
-    ) -> list[EvolutionProposal]:
+    ) -> List[EvolutionProposal]:
         with connect(self.db_path) as conn:
             if status:
                 rows = conn.execute(
@@ -759,9 +758,22 @@ class EvolutionEngine:
         elif event.target_type == "run_execution":
             if event.before:
                 task_dict = json.loads(event.before)
+                missing = [
+                    key
+                    for key in ("phase", "governance", "acceptance", "resolution")
+                    if not task_dict.get(key)
+                ]
+                if missing:
+                    raise ValueError(
+                        "run_execution rollback event missing lifecycle fields: "
+                        + ", ".join(missing)
+                    )
                 self.runs.update_run(
                     event.target_id,
-                    status=task_dict.get("status", "queued"),
+                    phase=task_dict["phase"],
+                    governance=task_dict["governance"],
+                    acceptance=task_dict["acceptance"],
+                    resolution=task_dict["resolution"],
                     result_summary=task_dict.get("result_summary", ""),
                     error=task_dict.get("error", ""),
                 )

@@ -5,8 +5,17 @@ from navi.connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
 import typer
 import asyncio
 from pathlib import Path
-from ..common import *
-from ..common import _invoke_capability, _run_chat_turn, _trace_evaluation_line, _workflow_action_cli, _require_connector, _select_runnable_connector, _tail_connector_events, _cli_service_active
+import uvicorn
+from navi.app_factory import build_runtime
+from navi.config import load_config
+from navi.daemon import SystemDaemon
+from navi.engine import HernessEngine
+from navi.api import create_app
+from navi.capabilities import build_capability_registry
+from navi.connector_registry import load_connector_adapters
+from navi.paths import ensure_home
+from navi.config import write_default_config
+from ..common import _run_chat_turn, _select_runnable_connector, _cli_service_active
 from ...defaults import DEFAULT_API_HOST, DEFAULT_API_PORT
 
 
@@ -32,7 +41,7 @@ def chat() -> None:
     session_id: str | None = None
     typer.echo("Navi chat. Type /exit to quit.")
 
-    pending_options = []
+    pending_options: list[str] = []
 
     while True:
         if pending_options:

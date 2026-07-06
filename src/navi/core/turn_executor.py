@@ -1,4 +1,3 @@
-from navi.lifecycle import Phase, Governance, Acceptance, Resolution
 import asyncio
 import json
 import logging
@@ -159,7 +158,10 @@ class TurnExecutor(EnginePhasesMixin):
             model_role="responder",
             ok=bool(text),
             input_data={"fact_keys": sorted(facts)},
-            output_data={"text_present": bool(text)},
+            output_data={
+                "text_present": bool(text),
+                "provider_usage": self.runtime.usage_for("responder"),
+            },
             message=text[:1600],
         )
         return text
@@ -360,7 +362,10 @@ class TurnExecutor(EnginePhasesMixin):
                 "observations_count": len(observations),
                 "permission_ceiling": context.permission_ceiling,
             },
-            output_data=asdict(syscall),
+            output_data={
+                **asdict(syscall),
+                "provider_usage": self.runtime.usage_for("planner"),
+            },
             message=planner_message,
         )
 

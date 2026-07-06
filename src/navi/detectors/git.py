@@ -7,6 +7,7 @@ import hashlib
 import logging
 import shutil
 from pathlib import Path
+from subprocess import SubprocessError
 
 from ..daemon_types import (
     MAX_GIT_STATUS_PROMPT_CHARS,
@@ -75,6 +76,6 @@ class GitMutationDetector:
                     suppressed_state_updates={"last_git_status_hash": current_hash},
                 )
             )
-        except (OSError, asyncio.SubprocessError) as e:
+        except (OSError, SubprocessError) as e:
             logger.warning("Error checking git status for %s: %s", project_path, e)
         return events, {}

@@ -8,10 +8,11 @@ import pytest
 
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
+from navi.lifecycle import Phase, Resolution
 from navi.runs import RunStore
 from navi.runtime import AgentRuntime
 from navi.trace import TraceStore
-from navi.workflows import STEP_STATUS_COMPLETED, WORKFLOW_STATUS_VERIFIED_COMPLETE, WorkflowStore
+from navi.workflows import WorkflowStore
 from navi.weixin.config import WeixinConfig
 from navi.weixin.service import WeixinService
 
@@ -56,6 +57,9 @@ class WorkflowStepProvider:
 
     def list_roles(self) -> list[str]:
         return ["planner", "auditor"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
 
 
 @pytest.mark.asyncio
@@ -102,7 +106,7 @@ async def test_remote_connector_prepare_allowlist_blocks_execution_and_cleanup(
     assert RunStore(tmp_path).get(spawned.run_id) is not None
 
     runs = RunStore(tmp_path)
-    runs.update_run(spawned.run_id, status="failed")
+    runs.update_run(spawned.run_id, phase=Phase.ENDED, resolution=Resolution.FAILED)
     failed_delete = await registry.invoke(
         "delegate.delete",
         {"run_id": spawned.run_id, "reason": "remove failed delegation record"},
@@ -125,7 +129,7 @@ async def test_bulk_delete_requires_explicit_scope(tmp_path: Path) -> None:
     )
     result = await registry.invoke(
         "delegate.delete",
-        {"status": "failed", "reason": "cleanup failed delegation records"},
+        {"phase": Phase.ENDED, "reason": "cleanup failed delegation records"},
         permission="write",
         context=context,
     )
@@ -216,11 +220,12 @@ async def test_workflow_run_uses_model_owned_step_loop(
     store = WorkflowStore(tmp_path)
     workflow = store.get(workflow_id)
     assert workflow is not None
-    assert workflow.status == WORKFLOW_STATUS_VERIFIED_COMPLETE
+    assert workflow.phase == Phase.ENDED
+    assert workflow.resolution == Resolution.SUCCESS
     workflow_evidence = json.loads(workflow.evidence_json)
     checker_names = [item["name"] for item in workflow_evidence["checker_results"]]
     assert checker_names == [
-        "workflow_status_completed",
+        "workflow_resolution_success",
         "workflow_steps_completed",
         "workflow_step_evidence_present",
         "workflow_capability_evidence_present",
@@ -228,7 +233,8 @@ async def test_workflow_run_uses_model_owned_step_loop(
     assert all(item["passed"] for item in workflow_evidence["checker_results"])
     steps = store.list_steps(workflow_id)
     assert len(steps) == 1
-    assert steps[0].status == STEP_STATUS_COMPLETED
+    assert steps[0].phase == Phase.ENDED
+    assert steps[0].resolution == Resolution.SUCCESS
     assert provider.planner_calls == 2
 
     evidence = json.loads(steps[0].evidence_json)

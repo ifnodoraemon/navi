@@ -11,8 +11,6 @@ from pathlib import Path
 
 from ..paths import db_paths
 from ..hooks import HookDecision, HookEvent, HookRegistry
-from ..loop import TracePhase
-from ..specs_data import PROMPT_LAYERS_SPEC
 from ..text_utils import truncate_middle
 from .models import (
     ACTIVE_MEMORY_CONTEXT_LIMIT,
@@ -21,7 +19,6 @@ from .models import (
     MEMORY_STATUSES,
     MEMORY_TYPES,
     NORMATIVE_REVIEW_REQUIRED_TYPES,
-    TASK_LEARNING_LOG_LIMIT,
     MemoryConflict,
     MemoryItem,
     MemoryRecall,
@@ -33,8 +30,7 @@ from .provider import MemoryProvider, SQLiteMemoryProvider
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .provider import ModelPool, SessionAlias, StoredMessage
-    from ..runs.models import ExecutionLog, Run
+    from .provider import SessionAlias, StoredMessage
 
 logger = logging.getLogger("navi.memory")
 
@@ -51,6 +47,9 @@ class MemoryStore:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.provider = provider or SQLiteMemoryProvider(db_paths(home).memory)
         self._embedding_service = embedding_service
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._session_lock_refs: dict[str, int] = {}
+        self._session_locks_guard: asyncio.Lock | None = None
 
 
     # ------------------------------------------------------------------ writes
@@ -704,4 +703,3 @@ def _render_conflict_summary(conflicts: tuple[MemoryConflict, ...]) -> str:
         f"{conflict.relation}:{conflict.conflicting_item_id}:{conflict.status}"
         for conflict in conflicts[:3]
     )
-

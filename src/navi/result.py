@@ -18,7 +18,7 @@ import functools
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Callable, Generic, TypeVar, cast
 
 from .capability_contract import CAPABILITY_ERROR_REASON_KEY
 
@@ -105,15 +105,15 @@ class Result(Generic[T]):
     def map(self, fn: Callable[[T], Any]) -> Result[Any]:
         if not self.ok:
             return self
-        return Result.success(fn(self.value))
+        return Result.success(fn(cast(T, self.value)))
 
     def unwrap(self) -> T:
         if self.ok:
-            return self.value  # type: ignore[return-value]
+            return cast(T, self.value)
         raise self.error or RuntimeError("result failed without error")
 
     def unwrap_or(self, default: T) -> T:
-        return self.value if self.ok else default
+        return cast(T, self.value) if self.ok else default
 
 
 # ----------------------------------------------------------------- @guarded

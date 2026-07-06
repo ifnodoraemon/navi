@@ -43,6 +43,9 @@ class AgentRuntime:
     async def complete(self, messages: list[ChatMessage], *, role: str = "default") -> str:
         return await self.provider.complete_for(role, messages)
 
+    def usage_for(self, role: str) -> dict:
+        return self.provider.usage_for(role)
+
     def model_roles(self) -> list[str]:
         return list_agent_role_names(self.provider.list_roles())
 

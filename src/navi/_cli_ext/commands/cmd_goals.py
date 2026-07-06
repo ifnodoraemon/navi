@@ -1,18 +1,18 @@
 from navi.approval_contract import APPROVAL_DECISION_REJECT
-from navi.evolution.domain import list_evolution_targets
+from navi.evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
 from navi.memory.store import MemoryStore
-from navi.workflows.store import workflow_facts
-from navi.evolution.ledger import EvolutionLedger
+from navi.workflows import workflow_facts
 from navi.goals import GoalStore
 from navi.graph import GraphStore
 from navi.approval_contract import APPROVAL_DECISION_APPROVE
 from navi.subagents import SubagentRunStore
-from navi.evolution.engine import EvolutionEngine
 import typer
 import asyncio
 import json
 from pathlib import Path
-from ..common import *
+from navi.capabilities import build_capability_registry, CapabilityContext
+from navi.workflows import WorkflowStore
+from navi.paths import ensure_home
 from ..common import _invoke_capability, _workflow_action_cli
 
 
@@ -123,12 +123,12 @@ def graph_list() -> None:
         typer.echo(f"{node.type} {node.name}: {node.data}")
 
 @goal_app.command("list")
-def goal_list(status: str = "", limit: int = 50) -> None:
+def goal_list(phase: str = "", limit: int = 50) -> None:
     """List durable goals as facts."""
-    for goal in GoalStore(ensure_home()).list(status=status, limit=limit):
+    for goal in GoalStore(ensure_home()).list(phase=phase, limit=limit):
         task = f" task={goal.run_id}" if goal.run_id else ""
         trace = f" trace={goal.trace_id}" if goal.trace_id else ""
-        typer.echo(f"{goal.id} {goal.phase}{task}{trace} {goal.objective}")
+        typer.echo(f"{goal.id} phase={goal.phase} resolution={goal.resolution}{task}{trace} {goal.objective}")
 
 @goal_app.command("show")
 def goal_show(goal_id: str) -> None:
@@ -137,13 +137,17 @@ def goal_show(goal_id: str) -> None:
     goal = store.get(goal_id)
     if goal is None:
         raise typer.BadParameter("goal not found")
-    typer.echo(f"{goal.id} {goal.phase} task={goal.run_id or '-'} trace={goal.trace_id or '-'}")
+    typer.echo(
+        f"{goal.id} phase={goal.phase} governance={goal.governance} resolution={goal.resolution} "
+        f"task={goal.run_id or '-'} trace={goal.trace_id or '-'}"
+    )
     typer.echo(goal.objective)
     if goal.blocked_reason:
         typer.echo(f"blocked: {goal.blocked_reason}")
     for event in store.list_events(goal_id):
         typer.echo(
-            f"- {event.event_type} {event.status} task={event.run_id or '-'} trace={event.trace_id or '-'}"
+            f"- {event.event_type} phase={event.phase} governance={event.governance} "
+            f"resolution={event.resolution} task={event.run_id or '-'} trace={event.trace_id or '-'}"
         )
 
 @subagent_app.command("list")
@@ -203,14 +207,19 @@ def workflow_propose(
     if not result.ok:
         raise typer.BadParameter(result.message or result.observation)
     facts = result.facts or {}
-    typer.echo(f"{facts.get('workflow_id')} {facts.get('status')} steps={facts.get('step_count')}")
+    raw_workflow = facts.get("workflow")
+    workflow = raw_workflow if isinstance(raw_workflow, dict) else {}
+    typer.echo(
+        f"{facts.get('workflow_id')} phase={workflow.get('phase')} "
+        f"resolution={workflow.get('resolution')} steps={facts.get('step_count')}"
+    )
 
 @workflow_app.command("list")
-def workflow_list(status: str = "", limit: int = 50) -> None:
+def workflow_list(phase: str = "", limit: int = 50) -> None:
     """List dynamic workflows."""
-    for workflow in WorkflowStore(ensure_home()).list(status=status, limit=limit):
+    for workflow in WorkflowStore(ensure_home()).list(phase=phase, limit=limit):
         typer.echo(
-            f"{workflow.id} {workflow.phase} ceiling={workflow.permission_ceiling} {workflow.objective}"
+            f"{workflow.id} phase={workflow.phase} resolution={workflow.resolution} ceiling={workflow.permission_ceiling} {workflow.objective}"
         )
 
 @workflow_app.command("show")

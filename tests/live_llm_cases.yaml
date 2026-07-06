@@ -45,7 +45,7 @@ syscall_cases:
     source: observed:.navi/memory.db
     message: "`8f59a0dcc92948c49f88de2df055dabf`为什么这个 delegation run 没有执行"
     expect:
-      tool: delegate.status
+      tool: delegate.state
       permission: read
       args:
         run_id: "8f59a0dcc92948c49f88de2df055dabf"

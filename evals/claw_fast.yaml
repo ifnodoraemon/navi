@@ -36,18 +36,18 @@ tasks:
     steps:
     - expect:
         action: approval
-        goal_status: awaiting_approval
+        goal_phase: paused
         run_count_delta: 1
-        run_status: awaiting_approval
+        run_phase: paused
       user: 测试在当前项目解释器上失败了，帮我定位问题并修复
     - expect:
         action: approval
         run_count_delta: 0
-        run_status: queued
+        run_phase: pending
       user: 批准 {{approval_code}}
     - expect:
-        goal_status: verified_complete
-        run_status: completed
+        goal_phase: ended
+        run_phase: ended
       process_pending: true
   language: zh
   query: 测试在当前项目解释器上失败了，帮我定位问题并修复

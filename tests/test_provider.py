@@ -4,7 +4,9 @@ import pytest
 
 from navi.provider import (
     ChatMessage,
+    ModelPool,
     OpenAICompatibleProvider,
+    ProviderUsage,
     _messages_for_response_format,
     _validate_structured_output,
 )
@@ -78,3 +80,36 @@ def test_json_object_mode_does_not_inject_schema_into_prompt():
     assert "JSON Schema" not in outbound[0].content
     assert "strictly matches" not in outbound[0].content
     assert outbound[1:] == messages
+
+
+class _UsageProvider:
+    last_usage: ProviderUsage | None = None
+
+    async def complete(self, messages: list[ChatMessage], **kwargs) -> str:
+        self.last_usage = ProviderUsage(
+            provider="openai-compatible",
+            model="usage-model",
+            input_tokens=11,
+            output_tokens=7,
+            total_tokens=18,
+            raw={"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+        )
+        return "ok"
+
+
+@pytest.mark.asyncio
+async def test_model_pool_exposes_provider_usage_by_role():
+    pool = ModelPool(default=_UsageProvider())
+
+    result = await pool.complete_for("planner", [ChatMessage("user", "hi")])
+
+    assert result == "ok"
+    assert pool.usage_for("planner") == {
+        "role": "planner",
+        "provider": "openai-compatible",
+        "model": "usage-model",
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "total_tokens": 18,
+        "raw": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+    }

@@ -31,21 +31,6 @@ class Resolution(StrEnum):
 def is_terminal_phase(phase: str) -> bool:
     return phase == Phase.ENDED
 
-class RunStatus(StrEnum):
-    PENDING = "pending"
-    RUNNING = "running"
-    AWAITING_APPROVAL = "awaiting_approval"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-RUN_STATUS_PENDING = RunStatus.PENDING
-RUN_STATUS_RUNNING = RunStatus.RUNNING
-RUN_STATUS_AWAITING_APPROVAL = RunStatus.AWAITING_APPROVAL
-RUN_STATUS_COMPLETED = RunStatus.COMPLETED
-RUN_STATUS_FAILED = RunStatus.FAILED
-
-
 
 @dataclass(frozen=True)
 class RunFinalizeDecision:
@@ -61,19 +46,18 @@ class AcceptanceAdvance:
     error: str = ""
 
 
-def run_is_terminal(status: str) -> bool:
-    return status in RUN_TERMINAL_STATUSES
+def run_is_terminal(phase: str) -> bool:
+    return phase == Phase.ENDED
 
 
-def prepare_run_status(*, exit_code: int, current_status: str = "") -> str:
-    return "running" if exit_code == 0 else "failed"
+def prepare_run_phase(*, exit_code: int) -> str:
+    return Phase.RUNNING if exit_code == 0 else Phase.ENDED
 
 
 def execute_finalize_decision(
     *,
     exit_code: int,
     stderr: str,
-    completion_status: str = "",
 ) -> RunFinalizeDecision:
     if exit_code == 0:
         return RunFinalizeDecision(phase=Phase.ENDED, resolution=Resolution.SUCCESS, error="")
@@ -82,29 +66,33 @@ def execute_finalize_decision(
 
 
 def execution_ledger_reason(exit_code: int) -> str:
-    outcome = RUN_STATUS_COMPLETED if exit_code == 0 else RUN_STATUS_FAILED
+    outcome = Resolution.SUCCESS if exit_code == 0 else Resolution.FAILED
     return f"run execution {outcome}"
 
 
-ACCEPTANCE_ADVANCE_BY_STATUS: dict[str, AcceptanceAdvance] = {
-    RUN_STATUS_PENDING: AcceptanceAdvance(action="confirm"),
-    RUN_STATUS_RUNNING: AcceptanceAdvance(action="check"),
-    RUN_STATUS_AWAITING_APPROVAL: AcceptanceAdvance(action="approve"),
-    RUN_STATUS_COMPLETED: AcceptanceAdvance(action="terminal", terminal=True),
-    RUN_STATUS_FAILED: AcceptanceAdvance(action="terminal", terminal=True),
-}
-
-
-def acceptance_advance(status: str) -> AcceptanceAdvance:
-    return ACCEPTANCE_ADVANCE_BY_STATUS.get(
-        status,
-        AcceptanceAdvance(action="stalled", error=f"run cannot advance from status {status}"),
+def acceptance_advance(
+    *,
+    phase: str,
+    governance: str = Governance.NONE,
+    resolution: str = Resolution.NONE,
+) -> AcceptanceAdvance:
+    if phase == Phase.ENDED:
+        return AcceptanceAdvance(action="terminal", terminal=True)
+    if governance == Governance.AWAITING_APPROVAL:
+        return AcceptanceAdvance(action="approve")
+    if phase == Phase.PENDING:
+        return AcceptanceAdvance(action="process_queue")
+    if phase == Phase.RUNNING:
+        return AcceptanceAdvance(action="check")
+    return AcceptanceAdvance(
+        action="stalled",
+        error=f"run cannot advance from phase={phase} governance={governance} resolution={resolution}",
     )
 
 
-def acceptance_outcome(*, accepted: bool, run_status: str) -> str:
+def acceptance_outcome(*, accepted: bool, run_phase: str) -> str:
     if accepted:
         return "accepted"
-    if run_status == RUN_STATUS_RUNNING:
+    if run_phase == Phase.RUNNING:
         return "blocked"
     return "failed"

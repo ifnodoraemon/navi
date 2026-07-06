@@ -10,10 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from .db import connect, check_schema_version, write_schema_version
-from .lifecycle import (
-    RUN_STATUS_FAILED,
-    RUN_STATUS_COMPLETED,
-)
 from .paths import db_paths
 from .runs import Run
 from .schema import Column, Table, assert_schema_exact
@@ -360,26 +356,30 @@ class GoalStore:
         )
         return self.get(goal_id)
 
-    def update_status(
+    def update_state(
         self,
         goal_id: str,
         *,
-        phase: str,
-        governance: str,
-        acceptance: str,
-        resolution: str,
+        phase: str | None = None,
+        governance: str | None = None,
+        acceptance: str | None = None,
+        resolution: str | None = None,
         blocked_reason: str = "",
         evidence: dict[str, Any] | None = None,
-        event_type: str = "goal.status",
+        event_type: str = "goal.state",
     ) -> Goal | None:
         goal = self.get(goal_id)
         if goal is None:
             return None
+        next_phase = goal.phase if phase is None else phase
+        next_governance = goal.governance if governance is None else governance
+        next_acceptance = goal.acceptance if acceptance is None else acceptance
+        next_resolution = goal.resolution if resolution is None else resolution
         merged_evidence = _merge_evidence(goal.evidence_json, evidence)
         now = time.time()
         completed_at = (
             now
-            if phase == Phase.ENDED
+            if next_phase == Phase.ENDED
             else 0.0
         )
         with connect(self.db_path) as conn:
@@ -390,10 +390,10 @@ class GoalStore:
                 WHERE id = ?
                 """,
                 (
-                    phase,
-                    governance,
-                    acceptance,
-                    resolution,
+                    next_phase,
+                    next_governance,
+                    next_acceptance,
+                    next_resolution,
                     blocked_reason,
                     json.dumps(merged_evidence, ensure_ascii=False, sort_keys=True),
                     now,
@@ -404,7 +404,10 @@ class GoalStore:
         self.record_event(
             goal_id,
             event_type,
-            phase=phase, governance=governance, acceptance=acceptance, resolution=resolution,
+            phase=next_phase,
+            governance=next_governance,
+            acceptance=next_acceptance,
+            resolution=next_resolution,
             run_id=goal.run_id,
             trace_id=goal.trace_id,
             evidence=evidence or {},
@@ -437,7 +440,7 @@ class GoalStore:
             retries = sum(
                 1
                 for event in self.list_events(goal_id, limit=1000)
-                if event.event_type == "goal.run_status"
+                if event.event_type == "goal.run_state"
                 and event.resolution in {Resolution.BLOCKED, Resolution.FAILED}
             )
             if retries >= goal.max_retries:
@@ -458,22 +461,28 @@ class GoalStore:
         goal = self.get_by_run(run.id)
         if goal is None:
             return None
-        evidence = evidence or {"run_id": run.id, "run_status": run.status}
-        phase, governance, acceptance, resolution = _goal_status_for_run(run, evidence=evidence)
+        evidence = evidence or {
+            "run_id": run.id,
+            "run_phase": run.phase,
+            "run_governance": run.governance,
+            "run_acceptance": run.acceptance,
+            "run_resolution": run.resolution,
+        }
+        phase, governance, acceptance, resolution = _goal_state_for_run(run, evidence=evidence)
         reason = ""
         if resolution == Resolution.BLOCKED:
-            if run.status == RUN_STATUS_COMPLETED and not run.error:
+            if run.phase == Phase.ENDED and run.resolution == Resolution.SUCCESS and not run.error:
                 reason = "critic_gate_evidence_missing"
             else:
                 reason = "run_blocked"
             if run.error:
                 evidence = {**evidence, "run_error": run.error}
-        return self.update_status(
+        return self.update_state(
             goal.id,
             phase=phase, governance=governance, acceptance=acceptance, resolution=resolution,
             blocked_reason=reason,
             evidence=evidence,
-            event_type="goal.run_status",
+            event_type="goal.run_state",
         )
 
     def record_event(
@@ -522,11 +531,16 @@ class GoalStore:
         return event
 
 
-def _goal_status_for_run(run: Run, *, evidence: dict[str, Any] | None = None) -> tuple[str, str, str, str]:
-    if run.status == RUN_STATUS_COMPLETED:
-        return (Phase.ENDED, Governance.NONE, Acceptance.NONE, Resolution.SUCCESS)
-    if run.status == RUN_STATUS_FAILED:
-        return (Phase.ENDED, Governance.NONE, Acceptance.NONE, Resolution.FAILED)
+def _goal_state_for_run(run: Run, *, evidence: dict[str, Any] | None = None) -> tuple[str, str, str, str]:
+    if run.phase == Phase.ENDED and run.resolution == Resolution.SUCCESS:
+        return (Phase.ENDED, Governance.NONE, Acceptance.ACCEPTED, Resolution.SUCCESS)
+    if run.phase == Phase.ENDED:
+        acceptance = Acceptance.REJECTED if run.resolution == Resolution.FAILED else Acceptance.NONE
+        return (Phase.ENDED, Governance.NONE, acceptance, run.resolution)
+    if run.governance == Governance.AWAITING_APPROVAL:
+        return (Phase.RUNNING, Governance.AWAITING_APPROVAL, Acceptance.NONE, Resolution.NONE)
+    if run.resolution == Resolution.BLOCKED:
+        return (Phase.RUNNING, run.governance, Acceptance.NONE, Resolution.BLOCKED)
     return (Phase.RUNNING, Governance.APPROVED, Acceptance.NONE, Resolution.NONE)
 
 

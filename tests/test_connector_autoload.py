@@ -19,6 +19,7 @@ from navi.connector_runtime import (
     REMOTE_BLOCKED_TOOLS,
     REMOTE_CONNECTOR_TOOL_POLICY,
 )
+from navi.lifecycle import Governance, Phase, Resolution
 from navi.runs import RunStore
 
 
@@ -124,12 +125,12 @@ def test_remote_policy_is_explicit_allowlist() -> None:
         "approval.resolve",
         "delegate.spawn",
         "delegate.list",
-        "delegate.status",
+        "delegate.state",
         "session.request_elevation",
         "tools.list",
         "watch.create",
         "workflow.propose",
-        "workflow.status",
+        "workflow.state",
     }
 
 
@@ -145,7 +146,7 @@ async def test_remote_tools_list_returns_filtered_manifest(tmp_path: Path) -> No
     assert "delegate.spawn" in names
     assert "tools.list" in names
     assert "approval.resolve" in names
-    assert "delegate.status" in names
+    assert "delegate.state" in names
     assert "session.request_elevation" in names
     assert "delegate.delete" not in names
 
@@ -160,7 +161,9 @@ async def test_remote_session_elevation_expands_governed_tools_not_direct_os(tmp
         peer_id="weixin-peer",
         sender_id="weixin-user",
         workspace=str(tmp_path),
-        status="awaiting_approval",
+        phase=Phase.PAUSED,
+        governance=Governance.AWAITING_APPROVAL,
+        resolution=Resolution.BLOCKED,
     )
     approval = runs.create_approval(
         run_id=run.id,
@@ -206,7 +209,9 @@ async def test_remote_can_request_session_elevation(tmp_path: Path) -> None:
     assert result.facts is not None
     assert result.facts["state_transition"] == "elevation_requested"
     assert result.facts["target_permission"] == "write"
-    assert result.facts["status"] == "awaiting_approval"
+    assert result.facts["phase"] == Phase.PAUSED
+    assert result.facts["governance"] == Governance.AWAITING_APPROVAL
+    assert result.facts["resolution"] == Resolution.BLOCKED
     assert result.facts["approval"]["action"] == "session_elevation"
     assert result.facts["run_id"] == result.run_id
 

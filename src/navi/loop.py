@@ -53,7 +53,7 @@ class LoopCheckName(StrEnum):
     PLANNER_RESULT = "planner_result"
     TERMINAL_RESULT = "terminal_result"
     WORKFLOW_CAPABILITY_EVIDENCE_PRESENT = "workflow_capability_evidence_present"
-    WORKFLOW_STATUS_COMPLETED = "workflow_status_completed"
+    WORKFLOW_RESOLUTION_SUCCESS = "workflow_resolution_success"
     WORKFLOW_STEP_CHECKER = "workflow_step_checker"
     WORKFLOW_STEP_EVIDENCE_PRESENT = "workflow_step_evidence_present"
     WORKFLOW_STEPS_COMPLETED = "workflow_steps_completed"

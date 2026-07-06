@@ -9,14 +9,10 @@ from typing import Any
 import pytest
 
 from navi.capabilities import CapabilityRegistry, CapabilityContext
+from navi.lifecycle import Acceptance, Governance, Phase, Resolution
 from navi.runs import RunStore
 from navi.tools import API_CONTEXT
-from navi.workflows import (
-    WorkflowStore,
-    WORKFLOW_STATUS_AWAITING_APPROVAL,
-    WORKFLOW_STATUS_APPROVED,
-    WORKFLOW_STATUS_VERIFIED_COMPLETE,
-)
+from navi.workflows import WorkflowStore
 
 
 class _WorkflowStepProvider:
@@ -51,6 +47,16 @@ class _WorkflowStepProvider:
 
     def list_roles(self) -> list[str]:
         return ["planner", "auditor"]
+
+    def usage_for(self, role: str) -> dict[str, Any]:
+        return {
+            "role": role,
+            "provider": "test-provider",
+            "model": "test-model",
+            "input_tokens": 3,
+            "output_tokens": 2,
+            "total_tokens": 5,
+        }
 
 
 @pytest.mark.asyncio
@@ -183,7 +189,9 @@ async def test_t1_delegation_actions_flow(navi_home, monkeypatch) -> None:
     # Verify state in RunStore
     run = runs.get(run_id)
     assert run is not None
-    assert run.status == "pending"
+    assert run.phase == Phase.PENDING
+    assert run.governance == Governance.NONE
+    assert run.resolution == Resolution.NONE
     
     # 2. delegate_prepare
     prepared = await registry.invoke(
@@ -196,7 +204,9 @@ async def test_t1_delegation_actions_flow(navi_home, monkeypatch) -> None:
     
     # Verify state in RunStore
     run = runs.get(run_id)
-    assert run.status == "prepared"
+    assert run.phase == Phase.RUNNING
+    assert run.governance == Governance.NONE
+    assert run.resolution == Resolution.NONE
     
 
 
@@ -246,7 +256,9 @@ async def test_t1_approval_actions_flow(navi_home, monkeypatch) -> None:
     assert approval_code
     
     run = runs.get(run_id)
-    assert run.status == "awaiting_approval"
+    assert run.phase == Phase.PAUSED
+    assert run.governance == Governance.AWAITING_APPROVAL
+    assert run.resolution == Resolution.BLOCKED
     
     # 3. Resolve approval (include the approval code in context.input_text)
     context_with_code = CapabilityContext(
@@ -268,7 +280,9 @@ async def test_t1_approval_actions_flow(navi_home, monkeypatch) -> None:
     
     # Assert run is queued
     run = runs.get(run_id)
-    assert run.status == "queued"
+    assert run.phase == Phase.PENDING
+    assert run.governance == Governance.APPROVED
+    assert run.resolution == Resolution.NONE
 
 
 @pytest.mark.asyncio
@@ -359,10 +373,14 @@ async def test_t1_workflow_actions_flow(
     
     # Verify initial proposed state in store
     workflow = store.get(workflow_id)
-    assert workflow.status == WORKFLOW_STATUS_AWAITING_APPROVAL
+    assert workflow.phase == Phase.PAUSED
+    assert workflow.governance == Governance.AWAITING_APPROVAL
+    assert workflow.acceptance == Acceptance.NONE
+    assert workflow.resolution == Resolution.NONE
     steps = store.list_steps(workflow_id)
     assert len(steps) == 1
-    assert steps[0].status == "pending"
+    assert steps[0].phase == Phase.PENDING
+    assert steps[0].resolution == Resolution.NONE
     
     # 2. Approve workflow
     approved = await registry.invoke(
@@ -375,7 +393,10 @@ async def test_t1_workflow_actions_flow(
     
     # Verify state in store
     workflow = store.get(workflow_id)
-    assert workflow.status == WORKFLOW_STATUS_APPROVED
+    assert workflow.phase == Phase.PAUSED
+    assert workflow.governance == Governance.APPROVED
+    assert workflow.acceptance == Acceptance.NONE
+    assert workflow.resolution == Resolution.NONE
     
     # 3. Run workflow
     run_res = await registry.invoke(
@@ -388,7 +409,15 @@ async def test_t1_workflow_actions_flow(
     
     # Verify run completed
     workflow = store.get(workflow_id)
-    assert workflow.status == WORKFLOW_STATUS_VERIFIED_COMPLETE
+    assert workflow.phase == Phase.ENDED
+    assert workflow.governance == Governance.NONE
+    assert workflow.acceptance == Acceptance.ACCEPTED
+    assert workflow.resolution == Resolution.SUCCESS
     steps = store.list_steps(workflow_id)
-    assert steps[0].status == "completed"
+    assert steps[0].phase == Phase.ENDED
+    assert steps[0].resolution == Resolution.SUCCESS
+    evidence = json.loads(steps[0].evidence_json)["evidence"]
+    provider_usage = [item for item in evidence if item.get("kind") == "provider_usage"]
+    assert provider_usage
+    assert provider_usage[0]["usage"]["total_tokens"] == 5
     assert provider.planner_calls == 2

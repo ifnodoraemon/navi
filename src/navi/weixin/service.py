@@ -1,5 +1,4 @@
 from __future__ import annotations
-from navi.lifecycle import Phase, Governance, Acceptance, Resolution
 
 import asyncio
 import json
@@ -10,7 +9,6 @@ from pathlib import Path
 from collections.abc import Callable
 
 from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
-from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.safeguards import redact_secrets
@@ -49,15 +47,21 @@ class WeixinService:
         self.typing_tickets: dict[str, str] = {}
         self.daemon = SystemDaemon(home, project_dir=self.project_dir)
         self.active = self.daemon
-        ingress_kwargs = {
-            "home": home,
-            "runtime": runtime,
-            "project_dir": self.project_dir,
-            "allow_sources": {"action", "core"},
-        }
-        if tool_policy is not None:
-            ingress_kwargs["tool_policy"] = tool_policy
-        self.ingress = ConnectorIngressRuntime(**ingress_kwargs)
+        if tool_policy is None:
+            self.ingress = ConnectorIngressRuntime(
+                home=home,
+                runtime=runtime,
+                project_dir=self.project_dir,
+                allow_sources={"action", "core"},
+            )
+        else:
+            self.ingress = ConnectorIngressRuntime(
+                home=home,
+                runtime=runtime,
+                project_dir=self.project_dir,
+                allow_sources={"action", "core"},
+                tool_policy=tool_policy,
+            )
 
     def _build_client(self):
         token = self.config.token
@@ -170,7 +174,7 @@ class WeixinService:
 
                 # Check for activity to adapt sleep time
                 if now - last_tasks_check >= 2.0:
-                    active_runs = self.daemon.runs.list_by_statuses(
+                    active_runs = self.daemon.runs.list_by_phases(
                         ["queued", "running", "preparing"]
                     )
                     has_active_runs = len(active_runs) > 0
@@ -371,7 +375,9 @@ class WeixinService:
                     background_event="watch_result" if not task else "watch_task_prepared",
                     reason="empty_surface_text",
                     run_id=run_id,
-                    status=task.status if task else "",
+                    phase=task.phase if task else "",
+                    governance=task.governance if task else "",
+                    resolution=task.resolution if task else "",
                 )
                 continue
             await self._send_reply(
@@ -418,7 +424,9 @@ class WeixinService:
                     background_event="run_execution_finished",
                     reason="empty_surface_text",
                     run_id=task.id,
-                    status=task.status,
+                    phase=task.phase,
+                    governance=task.governance,
+                    resolution=task.resolution,
                 )
                 continue
             await self._send_reply(
@@ -514,9 +522,9 @@ class WeixinService:
     def _task_surface_text(task: Run) -> str:
         # awaiting_approval carries the re-approval prompt (with the fresh code)
         # in result_summary; surface it verbatim rather than the empty error.
-        if task.status in ("awaiting_approval", "blocked"):
+        if task.governance == "awaiting_approval" or task.resolution == "blocked":
             return (task.result_summary or "").strip()
-        if task.status == "completed":
+        if task.phase == "ended" and task.resolution == "success":
             return (task.result_summary or "").strip()
         return (task.error or "").strip()
 

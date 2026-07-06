@@ -11,7 +11,8 @@ from navi.event_bus import EventBus
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
-from navi.trace.store import TraceStore
+from navi.trace import TraceStore
+from navi.lifecycle import Governance, Phase, Resolution
 
 
 @pytest.mark.asyncio
@@ -24,7 +25,9 @@ async def test_connector_approval_command_resolves_matching_pending_approval(tmp
         peer_id="peer-1",
         sender_id="sender-1",
         workspace=str(tmp_path),
-        status="awaiting_approval",
+        phase=Phase.PAUSED,
+        governance=Governance.AWAITING_APPROVAL,
+        resolution=Resolution.BLOCKED,
     )
     approval = runs.create_approval(
         run_id=run.id,
@@ -83,7 +86,10 @@ async def test_connector_approval_command_resolves_matching_pending_approval(tmp
         assert response == "已批准。"
         print(list(TraceStore(tmp_path).list_events(trace_id="msg-approval")))
         assert RunStore(tmp_path).get_approval(approval.id).status == "approved"
-    assert RunStore(tmp_path).get(run.id).status == "pending"
+    updated = RunStore(tmp_path).get(run.id)
+    assert updated.phase == Phase.PENDING
+    assert updated.governance == Governance.APPROVED
+    assert updated.resolution == Resolution.NONE
 
 
 @pytest.mark.asyncio
@@ -215,6 +221,9 @@ class ElevationProvider:
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]
 
+    def usage_for(self, role: str) -> dict:
+        return {}
+
 
 class ElevatedManifestProvider:
     async def complete_for(
@@ -238,6 +247,9 @@ class ElevatedManifestProvider:
 
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
 
 
 @pytest.mark.asyncio
@@ -269,7 +281,9 @@ async def test_connector_request_needing_local_access_surfaces_elevation_fact(tm
     runs = RunStore(tmp_path).list(limit=10)
     assert len(runs) == 1
     assert runs[0].kind == "elevation"
-    assert runs[0].status == "awaiting_approval"
+    assert runs[0].phase == Phase.PAUSED
+    assert runs[0].governance == Governance.AWAITING_APPROVAL
+    assert runs[0].resolution == Resolution.BLOCKED
     approvals = RunStore(tmp_path).list_approvals(run_id=runs[0].id)
     assert len(approvals) == 1
     assert approvals[0].action == "session_elevation"
@@ -285,7 +299,9 @@ async def test_connector_approved_session_elevation_reaches_planner_manifest(tmp
         peer_id="peer-1",
         sender_id="sender-1",
         workspace=str(tmp_path),
-        status="awaiting_approval",
+        phase=Phase.PAUSED,
+        governance=Governance.AWAITING_APPROVAL,
+        resolution=Resolution.BLOCKED,
     )
     approval = runs.create_approval(
         run_id=run.id,

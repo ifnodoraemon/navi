@@ -1,5 +1,4 @@
 from __future__ import annotations
-from navi.lifecycle import Phase, Governance, Acceptance, Resolution
 
 import json
 import time
@@ -56,6 +55,26 @@ class TraceEvent:
     output_json: str
     message: str
     created_at: float
+
+
+def _trace_event_from_row(row: Any) -> TraceEvent:
+    return TraceEvent(
+        id=row[0],
+        trace_id=row[1],
+        session_id=row[2],
+        run_id=row[3],
+        phase=row[4],
+        source=row[5],
+        peer_id=row[6],
+        sender_id=row[7],
+        tool=row[8],
+        model_role=row[9],
+        ok=bool(row[10]),
+        input_json=row[11],
+        output_json=row[12],
+        message=row[13],
+        created_at=row[14],
+    )
 
 
 @dataclass(frozen=True)
@@ -300,7 +319,7 @@ class TraceStore:
                 """,
                 (trace_id, limit, offset),
             ).fetchall()
-        events = [TraceEvent(*row[:10], bool(row[10]), *row[11:]) for row in rows]
+        events = [_trace_event_from_row(row) for row in rows]
         return self._resolve_events_blobs(events)
 
     def list_loop_decisions(self, trace_id: str, *, limit: int = 5000, offset: int = 0) -> list[TraceEvent]:
@@ -333,7 +352,7 @@ class TraceStore:
                 """,
                 (run_id, session_id, session_id, limit, offset),
             ).fetchall()
-        events = [TraceEvent(*row[:10], bool(row[10]), *row[11:]) for row in rows]
+        events = [_trace_event_from_row(row) for row in rows]
         return self._resolve_events_blobs(events)
 
     def list_trace_meta(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None, query: str = "") -> list[dict[str, Any]]:
@@ -529,11 +548,11 @@ class TraceStore:
                 resolved_events.append(
                     replace(
                         e,
-                        input_json=json.dumps(resolved_data["in"], ensure_ascii=False, sort_keys=True)
-                        if resolved_data["in"] is not None
+                        input_json=json.dumps(resolved_data.get("in"), ensure_ascii=False, sort_keys=True)
+                        if resolved_data.get("in") is not None
                         else "",
-                        output_json=json.dumps(resolved_data["out"], ensure_ascii=False, sort_keys=True)
-                        if resolved_data["out"] is not None
+                        output_json=json.dumps(resolved_data.get("out"), ensure_ascii=False, sort_keys=True)
+                        if resolved_data.get("out") is not None
                         else "",
                     )
                 )

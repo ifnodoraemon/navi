@@ -306,13 +306,19 @@ def planner_prompt_manifest() -> dict[str, Any]:
     return assemble_planner_system_prompt().manifest()
 
 
+def _iterable_prompt_values(values: object) -> list[object]:
+    if isinstance(values, (list, tuple, set, frozenset)):
+        return list(values)
+    return []
+
+
 def _list_block(name: str, tier: str, source: str, values: object) -> PromptBlock:
-    items = [str(item) for item in values or []]
+    items = [str(item) for item in _iterable_prompt_values(values)]
     return PromptBlock(name, tier, source, "\n".join(f"- {item}" for item in items))
 
 
 def _numbered_block(name: str, tier: str, source: str, values: object) -> PromptBlock:
-    items = [str(item) for item in values or []]
+    items = [str(item) for item in _iterable_prompt_values(values)]
     return PromptBlock(
         name, tier, source, "\n".join(f"{idx}. {item}" for idx, item in enumerate(items, start=1))
     )

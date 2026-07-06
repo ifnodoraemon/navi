@@ -1,6 +1,4 @@
 from __future__ import annotations
-from navi.lifecycle import Phase, Governance, Acceptance, Resolution
-
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -38,7 +36,7 @@ class CompletionBlock:
 
     reason_code: str
     run_id: str = ""
-    run_status: str = ""
+    run_phase: str = ""
     details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -53,7 +51,7 @@ class RecoveryPlanner:
             return self._run_progress_facts(
                 reason_code=block.reason_code,
                 run_id=block.run_id,
-                run_status=block.run_status,
+                run_phase=block.run_phase,
                 details=block.details,
             )
 
@@ -72,13 +70,13 @@ class RecoveryPlanner:
         *,
         reason_code: str,
         run_id: str,
-        run_status: str,
+        run_phase: str,
         details: dict[str, Any] | None = None,
     ) -> RecoveryFacts:
         resolved_details = {
             "blocked_entity_type": "delegation_run",
             "run_id": run_id,
-            "run_status": run_status,
+            "run_phase": run_phase,
             **(details or {}),
         }
         return RecoveryFacts(

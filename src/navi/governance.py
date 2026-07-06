@@ -111,7 +111,9 @@ class GovernanceEngine:
 
         evidence = dict(facts or {})
         if not allowed:
-            evidence["run_status"] = task.status
+            evidence["run_phase"] = task.phase
+            evidence["run_governance"] = task.governance
+            evidence["run_resolution"] = task.resolution
         before = json.dumps(
             {"allowed": False, "reason": reason, "facts": evidence},
             ensure_ascii=False,

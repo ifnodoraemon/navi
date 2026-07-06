@@ -7,6 +7,15 @@ from typing import Any
 from .codebase import _resolve_binary_error
 from .utils import _truncate_output
 
+
+def _timeout_output_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value
+
+
 # Defense in depth (principle 13): a denylist of binaries that can cause
 # irreversible damage if the model is prompt-injected into running them.
 # This is *not* the primary safety boundary — governance, approval gates,
@@ -191,8 +200,10 @@ def _run_command(
         )
     except subprocess.TimeoutExpired as exc:
         return {
-            "stdout": _truncate_output(exc.stdout or ""),
-            "stderr": _truncate_output(exc.stderr or f"command timed out after {timeout} seconds"),
+            "stdout": _truncate_output(_timeout_output_text(exc.stdout)),
+            "stderr": _truncate_output(
+                _timeout_output_text(exc.stderr) or f"command timed out after {timeout} seconds"
+            ),
             "exit_code": 124,
             "timed_out": True,
         }

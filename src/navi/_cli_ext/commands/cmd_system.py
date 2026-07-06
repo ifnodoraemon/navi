@@ -9,7 +9,10 @@ import typer
 import asyncio
 import json
 from pathlib import Path
-from ..common import *
+from navi.capabilities import build_capability_registry, CapabilityContext
+from navi.config import load_config, write_default_config
+from navi.connector_registry import load_connector_adapters
+from navi.paths import ensure_home
 from ..common import _require_connector, _tail_connector_events
 
 

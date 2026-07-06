@@ -39,9 +39,12 @@ def _block_goal_for_deleted_run(home: Path, run_id: str) -> None:
     goal = goals.get_by_run(run_id)
     if goal is None:
         return
-    goals.update_status(
+    goals.update_state(
         goal.id,
-        
+        phase=Phase.ENDED,
+        governance=Governance.NONE,
+        acceptance=Acceptance.REJECTED,
+        resolution=Resolution.BLOCKED,
         blocked_reason="delegation_run_deleted",
         evidence={"run_id": run_id, "reason": "delegation_run_deleted"},
         event_type="goal.run_deleted",
@@ -91,6 +94,9 @@ class DelegateSpawnCapability(BaseCapability):
                 **_transition_facts("delegation_run", existing.id, "existing"),
                 "run_id": existing.id,
                 "phase": existing.phase,
+                "governance": existing.governance,
+                "acceptance": existing.acceptance,
+                "resolution": existing.resolution,
                 "autonomy_level": existing.autonomy_level,
                 "trust_rule_id": existing.trust_rule_id,
                 "deduplicated": True,
@@ -136,6 +142,9 @@ class DelegateSpawnCapability(BaseCapability):
             "goal_id": goal.id,
             "run_id": task.id,
             "phase": task.phase,
+            "governance": task.governance,
+            "acceptance": task.acceptance,
+            "resolution": task.resolution,
             "autonomy_level": task.autonomy_level,
             "trust_rule_id": task.trust_rule_id,
         }
@@ -191,6 +200,9 @@ class DelegateRunCapability(BaseCapability):
                 **_transition_facts("delegation_run", queued.id, "updated"),
                 "run_id": queued.id,
                 "phase": queued.phase,
+                "governance": queued.governance,
+                "acceptance": queued.acceptance,
+                "resolution": queued.resolution,
             },
             run_id=queued.id,
         )
@@ -230,14 +242,17 @@ class DelegateSendInputCapability(BaseCapability):
         session_id = memory.current_session_id(session_alias)
         memory.add_message(session_id, "user", message)
 
-        runs.update_run(task.id, phase=Phase.PENDING, result_summary="")
+        queued = runs.update_run(task.id, phase=Phase.PENDING, result_summary="") or task
 
         return _fact_result(
             "delegation",
             {
                 **_transition_facts("delegation_run", run_id, "updated"),
                 "run_id": run_id,
-                "phase": Phase.PENDING,
+                "phase": queued.phase,
+                "governance": queued.governance,
+                "acceptance": queued.acceptance,
+                "resolution": queued.resolution,
             },
             run_id=run_id,
         )
@@ -268,7 +283,7 @@ class DelegateDeleteCapability(BaseCapability):
         ):
             raise PermissionDenied(
                 "remote delegate.delete can only delete delegation runs that are "
-                "failed, pending, or expired."
+                "pending or ended."
             )
         deleted = runs.delete_run(run_id)
         if deleted is None:
@@ -287,6 +302,9 @@ class DelegateDeleteCapability(BaseCapability):
             "run_id": deleted.id,
             "title": deleted.title,
             "phase": deleted.phase,
+            "governance": deleted.governance,
+            "acceptance": deleted.acceptance,
+            "resolution": deleted.resolution,
             "reason": reason,
         }
         return _fact_result("delegation", facts, run_id=deleted.id)
@@ -313,7 +331,7 @@ class DelegateDeleteCapability(BaseCapability):
         ):
             message = (
                 "remote delegate.delete bulk cleanup requires phase in "
-                "{failed, pending, expired} and kind watch or delegation."
+                "{pending, ended} and kind watch or delegation."
             )
             return _failure_result(
                 "delegation",
@@ -325,7 +343,7 @@ class DelegateDeleteCapability(BaseCapability):
         runs = RunStore(self.home)
         graph = GraphStore(self.home)
         before_count = runs.count_runs(phase=phase, source=source, kind=kind)
-        candidates = runs.list_by_status_filtered(phase, source=source, kind=kind, limit=limit)
+        candidates = runs.list_by_phase_filtered(phase, source=source, kind=kind, limit=limit)
         deleted = []
         for task in candidates:
             removed = runs.delete_run(task.id)
@@ -397,7 +415,10 @@ class ExecutionRetryCapability(BaseCapability):
         facts = {
             **_transition_facts("execution_attempt", result.id, "created"),
             "run_id": result.id,
-            "phase": result.phase, "resolution": result.resolution,
+            "phase": result.phase,
+            "governance": result.governance,
+            "acceptance": result.acceptance,
+            "resolution": result.resolution,
             "result_summary": result.result_summary,
             "error": result.error,
         }
@@ -448,7 +469,10 @@ def _run_list_facts(run: Any) -> dict[str, Any]:
     return {
         "id": run.id,
         "title": run.title,
-        "phase": run.phase, "resolution": run.resolution,
+        "phase": run.phase,
+        "governance": run.governance,
+        "acceptance": run.acceptance,
+        "resolution": run.resolution,
         "kind": run.kind,
         "source": run.source,
         "peer_id": run.peer_id,

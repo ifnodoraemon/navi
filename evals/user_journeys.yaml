@@ -12,8 +12,8 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
-          goal_status: awaiting_approval
+          run_phase: paused
+          goal_phase: paused
           text_contains: "审批码"
 
   - id: terse_fix_follow_up_uses_previous_error_context
@@ -32,8 +32,8 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
-          goal_status: awaiting_approval
+          run_phase: paused
+          goal_phase: paused
           text_contains: "审批码"
 
   - id: weixin_no_reply_checks_connector_trace

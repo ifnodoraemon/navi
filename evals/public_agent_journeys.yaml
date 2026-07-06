@@ -28,8 +28,8 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
-          goal_status: awaiting_approval
+          run_phase: paused
+          goal_phase: paused
           text_contains: "审批码"
 
   - id: public_hermes_provider_route_drift_check
@@ -88,8 +88,8 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
-          goal_status: awaiting_approval
+          run_phase: paused
+          goal_phase: paused
 
   - id: public_openclaw_privacy_redaction
     user_goal: Redact sensitive data through controlled local work.
@@ -99,7 +99,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: public_openclaw_data_report_repair
     user_goal: Repair a local data/report generation workflow.
@@ -109,7 +109,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: public_openclaw_memory_follow_up
     user_goal: Continue a concrete previous error from memory/context.
@@ -123,7 +123,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: public_openclaw_broad_permission_boundary
     user_goal: Keep broad autonomous local mutation behind clarification.
@@ -170,7 +170,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: public_enterprise_customer_support_triage
     user_goal: Use local customer-support data for a triage workflow.
@@ -180,7 +180,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: public_enterprise_it_issue_resolution
     user_goal: Diagnose an IT/runtime issue through local inspection and approval.
@@ -190,7 +190,7 @@ journeys:
         expect:
           action: approval
           run_count_delta: 1
-          run_status: awaiting_approval
+          run_phase: paused
 
   - id: public_information_practices_local_identifying
     user_goal: Identify project purpose from local files before answering.

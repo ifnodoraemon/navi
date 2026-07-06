@@ -9,7 +9,6 @@ from pathlib import Path
 from ..config import load_config
 from ..graph import GraphStore
 from ..memory import MemoryStore
-from ..paths import db_paths
 from ..provider import build_provider
 from ..runs import Run, RunStore
 from .domain import (
@@ -192,9 +191,22 @@ class EvolutionEngine:
         elif event.target_type == "run_execution":
             if event.before:
                 task_dict = json.loads(event.before)
+                missing = [
+                    key
+                    for key in ("phase", "governance", "acceptance", "resolution")
+                    if not task_dict.get(key)
+                ]
+                if missing:
+                    raise ValueError(
+                        "run_execution rollback event missing lifecycle fields: "
+                        + ", ".join(missing)
+                    )
                 self.runs.update_run(
                     event.target_id,
-                    status=task_dict.get("status", "queued"),
+                    phase=task_dict["phase"],
+                    governance=task_dict["governance"],
+                    acceptance=task_dict["acceptance"],
+                    resolution=task_dict["resolution"],
                     result_summary=task_dict.get("result_summary", ""),
                     error=task_dict.get("error", ""),
                 )
