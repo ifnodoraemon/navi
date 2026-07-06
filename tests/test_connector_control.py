@@ -66,10 +66,10 @@ async def test_connector_approval_command_resolves_matching_pending_approval(tmp
     finally:
         await ingress.event_bus.shutdown()
 
-        assert response.startswith("approval_resolved\n")
-        assert f"approval_id={approval.id}" in response
-        assert "decision=approve" in response
-        assert "status=approved" in response
+        assert response.text.startswith("approval_resolved\n")
+        assert f"approval_id={approval.id}" in response.text
+        assert "decision=approve" in response.text
+        assert "status=approved" in response.text
         assert ingress.agent.runtime.provider.calls == 0
         print(list(TraceStore(tmp_path).list_events(trace_id="msg-approval")))
         assert RunStore(tmp_path).get_approval(approval.id).status == "approved"
@@ -110,8 +110,8 @@ async def test_connector_approval_command_returns_not_found_fact(tmp_path):
     finally:
         await ingress.event_bus.shutdown()
 
-    assert response.startswith("approval_not_resolved\n")
-    assert "reason=approval_code_not_found" in response
+    assert response.text.startswith("approval_not_resolved\n")
+    assert "reason=approval_code_not_found" in response.text
     assert ingress.agent.runtime.provider.calls == 0
 
 
@@ -131,7 +131,7 @@ async def test_connector_timeout_surfaces_structured_fact(tmp_path, monkeypatch)
         )
     )
 
-    assert response == ""
+    assert response is None
 
 
 @pytest.mark.asyncio
@@ -165,7 +165,7 @@ async def test_connector_runtime_exception_surfaces_structured_fact(tmp_path):
     finally:
         await ingress.event_bus.shutdown()
 
-    assert response == ""
+    assert response.text == ""
 
 
 class ElevationProvider:
@@ -253,9 +253,9 @@ async def test_connector_request_needing_local_access_surfaces_elevation_fact(tm
     finally:
         await ingress.event_bus.shutdown()
 
-    assert response == "需要审批后才能继续。"
-    assert "session_elevation_requested" not in response
-    assert "target_permission=write" not in response
+    assert response.text == "需要审批后才能继续。"
+    assert "session_elevation_requested" not in response.text
+    assert "target_permission=write" not in response.text
     runs = RunStore(tmp_path).list(limit=10)
     assert len(runs) == 1
     assert runs[0].kind == "elevation"
@@ -311,4 +311,4 @@ async def test_connector_approved_session_elevation_reaches_planner_manifest(tmp
     finally:
         await ingress.event_bus.shutdown()
 
-    assert response == "elevated manifest observed"
+    assert response.text == "elevated manifest observed"

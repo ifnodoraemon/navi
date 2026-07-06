@@ -23,7 +23,9 @@ class ConnectorRouter:
         self.home = home
         self.event_bus = event_bus
 
-    async def route(self, message: ConnectorMessage) -> str:
+    async def route(self, message: ConnectorMessage) -> "ResponseReadyEvent | None":
+        if not message.text.strip():
+            return None
         correlation_id = message.message_id
         channel = self.event_bus.create_response_channel(correlation_id)
 
@@ -55,7 +57,13 @@ class ConnectorRouter:
                     output_data={"response": control_response, "control_message": True},
                     message="Resolved connector control message",
                 )
-                return control_response
+                return ResponseReadyEvent(
+                    source_agent="router",
+                    text=control_response,
+                    source=message.source,
+                    peer_id=message.peer_id,
+                    sender_id=message.sender_id,
+                )
 
             event = MessageIngressEvent(
                 source_agent="connector_router",
@@ -72,16 +80,17 @@ class ConnectorRouter:
             await self.event_bus.publish(event)
             response = await self._await_response(channel, correlation_id=correlation_id)
 
-            trace.add_event(
-                trace_id=correlation_id,
-                phase=TracePhase.CHANNEL_EGRESS,
-                run_id="",
-                source=message.source,
-                peer_id=message.peer_id,
-                sender_id=message.sender_id,
-                output_data={"response": response},
-                message="Sent response to channel",
-            )
+            if response:
+                trace.add_event(
+                    trace_id=correlation_id,
+                    phase=TracePhase.CHANNEL_EGRESS,
+                    run_id="",
+                    source=message.source,
+                    peer_id=message.peer_id,
+                    sender_id=message.sender_id,
+                    output_data={"response": response.text, "action": response.action},
+                    message="Sent response to channel",
+                )
             return response
         except Exception as e:
             trace.add_event(
@@ -99,7 +108,7 @@ class ConnectorRouter:
         finally:
             self.event_bus.remove_response_channel(correlation_id)
 
-    async def _await_response(self, channel: asyncio.Queue, *, correlation_id: str) -> str:
+    async def _await_response(self, channel: asyncio.Queue, *, correlation_id: str) -> "ResponseReadyEvent | None":
         """Wait for the real response, resetting the deadline on every heartbeat.
 
         The timeout is per-idle-gap, not a total wall clock: as long as the turn
@@ -109,9 +118,9 @@ class ConnectorRouter:
             try:
                 item = await asyncio.wait_for(channel.get(), timeout=IDLE_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
-                return ""
+                return None
             if isinstance(item, ResponseReadyEvent):
-                return item.text
+                return item
             # Heartbeat (or any non-terminal signal): upstream is alive, keep waiting.
 
     def _resolve_connector_control_message(self, message: ConnectorMessage) -> str | None:

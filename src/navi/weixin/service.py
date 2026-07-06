@@ -13,6 +13,7 @@ from navi.connector_runtime import (
     ConnectorIngressRuntime,
     ConnectorMessage,
 )
+from navi.event_bus import EventBus, ResponseReadyEvent
 from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.safeguards import redact_secrets
@@ -253,12 +254,16 @@ class WeixinService:
         )
         self.context_tokens.put(account.account_id, update.peer_id, update.context_token)
         context_token = self.context_tokens.get(account.account_id, update.peer_id)
-        text = await self._handle_with_typing(update, message, context_token=context_token)
+        response = await self._handle_with_typing(update, message, context_token=context_token)
+        if not response:
+            return True
         try:
             delivery = await self._send_reply(
                 account=account,
                 peer_id=update.peer_id,
-                text=text,
+                text=response.text,
+                action=response.action,
+                facts=response.facts,
                 context_token=context_token,
             )
         except Exception as exc:
@@ -276,7 +281,7 @@ class WeixinService:
 
     async def _handle_with_typing(
         self, update: WeixinUpdate, message: ConnectorMessage, *, context_token: str
-    ) -> str:
+    ) -> "ResponseReadyEvent | None":
         typing_ticket = await self._typing_ticket(update.sender_id, context_token=context_token)
         stop_typing = asyncio.Event()
         typing_task = (
@@ -392,6 +397,8 @@ class WeixinService:
                 account=account,
                 peer_id=peer_id,
                 text=text,
+                action="chat",
+                facts={},
                 context_token=self.context_tokens.get(account.account_id, peer_id),
             )
             self.record_event(
@@ -441,6 +448,8 @@ class WeixinService:
                 account=account,
                 peer_id=task.peer_id,
                 text=text,
+                action="chat",
+                facts={},
                 context_token=self.context_tokens.get(account.account_id, task.peer_id),
             )
             self.record_event(
@@ -477,18 +486,19 @@ class WeixinService:
         account: WeixinAccount,
         peer_id: str,
         text: str,
+        action: str = "chat",
+        facts: dict = None,
         context_token: str,
     ) -> dict[str, object]:
-        import json
-        try:
-            data = json.loads(text)
-            if isinstance(data, dict) and ("media_paths" in data or "text" in data):
-                media_paths = data.get("media_paths", [])
-                cleaned_text = data.get("text", "")
-            else:
-                media_paths, cleaned_text = _extract_media_directives(text)
-        except (ValueError, TypeError):
+        facts = facts or {}
+        media_paths = []
+        cleaned_text = text
+        if action == "connector_outbound":
+            if "outbound_path" in facts:
+                media_paths.append(facts["outbound_path"])
+        else:
             media_paths, cleaned_text = _extract_media_directives(text)
+            
         sent_media = 0
         for media_path in media_paths:
             allowed_path = self._allowed_outbound_media_path(media_path)

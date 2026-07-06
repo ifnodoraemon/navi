@@ -359,8 +359,8 @@ async def test_connector_approval_command_returns_explicit_unresolved_fact(tmp_p
     finally:
         await ingress.event_bus.shutdown()
 
-    assert response.startswith("approval_not_resolved\n")
-    assert "reason=approval_code_not_found" in response
+    assert response.text.startswith("approval_not_resolved\n")
+    assert "reason=approval_code_not_found" in response.text
     assert ingress.agent.runtime.provider.calls == 0
 
 

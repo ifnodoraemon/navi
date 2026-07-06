@@ -133,6 +133,8 @@ class ResponseReadyEvent(NaviEvent):
     sender_id: str = ""
     text: str = ""
     source: str = ""
+    action: str = "chat"
+    facts: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

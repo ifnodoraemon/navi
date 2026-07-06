@@ -230,17 +230,12 @@ def _send_file_handler(home: Path, args: dict[str, Any]):
             facts={"source_path": str(source), "outbound_path": str(target)},
         )
 
-    response_payload = {
-        "text": text,
-        "media_paths": [str(target)],
-    }
-    
     return ToolResult(
         tool="connector.weixin.send_file",
         ok=True,
         terminal=True,
         action="connector_outbound",
-        message=json.dumps(response_payload),
+        message=text,
         facts={
             "entity_type": "outbound_media",
             "entity_id": str(target),

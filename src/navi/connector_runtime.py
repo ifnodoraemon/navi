@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, FrozenSet
 
 from .engine import LoopEngine
+from .engine_types import AgentTurnResult
 from .runtime import AgentRuntime
 
 if TYPE_CHECKING:
@@ -33,6 +34,68 @@ def connector_fact_text(event: str, facts: dict[str, Any]) -> str:
             value_text = str(value)
         lines.append(f"{key}={value_text}")
     return "\n".join(lines)
+
+
+def format_approval_notification(
+    home: "Path",
+    source: str,
+    approval_code: str,
+    run_id: str = "",
+) -> str:
+    """Render a human-readable approval notification using the connector's template.
+
+    Returns the rendered text, or empty string when no template is available
+    so callers can fall back to their own default.
+    """
+    from .connector_registry import load_connector_adapters
+    from .runs import RunStore
+
+    spec = None
+    raw_source = source.strip()
+    for adapter in load_connector_adapters():
+        s = adapter.spec
+        if raw_source in {s.name, s.surface, s.local_source}:
+            spec = s
+            break
+
+    if not spec or not spec.approval_template:
+        return ""
+
+    runs = RunStore(home)
+    approval = None
+    if approval_code:
+        approval = runs.pending_approval_by_code(approval_code)
+    if approval is None and run_id:
+        approval = runs.pending_approval_for_run(run_id)
+    if approval is None:
+        return ""
+
+    approve_cmd = spec.approval_approve_commands[0] if spec.approval_approve_commands else "approve"
+    reject_cmd = spec.approval_reject_commands[0] if spec.approval_reject_commands else "reject"
+
+    task_line = approval.requested_tool or approval.action or "unknown"
+    if approval.reason:
+        task_line = f"{task_line} — {approval.reason}"
+
+    expiry = ""
+    if approval.expires_at:
+        from datetime import datetime
+        try:
+            dt = datetime.fromtimestamp(approval.expires_at).astimezone()
+            expiry = f"过期时间: {dt.strftime('%Y-%m-%d %H:%M')}"
+        except (ValueError, TypeError, OSError):
+            expiry = ""
+
+    try:
+        return spec.approval_template.format(
+            task_line=task_line,
+            code=approval.code,
+            expiry=expiry,
+            approve_command=approve_cmd,
+            reject_command=reject_cmd,
+        ).strip()
+    except (KeyError, IndexError):
+        return ""
 
 
 # The remote-connector security boundary is an explicit preparation/read
@@ -295,7 +358,16 @@ class ConnectorIngressRuntime:
 
         async def on_user_intent(event: "NaviEvent") -> None:
             assert isinstance(event, UserIntentEvent)
-            text = await self._handle_with_heartbeat(event)
+            result = await self._handle_with_heartbeat(event)
+            if result:
+                text = result.surfaced_text()
+                action = result.action
+                facts = result.facts or {}
+            else:
+                text = ""
+                action = "chat"
+                facts = {}
+
             await self.event_bus.send_response(
                 ResponseReadyEvent(
                     source_agent="main_agent",
@@ -304,6 +376,8 @@ class ConnectorIngressRuntime:
                     sender_id=event.sender_id,
                     text=text,
                     source=event.source,
+                    action=action,
+                    facts=facts,
                 )
             )
 
@@ -313,7 +387,14 @@ class ConnectorIngressRuntime:
 
         async def on_action_suspended(event: "NaviEvent") -> None:
             assert isinstance(event, ActionSuspendedEvent)
-            text = f"action_suspended\nrun_id={event.run_id}\napproval_code={event.approval_code}"
+            text = format_approval_notification(
+                home=self.agent.home,
+                source=event.source,
+                approval_code=event.approval_code,
+                run_id=event.run_id,
+            )
+            if not text:
+                text = f"action_suspended\nrun_id={event.run_id}\napproval_code={event.approval_code}"
             await self.event_bus.send_response(
                 ResponseReadyEvent(
                     source_agent="governance_agent",
@@ -367,7 +448,7 @@ class ConnectorIngressRuntime:
 
         self.event_bus.subscribe("run_suspended", on_run_suspended)
 
-    async def _handle_with_heartbeat(self, event) -> str:
+    async def _handle_with_heartbeat(self, event) -> "AgentTurnResult | None":
         """Run the agent turn while emitting heartbeats so a slow-but-live turn
         is never mistaken for a stuck upstream by the router's idle timeout.
 
@@ -393,8 +474,7 @@ class ConnectorIngressRuntime:
 
         heartbeat_task = asyncio.ensure_future(beat())
         try:
-            result = await handler_task
-            return result.surfaced_text()
+            return await handler_task
         except Exception as exc:
             import logging
 
@@ -404,12 +484,10 @@ class ConnectorIngressRuntime:
                 exc,
                 exc_info=True,
             )
-            return ""
+            return None
         finally:
             heartbeat_task.cancel()
 
-    async def handle(self, message: ConnectorMessage) -> str:
-        text = await self.router.route(message)
-        from .safeguards import redact_secrets
-
-        return redact_secrets(text)
+    async def handle(self, message: ConnectorMessage) -> "ResponseReadyEvent | None":
+        response = await self.router.route(message)
+        return response
