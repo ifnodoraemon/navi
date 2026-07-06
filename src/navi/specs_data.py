@@ -374,6 +374,7 @@ SYSCALL_PLANNER_SPEC: Any = {
     ],
     "routing_rules": [
         "If a delegated task is blocked waiting for approval, you must NOT poll the state again. Use the respond capability to yield to the user and ask for approval.",
+        "If you intend to spawn a background task (e.g. via delegate.spawn), you MUST do it in the current turn before using the respond capability. Do not delay actionable work to the next turn under the pretense of waiting for user confirmation."
     ]
 }
 
