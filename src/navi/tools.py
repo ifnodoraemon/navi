@@ -152,6 +152,9 @@ class ToolResult:
     error: str = ""
     started_at: float = 0.0
     ended_at: float = 0.0
+    action: str = "tool"
+    terminal: bool = False
+    message: str = ""
 
     @property
     def duration_ms(self) -> int:
@@ -257,6 +260,9 @@ class ToolRegistry:
             ok=result.ok,
             facts=result.facts,
             error=result.error,
+            action=result.action,
+            terminal=result.terminal,
+            message=result.message,
             started_at=started_at,
             ended_at=time.time(),
         )

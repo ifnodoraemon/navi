@@ -32,6 +32,7 @@ def _load_spec() -> ConnectorSpec:
         approval_reject_commands=tuple(
             str(item) for item in approval_commands.get("reject") or ()
         ),
+        approval_template=str(raw.get("approval_template") or ""),
     )
 
 
@@ -141,19 +142,18 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
     )
     registry.register(
         ToolSpec(
-            name="connector.weixin.stage_file",
+            name="connector.weixin.send_file",
             capability_class="connector.outbound_media",
             execution_contexts=ALL_EXECUTION_CONTEXTS,
             description=(
-                "Stage a local file for Weixin outbound delivery. Returns a MEDIA directive "
-                "that a final response can include on its own line so the Weixin connector "
-                "uploads and sends the staged file."
+                "Send a file (and optional text message) to the user via Weixin. "
+                "This is a terminal action \u2014 no further tools can be called in this turn after sending."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "file_name": {"type": "string"},
+                    "text": {"type": "string", "description": "Optional text caption or message to send alongside the file."},
                 },
                 "required": ["path"],
             },
@@ -166,7 +166,6 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
                     "turn_scope": {"type": "string"},
                     "source_path": {"type": "string"},
                     "outbound_path": {"type": "string"},
-                    "media_directive": {"type": "string"},
                     "size": {"type": "integer"},
                 },
             },
@@ -175,7 +174,7 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
             permission="write",
             source=f"connector.{spec.name}",
         ),
-        lambda args: _stage_outbound_file(home, args),
+        lambda args: _send_file_handler(home, args),
     )
 
 
@@ -188,26 +187,29 @@ async def _run(home: Path, project_dir: Path, once: bool) -> None:
     await _service(home, project_dir).run(once=once)
 
 
-def _stage_outbound_file(home: Path, args: dict[str, Any]):
+def _send_file_handler(home: Path, args: dict[str, Any]):
     from navi.tools import ToolResult
-
+    import json
+    import shutil
+    
+    text = args.get("text") or ""
     raw_path = str(args.get("path") or "").strip()
     if not raw_path:
-        return ToolResult(tool="connector.weixin.stage_file", ok=False, error="path is required")
+        return ToolResult(tool="connector.weixin.send_file", ok=False, error="path is required")
     try:
         source = Path(raw_path).expanduser().resolve()
     except OSError as exc:
-        return ToolResult(tool="connector.weixin.stage_file", ok=False, error=str(exc))
+        return ToolResult(tool="connector.weixin.send_file", ok=False, error=str(exc))
     if not source.exists():
         return ToolResult(
-            tool="connector.weixin.stage_file",
+            tool="connector.weixin.send_file",
             ok=False,
             error=f"file not found: {source}",
             facts={"source_path": str(source)},
         )
     if not source.is_file():
         return ToolResult(
-            tool="connector.weixin.stage_file",
+            tool="connector.weixin.send_file",
             ok=False,
             error=f"path is not a file: {source}",
             facts={"source_path": str(source)},
@@ -222,15 +224,23 @@ def _stage_outbound_file(home: Path, args: dict[str, Any]):
         shutil.copy2(source, target)
     except OSError as exc:
         return ToolResult(
-            tool="connector.weixin.stage_file",
+            tool="connector.weixin.send_file",
             ok=False,
             error=str(exc),
             facts={"source_path": str(source), "outbound_path": str(target)},
         )
 
+    response_payload = {
+        "text": text,
+        "media_paths": [str(target)],
+    }
+    
     return ToolResult(
-        tool="connector.weixin.stage_file",
+        tool="connector.weixin.send_file",
         ok=True,
+        terminal=True,
+        action="connector_outbound",
+        message=json.dumps(response_payload),
         facts={
             "entity_type": "outbound_media",
             "entity_id": str(target),
@@ -238,7 +248,6 @@ def _stage_outbound_file(home: Path, args: dict[str, Any]):
             "turn_scope": "current",
             "source_path": str(source),
             "outbound_path": str(target),
-            "media_directive": f"MEDIA:{target}",
             "size": target.stat().st_size,
         },
     )

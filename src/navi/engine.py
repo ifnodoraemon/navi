@@ -863,7 +863,7 @@ class LoopEngine(EnginePhasesMixin):
         # Only the 'respond' capability is allowed to speak directly to the user.
         # Other tools may return 'message' for internal logging or UI hints,
         # but they must not spoof the agent's conversational text.
-        text = invoked.message if syscall.tool in ("respond", "message_user") else ""
+        text = invoked.message if syscall.tool in ("respond", "message_user", "connector.weixin.send_file") else ""
         
         result = AgentTurnResult(
             text=text,

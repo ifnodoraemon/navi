@@ -479,7 +479,16 @@ class WeixinService:
         text: str,
         context_token: str,
     ) -> dict[str, object]:
-        media_paths, cleaned_text = _extract_media_directives(text)
+        import json
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict) and ("media_paths" in data or "text" in data):
+                media_paths = data.get("media_paths", [])
+                cleaned_text = data.get("text", "")
+            else:
+                media_paths, cleaned_text = _extract_media_directives(text)
+        except (ValueError, TypeError):
+            media_paths, cleaned_text = _extract_media_directives(text)
         sent_media = 0
         for media_path in media_paths:
             allowed_path = self._allowed_outbound_media_path(media_path)
@@ -526,11 +535,22 @@ class WeixinService:
             return candidate if candidate.is_file() else None
         return None
 
-    @staticmethod
-    def _task_surface_text(task: Run) -> str:
+    def _task_surface_text(self, task: Run) -> str:
         # awaiting_approval carries the re-approval prompt (with the fresh code)
         # in result_summary; surface it verbatim rather than the empty error.
         if task.governance == "awaiting_approval" or task.resolution == "blocked":
+            from navi.connector_runtime import format_approval_notification
+            import re
+            code_match = re.search(r"approval_code=(\d+)", task.result_summary or "")
+            code = code_match.group(1) if code_match else ""
+            rendered = format_approval_notification(
+                home=self.home,
+                source=self.local_source,
+                approval_code=code,
+                run_id=task.id,
+            )
+            if rendered:
+                return rendered
             return (task.result_summary or "").strip()
         if task.phase == "ended" and task.resolution == "success":
             return (task.result_summary or "").strip()

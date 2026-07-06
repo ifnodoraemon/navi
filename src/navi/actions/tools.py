@@ -77,8 +77,9 @@ class ToolCapability:
         )
         return CapabilityResult(
             ok=result.ok,
-            action="tool",
-            message=result.error if not result.ok else "",
+            action=result.action,
+            message=result.message if result.message else (result.error if not result.ok else ""),
+            terminal=result.terminal,
             facts=facts,
             error_reason=error_reason,
         )
