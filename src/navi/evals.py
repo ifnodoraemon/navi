@@ -14,7 +14,7 @@ import yaml
 from .app_factory import build_runtime
 from .capabilities import build_capability_registry
 from .connector_registry import get_connector_adapter
-from .engine import LoopEngine
+from .control_plane import TurnController
 from .execution import ExecutionService
 from .goals import GoalStore
 from .lifecycle import Phase, Resolution
@@ -279,7 +279,7 @@ async def _run_daily_journey_simulator(
     *,
     journey: dict[str, Any],
     provider: ModelPool,
-    engine: LoopEngine,
+    engine: TurnController,
     runs: RunStore,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     simulator = journey["simulator"]
@@ -372,7 +372,7 @@ async def _run_daily_journey(
     event_bus = EventBus()
     GovernanceAgent(home, event_bus)
 
-    engine = LoopEngine(
+    engine = TurnController(
         home=home,
         runtime=runtime,
         project_dir=project_dir,

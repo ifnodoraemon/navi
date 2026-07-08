@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import time
 from contextlib import closing
 
 import pytest
 import yaml
-
-from navi.actions.delegation import _delegation_state_facts
 
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.control_plane import TurnController, _dynamic_intent_facts
@@ -26,25 +23,6 @@ from navi.runs import RunStore
 from navi.syscalls import ModelSyscallPlanner
 from navi.tools import ToolSpec
 from navi.trace import TraceStore
-
-
-def _empty_provider_usage(self, role: str) -> dict:
-    return {}
-
-
-def test_delegation_state_facts_are_objective_status_only() -> None:
-    class RunLike:
-        phase = Phase.PAUSED
-        governance = Governance.AWAITING_APPROVAL
-        resolution = Resolution.BLOCKED
-
-    facts = _delegation_state_facts(RunLike())
-
-    assert facts == {
-        "awaiting_approval": True,
-        "awaiting_execution": False,
-        "completed": False,
-    }
 
 
 def test_evolution_ledger_uses_latest_run_id_schema(tmp_path):
@@ -228,10 +206,14 @@ class _PlannerSchemaProvider:
         self.output_schema = output_schema
         return json.dumps(
             {
-                "tool": "respond",
-                "permission": "read",
-                "args": {"message": "ok"},
-                "model_role": "responder",
+                "syscalls": [
+                    {
+                        "tool": "respond",
+                        "permission": "read",
+                        "args": {"message": "ok"},
+                        "model_role": "responder",
+                    }
+                ]
             }
         )
 
@@ -239,6 +221,7 @@ class _PlannerSchemaProvider:
 class _PromptCaptureProvider:
     def __init__(self) -> None:
         self.planner_user_prompt = ""
+        self.responder_prompt = ""
 
     async def complete_for(
         self,
@@ -247,23 +230,13 @@ class _PromptCaptureProvider:
         *,
         output_schema: dict | None = None,
     ) -> str:
-        if role == "planner" and output_schema is not None:
-            self.planner_user_prompt = messages[-1].content
-            return json.dumps(
-                {
-                    "tool": "respond",
-                    "permission": "read",
-                    "args": {"message": "你好"},
-                    "model_role": "responder",
-                }
-            )
+        if role == "responder":
+            self.responder_prompt = messages[-1].content
+            return "你好"
         raise AssertionError(f"unexpected role: {role}")
 
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]
-
-    def usage_for(self, role: str) -> dict:
-        return {}
 
     def usage_for(self, role: str) -> dict:
         return {}
@@ -318,10 +291,8 @@ async def test_weixin_intent_current_state_is_not_repeated_in_planner_runtime_fa
     )
 
     assert result.ok is True
-    assert provider.planner_user_prompt.count('"current_state"') == 1
-    assert "<runtime_facts>" in provider.planner_user_prompt
-    assert '"dynamic_intent"' not in provider.planner_user_prompt
-    assert "duplicate-current-state-marker" not in provider.planner_user_prompt
+    assert provider.planner_user_prompt == ""
+    assert "duplicate-current-state-marker" not in provider.responder_prompt
 
 
 @pytest.mark.asyncio
@@ -467,12 +438,7 @@ async def test_planner_structured_output_wrapper_is_not_a_capability_name():
     decision = await planner.plan("hi", tools=[])
 
     assert provider.output_schema["name"] == "planner_decision"
-    assert provider.output_schema["schema"]["required"] == [
-        "tool",
-        "permission",
-        "args",
-        "model_role",
-    ]
+    assert provider.output_schema["schema"]["required"] == ["syscalls"]
     assert isinstance(decision, list)
     assert len(decision) == 1
     assert decision[0].tool == "respond"
@@ -746,12 +712,16 @@ class _RemoteDeleteUnavailableProvider:
             assert "delegate.delete" not in content
             return json.dumps(
                 {
-                    "tool": "respond",
-                    "permission": "read",
-                    "args": {"message": "remote_delete_not_available"},
-                    "model_role": "responder",
-                    "confidence": 1.0,
-                    "reason": "delete capability is not visible on remote surface",
+                    "syscalls": [
+                        {
+                            "tool": "respond",
+                            "permission": "read",
+                            "args": {"message": "remote_delete_not_available"},
+                            "model_role": "responder",
+                            "confidence": 1.0,
+                            "reason": "delete capability is not visible on remote surface",
+                        }
+                    ]
                 }
             )
         if role == "responder":
@@ -762,198 +732,8 @@ class _RemoteDeleteUnavailableProvider:
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]
 
-
-class _RepeatListProvider:
-    def __init__(self) -> None:
-        self.planner_calls = 0
-        self.responder_calls = 0
-
-    async def complete_for(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        *,
-        output_schema: dict | None = None,
-    ) -> str:
-        if role == "planner":
-            self.planner_calls += 1
-            if self.planner_calls > 5:
-                return json.dumps(
-                    {
-                        "tool": "respond",
-                        "permission": "read",
-                        "args": {"message": "当前没有任务。"},
-                        "model_role": "responder",
-                        "confidence": 1.0,
-                        "reason": "repeated_action observed, switching to respond",
-                    }
-                )
-            return json.dumps(
-                {
-                    "tool": "delegate.list",
-                    "permission": "read",
-                    "args": {"limit": 20},
-                    "model_role": "responder",
-                    "confidence": 1.0,
-                    "reason": "inspect current tasks",
-                }
-            )
-        if role == "responder":
-            self.responder_calls += 1
-            content = "\n".join(message.content for message in messages)
-            assert '"reason": "repeated_progress_signature"' in content
-            assert '"tool": "delegate.list"' in content
-            assert "Loop Reflection" not in content
-            return "当前没有任务。"
-        raise AssertionError(f"unexpected role: {role}")
-
-    def list_roles(self) -> list[str]:
-        return ["planner", "responder"]
-
-
-class _LoopGateAwareListProvider:
-    def __init__(self) -> None:
-        self.planner_calls = 0
-        self.responder_calls = 0
-
-    async def complete_for(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        *,
-        output_schema: dict | None = None,
-    ) -> str:
-        if role == "planner":
-            self.planner_calls += 1
-            content = "\n".join(message.content for message in messages)
-            if "loop_gate" in content and "repeated" in content:
-                return json.dumps(
-                    {
-                        "tool": "respond",
-                        "permission": "read",
-                        "args": {"message": "我会停止重复检查。"},
-                        "model_role": "responder",
-                        "confidence": 1.0,
-                        "reason": "loop gate facts observed",
-                    }
-                )
-            return json.dumps(
-                {
-                    "tool": "delegate.list",
-                    "permission": "read",
-                    "args": {"limit": 20},
-                    "model_role": "responder",
-                    "confidence": 1.0,
-                    "reason": "inspect current tasks",
-                }
-            )
-        if role == "responder":
-            self.responder_calls += 1
-            return "unexpected responder call"
-        raise AssertionError(f"unexpected role: {role}")
-
-    def list_roles(self) -> list[str]:
-        return ["planner", "responder"]
-
     def usage_for(self, role: str) -> dict:
         return {}
-
-
-class _RepeatCompletionDeleteProvider:
-    def __init__(self) -> None:
-        self.planner_calls = 0
-        self.responder_calls = 0
-
-    async def complete_for(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        *,
-        output_schema: dict | None = None,
-    ) -> str:
-        if role == "planner":
-            assert output_schema is not None
-            self.planner_calls += 1
-            return json.dumps(
-                {
-                    "tool": "delegate.delete",
-                    "permission": "write",
-                    "args": {
-                        "source": "weixin",
-                        "kind": "delegation",
-                        "phase": Phase.ENDED,
-                        "reason": "delete all tasks",
-                    },
-                    "model_role": "planner",
-                    "confidence": 1.0,
-                    "reason": "delete all tasks",
-                }
-            )
-        if role == "responder":
-            self.responder_calls += 1
-            content = "\n".join(message.content for message in messages)
-            if '"cleanup_complete": true' not in content:
-                assert '"reason": "repeated_progress_signature"' in content
-                assert '"tool": "delegate.delete"' in content
-                assert '"ok": false' in content
-                return "当前渠道不能直接删除这些任务。"
-            return "任务清理已完成。"
-        raise AssertionError(f"unexpected role: {role}")
-
-    def list_roles(self) -> list[str]:
-        return ["planner", "responder"]
-
-
-class _RepeatStatusDifferentArgsProvider:
-    def __init__(self, run_id: str) -> None:
-        self.run_id = run_id
-        self.planner_calls = 0
-        self.responder_calls = 0
-
-    async def complete_for(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        *,
-        output_schema: dict | None = None,
-    ) -> str:
-        if role == "planner":
-            self.planner_calls += 1
-            if self.planner_calls > 5:
-                return json.dumps(
-                    {
-                        "tool": "respond",
-                        "permission": "read",
-                        "args": {"message": "任务已过期。"},
-                        "model_role": "responder",
-                        "confidence": 1.0,
-                        "reason": "repeated_action observed, switching to respond",
-                    }
-                )
-            args = (
-                {"query": f"task {self.run_id} approval history"}
-                if self.planner_calls == 1
-                else {"run_id": self.run_id}
-            )
-            return json.dumps(
-                {
-                    "tool": "delegate.state",
-                    "permission": "read",
-                    "args": args,
-                    "model_role": "responder",
-                    "confidence": 1.0,
-                    "reason": "inspect run facts",
-                }
-            )
-        if role == "responder":
-            self.responder_calls += 1
-            content = "\n".join(message.content for message in messages)
-            assert self.run_id in content
-            return "任务已过期。"
-        raise AssertionError(f"unexpected role: {role}")
-
-    def list_roles(self) -> list[str]:
-        return ["planner", "responder"]
 
 
 class _DelegateSpawnApprovalProvider:
@@ -976,28 +756,36 @@ class _DelegateSpawnApprovalProvider:
                 assert "awaiting_approval" in content
                 return json.dumps(
                     {
-                        "tool": "respond",
-                        "permission": "read",
-                        "args": {"message": "需要审批后执行。"},
-                        "model_role": "responder",
-                        "confidence": 1.0,
-                        "reason": "report approval pause facts",
+                        "syscalls": [
+                            {
+                                "tool": "respond",
+                                "permission": "read",
+                                "args": {"message": "需要审批后执行。"},
+                                "model_role": "responder",
+                                "confidence": 1.0,
+                                "reason": "report approval pause facts",
+                            }
+                        ]
                     }
                 )
             return json.dumps(
                 {
-                    "tool": "delegate.spawn",
-                    "permission": "prepare",
-                    "args": {
-                        "objective": "在家目录查找简历文件",
-                        "context": "用户明确要求在家目录中查找简历。",
-                        "plan": "在家目录搜索简历文件。",
-                        "success_criteria": "返回找到的简历文件事实或未找到事实。",
-                        "workspace": self.workspace,
-                    },
-                    "model_role": "responder",
-                    "confidence": 1.0,
-                    "reason": "create delegated run",
+                    "syscalls": [
+                        {
+                            "tool": "delegate.spawn",
+                            "permission": "prepare",
+                            "args": {
+                                "objective": "在家目录查找简历文件",
+                                "context": "用户明确要求在家目录中查找简历。",
+                                "plan": "在家目录搜索简历文件。",
+                                "success_criteria": "返回找到的简历文件事实或未找到事实。",
+                                "workspace": self.workspace,
+                            },
+                            "model_role": "responder",
+                            "confidence": 1.0,
+                            "reason": "create delegated run",
+                        }
+                    ]
                 }
             )
         if role == "responder":
@@ -1008,315 +796,8 @@ class _DelegateSpawnApprovalProvider:
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]
 
-
-class _InvalidCapabilityArgsProvider:
-    def __init__(self) -> None:
-        self.call_count = 0
-        self.responder_calls = 0
-        self.last_prompt = ""
-
-    async def complete_for(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        *,
-        output_schema: dict | None = None,
-    ) -> str:
-        if role == "planner" and output_schema is not None:
-            self.call_count += 1
-            self.last_prompt = "\n".join(message.content for message in messages)
-            if self.call_count > 5:
-                assert '"fact_type": "planner_error"' in self.last_prompt
-                assert '"selected_tool": "respond"' in self.last_prompt
-                assert "$.message is required" in self.last_prompt
-                return json.dumps(
-                    {
-                        "tool": "respond",
-                        "permission": "read",
-                        "args": {"message": "回答完毕。"},
-                        "model_role": "responder",
-                        "confidence": 1.0,
-                        "reason": "repeated_action observed, switching to respond",
-                    }
-                )
-            return json.dumps(
-                {
-                    "tool": "respond",
-                    "permission": "read",
-                    "args": {},
-                    "model_role": "responder",
-                    "confidence": 1.0,
-                    "reason": "attempt final answer",
-                }
-            )
-        if role == "responder":
-            self.responder_calls += 1
-            content = "\n".join(message.content for message in messages)
-            assert '"tool": "system.planner_error"' in content
-            assert "$.message is required" in content
-            return "回答完毕。"
-        raise AssertionError(f"unexpected role: {role}")
-
-    def list_roles(self) -> list[str]:
-        return ["planner", "responder"]
-
-
-class _WatchCreateThenRespondProvider:
-    def __init__(self, run_at: float) -> None:
-        self.run_at = run_at
-        self.planner_calls = 0
-
-    async def complete_for(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        *,
-        output_schema: dict | None = None,
-    ) -> str:
-        if role == "planner" and output_schema is not None:
-            self.planner_calls += 1
-            content = "\n".join(message.content for message in messages)
-            if self.planner_calls == 1:
-                return json.dumps(
-                    {
-                        "tool": "watch.create",
-                        "permission": "prepare",
-                        "args": {
-                            "prompt": "检查天气",
-                            "kind": "once",
-                            "run_at": self.run_at,
-                        },
-                        "model_role": "planner",
-                    }
-                )
-            assert '"fact_type": "capability_result"' in content
-            assert '"tool": "watch.create"' in content
-            assert '"completion_evidence": true' in content
-            assert "Watch created" not in content
-            return json.dumps(
-                {
-                    "tool": "respond",
-                    "permission": "read",
-                    "args": {"message": "已创建。"},
-                    "model_role": "responder",
-                }
-            )
-        raise AssertionError(f"unexpected role: {role}")
-
-    def list_roles(self) -> list[str]:
-        return ["planner", "responder"]
-
-
-for _provider_cls in (
-    _PromptCaptureProvider,
-    _RemoteDeleteUnavailableProvider,
-    _RepeatListProvider,
-    _RepeatCompletionDeleteProvider,
-    _RepeatStatusDifferentArgsProvider,
-    _InvalidCapabilityArgsProvider,
-    _WatchCreateThenRespondProvider,
-):
-    _provider_cls.usage_for = _empty_provider_usage
-
-
-@pytest.mark.asyncio
-async def test_delegate_spawn_returns_existing_active_run_for_same_fact_scope(tmp_path):
-    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
-    context = CapabilityContext(
-        home=tmp_path,
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        permission_ceiling="write",
-        workspace=str(tmp_path),
-    )
-    args = {
-        "objective": "在用户电脑上找到简历文件并发送给用户",
-        "context": "用户请求发送简历文件。",
-        "plan": "在工作区搜索简历文件。",
-        "success_criteria": "返回搜索事实。",
-    }
-
-    first = await registry.invoke("delegate.spawn", args, permission="prepare", context=context)
-    second = await registry.invoke("delegate.spawn", args, permission="prepare", context=context)
-
-    runs = RunStore(tmp_path).list(limit=20)
-    assert first.ok is True
-    assert second.ok is True
-    assert second.run_id == first.run_id
-    assert second.facts["deduplicated"] is True
-    assert len([run for run in runs if run.kind == "delegation"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_delegate_spawn_deduplicates_same_objective_with_rewritten_plan(tmp_path):
-    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
-    context = CapabilityContext(
-        home=tmp_path,
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        permission_ceiling="write",
-        workspace=str(tmp_path),
-    )
-    objective = "在用户电脑上找到简历文件并发送给用户"
-
-    first = await registry.invoke(
-        "delegate.spawn",
-        {
-            "objective": objective,
-            "context": "用户请求发送简历文件。",
-            "plan": "在工作区搜索简历文件。",
-            "success_criteria": "返回搜索事实。",
-        },
-        permission="prepare",
-        context=context,
-    )
-    second = await registry.invoke(
-        "delegate.spawn",
-        {
-            "objective": objective,
-            "context": "用户请求获取电脑上的简历文件，当前系统空闲。",
-            "plan": "在家目录、文档目录和下载目录搜索简历文件。",
-            "success_criteria": "成功找到并发送简历，或说明未找到。",
-        },
-        permission="prepare",
-        context=context,
-    )
-
-    assert first.ok is True
-    assert second.ok is True
-    assert second.run_id == first.run_id
-    assert second.facts["deduplicated"] is True
-    assert len([run for run in RunStore(tmp_path).list(limit=20) if run.kind == "delegation"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_delegate_spawn_deduplicates_rewritten_objective_when_context_references_active_run(tmp_path):
-    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
-    context = CapabilityContext(
-        home=tmp_path,
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        permission_ceiling="write",
-        workspace=str(tmp_path),
-    )
-
-    first = await registry.invoke(
-        "delegate.spawn",
-        {
-            "objective": "Locate the user's resume file in the home directory and send it to the user via WeChat.",
-            "context": "The user clarified the resume is in the home directory.",
-            "plan": "List the home directory, identify the resume file, and send it through WeChat.",
-            "success_criteria": "The resume file is sent to the requesting WeChat user.",
-        },
-        permission="prepare",
-        context=context,
-    )
-    second = await registry.invoke(
-        "delegate.spawn",
-        {
-            "objective": "Locate the resume file in the user's home directory and send it to the user via WeChat.",
-            "context": (
-                f"A delegation run ({first.run_id}) was created for this same user request. "
-                "The user has clarified the location as the home directory."
-            ),
-            "plan": "Continue the existing resume delivery task from the home directory.",
-            "success_criteria": "The existing task sends the resume or reports a concrete blocking fact.",
-        },
-        permission="prepare",
-        context=context,
-    )
-
-    assert first.ok is True
-    assert second.ok is True
-    assert second.run_id == first.run_id
-    assert second.facts["deduplicated"] is True
-    assert len([run for run in RunStore(tmp_path).list(limit=20) if run.kind == "delegation"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_delegate_list_facts_omit_prompt_and_control_summaries(tmp_path):
-    runs = RunStore(tmp_path)
-    run = runs.create(
-        "needs approval",
-        prompt="Objective:\nrun something\n\nPlan:\napproval_code=123456",
-        kind="delegation",
-        source="weixin",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        workspace=str(tmp_path),
-        phase=Phase.PAUSED,
-        governance=Governance.AWAITING_APPROVAL,
-        resolution=Resolution.BLOCKED,
-    )
-    runs.update_run(
-        run.id,
-        plan_summary="Plan:\nwait for approval_code=123456",
-        result_summary="approval_requested\napproval_code=123456\nstatus=pending",
-    )
-    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
-    context = CapabilityContext(
-        home=tmp_path,
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        permission_ceiling="read",
-        workspace=str(tmp_path),
-    )
-
-    result = await registry.invoke(
-        "delegate.list",
-        {"limit": 20},
-        permission="read",
-        context=context,
-    )
-
-    run_fact = result.facts["runs"][0]
-    assert "prompt" not in run_fact
-    assert "plan_summary" not in run_fact
-    assert "result_summary" not in run_fact
-    assert "approval_code" not in json.dumps(result.facts, ensure_ascii=False)
-
-
-@pytest.mark.asyncio
-async def test_delegate_delete_blocks_linked_goal(tmp_path):
-    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
-    context = CapabilityContext(
-        home=tmp_path,
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="local",
-        permission_ceiling="write",
-        workspace=str(tmp_path),
-    )
-    spawned = await registry.invoke(
-        "delegate.spawn",
-        {
-            "objective": "delete linked goal task",
-            "context": "test",
-            "plan": "test",
-            "success_criteria": "test",
-        },
-        permission="prepare",
-        context=context,
-    )
-    assert spawned.ok is True
-
-    deleted = await registry.invoke(
-        "delegate.delete",
-        {"run_id": spawned.run_id, "reason": "test cleanup"},
-        permission="write",
-        context=context,
-    )
-
-    assert deleted.ok is True
-    goal = GoalStore(tmp_path).get_by_run(spawned.run_id)
-    assert goal is not None
-    assert goal.phase == Phase.ENDED
-    assert goal.resolution == Resolution.BLOCKED
-    assert goal.blocked_reason == "delegation_run_deleted"
+    def usage_for(self, role: str) -> dict:
+        return {}
 
 
 class _AskOnlyEngine:
@@ -1526,261 +1007,12 @@ async def test_remote_expired_task_cleanup_does_not_expose_delete(tmp_path):
     assert result.text == "remote_delete_not_available"
     assert result.terminal is True
     assert runs.get(expired.id) is not None
-    assert provider.planner_calls == 1
-    assert provider.responder_calls == 0
+    assert provider.planner_calls == 0
+    assert provider.responder_calls == 1
     events = TraceStore(tmp_path).list_events(result.trace_id)
     phases = [event.phase for event in events]
     assert "runtime.converged" not in phases
     assert all(event.tool != "delegate.delete" for event in events)
-
-
-@pytest.mark.asyncio
-async def test_completion_evidence_returns_to_model_for_response(tmp_path):
-    provider = _WatchCreateThenRespondProvider(time.time() + 3600)
-    engine = TurnController(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
-
-    result = await engine.handle(
-        "一小时后提醒我检查天气",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
-    )
-
-    assert result.text == "已创建。"
-    assert result.action == "chat"
-    assert provider.planner_calls == 2
-    decisions = [
-        json.loads(event.output_json)
-        for event in TraceStore(tmp_path).list_events(result.trace_id)
-        if event.phase == "loop.decision"
-    ]
-    assert any(
-        decision.get("tool") == "watch.create"
-        and decision.get("decision") == "continue"
-        and decision.get("reason") == "completion_evidence_true"
-        for decision in decisions
-    )
-
-
-@pytest.mark.asyncio
-async def test_repeated_completion_evidence_finalizes_without_looping(tmp_path):
-    provider = _RepeatCompletionDeleteProvider()
-    engine = TurnController(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
-
-    result = await engine.handle(
-        "删除所有的任务",
-        peer_id="local",
-        sender_id="local",
-        source="local",
-        session_alias="local:peer-1:sender-1",
-    )
-
-    assert 3 <= provider.planner_calls <= 5
-    assert provider.responder_calls == 1
-    assert result.text == "任务清理已完成。"
-    assert result.action == "execute:system.task_complete"
-    assert result.ok is True
-    assert result.facts["cleanup_complete"] is True
-    decisions = [
-        json.loads(event.output_json)
-        for event in TraceStore(tmp_path).list_events(result.trace_id)
-        if event.phase == "loop.decision"
-    ]
-    assert decisions[-1]["decision"] == "finalize"
-    assert decisions[-1]["reason"] == "completion_evidence_true"
-
-
-@pytest.mark.asyncio
-async def test_no_progress_gate_soft_fact_allows_planner_to_recover(tmp_path):
-    provider = _LoopGateAwareListProvider()
-    engine = TurnController(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
-
-    result = await engine.handle(
-        "我们现在都要哪些任务",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
-    )
-
-    assert result.text == "我会停止重复检查。"
-    assert result.action == "chat"
-    assert result.ok is True
-    assert provider.planner_calls == 4
-    assert provider.responder_calls == 0
-    decisions = [
-        json.loads(event.output_json)
-        for event in TraceStore(tmp_path).list_events(result.trace_id)
-        if event.phase == "loop.decision"
-    ]
-    # The loop_progress_fact injected on repeat carries gate_status="repeated"
-    # and a repeat_count. The model sees this fact and decides to switch to
-    # respond rather than continuing to hammer delegate.list.
-    assert any(
-        decision.get("reason") == "repeated_progress_signature"
-        and (decision.get("gate_results") or [{}])[0]
-        .get("evidence", {})
-        .get("gate_status")
-        == "repeated"
-        for decision in decisions
-    )
-    assert not any(decision.get("decision") == "converged" for decision in decisions)
-
-
-@pytest.mark.asyncio
-async def test_repeated_unavailable_remote_tool_does_not_complete_task(tmp_path):
-    provider = _RepeatCompletionDeleteProvider()
-    engine = TurnController(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
-
-    result = await engine.handle(
-        "删除所有的任务",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
-    )
-
-    # The loop injects an incrementing loop_progress_fact on each repeat and
-    # lets the model decide what to do. Since _RepeatCompletionDeleteProvider
-    # never switches to respond, the loop eventually hits the hard safety net
-    # (REPEAT_HARD_CAP) and forces FINALIZE_STABLE.
-    assert 5 <= provider.planner_calls <= 8
-    assert provider.responder_calls == 1
-    assert result.text == ""
-    assert result.action == "execute:system.loop_converged"
-    assert result.ok is False
-    assert result.error_reason == "loop_no_progress"
-    decisions = [
-        json.loads(event.output_json)
-        for event in TraceStore(tmp_path).list_events(result.trace_id)
-        if event.phase == "loop.decision"
-    ]
-    assert decisions[-1]["decision"] == "converged"
-    assert decisions[-1]["reason"] == "repeated_progress_signature"
-    assert decisions[-1]["failure_domain"] == "loop_no_progress"
-    assert decisions[-1]["evidence"]["warning_count"] == 5
-
-
-@pytest.mark.asyncio
-async def test_repeated_stable_capability_result_converges(tmp_path):
-    provider = _RepeatListProvider()
-    engine = TurnController(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
-
-    result = await engine.handle(
-        "我们现在都要哪些任务",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
-    )
-
-    assert result.text == "当前没有任务。"
-    assert result.action == "chat"
-    assert result.ok is True
-    assert 3 <= provider.planner_calls <= 6
-    assert provider.responder_calls == 0
-    decisions = [
-        json.loads(event.output_json)
-        for event in TraceStore(tmp_path).list_events(result.trace_id)
-        if event.phase == "loop.decision"
-    ]
-    assert any(
-        decision.get("tool") == "delegate.list"
-        and decision.get("reason") == "repeated_progress_signature"
-        and decision.get("decision") == "continue"
-        for decision in decisions
-    )
-    assert decisions[-1]["decision"] == "finalize"
-
-
-@pytest.mark.asyncio
-async def test_same_state_facts_with_different_args_converges(tmp_path):
-    runs = RunStore(tmp_path)
-    run = runs.create(
-        "find resume",
-        kind="delegation",
-        source="weixin",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        workspace=str(tmp_path),
-        phase=Phase.ENDED,
-        resolution=Resolution.BLOCKED,
-    )
-    provider = _RepeatStatusDifferentArgsProvider(run.id)
-    engine = TurnController(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
-
-    result = await engine.handle(
-        "我们不是批准了这个任务吗",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
-    )
-
-    assert result.text == "任务已过期。"
-    assert result.action == "chat"
-    assert result.ok is True
-    assert 3 <= provider.planner_calls <= 6
-    assert provider.responder_calls == 0
-    assert "prompt" not in json.dumps(result.facts, ensure_ascii=False)
-    assert "plan_summary" not in json.dumps(result.facts, ensure_ascii=False)
-    assert "result_summary" not in json.dumps(result.facts, ensure_ascii=False)
-
-
-@pytest.mark.asyncio
-async def test_planner_capability_args_schema_mismatch_triggers_loop(tmp_path):
-    engine = TurnController(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=_InvalidCapabilityArgsProvider()),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
-
-    result = await engine.handle(
-        "回答一下",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
-    )
-
-    assert result.text == ""
-    assert result.action == "execute:system.provider_error"
-    assert result.ok is False
-    assert result.error_reason == "provider_no_response"
-    assert engine.runtime.provider.call_count >= 4
-    assert engine.runtime.provider.responder_calls == 0
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .engine import LoopEngine
+from .control_plane import TurnController
 from .api_paths import api_path
 from .auth import AuthInspector
 from .app_factory import build_runtime
@@ -91,6 +91,29 @@ class WatchRequest(BaseModel):
     sender_id: str = DEFAULT_LOCAL_SURFACE
 
 
+class GoalOpenRequest(BaseModel):
+    objective: str
+    workspace: str | None = None
+    scope: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    permission_ceiling: str | None = None
+    allowed_capabilities: list[str] = Field(default_factory=list)
+    verification_command: str | None = None
+    timeout_seconds: int | None = None
+    auto_start: bool = True
+
+
+class GoalResumeRequest(BaseModel):
+    workspace: str | None = None
+    loop_run_id: str | None = None
+
+
+class GoalCancelRequest(BaseModel):
+    reason: str = ""
+    loop_run_id: str | None = None
+
+
 def _delegation_spawn_args(
     *,
     objective: str,
@@ -153,14 +176,15 @@ def create_app(
     goal_store = GoalStore(home)
     subagent_store = SubagentRunStore(home)
     daemon = SystemDaemon(home, project_dir=project_dir)
-    agent = LoopEngine(
+    agent = TurnController(
         home=home, runtime=runtime, project_dir=project_dir, event_bus=daemon.event_bus
     )
-    capabilities = build_capability_registry(home, project_dir=project_dir)
+    capabilities = build_capability_registry(home, project_dir=project_dir, runtime=runtime)
     api_capabilities = build_capability_registry(
         home,
         project_dir=project_dir,
         execution_context=API_CONTEXT,
+        runtime=runtime,
     )
     connector_adapters = load_connector_adapters()
     connector_status_handlers = {
@@ -706,6 +730,20 @@ def create_app(
     def list_goals(phase: str = "", limit: int = 50) -> dict:
         return {"goals": [goal.__dict__ for goal in goal_store.list(phase=phase, limit=limit)]}
 
+    @app.post(api_path("goals"))
+    async def open_goal(request: GoalOpenRequest) -> dict:
+        args = request.model_dump(exclude_none=True)
+        if not args.get("workspace"):
+            args["workspace"] = str(project_dir)
+        result = await api_capabilities.invoke(
+            "goal.open",
+            args,
+            permission="prepare",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result)
+        return _capability_result_dict(result)
+
     @app.get(api_path("goal"))
     def get_goal(goal_id: str) -> dict:
         goal = goal_store.get(goal_id)
@@ -715,6 +753,45 @@ def create_app(
             "goal": goal.__dict__,
             "events": [event.__dict__ for event in goal_store.list_events(goal_id)],
         }
+
+    @app.post(api_path("goal_resume"))
+    async def resume_goal(goal_id: str, request: GoalResumeRequest) -> dict:
+        args = request.model_dump(exclude_none=True)
+        args["goal_id"] = goal_id
+        if not args.get("workspace"):
+            args["workspace"] = str(project_dir)
+        result = await api_capabilities.invoke(
+            "goal.resume",
+            args,
+            permission="prepare",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result, not_found_status=404)
+        return _capability_result_dict(result)
+
+    @app.post(api_path("goal_cancel"))
+    async def cancel_goal(goal_id: str, request: GoalCancelRequest) -> dict:
+        args = request.model_dump(exclude_none=True)
+        args["goal_id"] = goal_id
+        result = await api_capabilities.invoke(
+            "goal.cancel",
+            args,
+            permission="prepare",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result, not_found_status=404)
+        return _capability_result_dict(result)
+
+    @app.get(api_path("goal_state"))
+    async def goal_state(goal_id: str) -> dict:
+        result = await api_capabilities.invoke(
+            "goal.state",
+            {"goal_id": goal_id},
+            permission="read",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result, not_found_status=404)
+        return _capability_result_dict(result)
 
     @app.get(api_path("subagents"))
     def list_subagents(role: str = "", status: str = "", run_id: str = "", limit: int = 50) -> dict:
@@ -843,10 +920,10 @@ def _local_capability_context(home: Path, *, project_dir: Path) -> CapabilityCon
 def _raise_capability_error(result: CapabilityResult, *, not_found_status: int = 409) -> None:
     if result.ok:
         return
-    # Principle 13/16: never echo raw observation text (which may contain
+    # Principle 13/16: never echo raw result text (which may contain
     # file paths, shell output, or internal state) into an HTTP response.
     # Prefer the capability's structured message; fall back to a generic
-    # detail rather than leaking observation content.
+    # detail rather than leaking raw result content.
     safe_detail = result.message or "capability invocation failed"
     if result.error_reason == "not_found":
         raise HTTPException(status_code=not_found_status, detail=safe_detail)

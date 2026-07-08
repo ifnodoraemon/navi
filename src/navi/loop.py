@@ -21,13 +21,11 @@ class LoopDecisionKind(StrEnum):
     FINALIZE = "finalize"
     BLOCKED = "blocked"
     FAILED = "failed"
-    REFLECT_AND_REPLAN = "reflect_and_replan"
-    PAUSE_FOR_APPROVAL = "pause_for_approval"
 
 
 class LoopReason(StrEnum):
     CAPABILITY_FAILURE = "capability_failure"
-    CAPABILITY_OBSERVATION_APPENDED = "capability_observation_appended"
+    CAPABILITY_FACT_RECORDED = "capability_fact_recorded"
     COMPLETION_CHECKER_BLOCKED = "completion_checker_blocked"
     COMPLETION_EVIDENCE_TRUE = "completion_evidence_true"
     PLANNER_OR_PARSER_FAILURE = "planner_or_parser_failure"
@@ -223,6 +221,7 @@ class LoopProgressObservation:
 class LoopProgressGate:
     seen_signatures: dict[str, int] = field(default_factory=dict)
     history: list[tuple[str, str]] = field(default_factory=list)
+    no_progress_warnings: dict[str, int] = field(default_factory=dict)
 
     def observe(self, signature: str, tool: str = "") -> LoopProgressObservation:
         normalized = signature.strip()
@@ -261,6 +260,14 @@ class LoopProgressGate:
         repeated = count >= 5
         
         return LoopProgressObservation(signature=normalized, repeated=repeated, count=count)
+
+    def record_no_progress_warning(self, signature: str) -> int:
+        normalized = signature.strip()
+        if not normalized:
+            return 0
+        warning_count = self.no_progress_warnings.get(normalized, 0) + 1
+        self.no_progress_warnings[normalized] = warning_count
+        return warning_count
 
 
 NON_OK_LOOP_DECISIONS = frozenset(

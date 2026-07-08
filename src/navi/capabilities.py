@@ -29,6 +29,7 @@ from .hooks import HookDecision, HookEvent, HookRegistry
 from .json_utils import json_schema_errors
 from .lifecycle import Governance, Phase, Resolution
 from .operating_context import PERMISSION_ORDER, permission_allows
+from .resource_gateway import GlobalResourceGateway, ResourceLimits, ResourceRequest
 from .runs import RunStore
 from .tools import TURN_CONTEXT, ToolSpec, build_tool_gateway
 from .actions.registry import ActionCapabilityProvider  # noqa: F401
@@ -77,6 +78,8 @@ class CapabilityRegistry:
         execution_context: str = TURN_CONTEXT,
         enforce_connector_source_policy: bool = True,
         governed_run_id: str | None = None,
+        sensitive_approval_mode: str = "enforce",
+        runtime: Any | None = None,
     ):
         self.home = home
         self.allow_sources = allow_sources
@@ -90,6 +93,8 @@ class CapabilityRegistry:
         # already-governed background executor sets this False so it is not
         # re-sandboxed by the surface its task happened to originate from.
         self.enforce_connector_source_policy = enforce_connector_source_policy
+        self.sensitive_approval_mode = sensitive_approval_mode
+        self.runtime = runtime
         # When set, this registry executes on behalf of an approved background
         # run. Sensitive (mutating) ops are then gated by a per-capability
         # approval: the first such op suspends the run for a fresh code instead
@@ -99,8 +104,14 @@ class CapabilityRegistry:
             home,
             project_dir=project_dir,
         )
+        self.resource_gateway = GlobalResourceGateway(ResourceLimits())
         self.providers: tuple[CapabilityProvider, ...] = (
-            ActionCapabilityProvider(home=self.home, gateway=self.gateway),
+            ActionCapabilityProvider(
+                home=self.home,
+                gateway=self.gateway,
+                runtime=self.runtime,
+                capability_registry=self,
+            ),
             ToolGatewayCapabilityProvider(self.gateway),
         )
         self.hooks = HookRegistry(home)
@@ -293,12 +304,12 @@ class CapabilityRegistry:
             )
         if self._sensitive_call_needs_approval(handler.spec, name, permission, call_args):
             if not self.governed_run_id:
-                return CapabilityResult(
-                    ok=False,
-                    action=f"execute:{name}",
-                    terminal=True,
-                    error_reason="missing_governed_run",
-                    message="Sensitive capability requires a durable governed run context to mount an approval. Ephemeral conversational turns cannot mount approvals."
+                return self._suspend_turn_for_sensitive_approval(
+                    handler.spec,
+                    name,
+                    permission,
+                    call_args,
+                    context=context,
                 )
             return self._suspend_for_sensitive_approval(
                 handler.spec,
@@ -331,6 +342,20 @@ class CapabilityRegistry:
                 observation_facts={"tool": name, "hook": blocked.hook},
                 facts=facts,
             )
+        resource_grant = self.resource_gateway.request(
+            ResourceRequest(kind=f"capability:{name}", units=1)
+        )
+        if not resource_grant.allowed:
+            return _capability_error(
+                action=f"execute:{name}",
+                error_reason=f"resource_{resource_grant.decision}",
+                message=f"resource gateway {resource_grant.decision}: {resource_grant.reason}",
+                observation_facts={
+                    "tool": name,
+                    "resource_grant": resource_grant.to_dict(),
+                },
+                terminal=False,
+            )
         started_at = time.time()
         try:
             result = await handler.invoke(call_args, permission=permission, context=context)
@@ -343,6 +368,8 @@ class CapabilityRegistry:
                 observation_facts={"tool": name, "error_type": type(exc).__name__},
                 terminal=False,
             )
+        finally:
+            self.resource_gateway.release()
         if result.ok:
             output_schema_errors = json_schema_errors(result.facts or {}, handler.spec.output_schema)
             if output_schema_errors:
@@ -384,6 +411,8 @@ class CapabilityRegistry:
         permission: str,
         call_args: dict[str, Any],
     ) -> bool:
+        if self.sensitive_approval_mode == "skip":
+            return False
         if spec.governance_exempt:
             return False
         if not spec.mutates and spec.permission != "write":
@@ -397,6 +426,118 @@ class CapabilityRegistry:
             args_json=args_json,
         )
         return approved is None
+
+    def _suspend_turn_for_sensitive_approval(
+        self,
+        spec: ToolSpec,
+        name: str,
+        permission: str,
+        call_args: dict[str, Any],
+        *,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        runs = RunStore(self.home)
+        args_json = _canonical_args_json(call_args)
+        run, approval, transition = self._active_turn_capability_approval(
+            runs,
+            name=name,
+            permission=permission,
+            args_json=args_json,
+            context=context,
+        )
+        if run is None or approval is None:
+            run = runs.create(
+                f"Approve sensitive capability {name}",
+                kind="capability_approval",
+                prompt=f"Capability approval requested for {name}",
+                source=context.source,
+                peer_id=context.peer_id,
+                sender_id=context.sender_id,
+                workspace=context.workspace,
+                phase=Phase.PAUSED,
+                governance=Governance.AWAITING_APPROVAL,
+                resolution=Resolution.BLOCKED,
+                why_now="trigger=active_turn_sensitive_capability",
+            )
+            approval = runs.create_approval(
+                run_id=run.id,
+                action=APPROVAL_ACTION_CAPABILITY,
+                source=context.source,
+                peer_id=context.peer_id,
+                sender_id=context.sender_id,
+                requested_tool=name,
+                requested_permission=permission,
+                args_json=args_json,
+                reason=f"sensitive capability requires approval: {name}",
+            )
+            run = runs.update_run(
+                run.id,
+                plan_summary=f"capability_approval:{name}:{permission}:{args_json}",
+                result_summary=_approval_visible_text(approval),
+                error="",
+            ) or run
+            transition = "created"
+        facts = {
+            CAPABILITY_REASON_KEY: CAPABILITY_REASON_SENSITIVE_APPROVAL,
+            "entity_type": "approval_request",
+            "entity_id": approval.id,
+            "state_transition": transition,
+            "turn_scope": "current",
+            "run_id": run.id,
+            "status": APPROVAL_STATUS_PENDING,
+            "requested_tool": name,
+            "requested_permission": permission,
+            "approval": {
+                "id": approval.id,
+                "run_id": approval.run_id,
+                "action": approval.action,
+                "requested_tool": approval.requested_tool,
+                "requested_permission": approval.requested_permission,
+                "code": approval.code,
+                "expires_at": approval.expires_at,
+            },
+        }
+        return CapabilityResult(
+            ok=False,
+            action=CAPABILITY_ACTION_APPROVAL,
+            message="",
+            run_id=run.id,
+            terminal=False,
+            facts=facts,
+            error_reason=CAPABILITY_REASON_SENSITIVE_APPROVAL,
+            yields_control=True,
+        )
+
+    def _active_turn_capability_approval(
+        self,
+        runs: RunStore,
+        *,
+        name: str,
+        permission: str,
+        args_json: str,
+        context: CapabilityContext,
+    ):
+        marker = f"capability_approval:{name}:{permission}:{args_json}"
+        for run in runs.list_by_phases([Phase.PAUSED, Phase.PENDING, Phase.RUNNING], limit=100):
+            if run.kind != "capability_approval":
+                continue
+            if run.source != context.source or run.peer_id != context.peer_id:
+                continue
+            if run.sender_id != context.sender_id or run.plan_summary != marker:
+                continue
+            approval = runs.pending_approval_for_run(
+                run.id,
+                source=context.source,
+                peer_id=context.peer_id,
+                sender_id=context.sender_id,
+                action=APPROVAL_ACTION_CAPABILITY,
+                requested_tool=name,
+                requested_permission=permission,
+                args_json=args_json,
+            )
+            if approval is not None:
+                return run, approval, "existing"
+        return None, None, ""
 
     def _suspend_for_sensitive_approval(
         self,
@@ -555,6 +696,19 @@ def _canonical_args_json(value: dict[str, Any]) -> str:
     return json.dumps(redact_secrets_deep(filtered), ensure_ascii=False, sort_keys=True)
 
 
+def _approval_visible_text(approval) -> str:
+    return (
+        "approval_requested\n"
+        f"run_id={approval.run_id}\n"
+        f"approval_id={approval.id}\n"
+        f"action={approval.action}\n"
+        f"approval_code={approval.code}\n"
+        f"requested_tool={approval.requested_tool}\n"
+        f"requested_permission={approval.requested_permission}\n"
+        f"status={approval.status}"
+    )
+
+
 @dataclass(frozen=True)
 class _SourcePolicyLimits:
     permission_ceiling: str
@@ -633,6 +787,7 @@ def build_capability_registry(
     execution_context: str = TURN_CONTEXT,
     enforce_connector_source_policy: bool = True,
     governed_run_id: str | None = None,
+    runtime: Any | None = None,
 ) -> CapabilityRegistry:
     return CapabilityRegistry(
         home=home,
@@ -644,4 +799,5 @@ def build_capability_registry(
         execution_context=execution_context,
         enforce_connector_source_policy=enforce_connector_source_policy,
         governed_run_id=governed_run_id,
+        runtime=runtime,
     )

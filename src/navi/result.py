@@ -118,7 +118,7 @@ class Result(Generic[T]):
 # ----------------------------------------------------------------- @guarded
 
 
-def _error_observation(*, error_reason: str, error_type: str) -> dict[str, Any]:
+def _error_facts(*, error_reason: str, error_type: str) -> dict[str, Any]:
     facts = {CAPABILITY_ERROR_REASON_KEY: error_reason, "error_type": error_type}
     return facts
 
@@ -141,7 +141,7 @@ def guarded(fn: Callable) -> Callable:
             logger.debug("capability %s failed: %s", getattr(self, "spec", ""), exc)
             from .capabilities_types import CapabilityResult
 
-            facts = _error_observation(
+            facts = _error_facts(
                 error_reason=exc.reason,
                 error_type=exc.__class__.__name__,
             )
@@ -159,7 +159,7 @@ def guarded(fn: Callable) -> Callable:
             )
             from .capabilities_types import CapabilityResult
 
-            facts = _error_observation(
+            facts = _error_facts(
                 error_reason="internal_error",
                 error_type=exc.__class__.__name__,
             )

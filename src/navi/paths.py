@@ -39,6 +39,10 @@ class DbPaths:
     memory: Path
     subagents: Path
     graph: Path
+    loop_runs: Path
+    workspace_locks: Path
+    workspaces: Path
+    vault: Path
 
 
 def db_paths(home: Path) -> DbPaths:
@@ -51,4 +55,8 @@ def db_paths(home: Path) -> DbPaths:
         memory=home / "memory.db",
         subagents=home / "subagents.db",
         graph=home / "graph.db",
+        loop_runs=home / "loop_runs.db",
+        workspace_locks=home / "workspace_locks.db",
+        workspaces=home / "workspaces.db",
+        vault=home / "vault.db",
     )

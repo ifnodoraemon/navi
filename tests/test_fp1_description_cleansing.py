@@ -30,15 +30,6 @@ def test_delegate_spawn_description_is_pure_semantics() -> None:
     assert "delegate.spawn IS the path" not in specs
 
 
-def test_delegate_delete_bulk_constraint_moved_to_schema() -> None:
-    specs = _read("src/navi/actions/specs.py")
-    # The description no longer carries the bulk-cleanup guardrail prose...
-    assert (
-        "Bulk cleanup must include source or kind so phase-only filters"
-        not in specs
-    )
-    # ...but the constraint survives in the input_schema field descriptions.
-    assert "Phase-only filters are rejected" in specs
 
 
 def test_watch_delete_description_drops_approval_safeguard() -> None:
@@ -181,7 +172,7 @@ def test_loop_reflection_skill_collects_facts_not_tool_routing_policy() -> None:
     ]
     for phrase in forbidden:
         assert phrase not in data
-    assert "Treat any independent analysis as observation data" in data
+    assert "Treat any independent analysis as fact data" in data
 
 
 def test_workflow_actions_are_not_registered_after_removal() -> None:

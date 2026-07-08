@@ -17,12 +17,12 @@ logger = logging.getLogger(__name__)
 ToolHandler = Callable[[dict[str, Any]], "Awaitable[ToolResult] | ToolResult"]
 TURN_CONTEXT = "turn"
 ACTUATOR_CONTEXT = "actuator"
-REACT_CONTEXT = "react"
+CONTROL_PLANE_CONTEXT = "control_plane"
 API_CONTEXT = "api"
 ALL_EXECUTION_CONTEXTS = (
     TURN_CONTEXT,
     ACTUATOR_CONTEXT,
-    REACT_CONTEXT,
+    CONTROL_PLANE_CONTEXT,
 )
 
 
@@ -367,10 +367,4 @@ def _register_connector_tools(registry: ToolRegistry, *, home: Path) -> None:
         adapter.register_tools(registry, home)
 
 
-def _permission_allows(required: str, ceiling: str) -> bool:
-    """Deprecated: use :func:`operating_context.permission_allows` instead.
 
-    Kept temporarily to avoid breaking imports during the permission-layer
-    migration. New code should call ``permission_allows`` directly."""
-    order = {"read": 0, "prepare": 1, "write": 2}
-    return order.get(required, 0) <= order.get(ceiling, 0)

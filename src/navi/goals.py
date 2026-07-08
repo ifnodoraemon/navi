@@ -14,7 +14,7 @@ from .paths import db_paths
 from .runs import Run
 from .schema import Column, Table, assert_schema_exact
 
-GOAL_STORE_SCHEMA_VERSION = 2
+GOAL_STORE_SCHEMA_VERSION = 3
 
 
 
@@ -48,6 +48,9 @@ class Goal:
     created_at: float
     updated_at: float
     completed_at: float
+    # Gap F: persistent task tree fields.
+    parent_goal_id: str = ""
+    task_status: str = "in_progress"
 
 
 
@@ -103,6 +106,8 @@ class GoalStore:
         stop_condition: str = "",
         timeout: float = 0.0,
         max_retries: int = 0,
+        parent_goal_id: str = "",
+        task_status: str = "in_progress",
     ) -> Goal:
         now = time.time()
         goal = Goal(
@@ -124,6 +129,8 @@ class GoalStore:
             created_at=now,
             updated_at=now,
             completed_at=0.0,
+            parent_goal_id=parent_goal_id,
+            task_status=task_status,
         )
         with connect(self.db_path) as conn:
             conn.execute(
@@ -132,9 +139,10 @@ class GoalStore:
                     id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                     workspace, run_id, trace_id, evidence_json, blocked_reason,
                     stop_condition, timeout, max_retries,
-                    created_at, updated_at, completed_at
+                    created_at, updated_at, completed_at,
+                    parent_goal_id, task_status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     goal.id,
@@ -158,6 +166,8 @@ class GoalStore:
                     goal.created_at,
                     goal.updated_at,
                     goal.completed_at,
+                    goal.parent_goal_id,
+                    goal.task_status,
                 ),
             )
         self.record_event(
@@ -177,7 +187,8 @@ class GoalStore:
                 SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
-                       created_at, updated_at, completed_at
+                       created_at, updated_at, completed_at,
+                       parent_goal_id, task_status
                 FROM goals WHERE id = ?
                 """,
                 (goal_id,),
@@ -191,7 +202,8 @@ class GoalStore:
                 SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
-                       created_at, updated_at, completed_at
+                       created_at, updated_at, completed_at,
+                       parent_goal_id, task_status
                 FROM goals WHERE run_id = ? ORDER BY updated_at DESC LIMIT 1
                 """,
                 (run_id,),
@@ -204,7 +216,8 @@ class GoalStore:
                 SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
-                       created_at, updated_at, completed_at
+                       created_at, updated_at, completed_at,
+                       parent_goal_id, task_status
                 FROM goals WHERE phase = ? ORDER BY updated_at DESC LIMIT ?
                 """
             params: tuple[Any, ...] = (phase, limit)
@@ -213,13 +226,44 @@ class GoalStore:
                 SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
-                       created_at, updated_at, completed_at
+                       created_at, updated_at, completed_at,
+                       parent_goal_id, task_status
                 FROM goals ORDER BY updated_at DESC LIMIT ?
                 """
             params = (limit,)
         with connect(self.db_path) as conn:
             rows = conn.execute(query, params).fetchall()
         return [Goal(*row) for row in rows]
+
+    def list_children(self, parent_goal_id: str, *, limit: int = 50) -> typing.List[Goal]:
+        """List child goals of *parent_goal_id* (Gap F task tree)."""
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
+                       workspace, run_id, trace_id, evidence_json, blocked_reason,
+                       stop_condition, timeout, max_retries,
+                       created_at, updated_at, completed_at,
+                       parent_goal_id, task_status
+                FROM goals WHERE parent_goal_id = ? ORDER BY created_at ASC LIMIT ?
+                """,
+                (parent_goal_id, limit),
+            ).fetchall()
+        return [Goal(*row) for row in rows]
+
+    def update_task_status(self, goal_id: str, task_status: str) -> Goal | None:
+        """Update the ``task_status`` of a goal (Gap F task tree).
+
+        ``task_status`` is the explicit lifecycle state
+        (pending/in_progress/done/blocked) that the model updates as it
+        progresses through sub-tasks.
+        """
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE goals SET task_status = ?, updated_at = ? WHERE id = ?",
+                (task_status, time.time(), goal_id),
+            )
+        return self.get(goal_id)
 
     # Events that encode durable constraint state and must survive context
     # compression (principle 12). Pending approvals, denials, rejections, and
@@ -580,6 +624,13 @@ GOALS_TABLE = Table(
         Column("stop_condition", "TEXT", nullable=False),
         Column("timeout", "REAL", nullable=False),
         Column("max_retries", "INTEGER", nullable=False),
+        # Gap F: persistent task tree. parent_goal_id enables a
+        # parent-child hierarchy so the engine can track sub-task
+        # decomposition across long-horizon tasks. task_status is the
+        # explicit lifecycle state (pending/in_progress/done/blocked)
+        # that the model updates as it progresses.
+        Column("parent_goal_id", "TEXT", nullable=False),
+        Column("task_status", "TEXT", nullable=False),
     ],
 )
 

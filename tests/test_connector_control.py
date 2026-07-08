@@ -170,6 +170,8 @@ async def test_connector_runtime_exception_surfaces_structured_fact(tmp_path):
 
 
 class ElevationProvider:
+    enable_request_router = True
+
     async def complete_for(
         self,
         role: str,
@@ -177,22 +179,38 @@ class ElevationProvider:
         **kwargs,
     ) -> str:
         prompt = "\n".join(message.content for message in messages)
+        if role == "router":
+            return json.dumps(
+                {
+                    "intent": "request_elevation",
+                    "reason": "remote request needs governed local filesystem search",
+                    "confidence": 0.99,
+                    "facts": {
+                        "target_permission": "write",
+                        "reason": "remote request needs governed local filesystem search",
+                    },
+                }
+            )
         if role == "planner":
             assert kwargs.get("output_schema") is not None
             assert "session.request_elevation" in prompt
             return json.dumps(
                 {
-                    "tool": "session.request_elevation",
-                    "permission": "read",
-                    "args": {
-                        "target_permission": "write",
-                        "reason": "remote request needs governed local filesystem search",
-                    },
-                    "model_role": "responder",
+                    "syscalls": [
+                        {
+                            "tool": "session.request_elevation",
+                            "permission": "read",
+                            "args": {
+                                "target_permission": "write",
+                                "reason": "remote request needs governed local filesystem search",
+                            },
+                            "model_role": "responder",
+                        }
+                    ]
                 }
             )
         if role == "responder":
-            assert "session_elevation_requested" in prompt
+            assert "elevation_requested" in prompt
             assert "target_permission" in prompt
             return "需要审批后才能继续。"
         raise AssertionError(f"unexpected role: {role}")
@@ -205,24 +223,27 @@ class ElevationProvider:
 
 
 class ElevatedManifestProvider:
+    enable_request_router = True
+
     async def complete_for(
         self,
         role: str,
         messages: list[ChatMessage],
         **kwargs,
     ) -> str:
-        assert role == "planner"
+        if role == "router":
+            return json.dumps(
+                {
+                    "intent": "answer_now",
+                    "reason": "approved elevation is present in current state",
+                    "confidence": 0.99,
+                    "facts": {},
+                }
+            )
+        assert role == "responder"
         prompt = "\n".join(message.content for message in messages)
-        assert "approval.request" in prompt
         assert "shell.run" not in prompt
-        return json.dumps(
-            {
-                "tool": "respond",
-                "permission": "read",
-                "args": {"message": "elevated manifest observed"},
-                "model_role": "responder",
-            }
-        )
+        return "elevated manifest observed"
 
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]

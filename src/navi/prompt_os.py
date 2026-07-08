@@ -8,6 +8,7 @@ from typing import Any
 
 from .agent_roles import list_agent_role_names, list_agent_role_specs
 from .operating_context import OperatingContext, PromptLayer, permission_allows
+from .provider import ChatMessage
 from .specs_data import SYSCALL_PLANNER_SPEC
 from .tools import ToolSpec
 
@@ -114,12 +115,6 @@ def assemble_planner_system_prompt() -> PromptAssembly:
             spec.get("routing_rules"),
         ),
         _list_block(
-            "OBSERVATION INVARIANTS",
-            "stable",
-            "syscall_planner.observation_invariants",
-            spec.get("observation_invariants"),
-        ),
-        _list_block(
             "SECURITY GUIDELINE",
             "stable",
             "syscall_planner.security_guidelines",
@@ -136,7 +131,7 @@ def assemble_planner_turn_input(
     *,
     tools: list[ToolSpec],
     conversation_context: str = "",
-    observations: list[str] | None = None,
+    runtime_facts: dict[str, Any] | None = None,
     permission_ceiling: str = "write",
     model_roles: list[str] | None = None,
     durable_constraints: str = "",
@@ -161,17 +156,6 @@ def assemble_planner_turn_input(
                 mutable=True,
             )
         )
-    if observations:
-        blocks.append(
-            PromptBlock(
-                "OBSERVED FACTS",
-                "turn_input",
-                "capability_observations",
-                f"<observed_facts>\n{chr(10).join(_join_observations(observations))}\n</observed_facts>",
-                trusted=False,
-                mutable=True,
-            )
-        )
     blocks.extend(
         [
             PromptBlock(
@@ -190,6 +174,22 @@ def assemble_planner_turn_input(
             ),
         ]
     )
+
+    if runtime_facts:
+        blocks.append(
+            PromptBlock(
+                "RUNTIME FACTS",
+                "turn_input",
+                "runtime.facts",
+                (
+                    "<runtime_facts>\n"
+                    + json.dumps(runtime_facts, ensure_ascii=False, sort_keys=True, default=str)
+                    + "\n</runtime_facts>"
+                ),
+                trusted=False,
+                mutable=True,
+            )
+        )
 
     if durable_constraints.strip():
         # Principle 12: durable constraints are reloaded from the governed memory
@@ -269,7 +269,6 @@ def assemble_fact_response_turn_input(
     *,
     user_text: str,
     facts: dict[str, Any],
-    observations: list[str],
 ) -> PromptAssembly:
     return PromptAssembly(
         "fact_response_turn_input",
@@ -290,16 +289,36 @@ def assemble_fact_response_turn_input(
                 trusted=False,
                 mutable=True,
             ),
-            PromptBlock(
-                "RECENT OBSERVATIONS",
-                "turn_input",
-                "runtime.recent_observations",
-                "\n".join(observations[-3:]),
-                trusted=False,
-                mutable=True,
-            ),
         ),
     )
+
+
+def assemble_summarizer_messages(transcript: str) -> list[ChatMessage]:
+    """Build the LLM summarizer messages used to condense older turns.
+
+    The summarizer replaces the naive 120-character truncation of older
+    messages with a semantic summary that preserves: (1) key decisions made,
+    (2) errors encountered and their context, (3) facts learned, and (4) the
+    current objective. Centralized here so all prompt text lives in one
+    module.
+    """
+    return [
+        ChatMessage(
+            role="system",
+            content=(
+                "You are a conversation summarizer. Summarize the "
+                "following conversation history, preserving: (1) key "
+                "decisions made, (2) errors encountered and their "
+                "context, (3) facts learned, (4) the current "
+                "objective. Be concise but complete. Do not invent "
+                "information not present in the transcript."
+            ),
+        ),
+        ChatMessage(
+            role="user",
+            content=f"<transcript>\n{transcript}\n</transcript>",
+        ),
+    ]
 
 
 def planner_prompt_manifest() -> dict[str, Any]:
@@ -322,11 +341,6 @@ def _numbered_block(name: str, tier: str, source: str, values: object) -> Prompt
     return PromptBlock(
         name, tier, source, "\n".join(f"{idx}. {item}" for idx, item in enumerate(items, start=1))
     )
-
-
-def _join_observations(observations: list[str]) -> list[str]:
-    joined = "\n\n".join(item for item in observations if item.strip())
-    return [joined] if joined else []
 
 
 def _responder_tier(layer_name: str) -> str:

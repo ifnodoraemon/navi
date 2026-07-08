@@ -41,13 +41,19 @@ def capability(key: str):
 
 
 def construct_capability(
-    cls: type, spec: ToolSpec, *, home: Path, project_dir: Path
+    cls: type,
+    spec: ToolSpec,
+    *,
+    home: Path,
+    project_dir: Path,
+    runtime: Any | None = None,
+    capability_registry: Any | None = None,
 ) -> Any:
     """Construct a registered capability from its ``__init__`` signature.
 
-    Only ``home`` and ``project_dir`` are conditionally passed — everything
-    else (``spec``) is positional. This keeps the registry free of per-class
-    construction metadata.
+    Common dependencies are conditionally passed by name. This keeps the
+    registry free of per-class construction metadata while still allowing a
+    capability to opt into the runtime/control-plane dependencies it needs.
     """
     params = inspect.signature(cls).parameters
     kwargs: dict[str, Any] = {}
@@ -55,6 +61,10 @@ def construct_capability(
         kwargs["home"] = home
     if "project_dir" in params:
         kwargs["project_dir"] = project_dir
+    if "runtime" in params:
+        kwargs["runtime"] = runtime
+    if "capability_registry" in params:
+        kwargs["capability_registry"] = capability_registry
     return cls(spec, **kwargs)
 
 

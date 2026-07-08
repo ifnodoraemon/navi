@@ -1,4 +1,4 @@
-from navi.engine_types import AgentTurnResult
+from navi.turn_result import AgentTurnResult
 
 
 def test_failure_surface_does_not_synthesize_user_text() -> None:

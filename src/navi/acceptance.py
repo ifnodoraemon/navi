@@ -11,7 +11,7 @@ import yaml
 from .app_factory import build_runtime
 from .connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
 from .daemon import SystemDaemon
-from .engine import AgentTurnResult, LoopEngine
+from .control_plane import AgentTurnResult, TurnController
 from .goals import GoalStore
 from .lifecycle import (
     Phase,
@@ -97,7 +97,7 @@ async def run_product_acceptance(
     known_run_ids = {run.id for run in runs.list(limit=200)}
     runtime = build_runtime(home)
     daemon = SystemDaemon(home, project_dir=workspace)
-    engine = LoopEngine(
+    engine = TurnController(
         home=home,
         runtime=runtime,
         project_dir=workspace,

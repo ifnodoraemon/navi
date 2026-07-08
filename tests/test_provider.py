@@ -10,6 +10,7 @@ from navi.provider import (
     _messages_for_response_format,
     _validate_structured_output,
 )
+from navi.resource_gateway import ResourceRequest
 
 @patch("navi.provider.resolve_model_config")
 def test_openai_provider_init(mock_resolve):
@@ -113,3 +114,24 @@ async def test_model_pool_exposes_provider_usage_by_role():
         "total_tokens": 18,
         "raw": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
     }
+
+
+@pytest.mark.asyncio
+async def test_model_pool_blocks_when_resource_gateway_pauses():
+    pool = ModelPool(default=_UsageProvider())
+    held = pool.resource_gateway.request(ResourceRequest(kind="held-llm"))
+    assert held.allowed is True
+
+    with pytest.raises(RuntimeError, match="resource gateway pause: concurrency_limit"):
+        await pool.complete_for("planner", [ChatMessage("user", "hi")])
+
+
+@pytest.mark.asyncio
+async def test_model_pool_releases_resource_gateway_after_completion():
+    pool = ModelPool(default=_UsageProvider())
+
+    first = await pool.complete_for("planner", [ChatMessage("user", "one")])
+    second = await pool.complete_for("planner", [ChatMessage("user", "two")])
+
+    assert first == "ok"
+    assert second == "ok"

@@ -61,7 +61,7 @@ async def test_remote_allows_declared_preparation_tools(tmp_path: Path) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     context = _remote_ctx(tmp_path)
     spawned = await registry.invoke(
-        "delegate.spawn",
+        "goal.open",
         {
             "objective": "Search the user's machine for resume files.",
             "context": "Remote connector requested local file access.",
@@ -115,9 +115,8 @@ def test_remote_policy_is_explicit_allowlist() -> None:
     assert REMOTE_ALLOWED_TOOLS == {
         "respond",
         "approval.resolve",
-        "delegate.spawn",
-        "delegate.list",
-        "delegate.state",
+        "goal.open",
+        "goal.state",
         "session.request_elevation",
         "tools.list",
         "watch.create",
@@ -133,13 +132,11 @@ async def test_remote_tools_list_returns_filtered_manifest(tmp_path: Path) -> No
 
     assert result.ok is True
     names = {tool["name"] for tool in (result.facts or {})["tools"]}
-    assert "delegate.spawn" in names
+    assert "goal.open" in names
     assert "tools.list" in names
     assert "approval.resolve" in names
-    assert "delegate.state" in names
+    assert "goal.state" in names
     assert "session.request_elevation" in names
-    assert "delegate.run" not in names
-    assert "delegate.delete" not in names
 
 
 @pytest.mark.asyncio

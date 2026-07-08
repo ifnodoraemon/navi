@@ -11,14 +11,15 @@ trace is evaluated.
 
 Required decision shapes:
 
-- `continue`: a capability observation was appended and the planner should take
-  another step.
+- `continue`: capability result facts were recorded and the loop remains
+  eligible for another planner step from the updated runtime context.
 - `recover`: a completion checker blocked a terminal answer and recovery facts
-  were added to observations.
+  were exposed as loop-gate facts.
 - `pause_for_approval`: the current facts require approval or an existing
   approval is already pending.
-- `converged`: the runtime detected repeated stable progress and is finalizing
-  from stable observations.
+- `converged`: the runtime detected repeated stable progress after a soft
+  no-progress gate fact was already exposed and is stopping the loop as a
+  last-resort budget/safety boundary.
 - `finalize`: terminal facts or completion evidence are sufficient to answer.
 - `blocked`: a checker or gate prevents the loop from completing.
 - `failed`: planner, provider, parser, safeguard, capability, or workflow-step
@@ -28,8 +29,8 @@ Each decision may include:
 
 - `checker_results`: fact-level completion checks such as completion evidence,
   workflow-step evidence, terminal result validity, or capability result status.
-- `gate_results`: runtime gates such as approval wait and no-progress
-  convergence.
+- `gate_results`: runtime gates such as approval wait, soft no-progress facts,
+  and last-resort no-progress convergence.
 - `failure_domain`: structured trace/eval domain such as `planner_or_parser`,
   `capability_failure`, `checker_blocked`, `approval_loop`, or `none`.
 - `progress_signature`: the stable signature used for no-progress detection.
@@ -90,6 +91,9 @@ Navi must not control loop behavior through:
 - Planner prompt rules for a specific approval state.
 - Hardcoded `respond` fallback text.
 - Visible step-budget or budget-exhausted semantics.
+- First-repeat no-progress hard termination; the first repeated progress
+  signature must be exposed as structured runtime facts so the planner can
+  choose the next declared syscall.
 - Aliases for obsolete trace failure-domain names.
 - JSON extraction from markdown fences, surrounding prose, or provider
   reasoning text for model-owned protocols.

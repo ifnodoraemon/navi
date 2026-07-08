@@ -79,9 +79,9 @@ def test_execution_log_redacts_personal_contact_fields(tmp_path: Path):
     store = RunStore(tmp_path)
     log = store.add_execution_log(
         run_id="run-1",
-        provider="react",
+        provider="control_plane",
         phase="execute",
-        command="navi react run-1",
+        command="navi control-plane run-1",
         stdout="简历 电话 15709610082 邮箱 ifnodoraemon@example.com",
         stderr="error 15709610082",
         exit_code=0,

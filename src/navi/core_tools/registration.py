@@ -12,14 +12,21 @@ from .environment import (
     _system_info,
     _test_run,
 )
-from .files import _file_read, _file_write
+from .files import (
+    _file_read,
+    _file_write,
+    _workspace_shadow_create,
+    _workspace_shadow_discard,
+    _workspace_shadow_merge,
+)
 from .hooks import _hooks_list
 from .memory import _memory_conflicts, _memory_list, _memory_recall
 from .provider import _provider_config
 from .shell import _shell_run
 from .skills import _skills_list, _skills_view
 from .tools_list import _tools_list
-from .utils import _http_fetch, _web_search
+from .utils import _http_fetch
+from .web_search import _web_search
 
 
 def _core_tool_spec(**kwargs: Any) -> ToolSpec:
@@ -281,23 +288,126 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "content": {"type": "string"},
                     "mode": {"type": "string", "default": "overwrite"},
                     "create_dirs": {"type": "boolean", "default": False},
+                    "checkpoint": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "If true and mode is overwrite, create a git-stash checkpoint before writing so the engine can backtrack (Gap G).",
+                    },
+                    "checkpoint_reason": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Optional reason recorded with the checkpoint.",
+                    },
+                    "shadow_run_id": {
+                        "type": "string",
+                        "default": "",
+                        "description": "If set, write to that run's active shadow workspace instead of the real workspace.",
+                    },
                 },
                 "required": ["path", "content"],
             },
             output_schema=_output_schema(
                 {
                     "path": {"type": "string"},
+                    "shadow_path": {"type": "string"},
+                    "shadow_run_id": {"type": "string"},
                     "mode": {"type": "string"},
                     "bytes_written": {"type": "integer"},
                     "before_size": {"type": "integer"},
                     "after_size": {"type": "integer"},
+                    "checkpoint_id": {"type": "string"},
+                    "workspace_lock": {"type": "object"},
                 }
             ),
             facts_only=True,
             mutates=True,
             permission="write",
         ),
-        lambda args: _file_write(args, project_dir=registry.project_dir),
+        lambda args: _file_write(args, project_dir=registry.project_dir, home=home),
+    )
+    registry.register(
+        _core_tool_spec(
+            name="workspace.shadow.create",
+            capability_class="workspace",
+            description="Create or return a persistent shadow workspace for a run.",
+            input_schema={
+                "type": "object",
+                "properties": {"run_id": {"type": "string"}},
+                "required": ["run_id"],
+            },
+            output_schema=_output_schema(
+                {
+                    "entity_type": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "state_transition": {"type": "string"},
+                    "turn_scope": {"type": "string"},
+                    "run_id": {"type": "string"},
+                    "real_workspace": {"type": "string"},
+                    "baseline_workspace": {"type": "string"},
+                    "shadow_workspace": {"type": "string"},
+                    "baseline_fingerprint": {"type": "string"},
+                }
+            ),
+            facts_only=True,
+            mutates=True,
+            permission="prepare",
+        ),
+        lambda args: _workspace_shadow_create(args, project_dir=registry.project_dir, home=home),
+    )
+    registry.register(
+        _core_tool_spec(
+            name="workspace.shadow.merge",
+            capability_class="workspace",
+            description="Merge a run's shadow workspace back to the real workspace with conflict artifacts.",
+            input_schema={
+                "type": "object",
+                "properties": {"run_id": {"type": "string"}},
+                "required": ["run_id"],
+            },
+            output_schema=_output_schema(
+                {
+                    "entity_type": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "state_transition": {"type": "string"},
+                    "turn_scope": {"type": "string"},
+                    "run_id": {"type": "string"},
+                    "merge_status": {"type": "string"},
+                    "conflicts": {"type": "array", "items": {"type": "string"}},
+                    "artifact_path": {"type": "string"},
+                    "completion_evidence": {"type": "boolean"},
+                }
+            ),
+            facts_only=True,
+            mutates=True,
+            permission="write",
+        ),
+        lambda args: _workspace_shadow_merge(args, home=home),
+    )
+    registry.register(
+        _core_tool_spec(
+            name="workspace.shadow.discard",
+            capability_class="workspace",
+            description="Discard a run's shadow workspace without changing the real workspace.",
+            input_schema={
+                "type": "object",
+                "properties": {"run_id": {"type": "string"}},
+                "required": ["run_id"],
+            },
+            output_schema=_output_schema(
+                {
+                    "entity_type": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "state_transition": {"type": "string"},
+                    "turn_scope": {"type": "string"},
+                    "run_id": {"type": "string"},
+                    "discarded": {"type": "boolean"},
+                }
+            ),
+            facts_only=True,
+            mutates=True,
+            permission="write",
+        ),
+        lambda args: _workspace_shadow_discard(args, home=home),
     )
     registry.register(
         _core_tool_spec(
@@ -483,18 +593,50 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="web.search",
             capability_class="web",
-            description="Search the web via DuckDuckGo Instant Answer API. Returns structured JSON with abstract, related topics, and answer.",
+            description=(
+                "Search the web and return structured result facts. Uses configured "
+                "SearXNG JSON endpoints when available, with DuckDuckGo HTML as a fallback."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query."},
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum result count, capped at 10.",
+                        "default": 5,
+                    },
+                    "categories": {
+                        "type": "string",
+                        "description": "Optional SearXNG categories parameter.",
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Optional SearXNG language parameter.",
+                    },
+                    "time_range": {
+                        "type": "string",
+                        "description": "Optional SearXNG time_range parameter.",
+                    },
                 },
                 "required": ["query"],
             },
             output_schema=_output_schema(
-                {"query": {"type": "string"}, "response": {"type": "object"}}
+                {
+                    "query": {"type": "string"},
+                    "provider": {"type": "string"},
+                    "endpoint": {"type": "string"},
+                    "source_url": {"type": "string"},
+                    "results": _array_of_objects(),
+                    "answers": {"type": "array", "items": {"type": "string"}},
+                    "corrections": {"type": "array", "items": {"type": "string"}},
+                    "suggestions": {"type": "array", "items": {"type": "string"}},
+                    "infoboxes": _array_of_objects(),
+                    "provider_errors": _array_of_objects(),
+                    "response": {"type": "object"},
+                }
             ),
-            permission="read",
+            permission="network",
         ),
         _web_search,
     )
@@ -524,7 +666,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "truncated": {"type": "boolean"},
                 }
             ),
-            permission="read",
+            permission="network",
         ),
         _http_fetch,
     )

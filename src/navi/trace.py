@@ -1252,28 +1252,6 @@ def _capability_result_is_input_schema_mismatch(event: TraceEvent) -> bool:
     return "result_action" not in facts
 
 
-def _has_approval_required_pause(events: list[TraceEvent]) -> bool:
-    for event, output in reversed(_loop_decision_events(events)):
-        summary = loop_decision_summary(
-            output,
-            event_tool=event.tool,
-            event_run_id=event.run_id,
-        )
-        if summary.decision != str(LoopDecisionKind.PAUSE_FOR_APPROVAL):
-            continue
-        if summary.reason != str(LoopReason.APPROVAL_REQUIRED):
-            continue
-        if summary.failure_domain not in {"", str(TraceFailureDomain.NONE)}:
-            continue
-        if _loop_results_include(
-            output.get("gate_results"),
-            name=str(LoopCheckName.APPROVAL_GATE),
-            passed=True,
-        ):
-            return True
-    return False
-
-
 def _loop_results_include(value: Any, *, name: str, passed: bool) -> bool:
     if not isinstance(value, list):
         return False

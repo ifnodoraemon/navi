@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +16,11 @@ from .approval_contract import (
     APPROVAL_STATUS_REJECTED,
 )
 from .lifecycle import Acceptance, Governance, Phase, Resolution
+from .loop_contracts import BudgetState, WorkspaceLock, WorkspaceState
+from .loop_runs import LoopRunState
 from .runs import Run, RunStore
 from .runs.models import Approval
+from .workspaces import ShadowWorkspaceManager, WorkspaceLockStore
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,15 @@ class CurrentState:
     workspace: str
     active_runs: tuple[Run, ...]
     pending_approvals: tuple[Approval, ...]
+    active_goals: tuple[Any, ...] = ()
+    active_loop_runs: tuple[LoopRunState, ...] = ()
+    budget_state: BudgetState = field(default_factory=BudgetState)
+    workspace_state: WorkspaceState | None = None
+    lock_state: tuple[WorkspaceLock, ...] = ()
+    provider_state: dict[str, Any] = field(default_factory=dict)
+    delegation_state: dict[str, Any] = field(default_factory=dict)
+    vault_handle_state: tuple[Any, ...] = ()
+    connector_state: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -223,6 +235,11 @@ class CurrentStateBuilder:
             )
             if run_matches_context(approval, context)
         )
+        active_goals = _active_goals(self.home, context)
+        active_loop_runs = _active_loop_runs(self.home, active_goals)
+        active_locks = WorkspaceLockStore(self.home).list_active()
+        active_shadows = _active_shadow_workspaces(self.home, context)
+        vault_handles = _vault_handles(self.home)
         return CurrentState(
             surface=context.source,
             peer_id=context.peer_id,
@@ -231,6 +248,17 @@ class CurrentStateBuilder:
             workspace=context.workspace,
             active_runs=active_runs,
             pending_approvals=pending_approvals,
+            active_goals=active_goals,
+            active_loop_runs=active_loop_runs,
+            workspace_state=_workspace_state(context, active_shadows),
+            lock_state=active_locks,
+            vault_handle_state=vault_handles,
+            connector_state={
+                "source": context.source,
+                "peer_id": context.peer_id,
+                "sender_id": context.sender_id,
+                "session_id": context.session_id or "",
+            },
         )
 
 
@@ -287,7 +315,126 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
             }
             for approval in state.pending_approvals
         ],
+        "active_goals": [_goal_facts(goal) for goal in state.active_goals],
+        "active_loop_runs": [loop_run.to_dict() for loop_run in state.active_loop_runs],
+        "goal_state": {
+            "active_goals": [_goal_facts(goal) for goal in state.active_goals],
+        },
+        "loop_run_state": {
+            "active_loop_runs": [loop_run.to_dict() for loop_run in state.active_loop_runs],
+        },
+        "approval_state": {
+            "pending_approvals": [
+                {
+                    "id": approval.id,
+                    "run_id": approval.run_id,
+                    "action": approval.action,
+                    "requested_tool": approval.requested_tool,
+                    "requested_permission": approval.requested_permission,
+                    "status": approval.status,
+                    "expires_at": approval.expires_at,
+                }
+                for approval in state.pending_approvals
+            ],
+        },
+        "budget_state": state.budget_state.to_dict(),
+        "workspace_state": state.workspace_state.to_dict() if state.workspace_state else {},
+        "lock_state": [lock.to_dict() for lock in state.lock_state],
+        "provider_state": dict(state.provider_state),
+        "delegation_state": dict(state.delegation_state),
+        "vault_handle_state": [handle.to_prompt_dict() for handle in state.vault_handle_state],
+        "connector_state": dict(state.connector_state),
     }
+
+
+def _active_goals(home: Path, context: SurfaceContext) -> tuple[Any, ...]:
+    from .goals import GoalStore
+
+    return tuple(
+        goal
+        for goal in GoalStore(home).list(limit=100)
+        if goal.phase in {Phase.PENDING, Phase.RUNNING, Phase.PAUSED}
+        and run_matches_context(goal, context)
+        and _workspace_matches(goal.workspace, context.workspace)
+    )
+
+
+def _active_loop_runs(home: Path, active_goals: tuple[Any, ...]) -> tuple[LoopRunState, ...]:
+    if not active_goals:
+        return ()
+    from .loop_runs import LoopRunStore
+
+    goal_ids = {str(goal.id) for goal in active_goals}
+    return tuple(
+        loop_run
+        for loop_run in LoopRunStore(home).list_active(limit=100)
+        if loop_run.goal_id in goal_ids
+    )
+
+
+def _active_shadow_workspaces(home: Path, context: SurfaceContext) -> tuple[Any, ...]:
+    try:
+        shadows = ShadowWorkspaceManager(home).list_shadows(status="active", limit=100)
+    except Exception:
+        return ()
+    if not context.workspace:
+        return shadows
+    return tuple(
+        shadow
+        for shadow in shadows
+        if _workspace_matches(shadow.real_workspace, context.workspace)
+    )
+
+
+def _workspace_state(context: SurfaceContext, active_shadows: tuple[Any, ...]) -> WorkspaceState | None:
+    if not context.workspace and not active_shadows:
+        return None
+    first_shadow = active_shadows[0].shadow_workspace if active_shadows else ""
+    return WorkspaceState(
+        workspace=context.workspace,
+        shadow_workspace=first_shadow,
+        shadow_workspaces=tuple(shadow.to_dict() for shadow in active_shadows),
+    )
+
+
+def _vault_handles(home: Path) -> tuple[Any, ...]:
+    try:
+        from .vault import VaultStore
+
+        return VaultStore(home).list_handles(limit=100)
+    except Exception:
+        return ()
+
+
+def _goal_facts(goal: Any) -> dict[str, Any]:
+    return {
+        "id": goal.id,
+        "objective": goal.objective,
+        "phase": goal.phase,
+        "governance": goal.governance,
+        "acceptance": goal.acceptance,
+        "resolution": goal.resolution,
+        "source": goal.source,
+        "peer_id": goal.peer_id,
+        "sender_id": goal.sender_id,
+        "session_id": goal.session_id,
+        "workspace": goal.workspace,
+        "run_id": goal.run_id,
+        "trace_id": goal.trace_id,
+        "blocked_reason": goal.blocked_reason,
+        "stop_condition": goal.stop_condition,
+        "timeout": goal.timeout,
+        "max_retries": goal.max_retries,
+        "parent_goal_id": getattr(goal, "parent_goal_id", ""),
+        "task_status": getattr(goal, "task_status", ""),
+        "updated_at": goal.updated_at,
+    }
+
+
+def _workspace_matches(record_workspace: str, context_workspace: str) -> bool:
+    if not record_workspace or not context_workspace:
+        return True
+    return record_workspace == context_workspace
 
 
 def run_matches_context(record: Any, context: Any) -> bool:

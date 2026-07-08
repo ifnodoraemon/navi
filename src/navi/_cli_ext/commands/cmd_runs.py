@@ -9,7 +9,7 @@ import uvicorn
 from navi.app_factory import build_runtime
 from navi.config import load_config
 from navi.daemon import SystemDaemon
-from navi.engine import LoopEngine
+from navi.control_plane import TurnController
 from navi.api import create_app
 from navi.capabilities import build_capability_registry
 from navi.connector_registry import load_connector_adapters
@@ -31,7 +31,7 @@ def chat() -> None:
     config = load_config(home)
     daemon = SystemDaemon(home, project_dir=Path.cwd())
     daemon.start()
-    agent = LoopEngine(
+    agent = TurnController(
         home=home,
         runtime=runtime,
         project_dir=Path.cwd(),

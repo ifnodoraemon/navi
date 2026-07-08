@@ -13,7 +13,7 @@ Core objects:
 - `PromptBlock`: one named block with tier/source/trust/mutability metadata.
 - `PromptAssembly`: an ordered set of blocks that can render text and expose a digest manifest.
 - `assemble_planner_system_prompt`: stable planner policy.
-- `assemble_planner_turn_input`: turn-scoped data, observations, roles, and tool manifest.
+- `assemble_planner_turn_input`: turn-scoped runtime facts, roles, and tool manifest.
 - `assemble_responder_system_prompt`: user-facing response synthesis layers.
 
 ## Planner System Prompt
@@ -25,7 +25,7 @@ This prompt owns syscall selection boundaries:
 - output contract
 - prompt and tool boundaries
 - generic schema, permission, and mutation constraints
-- observation invariants
+- runtime fact boundaries
 - security rules
 
 It must not contain product-flow routing, one-off fixes for a single tool result, or connector-specific recovery recipes. If a rule is needed after a capability mutates state, express it as a generic state-transition invariant or move deterministic behavior into runtime state/control-plane code.
@@ -37,7 +37,7 @@ Sources: `ModelSyscallPlanner.plan`, `assemble_planner_turn_input`
 The user message sent to the planner contains turn-scoped data:
 
 - recent conversation inside `<conversation_history>`
-- capability observations inside `<observed_facts>`
+- runtime facts inside `<runtime_facts>`
 - current user request inside `<user_message>`
 - permission ceiling
 - model role contracts
@@ -99,4 +99,4 @@ The CLI inspection command is the supported headless audit surface for these man
 
 ## Reference Pattern
 
-Hermes documents a similar separation: stable prompt layers, context layers, and volatile runtime layers are assembled in order, while API-call-time overlays remain separate from the cached system prompt. Navi follows the same idea but splits planner policy, tool manifests, observations, and responder persona more explicitly.
+Hermes documents a similar separation: stable prompt layers, context layers, and volatile runtime layers are assembled in order, while API-call-time overlays remain separate from the cached system prompt. Navi follows the same idea but splits planner policy, tool manifests, runtime facts, and responder persona more explicitly.

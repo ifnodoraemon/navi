@@ -44,18 +44,20 @@ SUBAGENT_EXECUTOR_ROLE = "executor"
 SUBAGENT_NOTIFICATION_ROLE = "notification"
 
 
-_engine_class = None
+_turn_controller_class = None
 
 
-def register_engine_class(cls: type) -> None:
-    global _engine_class
-    _engine_class = cls
+def register_turn_controller_class(cls: type) -> None:
+    global _turn_controller_class
+    _turn_controller_class = cls
 
 
-def get_engine_class() -> type:
-    if _engine_class is None:
-        raise RuntimeError("LoopEngine class has not been registered yet.")
-    return _engine_class
+def get_turn_controller_class() -> type:
+    if _turn_controller_class is None:
+        from . import control_plane  # noqa: F401
+    if _turn_controller_class is None:
+        raise RuntimeError("TurnController class has not been registered yet.")
+    return _turn_controller_class
 
 
 def _execution_failure_reason(facts: dict[str, Any]) -> str:
@@ -687,7 +689,7 @@ class ExecutionService:
 
         from .runtime import AgentRuntime
 
-        LoopEngine = get_engine_class()
+        TurnController = get_turn_controller_class()
 
         config = load_config(self.home)
         runtime = AgentRuntime(home=self.home, provider=build_provider(config.model))
@@ -717,7 +719,7 @@ class ExecutionService:
         else:
             prompt_text = task.prompt
 
-        engine = LoopEngine(
+        controller = TurnController(
             home=self.home,
             runtime=runtime,
             project_dir=_task_workspace(task),
@@ -726,7 +728,7 @@ class ExecutionService:
             enforce_connector_source_policy=False,
             governed_run_id=task.id,
         )
-        turn_result = await engine.handle(
+        turn_result = await controller.handle(
             prompt_text,
             peer_id=task.peer_id,
             sender_id=task.sender_id,
@@ -787,7 +789,7 @@ class ExecutionService:
                 "exit_code": exit_code,
                 "execution_status": execution_status,
                 "summary": turn_summary,
-                "provider": "react",
+                "provider": "control_plane",
                 "model_role": turn_result.model_role,
                 "trace_id": turn_result.trace_id,
             },
@@ -821,12 +823,12 @@ class ExecutionService:
             status=execution_status,
             summary=turn_summary[:1600] if turn_summary else "",
             reason_code=status_reason,
-            action_kind="herness_engine",
+            action_kind="control_plane",
         )
         result = ExecutionResult(
-            provider="react",
+            provider="control_plane",
             phase="execute",
-            command=["navi", "react", task.id],
+            command=["navi", "control-plane", task.id],
             stdout=turn_summary,
             stderr=status_reason if execution_status == Resolution.FAILED.value else (turn_summary if exit_code != 0 else ""),
             exit_code=exit_code,

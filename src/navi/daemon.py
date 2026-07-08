@@ -707,7 +707,7 @@ class SystemDaemon:
             "message": event.message,
             "facts": event.facts,
             "run_id": "",
-            "action": "runtime.observation",
+            "action": "runtime.fact",
             "observation": event.message,
             "workspace": workspace,
         }

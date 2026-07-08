@@ -9,7 +9,7 @@ from pathlib import Path
 import typer
 import uvicorn
 
-from .engine import LoopEngine
+from .control_plane import TurnController
 from .api import create_app
 from .app_factory import build_runtime
 from .acceptance import load_acceptance_scenario, report_to_text, run_product_acceptance
@@ -55,8 +55,15 @@ def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CO
     """Invoke a capability through the unified registry (same path the API
     takes), so CLI writes go through hook gates and schema validation."""
     home = ensure_home()
+    needs_runtime = name == "goal.resume" or (
+        name == "goal.open" and bool(args.get("auto_start", True))
+    )
+    runtime = build_runtime(home) if needs_runtime else None
     capabilities = build_capability_registry(
-        home, project_dir=Path.cwd(), execution_context=execution_context
+        home,
+        project_dir=Path.cwd(),
+        execution_context=execution_context,
+        runtime=runtime,
     )
     spec = capabilities.get(name)
     if spec is None:
@@ -114,7 +121,7 @@ def chat() -> None:
     config = load_config(home)
     daemon = SystemDaemon(home, project_dir=Path.cwd())
     daemon.start()
-    agent = LoopEngine(
+    agent = TurnController(
         home=home,
         runtime=runtime,
         project_dir=Path.cwd(),
@@ -160,7 +167,7 @@ def chat() -> None:
 
 
 async def _run_chat_turn(
-    agent: LoopEngine,
+    agent: TurnController,
     text: str,
     *,
     peer_id: str,
@@ -830,6 +837,42 @@ def goal_list(phase: str = "", limit: int = 50) -> None:
         )
 
 
+@goal_app.command("open")
+def goal_open(
+    objective: str,
+    workspace: str = typer.Option("", "--workspace", help="Workspace path for the goal."),
+    verification_command: str = typer.Option(
+        "", "--verification-command", help="Deterministic checker command."
+    ),
+    allowed_capability: list[str] | None = typer.Option(
+        None,
+        "--allowed-capability",
+        help="Capability allowed in the LoopSpec. Repeat to allow multiple capabilities.",
+    ),
+    timeout_seconds: int = typer.Option(120, "--timeout-seconds"),
+    auto_start: bool = typer.Option(True, "--auto-start/--no-auto-start"),
+) -> None:
+    """Create a durable Goal and LoopRun through the Loop control service."""
+    args: dict[str, object] = {
+        "objective": objective,
+        "timeout_seconds": timeout_seconds,
+        "auto_start": auto_start,
+    }
+    if workspace:
+        args["workspace"] = workspace
+    if verification_command:
+        args["verification_command"] = verification_command
+    if allowed_capability:
+        args["allowed_capabilities"] = allowed_capability
+    typer.echo(
+        json.dumps(
+            _invoke_capability("goal.open", args),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
 @goal_app.command("show")
 def goal_show(goal_id: str) -> None:
     """Show one durable goal and its lifecycle events."""
@@ -849,6 +892,73 @@ def goal_show(goal_id: str) -> None:
             f"- {event.event_type} phase={event.phase} governance={event.governance} "
             f"resolution={event.resolution} task={event.run_id or '-'} trace={event.trace_id or '-'}"
         )
+
+
+@goal_app.command("state")
+def goal_state(
+    goal_id: str = typer.Argument("", help="Goal id to inspect."),
+    loop_run_id: str = typer.Option("", "--loop-run-id", help="LoopRun id to inspect."),
+    limit: int = 20,
+) -> None:
+    """Show durable Goal/LoopRun control state as JSON facts."""
+    args: dict[str, object] = {"limit": limit}
+    if goal_id:
+        args["goal_id"] = goal_id
+    if loop_run_id:
+        args["loop_run_id"] = loop_run_id
+    typer.echo(
+        json.dumps(
+            _invoke_capability("goal.state", args),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+@goal_app.command("resume")
+def goal_resume(
+    goal_id: str = typer.Argument("", help="Goal id to resume."),
+    loop_run_id: str = typer.Option("", "--loop-run-id", help="LoopRun id to resume."),
+    workspace: str = typer.Option("", "--workspace", help="Workspace path."),
+) -> None:
+    """Resume a durable Goal or LoopRun from its checkpoint."""
+    args: dict[str, object] = {}
+    if goal_id:
+        args["goal_id"] = goal_id
+    if loop_run_id:
+        args["loop_run_id"] = loop_run_id
+    if workspace:
+        args["workspace"] = workspace
+    typer.echo(
+        json.dumps(
+            _invoke_capability("goal.resume", args),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+@goal_app.command("cancel")
+def goal_cancel(
+    goal_id: str = typer.Argument("", help="Goal id to cancel."),
+    loop_run_id: str = typer.Option("", "--loop-run-id", help="LoopRun id to cancel."),
+    reason: str = typer.Option("", "--reason", help="Cancellation reason."),
+) -> None:
+    """Cancel an active durable Goal or LoopRun through the StateGraph control edge."""
+    args: dict[str, object] = {}
+    if goal_id:
+        args["goal_id"] = goal_id
+    if loop_run_id:
+        args["loop_run_id"] = loop_run_id
+    if reason:
+        args["reason"] = reason
+    typer.echo(
+        json.dumps(
+            _invoke_capability("goal.cancel", args),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
 
 
 @subagent_app.command("list")

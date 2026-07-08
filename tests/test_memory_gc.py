@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import time
+
+from navi.memory.store import MemoryStore
+
+
+def _add_memory(store: MemoryStore, content: str, *, status: str, expires_at: float = 0.0):
+    return store.add_item(
+        "working",
+        content,
+        source="test",
+        status=status,
+        confidence=0.8,
+        expires_at=expires_at,
+        reason="unit test",
+        provenance="tests/test_memory_gc.py",
+    )
+
+
+def test_memory_gc_expires_active_and_archives_nonactive_items(tmp_path) -> None:
+    store = MemoryStore(tmp_path)
+    now = time.time()
+    active = _add_memory(store, "active expired", status="active", expires_at=now - 1)
+    proposed = _add_memory(store, "proposed expired", status="proposed", expires_at=now - 1)
+    retained = _add_memory(store, "active retained", status="active", expires_at=now + 60)
+
+    facts = store.garbage_collect(now=now)
+
+    active_after = store.get_item(active.id)
+    proposed_after = store.get_item(proposed.id)
+    retained_after = store.get_item(retained.id)
+    assert facts["gc"] == "working_memory"
+    assert facts["expired_count"] == 2
+    assert active_after is not None
+    assert active_after.status == "stale"
+    assert proposed_after is not None
+    assert proposed_after.status == "archived"
+    assert retained_after is not None
+    assert retained_after.status == "active"
+    assert facts["active_count"] == 1
+
+
+def test_memory_supersede_archives_old_item_with_replacement_metadata(tmp_path) -> None:
+    store = MemoryStore(tmp_path)
+    old = _add_memory(store, "old constraint", status="active")
+    replacement = _add_memory(store, "new constraint", status="active")
+
+    updated = store.supersede_item(
+        old.id,
+        replacement_item_id=replacement.id,
+        reason="newer goal constraint",
+    )
+
+    assert updated is not None
+    assert updated.status == "archived"
+    assert updated.metadata["superseded_by"] == [replacement.id]
+    assert updated.metadata["supersede_reason"] == "newer goal constraint"
+    replacement_after = store.get_item(replacement.id)
+    assert replacement_after is not None
+    assert replacement_after.status == "active"
+
+
+def test_memory_supersede_requires_existing_items_and_reason(tmp_path) -> None:
+    store = MemoryStore(tmp_path)
+    item = _add_memory(store, "old", status="active")
+
+    assert store.supersede_item(item.id, replacement_item_id="missing", reason="no replacement") is None

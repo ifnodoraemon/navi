@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, FrozenSet
 
-from .engine import LoopEngine
-from .engine_types import AgentTurnResult
+from .control_plane import TurnController
+from .turn_result import AgentTurnResult
 from .runtime import AgentRuntime
 
 if TYPE_CHECKING:
@@ -106,9 +106,8 @@ REMOTE_ALLOWED_TOOLS = frozenset(
     (
         "respond",
         "approval.resolve",
-        "delegate.spawn",
-        "delegate.list",
-        "delegate.state",
+        "goal.open",
+        "goal.state",
         "session.request_elevation",
         "tools.list",
         "watch.create",
@@ -119,7 +118,6 @@ REMOTE_ELEVATED_ALLOWED_TOOLS = frozenset(
     (
         "approval.request",
         "approval.resolve",
-        "delegate.retry",
     )
 )
 
@@ -334,7 +332,7 @@ class ConnectorIngressRuntime:
         self.tool_policy = tool_policy
         self.event_bus = event_bus or _EventBus()
         self.router = ConnectorRouter(home, self.event_bus)
-        self.agent = LoopEngine(
+        self.agent = TurnController(
             home=home,
             runtime=runtime,
             project_dir=project_dir,

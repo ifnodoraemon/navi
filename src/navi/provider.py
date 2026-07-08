@@ -18,6 +18,7 @@ from .provider_specs import (
     get_provider_spec,
     list_provider_specs as _list_provider_specs,
 )
+from .resource_gateway import GlobalResourceGateway, ResourceLimits, ResourceRequest
 
 logger = logging.getLogger(__name__)
 
@@ -362,10 +363,18 @@ class FallbackProvider:
 
 
 class ModelPool:
-    def __init__(self, *, default: ChatProvider, routes: dict[str, ChatProvider] | None = None, config: ModelConfig | None = None):
+    def __init__(
+        self,
+        *,
+        default: ChatProvider,
+        routes: dict[str, ChatProvider] | None = None,
+        config: ModelConfig | None = None,
+        resource_gateway: GlobalResourceGateway | None = None,
+    ):
         self.default = default
         self.routes = routes or {}
         self.config = config
+        self.resource_gateway = resource_gateway or GlobalResourceGateway(ResourceLimits())
         self._usage_by_role: dict[str, dict[str, Any]] = {}
 
     async def complete_for(
@@ -379,10 +388,22 @@ class ModelPool:
         params = self.config.get_role_params(role) if self.config else {}
         temperature = params.get("temperature")
         max_tokens = params.get("max_tokens")
-        result = await _complete_with_optional_schema(
-            provider, messages, output_schema=output_schema,
-            temperature=temperature, max_tokens=max_tokens
+        grant = self.resource_gateway.request(
+            ResourceRequest(
+                kind=f"llm:{role}",
+                estimated_tokens=_estimate_prompt_tokens(messages),
+                units=1,
+            )
         )
+        if not grant.allowed:
+            raise RuntimeError(f"resource gateway {grant.decision}: {grant.reason}")
+        try:
+            result = await _complete_with_optional_schema(
+                provider, messages, output_schema=output_schema,
+                temperature=temperature, max_tokens=max_tokens
+            )
+        finally:
+            self.resource_gateway.release()
         usage = provider.last_usage
         if usage is not None:
             self._usage_by_role[role] = usage.to_facts(role=role)
@@ -400,8 +421,20 @@ class ModelPool:
         params = self.config.get_role_params(role) if self.config else {}
         temperature = params.get("temperature")
         max_tokens = params.get("max_tokens")
-        async for token in provider.stream(messages, temperature=temperature, max_tokens=max_tokens):
-            yield token
+        grant = self.resource_gateway.request(
+            ResourceRequest(
+                kind=f"llm:{role}",
+                estimated_tokens=_estimate_prompt_tokens(messages),
+                units=1,
+            )
+        )
+        if not grant.allowed:
+            raise RuntimeError(f"resource gateway {grant.decision}: {grant.reason}")
+        try:
+            async for token in provider.stream(messages, temperature=temperature, max_tokens=max_tokens):
+                yield token
+        finally:
+            self.resource_gateway.release()
 
     def list_roles(self) -> list[str]:
         # "default" is this pool's own routing fallback key; the agent role names
@@ -501,6 +534,12 @@ def _first_env(names: tuple[str, ...]) -> str:
         if value:
             return value
     return ""
+
+
+def _estimate_prompt_tokens(messages: list[ChatMessage]) -> int:
+    # Cheap deterministic guardrail estimate; provider usage remains the source
+    # of truth after the call.
+    return max(1, sum(max(1, len(message.content) // 4) for message in messages))
 
 
 async def _complete_with_optional_schema(
@@ -775,11 +814,6 @@ def _extract_planner_conversation_context(content: str) -> str:
     tagged = re.search(
         r"<conversation_history>\s*(.*?)\s*</conversation_history>", content, re.DOTALL
     )
-    return tagged.group(1).strip() if tagged else ""
-
-
-def _extract_planner_observations(content: str) -> str:
-    tagged = re.search(r"<observed_facts>\s*(.*?)\s*</observed_facts>", content, re.DOTALL)
     return tagged.group(1).strip() if tagged else ""
 
 

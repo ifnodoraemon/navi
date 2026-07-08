@@ -9,8 +9,9 @@ from .tools import ToolSpec
 
 PERMISSION_ORDER = {
     "read": 0,
-    "prepare": 1,
-    "write": 2,
+    "network": 1,
+    "prepare": 2,
+    "write": 3,
 }
 
 

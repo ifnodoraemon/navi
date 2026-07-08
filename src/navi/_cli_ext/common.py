@@ -7,7 +7,7 @@ from pathlib import Path
 
 import typer
 
-from ..engine import LoopEngine
+from ..control_plane import TurnController
 from ..capabilities import CapabilityContext, build_capability_registry
 from ..connector_registry import get_connector_adapter, load_connector_adapters
 from ..paths import ensure_home
@@ -39,7 +39,7 @@ def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CO
 
 
 async def _run_chat_turn(
-    agent: LoopEngine,
+    agent: TurnController,
     text: str,
     *,
     peer_id: str,

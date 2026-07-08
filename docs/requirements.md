@@ -97,11 +97,11 @@ Keep the code small, explicit, and inspectable:
 
 - `navi.config`: load `.navi/config.yaml`, `.navi/env`, and environment overrides.
 - `navi.provider` and `navi.provider_specs`: model provider protocol plus declared provider defaults and structured-output policy.
-- `navi.runtime`, `navi.engine`, `navi.syscalls`, `navi.prompt_os`, and `navi.prompting`: bounded turn orchestration, planner/responder prompt assembly, and provider-mediated syscall selection.
+- `navi.control_plane`, `navi.turn_lifecycle`, `navi.turn_result`, `navi.runtime`, `navi.syscalls`, `navi.prompt_os`, and `navi.prompting`: bounded turn orchestration, planner/responder prompt assembly, and provider-mediated syscall selection.
 - `navi.actions.specs` and `navi.actions.*`: planner-visible action/control capability specs and handlers.
 - `navi.capabilities` and `navi.capabilities_types`: unified capability registry, permission ceilings, contexts, and result envelopes.
 - `navi.core_tools`, `navi.fact_tools`, and `navi.tools`: core fact tools, gateway loading, filtering, schema validation, and audit behavior.
-- `navi.runs`, `navi.goals`, `navi.subagents`, `navi.trace`, and `navi.recovery`: durable execution, goal, role, trace, and recovery stores.
+- `navi.runs`, `navi.goals`, `navi.subagents`, `navi.trace`, and `navi.state_graph`: durable execution, goal, role, trace, and recovery state.
 - `navi.agent_roles` and generated role specs in `navi.specs_data`: planner, responder, executor, critic, and notification role contracts with traceable evidence requirements.
 - `navi.memory`: governed memory items plus SQLite conversation sessions.
 - `navi.skills`: governed skill discovery and metadata.
@@ -289,7 +289,7 @@ runtime:
   service_name: navi.service
   local_surface: local
 execution:
-  provider: react
+  provider: control_plane
   timeout_seconds: 120.0
 ```
 
@@ -314,7 +314,19 @@ NAVI_LOCAL_SURFACE
 NAVI_AGENT_STEP_BUDGET
 NAVI_EXECUTION_PROVIDER
 NAVI_EXECUTION_TIMEOUT_SECONDS
+NAVI_WEB_SEARCH_PROVIDER
+NAVI_WEB_SEARCH_SEARXNG_URL
+NAVI_WEB_SEARCH_SEARXNG_URLS
+NAVI_WEB_SEARCH_CATEGORIES
+NAVI_WEB_SEARCH_LANGUAGE
+NAVI_WEB_SEARCH_TIME_RANGE
 ```
+
+Web search requirements:
+
+- `web.search` must return structured provider facts and result objects, not only raw search-page text.
+- Configured SearXNG JSON endpoints are the preferred web-search provider.
+- Public HTML search fallbacks are best-effort only; bot challenges, captchas, and parse failures must return explicit failure facts such as `search_provider_blocked` instead of empty successful results.
 
 Weixin connector environment:
 

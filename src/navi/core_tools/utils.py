@@ -1,10 +1,8 @@
-"""Core tool handlers."""
+"""Core utility tool handlers."""
 from __future__ import annotations
 
 from typing import Any
 from urllib.parse import urlparse
-
-from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY
 
 from .paths import _is_blocked_http_host, _is_public_http_host
 from ..tools import ToolResult
@@ -29,101 +27,6 @@ def _positive_int(value: Any, *, default: int, maximum: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, min(parsed, maximum))
-
-
-def _web_search(args: dict[str, Any]) -> ToolResult:
-    import re
-    import subprocess
-    import urllib.parse
-
-    query = args.get("query")
-    if not query:
-        return ToolResult(
-            tool="web.search",
-            ok=False,
-            error="query is required",
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "missing_required_argument",
-                "provider": "curl_bing",
-            },
-        )
-
-    encoded = urllib.parse.quote(query)
-    url = f"https://www.bing.com/search?q={encoded}"
-
-    try:
-        result = subprocess.run(
-            [
-                "curl",
-                "-sL",
-                "-A",
-                (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                url,
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            stderr = _truncate_output(result.stderr.strip(), limit=2000)
-            return ToolResult(
-                tool="web.search",
-                ok=False,
-                error=stderr or f"curl exited with status {result.returncode}",
-                facts={
-                    CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
-                    "query": query,
-                    "provider": "curl_bing",
-                    "curl_exit_code": result.returncode,
-                    "stderr": stderr,
-                },
-            )
-        html = result.stdout
-
-        html = re.sub(
-            r"<(script|style|svg|symbol|use|path).*?>.*?</\1>",
-            " ",
-            html,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        text = re.sub(r"<[^>]+>", " ", html)
-        text = re.sub(r"\s+", " ", text).strip()
-
-        facts = {
-            "query": query,
-            "provider": "curl_bing",
-            "response": {"text": text[:15000]},
-        }
-
-        return ToolResult(tool="web.search", ok=True, facts=facts)
-    except subprocess.TimeoutExpired:
-        return ToolResult(
-            tool="web.search",
-            ok=False,
-            error="search request timed out",
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_timeout",
-                "query": query,
-                "provider": "curl_bing",
-            },
-        )
-    except Exception as exc:
-        return ToolResult(
-            tool="web.search",
-            ok=False,
-            error=str(exc),
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
-                "query": query,
-                "provider": "curl_bing",
-                "error_type": type(exc).__name__,
-            },
-        )
 
 
 def _http_fetch(args: dict[str, Any]) -> ToolResult:
