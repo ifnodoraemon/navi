@@ -50,7 +50,7 @@ def test_loop_control_service_creates_human_verification_loop_without_running(tm
 
     assert result.run.phase == Phase.RUNNING
     assert result.run.resolution == Resolution.NONE
-    assert result.loop_spec.verification_ladder[0].kind == VerificationKind.HUMAN_APPROVAL
+    assert result.loop_spec.verification_ladder[0].kind == VerificationKind.LLM_CHECKER
     assert result.loop_run.terminal_state == ""
     assert result.to_facts()["completion_evidence"] is False
 

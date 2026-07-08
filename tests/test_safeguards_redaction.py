@@ -75,23 +75,6 @@ def test_personal_data_redaction_masks_contact_identifiers():
     assert "[REDACTED_EMAIL]" in redacted
 
 
-def test_execution_log_redacts_personal_contact_fields(tmp_path: Path):
-    store = RunStore(tmp_path)
-    log = store.add_execution_log(
-        run_id="run-1",
-        provider="control_plane",
-        phase="execute",
-        command="navi control-plane run-1",
-        stdout="简历 电话 15709610082 邮箱 ifnodoraemon@example.com",
-        stderr="error 15709610082",
-        exit_code=0,
-        started_at=1.0,
-        ended_at=2.0,
-    )
-
-    assert "15709610082" not in log.stdout
-    assert "ifnodoraemon@example.com" not in log.stdout
-    assert "[REDACTED_PHONE]" in log.stderr
 
 
 def test_action_capability_audit_log_redacts_args(tmp_path: Path):

@@ -161,7 +161,7 @@ async def _run_journey(
             continue
         before_sent = len(getattr(service.client, "sent", []))
         before_runs = len(runs.list(limit=500))
-        before_watches = len(runs.list_watches(limit=500))
+        before_watches = len(GoalStore(home).list_cron_goals())
         expect = step.get("expect") or {}
         if "seed_failed_run" in step:
             seed = step.get("seed_failed_run") or {}
@@ -170,7 +170,7 @@ async def _run_journey(
                 prompt=str(seed.get("prompt") or seed.get("title") or "failed connector eval task"),
                 phase=Phase.ENDED,
                 resolution=Resolution.FAILED,
-                source=str(seed.get("source") or "watch"),
+                source=str(seed.get("source") or "cron"),
                 kind=str(seed.get("kind") or "delegation"),
                 peer_id="connector-eval-peer",
                 sender_id="connector-eval-sender",
@@ -265,19 +265,19 @@ def _match_expectation(
                 f"{prefix}: run_count_delta expected {expect['run_count_delta']!r}, got {delta!r}"
             )
     if "watch_count_delta" in expect:
-        delta = len(runs.list_watches(limit=500)) - before_watch_count
+        delta = len(GoalStore(home).list_cron_goals()) - before_watch_count
         if delta != int(expect["watch_count_delta"]):
             errors.append(
                 f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}"
             )
     if "watch_kind" in expect:
-        watches = runs.list_watches(limit=1)
-        actual = watches[0].kind if watches else ""
+        watches = GoalStore(home).list_cron_goals()
+        actual = watches[0].objective if watches else ""
         if actual != str(expect["watch_kind"]):
             errors.append(f"{prefix}: watch_kind expected {expect['watch_kind']!r}, got {actual!r}")
     if "watch_cron" in expect:
-        watches = runs.list_watches(limit=1)
-        actual = watches[0].cron if watches else ""
+        watches = GoalStore(home).list_cron_goals()
+        actual = watches[0].cron_schedule if watches else ""
         if actual != str(expect["watch_cron"]):
             errors.append(f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}")
     if "failed_run_count" in expect:

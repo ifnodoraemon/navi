@@ -24,6 +24,7 @@ from .loop_contracts import (
 )
 from .loop_runs import LoopCheckpoint, LoopRunStore
 
+from .provider import ChatMessage, ModelPool
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
 from .resource_gateway import GlobalResourceGateway, ResourceGrant, ResourceLimits, ResourceRequest
@@ -102,6 +103,46 @@ class ReflectionDecision:
         }
 
 
+
+class CapabilityRecoveryPort:
+    """Recovery node port that turns failed capability executions into retry facts."""
+
+    def recover(
+        self,
+        spec: LoopSpec,
+        state: LoopRunState,
+        *,
+        executed: ExecutedCapabilityStep,
+    ) -> ReflectionDecision:
+        recovery_facts = {
+            "trigger": "capability.failed",
+            "reason_code": "execution_failed",
+            "blocked": False,
+            "failure_domain": "executor",
+            "loop_run_id": state.run_id,
+            "attempt": state.attempt,
+            "goal_id": spec.goal_id,
+            "error_reason": executed.error_reason,
+            "message": executed.message,
+            "facts": executed.facts,
+        }
+        return ReflectionDecision(
+            retry=state.attempt < spec.retry_policy.max_attempts,
+            reason_code="execution_failed",
+            facts={
+                "recovery": recovery_facts,
+                "recovery_fact": json.dumps(
+                    {
+                        "fact_type": "capability_execution_failed",
+                        "facts": recovery_facts,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ),
+            },
+        )
+
 class RecoveryReflectorPort:
     """Reflector node port that turns failed evidence into retry facts."""
 
@@ -144,6 +185,170 @@ class RecoveryReflectorPort:
         )
 
 
+class LLMReflectorPort:
+    """Agentic reflector: asks the LLM whether the goal is achieved.
+
+    This replaces the deterministic ``retry = attempt < max`` rule with an
+    LLM judgement. The LLM sees:
+      - the user's objective
+      - the last capability execution (tool, args, ok, facts, message)
+      - the attempt count and remaining budget
+    and returns a structured decision:
+      - ``goal_achieved`` (bool) — has the user's objective been satisfied?
+      - ``should_continue`` (bool) — is it worth trying another capability?
+      - ``next_step_hint`` (str) — a concrete suggestion for the next plan
+        (which tool to try, what to search for, what to ask the user)
+      - ``user_message`` (str) — what to tell the user right now
+    """
+
+    def __init__(self, *, runtime: AgentRuntime):
+        self.runtime = runtime
+
+    _OUTPUT_SCHEMA = {
+        "name": "reflection_decision",
+        "strict": False,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "goal_achieved": {"type": "boolean"},
+                "should_continue": {"type": "boolean"},
+                "next_step_hint": {"type": "string"},
+                "user_message": {"type": "string"},
+            },
+            "required": [
+                "goal_achieved",
+                "should_continue",
+                "next_step_hint",
+                "user_message",
+            ],
+            "additionalProperties": False,
+        },
+    }
+
+    async def assess(
+        self,
+        spec: LoopSpec,
+        state: LoopRunState,
+        *,
+        executed: ExecutedCapabilityStep,
+        evidence: dict[str, Any],
+    ) -> ReflectionDecision:
+        """Judge whether the goal is achieved after a capability execution."""
+        decision = await self._ask_llm(spec, state, executed=executed)
+        max_attempts = spec.retry_policy.max_attempts
+        if decision.goal_achieved:
+            return ReflectionDecision(
+                retry=False,
+                reason_code="goal_achieved",
+                facts={
+                    "goal_achieved": True,
+                    "user_message": decision.user_message,
+                    "next_step_hint": decision.next_step_hint,
+                },
+            )
+        if not decision.should_continue or state.attempt >= max_attempts:
+            return ReflectionDecision(
+                retry=False,
+                reason_code="no_route_available",
+                facts={
+                    "goal_achieved": False,
+                    "should_continue": decision.should_continue,
+                    "attempt": state.attempt,
+                    "max_attempts": max_attempts,
+                    "user_message": decision.user_message,
+                    "next_step_hint": decision.next_step_hint,
+                },
+            )
+        return ReflectionDecision(
+            retry=True,
+            reason_code="new_route_available",
+            facts={
+                "goal_achieved": False,
+                "should_continue": True,
+                "attempt": state.attempt,
+                "max_attempts": max_attempts,
+                "user_message": decision.user_message,
+                "next_step_hint": decision.next_step_hint,
+            },
+        )
+
+    async def _ask_llm(
+        self,
+        spec: LoopSpec,
+        state: LoopRunState,
+        *,
+        executed: ExecutedCapabilityStep,
+    ) -> "_LLMReflection":
+        system_prompt = (
+            "You are Navi's reflection agent. After each capability execution, "
+            "judge whether the user's objective has been achieved.\n\n"
+            "Rules:\n"
+            "- goal_achieved=true ONLY when the last capability result concretely "
+            "satisfies the objective (e.g. the file was actually sent).\n"
+            "- If the last capability returned empty/no-op results, the goal is "
+            "NOT achieved — set should_continue=true and propose a DIFFERENT "
+            "capability in next_step_hint (e.g. search the filesystem, ask the "
+            "user for the file name).\n"
+            "- If you have exhausted reasonable approaches, set "
+            "should_continue=false and explain what the user should do.\n"
+            "- user_message is what Navi sends to the user right now. Be concise, "
+            "honest, and actionable. Never say 'I cannot do this' if another tool "
+            "could help.\n"
+        )
+        user_prompt = json.dumps(
+            {
+                "objective": spec.goal.objective,
+                "attempt": state.attempt,
+                "max_attempts": spec.retry_policy.max_attempts,
+                "last_capability": {
+                    "tool": "n/a",
+                    "ok": executed.ok,
+                    "action": executed.action,
+                    "facts": executed.facts,
+                    "message": executed.message,
+                    "error_reason": executed.error_reason,
+                },
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        response = await self.runtime.provider.complete_for(
+            "reflector",
+            [
+                ChatMessage("system", system_prompt),
+                ChatMessage("user", user_prompt),
+            ],
+            output_schema=self._OUTPUT_SCHEMA,
+        )
+        return self._parse(response)
+
+    @staticmethod
+    def _parse(response: str) -> "_LLMReflection":
+        try:
+            data = json.loads(response)
+        except json.JSONDecodeError:
+            return _LLMReflection(
+                goal_achieved=False,
+                should_continue=False,
+                next_step_hint="",
+                user_message="",
+            )
+        return _LLMReflection(
+            goal_achieved=bool(data.get("goal_achieved", False)),
+            should_continue=bool(data.get("should_continue", False)),
+            next_step_hint=str(data.get("next_step_hint", "")),
+            user_message=str(data.get("user_message", "")),
+        )
+
+
+@dataclass(frozen=True)
+class _LLMReflection:
+    goal_achieved: bool
+    should_continue: bool
+    next_step_hint: str
+    user_message: str
+
+
 class ModelCapabilityPlannerPort:
     """Planner node port for the durable StateGraph.
 
@@ -179,7 +384,7 @@ class ModelCapabilityPlannerPort:
                 permission_ceiling=spec.goal.permission_ceiling,
                 context=context,
             )
-            if item.name in allowed
+            if "*" in allowed or item.name in allowed
         ]
         if not tools:
             return PlannedCapabilityStep(
@@ -197,6 +402,7 @@ class ModelCapabilityPlannerPort:
                 "loop_spec": spec.to_dict(),
                 "loop_run_state": state.to_dict(),
                 "objective_evidence": dict(evidence),
+                "attempt_history": list(evidence.get("attempt_history") or []),
             },
             permission_ceiling=spec.goal.permission_ceiling,
             model_roles=self.runtime.model_roles(),
@@ -269,6 +475,8 @@ class DurableStateGraphRunner:
         planner_port: ModelCapabilityPlannerPort | None = None,
         executor_port: CapabilityExecutorPort | None = None,
         reflector_port: RecoveryReflectorPort | None = None,
+        recovery_port: CapabilityRecoveryPort | None = None,
+        llm_reflector_port: LLMReflectorPort | None = None,
     ):
         self.home = home
         self.store = LoopRunStore(home)
@@ -278,6 +486,8 @@ class DurableStateGraphRunner:
         self.planner_port = planner_port
         self.executor_port = executor_port
         self.reflector_port = reflector_port or RecoveryReflectorPort()
+        self.recovery_port = recovery_port or CapabilityRecoveryPort()
+        self.llm_reflector_port = llm_reflector_port
 
     def run(
         self,
@@ -312,6 +522,9 @@ class DurableStateGraphRunner:
             return StateGraphRunResult(run_state=state, evidence=evidence or {})
 
         collected_evidence: dict[str, Any] = dict(evidence or {})
+        attempt_history: list[dict[str, Any]] = list(
+            collected_evidence.get("attempt_history") or []
+        )
         grants: list[ResourceGrant] = []
         harness_results: list[HarnessResult] = []
         checker_report: CheckerReport | None = None
@@ -415,6 +628,19 @@ class DurableStateGraphRunner:
                 workspace=execution_workspace,
             )
             collected_evidence["capability_result"] = executed.to_dict()
+            attempt_history.append(
+                {
+                    "attempt": state.attempt,
+                    "tool": planned_step.tool,
+                    "args": dict(planned_step.args),
+                    "ok": executed.ok,
+                    "action": executed.action,
+                    "facts": dict(executed.facts),
+                    "message": executed.message,
+                    "error_reason": executed.error_reason,
+                }
+            )
+            collected_evidence["attempt_history"] = attempt_history
             if not executed.ok:
                 self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
                 state = self._transition(
@@ -423,19 +649,36 @@ class DurableStateGraphRunner:
                     condition="capability_failed",
                     evidence=executed.to_dict(),
                 )
-                state = self._transition(
-                    state,
-                    node=LoopNode.REFLECT,
-                    condition="checker_rejected",
-                    terminal_state=LoopTerminalState.FAILED,
-                    evidence={"reason": "executor_capability_failed"},
-                )
-                self.gateway.release()
-                return StateGraphRunResult(
-                    run_state=state,
-                    resource_grants=tuple(grants),
-                    evidence=collected_evidence,
-                )
+                decision = self.recovery_port.recover(spec, state, executed=executed)
+                collected_evidence["reflection"] = decision.to_dict()
+                if decision.retry:
+                    state = self._transition(
+                        state,
+                        node=LoopNode.PLAN,
+                        condition="new_route_available",
+                        evidence=decision.to_dict(),
+                    )
+                    self.gateway.release()
+                    return await self.run_async(
+                        spec,
+                        workspace=workspace,
+                        run_id=state.run_id,
+                        evidence=collected_evidence,
+                    )
+                else:
+                    state = self._transition(
+                        state,
+                        node=LoopNode.REFLECT,
+                        condition="no_route_available",
+                        terminal_state=LoopTerminalState.FAILED,
+                        evidence=decision.to_dict(),
+                    )
+                    self.gateway.release()
+                    return StateGraphRunResult(
+                        run_state=state,
+                        resource_grants=tuple(grants),
+                        evidence=collected_evidence,
+                    )
             state = self._transition(
                 state,
                 node=LoopNode.EVALUATE,
@@ -445,7 +688,7 @@ class DurableStateGraphRunner:
             self.gateway.release()
 
         if state.node == LoopNode.EVALUATE:
-            result = self._evaluate_state(
+            result = await self._evaluate_state(
                 spec,
                 state,
                 workspace=workspace,
@@ -482,7 +725,7 @@ class DurableStateGraphRunner:
         if shadow_workspace is not None and spec.rollback_policy.discard_shadow_on_failure:
             self.harness.discard_shadow_run(run_id)
 
-    def _evaluate_state(
+    async def _evaluate_state(
         self,
         spec: LoopSpec,
         state: LoopRunState,
@@ -563,6 +806,96 @@ class DurableStateGraphRunner:
 
         checker_report = self.checker.evaluate(spec, collected_evidence)
         if checker_report.accepted:
+            has_required_steps = any(step.required for step in spec.verification_ladder)
+            cap_result = collected_evidence.get("capability_result", {})
+            is_terminal = isinstance(cap_result, dict) and cap_result.get("terminal", False)
+            # Agentic reflection: for goals without required verification steps,
+            # ask the LLM whether the objective is achieved. The LLM decides
+            # whether to converge, retry with a new plan, or block with a user
+            # message. This is the "never give up" loop — the LLM keeps trying
+            # different capabilities (search filesystem, ask user, send file)
+            # until the objective is concretely satisfied or the attempt budget
+            # is exhausted.
+            if not has_required_steps and not is_terminal and self.llm_reflector_port is not None:
+                executed_step = ExecutedCapabilityStep(
+                    ok=cap_result.get("ok", False) if isinstance(cap_result, dict) else False,
+                    action=cap_result.get("action", "") if isinstance(cap_result, dict) else "",
+                    facts=cap_result.get("facts", {}) if isinstance(cap_result, dict) else {},
+                    message=cap_result.get("message", "") if isinstance(cap_result, dict) else "",
+                    error_reason=cap_result.get("error_reason", "") if isinstance(cap_result, dict) else "",
+                )
+                decision = await self.llm_reflector_port.assess(
+                    spec, state, executed=executed_step, evidence=collected_evidence
+                )
+                collected_evidence["reflection"] = decision.to_dict()
+                if decision.retry:
+                    state = self._transition(
+                        state,
+                        node=LoopNode.PLAN,
+                        condition="continue_iteration",
+                        evidence={"reason": "non_terminal_capability", "attempt": state.attempt},
+                    )
+                    return StateGraphRunResult(
+                        run_state=state,
+                        checker_report=checker_report,
+                        resource_grants=tuple(grants),
+                        harness_results=tuple(harness_results),
+                        evidence=collected_evidence,
+                    )
+                # Goal achieved or no more routes — converge or block.
+                if decision.facts.get("goal_achieved"):
+                    # Merge the shadow workspace into the real workspace before
+                    # converging, so the capability's side effects land on disk.
+                    if shadow_workspace is not None:
+                        merge_lock = self.harness.acquire_workspace_lock(
+                            owner_run_id=state.run_id,
+                            resource=_workspace_lock_resource(workspace),
+                            mode=LockMode.WRITE,
+                        )
+                        try:
+                            self.harness.merge_shadow_run(state.run_id)
+                        finally:
+                            if merge_lock.acquired:
+                                self.harness.release_workspace_locks(
+                                    owner_run_id=state.run_id,
+                                    resource=_workspace_lock_resource(workspace),
+                                )
+                    state = self._transition(
+                        state,
+                        node=LoopNode.EVALUATE,
+                        condition="checker_passed",
+                        terminal_state=LoopTerminalState.CONVERGED,
+                        evidence=decision.to_dict(),
+                    )
+                else:
+                    state = self._transition(
+                        state,
+                        node=LoopNode.EVALUATE,
+                        condition="no_route_available",
+                        terminal_state=LoopTerminalState.BLOCKED,
+                        evidence=decision.to_dict(),
+                    )
+                return StateGraphRunResult(
+                    run_state=state,
+                    checker_report=checker_report,
+                    resource_grants=tuple(grants),
+                    harness_results=tuple(harness_results),
+                    evidence=collected_evidence,
+                )
+            if not has_required_steps and not is_terminal and state.attempt < spec.retry_policy.max_attempts:
+                state = self._transition(
+                    state,
+                    node=LoopNode.PLAN,
+                    condition="continue_iteration",
+                    evidence={"reason": "non_terminal_capability", "attempt": state.attempt},
+                )
+                return StateGraphRunResult(
+                    run_state=state,
+                    checker_report=checker_report,
+                    resource_grants=tuple(grants),
+                    harness_results=tuple(harness_results),
+                    evidence=collected_evidence,
+                )
             if shadow_workspace is not None:
                 merge_lock: LockAcquireResult | None = None
                 lock_resource = _workspace_lock_resource(workspace)

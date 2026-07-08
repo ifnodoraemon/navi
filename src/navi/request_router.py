@@ -82,10 +82,8 @@ class ModelRequestRouter:
                 ChatMessage(
                     "system",
                     (
-                        "You are Navi's Request Router. Return only JSON matching the schema. "
-                        "Classify the request into answer_now, open_goal, resume_goal, "
-                        "control_goal, request_elevation, or ask_clarification. Do not answer the user and do not "
-                        "select capabilities."
+                        "You are Navi's Request Router. Classify the request according to the provided schema. "
+                        "Do not answer the user and do not select capabilities."
                     ),
                 ),
                 ChatMessage(

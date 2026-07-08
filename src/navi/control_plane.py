@@ -14,14 +14,13 @@ from .loop import TracePhase
 from .operating_context import PERMISSION_ORDER
 from .prompt_os import assemble_fact_response_system_prompt, assemble_fact_response_turn_input
 from .provider import ChatMessage
-from .request_router import ModelRequestRouter, RequestRouter, request_router_contract
 from .runtime import AgentRuntime
 from .runs import RunStore
 from .trace import TraceStore
 
 logger = logging.getLogger("navi.control_plane")
 
-__all__ = ["AgentTurnResult", "TurnController", "_dynamic_intent_facts"]
+__all__ = ["AgentTurnResult", "TurnController"]
 
 
 class TurnController(TurnLifecycleMixin):
@@ -94,68 +93,75 @@ class TurnController(TurnLifecycleMixin):
             intent_facts,
             trace_id,
         )
-        route_payload = _structured_routing_decision(intent_facts)
-        if not route_payload and _provider_has_explicit_router(self.runtime.provider):
-            try:
-                route_decision = await ModelRequestRouter(self.runtime.provider).route(
-                    text,
-                    current_state=runtime_facts.get("current_state", {}),
-                    connector_facts=_dynamic_intent_facts(intent_facts),
-                )
-                route_payload = route_decision.to_dict()
-            except Exception as exc:
-                return self._finalize_turn(
-                    text,
-                    AgentTurnResult(
-                        text="",
-                        action="execute:system.request_route_error",
-                        observation=_fact_event(
-                            "request_route_error",
-                            {"error_type": type(exc).__name__, "error": str(exc)},
-                        ),
-                        model_role="request_router",
-                        terminal=True,
-                        ok=False,
-                        error_reason="request_route_error",
-                        trace_id=trace_id,
-                        facts={"error_type": type(exc).__name__, "error": str(exc)},
-                    ),
-                    trace_id=trace_id,
-                    session_id=resolved_session_id,
-                    source=source,
-                    peer_id=peer_id,
-                    sender_id=sender_id,
-                )
-            self.trace.add_event(
-                trace_id=trace_id,
-                phase=TracePhase.AGENT_ROLE_RESULT,
-                session_id=resolved_session_id or "",
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-                model_role="router",
-                ok=True,
-                input_data={"router_enabled": True},
-                output_data=route_payload,
-                message="model request router selected route",
-            )
-
-        if route_payload:
-            routed = await self._handle_route_payload(
-                text,
-                route_payload,
-                trace_id=trace_id,
-                session_id=resolved_session_id,
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-                context=context,
-            )
-            if routed is not None:
-                return routed
-
-        return await self._answer_fast_path(
+        # Unified slow path: every turn opens a goal whose objective is the
+        # user's message, then runs the planner ReAct loop. The planner picks
+        # capabilities (shell.run, directory.list, send_file, respond, ...),
+        # the executor runs them, and the LLM reflector judges whether the
+        # objective is achieved. No router, no fast path — one loop for all
+        # requests.
+        invoked = await self.capabilities.invoke(
+            "goal.open",
+            {
+                "objective": text,
+                "workspace": str(self.project_dir.resolve()),
+            },
+            permission="prepare",
+            context=context,
+        )
+        self.trace.add_event(
+            trace_id=trace_id,
+            phase=TracePhase.CAPABILITY_RESULT,
+            session_id=resolved_session_id or "",
+            run_id=invoked.run_id,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            tool="goal.open",
+            model_role="request_router",
+            ok=invoked.ok,
+            input_data={
+                "args": {"objective": text, "workspace": str(self.project_dir.resolve())},
+                "permission": "prepare",
+            },
+            output_data={
+                "action": invoked.action,
+                "facts": invoked.facts or {},
+                "terminal": invoked.terminal,
+            },
+            message=invoked.message,
+        )
+        surface_text = invoked.message
+        if not surface_text and invoked.facts:
+            # Agentic principle: the capability produces facts; the LLM
+            # (responder role) synthesizes the user-facing reply. We never
+            # silently send an empty string — if the capability yielded no
+            # message, the LLM generates one from the verified facts.
+            surface_text = await self._response_from_facts(text, invoked.facts or {})
+        result = AgentTurnResult(
+            text=surface_text,
+            run_id=invoked.run_id,
+            action=invoked.action,
+            observation=_fact_event(
+                "request_route_result",
+                {
+                    "tool": "goal.open",
+                    "ok": invoked.ok,
+                    "action": invoked.action,
+                    "facts": invoked.facts or {},
+                    "error_reason": getattr(invoked, "error_reason", ""),
+                },
+            ),
+            model_role="request_router",
+            terminal=True,
+            ok=invoked.ok,
+            trace_id=trace_id,
+            facts=invoked.facts or {},
+            error_reason=getattr(invoked, "error_reason", ""),
+            yields_control=getattr(invoked, "yields_control", False),
+        )
+        return self._finalize_turn(
             text,
+            result,
             trace_id=trace_id,
             session_id=resolved_session_id,
             source=source,
@@ -216,130 +222,8 @@ class TurnController(TurnLifecycleMixin):
         current_state = CurrentStateBuilder(self.home).build(state_context)
         runtime_facts: dict[str, Any] = {
             "current_state": current_state_facts(current_state),
-            "request_router_contract": request_router_contract(),
         }
-        dynamic_intent_facts = _dynamic_intent_facts(intent_facts)
-        if dynamic_intent_facts:
-            runtime_facts["dynamic_intent"] = dynamic_intent_facts
         return resolved_session_id, trace_id, context, runtime_facts
-
-    async def _handle_route_payload(
-        self,
-        text: str,
-        route_payload: dict[str, Any],
-        *,
-        trace_id: str,
-        session_id: str,
-        source: str,
-        peer_id: str,
-        sender_id: str,
-        context: CapabilityContext,
-    ) -> AgentTurnResult | None:
-        try:
-            decision = RequestRouter().route_model_decision(route_payload)
-        except ValueError as exc:
-            return self._finalize_turn(
-                text,
-                AgentTurnResult(
-                    text="",
-                    action="execute:system.request_route_error",
-                    observation=_fact_event(
-                        "request_route_error",
-                        {"error_type": type(exc).__name__, "error": str(exc)},
-                    ),
-                    model_role="request_router",
-                    terminal=True,
-                    ok=False,
-                    error_reason="request_route_error",
-                    trace_id=trace_id,
-                    facts={"error_type": type(exc).__name__, "error": str(exc)},
-                ),
-                trace_id=trace_id,
-                session_id=session_id,
-                source=source,
-                peer_id=peer_id,
-                sender_id=sender_id,
-            )
-        routed = _route_to_goal_tool(
-            decision.to_dict(),
-            user_text=text,
-            workspace=context.workspace,
-        )
-        if routed is None:
-            return None
-        tool, args, permission = routed
-        self.trace.add_event(
-            trace_id=trace_id,
-            phase=TracePhase.AGENT_ROLE_RESULT,
-            session_id=session_id or "",
-            source=source,
-            peer_id=peer_id,
-            sender_id=sender_id,
-            model_role="request_router",
-            ok=True,
-            input_data={"decision": decision.to_dict()},
-            output_data={"tool": tool, "permission": permission},
-            message="structured request route accepted",
-        )
-        invoked = await self.capabilities.invoke(
-            tool,
-            args,
-            permission=permission,
-            context=context,
-        )
-        self.trace.add_event(
-            trace_id=trace_id,
-            phase=TracePhase.CAPABILITY_RESULT,
-            session_id=session_id or "",
-            run_id=invoked.run_id,
-            source=source,
-            peer_id=peer_id,
-            sender_id=sender_id,
-            tool=tool,
-            model_role="request_router",
-            ok=invoked.ok,
-            input_data={"args": args, "permission": permission},
-            output_data={
-                "action": invoked.action,
-                "facts": invoked.facts or {},
-                "terminal": invoked.terminal,
-            },
-            message=invoked.message,
-        )
-        surface_text = invoked.message
-        if not surface_text and invoked.facts and invoked.yields_control:
-            surface_text = await self._response_from_facts(text, invoked.facts)
-        result = AgentTurnResult(
-            text=surface_text,
-            run_id=invoked.run_id,
-            action=invoked.action,
-            observation=_fact_event(
-                "request_route_result",
-                {
-                    "tool": tool,
-                    "ok": invoked.ok,
-                    "action": invoked.action,
-                    "facts": invoked.facts or {},
-                    "error_reason": getattr(invoked, "error_reason", ""),
-                },
-            ),
-            model_role="request_router",
-            terminal=True,
-            ok=invoked.ok,
-            trace_id=trace_id,
-            facts=invoked.facts,
-            error_reason=getattr(invoked, "error_reason", ""),
-            yields_control=invoked.yields_control,
-        )
-        return self._finalize_turn(
-            text,
-            result,
-            trace_id=trace_id,
-            session_id=session_id,
-            source=source,
-            peer_id=peer_id,
-            sender_id=sender_id,
-        )
 
     async def _response_from_facts(self, user_text: str, facts: dict[str, Any]) -> str:
         try:
@@ -359,72 +243,6 @@ class TurnController(TurnLifecycleMixin):
         except Exception:
             logger.exception("failed to synthesize user-facing response from facts")
             return ""
-
-    async def _answer_fast_path(
-        self,
-        text: str,
-        *,
-        trace_id: str,
-        session_id: str,
-        source: str,
-        peer_id: str,
-        sender_id: str,
-    ) -> AgentTurnResult:
-        try:
-            answer = await self.runtime.complete(
-                [
-                    ChatMessage(
-                        "system",
-                        "Answer the user directly. Do not perform tool calls in fast path.",
-                    ),
-                    ChatMessage("user", text),
-                ],
-                role="responder",
-            )
-            result = AgentTurnResult(
-                text=answer,
-                action="chat",
-                model_role="responder",
-                terminal=True,
-                ok=True,
-                trace_id=trace_id,
-            )
-        except Exception as exc:
-            result = AgentTurnResult(
-                text="",
-                action="execute:system.responder_error",
-                observation=_fact_event(
-                    "responder_error",
-                    {"error_type": type(exc).__name__, "error": str(exc)},
-                ),
-                model_role="responder",
-                terminal=True,
-                ok=False,
-                error_reason="responder_error",
-                trace_id=trace_id,
-                facts={"error_type": type(exc).__name__, "error": str(exc)},
-            )
-        self.trace.add_event(
-            trace_id=trace_id,
-            phase=TracePhase.AGENT_ROLE_RESULT,
-            session_id=session_id or "",
-            source=source,
-            peer_id=peer_id,
-            sender_id=sender_id,
-            model_role=result.model_role,
-            ok=result.ok,
-            output_data={"action": result.action},
-            message=result.surfaced_text()[:1600],
-        )
-        return self._finalize_turn(
-            text,
-            result,
-            trace_id=trace_id,
-            session_id=session_id,
-            source=source,
-            peer_id=peer_id,
-            sender_id=sender_id,
-        )
 
     def _finalize_turn(
         self,
@@ -489,95 +307,6 @@ class TurnController(TurnLifecycleMixin):
             for task in list(self._background_tasks):
                 task.cancel()
             await asyncio.gather(*tuple(self._background_tasks), return_exceptions=True)
-
-
-def _structured_routing_decision(intent_facts: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(intent_facts, dict):
-        return {}
-    for key in ("request_routing_decision", "routing_decision", "route_decision"):
-        value = intent_facts.get(key)
-        if isinstance(value, dict):
-            return value
-    return {}
-
-
-def _provider_has_explicit_router(provider: Any) -> bool:
-    if bool(getattr(provider, "enable_request_router", False)):
-        return True
-    routes = getattr(provider, "routes", None)
-    return isinstance(routes, dict) and "router" in routes
-
-
-def _route_to_goal_tool(
-    decision: dict[str, Any],
-    *,
-    user_text: str,
-    workspace: str,
-) -> tuple[str, dict[str, Any], str] | None:
-    intent = str(decision.get("intent") or "")
-    facts = decision.get("facts") if isinstance(decision.get("facts"), dict) else {}
-    if intent == "open_goal":
-        args = {
-            "objective": str(facts.get("objective") or user_text).strip(),
-            "workspace": str(facts.get("workspace") or workspace).strip(),
-        }
-        for key in (
-            "scope",
-            "constraints",
-            "acceptance_criteria",
-            "permission_ceiling",
-            "allowed_capabilities",
-            "verification_command",
-            "timeout_seconds",
-            "auto_start",
-        ):
-            if key in facts:
-                args[key] = facts[key]
-        return ("goal.open", args, "prepare")
-    if intent == "resume_goal":
-        args = {
-            "goal_id": str(decision.get("goal_id") or facts.get("goal_id") or "").strip(),
-            "loop_run_id": str(facts.get("loop_run_id") or "").strip(),
-            "workspace": str(facts.get("workspace") or workspace).strip(),
-        }
-        return ("goal.resume", args, "prepare")
-    if intent == "control_goal":
-        control = str(facts.get("control") or facts.get("action") or "state").strip()
-        args = {
-            "goal_id": str(decision.get("goal_id") or facts.get("goal_id") or "").strip(),
-            "loop_run_id": str(facts.get("loop_run_id") or "").strip(),
-        }
-        if control in {"cancel", "cancel_goal"}:
-            if "reason" in facts:
-                args["reason"] = facts["reason"]
-            return ("goal.cancel", args, "prepare")
-        if control in {"state", "status", "read"} and "limit" in facts:
-            args["limit"] = facts["limit"]
-        return ("goal.state", args, "read")
-    if intent == "request_elevation":
-        return (
-            "session.request_elevation",
-            {
-                "target_permission": str(facts.get("target_permission") or "write").strip(),
-                "reason": str(facts.get("reason") or user_text).strip(),
-            },
-            "read",
-        )
-    return None
-
-
-def _dynamic_intent_facts(intent_facts: dict[str, Any] | None) -> dict[str, Any]:
-    if not intent_facts:
-        return {}
-    facts = dict(intent_facts)
-    if (
-        facts.get("source_agent") == "intent_agent"
-        and facts.get("intent_basis") == "current_state_facts"
-    ):
-        facts.pop("current_state", None)
-        if set(facts) <= {"source_agent", "intent_basis"}:
-            return {}
-    return facts
 
 
 def _max_permission(current: str, requested: str) -> str:

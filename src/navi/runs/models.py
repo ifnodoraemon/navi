@@ -30,34 +30,6 @@ class Run:
     error: str = ""
 
 
-@dataclass(frozen=True)
-class Watch:
-    id: str
-    cron: str
-    prompt: str
-    peer_id: str
-    sender_id: str
-    enabled: bool
-    next_run_at: float
-    last_run_at: float
-    created_at: float
-    updated_at: float
-    workspace: str = ""
-    kind: str = "recurring"
-
-
-@dataclass(frozen=True)
-class ExecutionLog:
-    id: str
-    run_id: str
-    provider: str
-    phase: str
-    command: str
-    stdout: str
-    stderr: str
-    exit_code: int
-    started_at: float
-    ended_at: float
 
 
 @dataclass(frozen=True)

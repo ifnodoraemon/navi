@@ -19,7 +19,7 @@ from .lifecycle import (
     acceptance_advance,
     acceptance_outcome,
 )
-from .runs import ExecutionLog, RunStore
+from .runs import RunStore
 
 
 @dataclass(frozen=True)
@@ -232,7 +232,6 @@ def _evaluate_acceptance(
     goals = GoalStore(home)
     run = runs.get(run_id)
     goal = goals.get_by_run(run_id)
-    logs = runs.list_execution_logs(run_id, limit=200)
     protocol = _latest_protocol(logs, phase="execute_protocol")
     checks = _acceptance_checks(
         scenario.expected,
@@ -382,15 +381,14 @@ def _latest_new_run_id(runs: RunStore, known_run_ids: set[str]) -> str:
 
 def _state_snapshot(runs: RunStore, run_id: str) -> dict[str, Any]:
     run = runs.get(run_id)
-    logs = runs.list_execution_logs(run_id, limit=200)
     approvals = [item for item in runs.list_approvals(limit=200) if item.run_id == run_id]
     return {
         "run_phase": run.phase if run else "",
         "run_governance": run.governance if run else "",
         "run_resolution": run.resolution if run else "",
         "approval_statuses": [item.status for item in approvals],
-        "log_count": len(logs),
-        "last_log_exit_code": logs[0].exit_code if logs else None,
+        "log_count": 0,
+        "last_log_exit_code": None,
     }
 
 
@@ -500,17 +498,6 @@ def _file_contains_check(spec: dict[str, Any], *, workspace: Path) -> dict[str, 
     }
 
 
-def _latest_protocol(logs: list[ExecutionLog], *, phase: str) -> dict[str, Any]:
-    for log in logs:
-        if log.phase != phase:
-            continue
-        try:
-            parsed = json.loads(log.stdout)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
-
 
 def _failed_evidence(protocol: dict[str, Any]) -> list[dict[str, Any]]:
     evidence = protocol.get("evidence") if isinstance(protocol, dict) else []
@@ -547,15 +534,6 @@ def _compact_protocol(protocol: dict[str, Any]) -> dict[str, Any]:
         "failed_evidence": _failed_evidence(protocol)[:5],
     }
 
-
-def _log_facts(log: ExecutionLog) -> dict[str, Any]:
-    return {
-        "phase": log.phase,
-        "provider": log.provider,
-        "exit_code": log.exit_code,
-        "stderr": log.stderr[:800],
-        "stdout": log.stdout[:800],
-    }
 
 
 def _acceptance_failure_reason(

@@ -53,6 +53,7 @@ class GoalOpenCapability(BaseCapability):
             verification_command=_arg_text(args, "verification_command"),
             timeout_seconds=_positive_int(args.get("timeout_seconds"), default=120, maximum=3600),
             auto_start=bool(args.get("auto_start", True)),
+            cron_schedule=_arg_text(args, "cron_schedule"),
         )
         try:
             service = LoopControlService(self.home)

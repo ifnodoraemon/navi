@@ -31,7 +31,6 @@ def get_action_handlers(
         memory,
         session,
         trace,
-        watch,
     )
 
     specs = {spec.name: spec for spec in ACTION_SPECS}

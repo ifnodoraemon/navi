@@ -790,6 +790,9 @@ def goal_open(
     verification_command: str = typer.Option(
         "", "--verification-command", help="Deterministic checker command."
     ),
+    cron_schedule: str = typer.Option(
+        "", "--cron-schedule", help="Cron expression to run the goal periodically."
+    ),
     allowed_capability: list[str] | None = typer.Option(
         None,
         "--allowed-capability",
@@ -808,6 +811,8 @@ def goal_open(
         args["workspace"] = workspace
     if verification_command:
         args["verification_command"] = verification_command
+    if cron_schedule:
+        args["cron_schedule"] = cron_schedule
     if allowed_capability:
         args["allowed_capabilities"] = allowed_capability
     typer.echo(

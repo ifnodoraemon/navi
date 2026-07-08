@@ -62,13 +62,6 @@ class ActiveApprovalRequest(BaseModel):
     sender_id: str = DEFAULT_LOCAL_SURFACE
 
 
-class WatchRequest(BaseModel):
-    cron: str
-    prompt: str
-    peer_id: str = DEFAULT_LOCAL_SURFACE
-    sender_id: str = DEFAULT_LOCAL_SURFACE
-
-
 class GoalOpenRequest(BaseModel):
     objective: str
     workspace: str | None = None
@@ -347,10 +340,6 @@ def create_app(
             "approvals": [_public_approval(approval) for approval in task_store.list_approvals()]
         }
 
-    @app.get(api_path("watches"))
-    def list_watches() -> dict:
-        return {"watches": [watch.__dict__ for watch in task_store.list_watches()]}
-
     @app.post(api_path("active_approve"))
     async def approve_active_delegation(request: ActiveApprovalRequest) -> dict:
         result = await api_capabilities.invoke(
@@ -392,35 +381,6 @@ def create_app(
             ),
             "facts": result.facts or {},
         }
-
-    @app.post(api_path("active_watches"))
-    async def create_active_watch(request: WatchRequest) -> dict:
-        result = await capabilities.invoke(
-            "watch.create",
-            {"cron": request.cron, "prompt": request.prompt},
-            permission="prepare",
-            context=CapabilityContext(
-                home=home,
-                peer_id=request.peer_id,
-                sender_id=request.sender_id,
-                source=load_config(home).runtime.local_surface,
-                permission_ceiling="write",
-                workspace=str(project_dir),
-            ),
-        )
-        watch_id = str((result.facts or {}).get("watch_id") or "")
-        watch = task_store.get_watch(watch_id) if watch_id else None
-        return {
-            "message": _local_result_message(
-                result, source=load_config(home).runtime.local_surface
-            ),
-            "watch": watch.__dict__ if watch else None,
-            "facts": result.facts or {},
-        }
-
-    @app.post(api_path("active_watches_process"))
-    async def process_watches() -> dict:
-        return {"results": await daemon.process_watches_once()}
 
     @app.get(api_path("auth_status"))
     def auth_status() -> dict:

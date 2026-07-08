@@ -7,7 +7,7 @@ from contextlib import closing
 import pytest
 
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
-from navi.control_plane import TurnController, _dynamic_intent_facts
+from navi.control_plane import TurnController
 from navi.connector_runtime import ConnectorMessage, ConnectorIngressRuntime
 from navi.evolution import EvolutionEngine, EvolutionLedger
 from navi.capabilities import build_capability_registry
@@ -235,59 +235,6 @@ class _PromptCaptureProvider:
 
     def usage_for(self, role: str) -> dict:
         return {}
-
-
-def test_dynamic_intent_current_state_is_not_duplicated() -> None:
-    duplicate_state = {
-        "source_agent": "intent_agent",
-        "intent_basis": "current_state_facts",
-        "current_state": {"marker": "duplicate-current-state-marker"},
-    }
-
-    assert _dynamic_intent_facts(duplicate_state) == {}
-
-    filtered = _dynamic_intent_facts(
-        {
-            **duplicate_state,
-            "connector_message": {"message_id": "msg-1"},
-        }
-    )
-
-    assert filtered == {
-        "source_agent": "intent_agent",
-        "intent_basis": "current_state_facts",
-        "connector_message": {"message_id": "msg-1"},
-    }
-
-
-@pytest.mark.asyncio
-async def test_weixin_intent_current_state_is_not_repeated_in_planner_runtime_facts(
-    tmp_path,
-) -> None:
-    provider = _PromptCaptureProvider()
-    engine = TurnController(
-        home=tmp_path,
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
-        project_dir=tmp_path,
-        permission_ceiling="write",
-    )
-
-    result = await engine.handle(
-        "你好",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        source="weixin",
-        session_alias="weixin:peer-1:sender-1",
-        intent_facts={
-            "source_agent": "intent_agent",
-            "intent_basis": "current_state_facts",
-            "current_state": {"marker": "duplicate-current-state-marker"},
-        },
-    )
-
-    assert result.ok is True
-    assert provider.planner_user_prompt == ""
-    assert "duplicate-current-state-marker" not in provider.responder_prompt
 
 
 @pytest.mark.asyncio

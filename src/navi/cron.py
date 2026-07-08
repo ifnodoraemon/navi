@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 from datetime import datetime, timedelta
 
-
 def next_cron_time(expression: str, *, now: float | None = None) -> float:
     """Return the next time for a simple 5-field cron expression."""
     base = datetime.fromtimestamp(now or time.time()).replace(second=0, microsecond=0)
@@ -20,7 +19,6 @@ def next_cron_time(expression: str, *, now: float | None = None) -> float:
             return candidate.timestamp()
     raise ValueError(f"Cron expression has no run in the next year: {expression}")
 
-
 def validate_cron(expression: str) -> None:
     parts = expression.split()
     if len(parts) != 5:
@@ -29,31 +27,15 @@ def validate_cron(expression: str) -> None:
     for part, (min_value, max_value) in zip(parts, ranges):
         _parse_field(part, min_value, max_value)
 
+def _parse_field(field: str, min_value: int, max_value: int) -> set[int]:
+    if field == "*":
+        return set(range(min_value, max_value + 1))
+    if field.startswith("*/"):
+        step = int(field[2:])
+        return set(range(min_value, max_value + 1, step))
+    if "," in field:
+        return {int(x) for x in field.split(",")}
+    return {int(field)}
 
 def _matches(field: str, value: int, min_value: int, max_value: int) -> bool:
     return value in _parse_field(field, min_value, max_value)
-
-
-def _parse_field(field: str, min_value: int, max_value: int) -> set[int]:
-    values: set[int] = set()
-    for raw in field.split(","):
-        part = raw.strip()
-        if not part:
-            raise ValueError("Cron field includes an empty segment")
-        step = 1
-        if "/" in part:
-            part, step_raw = part.split("/", 1)
-            step = int(step_raw)
-            if step <= 0:
-                raise ValueError("Cron step must be positive")
-        if part == "*":
-            start, end = min_value, max_value
-        elif "-" in part:
-            start_raw, end_raw = part.split("-", 1)
-            start, end = int(start_raw), int(end_raw)
-        else:
-            start = end = int(part)
-        if start < min_value or end > max_value or start > end:
-            raise ValueError(f"Cron value out of range: {field}")
-        values.update(range(start, end + 1, step))
-    return values

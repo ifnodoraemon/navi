@@ -266,6 +266,7 @@ def _unique_outbound_path(path: Path) -> Path:
 
 def _service(home: Path, project_dir: Path):
     from .service import WeixinService
+    from navi.connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
 
     return WeixinService(
         home=home,
@@ -274,6 +275,7 @@ def _service(home: Path, project_dir: Path):
         project_dir=project_dir,
         local_source=SPEC.local_source,
         session_alias_prefix=SPEC.session_alias_prefix,
+        tool_policy=LOCAL_CONVERSATIONAL_TOOL_POLICY,
     )
 
 

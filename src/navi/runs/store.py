@@ -1,4 +1,4 @@
-"""RunStore: governed run/approval/watch/execution-log persistence."""
+"""RunStore: governed run/approval persistence."""
 
 from __future__ import annotations
 
@@ -12,12 +12,11 @@ from ..db import connect, check_schema_version, write_schema_version
 from ..paths import db_paths
 from ..schema import Column, Table, assert_schema_exact
 from ._approval_store import APPROVALS_TABLE, ApprovalStoreMixin
-from ._execution_log_store import (
-    EXECUTION_LOGS_TABLE,
+from ._tool_call_log_store import (
+
     TOOL_CALL_LOGS_TABLE,
-    ExecutionLogStoreMixin,
+    ToolCallLogStoreMixin,
 )
-from ._watch_store import WATCHES_TABLE, WatchStoreMixin
 from .models import Run, _require_workspace
 
 RUN_STORE_SCHEMA_VERSION = 4
@@ -50,7 +49,7 @@ RUNS_TABLE = Table(
 )
 
 
-class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
+class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
     def __init__(self, home: Path):
         self.home = home
         self.home.mkdir(parents=True, exist_ok=True)
@@ -62,19 +61,12 @@ class RunStore(WatchStoreMixin, ExecutionLogStoreMixin, ApprovalStoreMixin):
             check_schema_version(conn, "runs", RUN_STORE_SCHEMA_VERSION)
             conn.execute(RUNS_TABLE.ddl)
             assert_schema_exact(conn, RUNS_TABLE)
-            conn.execute(WATCHES_TABLE.ddl)
-            assert_schema_exact(conn, WATCHES_TABLE)
-            conn.execute(EXECUTION_LOGS_TABLE.ddl)
-            assert_schema_exact(conn, EXECUTION_LOGS_TABLE)
             conn.execute(TOOL_CALL_LOGS_TABLE.ddl)
             self._migrate_tool_call_logs(conn)
             assert_schema_exact(conn, TOOL_CALL_LOGS_TABLE)
             conn.execute(APPROVALS_TABLE.ddl)
             assert_schema_exact(conn, APPROVALS_TABLE)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_phase ON runs(phase, updated_at)")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_watches_next ON watches(enabled, next_run_at)"
-            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tool_call_logs_tool ON tool_call_logs(tool, started_at)"
             )

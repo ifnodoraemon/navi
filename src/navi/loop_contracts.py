@@ -256,7 +256,7 @@ class WorkspacePolicy:
 
 @dataclass(frozen=True)
 class RetryPolicy:
-    max_attempts: int = 1
+    max_attempts: int = 10
     reflect_before_retry: bool = True
 
     def validate(self) -> None:
@@ -553,6 +553,14 @@ class LoopRunState:
         next_attempt = self.attempt
         if str(self.node) == str(LoopNode.REFLECT) and str(node) == str(LoopNode.PLAN):
             next_attempt += 1
+        if (
+            str(self.node) == str(LoopNode.EVALUATE)
+            and str(node) == str(LoopNode.PLAN)
+        ):
+            # Each EVALUATE -> PLAN iteration (the agentic reflection loop)
+            # consumes one attempt so the loop terminates at max_attempts even
+            # if the LLM reflector keeps saying should_continue=true.
+            next_attempt += 1
         return replace(
             self,
             node=node,
@@ -623,12 +631,14 @@ def default_state_graph() -> tuple[StateTransition, ...]:
         StateTransition(LoopNode.EXECUTE, LoopNode.ESCALATE, "resource_escalate"),
         StateTransition(LoopNode.EXECUTE, LoopTerminalState.BLOCKED, "resource_blocked"),
         StateTransition(LoopNode.EVALUATE, LoopTerminalState.CONVERGED, "checker_passed"),
+        StateTransition(LoopNode.EVALUATE, LoopNode.PLAN, "continue_iteration"),
         StateTransition(LoopNode.EVALUATE, LoopNode.REFLECT, "checker_failed"),
         StateTransition(LoopNode.EVALUATE, LoopTerminalState.CONFLICTED, "merge_conflict"),
         StateTransition(LoopNode.EVALUATE, LoopTerminalState.TIMED_OUT, "hard_timeout"),
         StateTransition(LoopNode.EVALUATE, LoopNode.PAUSE, "resource_pause"),
         StateTransition(LoopNode.EVALUATE, LoopNode.ESCALATE, "resource_escalate"),
         StateTransition(LoopNode.EVALUATE, LoopTerminalState.BLOCKED, "resource_blocked"),
+        StateTransition(LoopNode.EVALUATE, LoopTerminalState.BLOCKED, "no_route_available"),
         StateTransition(LoopNode.REFLECT, LoopNode.PLAN, "new_route_available"),
         StateTransition(LoopNode.REFLECT, LoopTerminalState.BLOCKED, "no_route_available"),
         StateTransition(LoopNode.REFLECT, LoopTerminalState.FAILED, "checker_rejected"),

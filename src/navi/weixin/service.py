@@ -418,7 +418,7 @@ class WeixinService:
                     source=self.local_source,
                     peer_id=peer_id,
                     output_data={"response": text, "background_event": "watch_result" if not task else "watch_task_prepared"},
-                    message="Sent background watch result to channel",
+                    message="Sent background cron result to channel",
                 )
             except Exception:
                 pass

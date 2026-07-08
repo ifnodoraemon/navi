@@ -119,7 +119,6 @@ def test_remote_policy_is_explicit_allowlist() -> None:
         "goal.state",
         "session.request_elevation",
         "tools.list",
-        "watch.create",
     }
 
 
@@ -218,7 +217,6 @@ def test_blocked_capability_classes_are_direct_os_only() -> None:
         "shell",
         "system",
         "test",
-        "watch.delete",
     }
     assert blocked == direct_os
     governance = {"delegation", "approval", "memory", "session", "conversation"}

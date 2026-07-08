@@ -6,7 +6,12 @@ from typing import Any
 from .capabilities_types import CapabilityContext
 from .loop_control_service import LoopControlService, LoopControlServiceResult
 from .runtime import AgentRuntime
-from .state_graph import CapabilityExecutorPort, DurableStateGraphRunner, ModelCapabilityPlannerPort
+from .state_graph import (
+    CapabilityExecutorPort,
+    DurableStateGraphRunner,
+    LLMReflectorPort,
+    ModelCapabilityPlannerPort,
+)
 
 
 async def run_goal_loop_state_graph(
@@ -34,6 +39,7 @@ async def run_goal_loop_state_graph(
             capabilities=planner_capabilities,
         ),
         executor_port=CapabilityExecutorPort(home=home, context=context),
+        llm_reflector_port=LLMReflectorPort(runtime=runtime),
     )
     graph_result = await runner.run_async(
         base.loop_spec,

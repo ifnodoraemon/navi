@@ -14,7 +14,7 @@ from .paths import db_paths
 from .runs import Run
 from .schema import Column, Table, assert_schema_exact
 
-GOAL_STORE_SCHEMA_VERSION = 3
+GOAL_STORE_SCHEMA_VERSION = 4
 
 
 
@@ -51,9 +51,9 @@ class Goal:
     # Gap F: persistent task tree fields.
     parent_goal_id: str = ""
     task_status: str = "in_progress"
-
-
-
+    # Cron / recurring fields
+    cron_schedule: str = ""
+    next_run_at: float = 0.0
 
 @dataclass(frozen=True)
 class GoalEvent:
@@ -77,10 +77,24 @@ class GoalStore:
         self.db_path = db_paths(home).goals
         self._init_db()
 
+
+    @staticmethod
+    def _migrate_goals(conn) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(goals)")}
+        if "parent_goal_id" not in columns:
+            conn.execute("ALTER TABLE goals ADD COLUMN parent_goal_id TEXT NOT NULL DEFAULT ''")
+        if "task_status" not in columns:
+            conn.execute("ALTER TABLE goals ADD COLUMN task_status TEXT NOT NULL DEFAULT 'in_progress'")
+        if "cron_schedule" not in columns:
+            conn.execute("ALTER TABLE goals ADD COLUMN cron_schedule TEXT NOT NULL DEFAULT ''")
+        if "next_run_at" not in columns:
+            conn.execute("ALTER TABLE goals ADD COLUMN next_run_at REAL NOT NULL DEFAULT 0.0")
+
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
-            check_schema_version(conn, "goals", GOAL_STORE_SCHEMA_VERSION)
             conn.execute(GOALS_TABLE.ddl)
+            self._migrate_goals(conn)
+            check_schema_version(conn, "goals", GOAL_STORE_SCHEMA_VERSION)
             assert_schema_exact(conn, GOALS_TABLE)
             conn.execute(GOAL_EVENTS_TABLE.ddl)
             assert_schema_exact(conn, GOAL_EVENTS_TABLE)
@@ -108,6 +122,8 @@ class GoalStore:
         max_retries: int = 0,
         parent_goal_id: str = "",
         task_status: str = "in_progress",
+        cron_schedule: str = "",
+        next_run_at: float = 0.0,
     ) -> Goal:
         now = time.time()
         goal = Goal(
@@ -131,6 +147,8 @@ class GoalStore:
             completed_at=0.0,
             parent_goal_id=parent_goal_id,
             task_status=task_status,
+            cron_schedule=cron_schedule,
+            next_run_at=next_run_at,
         )
         with connect(self.db_path) as conn:
             conn.execute(
@@ -140,9 +158,9 @@ class GoalStore:
                     workspace, run_id, trace_id, evidence_json, blocked_reason,
                     stop_condition, timeout, max_retries,
                     created_at, updated_at, completed_at,
-                    parent_goal_id, task_status
+                    parent_goal_id, task_status, cron_schedule, next_run_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     goal.id,
@@ -168,6 +186,8 @@ class GoalStore:
                     goal.completed_at,
                     goal.parent_goal_id,
                     goal.task_status,
+                    goal.cron_schedule,
+                    goal.next_run_at,
                 ),
             )
         self.record_event(
@@ -188,7 +208,7 @@ class GoalStore:
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at,
-                       parent_goal_id, task_status
+                       parent_goal_id, task_status, cron_schedule, next_run_at
                 FROM goals WHERE id = ?
                 """,
                 (goal_id,),
@@ -203,7 +223,7 @@ class GoalStore:
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at,
-                       parent_goal_id, task_status
+                       parent_goal_id, task_status, cron_schedule, next_run_at
                 FROM goals WHERE run_id = ? ORDER BY updated_at DESC LIMIT 1
                 """,
                 (run_id,),
@@ -217,7 +237,7 @@ class GoalStore:
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at,
-                       parent_goal_id, task_status
+                       parent_goal_id, task_status, cron_schedule, next_run_at
                 FROM goals WHERE phase = ? ORDER BY updated_at DESC LIMIT ?
                 """
             params: tuple[Any, ...] = (phase, limit)
@@ -227,7 +247,7 @@ class GoalStore:
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at,
-                       parent_goal_id, task_status
+                       parent_goal_id, task_status, cron_schedule, next_run_at
                 FROM goals ORDER BY updated_at DESC LIMIT ?
                 """
             params = (limit,)
@@ -244,7 +264,7 @@ class GoalStore:
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at,
-                       parent_goal_id, task_status
+                       parent_goal_id, task_status, cron_schedule, next_run_at
                 FROM goals WHERE parent_goal_id = ? ORDER BY created_at ASC LIMIT ?
                 """,
                 (parent_goal_id, limit),
@@ -600,6 +620,48 @@ def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict
     return existing
 
 
+
+    def list_cron_goals(self) -> typing.List[Goal]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
+                       workspace, run_id, trace_id, evidence_json, blocked_reason,
+                       stop_condition, timeout, max_retries,
+                       created_at, updated_at, completed_at,
+                       parent_goal_id, task_status, cron_schedule, next_run_at
+                FROM goals
+                WHERE cron_schedule != ''
+                ORDER BY created_at DESC
+                """
+            ).fetchall()
+        return [Goal(*row) for row in rows]
+
+    def due_cron_goals(self, now: float) -> typing.List[Goal]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
+                       workspace, run_id, trace_id, evidence_json, blocked_reason,
+                       stop_condition, timeout, max_retries,
+                       created_at, updated_at, completed_at,
+                       parent_goal_id, task_status, cron_schedule, next_run_at
+                FROM goals
+                WHERE cron_schedule != '' AND next_run_at <= ? AND phase != ?
+                ORDER BY next_run_at ASC
+                """,
+                (now, Phase.ENDED)
+            ).fetchall()
+        return [Goal(*row) for row in rows]
+
+    def update_cron_run(self, goal_id: str, next_run_at: float) -> None:
+        now = time.time()
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE goals SET next_run_at = ?, updated_at = ? WHERE id = ?",
+                (next_run_at, now, goal_id),
+            )
+
 GOALS_TABLE = Table(
     "goals",
     [
@@ -631,6 +693,8 @@ GOALS_TABLE = Table(
         # that the model updates as it progresses.
         Column("parent_goal_id", "TEXT", nullable=False),
         Column("task_status", "TEXT", nullable=False),
+        Column("cron_schedule", "TEXT", nullable=False),
+        Column("next_run_at", "REAL", nullable=False),
     ],
 )
 

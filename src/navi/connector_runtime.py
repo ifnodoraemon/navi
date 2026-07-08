@@ -100,7 +100,7 @@ def format_approval_notification(
 
 # The remote-connector security boundary is an explicit preparation/read
 # allowlist. Remote surfaces can converse, ask, propose or inspect governed
-# work, and create prepared delegation/watch state. New mutating capabilities do
+# work, and create prepared delegation state. New mutating capabilities do
 # not become remotely visible unless the policy names them.
 REMOTE_ALLOWED_TOOLS = frozenset(
     (
@@ -110,7 +110,6 @@ REMOTE_ALLOWED_TOOLS = frozenset(
         "goal.state",
         "session.request_elevation",
         "tools.list",
-        "watch.create",
     )
 )
 
@@ -133,7 +132,6 @@ REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(
         "service",
         "system",
         "test",
-        "watch.delete",
     )
 )
 
@@ -341,6 +339,7 @@ class ConnectorIngressRuntime:
             disabled_tools=set(tool_policy.blocked_tools),
             disabled_capability_classes=tool_policy.blocked_capability_classes,
             permission_ceiling=tool_policy.permission_ceiling,
+            enforce_connector_source_policy=(tool_policy is REMOTE_CONNECTOR_TOOL_POLICY),
             event_bus=self.event_bus,
         )
         self._setup_event_subscriptions()

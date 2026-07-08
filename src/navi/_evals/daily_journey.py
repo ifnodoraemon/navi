@@ -127,7 +127,7 @@ async def _run_daily_journey(
         else:
             for index, step in enumerate(journey["steps"]):
                 before_runs = runs.list(limit=500)
-                before_watches = runs.list_watches(limit=500)
+                before_watches = GoalStore(home).list_cron_goals()
                 expect = step.get("expect") or {}
                 if not isinstance(step, dict):
                     errors.append(f"step[{index}]: step must be a mapping")
@@ -168,7 +168,7 @@ async def _run_daily_journey(
                         prompt=str(seed.get("prompt") or title),
                         phase=Phase.ENDED,
                         resolution=Resolution.FAILED,
-                        source=str(seed.get("source") or "watch"),
+                        source=str(seed.get("source") or "cron"),
                         kind=str(seed.get("kind") or "delegation"),
                         peer_id="daily-eval",
                         sender_id="daily-eval",
@@ -331,27 +331,27 @@ def _match_daily_expectation(
                 f"{prefix}: run_count expected {expect['run_count']!r}, got {count!r}"
             )
     if "watch_count_delta" in expect:
-        delta = len(runs.list_watches(limit=500)) - before_watch_count
+        delta = len(GoalStore(home).list_cron_goals()) - before_watch_count
         if delta != int(expect["watch_count_delta"]):
             errors.append(
                 f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}"
             )
     if "watch_count" in expect:
-        count = len(runs.list_watches(limit=500))
+        count = len(GoalStore(home).list_cron_goals())
         if count != int(expect["watch_count"]):
             errors.append(
                 f"{prefix}: watch_count expected {expect['watch_count']!r}, got {count!r}"
             )
     if "watch_kind" in expect:
-        watches = runs.list_watches(limit=1)
-        actual = watches[0].kind if watches else ""
+        watches = GoalStore(home).list_cron_goals()
+        actual = watches[0].objective if watches else ""
         if actual != str(expect["watch_kind"]):
             errors.append(
                 f"{prefix}: watch_kind expected {expect['watch_kind']!r}, got {actual!r}"
             )
     if "watch_cron" in expect:
-        watches = runs.list_watches(limit=1)
-        actual = watches[0].cron if watches else ""
+        watches = GoalStore(home).list_cron_goals()
+        actual = watches[0].cron_schedule if watches else ""
         if actual != str(expect["watch_cron"]):
             errors.append(
                 f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}"

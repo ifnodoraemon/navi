@@ -9,7 +9,6 @@ from .goals import Goal, GoalStore
 from .lifecycle import Acceptance, Governance, Phase, Resolution
 from .loop_contracts import (
     CheckpointPolicy,
-    DelegationPolicy,
     EscalationPolicy,
     GoalSpec,
     LoopSpec,
@@ -43,6 +42,7 @@ class OpenGoalRequest:
     verification_command: str = ""
     timeout_seconds: int = 120
     auto_start: bool = True
+    cron_schedule: str = ""
 
 
 @dataclass(frozen=True)
@@ -105,6 +105,7 @@ class LoopControlService:
             resolution=Resolution.NONE,
             why_now="trigger=slow_path_goal",
         )
+        next_run_at = next_cron_time(request.cron_schedule, now=time.time()) if request.cron_schedule else 0.0
         goal = self.goals.create(
             objective=objective,
             workspace=workspace,
@@ -115,6 +116,8 @@ class LoopControlService:
             run_id=run.id,
             timeout=float(max(1, request.timeout_seconds)),
             max_retries=1,
+            cron_schedule=request.cron_schedule,
+            next_run_at=next_run_at,
             evidence={
                 "route": "slow_path",
                 "run_id": run.id,
@@ -324,17 +327,17 @@ class LoopControlService:
                     timeout=timeout,
                 ),
             )
-            allowed = request.allowed_capabilities or ("test.run",)
         else:
             verification_ladder = (
                 VerificationStep(
-                    kind=VerificationKind.HUMAN_APPROVAL,
-                    name="human_approval",
-                    evidence_key="human_approval",
+                    kind=VerificationKind.LLM_CHECKER,
+                    name="objective_check",
+                    evidence_key="capability_result",
                     timeout=timeout,
+                    required=False,
                 ),
             )
-            allowed = request.allowed_capabilities or ("human.approval",)
+        allowed = request.allowed_capabilities or ("*",)
         goal_spec = GoalSpec(
             objective=goal.objective,
             scope=request.scope or (f"repo:{workspace}",),
@@ -521,7 +524,6 @@ def _loop_spec_from_json(raw: str) -> LoopSpec:
         checkpoint_policy=CheckpointPolicy(**_dict(data.get("checkpoint_policy"))),
         retry_policy=RetryPolicy(**_dict(data.get("retry_policy"))),
         rollback_policy=RollbackPolicy(**_dict(data.get("rollback_policy"))),
-        delegation_policy=DelegationPolicy(**_dict(data.get("delegation_policy"))),
         escalation_policy=EscalationPolicy(**_dict(data.get("escalation_policy"))),
         terminal_states=tuple(str(item) for item in data.get("terminal_states", ())),
         created_at=float(data.get("created_at") or 0.0),

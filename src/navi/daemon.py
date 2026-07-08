@@ -166,8 +166,67 @@ class SystemDaemon:
         self.event_bus.subscribe("agent_turn_completed", on_turn_completed)
 
     async def process_queue_once(self) -> list[Run]:
-        # TODO: ReflectorPort / RecoveryPort implementation placeholder
-        return []
+        from .config import load_config
+        from .provider import build_provider
+        from .runtime import AgentRuntime
+        from .loop_runs import LoopRunStore
+        from .loop_control_service import LoopControlService
+        from .goal_state_graph import run_goal_loop_state_graph
+        from .capabilities import CapabilityRegistry
+        from .capabilities_types import CapabilityContext
+        from .goals import GoalStore
+
+        loop_runs = LoopRunStore(self.home)
+        active_states = loop_runs.list_active(limit=10)
+        if not active_states:
+            return []
+
+        config = load_config(self.home)
+        provider = build_provider(config.model)
+        runtime = AgentRuntime(home=self.home, provider=provider)
+        service = LoopControlService(self.home)
+        goals = GoalStore(self.home)
+
+        affected_runs = []
+        for state in active_states:
+            goal = goals.get(state.goal_id)
+            if not goal:
+                continue
+
+            try:
+                prepared = service.resume_loop(loop_run_id=state.run_id, workspace=goal.workspace)
+                
+                planner_capabilities = CapabilityRegistry(
+                    home=self.home,
+                    project_dir=Path(goal.workspace),
+                    permission_ceiling=goal.permission_ceiling,
+                    runtime=runtime,
+                )
+                context = CapabilityContext(
+                    home=self.home,
+                    source="daemon",
+                    peer_id="daemon",
+                    sender_id=goal.sender_id,
+                    permission_ceiling=goal.permission_ceiling,
+                    workspace=goal.workspace,
+                )
+                
+                result = await run_goal_loop_state_graph(
+                    home=self.home,
+                    service=service,
+                    base=prepared,
+                    runtime=runtime,
+                    planner_capabilities=planner_capabilities,
+                    context=context,
+                    evidence={"entrypoint": "daemon.process_queue_once", "resumed": True},
+                    result_evidence={"state_graph_mode": "llm_backed", "resumed": True},
+                    state_transition="resumed",
+                )
+                affected_runs.append(result.run)
+            except Exception as e:
+                logger.error(f"Failed to process loop run {state.run_id}: {e}", exc_info=True)
+
+        return affected_runs
 
     async def process_watches_once(self) -> list[dict]:
         created: list[dict] = []
@@ -177,7 +236,36 @@ class SystemDaemon:
         created.extend(events)
 
 
-        # TODO: Rebuild cron watches using V2 Goal loops
+        # 2. Process Cron Goals
+        from .cron import next_cron_time
+        from .goals import GoalStore
+        from .loop_control_service import LoopControlService
+        from .loop_control_service import OpenGoalRequest
+        import time
+        import logging
+
+        now = time.time()
+        goal_store = GoalStore(self.home)
+        service = LoopControlService(self.home)
+        
+        due_goals = goal_store.due_cron_goals(now)
+        for g in due_goals:
+            try:
+                request = OpenGoalRequest(
+                    objective=g.objective,
+                    source="cron",
+                    peer_id=g.peer_id,
+                    sender_id=g.sender_id,
+                    workspace=g.workspace,
+                )
+                service.open_goal(request)
+                
+                next_time = next_cron_time(g.cron_schedule, now=now)
+                goal_store.update_cron_run(g.id, next_time)
+                created.append({"cron_goal_id": g.id, "triggered": True})
+            except Exception as e:
+                logging.getLogger("navi.daemon").error(f"Failed to process cron goal {g.id}: {e}", exc_info=True)
+
         return created
 
 

@@ -8,26 +8,11 @@ from typing import TYPE_CHECKING
 
 from ..db import connect
 from ..schema import Column, Table
-from .models import ExecutionLog, ToolCallLog
+from .models import ToolCallLog
 
 if TYPE_CHECKING:
     pass
 
-EXECUTION_LOGS_TABLE = Table(
-    "execution_logs",
-    [
-        Column("id", "TEXT", primary_key=True),
-        Column("run_id", "TEXT", nullable=False),
-        Column("provider", "TEXT", nullable=False),
-        Column("phase", "TEXT", nullable=False),
-        Column("command", "TEXT", nullable=False),
-        Column("stdout", "TEXT", nullable=False),
-        Column("stderr", "TEXT", nullable=False),
-        Column("exit_code", "INTEGER", nullable=False),
-        Column("started_at", "REAL", nullable=False),
-        Column("ended_at", "REAL", nullable=False),
-    ],
-)
 TOOL_CALL_LOGS_TABLE = Table(
     "tool_call_logs",
     [
@@ -45,7 +30,7 @@ TOOL_CALL_LOGS_TABLE = Table(
 )
 
 
-class ExecutionLogStoreMixin:
+class ToolCallLogStoreMixin:
     """Mixin providing execution log persistence methods to RunStore.
 
     Requires:
@@ -67,56 +52,6 @@ class ExecutionLogStoreMixin:
         if "trace_id" not in columns:
             conn.execute("ALTER TABLE tool_call_logs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''")
 
-    def add_execution_log(
-        self,
-        *,
-        run_id: str,
-        provider: str,
-        phase: str,
-        command: str,
-        stdout: str,
-        stderr: str,
-        exit_code: int,
-        started_at: float,
-        ended_at: float,
-    ) -> ExecutionLog:
-        from ..safeguards import redact_personal_data
-
-        log = ExecutionLog(
-            id=uuid.uuid4().hex,
-            run_id=run_id,
-            provider=provider,
-            phase=phase,
-            command=command,
-            stdout=redact_personal_data(stdout),
-            stderr=redact_personal_data(stderr),
-            exit_code=exit_code,
-            started_at=started_at,
-            ended_at=ended_at,
-        )
-        with connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO execution_logs(
-                    id, run_id, provider, phase, command, stdout, stderr,
-                    exit_code, started_at, ended_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    log.id,
-                    log.run_id,
-                    log.provider,
-                    log.phase,
-                    log.command,
-                    log.stdout,
-                    log.stderr,
-                    log.exit_code,
-                    log.started_at,
-                    log.ended_at,
-                ),
-            )
-        return log
 
     def add_tool_call_log(
         self,
@@ -166,30 +101,6 @@ class ExecutionLogStoreMixin:
                 ),
             )
         return log
-
-    def list_execution_logs(
-        self, run_id: str | None = None, *, limit: int = 50
-    ) -> list[ExecutionLog]:
-        with connect(self.db_path) as conn:
-            if run_id:
-                rows = conn.execute(
-                    """
-                    SELECT id, run_id, provider, phase, command, stdout, stderr,
-                           exit_code, started_at, ended_at
-                    FROM execution_logs WHERE run_id = ? ORDER BY started_at DESC LIMIT ?
-                    """,
-                    (run_id, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT id, run_id, provider, phase, command, stdout, stderr,
-                           exit_code, started_at, ended_at
-                    FROM execution_logs ORDER BY started_at DESC LIMIT ?
-                    """,
-                    (limit,),
-                ).fetchall()
-        return [ExecutionLog(*row) for row in rows]
 
     def list_tool_call_logs(self, *, limit: int = 50) -> list[ToolCallLog]:
         with connect(self.db_path) as conn:
