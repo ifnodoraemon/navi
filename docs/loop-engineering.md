@@ -110,3 +110,123 @@ If the model repeats a `goal.open` while the approval is already pending,
 the runtime records `pause_for_approval` with an `approval_gate` result and the
 trace can evaluate to `approval_loop`. The fix belongs in state, trace, and gate
 semantics, not in a prompt warning.
+
+
+## Layers
+
+1. Presentation and ingress
+
+- `api.py` and API routers expose local HTTP control surfaces.
+- `cli.py` and CLI command modules expose local operator workflows.
+- Connectors such as Weixin and Telegram normalize external messages into the
+  same control-plane entrypoints.
+
+2. Request and resource control
+
+- `request_router.py` validates model-owned intent facts for the unified loop
+  intake. It chooses a request intent, not an execution path.
+- `resource_gateway.py` enforces budget, concurrency, and escalation decisions.
+- `vault.py` owns secret lookup and keeps secret values out of prompt, memory,
+  and trace surfaces.
+
+3. Unified loop control plane
+
+- `control_plane.py` owns inbound turn setup and hands every request to the
+  unified loop kernel.
+- `turn_lifecycle.py` owns turn setup, trace, memory, and finalization phases.
+- `turn_result.py` defines the turn result contract.
+- `runtime.py`, `syscalls.py`, `prompt_os.py`, and `prompting.py` provide
+  provider-mediated planner and responder calls.
+
+4. Durable loop plane
+
+- `loop_control_service.py` creates and resumes Goals, Runs, LoopSpecs, and
+  LoopRuns. It records `loop_kind` so not every loop is treated as a user-facing
+  durable goal. It does not execute the graph.
+- `goal_state_graph.py` bridges prepared Goal/LoopRun records into the durable
+  StateGraph.
+- `state_graph.py` executes `PLAN -> EXECUTE -> EVALUATE` through explicit
+  `planner_port` and `executor_port` implementations. The synchronous
+  deterministic runner is disabled.
+- `checker.py` evaluates objective verification evidence.
+
+5. Harness and workspace isolation
+
+- `harness.py` runs commands with bounded timeout and returns objective facts.
+- `workspaces.py` owns shadow workspaces, locks, and merge-back behavior.
+- `loop_runs.py` persists checkpoints, events, and current StateGraph state.
+
+6. Capabilities, governance, and stores
+
+- `capabilities.py`, `capabilities_types.py`, and `actions/*` define declared
+  tool contracts, permission ceilings, and capability execution.
+- `goals.py`, `runs.py`, `subagents.py`, `trace.py`, `memory`, and `evolution.py`
+  persist durable state and audit data.
+
+## Control Flow
+
+```mermaid
+flowchart TD
+    Ingress[API / CLI / Connector] --> ControlPlane[control_plane.py]
+    ControlPlane --> Intake[Unified Loop Intake]
+    Intake --> LoopService[LoopControlService]
+    LoopService --> LoopRun[Goal + Run + LoopSpec + LoopRun]
+    LoopRun --> GoalGraph[goal_state_graph.py]
+    GoalGraph --> Gateway[Global Resource Gateway]
+    Gateway --> StateGraph[Durable StateGraph]
+    StateGraph --> PlannerPort[Planner Port]
+    PlannerPort --> Provider[LLM Provider]
+    StateGraph --> ExecutorPort[Executor Port]
+    ExecutorPort --> Capabilities[Capability Registry]
+    StateGraph --> Harness[Harness + Shadow Workspace]
+    Harness --> Checker[Deterministic Checker]
+    Checker --> Terminal[Converged / Failed / Paused / Conflicted]
+```
+
+## Non-Negotiable Boundaries
+
+- There is no production deterministic StateGraph runner.
+- The control plane cannot self-certify durable goal completion.
+- `LoopControlService` prepares control facts; StateGraph execution happens only
+  through explicit runtime-backed ports.
+- Shadow workspace changes merge back only after objective checker evidence.
+- Trace is audit evidence, while the active StateGraph state lives in
+  materialized LoopRun records.
+
+
+## Component Responsibilities
+
+| Component | File | Responsibility |
+|---|---|---|
+| Loop intake validator | `request_router.py` | Validates model-owned intent facts for unified loop intake. |
+| Control plane | `control_plane.py` | Normalizes ingress, injects current state, and starts/resumes unified loops. |
+| Loop control service | `loop_control_service.py` | Creates, resumes, cancels, and reads durable Goal/LoopRun state. |
+| Goal graph bridge | `goal_state_graph.py` | Runs a prepared LoopRun through runtime-backed StateGraph ports. |
+| Durable StateGraph | `state_graph.py` | Executes `PLAN -> EXECUTE -> EVALUATE` through explicit ports. |
+| Resource gateway | `resource_gateway.py` | Enforces budget, rate, concurrency, pause, and escalation gates. |
+| Harness | `harness.py` | Runs objective commands with timeout and returns facts. |
+| Workspace layer | `workspaces.py` | Owns shadow workspace creation, locks, conflict detection, and merge-back. |
+| Checker | `checker.py` | Accepts or rejects objective evidence. |
+| Loop run store | `loop_runs.py` | Persists checkpoints, transitions, and events. |
+
+## StateGraph Contract
+
+`DurableStateGraphRunner.run()` is disabled. Production execution must call
+`run_async()` with both:
+
+- `planner_port`: the model-backed planner adapter.
+- `executor_port`: the capability execution adapter.
+
+If either port is missing, the graph fails immediately instead of falling back
+to deterministic placeholder behavior.
+
+## Terminal States
+
+- `CONVERGED`: checker accepted objective evidence and merge-back, if any,
+  completed cleanly.
+- `FAILED`: planner, executor, or checker rejected the run.
+- `BLOCKED`: a checker or gate cannot proceed without a new route.
+- `TIMED_OUT`: harness or checker hit a hard timeout.
+- `PAUSED`: resource limits, locks, or user control paused execution.
+- `WAITING_APPROVAL`: execution requires explicit approval.
+- `CONFLICTED`: shadow merge detected a human/agent conflict.

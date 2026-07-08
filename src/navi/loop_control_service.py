@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from .goals import Goal, GoalStore
 from .lifecycle import Acceptance, Governance, Phase, Resolution
 from .loop_contracts import (
+    BudgetPolicy,
     CheckpointPolicy,
     EscalationPolicy,
     GoalSpec,
@@ -30,6 +31,7 @@ from .state_graph import StateGraphRunResult
 class OpenGoalRequest:
     objective: str
     workspace: str
+    loop_kind: str = "durable_goal"
     source: str = "local"
     peer_id: str = ""
     sender_id: str = ""
@@ -41,6 +43,11 @@ class OpenGoalRequest:
     allowed_capabilities: tuple[str, ...] = ()
     verification_command: str = ""
     timeout_seconds: int = 120
+    token_budget: int = 0
+    call_budget: int = 0
+    cost_budget: float = 0.0
+    qps_limit: int = 0
+    max_concurrent: int = 1
     auto_start: bool = True
     cron_schedule: str = ""
 
@@ -64,6 +71,9 @@ class LoopControlServiceResult:
             "run_id": self.run.id,
             "loop_spec_id": self.loop_spec.id,
             "loop_run_id": self.loop_run.run_id,
+            "route": "unified_loop",
+            "loop_kind": str((self.loop_spec.goal.metadata or {}).get("loop_kind") or ""),
+            "budget_policy": self.loop_spec.budget_policy.to_dict(),
             "phase": self.run.phase,
             "governance": self.run.governance,
             "acceptance": self.run.acceptance,
@@ -78,7 +88,7 @@ class LoopControlServiceResult:
 
 
 class LoopControlService:
-    """Root slow-path controller: Goal operation -> LoopSpec -> StateGraph."""
+    """Root unified loop controller: Goal operation -> LoopSpec -> StateGraph."""
 
     def __init__(self, home: Path):
         self.home = home
@@ -94,7 +104,7 @@ class LoopControlService:
         run = self.runs.create(
             title=objective[:120],
             prompt=objective,
-            kind="loop",
+            kind=f"loop:{_loop_kind(request.loop_kind)}",
             source=request.source,
             peer_id=request.peer_id,
             sender_id=request.sender_id,
@@ -103,7 +113,7 @@ class LoopControlService:
             governance=Governance.APPROVED,
             acceptance=Acceptance.NONE,
             resolution=Resolution.NONE,
-            why_now="trigger=slow_path_goal",
+            why_now=f"trigger=unified_loop loop_kind={_loop_kind(request.loop_kind)}",
         )
         next_run_at = next_cron_time(request.cron_schedule, now=time.time()) if request.cron_schedule else 0.0
         goal = self.goals.create(
@@ -119,7 +129,8 @@ class LoopControlService:
             cron_schedule=request.cron_schedule,
             next_run_at=next_run_at,
             evidence={
-                "route": "slow_path",
+                "route": "unified_loop",
+                "loop_kind": _loop_kind(request.loop_kind),
                 "run_id": run.id,
                 "verification_command_declared": bool(request.verification_command.strip()),
             },
@@ -332,9 +343,9 @@ class LoopControlService:
                 VerificationStep(
                     kind=VerificationKind.LLM_CHECKER,
                     name="objective_check",
-                    evidence_key="capability_result",
+                    evidence_key="semantic_checker_result",
                     timeout=timeout,
-                    required=False,
+                    required=True,
                 ),
             )
         allowed = request.allowed_capabilities or ("*",)
@@ -346,14 +357,35 @@ class LoopControlService:
             or ("verification ladder accepts objective evidence",),
             permission_ceiling=request.permission_ceiling or "write",
             owner=request.sender_id or request.peer_id,
-            metadata={"goal_id": goal.id, "run_id": goal.run_id},
+            metadata={
+                "goal_id": goal.id,
+                "run_id": goal.run_id,
+                "session_id": goal.session_id,
+                "route": "unified_loop",
+                "loop_kind": _loop_kind(request.loop_kind),
+                "source": goal.source,
+                "peer_id": goal.peer_id,
+                "sender_id": goal.sender_id,
+            },
         )
-        return LoopSpec.from_goal(
+        spec = LoopSpec.from_goal(
             goal_spec,
             goal_id=goal.id,
             allowed_capabilities=allowed,
             verification_ladder=verification_ladder,
         )
+        spec = replace(
+            spec,
+            budget_policy=BudgetPolicy(
+                token_budget=max(0, int(request.token_budget)),
+                call_budget=max(0, int(request.call_budget)),
+                cost_budget=max(0.0, float(request.cost_budget)),
+                qps_limit=max(0, int(request.qps_limit)),
+                max_concurrent=max(1, int(request.max_concurrent)),
+            ),
+        )
+        spec.validate()
+        return spec
 
     def _update_run_for_loop(self, run_id: str, result: StateGraphRunResult) -> Run:
         terminal = result.terminal_state
@@ -479,6 +511,11 @@ def _resolve_workspace(workspace: str) -> str:
     return str(path)
 
 
+def _loop_kind(value: str) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    return normalized if normalized in {"turn", "control", "durable_goal", "scheduled"} else "durable_goal"
+
+
 def _loop_spec_from_json(raw: str) -> LoopSpec:
     data = json.loads(raw)
     goal_data = data["goal"]
@@ -523,6 +560,7 @@ def _loop_spec_from_json(raw: str) -> LoopSpec:
         workspace_policy=WorkspacePolicy(**_dict(data.get("workspace_policy"))),
         checkpoint_policy=CheckpointPolicy(**_dict(data.get("checkpoint_policy"))),
         retry_policy=RetryPolicy(**_dict(data.get("retry_policy"))),
+        budget_policy=BudgetPolicy(**_dict(data.get("budget_policy"))),
         rollback_policy=RollbackPolicy(**_dict(data.get("rollback_policy"))),
         escalation_policy=EscalationPolicy(**_dict(data.get("escalation_policy"))),
         terminal_states=tuple(str(item) for item in data.get("terminal_states", ())),

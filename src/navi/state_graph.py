@@ -10,6 +10,15 @@ from .capabilities import CapabilityRegistry
 from .capabilities_types import CapabilityContext
 from .checker import CheckerReport, DeterministicChecker
 from .harness import Harness, HarnessCommand, HarnessResult
+from .loop import (
+    LoopCheckName,
+    LoopCheckResult,
+    LoopDecision,
+    LoopDecisionKind,
+    LoopPhase,
+    LoopReason,
+    TraceFailureDomain,
+)
 from .loop_contracts import (
     LoopNode,
     LoopRunState,
@@ -28,6 +37,7 @@ from .provider import ChatMessage, ModelPool
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
 from .resource_gateway import GlobalResourceGateway, ResourceGrant, ResourceLimits, ResourceRequest
+from .trace import TraceStore
 from .workspaces import LockAcquireResult
 
 
@@ -103,6 +113,27 @@ class ReflectionDecision:
         }
 
 
+@dataclass(frozen=True)
+class SemanticCheckDecision:
+    passed: bool
+    should_continue: bool
+    next_step_hint: str
+    user_message: str
+    evidence_summary: str = ""
+
+    def to_facts(self) -> dict[str, Any]:
+        return {
+            "passed": self.passed,
+            "ok": self.passed,
+            "should_continue": self.should_continue,
+            "next_step_hint": self.next_step_hint,
+            "user_message": self.user_message,
+            "evidence_summary": self.evidence_summary,
+            "evaluator_role": "checker",
+            "isolated_context": True,
+        }
+
+
 
 class CapabilityRecoveryPort:
     """Recovery node port that turns failed capability executions into retry facts."""
@@ -168,7 +199,8 @@ class RecoveryReflectorPort:
             "harness_results": [item.to_facts() for item in harness_results],
         }
         return ReflectionDecision(
-            retry=state.attempt < spec.retry_policy.max_attempts,
+            retry=reason_code != "no_route_available"
+            and state.attempt < spec.retry_policy.max_attempts,
             reason_code=reason_code,
             facts={
                 "recovery": recovery_facts,
@@ -182,6 +214,96 @@ class RecoveryReflectorPort:
                     default=str,
                 ),
             },
+        )
+
+
+class LLMSemanticCheckerPort:
+    """Isolated semantic checker for LLM_CHECKER verification steps."""
+
+    def __init__(self, *, runtime: AgentRuntime):
+        self.runtime = runtime
+
+    _OUTPUT_SCHEMA = {
+        "name": "semantic_check_result",
+        "strict": False,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "passed": {"type": "boolean"},
+                "should_continue": {"type": "boolean"},
+                "next_step_hint": {"type": "string"},
+                "user_message": {"type": "string"},
+                "evidence_summary": {"type": "string"},
+            },
+            "required": [
+                "passed",
+                "should_continue",
+                "next_step_hint",
+                "user_message",
+                "evidence_summary",
+            ],
+            "additionalProperties": False,
+        },
+    }
+
+    async def assess(
+        self,
+        spec: LoopSpec,
+        state: LoopRunState,
+        *,
+        executed: ExecutedCapabilityStep,
+    ) -> SemanticCheckDecision:
+        response = await self.runtime.provider.complete_for(
+            "checker",
+            [
+                ChatMessage(
+                    "system",
+                    (
+                        "You are Navi's isolated semantic checker. Judge the final "
+                        "capability evidence against the objective and acceptance "
+                        "criteria. You are not the maker: do not rely on planner "
+                        "reasoning, attempt history, or prior self-assessment. "
+                        "Use only the objective, criteria, attempt number, and "
+                        "last capability result provided."
+                    ),
+                ),
+                ChatMessage(
+                    "user",
+                    json.dumps(
+                        {
+                            "objective": spec.goal.objective,
+                            "acceptance_criteria": list(spec.goal.acceptance_criteria),
+                            "attempt": state.attempt,
+                            "max_attempts": spec.retry_policy.max_attempts,
+                            "last_capability": executed.to_dict(),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                ),
+            ],
+            output_schema=self._OUTPUT_SCHEMA,
+        )
+        return self._parse(response)
+
+    @staticmethod
+    def _parse(response: str) -> SemanticCheckDecision:
+        try:
+            data = json.loads(response)
+        except json.JSONDecodeError:
+            return SemanticCheckDecision(
+                passed=False,
+                should_continue=False,
+                next_step_hint="",
+                user_message="",
+                evidence_summary="checker returned invalid JSON",
+            )
+        return SemanticCheckDecision(
+            passed=bool(data.get("passed", False)),
+            should_continue=bool(data.get("should_continue", False)),
+            next_step_hint=str(data.get("next_step_hint", "")),
+            user_message=str(data.get("user_message", "")),
+            evidence_summary=str(data.get("evidence_summary", "")),
         )
 
 
@@ -394,10 +516,21 @@ class ModelCapabilityPlannerPort:
                 model_role="planner",
                 reason="LoopSpec allowed no planner-visible capabilities",
             )
+        session_id = spec.goal.metadata.get("session_id") or ""
+        conversation_context = ""
+        if session_id:
+            messages = self.runtime.memory.get_messages(session_id)
+            if messages:
+                conversation_context = "\n\n".join(
+                    f"{msg.role.upper()}:\n{msg.content}"
+                    for msg in messages
+                    if msg.role in {"user", "assistant"}
+                )
+
         syscalls = await self.planner.plan(
             spec.goal.objective,
             tools=tools,
-            conversation_context="",
+            conversation_context=conversation_context,
             runtime_facts={
                 "loop_spec": spec.to_dict(),
                 "loop_run_state": state.to_dict(),
@@ -477,10 +610,13 @@ class DurableStateGraphRunner:
         reflector_port: RecoveryReflectorPort | None = None,
         recovery_port: CapabilityRecoveryPort | None = None,
         llm_reflector_port: LLMReflectorPort | None = None,
+        semantic_checker_port: LLMSemanticCheckerPort | None = None,
+        trace_store: TraceStore | None = None,
+        trace_context: CapabilityContext | None = None,
     ):
         self.home = home
         self.store = LoopRunStore(home)
-        self.gateway = gateway or GlobalResourceGateway(ResourceLimits(max_concurrent=1))
+        self.gateway = gateway
         self.harness = harness or Harness(home=home)
         self.checker = checker or DeterministicChecker()
         self.planner_port = planner_port
@@ -488,6 +624,9 @@ class DurableStateGraphRunner:
         self.reflector_port = reflector_port or RecoveryReflectorPort()
         self.recovery_port = recovery_port or CapabilityRecoveryPort()
         self.llm_reflector_port = llm_reflector_port
+        self.semantic_checker_port = semantic_checker_port
+        self.trace_store = trace_store
+        self.trace_context = trace_context
 
     def run(
         self,
@@ -515,6 +654,8 @@ class DurableStateGraphRunner:
                 "Durable StateGraph requires explicit planner_port and executor_port."
             )
         spec.validate()
+        if self.gateway is None:
+            self.gateway = GlobalResourceGateway(_resource_limits_for_spec(spec))
         state = self.store.get_run(run_id) if run_id else None
         if state is None:
             state = self.store.create_run(spec)
@@ -804,6 +945,11 @@ class DurableStateGraphRunner:
             harness_results.append(result)
             collected_evidence[step.evidence_key or step.name] = result.to_facts()
 
+        await self._populate_semantic_checker_evidence(
+            spec,
+            state,
+            collected_evidence=collected_evidence,
+        )
         checker_report = self.checker.evaluate(spec, collected_evidence)
         if checker_report.accepted:
             has_required_steps = any(step.required for step in spec.verification_ladder)
@@ -1023,6 +1169,38 @@ class DurableStateGraphRunner:
             evidence=decision.to_dict(),
         )
 
+    async def _populate_semantic_checker_evidence(
+        self,
+        spec: LoopSpec,
+        state: LoopRunState,
+        *,
+        collected_evidence: dict[str, Any],
+    ) -> None:
+        if self.semantic_checker_port is None:
+            return
+        cap_result = collected_evidence.get("capability_result")
+        if not isinstance(cap_result, dict):
+            return
+        executed_step = ExecutedCapabilityStep(
+            ok=cap_result.get("ok", False),
+            action=str(cap_result.get("action") or ""),
+            facts=cap_result.get("facts", {}) if isinstance(cap_result.get("facts"), dict) else {},
+            message=str(cap_result.get("message") or ""),
+            error_reason=str(cap_result.get("error_reason") or ""),
+        )
+        for step in spec.verification_ladder:
+            if step.kind != VerificationKind.LLM_CHECKER:
+                continue
+            key = step.evidence_key or step.name
+            decision = await self.semantic_checker_port.assess(
+                spec,
+                state,
+                executed=executed_step,
+            )
+            facts = {**decision.to_facts(), "attempt": state.attempt}
+            collected_evidence[key] = facts
+            collected_evidence["semantic_checker_result"] = facts
+
     def _gate_or_stop(
         self,
         state: LoopRunState,
@@ -1030,10 +1208,34 @@ class DurableStateGraphRunner:
         kind: str,
         request: ResourceRequest | None = None,
     ) -> tuple[LoopRunState, bool, ResourceGrant]:
+        if self.gateway is None:
+            raise RuntimeError("StateGraph resource gateway is not initialized")
         grant = self.gateway.request(request or ResourceRequest(kind=kind, units=1))
+        self._record_gate_decision(state=state, kind=kind, grant=grant)
         if grant.allowed:
             return state, False, grant
         return self._stop_for_resource_grant(state, grant), True, grant
+
+    def _record_gate_decision(
+        self,
+        *,
+        state: LoopRunState,
+        kind: str,
+        grant: ResourceGrant,
+    ) -> None:
+        if self.trace_store is None or self.trace_context is None:
+            return
+        if not self.trace_context.trace_id:
+            return
+        self.trace_store.add_loop_decision(
+            trace_id=self.trace_context.trace_id,
+            session_id=self.trace_context.session_id or "",
+            run_id=state.run_id,
+            source=self.trace_context.source,
+            peer_id=self.trace_context.peer_id,
+            sender_id=self.trace_context.sender_id,
+            decision=_gate_loop_decision(state=state, kind=kind, grant=grant),
+        )
 
     def _stop_for_resource_grant(self, state: LoopRunState, grant: ResourceGrant) -> LoopRunState:
         evidence = {"resource_grant": grant.to_dict()}
@@ -1110,13 +1312,53 @@ class DurableStateGraphRunner:
                 "terminal_state": str(terminal_state),
             },
         )
-        return self.store.transition(
+        transitioned = self.store.transition(
             state.run_id,
             node=node,
             checkpoint_id=checkpoint.id,
             terminal_state=terminal_state,
             condition=condition,
             evidence=evidence,
+        )
+        self._record_transition_decision(
+            from_state=state,
+            to_state=transitioned,
+            checkpoint_id=checkpoint.id,
+            condition=condition,
+            terminal_state=terminal_state,
+            evidence=evidence or {},
+        )
+        return transitioned
+
+    def _record_transition_decision(
+        self,
+        *,
+        from_state: LoopRunState,
+        to_state: LoopRunState,
+        checkpoint_id: str,
+        condition: str,
+        terminal_state: LoopTerminalState | str,
+        evidence: dict[str, Any],
+    ) -> None:
+        if self.trace_store is None or self.trace_context is None:
+            return
+        if not self.trace_context.trace_id:
+            return
+        self.trace_store.add_loop_decision(
+            trace_id=self.trace_context.trace_id,
+            session_id=self.trace_context.session_id or "",
+            run_id=to_state.run_id,
+            source=self.trace_context.source,
+            peer_id=self.trace_context.peer_id,
+            sender_id=self.trace_context.sender_id,
+            decision=_transition_loop_decision(
+                from_state=from_state,
+                to_state=to_state,
+                checkpoint_id=checkpoint_id,
+                condition=condition,
+                terminal_state=terminal_state,
+                evidence=evidence,
+            ),
         )
 
     def _checkpoint(self, state: LoopRunState, *, inputs: dict[str, Any]) -> LoopCheckpoint:
@@ -1126,6 +1368,272 @@ class DurableStateGraphRunner:
             inputs=inputs,
             state=state.to_dict(),
         )
+
+
+def _transition_loop_decision(
+    *,
+    from_state: LoopRunState,
+    to_state: LoopRunState,
+    checkpoint_id: str,
+    condition: str,
+    terminal_state: LoopTerminalState | str,
+    evidence: dict[str, Any],
+) -> LoopDecision:
+    decision = _transition_decision_kind(to_state, condition, terminal_state)
+    reason = _transition_reason(condition, terminal_state)
+    failure_domain = _transition_failure_domain(condition, terminal_state)
+    check = LoopCheckResult(
+        name=_transition_check_name(condition, terminal_state),
+        passed=str(decision)
+        not in {
+            str(LoopDecisionKind.BLOCKED),
+            str(LoopDecisionKind.FAILED),
+        },
+        reason=str(reason),
+        evidence={
+            "from_node": str(from_state.node),
+            "to_node": str(to_state.node),
+            "condition": condition,
+            "terminal_state": str(terminal_state or ""),
+            "attempt": to_state.attempt,
+            "checkpoint_id": checkpoint_id,
+            "transition_evidence": dict(evidence),
+        },
+    )
+    gate_results: tuple[LoopCheckResult, ...] = ()
+    checker_results: tuple[LoopCheckResult, ...] = (check,)
+    if str(check.name) in {
+        str(LoopCheckName.APPROVAL_GATE),
+        str(LoopCheckName.NO_PROGRESS_GATE),
+    }:
+        gate_results = (check,)
+        checker_results = ()
+    decision_evidence = {
+        "from_node": str(from_state.node),
+        "to_node": str(to_state.node),
+        "condition": condition,
+        "terminal_state": str(terminal_state or ""),
+        "loop_run_id": to_state.run_id,
+        "loop_spec_id": to_state.loop_spec_id,
+        "attempt": to_state.attempt,
+    }
+    side_effect = _transition_side_effect(evidence)
+    if side_effect:
+        decision_evidence["side_effect"] = side_effect
+    return LoopDecision(
+        decision=decision,
+        reason=reason,
+        phase=LoopPhase.DECISION,
+        failure_domain=failure_domain,
+        tool=_transition_tool(evidence),
+        run_id=to_state.run_id,
+        step_id=checkpoint_id,
+        goal_ids=(to_state.goal_id,),
+        checker_results=checker_results,
+        gate_results=gate_results,
+        evidence=decision_evidence,
+    )
+
+
+def _gate_loop_decision(
+    *,
+    state: LoopRunState,
+    kind: str,
+    grant: ResourceGrant,
+) -> LoopDecision:
+    decision = _gate_decision_kind(grant)
+    check = LoopCheckResult(
+        name=LoopCheckName.APPROVAL_GATE,
+        passed=grant.allowed,
+        reason=grant.reason,
+        evidence={
+            "kind": kind,
+            "grant": grant.to_dict(),
+            "loop_run_id": state.run_id,
+            "attempt": state.attempt,
+        },
+    )
+    return LoopDecision(
+        decision=decision,
+        reason=LoopReason.CAPABILITY_FACT_RECORDED
+        if grant.allowed
+        else LoopReason.APPROVAL_REQUIRED,
+        phase=LoopPhase.DECISION,
+        failure_domain=TraceFailureDomain.NONE
+        if grant.allowed
+        else TraceFailureDomain.SAFEGUARD_POLICY,
+        tool=kind,
+        run_id=state.run_id,
+        goal_ids=(state.goal_id,),
+        gate_results=(check,),
+        evidence={
+            "kind": kind,
+            "grant": grant.to_dict(),
+            "loop_run_id": state.run_id,
+            "loop_spec_id": state.loop_spec_id,
+            "attempt": state.attempt,
+        },
+    )
+
+
+def _gate_decision_kind(grant: ResourceGrant) -> LoopDecisionKind:
+    if grant.decision == ResourceDecision.ALLOW:
+        return LoopDecisionKind.CONTINUE
+    if grant.decision == ResourceDecision.BLOCK:
+        return LoopDecisionKind.FAILED
+    return LoopDecisionKind.BLOCKED
+
+
+def _resource_limits_for_spec(spec: LoopSpec) -> ResourceLimits:
+    policy = spec.budget_policy
+    return ResourceLimits(
+        token_budget=policy.token_budget,
+        call_budget=policy.call_budget,
+        cost_budget=policy.cost_budget,
+        qps_limit=policy.qps_limit,
+        max_concurrent=policy.max_concurrent,
+    )
+
+
+def _transition_decision_kind(
+    state: LoopRunState,
+    condition: str,
+    terminal_state: LoopTerminalState | str,
+) -> LoopDecisionKind:
+    terminal = str(terminal_state or "")
+    if terminal == str(LoopTerminalState.CONVERGED):
+        return LoopDecisionKind.CONVERGED
+    if terminal in {
+        str(LoopTerminalState.PAUSED),
+        str(LoopTerminalState.WAITING_APPROVAL),
+        str(LoopTerminalState.BLOCKED),
+        str(LoopTerminalState.CONFLICTED),
+    }:
+        return LoopDecisionKind.BLOCKED
+    if terminal:
+        return LoopDecisionKind.FAILED
+    if condition in {
+        "capability_failed",
+        "checker_failed",
+        "new_route_available",
+    } or str(state.node) == str(LoopNode.REFLECT):
+        return LoopDecisionKind.RECOVER
+    if condition.startswith("resource_"):
+        return LoopDecisionKind.BLOCKED
+    return LoopDecisionKind.CONTINUE
+
+
+def _transition_reason(
+    condition: str,
+    terminal_state: LoopTerminalState | str,
+) -> LoopReason:
+    terminal = str(terminal_state or "")
+    if condition in {"planner_failed", "missing_planned_capability"}:
+        return LoopReason.PLANNER_OR_PARSER_FAILURE
+    if condition == "capability_failed":
+        return LoopReason.CAPABILITY_FAILURE
+    if condition in {"checker_failed", "checker_rejected", "no_route_available"}:
+        return LoopReason.COMPLETION_CHECKER_BLOCKED
+    if condition in {"resource_pause", "resource_or_user_pause", "resource_escalate"}:
+        return LoopReason.APPROVAL_REQUIRED
+    if condition == "hard_timeout":
+        return LoopReason.TERMINAL_RESULT
+    if terminal == str(LoopTerminalState.CONVERGED) or condition == "checker_passed":
+        return LoopReason.COMPLETION_EVIDENCE_TRUE
+    if condition in {"plan_ready", "side_effect_recorded", "continue_iteration"}:
+        return LoopReason.CAPABILITY_FACT_RECORDED
+    if terminal:
+        return LoopReason.TERMINAL_RESULT
+    return LoopReason.CAPABILITY_FACT_RECORDED
+
+
+def _transition_failure_domain(
+    condition: str,
+    terminal_state: LoopTerminalState | str,
+) -> TraceFailureDomain:
+    terminal = str(terminal_state or "")
+    if condition in {"planner_failed", "missing_planned_capability"}:
+        return TraceFailureDomain.PLANNER_OR_PARSER
+    if condition == "capability_failed":
+        return TraceFailureDomain.CAPABILITY_FAILURE
+    if condition in {"checker_failed", "checker_rejected", "no_route_available"}:
+        return TraceFailureDomain.CHECKER_BLOCKED
+    if condition.startswith("resource_") or terminal in {
+        str(LoopTerminalState.PAUSED),
+        str(LoopTerminalState.WAITING_APPROVAL),
+    }:
+        return TraceFailureDomain.SAFEGUARD_POLICY
+    if terminal in {
+        str(LoopTerminalState.FAILED),
+        str(LoopTerminalState.TIMED_OUT),
+        str(LoopTerminalState.CANCELLED),
+        str(LoopTerminalState.SUPERSEDED),
+        str(LoopTerminalState.CONFLICTED),
+    }:
+        return TraceFailureDomain.RUNTIME
+    return TraceFailureDomain.NONE
+
+
+def _transition_check_name(
+    condition: str,
+    terminal_state: LoopTerminalState | str,
+) -> LoopCheckName:
+    if condition in {"planner_failed", "plan_ready"}:
+        return LoopCheckName.PLANNER_RESULT
+    if condition in {"capability_failed", "side_effect_recorded"}:
+        return LoopCheckName.CAPABILITY_RESULT
+    if condition.startswith("resource_"):
+        return LoopCheckName.APPROVAL_GATE
+    if terminal_state:
+        return LoopCheckName.TERMINAL_RESULT
+    return LoopCheckName.COMPLETION_CHECKER
+
+
+def _transition_tool(evidence: dict[str, Any]) -> str:
+    planned = evidence.get("planned_capability")
+    if isinstance(planned, dict):
+        return str(planned.get("tool") or "")
+    executor = evidence.get("executor")
+    if isinstance(executor, dict):
+        facts = executor.get("facts")
+        if isinstance(facts, dict):
+            return str(facts.get("tool") or "")
+        return str(executor.get("tool") or executor.get("action") or "")
+    return str(evidence.get("tool") or evidence.get("action") or "")
+
+
+def _transition_side_effect(evidence: dict[str, Any]) -> dict[str, Any]:
+    executor = evidence.get("executor")
+    if not isinstance(executor, dict):
+        return {}
+    facts = executor.get("facts")
+    if not isinstance(facts, dict):
+        return {}
+    has_explicit_side_effect = any(
+        key in facts
+        for key in (
+            "side_effect_scope",
+            "side_effect_state",
+            "side_effect_artifact",
+            "side_effect_commit",
+            "side_effect_compensate",
+        )
+    ) or str(executor.get("action") or "") == "connector_outbound"
+    if not has_explicit_side_effect:
+        return {}
+    scope = str(facts.get("side_effect_scope") or "")
+    state = str(facts.get("side_effect_state") or facts.get("state_transition") or "")
+    artifact = str(facts.get("side_effect_artifact") or facts.get("outbound_path") or "")
+    if not scope and not state and not artifact:
+        return {}
+    return {
+        "scope": scope,
+        "state": state,
+        "artifact": artifact,
+        "action": str(executor.get("action") or ""),
+        "commit": str(facts.get("side_effect_commit") or ""),
+        "compensate": str(facts.get("side_effect_compensate") or ""),
+    }
 
 
 def _step_runs_command(step: VerificationStep) -> bool:
@@ -1143,12 +1651,12 @@ def _workspace_lock_resource(workspace: Path) -> str:
 def _checker_reason_code(checker_report: CheckerReport) -> str:
     if checker_report.timed_out:
         return "checker_timed_out"
-    if checker_report.blocked:
-        return "checker_blocked"
     for item in checker_report.checker_results:
         reason = str(getattr(item, "reason", "") or "").strip()
         if reason:
             return reason
+    if checker_report.blocked:
+        return "checker_blocked"
     return "checker_rejected"
 
 
