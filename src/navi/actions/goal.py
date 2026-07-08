@@ -79,7 +79,15 @@ class GoalOpenCapability(BaseCapability):
                 result = service.open_goal(request)
         except ValueError as exc:
             raise SchemaMismatch(str(exc)) from exc
-        return _fact_result("goal", result.to_facts(), run_id=result.run.id)
+        facts = result.to_facts()
+        # Promote connector_outbound side effects (e.g. a staged file the
+        # weixin connector should actually send) to the top level so the
+        # connector runtime's _send_reply can dispatch them. Without this,
+        # the file sits in the outbox forever and the user gets nothing.
+        promoted = _promote_outbound_facts(result)
+        if promoted:
+            facts = {**facts, **promoted}
+        return _fact_result("goal", facts, run_id=result.run.id)
 
 
 @capability("goal_resume")
@@ -218,3 +226,35 @@ def _planner_capabilities(home: Path, workspace: str, *, permission_ceiling: str
         permission_ceiling=permission_ceiling,
         runtime=runtime,
     )
+
+
+def _promote_outbound_facts(result: Any) -> dict[str, Any]:
+    """Lift connector_outbound side effects to the top level of the facts.
+
+    The planner ReAct loop executes capabilities and stores their results in
+    ``state_graph_result.evidence["capability_result"]``. When the last
+    capability was a connector outbound (e.g. weixin send_file), its
+    ``outbound_path`` and ``action`` must be promoted so the connector
+    runtime's ``_send_reply`` can actually dispatch the file. Without this
+    promotion the file is staged to the outbox but never sent, and the user
+    receives nothing.
+    """
+    state_graph_result = getattr(result, "state_graph_result", None)
+    if state_graph_result is None:
+        return {}
+    evidence = getattr(state_graph_result, "evidence", None) or {}
+    capability_result = evidence.get("capability_result")
+    if not isinstance(capability_result, dict):
+        return {}
+    action = str(capability_result.get("action") or "")
+    cap_facts = capability_result.get("facts")
+    if not isinstance(cap_facts, dict):
+        return {}
+    outbound_path = str(cap_facts.get("outbound_path") or "")
+    if action != "connector_outbound" or not outbound_path:
+        return {}
+    return {
+        "action": action,
+        "outbound_path": outbound_path,
+        "outbound_message": str(capability_result.get("message") or ""),
+    }

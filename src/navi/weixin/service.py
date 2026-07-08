@@ -503,7 +503,11 @@ class WeixinService:
                 media_paths.append(facts["outbound_path"])
         else:
             media_paths, cleaned_text = _extract_media_directives(text)
-            
+            # Also dispatch files promoted from the planner ReAct loop
+            # (e.g. goal.open staged a weixin send_file). Without this
+            # the file sits in the outbox forever and the user gets nothing.
+            if "outbound_path" in facts:
+                media_paths.append(facts["outbound_path"])
         sent_media = 0
         for media_path in media_paths:
             allowed_path = self._allowed_outbound_media_path(media_path)
