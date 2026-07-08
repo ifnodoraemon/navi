@@ -74,6 +74,7 @@ class MemoryProvider(Protocol):
     def delete_item(self, item_id: str) -> None: ...
     def add_message(self, session_id: str, role: str, content: str, created_at: float) -> None: ...
     def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]: ...
+    def clear_messages(self, session_id: str) -> int: ...
     def list_sessions(self) -> list[str]: ...
     def set_session_alias(
         self, alias: str, session_id: str, created_at: float, updated_at: float
@@ -411,6 +412,21 @@ class SQLiteMemoryProvider:
                 (session_id, limit),
             ).fetchall()
         return [StoredMessage(*row) for row in reversed(rows)]
+
+    def clear_messages(self, session_id: str) -> int:
+        """Delete all messages for *session_id*.
+
+        conversation context is polluted with failing assumptions.
+        context when the loop triggers ``REFLECT_AND_REPLAN`` — the next
+        planner call rebuilds context from durable constraints + working
+        memory snapshot only. Returns the number of deleted rows.
+        """
+        with connect(self.db_path) as conn:
+            cur = conn.execute(
+                "DELETE FROM messages WHERE session_id = ?",
+                (session_id,),
+            )
+            return cur.rowcount
 
     def list_sessions(self) -> list[str]:
         with connect(self.db_path) as conn:

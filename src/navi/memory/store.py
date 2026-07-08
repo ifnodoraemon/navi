@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 from ..paths import db_paths
@@ -27,7 +27,7 @@ from .provider import MemoryProvider, SQLiteMemoryProvider
 
 # TYPE_CHECKING-only imports kept in the methods that need them to avoid
 # import cycles at module load time.
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .provider import SessionAlias, StoredMessage
@@ -47,9 +47,6 @@ class MemoryStore:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.provider = provider or SQLiteMemoryProvider(db_paths(home).memory)
         self._embedding_service = embedding_service
-        self._session_locks: dict[str, asyncio.Lock] = {}
-        self._session_lock_refs: dict[str, int] = {}
-        self._session_locks_guard: asyncio.Lock | None = None
 
 
     # ------------------------------------------------------------------ writes
@@ -240,6 +237,93 @@ class MemoryStore:
                 metadata_keys=sorted(current.metadata.keys()),
             )
         self.provider.delete_item(item_id)
+
+    def expire_items(self, *, now: float | None = None, limit: int = 1000) -> dict[str, Any]:
+        """Move expired active working-memory items out of the active set.
+
+        Expiration is explicit GC, not prompt compression: expired active items
+        become ``stale`` and expired proposed/accepted/contradicted items are
+        archived. The item remains auditable, but no longer renders into active
+        working memory or recall.
+        """
+        current_time = time.time() if now is None else now
+        expired: list[dict[str, str]] = []
+        for item in self.list_items(limit=limit):
+            if not item.expires_at or item.expires_at > current_time:
+                continue
+            if item.status in {"archived", "revoked", "stale"}:
+                continue
+            next_status = "stale" if item.status == "active" else "archived"
+            updated = self.set_status(item.id, next_status)
+            if updated is not None:
+                expired.append(
+                    {
+                        "id": updated.id,
+                        "previous_status": item.status,
+                        "status": updated.status,
+                    }
+                )
+        return {
+            "expired_count": len(expired),
+            "expired_items": expired,
+        }
+
+    def supersede_item(
+        self,
+        item_id: str,
+        *,
+        replacement_item_id: str,
+        reason: str,
+    ) -> MemoryItem | None:
+        """Archive an item and record the item that superseded it."""
+        current = self.get_item(item_id)
+        replacement = self.get_item(replacement_item_id)
+        if current is None or replacement is None:
+            return None
+        if not reason.strip():
+            raise ValueError("supersede reason is required")
+        metadata = dict(current.metadata)
+        superseded_by = _metadata_id_list(metadata.get("superseded_by"))
+        if replacement_item_id not in superseded_by:
+            superseded_by.append(replacement_item_id)
+        metadata["superseded_by"] = superseded_by
+        metadata["supersede_reason"] = reason.strip()
+        metadata["superseded_at"] = time.time()
+        self._assert_memory_write_allowed(
+            memory_type=current.type,
+            status="archived",
+            scope=current.scope,
+            source=current.source,
+            confidence=max(0.0, min(1.0, current.confidence)),
+            content_chars=len(current.content),
+            metadata_keys=sorted(metadata.keys()),
+        )
+        updated = replace(
+            current,
+            status="archived",
+            metadata=metadata,
+            updated_at=time.time(),
+        )
+        self.provider.store_item(updated)
+        return self.get_item(item_id)
+
+    def garbage_collect(self, *, now: float | None = None, limit: int = 1000) -> dict[str, Any]:
+        """Run bounded working-memory GC and return objective facts."""
+        expired = self.expire_items(now=now, limit=limit)
+        active_count = len(
+            [
+                item
+                for item in self.list_items(limit=limit)
+                if item.status in ACTIVE_STATUSES
+                and (not item.expires_at or item.expires_at > (now or time.time()))
+            ]
+        )
+        return {
+            "gc": "working_memory",
+            "expired_count": expired["expired_count"],
+            "expired_items": expired["expired_items"],
+            "active_count": active_count,
+        }
 
     def restore_item(self, item_dict: dict) -> None:
         if isinstance(item_dict.get("metadata"), str):
@@ -450,6 +534,37 @@ class MemoryStore:
             )
         return "\n".join(lines)
 
+    def render_working_memory(self, *, goal_store: Any = None, limit: int = 20) -> str:
+        """Render a pinned working-memory snapshot for the planner.
+
+        Gap D: extend the per-step durable-constraints injection to also
+        carry working state — the active goal + objective, the phase, and
+        key run facts. This is the "pin working memory so it survives
+        context compression" piece: every step the planner sees a fresh
+        snapshot of what it is currently working on, regardless of how
+        much conversation history has been truncated or summarized.
+
+        Returns "" when there is no goal store or no active goals.
+        """
+        if goal_store is None:
+            return ""
+        from ..lifecycle import Phase as _GoalPhase  # local import to avoid cycle
+
+        try:
+            goals = goal_store.list(limit=limit)
+        except Exception:
+            return ""
+        active = [g for g in goals if g.phase == str(_GoalPhase.RUNNING)]
+        if not active:
+            return ""
+        lines = ["Working memory snapshot (reloaded every step; survives context compression):"]
+        for g in active:
+            lines.append(
+                f"- [goal_id={g.id} phase={g.phase} run_id={g.run_id}] "
+                f"objective={g.objective}"
+            )
+        return "\n".join(lines)
+
     # --------------------------------------------------------------- sessions
 
     def new_session_id(self) -> str:
@@ -492,6 +607,16 @@ class MemoryStore:
     def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]:
         return self.provider.get_messages(session_id, limit)
 
+    def clear_messages(self, session_id: str) -> int:
+        """Delete all messages for *session_id*.
+
+        conversation context is polluted with failing assumptions.
+        context when the loop triggers ``REFLECT_AND_REPLAN``. The next
+        planner call rebuilds context from durable constraints + working
+        memory snapshot only. Returns the number of deleted rows.
+        """
+        return self.provider.clear_messages(session_id)
+
     def _list_active_learnable_items(self) -> list[MemoryItem]:
         active_items: list[MemoryItem] = []
         for item_type in LEARNABLE_MEMORY_TYPES:
@@ -503,32 +628,6 @@ class MemoryStore:
                 )
             )
         return active_items
-
-    async def _acquire_session_lock(self, session_id: str) -> asyncio.Lock:
-        guard = self._session_lock_guard()
-        async with guard:
-            lock = self._session_locks.get(session_id)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._session_locks[session_id] = lock
-            self._session_lock_refs[session_id] = self._session_lock_refs.get(session_id, 0) + 1
-            return lock
-
-    async def _release_session_lock(self, session_id: str) -> None:
-        guard = self._session_lock_guard()
-        async with guard:
-            refs = self._session_lock_refs.get(session_id, 0) - 1
-            if refs > 0:
-                self._session_lock_refs[session_id] = refs
-                return
-            self._session_lock_refs.pop(session_id, None)
-            self._session_locks.pop(session_id, None)
-
-    def _session_lock_guard(self) -> asyncio.Lock:
-        if self._session_locks_guard is None:
-            self._session_locks_guard = asyncio.Lock()
-        return self._session_locks_guard
-
 
     # --------------------------------------------------------- apply learnings
 

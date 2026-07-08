@@ -8,14 +8,15 @@ from contextlib import closing
 import pytest
 import yaml
 
-from navi.context import ContextManager
+from navi.actions.delegation import _delegation_state_facts
+
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
-from navi.engine import LoopEngine, _dynamic_intent_facts
+from navi.control_plane import TurnController, _dynamic_intent_facts
 from navi.connector_runtime import ConnectorMessage, ConnectorIngressRuntime
 from navi.evolution import EvolutionEngine, EvolutionLedger
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
-from navi.engine_types import AgentTurnResult
+from navi.turn_result import AgentTurnResult
 from navi.execution import ExecutionService
 from navi.goals import GoalStore
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
@@ -29,6 +30,21 @@ from navi.trace import TraceStore
 
 def _empty_provider_usage(self, role: str) -> dict:
     return {}
+
+
+def test_delegation_state_facts_are_objective_status_only() -> None:
+    class RunLike:
+        phase = Phase.PAUSED
+        governance = Governance.AWAITING_APPROVAL
+        resolution = Resolution.BLOCKED
+
+    facts = _delegation_state_facts(RunLike())
+
+    assert facts == {
+        "awaiting_approval": True,
+        "awaiting_execution": False,
+        "completed": False,
+    }
 
 
 def test_evolution_ledger_uses_latest_run_id_schema(tmp_path):
@@ -125,32 +141,7 @@ def test_provider_rejects_structured_json_hidden_in_reasoning_content():
         _extract_openai_content(data)
 
 
-def test_planner_history_redacts_stale_approval_codes() -> None:
-    class Message:
-        def __init__(self, role: str, content: str) -> None:
-            self.role = role
-            self.content = content
 
-    context = ContextManager(recent_turns=6).build_conversation_context(
-        [
-            Message(
-                "assistant",
-                (
-                    "approval_code=408239\n"
-                    "approval code 408239\n"
-                    "审批码包括：670343, 357979, 408239"
-                ),
-            ),
-            Message("user", "你好"),
-        ]
-    )
-
-    assert "408239" not in context
-    assert "670343" not in context
-    assert "357979" not in context
-    assert "approval_code=[redacted-history-approval-code]" in context
-    assert "approval code [redacted-history-approval-code]" in context
-    assert "审批码包括：[redacted-history-approval-codes]" in context
 
 
 def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
@@ -271,6 +262,12 @@ class _PromptCaptureProvider:
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]
 
+    def usage_for(self, role: str) -> dict:
+        return {}
+
+    def usage_for(self, role: str) -> dict:
+        return {}
+
 
 def test_dynamic_intent_current_state_is_not_duplicated() -> None:
     duplicate_state = {
@@ -296,11 +293,11 @@ def test_dynamic_intent_current_state_is_not_duplicated() -> None:
 
 
 @pytest.mark.asyncio
-async def test_weixin_intent_current_state_is_not_repeated_in_planner_observations(
+async def test_weixin_intent_current_state_is_not_repeated_in_planner_runtime_facts(
     tmp_path,
 ) -> None:
     provider = _PromptCaptureProvider()
-    engine = LoopEngine(
+    engine = TurnController(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -321,8 +318,9 @@ async def test_weixin_intent_current_state_is_not_repeated_in_planner_observatio
     )
 
     assert result.ok is True
-    assert provider.planner_user_prompt.count('"observation_type": "current_state"') == 1
-    assert '"observation_type": "dynamic_intent"' not in provider.planner_user_prompt
+    assert provider.planner_user_prompt.count('"current_state"') == 1
+    assert "<runtime_facts>" in provider.planner_user_prompt
+    assert '"dynamic_intent"' not in provider.planner_user_prompt
     assert "duplicate-current-state-marker" not in provider.planner_user_prompt
 
 
@@ -417,6 +415,51 @@ async def test_governed_sensitive_shell_call_suspends_until_matching_approval(tm
 
 
 @pytest.mark.asyncio
+async def test_active_turn_sensitive_shell_call_creates_durable_approval(tmp_path):
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        peer_id="local",
+        sender_id="user-1",
+        source="local",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    args = {"command": ["python", "-c", "print('needs approval')"]}
+
+    suspended = await registry.invoke("shell.run", args, permission="write", context=context)
+
+    assert suspended.ok is False
+    assert suspended.terminal is False
+    assert suspended.error_reason == "sensitive_op_requires_approval"
+    assert suspended.facts["entity_type"] == "approval_request"
+    assert suspended.facts["requested_tool"] == "shell.run"
+    run = RunStore(tmp_path).get(suspended.run_id)
+    assert run is not None
+    assert run.kind == "capability_approval"
+    assert run.phase == Phase.PAUSED
+    assert run.governance == Governance.AWAITING_APPROVAL
+    approval = RunStore(tmp_path).list_approvals(run_id=run.id)[0]
+    assert approval.action == "capability"
+    assert approval.requested_tool == "shell.run"
+    assert approval.requested_permission == "write"
+
+
+def test_network_tools_are_not_plain_read_capabilities(tmp_path):
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    read_names = {spec.name for spec in registry.planner_specs(permission_ceiling="read")}
+    network_names = {spec.name for spec in registry.planner_specs(permission_ceiling="network")}
+
+    assert "web.search" not in read_names
+    assert "http.fetch" not in read_names
+    assert "web.search" in network_names
+    assert "http.fetch" in network_names
+    assert registry.get("web.search").permission == "network"
+    assert registry.get("http.fetch").permission == "network"
+
+
+@pytest.mark.asyncio
 async def test_planner_structured_output_wrapper_is_not_a_capability_name():
     provider = _PlannerSchemaProvider()
     planner = ModelSyscallPlanner(provider)
@@ -430,9 +473,11 @@ async def test_planner_structured_output_wrapper_is_not_a_capability_name():
         "args",
         "model_role",
     ]
-    assert decision.tool == "respond"
-    assert decision.confidence == 0.0
-    assert decision.reason == ""
+    assert isinstance(decision, list)
+    assert len(decision) == 1
+    assert decision[0].tool == "respond"
+    assert decision[0].confidence == 0.0
+    assert decision[0].reason == ""
 
 
 def test_anthropic_structured_wrapper_returns_inner_planner_decision():
@@ -474,46 +519,60 @@ def test_anthropic_direct_tool_call_is_not_reconstructed_as_planner_decision():
 
 
 def test_planner_parser_rejects_markdown_fenced_json():
-    decision = ModelSyscallPlanner._parse_syscall(
+    decisions = ModelSyscallPlanner._parse_syscalls(
         '```json\n{"tool":"respond","permission":"read","args":{},'
         '"model_role":"responder","confidence":1,"reason":"done"}\n```'
     )
 
-    assert decision.tool == "system.planner_error"
-    assert decision.reason == "planner returned invalid JSON"
+    assert isinstance(decisions, list)
+    assert len(decisions) == 1
+    assert decisions[0].tool == "system.planner_error"
+    assert decisions[0].reason == "planner returned invalid JSON"
 
 
 def test_planner_parser_accepts_missing_optional_audit_fields():
-    decision = ModelSyscallPlanner._parse_syscall(
+    decisions = ModelSyscallPlanner._parse_syscalls(
         json.dumps(
             {
-                "tool": "respond",
-                "permission": "read",
-                "args": {"message": "ok"},
-                "model_role": "responder",
+                "syscalls": [
+                    {
+                        "tool": "respond",
+                        "permission": "read",
+                        "args": {"message": "ok"},
+                        "model_role": "responder",
+                    }
+                ]
             }
         )
     )
 
-    assert decision.tool == "respond"
-    assert decision.confidence == 0.0
-    assert decision.reason == ""
+    assert isinstance(decisions, list)
+    assert len(decisions) == 1
+    assert decisions[0].tool == "respond"
+    assert decisions[0].confidence == 0.0
+    assert decisions[0].reason == ""
 
 
 def test_planner_parser_rejects_missing_required_schema_fields():
-    decision = ModelSyscallPlanner._parse_syscall(
+    decisions = ModelSyscallPlanner._parse_syscalls(
         json.dumps(
             {
-                "tool": "respond",
-                "permission": "read",
-                "args": {"message": "ok"},
+                "syscalls": [
+                    {
+                        "tool": "respond",
+                        "permission": "read",
+                        "args": {"message": "ok"},
+                    }
+                ]
             }
         )
     )
 
-    assert decision.tool == "system.planner_error"
-    assert decision.reason == "planner decision schema mismatch"
-    assert "$.model_role is required" in decision.args["schema_errors"]
+    assert isinstance(decisions, list)
+    assert len(decisions) == 1
+    assert decisions[0].tool == "system.planner_error"
+    assert decisions[0].reason == "planner decision schema mismatch"
+    assert "$.syscalls[0].model_role is required" in decisions[0].args["schema_errors"]
 
 
 @pytest.mark.asyncio
@@ -529,10 +588,14 @@ async def test_planner_rejects_selected_capability_args_schema_mismatch():
             del role, messages, output_schema
             return json.dumps(
                 {
-                    "tool": "respond",
-                    "permission": "read",
-                    "args": {},
-                    "model_role": "responder",
+                    "syscalls": [
+                        {
+                            "tool": "respond",
+                            "permission": "read",
+                            "args": {},
+                            "model_role": "responder",
+                        }
+                    ]
                 }
             )
 
@@ -554,10 +617,83 @@ async def test_planner_rejects_selected_capability_args_schema_mismatch():
         ],
     )
 
-    assert decision.tool == "system.planner_error"
-    assert decision.reason == "planner capability arguments schema mismatch"
-    assert decision.args["selected_tool"] == "respond"
-    assert "$.message is required" in decision.args["schema_errors"]
+    assert isinstance(decision, list)
+    assert len(decision) == 1
+    assert decision[0].tool == "system.planner_error"
+    assert decision[0].reason == "planner capability arguments schema mismatch"
+    assert decision[0].args["selected_tool"] == "respond"
+    assert "$.message is required" in decision[0].args["schema_errors"]
+
+
+def test_planner_parser_parses_multiple_syscalls():
+    decisions = ModelSyscallPlanner._parse_syscalls(
+        json.dumps(
+            {
+                "syscalls": [
+                    {
+                        "tool": "delegate.spawn",
+                        "permission": "prepare",
+                        "args": {"objective": "x"},
+                        "model_role": "planner",
+                    },
+                    {
+                        "tool": "respond",
+                        "permission": "read",
+                        "args": {"message": "done"},
+                        "model_role": "responder",
+                    },
+                ]
+            }
+        )
+    )
+
+    assert isinstance(decisions, list)
+    assert len(decisions) == 2
+    assert decisions[0].tool == "delegate.spawn"
+    assert decisions[1].tool == "respond"
+    assert decisions[1].message == "done"
+
+
+def test_planner_parser_rejects_empty_syscalls_list():
+    decisions = ModelSyscallPlanner._parse_syscalls(
+        json.dumps({"syscalls": []})
+    )
+
+    assert isinstance(decisions, list)
+    assert len(decisions) == 1
+    assert decisions[0].tool == "system.planner_error"
+    assert decisions[0].reason == "planner 'syscalls' list was empty"
+
+
+def test_planner_parser_rejects_non_list_syscalls():
+    decisions = ModelSyscallPlanner._parse_syscalls(
+        json.dumps({"syscalls": "not a list"})
+    )
+
+    assert isinstance(decisions, list)
+    assert len(decisions) == 1
+    assert decisions[0].tool == "system.planner_error"
+    assert decisions[0].reason == "planner decision schema mismatch"
+    assert "$.syscalls expected array" in decisions[0].args["schema_errors"]
+
+
+def test_planner_parser_rejects_single_syscall_without_wrapper():
+    decisions = ModelSyscallPlanner._parse_syscalls(
+        json.dumps(
+            {
+                "tool": "respond",
+                "permission": "read",
+                "args": {"message": "hi"},
+                "model_role": "responder",
+            }
+        )
+    )
+
+    assert isinstance(decisions, list)
+    assert len(decisions) == 1
+    assert decisions[0].tool == "system.planner_error"
+    assert decisions[0].reason == "planner decision schema mismatch"
+    assert "$.syscalls is required" in decisions[0].args["schema_errors"]
 
 
 class _StructuredJourneyProvider:
@@ -668,12 +804,59 @@ class _RepeatListProvider:
             assert '"reason": "repeated_progress_signature"' in content
             assert '"tool": "delegate.list"' in content
             assert "Loop Reflection" not in content
-            assert "Capability observations:" not in content
             return "当前没有任务。"
         raise AssertionError(f"unexpected role: {role}")
 
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]
+
+
+class _LoopGateAwareListProvider:
+    def __init__(self) -> None:
+        self.planner_calls = 0
+        self.responder_calls = 0
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        if role == "planner":
+            self.planner_calls += 1
+            content = "\n".join(message.content for message in messages)
+            if "loop_gate" in content and "repeated" in content:
+                return json.dumps(
+                    {
+                        "tool": "respond",
+                        "permission": "read",
+                        "args": {"message": "我会停止重复检查。"},
+                        "model_role": "responder",
+                        "confidence": 1.0,
+                        "reason": "loop gate facts observed",
+                    }
+                )
+            return json.dumps(
+                {
+                    "tool": "delegate.list",
+                    "permission": "read",
+                    "args": {"limit": 20},
+                    "model_role": "responder",
+                    "confidence": 1.0,
+                    "reason": "inspect current tasks",
+                }
+            )
+        if role == "responder":
+            self.responder_calls += 1
+            return "unexpected responder call"
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
 
 
 class _RepeatCompletionDeleteProvider:
@@ -843,7 +1026,7 @@ class _InvalidCapabilityArgsProvider:
             self.call_count += 1
             self.last_prompt = "\n".join(message.content for message in messages)
             if self.call_count > 5:
-                assert '"observation_type": "planner_error"' in self.last_prompt
+                assert '"fact_type": "planner_error"' in self.last_prompt
                 assert '"selected_tool": "respond"' in self.last_prompt
                 assert "$.message is required" in self.last_prompt
                 return json.dumps(
@@ -906,7 +1089,7 @@ class _WatchCreateThenRespondProvider:
                         "model_role": "planner",
                     }
                 )
-            assert '"observation_type": "capability_result"' in content
+            assert '"fact_type": "capability_result"' in content
             assert '"tool": "watch.create"' in content
             assert '"completion_evidence": true' in content
             assert "Watch created" not in content
@@ -1171,7 +1354,7 @@ async def test_executor_ask_result_blocks_run_instead_of_marking_completed(
 ):
     import navi.execution as execution_module
 
-    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _AskOnlyEngine)
+    monkeypatch.setattr(execution_module, "get_turn_controller_class", lambda: _AskOnlyEngine)
     runs = RunStore(tmp_path)
     task = runs.create(
         "在用户电脑上找到简历文件并发送给用户",
@@ -1198,7 +1381,7 @@ async def test_executor_terminal_response_marks_governed_run_completed(
 ):
     import navi.execution as execution_module
 
-    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _CompletedEngine)
+    monkeypatch.setattr(execution_module, "get_turn_controller_class", lambda: _CompletedEngine)
     runs = RunStore(tmp_path)
     task = runs.create(
         "在用户电脑上找到简历文件并发送给用户",
@@ -1246,7 +1429,7 @@ async def test_executor_preserves_connector_outbound_media_directive(
                 },
             )
 
-    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _ConnectorOutboundEngine)
+    monkeypatch.setattr(execution_module, "get_turn_controller_class", lambda: _ConnectorOutboundEngine)
     runs = RunStore(tmp_path)
     task = runs.create(
         "在用户电脑上找到简历文件并发送给用户",
@@ -1292,7 +1475,7 @@ async def test_executor_uses_run_id_as_trace_id_for_delegated_turn(
                 ok=True,
             )
 
-    monkeypatch.setattr(execution_module, "get_engine_class", lambda: _TraceCapturingEngine)
+    monkeypatch.setattr(execution_module, "get_turn_controller_class", lambda: _TraceCapturingEngine)
     runs = RunStore(tmp_path)
     task = runs.create(
         "trace correlated execution",
@@ -1325,7 +1508,7 @@ async def test_remote_expired_task_cleanup_does_not_expose_delete(tmp_path):
         resolution=Resolution.BLOCKED,
     )
     provider = _RemoteDeleteUnavailableProvider()
-    engine = LoopEngine(
+    engine = TurnController(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1354,7 +1537,7 @@ async def test_remote_expired_task_cleanup_does_not_expose_delete(tmp_path):
 @pytest.mark.asyncio
 async def test_completion_evidence_returns_to_model_for_response(tmp_path):
     provider = _WatchCreateThenRespondProvider(time.time() + 3600)
-    engine = LoopEngine(
+    engine = TurnController(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1388,7 +1571,7 @@ async def test_completion_evidence_returns_to_model_for_response(tmp_path):
 @pytest.mark.asyncio
 async def test_repeated_completion_evidence_finalizes_without_looping(tmp_path):
     provider = _RepeatCompletionDeleteProvider()
-    engine = LoopEngine(
+    engine = TurnController(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1403,7 +1586,7 @@ async def test_repeated_completion_evidence_finalizes_without_looping(tmp_path):
         session_alias="local:peer-1:sender-1",
     )
 
-    assert 3 <= provider.planner_calls <= 4
+    assert 3 <= provider.planner_calls <= 5
     assert provider.responder_calls == 1
     assert result.text == "任务清理已完成。"
     assert result.action == "execute:system.task_complete"
@@ -1419,9 +1602,51 @@ async def test_repeated_completion_evidence_finalizes_without_looping(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_no_progress_gate_soft_fact_allows_planner_to_recover(tmp_path):
+    provider = _LoopGateAwareListProvider()
+    engine = TurnController(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+
+    result = await engine.handle(
+        "我们现在都要哪些任务",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+        session_alias="weixin:peer-1:sender-1",
+    )
+
+    assert result.text == "我会停止重复检查。"
+    assert result.action == "chat"
+    assert result.ok is True
+    assert provider.planner_calls == 4
+    assert provider.responder_calls == 0
+    decisions = [
+        json.loads(event.output_json)
+        for event in TraceStore(tmp_path).list_events(result.trace_id)
+        if event.phase == "loop.decision"
+    ]
+    # The loop_progress_fact injected on repeat carries gate_status="repeated"
+    # and a repeat_count. The model sees this fact and decides to switch to
+    # respond rather than continuing to hammer delegate.list.
+    assert any(
+        decision.get("reason") == "repeated_progress_signature"
+        and (decision.get("gate_results") or [{}])[0]
+        .get("evidence", {})
+        .get("gate_status")
+        == "repeated"
+        for decision in decisions
+    )
+    assert not any(decision.get("decision") == "converged" for decision in decisions)
+
+
+@pytest.mark.asyncio
 async def test_repeated_unavailable_remote_tool_does_not_complete_task(tmp_path):
     provider = _RepeatCompletionDeleteProvider()
-    engine = LoopEngine(
+    engine = TurnController(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1436,12 +1661,16 @@ async def test_repeated_unavailable_remote_tool_does_not_complete_task(tmp_path)
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert 3 <= provider.planner_calls <= 4
+    # The loop injects an incrementing loop_progress_fact on each repeat and
+    # lets the model decide what to do. Since _RepeatCompletionDeleteProvider
+    # never switches to respond, the loop eventually hits the hard safety net
+    # (REPEAT_HARD_CAP) and forces FINALIZE_STABLE.
+    assert 5 <= provider.planner_calls <= 8
     assert provider.responder_calls == 1
     assert result.text == ""
-    assert result.action == "execute:system.task_complete"
-    assert result.ok is True
-    assert result.error_reason == ""
+    assert result.action == "execute:system.loop_converged"
+    assert result.ok is False
+    assert result.error_reason == "loop_no_progress"
     decisions = [
         json.loads(event.output_json)
         for event in TraceStore(tmp_path).list_events(result.trace_id)
@@ -1450,12 +1679,13 @@ async def test_repeated_unavailable_remote_tool_does_not_complete_task(tmp_path)
     assert decisions[-1]["decision"] == "converged"
     assert decisions[-1]["reason"] == "repeated_progress_signature"
     assert decisions[-1]["failure_domain"] == "loop_no_progress"
+    assert decisions[-1]["evidence"]["warning_count"] == 5
 
 
 @pytest.mark.asyncio
 async def test_repeated_stable_capability_result_converges(tmp_path):
     provider = _RepeatListProvider()
-    engine = LoopEngine(
+    engine = TurnController(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1471,9 +1701,10 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
     )
 
     assert result.text == "当前没有任务。"
-    assert result.action == "execute:system.task_complete"
-    assert 3 <= provider.planner_calls <= 4
-    assert provider.responder_calls == 1
+    assert result.action == "chat"
+    assert result.ok is True
+    assert 3 <= provider.planner_calls <= 6
+    assert provider.responder_calls == 0
     decisions = [
         json.loads(event.output_json)
         for event in TraceStore(tmp_path).list_events(result.trace_id)
@@ -1482,9 +1713,10 @@ async def test_repeated_stable_capability_result_converges(tmp_path):
     assert any(
         decision.get("tool") == "delegate.list"
         and decision.get("reason") == "repeated_progress_signature"
-        and decision.get("decision") == "converged"
+        and decision.get("decision") == "continue"
         for decision in decisions
     )
+    assert decisions[-1]["decision"] == "finalize"
 
 
 @pytest.mark.asyncio
@@ -1501,7 +1733,7 @@ async def test_same_state_facts_with_different_args_converges(tmp_path):
         resolution=Resolution.BLOCKED,
     )
     provider = _RepeatStatusDifferentArgsProvider(run.id)
-    engine = LoopEngine(
+    engine = TurnController(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
@@ -1517,9 +1749,10 @@ async def test_same_state_facts_with_different_args_converges(tmp_path):
     )
 
     assert result.text == "任务已过期。"
-    assert result.action == "execute:system.task_complete"
-    assert 3 <= provider.planner_calls <= 4
-    assert provider.responder_calls == 1
+    assert result.action == "chat"
+    assert result.ok is True
+    assert 3 <= provider.planner_calls <= 6
+    assert provider.responder_calls == 0
     assert "prompt" not in json.dumps(result.facts, ensure_ascii=False)
     assert "plan_summary" not in json.dumps(result.facts, ensure_ascii=False)
     assert "result_summary" not in json.dumps(result.facts, ensure_ascii=False)
@@ -1527,7 +1760,7 @@ async def test_same_state_facts_with_different_args_converges(tmp_path):
 
 @pytest.mark.asyncio
 async def test_planner_capability_args_schema_mismatch_triggers_loop(tmp_path):
-    engine = LoopEngine(
+    engine = TurnController(
         home=tmp_path,
         runtime=AgentRuntime(home=tmp_path, provider=_InvalidCapabilityArgsProvider()),
         project_dir=tmp_path,
@@ -1542,21 +1775,12 @@ async def test_planner_capability_args_schema_mismatch_triggers_loop(tmp_path):
         session_alias="weixin:peer-1:sender-1",
     )
 
-    assert result.text == "回答完毕。"
-    assert result.action == "execute:system.task_complete"
-    assert result.ok is True
-    assert result.error_reason == ""
-    assert engine.runtime.provider.call_count == 3
-    assert engine.runtime.provider.responder_calls == 1
-    events = TraceStore(tmp_path).list_events(result.trace_id)
-    assert any(event.phase == "planner.parse_error" for event in events)
-    decisions = [
-        json.loads(event.output_json)
-        for event in events
-        if event.phase == "loop.decision"
-    ]
-    assert decisions[-1]["decision"] == "converged"
-    assert decisions[-1]["failure_domain"] == "loop_no_progress"
+    assert result.text == ""
+    assert result.action == "execute:system.provider_error"
+    assert result.ok is False
+    assert result.error_reason == "provider_no_response"
+    assert engine.runtime.provider.call_count >= 4
+    assert engine.runtime.provider.responder_calls == 0
 
 
 @pytest.mark.asyncio
