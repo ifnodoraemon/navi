@@ -7,7 +7,6 @@ from unittest.mock import patch
 import pytest
 
 from navi.control import ApprovalService, SurfaceContext
-from navi.execution import ExecutionService
 from navi.lifecycle import Governance, Phase, Resolution
 from navi.runs import RunStore
 
@@ -33,62 +32,6 @@ def _make_run(
         resolution=resolution,
     )
     return run, runs
-
-
-def test_recover_stale_runs_rejects_pending_approvals(tmp_path) -> None:
-    """P0.2: recover_stale_runs must not crash with AttributeError.
-
-    Previously it called self.runs.db.fetchall/execute, but RunStore has no
-    .db attribute. This test covers the previously-untested recovery path."""
-    run, runs = _make_run(tmp_path)
-    approval = runs.create_approval(
-        run_id=run.id,
-        action="capability",
-        source="weixin",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        requested_tool="connector.weixin.send_file",
-        requested_permission="write",
-        code="123456",
-    )
-
-    execution = ExecutionService(home=tmp_path)
-    # Should not raise AttributeError
-    execution.recover_stale_runs()
-
-    # Run should be failed
-    failed_run = runs.get(run.id)
-    assert failed_run.phase == Phase.ENDED
-    assert failed_run.resolution == Resolution.FAILED
-
-    # Pending approval should be rejected
-    rejected = runs.get_approval(approval.id)
-    assert rejected.status == "rejected"
-
-
-def test_recover_stale_runs_handles_running_status(tmp_path) -> None:
-    """P0.2: recover_stale_runs should handle both RUNNING and AWAITING_APPROVAL."""
-    run, runs = _make_run(tmp_path, phase=Phase.RUNNING, governance=Governance.NONE, resolution=Resolution.NONE)
-    approval = runs.create_approval(
-        run_id=run.id,
-        action="capability",
-        source="weixin",
-        peer_id="peer-1",
-        sender_id="sender-1",
-        requested_tool="connector.weixin.send_file",
-        requested_permission="write",
-        code="654321",
-    )
-
-    execution = ExecutionService(home=tmp_path)
-    execution.recover_stale_runs()
-
-    failed_run = runs.get(run.id)
-    assert failed_run.phase == Phase.ENDED
-    assert failed_run.resolution == Resolution.FAILED
-
-    rejected = runs.get_approval(approval.id)
-    assert rejected.status == "rejected"
 
 
 def test_resolve_atomicity_rollback_on_failure(tmp_path) -> None:

@@ -15,7 +15,6 @@ from .app_factory import build_runtime
 from .capabilities import build_capability_registry
 from .connector_registry import get_connector_adapter
 from .control_plane import TurnController
-from .execution import ExecutionService
 from .goals import GoalStore
 from .lifecycle import Phase, Resolution
 from .provider import ModelPool
@@ -365,7 +364,6 @@ async def _run_daily_journey(
     )
     runs = RunStore(home)
     goals = GoalStore(home)
-    execution = ExecutionService(home)
     session_id = ""
     events: list[dict[str, Any]] = []
     errors: list[str] = []

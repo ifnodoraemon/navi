@@ -13,7 +13,6 @@ from subprocess import SubprocessError
 from typing import Any, Awaitable, Callable
 
 from .capabilities import CapabilityRegistry
-from .cron import next_cron_time
 from .event_bus import (
     ActionApprovedEvent,
     AgentTurnCompletedEvent,
@@ -22,7 +21,6 @@ from .event_bus import (
     NaviEvent,
 )
 from .evolution import EvolutionEngine
-from .execution import ExecutionService
 from .governance_agent import GovernanceAgent
 from .graph import GraphNode, GraphStore
 from .lifecycle import Governance, Phase, Resolution
@@ -71,7 +69,6 @@ class SystemDaemon:
         self.project_dir = project_dir.resolve()
         self.runs = RunStore(home)
         self.event_bus = EventBus()
-        self.execution = ExecutionService(home, event_bus=self.event_bus)
         self.evolution = EvolutionEngine(home)
         self.capabilities = CapabilityRegistry(home=home, project_dir=self.project_dir)
         self.graph = GraphStore(home)
@@ -86,7 +83,6 @@ class SystemDaemon:
         event loop is running we simply skip the scheduler-start (the
         scheduler will be started lazily when the loop is up, or the daemon
         will be driven manually via :meth:`process_queue_once`)."""
-        self.execution.recover_stale_runs()
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -171,27 +167,10 @@ class SystemDaemon:
         self.event_bus.subscribe("agent_turn_completed", on_turn_completed)
 
     async def process_queue_once(self) -> list[Run]:
-        from .event_bus import RunCompletedEvent
-
-        completed = await self.execution.process_pending_once()
-        for task in completed:
-            success = task.phase == Phase.ENDED and task.resolution == Resolution.SUCCESS
-            await self.evolution.reflect_run(task, success=success)
-            if task.phase == Phase.ENDED:
-                await self.event_bus.publish(
-                    RunCompletedEvent(
-                        run_id=task.id,
-                        phase=task.phase,
-                        resolution=task.resolution,
-                        error=task.error,
-                        peer_id=task.peer_id,
-                        sender_id=task.sender_id,
-                    )
-                )
-        return completed
+        # TODO: ReflectorPort / RecoveryPort implementation placeholder
+        return []
 
     async def process_watches_once(self) -> list[dict]:
-        now = time.time()
         created: list[dict] = []
 
         # 1. Run proactive event-driven checks
@@ -199,33 +178,7 @@ class SystemDaemon:
         created.extend(events)
 
 
-        # 2. Run static cron watches
-        for watch in self.runs.due_watches(now):
-            result = await self.execution.run_watch(
-                prompt=watch.prompt,
-                source="watch",
-                peer_id=watch.peer_id,
-                sender_id=watch.sender_id,
-                workspace=watch.workspace,
-            )
-            created.append(
-                {
-                    "message": result.summary,
-                    "run_id": "",
-                    "action": "watch",
-                    "observation": result.summary,
-                    "peer_id": watch.peer_id,
-                    "sender_id": watch.sender_id,
-                    "watch_id": watch.id,
-                    "ok": result.exit_code == 0,
-                }
-            )
-            if watch.kind == "once":
-                self.runs.mark_watch_completed_once(watch.id, last_run_at=now)
-            else:
-                self.runs.mark_watch_run(
-                    watch.id, last_run_at=now, next_run_at=next_cron_time(watch.cron, now=now)
-                )
+        # TODO: Rebuild cron watches using V2 Goal loops
         return created
 
 

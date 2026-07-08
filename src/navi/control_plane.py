@@ -597,6 +597,4 @@ def _fact_event(kind: str, facts: dict[str, Any]) -> str:
     )
 
 
-from .execution import register_turn_controller_class  # noqa: E402
 
-register_turn_controller_class(TurnController)
