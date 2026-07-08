@@ -106,7 +106,7 @@ Trace evaluation must read structured JSON fields such as `failure_domain`,
 `checker_results`, and `gate_results`. It must not infer domains from natural
 language `reason` text or token matching.
 
-If the model repeats a `delegate.spawn` while the approval is already pending,
+If the model repeats a `goal.open` while the approval is already pending,
 the runtime records `pause_for_approval` with an `approval_gate` result and the
 trace can evaluate to `approval_loop`. The fix belongs in state, trace, and gate
 semantics, not in a prompt warning.

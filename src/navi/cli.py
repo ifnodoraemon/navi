@@ -26,14 +26,9 @@ from .evals import (
     load_claw_eval_dataset,
     load_connector_journey_eval_dataset,
     load_daily_journey_eval_dataset,
-    load_delegation_eval_dataset,
     run_claw_eval_dataset,
     run_connector_journey_eval_dataset,
-    results_to_json,
     run_daily_journey_eval_dataset,
-    run_delegation_eval_dataset,
-    delegation_eval_tools,
-    validate_delegation_eval_dataset,
 )
 from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
@@ -525,52 +520,6 @@ def prompts_inspect(target: str = typer.Argument("planner"), json_output: bool =
             f"{block['name']} tier={block['tier']} source={block['source']} "
             f"trusted={block['trusted']} mutable={block['mutable']} digest={block['digest']} chars={block['chars']}"
         )
-
-
-@eval_app.command("delegations")
-def eval_delegations(
-    dataset: Path = Path("evals") / "delegation_cases.yaml",
-    json_output: bool = False,
-    validate_only: bool = False,
-    timeout_seconds: float = 75.0,
-) -> None:
-    """Run the delegation routing eval dataset against the configured model."""
-    home = ensure_home()
-    if validate_only:
-        errors = validate_delegation_eval_dataset(
-            load_delegation_eval_dataset(dataset),
-            delegation_eval_tools(home, project_dir=Path.cwd()),
-        )
-        if json_output:
-            typer.echo(
-                json.dumps({"ok": not errors, "errors": errors}, ensure_ascii=False, indent=2)
-            )
-        elif errors:
-            for error in errors:
-                typer.echo(error)
-        else:
-            typer.echo("ok dataset")
-        if errors:
-            raise typer.Exit(code=1)
-        return
-    results = asyncio.run(
-        run_delegation_eval_dataset(
-            home=home,
-            project_dir=Path.cwd(),
-            dataset=dataset,
-            timeout_seconds=timeout_seconds,
-        )
-    )
-    if json_output:
-        typer.echo(results_to_json(results))
-    else:
-        for result in results:
-            marker = "ok" if result.ok else "fail"
-            typer.echo(f"{marker} {result.id}")
-            for error in result.errors:
-                typer.echo(f"  {error}")
-    if any(not result.ok for result in results):
-        raise typer.Exit(code=1)
 
 
 @eval_app.command("daily")

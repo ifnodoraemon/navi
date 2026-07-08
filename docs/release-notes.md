@@ -14,16 +14,16 @@ Patch release for principle-aligned runtime hardening and docs/eval reconciliati
 - Fixes `codebase.search` registration by using the current RAG import path, storing its cache under Navi home, and returning the declared `results` schema.
 - Fixes provider fallback retries so schema validation only passes optional call arguments accepted by the concrete provider implementation.
 - Redacts secret-bearing action capability arguments and errors in audit logs.
-- Removes routing policy from the `delegate.spawn` tool description and keeps remote/local access behavior declared through runtime policy and capability facts.
-- Removes the dynamic workflow public surface from current docs, API metadata, CLI, action specs, and delegation evals; governed long-running work now uses delegation runs, goals, approvals, and `delegate.state`.
-- Adds queue-state facts to `delegate.run` and keeps executor loop/error facts from being marked as successful task completion.
+- Removes routing policy from the long-running work tool descriptions and keeps remote/local access behavior declared through runtime policy and capability facts.
+- Removes the dynamic workflow public surface from current docs, API metadata, CLI, action specs, and evals; governed long-running work now uses durable goals, loop runs, approvals, and `goal.state`.
+- Adds queue-state facts to durable loop runs and keeps executor loop/error facts from being marked as successful task completion.
 
 Verification:
 
 ```bash
 python -m ruff check src tests
 pytest -q
-PYTHONPATH=src python -m navi.cli eval delegations --validate-only --json-output
+PYTHONPATH=src python -m navi.cli eval connector --validate-only --json-output
 PYTHONPATH=src python -m compileall -q src/navi
 git diff --check
 ```
@@ -75,7 +75,7 @@ First stable agent OS contract for the local-first personal assistant.
 - Remote connector tool policy with permission ceilings, blocked capability classes, and audit facts.
 - Prompt boundary hardening: observed facts are untrusted input blocks; capability result envelopes remain structured runtime facts.
 - Planner goal-integrity guidance: task goals are subordinate to user intent, durable constraints, approvals, permissions, and safeguards.
-- CLI and local FastAPI surfaces for chat, memory, sessions, delegations, goals, approvals, tools, traces, diagnostics, subagents, connectors, and evolution.
+- CLI and local FastAPI surfaces for chat, memory, sessions, goals, approvals, tools, traces, diagnostics, subagents, connectors, and evolution.
 
 Post-v1 work:
 

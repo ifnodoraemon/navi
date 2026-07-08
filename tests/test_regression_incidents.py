@@ -453,7 +453,7 @@ def test_anthropic_structured_wrapper_returns_inner_planner_decision():
                 "type": "tool_use",
                 "name": "planner_decision",
                 "input": {
-                    "tool": "delegate.list",
+                    "tool": "goal.state",
                     "permission": "read",
                     "args": {"limit": 10},
                     "model_role": "responder",
@@ -466,7 +466,7 @@ def test_anthropic_structured_wrapper_returns_inner_planner_decision():
 
     parsed = json.loads(_extract_anthropic_content(raw, tool_name="planner_decision"))
 
-    assert parsed["tool"] == "delegate.list"
+    assert parsed["tool"] == "goal.state"
 
 
 def test_anthropic_direct_tool_call_is_not_reconstructed_as_planner_decision():
@@ -474,7 +474,7 @@ def test_anthropic_direct_tool_call_is_not_reconstructed_as_planner_decision():
         "content": [
             {
                 "type": "tool_use",
-                "name": "delegate.list",
+                "name": "goal.state",
                 "input": {"limit": 10},
             }
         ]
@@ -597,7 +597,7 @@ def test_planner_parser_parses_multiple_syscalls():
             {
                 "syscalls": [
                     {
-                        "tool": "delegate.spawn",
+                        "tool": "goal.open",
                         "permission": "prepare",
                         "args": {"objective": "x"},
                         "model_role": "planner",
@@ -615,7 +615,7 @@ def test_planner_parser_parses_multiple_syscalls():
 
     assert isinstance(decisions, list)
     assert len(decisions) == 2
-    assert decisions[0].tool == "delegate.spawn"
+    assert decisions[0].tool == "goal.open"
     assert decisions[1].tool == "respond"
     assert decisions[1].message == "done"
 
@@ -709,7 +709,7 @@ class _RemoteDeleteUnavailableProvider:
         if role == "planner" and output_schema is not None:
             self.planner_calls += 1
             content = "\n".join(message.content for message in messages)
-            assert "delegate.delete" not in content
+            assert "goal.cancel" not in content
             return json.dumps(
                 {
                     "syscalls": [
@@ -727,70 +727,6 @@ class _RemoteDeleteUnavailableProvider:
         if role == "responder":
             self.responder_calls += 1
             return "remote_delete_not_available"
-        raise AssertionError(f"unexpected role: {role}")
-
-    def list_roles(self) -> list[str]:
-        return ["planner", "responder"]
-
-    def usage_for(self, role: str) -> dict:
-        return {}
-
-
-class _DelegateSpawnApprovalProvider:
-    def __init__(self, workspace: str) -> None:
-        self.workspace = workspace
-        self.planner_calls = 0
-        self.responder_calls = 0
-
-    async def complete_for(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        *,
-        output_schema: dict | None = None,
-    ) -> str:
-        if role == "planner":
-            self.planner_calls += 1
-            if self.planner_calls > 1:
-                content = "\n".join(message.content for message in messages)
-                assert "awaiting_approval" in content
-                return json.dumps(
-                    {
-                        "syscalls": [
-                            {
-                                "tool": "respond",
-                                "permission": "read",
-                                "args": {"message": "需要审批后执行。"},
-                                "model_role": "responder",
-                                "confidence": 1.0,
-                                "reason": "report approval pause facts",
-                            }
-                        ]
-                    }
-                )
-            return json.dumps(
-                {
-                    "syscalls": [
-                        {
-                            "tool": "delegate.spawn",
-                            "permission": "prepare",
-                            "args": {
-                                "objective": "在家目录查找简历文件",
-                                "context": "用户明确要求在家目录中查找简历。",
-                                "plan": "在家目录搜索简历文件。",
-                                "success_criteria": "返回找到的简历文件事实或未找到事实。",
-                                "workspace": self.workspace,
-                            },
-                            "model_role": "responder",
-                            "confidence": 1.0,
-                            "reason": "create delegated run",
-                        }
-                    ]
-                }
-            )
-        if role == "responder":
-            self.responder_calls += 1
-            return "需要审批后执行。"
         raise AssertionError(f"unexpected role: {role}")
 
     def list_roles(self) -> list[str]:
@@ -1012,7 +948,7 @@ async def test_remote_expired_task_cleanup_does_not_expose_delete(tmp_path):
     events = TraceStore(tmp_path).list_events(result.trace_id)
     phases = [event.phase for event in events]
     assert "runtime.converged" not in phases
-    assert all(event.tool != "delegate.delete" for event in events)
+    assert all(event.tool != "goal.cancel" for event in events)
 
 
 @pytest.mark.asyncio

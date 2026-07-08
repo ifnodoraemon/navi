@@ -166,7 +166,6 @@ navi auth status
 navi hooks list
 navi prompts inspect [planner|responder]
 
-navi eval delegations
 navi eval daily
 navi eval claw
 navi eval connector [--dataset evals/weixin_journeys.yaml]
@@ -228,15 +227,8 @@ GET    /v1/memory
 GET    /v1/memory/conflicts
 POST   /v1/memory
 GET    /v1/skills
-GET    /v1/delegations
-POST   /v1/delegations
-PATCH  /v1/delegations/{run_id}
-DELETE /v1/delegations/{run_id}
 GET    /v1/approvals
 GET    /v1/watches
-POST   /v1/delegations/{run_id}/approve
-POST   /v1/delegations/process
-POST   /v1/active/delegations
 POST   /v1/active/approve
 POST   /v1/active/reject
 POST   /v1/active/watches
@@ -388,7 +380,7 @@ Implemented:
 - Core fact tools for providers, skills, tools, hooks, memory, files, shell, tests, web, service, and system facts.
 - Internal execution through the structured `navi.actuator.v1` protocol; protocol actions must be capability calls and must produce capability-result evidence.
 - Planner, executor, critic, and notification role executions recorded as subagent runtime records.
-- Governed delegation runs persisted in `runs.db` and exposed through `delegate.*`, goal, approval, CLI, and API surfaces.
+- Governed durable goals and loop runs persisted in goal/loop stores and exposed through `goal.*`, approval, CLI, and API surfaces.
 - Local memory, session, task/watch, approval, goal, trace, evolution, hook, and graph stores.
 - Connector registry plus Weixin and Telegram connector packages.
 - Weixin account store, context-token store, deduplication, policy checks, HTTP client skeleton, typing indicators, chunked text replies, voice transcript extraction, and inbound-to-agent service flow.

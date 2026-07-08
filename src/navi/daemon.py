@@ -198,7 +198,6 @@ class SystemDaemon:
         events = await self.process_events_once()
         created.extend(events)
 
-        self._prune_failed_watch_delegate_spawns()
 
         # 2. Run static cron watches
         for watch in self.runs.due_watches(now):
@@ -229,35 +228,6 @@ class SystemDaemon:
                 )
         return created
 
-    def _prune_failed_watch_delegate_spawns(
-        self, *, keep_latest: int = MAX_FAILED_WATCH_RUN_RECORDS
-    ) -> int:
-        keep_latest = max(0, keep_latest)
-        total = len(self._failed_watch_delegate_runs(limit=10_000))
-        excess = max(0, total - keep_latest)
-        if excess == 0:
-            return 0
-        stale = self._failed_watch_delegate_runs(limit=excess)
-        pruned = 0
-        from navi.trace import TraceStore
-        trace = TraceStore(self.home)
-        for task in stale:
-            removed = self.runs.delete_run(task.id)
-            if removed is None:
-                continue
-            self.graph.delete(removed.id)
-            trace.add_event(
-                trace_id=trace.new_trace_id(),
-                phase="daemon.cleanup",
-                run_id=removed.id,
-                output_data={
-                    "action": "pruned_failed_watch_task",
-                    "title": removed.title,
-                    "workspace": removed.workspace,
-                },
-            )
-            pruned += 1
-        return pruned
 
     async def process_events_once(self) -> list[dict]:
         created: list[dict] = []
@@ -402,15 +372,6 @@ class SystemDaemon:
             )
             if task.workspace
         }
-
-    def _failed_watch_delegate_runs(self, *, limit: int) -> list[Run]:
-        return [
-            run
-            for run in self.runs.list_by_phase(Phase.ENDED, limit=limit)
-            if run.resolution == Resolution.FAILED
-            and run.source == "watch"
-            and run.kind == "delegation"
-        ]
 
     @staticmethod
     def _canonical_path(path: str) -> str:

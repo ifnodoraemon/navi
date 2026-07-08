@@ -90,13 +90,8 @@ API_PATHS_SPEC: Any = {
     "memory": "/v1/memory",
     "memory_conflicts": "/v1/memory/conflicts",
     "skills": "/v1/skills",
-    "delegations": "/v1/delegations",
-    "delegation": "/v1/delegations/{run_id}",
     "approvals": "/v1/approvals",
     "watches": "/v1/watches",
-    "delegation_approve": "/v1/delegations/{run_id}/approve",
-    "delegations_process": "/v1/delegations/process",
-    "active_delegations": "/v1/active/delegations",
     "active_approve": "/v1/active/approve",
     "active_reject": "/v1/active/reject",
     "active_watches": "/v1/active/watches",
@@ -330,35 +325,29 @@ CAPABILITY_SAFEGUARDS_SPEC: Any = {
             "confirmation_required": False,
             "reason_code": "capability_safeguard_memory_conflicts",
         },
-        "delegate.spawn": {
+        "goal.open": {
             "risk_class": "medium",
             "sensitive_contexts": ["task_control"],
             "confirmation_required": False,
-            "reason_code": "capability_safeguard_delegate_spawn",
+            "reason_code": "capability_safeguard_goal_open",
         },
-        "delegate.delete": {
+        "goal.cancel": {
             "risk_class": "high",
             "sensitive_contexts": ["task_control"],
             "confirmation_required": True,
-            "reason_code": "capability_safeguard_delegate_delete",
+            "reason_code": "capability_safeguard_goal_cancel",
         },
-        "delegate.retry": {
+        "goal.resume": {
             "risk_class": "high",
             "sensitive_contexts": ["task_control", "local_state"],
             "confirmation_required": True,
-            "reason_code": "capability_safeguard_delegate_retry",
+            "reason_code": "capability_safeguard_goal_resume",
         },
-        "delegate.state": {
+        "goal.state": {
             "risk_class": "medium",
             "sensitive_contexts": ["task_control"],
             "confirmation_required": False,
-            "reason_code": "capability_safeguard_delegate_state",
-        },
-        "delegate.list": {
-            "risk_class": "medium",
-            "sensitive_contexts": ["task_control"],
-            "confirmation_required": False,
-            "reason_code": "capability_safeguard_delegate_list",
+            "reason_code": "capability_safeguard_goal_state",
         },
         "watch.create": {
             "risk_class": "medium",

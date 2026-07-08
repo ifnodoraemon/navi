@@ -11,7 +11,7 @@ from .specs import ACTION_SPECS
 
 
 # Spec names whose handler key differs from ``name.replace(".", "_")``.
-_KEY_OVERRIDES = {"respond": "respond", "delegate.retry": "execution_retry"}
+_KEY_OVERRIDES = {"respond": "respond"}
 
 
 def get_action_handlers(

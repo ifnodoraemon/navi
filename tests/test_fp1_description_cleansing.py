@@ -1,12 +1,11 @@
 """FP-1/FP-7 regression: tool descriptions must carry pure capability
 semantics, not routing policy, sequencing rules, or follow-up advice.
 
-After Batch C, the following descriptions were cleansed of procedural/routing
-content:
-  - delegate.spawn: removed "Must only be used after gathering sufficient local
-    facts via foreground tools" (sequencing belongs in runtime facts/control).
-  - delegate.delete: removed "Bulk cleanup must include source or kind..."
-    (constraint moved to input_schema field descriptions).
+After the Loop Engineering migration, tool descriptions must describe the
+current `goal.*` control surface without reviving removed `delegate.*` tools.
+Previous procedural/routing content remains banned:
+  - "Must only be used after gathering sufficient local facts" (sequencing
+    belongs in runtime facts/control).
   - watch.delete: removed "Requires user approval" (safeguard, not semantics).
   - shell.run: removed the allocate_pty decision rule from the description
     (moved to the allocate_pty arg description).
@@ -22,14 +21,13 @@ def _read(path: str) -> str:
     return (PROJECT_ROOT / path).read_text(encoding="utf-8")
 
 
-def test_delegate_spawn_description_is_pure_semantics() -> None:
+def test_goal_descriptions_do_not_revive_delegate_surface() -> None:
     specs = _read("src/navi/actions/specs.py")
-    # The sequencing rule must be gone from the description.
     assert "Must only be used after gathering sufficient local facts" not in specs
-    assert "Do NOT use delegate.spawn" not in specs
-    assert "delegate.spawn IS the path" not in specs
-
-
+    assert "delegate.spawn" not in specs
+    assert "delegate.delete" not in specs
+    assert "delegate.retry" not in specs
+    assert "goal.open" in specs
 
 
 def test_watch_delete_description_drops_approval_safeguard() -> None:

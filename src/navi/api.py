@@ -58,27 +58,6 @@ class SessionRequest(BaseModel):
     alias: str | None = None
 
 
-class DelegationRequest(BaseModel):
-    title: str
-    prompt: str | None = None
-    context: str | None = None
-    plan: str | None = None
-    success_criteria: str | None = None
-
-
-class DelegationStatusRequest(BaseModel):
-    status: str
-
-
-class ActiveDelegationRequest(BaseModel):
-    prompt: str
-    peer_id: str = DEFAULT_LOCAL_SURFACE
-    sender_id: str = DEFAULT_LOCAL_SURFACE
-    context: str | None = None
-    plan: str | None = None
-    success_criteria: str | None = None
-
-
 class ActiveApprovalRequest(BaseModel):
     code: str
     sender_id: str = DEFAULT_LOCAL_SURFACE
@@ -112,21 +91,6 @@ class GoalResumeRequest(BaseModel):
 class GoalCancelRequest(BaseModel):
     reason: str = ""
     loop_run_id: str | None = None
-
-
-def _delegation_spawn_args(
-    *,
-    objective: str,
-    context: str | None,
-    plan: str | None,
-    success_criteria: str | None,
-) -> dict[str, str]:
-    return {
-        "objective": objective,
-        "context": context or "API request context was not provided.",
-        "plan": plan or "API request execution plan was not provided.",
-        "success_criteria": success_criteria or "API request success criteria were not provided.",
-    }
 
 
 class ToolCallRequest(BaseModel):
@@ -379,80 +343,6 @@ def create_app(
             ]
         }
 
-    @app.get(api_path("delegations"))
-    def list_delegations() -> dict:
-        return {"delegations": [task.__dict__ for task in task_store.list()]}
-
-    @app.post(api_path("delegations"))
-    async def create_delegation(request: DelegationRequest) -> dict:
-        result = await capabilities.invoke(
-            "delegate.spawn",
-            _delegation_spawn_args(
-                objective=request.prompt or request.title,
-                context=request.context,
-                plan=request.plan,
-                success_criteria=request.success_criteria,
-            ),
-            permission="prepare",
-            context=_local_capability_context(home, project_dir=project_dir),
-        )
-        _raise_capability_error(result)
-        prepared = await capabilities.invoke(
-            "delegate.prepare",
-            {"run_id": result.run_id},
-            permission="prepare",
-            context=_local_capability_context(home, project_dir=project_dir),
-        )
-        _raise_capability_error(prepared)
-        requested = await capabilities.invoke(
-            "approval.request",
-            {"run_id": result.run_id},
-            permission="prepare",
-            context=_local_capability_context(home, project_dir=project_dir),
-        )
-        _raise_capability_error(requested)
-        task = task_store.get(result.run_id) if result.run_id else None
-        if task is None:
-            raise HTTPException(
-                status_code=500, detail="delegate.spawn did not return a delegation run"
-            )
-        return task.__dict__
-
-    @app.patch(api_path("delegation"))
-    async def update_delegation(run_id: str, request: DelegationStatusRequest) -> dict:
-        decision_by_status = {
-            "queued": APPROVAL_DECISION_APPROVE,
-            "rejected": APPROVAL_DECISION_REJECT,
-        }
-        decision = decision_by_status.get(request.status)
-        if decision is None:
-            raise HTTPException(
-                status_code=409,
-                detail="delegation status transitions must go through delegation capabilities",
-            )
-        result = await api_capabilities.invoke(
-            "approval.resolve",
-            {"decision": decision, "run_id": run_id},
-            permission="write",
-            context=_local_capability_context(home, project_dir=project_dir),
-        )
-        _raise_capability_error(result)
-        task = task_store.get(run_id)
-        if task is None:
-            raise HTTPException(status_code=404, detail="delegation run not found")
-        return task.__dict__
-
-    @app.delete(api_path("delegation"))
-    async def delete_delegation(run_id: str) -> dict:
-        result = await capabilities.invoke(
-            "delegate.delete",
-            {"run_id": run_id, "reason": "api delegation delete request"},
-            permission="write",
-            context=_local_capability_context(home, project_dir=project_dir),
-        )
-        _raise_capability_error(result, not_found_status=404)
-        return {"deleted": True, "delegation": result.facts}
-
     @app.get(api_path("approvals"))
     def list_approvals() -> dict:
         return {
@@ -462,67 +352,6 @@ def create_app(
     @app.get(api_path("watches"))
     def list_watches() -> dict:
         return {"watches": [watch.__dict__ for watch in task_store.list_watches()]}
-
-    @app.post(api_path("delegation_approve"))
-    async def approve_delegation(run_id: str) -> dict:
-        result = await api_capabilities.invoke(
-            "approval.resolve",
-            {"decision": APPROVAL_DECISION_APPROVE, "run_id": run_id},
-            permission="write",
-            context=_local_capability_context(home, project_dir=project_dir),
-        )
-        _raise_capability_error(result, not_found_status=409)
-        task = task_store.get(run_id)
-        if task is None:
-            raise HTTPException(status_code=404, detail="delegation run not found")
-        return task.__dict__
-
-    @app.post(api_path("delegations_process"))
-    async def process_delegations() -> dict:
-        return {"delegations": [task.__dict__ for task in await daemon.process_queue_once()]}
-
-    @app.post(api_path("active_delegations"))
-    async def create_active_delegation(request: ActiveDelegationRequest) -> dict:
-        context = CapabilityContext(
-            home=home,
-            peer_id=request.peer_id,
-            sender_id=request.sender_id,
-            source=load_config(home).runtime.local_surface,
-            permission_ceiling="write",
-            workspace=str(project_dir),
-        )
-        result = await capabilities.invoke(
-            "delegate.spawn",
-            _delegation_spawn_args(
-                objective=request.prompt,
-                context=request.context,
-                plan=request.plan,
-                success_criteria=request.success_criteria,
-            ),
-            permission="prepare",
-            context=context,
-        )
-        if result.ok:
-            await capabilities.invoke(
-                "delegate.prepare",
-                {"run_id": result.run_id},
-                permission="prepare",
-                context=context,
-            )
-            result = await capabilities.invoke(
-                "approval.request",
-                {"run_id": result.run_id},
-                permission="prepare",
-                context=context,
-            )
-        task = task_store.get(result.run_id) if result.run_id else None
-        source = load_config(home).runtime.local_surface
-        return {
-            "message": _local_result_message(result, source=source),
-            "delegation": task.__dict__ if task else None,
-            "preparation": task.plan_summary if task else "",
-            "facts": result.facts or {},
-        }
 
     @app.post(api_path("active_approve"))
     async def approve_active_delegation(request: ActiveApprovalRequest) -> dict:

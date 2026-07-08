@@ -45,7 +45,7 @@ syscall_cases:
     source: observed:.navi/memory.db
     message: "`8f59a0dcc92948c49f88de2df055dabf`为什么这个 delegation run 没有执行"
     expect:
-      tool: delegate.state
+      tool: goal.state
       permission: read
       args:
         run_id: "8f59a0dcc92948c49f88de2df055dabf"
@@ -107,7 +107,7 @@ syscall_cases:
     source: https://github.com/NousResearch/hermes-agent/issues/28984
     message: "配置项写了但运行时好像没消费，帮我检查配置到运行时的映射问题"
     expect:
-      tool: delegate.spawn
+      tool: goal.open
       permission: prepare
 
   - id: hermes_terminal_tool_latency_issue
@@ -115,7 +115,7 @@ syscall_cases:
     message: "工具调用明显变慢，帮我检查终端执行耗时和轮询问题"
     expect:
       any:
-        - tool: delegate.spawn
+        - tool: goal.open
           permission: prepare
         - tool: shell.run
           permission: write
@@ -127,7 +127,7 @@ syscall_cases:
     message: "execution protocol evidence must be a list 这是为什么，如何修复"
     expect:
       any:
-        - tool: delegate.spawn
+        - tool: goal.open
           permission: prepare
         - tool: codebase.search
           permission: read
@@ -139,7 +139,7 @@ syscall_cases:
     message: "修复一下"
     conversation_context: "用户刚才问：execution protocol evidence must be a list 这是为什么。助手解释这是执行协议 schema 错误。"
     expect:
-      tool: delegate.spawn
+      tool: goal.open
       permission: prepare
 
 watch_cases:
