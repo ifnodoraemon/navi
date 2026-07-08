@@ -285,32 +285,6 @@ class RollbackPolicy:
 
 
 @dataclass(frozen=True)
-class DelegationPolicy:
-    allow_subgoals: bool = True
-    max_parallel_runs: int = 1
-    inherit_permission_ceiling: bool = True
-    inherit_budget: bool = True
-    inherit_workspace_policy: bool = True
-
-    def validate(self, *, workspace_policy: WorkspacePolicy) -> None:
-        if self.max_parallel_runs < 1:
-            raise ValueError("DelegationPolicy.max_parallel_runs must be at least 1")
-        if self.max_parallel_runs > 1 and not workspace_policy.require_locks:
-            raise ValueError("parallel delegation requires workspace locks")
-        if self.allow_subgoals and not self.inherit_permission_ceiling:
-            raise ValueError("subgoals must inherit the parent permission ceiling")
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "allow_subgoals": self.allow_subgoals,
-            "max_parallel_runs": self.max_parallel_runs,
-            "inherit_permission_ceiling": self.inherit_permission_ceiling,
-            "inherit_budget": self.inherit_budget,
-            "inherit_workspace_policy": self.inherit_workspace_policy,
-        }
-
-
-@dataclass(frozen=True)
 class EscalationPolicy:
     ask_user_on_conflict: bool = True
     ask_user_on_approval: bool = True
@@ -336,7 +310,6 @@ class LoopSpec:
     checkpoint_policy: CheckpointPolicy = field(default_factory=CheckpointPolicy)
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     rollback_policy: RollbackPolicy = field(default_factory=RollbackPolicy)
-    delegation_policy: DelegationPolicy = field(default_factory=DelegationPolicy)
     escalation_policy: EscalationPolicy = field(default_factory=EscalationPolicy)
     terminal_states: tuple[LoopTerminalState | str, ...] = DEFAULT_TERMINAL_STATES
     created_at: float = field(default_factory=time.time)
@@ -349,7 +322,6 @@ class LoopSpec:
         goal_id: str,
         allowed_capabilities: tuple[str, ...],
         verification_ladder: tuple[VerificationStep, ...],
-        delegation_policy: DelegationPolicy | None = None,
     ) -> LoopSpec:
         spec = cls(
             id=uuid.uuid4().hex,
@@ -358,7 +330,6 @@ class LoopSpec:
             state_graph=default_state_graph(),
             allowed_capabilities=allowed_capabilities,
             verification_ladder=verification_ladder,
-            delegation_policy=delegation_policy or DelegationPolicy(),
         )
         spec.validate()
         return spec
@@ -378,7 +349,6 @@ class LoopSpec:
         self.workspace_policy.validate()
         self.checkpoint_policy.validate()
         self.retry_policy.validate()
-        self.delegation_policy.validate(workspace_policy=self.workspace_policy)
         missing = set(DEFAULT_TERMINAL_STATES) - {LoopTerminalState(str(item)) for item in self.terminal_states}
         if missing:
             values = ", ".join(sorted(str(item) for item in missing))
@@ -396,7 +366,6 @@ class LoopSpec:
             "checkpoint_policy": self.checkpoint_policy.to_dict(),
             "retry_policy": self.retry_policy.to_dict(),
             "rollback_policy": self.rollback_policy.to_dict(),
-            "delegation_policy": self.delegation_policy.to_dict(),
             "escalation_policy": self.escalation_policy.to_dict(),
             "terminal_states": [str(item) for item in self.terminal_states],
             "created_at": self.created_at,

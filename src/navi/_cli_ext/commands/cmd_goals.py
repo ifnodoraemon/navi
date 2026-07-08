@@ -2,7 +2,6 @@ from navi.evolution import EvolutionEngine, EvolutionLedger, list_evolution_targ
 from navi.memory.store import MemoryStore
 from navi.goals import GoalStore
 from navi.graph import GraphStore
-from navi.subagents import SubagentRunStore
 import typer
 import json
 from navi.paths import ensure_home
@@ -10,7 +9,7 @@ from ..common import _invoke_capability
 
 
 goal_app = typer.Typer(help="Durable goal lifecycle")
-subagent_app = typer.Typer(help="Sub-agent runtime records")
+
 evolution_app = typer.Typer(help="Evolution ledger")
 memory_app = typer.Typer(help="Typed memory control system")
 graph_app = typer.Typer(help="Personal graph")
@@ -142,26 +141,6 @@ def goal_show(goal_id: str) -> None:
             f"resolution={event.resolution} task={event.run_id or '-'} trace={event.trace_id or '-'}"
         )
 
-@subagent_app.command("list")
-def subagent_list(role: str = "", status: str = "", run_id: str = "", limit: int = 50) -> None:
-    """List sub-agent runtime records as facts."""
-    for item in SubagentRunStore(ensure_home()).list(
-        role=role, status=status, run_id=run_id, limit=limit
-    ):
-        task = f" run={item.run_id}" if item.run_id else ""
-        typer.echo(f"{item.id} {item.role} {item.phase} {item.status}{task}")
-
-@subagent_app.command("show")
-def subagent_show(subagent_id: str) -> None:
-    """Show one sub-agent runtime record."""
-    item = SubagentRunStore(ensure_home()).get(subagent_id)
-    if item is None:
-        raise typer.BadParameter("sub-agent run not found")
-    typer.echo(f"{item.id} {item.role} {item.phase} {item.status} run={item.run_id or '-'}")
-    typer.echo(f"command: {item.command}")
-    if item.error:
-        typer.echo(f"error: {item.error}")
-    typer.echo(item.output_json)
 
 @evolution_app.command("list")
 def evolution_list() -> None:

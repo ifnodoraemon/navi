@@ -31,7 +31,6 @@ from .graph import GraphStore
 from .json_utils import json_object
 from .paths import ensure_home
 from .runs import RunStore
-from .subagents import SubagentRunStore
 from .trace import TraceStore
 from .tools import API_CONTEXT
 from . import __version__
@@ -138,7 +137,6 @@ def create_app(
     runtime = build_runtime(home)
     task_store = RunStore(home)
     goal_store = GoalStore(home)
-    subagent_store = SubagentRunStore(home)
     daemon = SystemDaemon(home, project_dir=project_dir)
     agent = TurnController(
         home=home, runtime=runtime, project_dir=project_dir, event_bus=daemon.event_bus
@@ -621,24 +619,6 @@ def create_app(
         )
         _raise_capability_error(result, not_found_status=404)
         return _capability_result_dict(result)
-
-    @app.get(api_path("subagents"))
-    def list_subagents(role: str = "", status: str = "", run_id: str = "", limit: int = 50) -> dict:
-        return {
-            "subagents": [
-                subagent.__dict__
-                for subagent in subagent_store.list(
-                    role=role, status=status, run_id=run_id, limit=limit
-                )
-            ]
-        }
-
-    @app.get(api_path("subagent"))
-    def get_subagent(subagent_id: str) -> dict:
-        subagent = subagent_store.get(subagent_id)
-        if subagent is None:
-            raise HTTPException(status_code=404, detail="subagent run not found")
-        return {"subagent": subagent.__dict__}
 
     @app.get(api_path("evolution_events"))
     def evolution_events() -> dict:

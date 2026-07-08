@@ -184,7 +184,6 @@ def test_workflow_actions_are_not_registered_after_removal() -> None:
 def test_model_json_protocols_do_not_extract_json_from_prose() -> None:
     for relative in (
         "src/navi/json_utils.py",
-        "src/navi/execution.py",
         "src/navi/memory/store.py",
         "src/navi/provider.py",
     ):

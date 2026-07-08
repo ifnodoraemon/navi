@@ -5,7 +5,6 @@ import sqlite3
 from contextlib import closing
 
 import pytest
-import yaml
 
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.control_plane import TurnController, _dynamic_intent_facts
@@ -13,14 +12,12 @@ from navi.connector_runtime import ConnectorMessage, ConnectorIngressRuntime
 from navi.evolution import EvolutionEngine, EvolutionLedger
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
-from navi.turn_result import AgentTurnResult
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
 from navi.provider import ChatMessage, _extract_anthropic_content, _extract_openai_content
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 from navi.syscalls import ModelSyscallPlanner
 from navi.tools import ToolSpec
-from navi.trace import TraceStore
 
 
 def test_evolution_ledger_uses_latest_run_id_schema(tmp_path):

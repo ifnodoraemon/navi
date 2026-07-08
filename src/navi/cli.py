@@ -42,7 +42,6 @@ from .prompt_os import assemble_planner_system_prompt
 from .prompting import build_system_prompt_assembly
 from .provider import build_provider
 from .service import build_systemd_user_unit, install_systemd_user_unit
-from .subagents import SubagentRunStore
 from .trace import TraceStore
 from .tools import API_CONTEXT
 
@@ -83,7 +82,6 @@ graph_app = typer.Typer(help="Personal graph")
 evolution_app = typer.Typer(help="Evolution ledger")
 trace_app = typer.Typer(help="Full-flow traces and evaluations")
 goal_app = typer.Typer(help="Durable goal lifecycle")
-subagent_app = typer.Typer(help="Sub-agent runtime records")
 service_app = typer.Typer(help="System service helpers")
 memory_app = typer.Typer(help="Typed memory control system")
 session_app = typer.Typer(help="Conversation session control")
@@ -97,7 +95,6 @@ app.add_typer(graph_app, name="graph")
 app.add_typer(evolution_app, name="evolution")
 app.add_typer(trace_app, name="trace")
 app.add_typer(goal_app, name="goal")
-app.add_typer(subagent_app, name="subagent")
 app.add_typer(service_app, name="service")
 app.add_typer(memory_app, name="memory")
 app.add_typer(session_app, name="session")
@@ -908,29 +905,6 @@ def goal_cancel(
             sort_keys=True,
         )
     )
-
-
-@subagent_app.command("list")
-def subagent_list(role: str = "", status: str = "", run_id: str = "", limit: int = 50) -> None:
-    """List sub-agent runtime records as facts."""
-    for item in SubagentRunStore(ensure_home()).list(
-        role=role, status=status, run_id=run_id, limit=limit
-    ):
-        task = f" run={item.run_id}" if item.run_id else ""
-        typer.echo(f"{item.id} {item.role} {item.phase} {item.status}{task}")
-
-
-@subagent_app.command("show")
-def subagent_show(subagent_id: str) -> None:
-    """Show one sub-agent runtime record."""
-    item = SubagentRunStore(ensure_home()).get(subagent_id)
-    if item is None:
-        raise typer.BadParameter("sub-agent run not found")
-    typer.echo(f"{item.id} {item.role} {item.phase} {item.status} run={item.run_id or '-'}")
-    typer.echo(f"command: {item.command}")
-    if item.error:
-        typer.echo(f"error: {item.error}")
-    typer.echo(item.output_json)
 
 
 @evolution_app.command("list")

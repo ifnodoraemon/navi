@@ -7,7 +7,6 @@ import pytest
 from navi.loop_contracts import (
     CheckpointPolicy,
     CurrentStateSnapshot,
-    DelegationPolicy,
     GoalSpec,
     LockMode,
     LoopNode,
@@ -56,7 +55,6 @@ def test_loop_spec_from_goal_encodes_navi_2_contract():
         goal_id="goal-1",
         allowed_capabilities=("filesystem.write", "test.run"),
         verification_ladder=_verification(),
-        delegation_policy=DelegationPolicy(max_parallel_runs=2),
     )
 
     graph_edges = {(edge.source, edge.target, edge.condition) for edge in spec.state_graph}
@@ -74,7 +72,6 @@ def test_loop_spec_from_goal_encodes_navi_2_contract():
     assert spec.workspace_policy.require_three_way_merge is True
     assert spec.workspace_policy.require_locks is True
     assert spec.checkpoint_policy.before_side_effect is True
-    assert spec.delegation_policy.inherit_permission_ceiling is True
     assert spec.verification_ladder[0].timeout.seconds == 120
 
 
@@ -90,17 +87,7 @@ def test_loop_spec_rejects_unsafe_execution_contracts():
             checkpoint_policy=CheckpointPolicy(before_side_effect=False),
         ).validate()
 
-    with pytest.raises(ValueError, match="parallel delegation requires workspace locks"):
-        LoopSpec(
-            id="loop-2",
-            goal_id="goal-1",
-            goal=_goal_spec(),
-            state_graph=default_state_graph(),
-            allowed_capabilities=("filesystem.write",),
-            verification_ladder=_verification(),
-            workspace_policy=WorkspacePolicy(require_locks=False),
-            delegation_policy=DelegationPolicy(max_parallel_runs=2),
-        ).validate()
+
 
     with pytest.raises(ValueError, match="verification requires a command"):
         VerificationStep(
