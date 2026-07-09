@@ -88,6 +88,7 @@ class ExecutedCapabilityStep:
     facts: dict[str, Any]
     message: str = ""
     error_reason: str = ""
+    terminal: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +97,7 @@ class ExecutedCapabilityStep:
             "facts": dict(self.facts),
             "message": self.message,
             "error_reason": self.error_reason,
+            "terminal": self.terminal,
         }
 
 
@@ -471,6 +473,162 @@ class _LLMReflection:
     user_message: str
 
 
+@dataclass(frozen=True)
+class SideEffectSagaResult:
+    action: str
+    ok: bool
+    scope: str
+    state: str
+    artifact: str = ""
+    commit: str = ""
+    compensate: str = ""
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action": self.action,
+            "ok": self.ok,
+            "scope": self.scope,
+            "state": self.state,
+            "artifact": self.artifact,
+            "commit": self.commit,
+            "compensate": self.compensate,
+            "reason": self.reason,
+        }
+
+
+class SideEffectSagaPort:
+    def __init__(self, *, home: Path):
+        self.home = home
+
+    def commit(self, side_effect: dict[str, Any]) -> SideEffectSagaResult:
+        scope = str(side_effect.get("scope") or "")
+        state = str(side_effect.get("state") or "")
+        artifact = str(side_effect.get("artifact") or "")
+        commit = str(side_effect.get("commit") or "")
+        compensate = str(side_effect.get("compensate") or "")
+        if state not in {"staged", "prepared"}:
+            return SideEffectSagaResult(
+                action="commit",
+                ok=True,
+                scope=scope,
+                state=state or "no_staged_side_effect",
+                artifact=artifact,
+                commit=commit,
+                compensate=compensate,
+                reason="side_effect_not_staged",
+            )
+        if commit == "weixin.connector_runtime.dispatch_outbox":
+            return SideEffectSagaResult(
+                action="commit",
+                ok=True,
+                scope=scope,
+                state="released_for_connector_commit",
+                artifact=artifact,
+                commit=commit,
+                compensate=compensate,
+                reason="connector_runtime_dispatch_required",
+            )
+        return SideEffectSagaResult(
+            action="commit",
+            ok=False,
+            scope=scope,
+            state="commit_handler_missing",
+            artifact=artifact,
+            commit=commit,
+            compensate=compensate,
+            reason="no_state_graph_commit_handler",
+        )
+
+    def compensate(self, side_effect: dict[str, Any]) -> SideEffectSagaResult:
+        scope = str(side_effect.get("scope") or "")
+        state = str(side_effect.get("state") or "")
+        artifact = str(side_effect.get("artifact") or "")
+        commit = str(side_effect.get("commit") or "")
+        compensate = str(side_effect.get("compensate") or "")
+        if state not in {"staged", "prepared"}:
+            return SideEffectSagaResult(
+                action="compensate",
+                ok=True,
+                scope=scope,
+                state=state or "no_staged_side_effect",
+                artifact=artifact,
+                commit=commit,
+                compensate=compensate,
+                reason="side_effect_not_staged",
+            )
+        if compensate != "filesystem.remove_staged_outbound":
+            return SideEffectSagaResult(
+                action="compensate",
+                ok=False,
+                scope=scope,
+                state="compensate_handler_missing",
+                artifact=artifact,
+                commit=commit,
+                compensate=compensate,
+                reason="no_state_graph_compensate_handler",
+            )
+        artifact_path = Path(artifact).expanduser()
+        allowed_root = (self.home / "weixin" / "outbox").resolve()
+        try:
+            resolved = artifact_path.resolve()
+        except OSError as exc:
+            return SideEffectSagaResult(
+                action="compensate",
+                ok=False,
+                scope=scope,
+                state="compensate_path_error",
+                artifact=artifact,
+                commit=commit,
+                compensate=compensate,
+                reason=str(exc),
+            )
+        if not resolved.is_relative_to(allowed_root):
+            return SideEffectSagaResult(
+                action="compensate",
+                ok=False,
+                scope=scope,
+                state="compensate_path_blocked",
+                artifact=str(resolved),
+                commit=commit,
+                compensate=compensate,
+                reason="artifact_outside_weixin_outbox",
+            )
+        if not resolved.exists():
+            return SideEffectSagaResult(
+                action="compensate",
+                ok=True,
+                scope=scope,
+                state="compensated_missing",
+                artifact=str(resolved),
+                commit=commit,
+                compensate=compensate,
+                reason="artifact_already_absent",
+            )
+        if not resolved.is_file():
+            return SideEffectSagaResult(
+                action="compensate",
+                ok=False,
+                scope=scope,
+                state="compensate_path_blocked",
+                artifact=str(resolved),
+                commit=commit,
+                compensate=compensate,
+                reason="artifact_not_file",
+            )
+        resolved.unlink()
+        return SideEffectSagaResult(
+            action="compensate",
+            ok=True,
+            scope=scope,
+            state="compensated",
+            artifact=str(resolved),
+            commit=commit,
+            compensate=compensate,
+            reason="staged_artifact_removed",
+        )
+
+
 class ModelCapabilityPlannerPort:
     """Planner node port for the durable StateGraph.
 
@@ -592,6 +750,7 @@ class CapabilityExecutorPort:
             facts=result.facts or {},
             message=result.message,
             error_reason=result.error_reason,
+            terminal=result.terminal,
         )
 
 
@@ -611,6 +770,7 @@ class DurableStateGraphRunner:
         recovery_port: CapabilityRecoveryPort | None = None,
         llm_reflector_port: LLMReflectorPort | None = None,
         semantic_checker_port: LLMSemanticCheckerPort | None = None,
+        side_effect_saga_port: SideEffectSagaPort | None = None,
         trace_store: TraceStore | None = None,
         trace_context: CapabilityContext | None = None,
     ):
@@ -625,6 +785,7 @@ class DurableStateGraphRunner:
         self.recovery_port = recovery_port or CapabilityRecoveryPort()
         self.llm_reflector_port = llm_reflector_port
         self.semantic_checker_port = semantic_checker_port
+        self.side_effect_saga_port = side_effect_saga_port or SideEffectSagaPort(home=home)
         self.trace_store = trace_store
         self.trace_context = trace_context
 
@@ -779,6 +940,7 @@ class DurableStateGraphRunner:
                     "facts": dict(executed.facts),
                     "message": executed.message,
                     "error_reason": executed.error_reason,
+                    "terminal": executed.terminal,
                 }
             )
             collected_evidence["attempt_history"] = attempt_history
@@ -969,6 +1131,7 @@ class DurableStateGraphRunner:
                     facts=cap_result.get("facts", {}) if isinstance(cap_result, dict) else {},
                     message=cap_result.get("message", "") if isinstance(cap_result, dict) else "",
                     error_reason=cap_result.get("error_reason", "") if isinstance(cap_result, dict) else "",
+                    terminal=bool(cap_result.get("terminal", False)) if isinstance(cap_result, dict) else False,
                 )
                 decision = await self.llm_reflector_port.assess(
                     spec, state, executed=executed_step, evidence=collected_evidence
@@ -1006,6 +1169,16 @@ class DurableStateGraphRunner:
                                     owner_run_id=state.run_id,
                                     resource=_workspace_lock_resource(workspace),
                                 )
+                    commit_result = self._commit_side_effects(state, collected_evidence)
+                    if commit_result is not None and not commit_result.ok:
+                        state = self._side_effect_commit_required(state, commit_result)
+                        return StateGraphRunResult(
+                            run_state=state,
+                            checker_report=checker_report,
+                            resource_grants=tuple(grants),
+                            harness_results=tuple(harness_results),
+                            evidence=collected_evidence,
+                        )
                     state = self._transition(
                         state,
                         node=LoopNode.EVALUATE,
@@ -1068,8 +1241,9 @@ class DurableStateGraphRunner:
                         self.harness.release_workspace_locks(
                             owner_run_id=state.run_id,
                             resource=lock_resource,
-                        )
+                    )
                 if merge_result.status == MergeStatus.CONFLICTED:
+                    self._compensate_side_effects(state, collected_evidence)
                     state = self._transition(
                         state,
                         node=LoopNode.EVALUATE,
@@ -1084,6 +1258,16 @@ class DurableStateGraphRunner:
                         harness_results=tuple(harness_results),
                         evidence=collected_evidence,
                     )
+            commit_result = self._commit_side_effects(state, collected_evidence)
+            if commit_result is not None and not commit_result.ok:
+                state = self._side_effect_commit_required(state, commit_result)
+                return StateGraphRunResult(
+                    run_state=state,
+                    checker_report=checker_report,
+                    resource_grants=tuple(grants),
+                    harness_results=tuple(harness_results),
+                    evidence=collected_evidence,
+                )
             state = self._transition(
                 state,
                 node=LoopNode.EVALUATE,
@@ -1092,6 +1276,7 @@ class DurableStateGraphRunner:
                 evidence=checker_report.to_dict(),
             )
         elif checker_report.timed_out:
+            self._compensate_side_effects(state, collected_evidence)
             self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
             state = self._transition(
                 state,
@@ -1127,6 +1312,99 @@ class DurableStateGraphRunner:
             evidence=collected_evidence,
         )
 
+    def _commit_side_effects(
+        self,
+        state: LoopRunState,
+        collected_evidence: dict[str, Any],
+    ) -> SideEffectSagaResult | None:
+        side_effect = _side_effect_from_collected_evidence(collected_evidence)
+        if not side_effect:
+            return None
+        result = self.side_effect_saga_port.commit(side_effect)
+        collected_evidence["side_effect_commit_result"] = result.to_dict()
+        self._record_side_effect_decision(state=state, result=result)
+        return result
+
+    def _compensate_side_effects(
+        self,
+        state: LoopRunState,
+        collected_evidence: dict[str, Any],
+    ) -> SideEffectSagaResult | None:
+        side_effect = _side_effect_from_collected_evidence(collected_evidence)
+        if not side_effect:
+            return None
+        result = self.side_effect_saga_port.compensate(side_effect)
+        results = list(collected_evidence.get("side_effect_compensation_results") or [])
+        results.append(result.to_dict())
+        collected_evidence["side_effect_compensation_results"] = results
+        self._record_side_effect_decision(state=state, result=result)
+        return result
+
+    def _side_effect_commit_required(
+        self,
+        state: LoopRunState,
+        result: SideEffectSagaResult,
+    ) -> LoopRunState:
+        escalated = self._transition(
+            state,
+            node=LoopNode.ESCALATE,
+            condition="side_effect_commit_required",
+            evidence=result.to_dict(),
+        )
+        return self._transition(
+            escalated,
+            node=LoopNode.ESCALATE,
+            condition="approval_required",
+            terminal_state=LoopTerminalState.WAITING_APPROVAL,
+            evidence=result.to_dict(),
+        )
+
+    def _record_side_effect_decision(
+        self,
+        *,
+        state: LoopRunState,
+        result: SideEffectSagaResult,
+    ) -> None:
+        if self.trace_store is None or self.trace_context is None:
+            return
+        if not self.trace_context.trace_id:
+            return
+        check = LoopCheckResult(
+            name=LoopCheckName.CAPABILITY_RESULT,
+            passed=result.ok,
+            reason=result.reason,
+            evidence={"side_effect": result.to_dict()},
+        )
+        self.trace_store.add_loop_decision(
+            trace_id=self.trace_context.trace_id,
+            session_id=self.trace_context.session_id or "",
+            run_id=state.run_id,
+            source=self.trace_context.source,
+            peer_id=self.trace_context.peer_id,
+            sender_id=self.trace_context.sender_id,
+            decision=LoopDecision(
+                decision=LoopDecisionKind.CONTINUE if result.ok else LoopDecisionKind.BLOCKED,
+                reason=LoopReason.CAPABILITY_FACT_RECORDED
+                if result.ok
+                else LoopReason.APPROVAL_REQUIRED,
+                phase=LoopPhase.DECISION,
+                failure_domain=TraceFailureDomain.NONE
+                if result.ok
+                else TraceFailureDomain.SAFEGUARD_POLICY,
+                tool=f"state_graph.side_effect.{result.action}",
+                run_id=state.run_id,
+                goal_ids=(state.goal_id,),
+                checker_results=(check,),
+                evidence={
+                    "condition": f"side_effect_{result.action}",
+                    "loop_run_id": state.run_id,
+                    "loop_spec_id": state.loop_spec_id,
+                    "attempt": state.attempt,
+                    "side_effect": result.to_dict(),
+                },
+            ),
+        )
+
     def _reflect_state(
         self,
         spec: LoopSpec,
@@ -1137,6 +1415,7 @@ class DurableStateGraphRunner:
         collected_evidence: dict[str, Any],
         harness_results: list[HarnessResult],
     ) -> LoopRunState:
+        self._compensate_side_effects(state, collected_evidence)
         self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
         reflected = self._transition(
             state,
@@ -1187,6 +1466,7 @@ class DurableStateGraphRunner:
             facts=cap_result.get("facts", {}) if isinstance(cap_result.get("facts"), dict) else {},
             message=str(cap_result.get("message") or ""),
             error_reason=str(cap_result.get("error_reason") or ""),
+            terminal=bool(cap_result.get("terminal", False)),
         )
         for step in spec.verification_ladder:
             if step.kind != VerificationKind.LLM_CHECKER:
@@ -1520,6 +1800,8 @@ def _transition_decision_kind(
         return LoopDecisionKind.RECOVER
     if condition.startswith("resource_"):
         return LoopDecisionKind.BLOCKED
+    if condition == "side_effect_commit_required":
+        return LoopDecisionKind.BLOCKED
     return LoopDecisionKind.CONTINUE
 
 
@@ -1534,7 +1816,12 @@ def _transition_reason(
         return LoopReason.CAPABILITY_FAILURE
     if condition in {"checker_failed", "checker_rejected", "no_route_available"}:
         return LoopReason.COMPLETION_CHECKER_BLOCKED
-    if condition in {"resource_pause", "resource_or_user_pause", "resource_escalate"}:
+    if condition in {
+        "resource_pause",
+        "resource_or_user_pause",
+        "resource_escalate",
+        "side_effect_commit_required",
+    }:
         return LoopReason.APPROVAL_REQUIRED
     if condition == "hard_timeout":
         return LoopReason.TERMINAL_RESULT
@@ -1558,7 +1845,7 @@ def _transition_failure_domain(
         return TraceFailureDomain.CAPABILITY_FAILURE
     if condition in {"checker_failed", "checker_rejected", "no_route_available"}:
         return TraceFailureDomain.CHECKER_BLOCKED
-    if condition.startswith("resource_") or terminal in {
+    if condition.startswith("resource_") or condition == "side_effect_commit_required" or terminal in {
         str(LoopTerminalState.PAUSED),
         str(LoopTerminalState.WAITING_APPROVAL),
     }:
@@ -1582,7 +1869,7 @@ def _transition_check_name(
         return LoopCheckName.PLANNER_RESULT
     if condition in {"capability_failed", "side_effect_recorded"}:
         return LoopCheckName.CAPABILITY_RESULT
-    if condition.startswith("resource_"):
+    if condition.startswith("resource_") or condition == "side_effect_commit_required":
         return LoopCheckName.APPROVAL_GATE
     if terminal_state:
         return LoopCheckName.TERMINAL_RESULT
@@ -1634,6 +1921,13 @@ def _transition_side_effect(evidence: dict[str, Any]) -> dict[str, Any]:
         "commit": str(facts.get("side_effect_commit") or ""),
         "compensate": str(facts.get("side_effect_compensate") or ""),
     }
+
+
+def _side_effect_from_collected_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    cap_result = evidence.get("capability_result")
+    if not isinstance(cap_result, dict):
+        return {}
+    return _transition_side_effect({"executor": cap_result})
 
 
 def _step_runs_command(step: VerificationStep) -> bool:

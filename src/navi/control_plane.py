@@ -26,9 +26,9 @@ __all__ = ["AgentTurnResult", "TurnController"]
 class TurnController(TurnLifecycleMixin):
     """Thin turn facade for the Navi 2.0 control plane.
 
-    This class intentionally does not contain a ReAct loop. It only normalizes
-    an inbound turn, routes it through the RequestRouter contract, invokes
-    goal/control capabilities, or returns a one-turn responder answer.
+    This class normalizes inbound turns and hands them to the unified loop
+    kernel. Every turn runs through the durable loop machinery; `loop_kind`
+    distinguishes ordinary turns from explicit durable goals and control work.
     """
 
     def __init__(
@@ -93,17 +93,17 @@ class TurnController(TurnLifecycleMixin):
             intent_facts,
             trace_id,
         )
-        # Unified slow path: every turn opens a goal whose objective is the
-        # user's message, then runs the planner ReAct loop. The planner picks
+        # Unified loop path: every turn opens a loop record whose objective is
+        # the user's message, then runs the planner ReAct loop. The planner picks
         # capabilities (shell.run, directory.list, send_file, respond, ...),
-        # the executor runs them, and the LLM reflector judges whether the
-        # objective is achieved. No router, no fast path — one loop for all
-        # requests.
+        # the executor runs them, and the checker verifies whether the objective
+        # is achieved.
         invoked = await self.capabilities.invoke(
             "goal.open",
             {
                 "objective": text,
                 "workspace": str(self.project_dir.resolve()),
+                "loop_kind": "turn",
             },
             permission="prepare",
             context=context,
@@ -117,10 +117,14 @@ class TurnController(TurnLifecycleMixin):
             peer_id=peer_id,
             sender_id=sender_id,
             tool="goal.open",
-            model_role="request_router",
+            model_role="loop_kernel",
             ok=invoked.ok,
             input_data={
-                "args": {"objective": text, "workspace": str(self.project_dir.resolve())},
+                "args": {
+                    "objective": text,
+                    "workspace": str(self.project_dir.resolve()),
+                    "loop_kind": "turn",
+                },
                 "permission": "prepare",
             },
             output_data={
@@ -151,7 +155,7 @@ class TurnController(TurnLifecycleMixin):
                     "error_reason": getattr(invoked, "error_reason", ""),
                 },
             ),
-            model_role="request_router",
+            model_role="loop_kernel",
             terminal=True,
             ok=invoked.ok,
             trace_id=trace_id,
@@ -324,6 +328,3 @@ def _fact_event(kind: str, facts: dict[str, Any]) -> str:
         ensure_ascii=False,
         sort_keys=True,
     )
-
-
-

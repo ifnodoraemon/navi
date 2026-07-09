@@ -11,8 +11,31 @@ from navi.capabilities_types import CapabilityContext
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY
 from navi.db import connect
 from navi.loop import LoopCheckName, LoopDecisionKind, LoopReason, TraceFailureDomain
+from navi.loop_contracts import GoalSpec, LoopNode, LoopSpec, VerificationKind, VerificationStep
+from navi.loop_runs import LoopRunStore
 from navi.trace import LoopCheckResult, TraceStore
 from navi.loop import LoopDecision
+
+
+def _loop_spec_for_trace(goal_id: str) -> LoopSpec:
+    return LoopSpec.from_goal(
+        GoalSpec(
+            objective="show complete trace loop state",
+            scope=("repo:/tmp/project",),
+            acceptance_criteria=("loop transition is visible in trace UI",),
+            permission_ceiling="read",
+        ),
+        goal_id=goal_id,
+        allowed_capabilities=("respond",),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                required=False,
+                evidence_key="capability_result",
+            ),
+        ),
+    )
 
 
 def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
@@ -72,6 +95,41 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
     assert runs[2].name == "Decision: finalize"
     assert runs[2].parent_run_id == trace_id
     assert runs[2].feedback == {}
+
+
+def test_trace_blob_resolution_preserves_non_blob_loop_decision_payloads(tmp_path):
+    store = TraceStore(tmp_path)
+    trace_id = "trace-mixed-blob"
+
+    store.add_event(
+        trace_id=trace_id,
+        phase="planner.syscall",
+        output_data={"large": "x" * 2048},
+    )
+    store.add_loop_decision(
+        trace_id=trace_id,
+        decision=LoopDecision(
+            decision=LoopDecisionKind.CONTINUE,
+            reason=LoopReason.CAPABILITY_FACT_RECORDED,
+            tool="state_graph.side_effect.commit",
+            evidence={
+                "side_effect": {
+                    "state": "released_for_connector_commit",
+                    "artifact": "/tmp/outbox/resume.docx",
+                }
+            },
+        ),
+    )
+
+    decisions = store.list_loop_decisions(trace_id)
+
+    assert len(decisions) == 1
+    payload = json.loads(decisions[0].output_json)
+    assert payload["tool"] == "state_graph.side_effect.commit"
+    assert (
+        payload["evidence"]["side_effect"]["state"]
+        == "released_for_connector_commit"
+    )
 
 
 def test_trace_store_redacts_legacy_rows_on_init(tmp_path):
@@ -236,6 +294,59 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
     runs_payload = runs_response.json()
     assert runs_payload["data"]["runs"][0]["run_type"] == "chain"
     assert "thread_id" in runs_payload["data"]["runs"][0]
+
+
+def test_trace_api_includes_durable_loop_run_details_for_web_tree(tmp_path):
+    loop_store = LoopRunStore(tmp_path)
+    loop_run = loop_store.create_run(_loop_spec_for_trace("goal-trace"))
+    checkpoint = loop_store.write_checkpoint(
+        loop_run.run_id,
+        node=LoopNode.PLAN,
+        inputs={"planned_capability": {"tool": "respond"}},
+        state=loop_run.to_dict(),
+    )
+    loop_store.transition(
+        loop_run.run_id,
+        node=LoopNode.EXECUTE,
+        checkpoint_id=checkpoint.id,
+        condition="plan_ready",
+        evidence={"planned_capability": {"tool": "respond"}},
+    )
+    store = TraceStore(tmp_path)
+    store.add_event(
+        trace_id="trace-loop-ui",
+        phase="turn.start",
+        session_id="session-loop-ui",
+        input_data={"message": "show loop"},
+    )
+    store.add_event(
+        trace_id="trace-loop-ui",
+        phase="capability.result",
+        output_data={"facts": {"loop_run_id": loop_run.run_id}},
+    )
+
+    app = create_app(tmp_path)
+    api_key = (tmp_path / "api_key").read_text(encoding="utf-8").strip()
+    client = TestClient(app)
+
+    list_response = client.get("/v1/traces", headers={"X-API-Key": api_key})
+    assert list_response.status_code == 200
+    meta = list_response.json()["data"]["traces"][0]
+    assert meta["thread_id"] == "session-loop-ui"
+
+    trace_response = client.get(
+        "/v1/traces/trace-loop-ui",
+        headers={"X-API-Key": api_key},
+    )
+    assert trace_response.status_code == 200
+    payload = trace_response.json()["data"]
+    assert payload["loop_runs"][0]["run_state"]["run_id"] == loop_run.run_id
+    run_names = {item["name"] for item in payload["runs"]}
+    assert "LoopRun: execute" in run_names
+    assert "Checkpoint: plan" in run_names
+    assert "Loop Transition: execute" in run_names
+    engine_runs = [item for item in payload["runs"] if item["run_type"] == "engine"]
+    assert engine_runs
 
 
 def test_trace_delete_api_endpoints(tmp_path):

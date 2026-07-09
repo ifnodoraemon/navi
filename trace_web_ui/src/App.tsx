@@ -374,6 +374,66 @@ const stringToColor = (str: string) => {
   return `hsl(${hue}, 70%, 60%)`;
 };
 
+const parseMaybeJson = (value: any): any => {
+  if (!value) return null;
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+};
+
+const loopDecisionPayload = (decision: any): any => {
+  const direct = parseMaybeJson(decision?.decision);
+  if (direct && typeof direct === 'object') return direct;
+  const output = parseMaybeJson(decision?.output_json);
+  return output && typeof output === 'object' ? output : {};
+};
+
+const decisionTone = (decision: string) => {
+  if (decision === 'blocked' || decision === 'failed') return '#fca5a5';
+  if (decision === 'converged' || decision === 'finalize') return '#34d399';
+  if (decision === 'recover') return '#fbbf24';
+  return '#93c5fd';
+};
+
+const budgetValue = (value: any) => {
+  if (value === null || value === undefined) return '-';
+  if (typeof value === 'number') return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(4);
+  return String(value);
+};
+
+const sideEffectFromDecision = (payload: any): any => {
+  const direct = payload?.evidence?.side_effect;
+  if (direct && typeof direct === 'object') return direct;
+  const transition = payload?.checker_results?.[0]?.evidence?.transition_evidence;
+  const executor = transition?.executor;
+  const facts = executor?.facts;
+  if (!facts || typeof facts !== 'object') return null;
+  const hasExplicitSideEffect = Boolean(
+    facts.side_effect_scope ||
+    facts.side_effect_state ||
+    facts.side_effect_artifact ||
+    facts.side_effect_commit ||
+    facts.side_effect_compensate ||
+    executor?.action === 'connector_outbound'
+  );
+  if (!hasExplicitSideEffect) return null;
+  const scope = String(facts.side_effect_scope || '');
+  const state = String(facts.side_effect_state || facts.state_transition || '');
+  const artifact = String(facts.side_effect_artifact || facts.outbound_path || '');
+  if (!scope && !state && !artifact) return null;
+  return {
+    scope,
+    state,
+    artifact,
+    action: String(executor.action || ''),
+    commit: String(facts.side_effect_commit || ''),
+    compensate: String(facts.side_effect_compensate || ''),
+  };
+};
+
 function App() {
   const [tracesMeta, setTracesMeta] = useState<TraceMeta[]>([]);
   const [selectedTrace, setSelectedTrace] = useState<string | null>(null);
@@ -564,6 +624,7 @@ function App() {
           events: [...(traceData.events || []), ...(actualData.events || [])],
           runs: Array.from(runMap.values()),
           loop_decisions: Array.from(decisionMap.values()),
+          loop_runs: actualData.loop_runs || traceData.loop_runs,
           evaluations: actualData.evaluations || traceData.evaluations,
         });
       } else {
@@ -593,6 +654,7 @@ function App() {
   let totalTokensOutput = 0;
   let maxExclusiveTime = 0;
   let bottleneckRunId = '';
+  const loopRunCount = traceData?.loop_runs?.length || 0;
 
   if (traceData && traceData.runs && traceData.runs.length > 0) {
     allRuns = traceData.runs;
@@ -691,6 +753,40 @@ function App() {
   }
 
   const estimatedCost = (totalTokensInput * 0.005 / 1000) + (totalTokensOutput * 0.015 / 1000);
+  const loopDecisionRecords = (traceData?.loop_decisions || [])
+    .map((event: any) => ({ event, payload: loopDecisionPayload(event) }))
+    .filter((item: any) => item.payload && Object.keys(item.payload).length > 0);
+  const transitionDecisionRecords = loopDecisionRecords.filter((item: any) => Boolean(item.payload?.evidence?.condition));
+  const gateDecisionRecords = loopDecisionRecords.filter((item: any) => {
+    const evidence = item.payload?.evidence || {};
+    return Boolean(evidence.grant || item.payload?.gate_results?.length);
+  });
+  const blockedLoopDecisionCount = loopDecisionRecords.filter((item: any) => {
+    const decision = String(item.payload?.decision || '');
+    return decision === 'blocked' || decision === 'failed';
+  }).length;
+  const latestBudgetState = [...gateDecisionRecords]
+    .reverse()
+    .map((item: any) => item.payload?.evidence?.grant?.budget_state || item.payload?.gate_results?.[0]?.evidence?.grant?.budget_state)
+    .find(Boolean);
+  const gateLedgerRows = gateDecisionRecords.slice(-10).reverse();
+  const sideEffectRows = loopDecisionRecords
+    .map((item: any) => ({ ...item, sideEffect: sideEffectFromDecision(item.payload) }))
+    .filter((item: any) => item.sideEffect)
+    .slice(-10)
+    .reverse();
+  const loopRunSummaries = (traceData?.loop_runs || []).map((detail: any) => {
+    const runState = detail.run_state || {};
+    const events = detail.events || [];
+    const checkpoints = detail.checkpoints || [];
+    const lastEvent = events.length > 0 ? events[events.length - 1] : null;
+    return {
+      runState,
+      events,
+      checkpoints,
+      lastEvent,
+    };
+  });
 
   const handleReplay = async () => {
     const firstUserMsg = allRuns.find(r => r.name === 'Channel Receive')?.inputs?.message;
@@ -920,6 +1016,10 @@ function App() {
                       <div className="metric-label"><Database size={14} /> Est. Cost</div>
                       <div className="metric-value" style={{color: 'var(--success-color)'}}>${estimatedCost.toFixed(5)}</div>
                     </div>
+                    <div className="metric-box">
+                      <div className="metric-label"><ListTree size={14} /> Loop Runs</div>
+                      <div className="metric-value">{loopRunCount}</div>
+                    </div>
                   </div>
                 </div>
 
@@ -1008,6 +1108,159 @@ function App() {
                 )}
               </div>
             </div>
+
+            {(loopRunSummaries.length > 0 || loopDecisionRecords.length > 0) && (
+              <div className="glass-panel" style={{ padding: 18, borderRadius: 8, marginBottom: 24 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 14, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <ListTree size={16} color="var(--accent-color)" />
+                    <h3 style={{ margin: 0, fontSize: '0.95rem' }}>Loop Control</h3>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <span className="badge">decisions {loopDecisionRecords.length}</span>
+                    <span className="badge">transitions {transitionDecisionRecords.length}</span>
+                    <span className="badge">gates {gateDecisionRecords.length}</span>
+                    <span className="badge">side effects {sideEffectRows.length}</span>
+                    <span className="badge" style={{ color: blockedLoopDecisionCount ? '#fca5a5' : '#34d399' }}>
+                      blocked {blockedLoopDecisionCount}
+                    </span>
+                  </div>
+                </div>
+
+                {latestBudgetState && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 16 }}>
+                    <div style={{ padding: 10, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6 }}>
+                      <div className="metric-label"><Database size={13} /> Calls Left</div>
+                      <div className="metric-value" style={{ fontSize: '1rem' }}>{budgetValue(latestBudgetState.call_budget_remaining)}</div>
+                    </div>
+                    <div style={{ padding: 10, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6 }}>
+                      <div className="metric-label"><Activity size={13} /> Tokens Left</div>
+                      <div className="metric-value" style={{ fontSize: '1rem' }}>{budgetValue(latestBudgetState.token_budget_remaining)}</div>
+                    </div>
+                    <div style={{ padding: 10, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6 }}>
+                      <div className="metric-label"><Timer size={13} /> Cost Left</div>
+                      <div className="metric-value" style={{ fontSize: '1rem' }}>{budgetValue(latestBudgetState.cost_budget_remaining)}</div>
+                    </div>
+                    <div style={{ padding: 10, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6 }}>
+                      <div className="metric-label"><ShieldAlert size={13} /> Gate State</div>
+                      <div className="metric-value" style={{ fontSize: '1rem', color: latestBudgetState.decision === 'allow' ? '#34d399' : '#fca5a5' }}>
+                        {latestBudgetState.reason || latestBudgetState.decision}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {sideEffectRows.length > 0 && (
+                  <div style={{ overflowX: 'auto', marginBottom: 16 }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+                      <thead>
+                        <tr style={{ color: 'var(--text-secondary)', textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                          <th style={{ padding: '8px 6px' }}>Time</th>
+                          <th style={{ padding: '8px 6px' }}>Tool</th>
+                          <th style={{ padding: '8px 6px' }}>Scope</th>
+                          <th style={{ padding: '8px 6px' }}>State</th>
+                          <th style={{ padding: '8px 6px' }}>Artifact</th>
+                          <th style={{ padding: '8px 6px' }}>Commit</th>
+                          <th style={{ padding: '8px 6px' }}>Compensate</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sideEffectRows.map((item: any) => {
+                          const effect = item.sideEffect || {};
+                          const artifact = String(effect.artifact || '');
+                          const state = String(effect.state || '');
+                          const tool = item.payload?.tool || effect.action || '-';
+                          return (
+                            <tr key={`${item.event.id}-side-effect`} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                              <td style={{ padding: '8px 6px', fontFamily: 'monospace' }}>{item.event.created_at ? format(new Date(item.event.created_at * 1000), 'HH:mm:ss.SSS') : '-'}</td>
+                              <td style={{ padding: '8px 6px' }}>{tool}</td>
+                              <td style={{ padding: '8px 6px' }}>{effect.scope || '-'}</td>
+                              <td style={{ padding: '8px 6px', color: state === 'committed' ? '#34d399' : '#fbbf24' }}>{state || '-'}</td>
+                              <td style={{ padding: '8px 6px', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' }} title={artifact}>{artifact || '-'}</td>
+                              <td style={{ padding: '8px 6px' }}>{effect.commit || '-'}</td>
+                              <td style={{ padding: '8px 6px' }}>{effect.compensate || '-'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {loopRunSummaries.length > 0 && (
+                  <div style={{ overflowX: 'auto', marginBottom: gateLedgerRows.length > 0 ? 16 : 0 }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+                      <thead>
+                        <tr style={{ color: 'var(--text-secondary)', textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                          <th style={{ padding: '8px 6px' }}>Loop Run</th>
+                          <th style={{ padding: '8px 6px' }}>Node</th>
+                          <th style={{ padding: '8px 6px' }}>Terminal</th>
+                          <th style={{ padding: '8px 6px' }}>Attempt</th>
+                          <th style={{ padding: '8px 6px' }}>Events</th>
+                          <th style={{ padding: '8px 6px' }}>Checkpoints</th>
+                          <th style={{ padding: '8px 6px' }}>Last Transition</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {loopRunSummaries.map((item: any) => {
+                          const runId = String(item.runState.run_id || '');
+                          const terminal = String(item.runState.terminal_state || 'active');
+                          const lastCondition = item.lastEvent?.evidence?.condition || item.lastEvent?.event_type || '';
+                          return (
+                            <tr key={runId} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                              <td style={{ padding: '8px 6px', fontFamily: 'monospace', color: '#c4b5fd' }}>{runId.slice(0, 12)}</td>
+                              <td style={{ padding: '8px 6px' }}>{item.runState.node || '-'}</td>
+                              <td style={{ padding: '8px 6px', color: terminal === 'converged' ? '#34d399' : (terminal === 'active' ? '#93c5fd' : '#fca5a5') }}>{terminal}</td>
+                              <td style={{ padding: '8px 6px' }}>{item.runState.attempt || '-'}</td>
+                              <td style={{ padding: '8px 6px' }}>{item.events.length}</td>
+                              <td style={{ padding: '8px 6px' }}>{item.checkpoints.length}</td>
+                              <td style={{ padding: '8px 6px' }}>{lastCondition || '-'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {gateLedgerRows.length > 0 && (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+                      <thead>
+                        <tr style={{ color: 'var(--text-secondary)', textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                          <th style={{ padding: '8px 6px' }}>Time</th>
+                          <th style={{ padding: '8px 6px' }}>Gate</th>
+                          <th style={{ padding: '8px 6px' }}>Decision</th>
+                          <th style={{ padding: '8px 6px' }}>Reason</th>
+                          <th style={{ padding: '8px 6px' }}>Calls Left</th>
+                          <th style={{ padding: '8px 6px' }}>Tokens Left</th>
+                          <th style={{ padding: '8px 6px' }}>Cost Left</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {gateLedgerRows.map((item: any) => {
+                          const payload = item.payload || {};
+                          const grant = payload.evidence?.grant || payload.gate_results?.[0]?.evidence?.grant || {};
+                          const budget = grant.budget_state || {};
+                          const decision = String(payload.decision || grant.decision || '');
+                          return (
+                            <tr key={item.event.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                              <td style={{ padding: '8px 6px', fontFamily: 'monospace' }}>{item.event.created_at ? format(new Date(item.event.created_at * 1000), 'HH:mm:ss.SSS') : '-'}</td>
+                              <td style={{ padding: '8px 6px' }}>{payload.tool || payload.evidence?.kind || '-'}</td>
+                              <td style={{ padding: '8px 6px', color: decisionTone(decision) }}>{decision || '-'}</td>
+                              <td style={{ padding: '8px 6px' }}>{grant.reason || payload.reason || '-'}</td>
+                              <td style={{ padding: '8px 6px' }}>{budgetValue(budget.call_budget_remaining)}</td>
+                              <td style={{ padding: '8px 6px' }}>{budgetValue(budget.token_budget_remaining)}</td>
+                              <td style={{ padding: '8px 6px' }}>{budgetValue(budget.cost_budget_remaining)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
 
             {rootCauseError && (
               <div className="error-alert glass-panel" style={{ padding: '16px', background: 'rgba(239, 68, 68, 0.05)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', marginBottom: '24px' }}>

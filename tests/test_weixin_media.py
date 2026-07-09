@@ -306,7 +306,12 @@ async def test_weixin_send_file_returns_allowed_media_directive(tmp_path: Path):
     assert result.facts is not None
     assert "entity_type" in result.facts
     assert result.facts["entity_type"] == "outbound_media"
+    assert result.facts["side_effect_scope"] == "external"
+    assert result.facts["side_effect_state"] == "staged"
+    assert result.facts["side_effect_commit"] == "weixin.connector_runtime.dispatch_outbox"
+    assert result.facts["side_effect_compensate"] == "filesystem.remove_staged_outbound"
     staged = Path(result.facts["outbound_path"])
+    assert result.facts["side_effect_artifact"] == str(staged)
     assert staged.is_file()
     assert staged.read_bytes() == b"resume"
     assert staged.is_relative_to((tmp_path / "weixin" / "outbox").resolve())

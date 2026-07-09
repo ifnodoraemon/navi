@@ -45,10 +45,17 @@ export interface TraceEvaluation {
   created_at: number;
 }
 
+export interface LoopRunTraceDetail {
+  run_state: any;
+  events: any[];
+  checkpoints: any[];
+}
+
 export interface TraceData {
   events: TraceEvent[];
   runs: TraceRunView[];
   loop_decisions: TraceDecision[];
+  loop_runs?: LoopRunTraceDetail[];
   evaluations?: TraceEvaluation[];
 }
 

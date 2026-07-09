@@ -43,7 +43,7 @@ class RequestRoutingDecision:
 
 
 class RequestRouter:
-    """Validate model-owned request intent and map it to fast or slow path."""
+    """Validate model-owned request intent for Navi's unified loop intake."""
 
     def route_model_decision(self, decision: dict[str, Any]) -> RequestRoutingDecision:
         intent = _parse_intent(decision.get("intent"))
@@ -63,7 +63,7 @@ class RequestRouter:
 
 
 class ModelRequestRouter:
-    """LLM-backed router that must output the same explicit RequestRouter contract."""
+    """LLM-backed intake validator that must output the same explicit contract."""
 
     def __init__(self, provider: ModelPool):
         self.provider = provider
@@ -82,7 +82,7 @@ class ModelRequestRouter:
                 ChatMessage(
                     "system",
                     (
-                        "You are Navi's Request Router. Classify the request according to the provided schema. "
+                        "You are Navi's unified loop intake validator. Classify the intent according to the provided schema. "
                         "Do not answer the user and do not select capabilities."
                     ),
                 ),
@@ -112,25 +112,18 @@ class ModelRequestRouter:
 
 
 def route_for_intent(intent: RequestIntent | str) -> RequestRoute:
-    parsed = _parse_intent(intent)
-    if parsed in {RequestIntent.OPEN_GOAL, RequestIntent.RESUME_GOAL}:
-        return RequestRoute.SLOW_PATH
-    return RequestRoute.FAST_PATH
+    _parse_intent(intent)
+    return RequestRoute.UNIFIED_LOOP
 
 
 def request_router_contract() -> dict[str, Any]:
     return {
         "router": "request_router",
         "intent_owner": "model_or_structured_protocol",
-        "system_role": "validate_intent_and_map_fast_slow",
+        "system_role": "validate_intent_for_unified_loop",
         "allowed_intents": [str(item) for item in RequestIntent],
         "routes": {
-            str(RequestIntent.ANSWER_NOW): str(RequestRoute.FAST_PATH),
-            str(RequestIntent.OPEN_GOAL): str(RequestRoute.SLOW_PATH),
-            str(RequestIntent.RESUME_GOAL): str(RequestRoute.SLOW_PATH),
-            str(RequestIntent.CONTROL_GOAL): str(RequestRoute.FAST_PATH),
-            str(RequestIntent.REQUEST_ELEVATION): str(RequestRoute.FAST_PATH),
-            str(RequestIntent.ASK_CLARIFICATION): str(RequestRoute.FAST_PATH),
+            str(item): str(RequestRoute.UNIFIED_LOOP) for item in RequestIntent
         },
     }
 

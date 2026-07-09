@@ -159,6 +159,7 @@ class CapabilityRegistry:
                     output_schema=spec.output_schema,
                     provider="tool_gateway" if isinstance(handler, ToolCapability) else "action",
                     description=spec.description,
+                    side_effect_policy=spec.side_effect_policy.to_dict(),
                 )
             )
         return sorted(nodes, key=lambda node: node.name)
@@ -328,6 +329,7 @@ class CapabilityRegistry:
                     "sender_id": context.sender_id,
                     "workspace": context.workspace,
                     "mutates": handler.spec.mutates,
+                    "side_effect_policy": handler.spec.side_effect_policy.to_dict(),
                     "args_keys": sorted(call_args),
                 },
             )

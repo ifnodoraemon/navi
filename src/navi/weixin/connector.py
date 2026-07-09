@@ -113,7 +113,7 @@ def _diagnostics(home: Path) -> list[dict[str, str]]:
 
 
 def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
-    from navi.tools import ALL_EXECUTION_CONTEXTS, ToolResult, ToolSpec
+    from navi.tools import ALL_EXECUTION_CONTEXTS, SideEffectPolicy, ToolResult, ToolSpec
 
     registry.register(
         ToolSpec(
@@ -166,6 +166,11 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
                     "source_path": {"type": "string"},
                     "outbound_path": {"type": "string"},
                     "size": {"type": "integer"},
+                    "side_effect_scope": {"type": "string"},
+                    "side_effect_state": {"type": "string"},
+                    "side_effect_artifact": {"type": "string"},
+                    "side_effect_commit": {"type": "string"},
+                    "side_effect_compensate": {"type": "string"},
                 },
             },
             facts_only=True,
@@ -173,6 +178,15 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
             permission="write",
             governance_exempt=True,
             source=f"connector.{spec.name}",
+            side_effect_policy=SideEffectPolicy(
+                scope="external",
+                mode="staged",
+                state_field="side_effect_state",
+                artifact_field="outbound_path",
+                commit_tool="weixin.connector_runtime.dispatch_outbox",
+                compensate_tool="filesystem.remove_staged_outbound",
+                description="Stages outbound media locally; the connector runtime commits the send.",
+            ),
         ),
         lambda args: _send_file_handler(home, args),
     )
@@ -243,6 +257,11 @@ def _send_file_handler(home: Path, args: dict[str, Any]):
             "source_path": str(source),
             "outbound_path": str(target),
             "size": target.stat().st_size,
+            "side_effect_scope": "external",
+            "side_effect_state": "staged",
+            "side_effect_artifact": str(target),
+            "side_effect_commit": "weixin.connector_runtime.dispatch_outbox",
+            "side_effect_compensate": "filesystem.remove_staged_outbound",
         },
     )
 

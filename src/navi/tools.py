@@ -26,6 +26,37 @@ ALL_EXECUTION_CONTEXTS = (
 )
 
 
+@dataclass(frozen=True)
+class SideEffectPolicy:
+    scope: str = "none"
+    mode: str = "none"
+    state_field: str = ""
+    artifact_field: str = ""
+    commit_tool: str = ""
+    compensate_tool: str = ""
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "scope", str(self.scope or "none").strip() or "none")
+        object.__setattr__(self, "mode", str(self.mode or "none").strip() or "none")
+        object.__setattr__(self, "state_field", str(self.state_field or "").strip())
+        object.__setattr__(self, "artifact_field", str(self.artifact_field or "").strip())
+        object.__setattr__(self, "commit_tool", str(self.commit_tool or "").strip())
+        object.__setattr__(self, "compensate_tool", str(self.compensate_tool or "").strip())
+        object.__setattr__(self, "description", str(self.description or "").strip())
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "scope": self.scope,
+            "mode": self.mode,
+            "state_field": self.state_field,
+            "artifact_field": self.artifact_field,
+            "commit_tool": self.commit_tool,
+            "compensate_tool": self.compensate_tool,
+            "description": self.description,
+        }
+
+
 def validate_schema(data: Any, schema: dict[str, Any], path: str = "") -> list[str]:
     """Validates data against a simplified JSON Schema. Returns list of error messages."""
     errors: list[str] = []
@@ -126,6 +157,9 @@ class ToolSpec:
     mutates: bool = False
     permission: str = "read"
     source: str = "core"
+    side_effect_policy: SideEffectPolicy | dict[str, Any] = field(
+        default_factory=SideEffectPolicy
+    )
     # Governance primitives carry their own first-level guard and must not be
     # suspended by the approval mechanism they implement — that creates an
     # infinite approval loop. Declared per-spec so the exemption is data-driven,
@@ -140,6 +174,18 @@ class ToolSpec:
         if not contexts:
             raise ValueError(f"tool {self.name!r} must declare execution_contexts")
         object.__setattr__(self, "execution_contexts", contexts)
+        policy = self.side_effect_policy
+        if isinstance(policy, dict):
+            policy = SideEffectPolicy(**policy)
+        if not isinstance(policy, SideEffectPolicy):
+            raise ValueError(f"tool {self.name!r} must declare a valid side_effect_policy")
+        if self.mutates and policy.scope == "none":
+            policy = SideEffectPolicy(
+                scope="local_state",
+                mode="immediate",
+                description="Capability mutates local durable state immediately.",
+            )
+        object.__setattr__(self, "side_effect_policy", policy)
 
     def available_in(self, context: str) -> bool:
         return context in self.execution_contexts
@@ -365,6 +411,5 @@ def _register_core_fact_tools(registry: ToolRegistry, *, home: Path) -> None:
 def _register_connector_tools(registry: ToolRegistry, *, home: Path) -> None:
     for adapter in load_connector_adapters():
         adapter.register_tools(registry, home)
-
 
 

@@ -7,7 +7,7 @@ import pytest
 
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext, CapabilityResult
-from navi.tools import ToolSpec
+from navi.tools import SideEffectPolicy, ToolSpec
 
 
 class _SchemaTestCapability:
@@ -53,6 +53,44 @@ def _spec() -> ToolSpec:
         permission="read",
         source="action",
     )
+
+
+def test_mutating_tool_spec_defaults_to_local_side_effect_policy() -> None:
+    spec = ToolSpec(
+        name="schema.mutate",
+        capability_class="test",
+        execution_contexts=("turn",),
+        description="mutating schema contract test capability",
+        input_schema={"type": "object", "properties": {}},
+        output_schema={"type": "object", "properties": {}},
+        mutates=True,
+        permission="write",
+    )
+
+    assert isinstance(spec.side_effect_policy, SideEffectPolicy)
+    assert spec.side_effect_policy.to_dict() == {
+        "scope": "local_state",
+        "mode": "immediate",
+        "state_field": "",
+        "artifact_field": "",
+        "commit_tool": "",
+        "compensate_tool": "",
+        "description": "Capability mutates local durable state immediately.",
+    }
+
+
+def test_weixin_outbound_declares_staged_external_side_effect(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    spec = registry.get("connector.weixin.send_file")
+
+    assert spec is not None
+    policy = spec.side_effect_policy
+    assert policy.scope == "external"
+    assert policy.mode == "staged"
+    assert policy.state_field == "side_effect_state"
+    assert policy.artifact_field == "outbound_path"
+    assert policy.commit_tool == "weixin.connector_runtime.dispatch_outbox"
+    assert policy.compensate_tool == "filesystem.remove_staged_outbound"
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ from navi.loop_contracts import RequestIntent, RequestRoute
 from navi.request_router import RequestRouter, request_router_contract, route_for_intent
 
 
-def test_request_router_maps_model_owned_intents_to_fast_and_slow_paths() -> None:
+def test_request_router_maps_model_owned_intents_to_unified_loop() -> None:
     router = RequestRouter()
 
     answer = router.route_model_decision(
@@ -26,9 +26,9 @@ def test_request_router_maps_model_owned_intents_to_fast_and_slow_paths() -> Non
     )
 
     assert answer.intent == RequestIntent.ANSWER_NOW
-    assert answer.route == RequestRoute.FAST_PATH
+    assert answer.route == RequestRoute.UNIFIED_LOOP
     assert open_goal.intent == RequestIntent.OPEN_GOAL
-    assert open_goal.route == RequestRoute.SLOW_PATH
+    assert open_goal.route == RequestRoute.UNIFIED_LOOP
     assert open_goal.facts["requires_verification"] is True
 
 
@@ -45,8 +45,7 @@ def test_route_contract_is_explicit_and_not_keyword_classifier() -> None:
     contract = request_router_contract()
 
     assert contract["intent_owner"] == "model_or_structured_protocol"
-    assert contract["system_role"] == "validate_intent_and_map_fast_slow"
-    assert contract["routes"]["answer_now"] == "fast_path"
-    assert contract["routes"]["open_goal"] == "slow_path"
-    assert route_for_intent("resume_goal") == RequestRoute.SLOW_PATH
-    assert route_for_intent("control_goal") == RequestRoute.FAST_PATH
+    assert contract["system_role"] == "validate_intent_for_unified_loop"
+    assert set(contract["routes"].values()) == {"unified_loop"}
+    assert route_for_intent("resume_goal") == RequestRoute.UNIFIED_LOOP
+    assert route_for_intent("control_goal") == RequestRoute.UNIFIED_LOOP

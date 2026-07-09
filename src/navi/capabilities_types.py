@@ -106,6 +106,7 @@ class CapabilityNode:
     output_schema: dict[str, Any]
     provider: str
     description: str = ""
+    side_effect_policy: dict[str, Any] | None = None
 
 
 class BaseCapability:

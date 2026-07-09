@@ -47,9 +47,12 @@ def _declared_safeguard(spec: ToolSpec) -> dict:
     default_key = "write" if spec.mutates or spec.permission == "write" else spec.permission
     if isinstance(defaults, dict) and isinstance(defaults.get(default_key), dict):
         return dict(defaults[default_key])
+    sensitive_contexts = ["local_state"] if spec.mutates else []
+    if spec.side_effect_policy.scope == "external":
+        sensitive_contexts = [*sensitive_contexts, "external_side_effect"]
     return {
         "risk_class": "high" if spec.mutates else "low",
-        "sensitive_contexts": ["local_state"] if spec.mutates else [],
+        "sensitive_contexts": sensitive_contexts,
         "confirmation_required": bool(spec.mutates),
     }
 

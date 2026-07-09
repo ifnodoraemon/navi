@@ -16,13 +16,14 @@ from navi.loop_runs import LoopRunStore
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
+from navi.trace import TraceStore
 
 
 def _command(script: str) -> str:
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
 
 
-def _context(home: Path) -> CapabilityContext:
+def _context(home: Path, *, trace_id: str = "") -> CapabilityContext:
     return CapabilityContext(
         home=home,
         source="cli",
@@ -30,6 +31,7 @@ def _context(home: Path) -> CapabilityContext:
         sender_id="tester",
         permission_ceiling="write",
         workspace=str(home),
+        trace_id=trace_id,
     )
 
 
@@ -86,7 +88,7 @@ async def test_goal_open_capability_auto_start_uses_runtime_state_graph(tmp_path
             "timeout_seconds": 5,
         },
         permission="prepare",
-        context=_context(tmp_path),
+        context=_context(tmp_path, trace_id="trace-goal-open"),
     )
 
     assert result.ok is True
@@ -98,6 +100,19 @@ async def test_goal_open_capability_auto_start_uses_runtime_state_graph(tmp_path
     assert evidence["planned_capability"]["tool"] == "file.write"
     assert evidence["capability_result"]["ok"] is True
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
+    decisions = [
+        json.loads(event.output_json)
+        for event in TraceStore(tmp_path).list_loop_decisions("trace-goal-open")
+    ]
+    transitions = [item for item in decisions if "condition" in item.get("evidence", {})]
+    conditions = [item["evidence"]["condition"] for item in transitions]
+    assert "plan_ready" in conditions
+    assert "side_effect_recorded" in conditions
+    assert transitions[-1]["decision"] == "converged"
+    assert transitions[-1]["evidence"]["condition"] == "checker_passed"
+    assert {
+        item["evidence"]["loop_run_id"] for item in transitions
+    } == {result.facts["loop_run_id"]}
 
 
 @pytest.mark.asyncio
@@ -107,10 +122,16 @@ async def test_goal_open_capability_without_runtime_only_prepares_loop(tmp_path:
     result = await registry.invoke(
         "goal.open",
         {
-            "objective": "prepare slow path through durable state graph",
+            "objective": "prepare turn through durable state graph",
             "workspace": str(tmp_path),
+            "loop_kind": "turn",
             "verification_command": _command("print('ok')"),
             "timeout_seconds": 5,
+            "call_budget": 4,
+            "token_budget": 1000,
+            "cost_budget": 2.25,
+            "qps_limit": 2,
+            "max_concurrent": 3,
         },
         permission="prepare",
         context=_context(tmp_path),
@@ -120,11 +141,19 @@ async def test_goal_open_capability_without_runtime_only_prepares_loop(tmp_path:
     assert result.facts is not None
     assert result.facts["completion_evidence"] is False
     assert result.facts["loop_terminal_state"] == ""
+    assert result.facts["route"] == "unified_loop"
+    assert result.facts["loop_kind"] == "turn"
+    assert result.facts["budget_policy"]["call_budget"] == 4
+    assert result.facts["budget_policy"]["token_budget"] == 1000
+    assert result.facts["budget_policy"]["cost_budget"] == 2.25
+    assert result.facts["budget_policy"]["qps_limit"] == 2
+    assert result.facts["budget_policy"]["max_concurrent"] == 3
 
     run = RunStore(tmp_path).get(result.facts["run_id"])
     goal = GoalStore(tmp_path).get(result.facts["goal_id"])
     loop_run = LoopRunStore(tmp_path).get_run(result.facts["loop_run_id"])
     assert run is not None
+    assert run.kind == "loop:turn"
     assert run.phase == Phase.RUNNING
     assert run.resolution == Resolution.NONE
     assert goal is not None
@@ -140,7 +169,7 @@ async def test_goal_open_capability_can_create_goal_without_starting_loop(tmp_pa
     result = await registry.invoke(
         "goal.open",
         {
-            "objective": "prepare slow path only",
+            "objective": "prepare unified loop only",
             "workspace": str(tmp_path),
             "verification_command": _command("print('ok')"),
             "auto_start": False,

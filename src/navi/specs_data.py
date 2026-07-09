@@ -17,14 +17,14 @@ AGENT_ROLES_SPEC: Any = {
             "parallel_safe": False,
         },
         "router": {
-            "purpose": "Classify a user request into the explicit Request Router contract "
+            "purpose": "Validate user-request intent facts for the unified loop intake "
             "without executing tools or answering the user.",
             "when_to_use": [
-                "Before a normal user turn when the provider exposes a router role.",
-                "When deciding between fast path response/control and durable slow path Goal execution.",
+                "Before or during loop intake when the provider exposes a router role.",
+                "When normalizing request intent before unified StateGraph execution.",
             ],
             "evidence_required": [
-                "agent.role_result trace event with validated request intent, route, confidence, and facts."
+                "agent.role_result trace event with validated request intent, unified_loop route, confidence, and facts."
             ],
             "parallel_safe": False,
         },

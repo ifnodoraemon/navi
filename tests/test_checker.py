@@ -93,3 +93,43 @@ def test_deterministic_checker_timeout_and_missing_evidence_are_structured_state
     assert missing.blocked is True
     assert missing.state_hint == LoopTerminalState.BLOCKED
     assert missing.checker_results[0].reason == "evidence_missing"
+
+
+def test_llm_checker_no_route_available_blocks_without_retry_signal():
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="semantic objective",
+            scope=("repo:/tmp/project",),
+            acceptance_criteria=("isolated checker accepts",),
+            permission_ceiling="read",
+        ),
+        goal_id="goal-semantic",
+        allowed_capabilities=("respond",),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                evidence_key="semantic_checker_result",
+            ),
+        ),
+    )
+
+    report = DeterministicChecker().evaluate(
+        spec,
+        {
+            "semantic_checker_result": {
+                "passed": False,
+                "should_continue": False,
+                "user_message": "Need more information.",
+                "next_step_hint": "ask user",
+                "evaluator_role": "checker",
+                "isolated_context": True,
+            }
+        },
+    )
+
+    assert report.accepted is False
+    assert report.blocked is True
+    assert report.state_hint == LoopTerminalState.BLOCKED
+    assert report.checker_results[0].reason == "no_route_available"
+    assert report.checker_results[0].evidence["isolated_context"] is True

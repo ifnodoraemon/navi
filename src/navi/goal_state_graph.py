@@ -10,8 +10,10 @@ from .state_graph import (
     CapabilityExecutorPort,
     DurableStateGraphRunner,
     LLMReflectorPort,
+    LLMSemanticCheckerPort,
     ModelCapabilityPlannerPort,
 )
+from .trace import TraceStore
 
 
 async def run_goal_loop_state_graph(
@@ -40,6 +42,9 @@ async def run_goal_loop_state_graph(
         ),
         executor_port=CapabilityExecutorPort(home=home, context=context),
         llm_reflector_port=LLMReflectorPort(runtime=runtime),
+        semantic_checker_port=LLMSemanticCheckerPort(runtime=runtime),
+        trace_store=TraceStore(home) if context.trace_id else None,
+        trace_context=context,
     )
     graph_result = await runner.run_async(
         base.loop_spec,

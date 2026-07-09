@@ -65,6 +65,7 @@ class ActiveApprovalRequest(BaseModel):
 class GoalOpenRequest(BaseModel):
     objective: str
     workspace: str | None = None
+    loop_kind: str = "durable_goal"
     scope: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(default_factory=list)
@@ -72,6 +73,11 @@ class GoalOpenRequest(BaseModel):
     allowed_capabilities: list[str] = Field(default_factory=list)
     verification_command: str | None = None
     timeout_seconds: int | None = None
+    token_budget: int | None = None
+    call_budget: int | None = None
+    cost_budget: float | None = None
+    qps_limit: int | None = None
+    max_concurrent: int | None = None
     auto_start: bool = True
 
 
@@ -449,19 +455,6 @@ def create_app(
         store = TraceStore(home)
         events_page = store.list_events(trace_id, limit=limit, offset=offset)
 
-        # To preserve tree hierarchy and step counts, we must compute runs from the very beginning
-        # up to the end of the current page.
-        from .trace import _trace_run_views
-        all_events = store.list_events(trace_id, limit=offset + limit, offset=0)
-        all_runs = _trace_run_views(all_events, trace_id=trace_id)
-
-        if events_page:
-            first_time = events_page[0].created_at
-            # Only return runs that overlap with or were created during this page's time window
-            page_runs = [run for run in all_runs if run.end_time >= first_time]
-        else:
-            page_runs = []
-
         loop_decisions = [
             {
                 **event.__dict__,
@@ -472,8 +465,9 @@ def create_app(
 
         return {
             "events": [event.__dict__ for event in events_page],
-            "runs": [run.to_dict() for run in page_runs],
+            "runs": [run.to_dict() for run in store.list_run_views(trace_id)],
             "loop_decisions": loop_decisions,
+            "loop_runs": store.list_loop_run_details(trace_id),
             "evaluations": [item.to_dict() for item in store.list_evaluations(trace_id)],
         }
 
@@ -492,7 +486,11 @@ def create_app(
 
     @app.get(api_path("trace_runs"))
     def trace_runs(trace_id: str) -> dict:
-        return {"runs": [run.to_dict() for run in TraceStore(home).list_run_views(trace_id)]}
+        store = TraceStore(home)
+        return {
+            "runs": [run.to_dict() for run in store.list_run_views(trace_id)],
+            "loop_runs": store.list_loop_run_details(trace_id),
+        }
 
     @app.get(api_path("trace_evaluations"))
     def trace_evaluations(trace_id: str = "", limit: int = 50) -> dict:

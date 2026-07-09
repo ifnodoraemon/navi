@@ -8,8 +8,7 @@ from typing import Any
 
 
 class RequestRoute(StrEnum):
-    FAST_PATH = "fast_path"
-    SLOW_PATH = "slow_path"
+    UNIFIED_LOOP = "unified_loop"
 
 
 class RequestIntent(StrEnum):
@@ -271,6 +270,36 @@ class RetryPolicy:
 
 
 @dataclass(frozen=True)
+class BudgetPolicy:
+    token_budget: int = 0
+    call_budget: int = 0
+    cost_budget: float = 0.0
+    qps_limit: int = 0
+    max_concurrent: int = 1
+
+    def validate(self) -> None:
+        if self.token_budget < 0:
+            raise ValueError("BudgetPolicy.token_budget must be non-negative")
+        if self.call_budget < 0:
+            raise ValueError("BudgetPolicy.call_budget must be non-negative")
+        if self.cost_budget < 0:
+            raise ValueError("BudgetPolicy.cost_budget must be non-negative")
+        if self.qps_limit < 0:
+            raise ValueError("BudgetPolicy.qps_limit must be non-negative")
+        if self.max_concurrent < 1:
+            raise ValueError("BudgetPolicy.max_concurrent must be at least 1")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "token_budget": self.token_budget,
+            "call_budget": self.call_budget,
+            "cost_budget": self.cost_budget,
+            "qps_limit": self.qps_limit,
+            "max_concurrent": self.max_concurrent,
+        }
+
+
+@dataclass(frozen=True)
 class RollbackPolicy:
     discard_shadow_on_failure: bool = True
     rollback_to_checkpoint: bool = True
@@ -309,6 +338,7 @@ class LoopSpec:
     workspace_policy: WorkspacePolicy = field(default_factory=WorkspacePolicy)
     checkpoint_policy: CheckpointPolicy = field(default_factory=CheckpointPolicy)
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
+    budget_policy: BudgetPolicy = field(default_factory=BudgetPolicy)
     rollback_policy: RollbackPolicy = field(default_factory=RollbackPolicy)
     escalation_policy: EscalationPolicy = field(default_factory=EscalationPolicy)
     terminal_states: tuple[LoopTerminalState | str, ...] = DEFAULT_TERMINAL_STATES
@@ -349,6 +379,7 @@ class LoopSpec:
         self.workspace_policy.validate()
         self.checkpoint_policy.validate()
         self.retry_policy.validate()
+        self.budget_policy.validate()
         missing = set(DEFAULT_TERMINAL_STATES) - {LoopTerminalState(str(item)) for item in self.terminal_states}
         if missing:
             values = ", ".join(sorted(str(item) for item in missing))
@@ -365,6 +396,7 @@ class LoopSpec:
             "workspace_policy": self.workspace_policy.to_dict(),
             "checkpoint_policy": self.checkpoint_policy.to_dict(),
             "retry_policy": self.retry_policy.to_dict(),
+            "budget_policy": self.budget_policy.to_dict(),
             "rollback_policy": self.rollback_policy.to_dict(),
             "escalation_policy": self.escalation_policy.to_dict(),
             "terminal_states": [str(item) for item in self.terminal_states],
@@ -486,6 +518,7 @@ class BudgetState:
     decision: ResourceDecision | str = ResourceDecision.ALLOW
     token_budget_remaining: int | None = None
     call_budget_remaining: int | None = None
+    cost_budget_remaining: float | None = None
     reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -493,6 +526,7 @@ class BudgetState:
             "decision": str(self.decision),
             "token_budget_remaining": self.token_budget_remaining,
             "call_budget_remaining": self.call_budget_remaining,
+            "cost_budget_remaining": self.cost_budget_remaining,
             "reason": self.reason,
         }
 
@@ -637,6 +671,7 @@ def default_state_graph() -> tuple[StateTransition, ...]:
         StateTransition(LoopNode.EVALUATE, LoopTerminalState.TIMED_OUT, "hard_timeout"),
         StateTransition(LoopNode.EVALUATE, LoopNode.PAUSE, "resource_pause"),
         StateTransition(LoopNode.EVALUATE, LoopNode.ESCALATE, "resource_escalate"),
+        StateTransition(LoopNode.EVALUATE, LoopNode.ESCALATE, "side_effect_commit_required"),
         StateTransition(LoopNode.EVALUATE, LoopTerminalState.BLOCKED, "resource_blocked"),
         StateTransition(LoopNode.EVALUATE, LoopTerminalState.BLOCKED, "no_route_available"),
         StateTransition(LoopNode.REFLECT, LoopNode.PLAN, "new_route_available"),

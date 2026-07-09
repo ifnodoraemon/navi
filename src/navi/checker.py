@@ -43,7 +43,10 @@ class DeterministicChecker:
             or result.evidence.get("error_type") == "TimeoutError"
             for result in failed_required
         )
-        blocked = any(result.reason == "evidence_missing" for result in failed_required)
+        blocked = any(
+            result.reason in {"evidence_missing", "no_route_available"}
+            for result in failed_required
+        )
         accepted = not failed_required
         if accepted:
             state_hint: LoopTerminalState | str = LoopTerminalState.CONVERGED
@@ -113,12 +116,25 @@ def _evaluate_boolean_step(step: VerificationStep, *, key: str, facts: dict[str,
         passed = bool(facts.get("passed"))
     else:
         passed = bool(facts.get("ok"))
+    reason = "fact_passed" if passed else "fact_failed"
+    if step.kind == VerificationKind.LLM_CHECKER and not passed:
+        reason = "semantic_check_failed"
+        if facts.get("should_continue") is False:
+            reason = "no_route_available"
     return LoopCheckResult(
         name=step.name,
         passed=passed,
         severity=LoopSeverity.INFO if passed else LoopSeverity.ERROR,
-        reason="fact_passed" if passed else "fact_failed",
-        evidence={"evidence_key": key, "kind": str(step.kind)},
+        reason=reason,
+        evidence={
+            "evidence_key": key,
+            "kind": str(step.kind),
+            "should_continue": facts.get("should_continue", ""),
+            "user_message": str(facts.get("user_message") or ""),
+            "next_step_hint": str(facts.get("next_step_hint") or ""),
+            "evaluator_role": str(facts.get("evaluator_role") or ""),
+            "isolated_context": bool(facts.get("isolated_context", False)),
+        },
     )
 
 

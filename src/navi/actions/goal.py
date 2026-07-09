@@ -41,6 +41,7 @@ class GoalOpenCapability(BaseCapability):
         request = OpenGoalRequest(
             objective=objective,
             workspace=workspace,
+            loop_kind=_arg_text(args, "loop_kind") or "durable_goal",
             source=context.source,
             peer_id=context.peer_id,
             sender_id=context.sender_id,
@@ -52,6 +53,11 @@ class GoalOpenCapability(BaseCapability):
             allowed_capabilities=_string_tuple(args.get("allowed_capabilities")),
             verification_command=_arg_text(args, "verification_command"),
             timeout_seconds=_positive_int(args.get("timeout_seconds"), default=120, maximum=3600),
+            token_budget=_nonnegative_int(args.get("token_budget"), maximum=100_000_000),
+            call_budget=_nonnegative_int(args.get("call_budget"), maximum=100_000),
+            cost_budget=_nonnegative_float(args.get("cost_budget"), maximum=1_000_000.0),
+            qps_limit=_nonnegative_int(args.get("qps_limit"), maximum=10_000),
+            max_concurrent=_positive_int(args.get("max_concurrent"), default=1, maximum=100),
             auto_start=bool(args.get("auto_start", True)),
             cron_schedule=_arg_text(args, "cron_schedule"),
         )
@@ -217,6 +223,22 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     return ()
 
 
+def _nonnegative_int(value: Any, *, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(parsed, maximum))
+
+
+def _nonnegative_float(value: Any, *, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(parsed, maximum))
+
+
 def _planner_capabilities(home: Path, workspace: str, *, permission_ceiling: str, runtime: Any):
     from ..capabilities import CapabilityRegistry
 
@@ -253,8 +275,21 @@ def _promote_outbound_facts(result: Any) -> dict[str, Any]:
     outbound_path = str(cap_facts.get("outbound_path") or "")
     if action != "connector_outbound" or not outbound_path:
         return {}
-    return {
+    promoted = {
         "action": action,
         "outbound_path": outbound_path,
         "outbound_message": str(capability_result.get("message") or ""),
     }
+    for key in (
+        "entity_type",
+        "entity_id",
+        "state_transition",
+        "side_effect_scope",
+        "side_effect_state",
+        "side_effect_artifact",
+        "side_effect_commit",
+        "side_effect_compensate",
+    ):
+        if key in cap_facts:
+            promoted[key] = cap_facts[key]
+    return promoted

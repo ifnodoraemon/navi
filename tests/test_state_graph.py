@@ -4,13 +4,17 @@ import json
 import shlex
 import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from navi.capabilities import CapabilityRegistry
 from navi.capabilities_types import CapabilityContext
 from navi.loop_contracts import (
+    BudgetPolicy,
     GoalSpec,
+    LoopNode,
+    LoopRunState,
     LoopSpec,
     LoopTerminalState,
     RetryPolicy,
@@ -24,11 +28,21 @@ from navi.state_graph import (
     CapabilityExecutorPort,
     DurableStateGraphRunner,
     ModelCapabilityPlannerPort,
+    _transition_loop_decision,
 )
+from navi.trace import TraceStore
 
 
 def _command(script: str) -> str:
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+
+def _loop_decision_payloads_by_tool(home: Path, trace_id: str, tool: str) -> list[dict]:
+    return [
+        json.loads(event.output_json)
+        for event in TraceStore(home).list_loop_decisions(trace_id)
+        if event.tool == tool and event.output_json.strip()
+    ]
 
 
 def _spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
@@ -63,6 +77,28 @@ def _write_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
         ),
         goal_id="goal-1",
         allowed_capabilities=("file.write", "test.run"),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.COMMAND_EXIT_CODE,
+                name="verification",
+                command=command,
+                timeout=TimeoutPolicy(seconds=timeout),
+            ),
+        ),
+    )
+
+
+def _send_file_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
+    return LoopSpec.from_goal(
+        GoalSpec(
+            objective="send the requested file through the connector",
+            scope=("repo:/tmp/project",),
+            acceptance_criteria=("outbound media is staged and verification passes",),
+            permission_ceiling="write",
+            owner="tester",
+        ),
+        goal_id="goal-1",
+        allowed_capabilities=("connector.weixin.send_file",),
         verification_ladder=(
             VerificationStep(
                 kind=VerificationKind.COMMAND_EXIT_CODE,
@@ -139,11 +175,82 @@ class _RetryPlanningProvider:
         return {}
 
 
+class _SendFilePlanningProvider:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.calls: list[tuple[str, list[ChatMessage]]] = []
+
+    async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+        del kwargs
+        self.calls.append((role, messages))
+        assert role == "planner"
+        return json.dumps(
+            {
+                "syscalls": [
+                    {
+                        "tool": "connector.weixin.send_file",
+                        "permission": "write",
+                        "args": {"path": str(self.path)},
+                        "model_role": "executor",
+                        "reason": "stage outbound media for connector delivery",
+                    }
+                ]
+            }
+        )
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "executor", "checker", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
+
+
 def test_durable_state_graph_sync_runner_is_disabled(tmp_path):
     runner = DurableStateGraphRunner(home=tmp_path)
 
     with pytest.raises(RuntimeError, match="run\\(\\) is disabled"):
         runner.run(_spec(_command("print('ok')")), workspace=tmp_path)
+
+
+def test_transition_decision_promotes_explicit_side_effect_summary() -> None:
+    decision = _transition_loop_decision(
+        from_state=LoopRunState(
+            run_id="loop-1",
+            goal_id="goal-1",
+            loop_spec_id="spec-1",
+            node=LoopNode.EXECUTE,
+        ),
+        to_state=LoopRunState(
+            run_id="loop-1",
+            goal_id="goal-1",
+            loop_spec_id="spec-1",
+            node=LoopNode.EVALUATE,
+        ),
+        checkpoint_id="checkpoint-1",
+        condition="side_effect_recorded",
+        terminal_state="",
+        evidence={
+            "executor": {
+                "action": "connector_outbound",
+                "facts": {
+                    "side_effect_scope": "external",
+                    "side_effect_state": "staged",
+                    "outbound_path": "/tmp/outbox/report.pdf",
+                    "side_effect_commit": "weixin.connector_runtime.dispatch_outbox",
+                    "side_effect_compensate": "filesystem.remove_staged_outbound",
+                },
+            }
+        },
+    )
+
+    assert decision.evidence["side_effect"] == {
+        "scope": "external",
+        "state": "staged",
+        "artifact": "/tmp/outbox/report.pdf",
+        "action": "connector_outbound",
+        "commit": "weixin.connector_runtime.dispatch_outbox",
+        "compensate": "filesystem.remove_staged_outbound",
+    }
 
 
 @pytest.mark.asyncio
@@ -191,6 +298,161 @@ async def test_durable_state_graph_async_plan_execute_uses_llm_and_capability_po
     assert result.evidence["capability_result"]["ok"] is True
     assert result.evidence["capability_result"]["facts"]["state_transition"] == "written"
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
+
+
+@pytest.mark.asyncio
+async def test_durable_state_graph_uses_loop_budget_policy_and_traces_gate(tmp_path):
+    provider = _PlanningProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    planner_capabilities = CapabilityRegistry(
+        home=tmp_path,
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+    context = CapabilityContext(
+        home=tmp_path,
+        source="state_graph",
+        peer_id="state_graph",
+        sender_id="tester",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+        trace_id="trace-budget-policy",
+    )
+    runner = DurableStateGraphRunner(
+        home=tmp_path,
+        planner_port=ModelCapabilityPlannerPort(
+            runtime=runtime,
+            capabilities=planner_capabilities,
+        ),
+        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        trace_store=TraceStore(tmp_path),
+        trace_context=context,
+    )
+    spec = replace(
+        _write_spec(_command("from pathlib import Path; assert Path('app.py').exists()")),
+        budget_policy=BudgetPolicy(call_budget=1),
+    )
+
+    result = await runner.run_async(spec, workspace=tmp_path)
+
+    assert result.terminal_state == LoopTerminalState.WAITING_APPROVAL
+    assert provider.calls and provider.calls[0][0] == "planner"
+    assert not (tmp_path / "app.py").exists()
+    gate_decisions = [
+        json.loads(event.output_json)
+        for event in TraceStore(tmp_path).list_loop_decisions("trace-budget-policy")
+        if json.loads(event.output_json).get("tool") == "state_graph.execute"
+    ]
+    assert gate_decisions
+    exhausted = gate_decisions[0]["evidence"]["grant"]
+    assert exhausted["reason"] == "call_budget_exhausted"
+    assert exhausted["budget_state"]["call_budget_remaining"] == 0
+
+
+@pytest.mark.asyncio
+async def test_durable_state_graph_releases_staged_external_side_effect_after_acceptance(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "resume.docx"
+    source.write_bytes(b"resume")
+    provider = _SendFilePlanningProvider(source)
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    context = CapabilityContext(
+        home=tmp_path,
+        source="state_graph",
+        peer_id="wx-user",
+        sender_id="tester",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+        trace_id="trace-side-effect-commit",
+    )
+    runner = DurableStateGraphRunner(
+        home=tmp_path,
+        planner_port=ModelCapabilityPlannerPort(
+            runtime=runtime,
+            capabilities=CapabilityRegistry(
+                home=tmp_path,
+                project_dir=tmp_path,
+                permission_ceiling="write",
+            ),
+        ),
+        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        trace_store=TraceStore(tmp_path),
+        trace_context=context,
+    )
+
+    result = await runner.run_async(
+        _send_file_spec(_command("print('ok')")),
+        workspace=tmp_path,
+    )
+
+    assert result.terminal_state == LoopTerminalState.CONVERGED
+    assert result.evidence["capability_result"]["terminal"] is True
+    assert result.evidence["side_effect_commit_result"]["state"] == "released_for_connector_commit"
+    staged = Path(result.evidence["capability_result"]["facts"]["outbound_path"])
+    assert staged.exists()
+    commit_decisions = _loop_decision_payloads_by_tool(
+        tmp_path,
+        "trace-side-effect-commit",
+        "state_graph.side_effect.commit",
+    )
+    assert commit_decisions
+    assert (
+        commit_decisions[0]["evidence"]["side_effect"]["state"]
+        == "released_for_connector_commit"
+    )
+
+
+@pytest.mark.asyncio
+async def test_durable_state_graph_compensates_staged_external_side_effect_on_rejection(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "resume.docx"
+    source.write_bytes(b"resume")
+    provider = _SendFilePlanningProvider(source)
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    context = CapabilityContext(
+        home=tmp_path,
+        source="state_graph",
+        peer_id="wx-user",
+        sender_id="tester",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+        trace_id="trace-side-effect-compensate",
+    )
+    runner = DurableStateGraphRunner(
+        home=tmp_path,
+        planner_port=ModelCapabilityPlannerPort(
+            runtime=runtime,
+            capabilities=CapabilityRegistry(
+                home=tmp_path,
+                project_dir=tmp_path,
+                permission_ceiling="write",
+            ),
+        ),
+        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        trace_store=TraceStore(tmp_path),
+        trace_context=context,
+    )
+    spec = replace(
+        _send_file_spec(_command("import sys; sys.exit(7)")),
+        retry_policy=RetryPolicy(max_attempts=1),
+    )
+
+    result = await runner.run_async(spec, workspace=tmp_path)
+
+    assert result.terminal_state == LoopTerminalState.FAILED
+    staged = Path(result.evidence["capability_result"]["facts"]["outbound_path"])
+    assert not staged.exists()
+    compensation = result.evidence["side_effect_compensation_results"][0]
+    assert compensation["state"] == "compensated"
+    compensation_decisions = _loop_decision_payloads_by_tool(
+        tmp_path,
+        "trace-side-effect-compensate",
+        "state_graph.side_effect.compensate",
+    )
+    assert compensation_decisions
+    assert compensation_decisions[0]["evidence"]["side_effect"]["state"] == "compensated"
 
 
 @pytest.mark.asyncio

@@ -1,9 +1,9 @@
-"""Tests for the agentic LLM reflector in the durable StateGraph.
+"""Tests for the isolated LLM semantic checker in the durable StateGraph.
 
-These tests verify the "never give up" loop: when a goal has no required
-verification command, the LLM reflector (not a deterministic rule) judges
-whether the objective is achieved and decides whether to retry with a new
-plan, converge, or block with a user message.
+These tests verify the semantic checker loop: when a goal has no command
+verification, an isolated checker role judges final capability evidence. The
+deterministic checker consumes that evidence and the StateGraph either retries,
+converges, or blocks.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ class _ScriptedProvider:
     """A provider that returns scripted responses per role.
 
     - planner: returns a single syscall (the next capability to try)
-    - reflector: returns the LLM's judgement of whether the goal is achieved
+    - checker: returns the isolated semantic judgement
     - responder: returns a natural language reply synthesized from facts
     """
 
@@ -35,10 +35,10 @@ class _ScriptedProvider:
         self,
         *,
         planner_syscalls: list[dict],
-        reflector_decisions: list[dict],
+        checker_decisions: list[dict],
     ) -> None:
         self._planner_syscalls = list(planner_syscalls)
-        self._reflector_decisions = list(reflector_decisions)
+        self._checker_decisions = list(checker_decisions)
         self.calls: list[str] = []
 
     async def complete_for(
@@ -48,14 +48,14 @@ class _ScriptedProvider:
         if role == "planner":
             syscall = self._planner_syscalls.pop(0)
             return json.dumps({"syscalls": [syscall]})
-        if role == "reflector":
-            decision = self._reflector_decisions.pop(0)
+        if role == "checker":
+            decision = self._checker_decisions.pop(0)
             return json.dumps(decision)
         # responder / default — synthesize from the facts payload
         return "I'll handle that for you."
 
     def list_roles(self) -> list[str]:
-        return ["planner", "reflector", "responder"]
+        return ["planner", "checker", "responder"]
 
     def usage_for(self, role: str) -> dict:
         return {}
@@ -88,16 +88,17 @@ def _file_write_syscall(path: str, content: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_llm_reflector_converges_when_goal_achieved(tmp_path: Path) -> None:
-    """The LLM reflector judges goal_achieved=true and converges."""
+async def test_semantic_checker_converges_when_goal_achieved(tmp_path: Path) -> None:
+    """The isolated checker judges passed=true and converges."""
     provider = _ScriptedProvider(
         planner_syscalls=[_file_write_syscall("done.txt", "ok")],
-        reflector_decisions=[
+        checker_decisions=[
             {
-                "goal_achieved": True,
+                "passed": True,
                 "should_continue": False,
                 "next_step_hint": "file written",
                 "user_message": "Done — wrote done.txt.",
+                "evidence_summary": "done.txt was written",
             }
         ],
     )
@@ -123,29 +124,31 @@ async def test_llm_reflector_converges_when_goal_achieved(tmp_path: Path) -> Non
     assert result.ok is True
     assert result.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
     assert (tmp_path / "done.txt").read_text(encoding="utf-8") == "ok"
-    assert "reflector" in provider.calls
+    assert "checker" in provider.calls
 
 
 @pytest.mark.asyncio
-async def test_llm_reflector_retries_then_converges(tmp_path: Path) -> None:
-    """The LLM reflector says should_continue=true, then converges on attempt 2."""
+async def test_semantic_checker_retries_then_converges(tmp_path: Path) -> None:
+    """The checker says should_continue=true, then passes on attempt 2."""
     provider = _ScriptedProvider(
         planner_syscalls=[
             _file_write_syscall("v1.txt", "first"),
             _file_write_syscall("v2.txt", "second"),
         ],
-        reflector_decisions=[
+        checker_decisions=[
             {
-                "goal_achieved": False,
+                "passed": False,
                 "should_continue": True,
                 "next_step_hint": "try writing v2.txt instead",
                 "user_message": "Let me try a different file.",
+                "evidence_summary": "first file does not satisfy the objective",
             },
             {
-                "goal_achieved": True,
+                "passed": True,
                 "should_continue": False,
                 "next_step_hint": "v2.txt written",
                 "user_message": "Done — wrote v2.txt.",
+                "evidence_summary": "v2.txt was written",
             },
         ],
     )
@@ -172,21 +175,22 @@ async def test_llm_reflector_retries_then_converges(tmp_path: Path) -> None:
     assert result.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
     # both planner calls happened (2 iterations)
     assert provider.calls.count("planner") == 2
-    assert provider.calls.count("reflector") == 2
+    assert provider.calls.count("checker") == 2
     assert (tmp_path / "v2.txt").read_text(encoding="utf-8") == "second"
 
 
 @pytest.mark.asyncio
-async def test_llm_reflector_blocks_when_should_continue_false(tmp_path: Path) -> None:
-    """When the LLM says should_continue=false and goal not achieved, block."""
+async def test_semantic_checker_blocks_when_should_continue_false(tmp_path: Path) -> None:
+    """When the checker says should_continue=false and not passed, block."""
     provider = _ScriptedProvider(
         planner_syscalls=[_file_write_syscall("v1.txt", "first")],
-        reflector_decisions=[
+        checker_decisions=[
             {
-                "goal_achieved": False,
+                "passed": False,
                 "should_continue": False,
                 "next_step_hint": "cannot proceed without more info",
                 "user_message": "I need more details to complete this.",
+                "evidence_summary": "requested details are missing",
             }
         ],
     )
@@ -215,24 +219,25 @@ async def test_llm_reflector_blocks_when_should_continue_false(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_llm_reflector_terminates_at_max_attempts(tmp_path: Path) -> None:
+async def test_semantic_checker_terminates_at_max_attempts(tmp_path: Path) -> None:
     """The loop terminates at max_attempts even if the LLM keeps saying continue.
 
-    The scripted provider has 12 planner syscalls and 12 reflector decisions
+    The scripted provider has 12 planner syscalls and 12 checker decisions
     (more than the default max_attempts=10). If the loop did NOT terminate at
     max_attempts, it would exhaust the scripted responses and raise IndexError.
     So this test both verifies termination AND that the loop doesn't spin
     forever on a "should_continue=true" LLM.
     """
     continue_decision = {
-        "goal_achieved": False,
+        "passed": False,
         "should_continue": True,
         "next_step_hint": "keep trying",
         "user_message": "Still working on it.",
+        "evidence_summary": "not enough evidence yet",
     }
     provider = _ScriptedProvider(
         planner_syscalls=[_file_write_syscall(f"v{i}.txt", f"iter-{i}") for i in range(12)],
-        reflector_decisions=[continue_decision] * 12,
+        checker_decisions=[continue_decision] * 12,
     )
     runtime = AgentRuntime(home=tmp_path, provider=provider)
     registry = build_capability_registry(

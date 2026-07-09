@@ -64,6 +64,7 @@ class GlobalResourceGateway:
             decision=ResourceDecision.ALLOW,
             token_budget_remaining=_remaining(self.limits.token_budget, self._used_tokens),
             call_budget_remaining=_remaining(self.limits.call_budget, self._used_calls),
+            cost_budget_remaining=_remaining_float(self.limits.cost_budget, self._used_cost),
             reason="ok",
         )
 
@@ -123,6 +124,7 @@ class GlobalResourceGateway:
             decision=decision,
             token_budget_remaining=_remaining(self.limits.token_budget, self._used_tokens),
             call_budget_remaining=_remaining(self.limits.call_budget, self._used_calls),
+            cost_budget_remaining=_remaining_float(self.limits.cost_budget, self._used_cost),
             reason=reason,
         )
 
@@ -140,3 +142,9 @@ def _remaining(limit: int, used: int) -> int | None:
     if limit <= 0:
         return None
     return max(0, limit - used)
+
+
+def _remaining_float(limit: float, used: float) -> float | None:
+    if limit <= 0:
+        return None
+    return max(0.0, limit - used)

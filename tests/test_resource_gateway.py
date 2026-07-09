@@ -5,12 +5,18 @@ from navi.resource_gateway import GlobalResourceGateway, ResourceLimits, Resourc
 
 
 def test_resource_gateway_tracks_budget_and_pauses_on_concurrency():
-    gateway = GlobalResourceGateway(ResourceLimits(token_budget=100, call_budget=2, max_concurrent=1))
+    gateway = GlobalResourceGateway(
+        ResourceLimits(token_budget=100, call_budget=2, cost_budget=1.5, max_concurrent=1)
+    )
 
-    first = gateway.request(ResourceRequest(kind="llm", estimated_tokens=40), now=100.0)
+    first = gateway.request(
+        ResourceRequest(kind="llm", estimated_tokens=40, estimated_cost=0.5),
+        now=100.0,
+    )
     assert first.allowed is True
     assert first.budget_state.token_budget_remaining == 60
     assert first.budget_state.call_budget_remaining == 1
+    assert first.budget_state.cost_budget_remaining == 1.0
 
     concurrent = gateway.request(ResourceRequest(kind="tool"), now=100.1)
     assert concurrent.decision == ResourceDecision.PAUSE

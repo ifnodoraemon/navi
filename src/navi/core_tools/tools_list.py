@@ -20,6 +20,7 @@ def _tools_list(registry: ToolRegistry) -> ToolResult:
                     "facts_only": spec.facts_only,
                     "mutates": spec.mutates,
                     "source": spec.source,
+                    "side_effect_policy": spec.side_effect_policy.to_dict(),
                     "input_properties": sorted((spec.input_schema.get("properties") or {}).keys()),
                     "required": list(spec.input_schema.get("required") or []),
                     "safeguards": capability_safeguard_facts(spec),
@@ -29,5 +30,4 @@ def _tools_list(registry: ToolRegistry) -> ToolResult:
             "count": len(specs),
         },
     )
-
 

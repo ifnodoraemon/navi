@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shlex
 import sys
 
@@ -17,13 +18,19 @@ def _command(script: str) -> str:
 def test_loop_control_service_opens_goal_without_executing_state_graph(tmp_path):
     result = LoopControlService(tmp_path).open_goal(
         OpenGoalRequest(
-            objective="verify slow path",
+            objective="verify unified loop",
             workspace=str(tmp_path),
             source="cli",
             peer_id="cli",
             sender_id="tester",
+            session_id="session-unified",
             verification_command=_command("print('ok')"),
             timeout_seconds=5,
+            call_budget=7,
+            token_budget=123,
+            cost_budget=4.5,
+            qps_limit=3,
+            max_concurrent=2,
         )
     )
 
@@ -33,6 +40,19 @@ def test_loop_control_service_opens_goal_without_executing_state_graph(tmp_path)
     assert result.loop_run.terminal_state == ""
     assert result.state_graph_result is None
     assert result.to_facts()["completion_evidence"] is False
+    assert result.to_facts()["route"] == "unified_loop"
+    assert result.to_facts()["loop_kind"] == "durable_goal"
+    assert result.run.kind == "loop:durable_goal"
+    assert json.loads(result.goal.evidence_json)["loop_kind"] == "durable_goal"
+    assert result.to_facts()["budget_policy"]["call_budget"] == 7
+    assert result.loop_spec.budget_policy.token_budget == 123
+    assert result.loop_spec.budget_policy.cost_budget == 4.5
+    assert result.loop_spec.budget_policy.qps_limit == 3
+    assert result.loop_spec.budget_policy.max_concurrent == 2
+    assert result.loop_spec.goal.metadata["route"] == "unified_loop"
+    assert result.loop_spec.goal.metadata["loop_kind"] == "durable_goal"
+    assert result.loop_spec.goal.metadata["session_id"] == "session-unified"
+    assert result.loop_spec.goal.metadata["sender_id"] == "tester"
     assert LoopRunStore(tmp_path).get_run(result.loop_run.run_id) is not None
 
 
@@ -51,6 +71,8 @@ def test_loop_control_service_creates_human_verification_loop_without_running(tm
     assert result.run.phase == Phase.RUNNING
     assert result.run.resolution == Resolution.NONE
     assert result.loop_spec.verification_ladder[0].kind == VerificationKind.LLM_CHECKER
+    assert result.loop_spec.verification_ladder[0].required is True
+    assert result.loop_spec.verification_ladder[0].evidence_key == "semantic_checker_result"
     assert result.loop_run.terminal_state == ""
     assert result.to_facts()["completion_evidence"] is False
 

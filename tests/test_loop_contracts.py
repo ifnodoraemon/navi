@@ -5,6 +5,7 @@ import time
 import pytest
 
 from navi.loop_contracts import (
+    BudgetPolicy,
     CheckpointPolicy,
     CurrentStateSnapshot,
     GoalSpec,
@@ -61,6 +62,7 @@ def test_loop_spec_from_goal_encodes_navi_2_contract():
     assert (LoopNode.PLAN, LoopNode.EXECUTE, "plan_ready") in graph_edges
     assert (LoopNode.EXECUTE, LoopNode.EVALUATE, "side_effect_recorded") in graph_edges
     assert (LoopNode.EVALUATE, LoopTerminalState.CONVERGED, "checker_passed") in graph_edges
+    assert (LoopNode.EVALUATE, LoopNode.ESCALATE, "side_effect_commit_required") in graph_edges
     assert (LoopNode.EXECUTE, LoopTerminalState.TIMED_OUT, "hard_timeout") in graph_edges
     assert (LoopNode.EVALUATE, LoopTerminalState.CONFLICTED, "merge_conflict") in graph_edges
     for node in LoopNode:
@@ -73,6 +75,8 @@ def test_loop_spec_from_goal_encodes_navi_2_contract():
     assert spec.workspace_policy.require_locks is True
     assert spec.checkpoint_policy.before_side_effect is True
     assert spec.verification_ladder[0].timeout.seconds == 120
+    assert spec.budget_policy.max_concurrent == 1
+    assert spec.to_dict()["budget_policy"]["call_budget"] == 0
 
 
 def test_loop_spec_rejects_unsafe_execution_contracts():
@@ -87,6 +91,17 @@ def test_loop_spec_rejects_unsafe_execution_contracts():
             checkpoint_policy=CheckpointPolicy(before_side_effect=False),
         ).validate()
 
+
+    with pytest.raises(ValueError, match="call_budget"):
+        LoopSpec(
+            id="loop-1",
+            goal_id="goal-1",
+            goal=_goal_spec(),
+            state_graph=default_state_graph(),
+            allowed_capabilities=("filesystem.write",),
+            verification_ladder=_verification(),
+            budget_policy=BudgetPolicy(call_budget=-1),
+        ).validate()
 
 
     with pytest.raises(ValueError, match="verification requires a command"):

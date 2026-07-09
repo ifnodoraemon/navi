@@ -330,7 +330,13 @@ class TraceStore:
         ]
 
     def list_run_views(self, trace_id: str, *, limit: int = 5000, offset: int = 0) -> list[TraceRunView]:
-        return _trace_run_views(self.list_events(trace_id, limit=limit, offset=offset), trace_id=trace_id)
+        events = self.list_events(trace_id, limit=limit, offset=offset)
+        views = _trace_run_views(events, trace_id=trace_id)
+        return _merge_run_views(views, _loop_run_views_for_trace(self.home, trace_id, events))
+
+    def list_loop_run_details(self, trace_id: str, *, limit: int = 5000) -> list[dict[str, Any]]:
+        events = self.list_events(trace_id, limit=limit)
+        return _loop_run_details_for_trace(self.home, events)
 
     def list_events_for_run_or_session(
         self,
@@ -416,7 +422,7 @@ class TraceStore:
                 with connect(self.db_path) as conn:
                     rows = conn.execute(
                         f"""
-                        SELECT trace_id, input_json, message
+                        SELECT trace_id, input_json, message, session_id
                         FROM trace_events
                         WHERE trace_id IN ({placeholders}) AND phase IN ('channel.ingress', 'turn.start')
                         ORDER BY created_at ASC
@@ -426,10 +432,13 @@ class TraceStore:
                     first_events.extend(rows)
 
             first_by_trace = {}
+            thread_by_trace = {}
             for row in first_events:
                 tid = row[0]
                 if tid not in first_by_trace:
                     first_by_trace[tid] = (row[1], row[2])
+                if row[3] and tid not in thread_by_trace:
+                    thread_by_trace[tid] = row[3]
 
             input_hashes = {v[0] for v in first_by_trace.values() if v[0] and v[0].startswith("blob:")}
             blobs = self._fetch_blobs(input_hashes) if input_hashes else {}
@@ -455,6 +464,7 @@ class TraceStore:
                 first_event_map[tid] = preview_text
             for meta in metas:
                 meta["preview_text"] = first_event_map.get(meta["trace_id"], "")
+                meta["thread_id"] = thread_by_trace.get(meta["trace_id"], "")
 
         return metas
 
@@ -522,7 +532,7 @@ class TraceStore:
 
                 _find_hashes(data)
             else:
-                parsed_data.append((e, {}))
+                parsed_data.append((e, None))
 
         if not hashes:
             return events
@@ -844,6 +854,212 @@ _EVENT_RUN_TYPES_BY_PHASE: dict[str, TraceRunType] = {
 
 def _event_run_type(event: TraceEvent) -> TraceRunType:
     return _EVENT_RUN_TYPES_BY_PHASE.get(event.phase, TraceRunType.CHAIN)
+
+
+def _merge_run_views(
+    base: list[TraceRunView],
+    extra: list[TraceRunView],
+) -> list[TraceRunView]:
+    merged: dict[str, TraceRunView] = {item.id: item for item in base}
+    for item in extra:
+        merged.setdefault(item.id, item)
+    return sorted(
+        merged.values(),
+        key=lambda item: (0 if not item.parent_run_id else 1, item.start_time, item.id),
+    )
+
+
+def _loop_run_details_for_trace(home: Path, events: list[TraceEvent]) -> list[dict[str, Any]]:
+    loop_run_ids = _loop_run_ids_from_trace_events(events)
+    if not loop_run_ids:
+        return []
+    from .loop_runs import LoopRunStore
+
+    store = LoopRunStore(home)
+    details: list[dict[str, Any]] = []
+    for loop_run_id in sorted(loop_run_ids):
+        state = store.get_run(loop_run_id)
+        if state is None:
+            continue
+        checkpoints = store.list_checkpoints(loop_run_id, limit=1000)
+        loop_events = store.list_events(loop_run_id, limit=1000)
+        details.append(
+            {
+                "run_state": state.to_dict(),
+                "events": [
+                    {
+                        "id": item.id,
+                        "run_id": item.run_id,
+                        "event_type": item.event_type,
+                        "node": item.node,
+                        "terminal_state": item.terminal_state,
+                        "checkpoint_id": item.checkpoint_id,
+                        "evidence": json_object(item.evidence_json),
+                        "created_at": item.created_at,
+                    }
+                    for item in loop_events
+                ],
+                "checkpoints": [
+                    {
+                        "id": item.id,
+                        "run_id": item.run_id,
+                        "node": item.node,
+                        "inputs": json_object(item.inputs_json),
+                        "state": json_object(item.state_json),
+                        "created_at": item.created_at,
+                    }
+                    for item in checkpoints
+                ],
+            }
+        )
+    return details
+
+
+def _loop_run_views_for_trace(
+    home: Path,
+    trace_id: str,
+    events: list[TraceEvent],
+) -> list[TraceRunView]:
+    details = _loop_run_details_for_trace(home, events)
+    views: list[TraceRunView] = []
+    for detail in details:
+        state = detail["run_state"]
+        loop_run_id = str(state.get("run_id") or "")
+        if not loop_run_id:
+            continue
+        event_items = detail["events"]
+        checkpoint_items = detail["checkpoints"]
+        timestamps = [
+            float(item["created_at"])
+            for item in [*event_items, *checkpoint_items]
+            if item.get("created_at")
+        ]
+        updated_at = float(state.get("updated_at") or 0.0)
+        start_time = min(timestamps) if timestamps else updated_at
+        end_time = max(timestamps) if timestamps else updated_at
+        status = _loop_run_status(str(state.get("terminal_state") or ""))
+        root_id = f"looprun_{loop_run_id}"
+        views.append(
+            TraceRunView(
+                id=root_id,
+                trace_id=trace_id,
+                parent_run_id=trace_id,
+                name=f"LoopRun: {str(state.get('node') or 'unknown')}",
+                run_type="engine",
+                status=status,
+                start_time=start_time,
+                end_time=end_time,
+                inputs={
+                    "goal_id": state.get("goal_id", ""),
+                    "loop_spec_id": state.get("loop_spec_id", ""),
+                },
+                outputs=state,
+                tags=("navi", "loop_run", "state_graph"),
+                metadata={
+                    "run_id": loop_run_id,
+                    "goal_id": state.get("goal_id", ""),
+                    "loop_spec_id": state.get("loop_spec_id", ""),
+                    "terminal_state": state.get("terminal_state", ""),
+                    "attempt": state.get("attempt", 0),
+                },
+            )
+        )
+        for item in event_items:
+            terminal_state = str(item.get("terminal_state") or "")
+            event_status = _loop_run_status(terminal_state) if terminal_state else "success"
+            event_type = str(item.get("event_type") or "loop.event")
+            views.append(
+                TraceRunView(
+                    id=f"loopevent_{item['id']}",
+                    trace_id=trace_id,
+                    parent_run_id=root_id,
+                    name=_loop_event_name(event_type, str(item.get("node") or ""), terminal_state),
+                    run_type="engine",
+                    status=event_status,
+                    start_time=float(item["created_at"]),
+                    end_time=float(item["created_at"]),
+                    inputs={
+                        "node": item.get("node", ""),
+                        "checkpoint_id": item.get("checkpoint_id", ""),
+                    },
+                    outputs={
+                        "event_type": event_type,
+                        "terminal_state": terminal_state,
+                        "evidence": item.get("evidence") or {},
+                    },
+                    tags=("navi", "loop_event", event_type),
+                    metadata={
+                        "run_id": loop_run_id,
+                        "checkpoint_id": item.get("checkpoint_id", ""),
+                    },
+                )
+            )
+        for item in checkpoint_items:
+            views.append(
+                TraceRunView(
+                    id=f"loopcheckpoint_{item['id']}",
+                    trace_id=trace_id,
+                    parent_run_id=root_id,
+                    name=f"Checkpoint: {item.get('node') or 'unknown'}",
+                    run_type="engine",
+                    status="success",
+                    start_time=float(item["created_at"]),
+                    end_time=float(item["created_at"]),
+                    inputs=item.get("inputs") or {},
+                    outputs={"state": item.get("state") or {}},
+                    tags=("navi", "loop_checkpoint"),
+                    metadata={
+                        "run_id": loop_run_id,
+                        "checkpoint_id": item.get("id", ""),
+                        "node": item.get("node", ""),
+                    },
+                )
+            )
+    return views
+
+
+def _loop_run_ids_from_trace_events(events: list[TraceEvent]) -> set[str]:
+    ids: set[str] = set()
+    for event in events:
+        for payload in (_event_input(event), _event_output(event)):
+            _collect_loop_run_ids(payload, ids)
+    return ids
+
+
+def _collect_loop_run_ids(value: Any, ids: set[str]) -> None:
+    if isinstance(value, dict):
+        raw_loop_run_id = value.get("loop_run_id")
+        if isinstance(raw_loop_run_id, str) and raw_loop_run_id.strip():
+            ids.add(raw_loop_run_id.strip())
+        run_state = value.get("run_state")
+        if isinstance(run_state, dict) and run_state.get("loop_spec_id"):
+            raw_run_id = run_state.get("run_id")
+            if isinstance(raw_run_id, str) and raw_run_id.strip():
+                ids.add(raw_run_id.strip())
+        for item in value.values():
+            _collect_loop_run_ids(item, ids)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_loop_run_ids(item, ids)
+
+
+def _loop_run_status(terminal_state: str) -> str:
+    if not terminal_state:
+        return "running"
+    if terminal_state in {"blocked", "paused", "waiting_approval", "conflicted"}:
+        return "blocked"
+    if terminal_state in {"failed", "timed_out"}:
+        return "error"
+    return "success"
+
+
+def _loop_event_name(event_type: str, node: str, terminal_state: str) -> str:
+    if event_type == "loop.transition":
+        target = terminal_state or node
+        return f"Loop Transition: {target}"
+    if event_type == "loop.checkpoint":
+        return f"Loop Checkpoint: {node or 'unknown'}"
+    return f"Loop Event: {event_type}"
 
 
 def _loop_decision_events(events: list[TraceEvent]) -> list[tuple[TraceEvent, dict[str, Any]]]:
