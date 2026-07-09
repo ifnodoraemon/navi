@@ -607,7 +607,7 @@ def eval_claw(
 
 @eval_app.command("connector")
 def eval_connector(
-    dataset: Path = Path("evals") / "weixin_journeys.yaml",
+    dataset: Path = Path("evals") / "connector_journeys.yaml",
     json_output: bool = False,
     validate_only: bool = False,
     timeout_seconds: float = 30.0,

@@ -545,7 +545,7 @@ class SideEffectSagaPort:
                 compensate=compensate,
                 reason="side_effect_not_staged",
             )
-        if commit == "weixin.connector_runtime.dispatch_outbox":
+        if commit and commit.endswith(".dispatch_outbox"):
             return SideEffectSagaResult(
                 action="commit",
                 ok=True,
@@ -596,7 +596,7 @@ class SideEffectSagaPort:
                 reason="no_state_graph_compensate_handler",
             )
         artifact_path = Path(artifact).expanduser()
-        allowed_root = (self.home / "weixin" / "outbox").resolve()
+        allowed_root = self.home.resolve()
         try:
             resolved = artifact_path.resolve()
         except OSError as exc:
@@ -610,7 +610,7 @@ class SideEffectSagaPort:
                 compensate=compensate,
                 reason=str(exc),
             )
-        if not resolved.is_relative_to(allowed_root):
+        if not resolved.is_relative_to(allowed_root) or "outbox" not in resolved.parts:
             return SideEffectSagaResult(
                 action="compensate",
                 ok=False,
@@ -619,7 +619,7 @@ class SideEffectSagaPort:
                 artifact=str(resolved),
                 commit=commit,
                 compensate=compensate,
-                reason="artifact_outside_weixin_outbox",
+                reason="artifact_outside_connector_outbox",
             )
         if not resolved.exists():
             return SideEffectSagaResult(
