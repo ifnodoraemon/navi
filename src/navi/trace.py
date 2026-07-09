@@ -758,9 +758,11 @@ def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRu
 
         if event.phase in (str(TracePhase.PLANNER_SYSCALL), str(TracePhase.PLANNER_CALL_ERROR), str(TracePhase.PLANNER_PARSE_ERROR)):
             if pending_llm_run:
+                new_inputs = {**(pending_llm_run.inputs or {}), **(_event_input(event) or {})}
                 pending_llm_run = replace(
                     pending_llm_run,
                     end_time=event.created_at,
+                    inputs=new_inputs,
                     outputs=_event_output(event),
                     status=_event_trace_run_status(event),
                 )

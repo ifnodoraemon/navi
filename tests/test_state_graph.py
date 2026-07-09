@@ -11,6 +11,7 @@ import pytest
 
 from navi.capabilities import CapabilityRegistry
 from navi.capabilities_types import CapabilityContext
+from navi.loop import TracePhase
 from navi.loop_contracts import (
     BudgetPolicy,
     GoalSpec,
@@ -155,6 +156,34 @@ class _PlanningProvider:
 
     def usage_for(self, role: str) -> dict:
         return {}
+
+
+class _TraceUsagePlanningProvider(_PlanningProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self._usage: dict[str, dict] = {}
+
+    async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+        response = await super().complete_for(role, messages, **kwargs)
+        self._usage[role] = {
+            "role": role,
+            "provider": "test-provider",
+            "model": "trace-usage-model",
+            "input_tokens": 13,
+            "output_tokens": 5,
+            "prompt_tokens": 13,
+            "completion_tokens": 5,
+            "total_tokens": 18,
+            "messages": [
+                {"role": message.role, "content": message.content}
+                for message in messages
+            ],
+            "response": response,
+        }
+        return response
+
+    def usage_for(self, role: str) -> dict:
+        return dict(self._usage.get(role) or {})
 
 
 class _MemoryAwarePlanningProvider(_PlanningProvider):
@@ -404,6 +433,108 @@ async def test_planner_context_compacts_long_session_history(tmp_path: Path) -> 
     assert compaction["omitted_message_count"] == 6
     assert compaction["retained_recent_message_count"] == 12
     assert compaction["compacted_character_count"] <= compaction["max_character_count"]
+
+
+@pytest.mark.asyncio
+async def test_state_graph_traces_planner_usage(tmp_path: Path) -> None:
+    provider = _TraceUsagePlanningProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    planner_capabilities = CapabilityRegistry(
+        home=tmp_path,
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+    context = CapabilityContext(
+        home=tmp_path,
+        source="state_graph",
+        peer_id="state_graph",
+        sender_id="tester",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+        trace_id="trace-planner-usage",
+    )
+    trace_store = TraceStore(tmp_path)
+    runner = DurableStateGraphRunner(
+        home=tmp_path,
+        planner_port=ModelCapabilityPlannerPort(
+            runtime=runtime,
+            capabilities=planner_capabilities,
+        ),
+        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        trace_store=trace_store,
+        trace_context=context,
+    )
+
+    result = await runner.run_async(
+        _write_spec(_command("from pathlib import Path; assert Path('app.py').exists()")),
+        workspace=tmp_path,
+    )
+
+    events = trace_store.list_events("trace-planner-usage")
+    planner_start = [
+        event for event in events if event.phase == str(TracePhase.PLANNER_CALL_START)
+    ]
+    planner_results = [
+        event for event in events if event.phase == str(TracePhase.PLANNER_SYSCALL)
+    ]
+    output = json.loads(planner_results[0].output_json)
+    input_payload = json.loads(planner_results[0].input_json)
+    assert result.terminal_state == LoopTerminalState.CONVERGED
+    assert planner_start
+    assert planner_results
+    assert output["tool"] == "file.write"
+    assert output["usage"] == {
+        "role": "planner",
+        "provider": "test-provider",
+        "model": "trace-usage-model",
+        "input_tokens": 13,
+        "output_tokens": 5,
+        "prompt_tokens": 13,
+        "completion_tokens": 5,
+        "total_tokens": 18,
+    }
+    assert "response" not in output["usage"]
+    assert "messages" not in output["usage"]
+    assert output["llm_response"]
+    assert input_payload["prompt"][0]["role"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_state_graph_does_not_write_empty_trace_id_events(tmp_path: Path) -> None:
+    provider = _TraceUsagePlanningProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    planner_capabilities = CapabilityRegistry(
+        home=tmp_path,
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+    context = CapabilityContext(
+        home=tmp_path,
+        source="state_graph",
+        peer_id="state_graph",
+        sender_id="tester",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    trace_store = TraceStore(tmp_path)
+    runner = DurableStateGraphRunner(
+        home=tmp_path,
+        planner_port=ModelCapabilityPlannerPort(
+            runtime=runtime,
+            capabilities=planner_capabilities,
+        ),
+        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        trace_store=trace_store,
+        trace_context=context,
+    )
+
+    result = await runner.run_async(
+        _write_spec(_command("from pathlib import Path; assert Path('app.py').exists()")),
+        workspace=tmp_path,
+    )
+
+    assert result.terminal_state == LoopTerminalState.CONVERGED
+    assert trace_store.list_events("") == []
 
 
 @pytest.mark.asyncio

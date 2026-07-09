@@ -44,6 +44,8 @@ class ProviderUsage:
             "model": self.model,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "prompt_tokens": self.input_tokens,
+            "completion_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
         }
         if role:
@@ -406,7 +408,10 @@ class ModelPool:
             self.resource_gateway.release()
         usage = provider.last_usage
         if usage is not None:
-            self._usage_by_role[role] = usage.to_facts(role=role)
+            facts = usage.to_facts(role=role)
+            facts["messages"] = [{"role": m.role, "content": m.content} for m in messages]
+            facts["response"] = result
+            self._usage_by_role[role] = facts
         else:
             self._usage_by_role.pop(role, None)
         return result

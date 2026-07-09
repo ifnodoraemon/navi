@@ -111,7 +111,11 @@ async def test_model_pool_exposes_provider_usage_by_role():
         "model": "usage-model",
         "input_tokens": 11,
         "output_tokens": 7,
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
         "total_tokens": 18,
+        "messages": [{"role": "user", "content": "hi"}],
+        "response": "ok",
         "raw": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
     }
 

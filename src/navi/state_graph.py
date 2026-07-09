@@ -18,6 +18,7 @@ from .loop import (
     LoopPhase,
     LoopReason,
     TraceFailureDomain,
+    TracePhase,
 )
 from .loop_contracts import (
     LoopNode,
@@ -1084,12 +1085,52 @@ class DurableStateGraphRunner:
                     inputs={"planner_node": "start"},
                     state=state.to_dict(),
                 )
+                if self._has_trace_context():
+                    self.trace_store.add_event(
+                        trace_id=self.trace_context.trace_id,
+                        session_id=self.trace_context.session_id or "",
+                        run_id=state.run_id,
+                        phase=str(TracePhase.PLANNER_CALL_START),
+                        source=self.trace_context.source,
+                        peer_id=self.trace_context.peer_id,
+                        sender_id=self.trace_context.sender_id,
+                        input_data={"objective": spec.goal.objective, "attempt": state.attempt},
+                    )
+
                 planned_step = await self.planner_port.plan(
                     spec,
                     state,
                     workspace=execution_workspace,
                     evidence=collected_evidence,
                 )
+
+                if self._has_trace_context():
+                    phase = str(TracePhase.PLANNER_SYSCALL)
+                    if planned_step.tool == "system.planner_error":
+                        phase = str(TracePhase.PLANNER_CALL_ERROR)
+
+                    output_data = planned_step.to_dict()
+                    usage_data = self._usage_for_role("planner")
+                    prompt_messages = usage_data.pop("messages", [])
+                    llm_response = usage_data.pop("response", "")
+                    output_data["usage"] = usage_data
+                    output_data["llm_response"] = llm_response
+
+                    self.trace_store.add_event(
+                        trace_id=self.trace_context.trace_id,
+                        session_id=self.trace_context.session_id or "",
+                        run_id=state.run_id,
+                        phase=phase,
+                        source=self.trace_context.source,
+                        peer_id=self.trace_context.peer_id,
+                        sender_id=self.trace_context.sender_id,
+                        tool=planned_step.tool,
+                        model_role="planner",
+                        ok=(planned_step.tool != "system.planner_error"),
+                        input_data={"prompt": prompt_messages},
+                        output_data=output_data,
+                    )
+
                 collected_evidence["planned_capability"] = planned_step.to_dict()
                 if planned_step.tool == "system.planner_error":
                     self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
@@ -1360,9 +1401,43 @@ class DurableStateGraphRunner:
                     error_reason=cap_result.get("error_reason", "") if isinstance(cap_result, dict) else "",
                     terminal=bool(cap_result.get("terminal", False)) if isinstance(cap_result, dict) else False,
                 )
+                if self._has_trace_context():
+                    self.trace_store.add_event(
+                        trace_id=self.trace_context.trace_id,
+                        session_id=self.trace_context.session_id or "",
+                        run_id=state.run_id,
+                        phase=str(TracePhase.PLANNER_CALL_START),
+                        source=self.trace_context.source,
+                        peer_id=self.trace_context.peer_id,
+                        sender_id=self.trace_context.sender_id,
+                        input_data={"objective": spec.goal.objective, "attempt": state.attempt},
+                    )
+
                 decision = await self.llm_reflector_port.assess(
                     spec, state, executed=executed_step, evidence=collected_evidence
                 )
+
+                if self._has_trace_context():
+                    output_data = decision.to_dict()
+                    usage_data = self._usage_for_role("reflector")
+                    prompt_messages = usage_data.pop("messages", [])
+                    llm_response = usage_data.pop("response", "")
+                    output_data["usage"] = usage_data
+                    output_data["llm_response"] = llm_response
+                    self.trace_store.add_event(
+                        trace_id=self.trace_context.trace_id,
+                        session_id=self.trace_context.session_id or "",
+                        run_id=state.run_id,
+                        phase=str(TracePhase.PLANNER_SYSCALL),
+                        source=self.trace_context.source,
+                        peer_id=self.trace_context.peer_id,
+                        sender_id=self.trace_context.sender_id,
+                        tool="reflection",
+                        model_role="reflector",
+                        input_data={"prompt": prompt_messages},
+                        output_data=output_data,
+                    )
+
                 collected_evidence["reflection"] = decision.to_dict()
                 if decision.retry:
                     state = self._transition(
@@ -1699,14 +1774,71 @@ class DurableStateGraphRunner:
             if step.kind != VerificationKind.LLM_CHECKER:
                 continue
             key = step.evidence_key or step.name
+            if self._has_trace_context():
+                self.trace_store.add_event(
+                    trace_id=self.trace_context.trace_id,
+                    session_id=self.trace_context.session_id or "",
+                    run_id=state.run_id,
+                    phase=str(TracePhase.PLANNER_CALL_START),
+                    source=self.trace_context.source,
+                    peer_id=self.trace_context.peer_id,
+                    sender_id=self.trace_context.sender_id,
+                    input_data={"objective": spec.goal.objective, "attempt": state.attempt},
+                )
+
             decision = await self.semantic_checker_port.assess(
                 spec,
                 state,
                 executed=executed_step,
             )
+
+            if self._has_trace_context():
+                output_data = decision.to_dict()
+                usage_data = self._usage_for_role("checker")
+                prompt_messages = usage_data.pop("messages", [])
+                llm_response = usage_data.pop("response", "")
+                output_data["usage"] = usage_data
+                output_data["llm_response"] = llm_response
+                self.trace_store.add_event(
+                    trace_id=self.trace_context.trace_id,
+                    session_id=self.trace_context.session_id or "",
+                    run_id=state.run_id,
+                    phase=str(TracePhase.PLANNER_SYSCALL),
+                    source=self.trace_context.source,
+                    peer_id=self.trace_context.peer_id,
+                    sender_id=self.trace_context.sender_id,
+                    tool="checker",
+                    model_role="checker",
+                    input_data={"prompt": prompt_messages},
+                    output_data=output_data,
+                )
+
             facts = {**decision.to_facts(), "attempt": state.attempt}
             collected_evidence[key] = facts
             collected_evidence["semantic_checker_result"] = facts
+
+    def _usage_for_role(self, role: str) -> dict[str, Any]:
+        for port in (
+            self.planner_port,
+            self.llm_reflector_port,
+            self.semantic_checker_port,
+        ):
+            runtime = getattr(port, "runtime", None)
+            provider = getattr(runtime, "provider", None)
+            usage_for = getattr(provider, "usage_for", None)
+            if not callable(usage_for):
+                continue
+            usage = usage_for(role)
+            if usage:
+                return dict(usage)
+        return {}
+
+    def _has_trace_context(self) -> bool:
+        return (
+            self.trace_store is not None
+            and self.trace_context is not None
+            and bool(self.trace_context.trace_id)
+        )
 
     def _gate_or_stop(
         self,

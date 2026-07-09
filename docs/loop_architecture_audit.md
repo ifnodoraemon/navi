@@ -210,3 +210,22 @@ user-visible watch result.
 Status: Implemented for typed memory graph indexing, daemon maintenance, and
 graph-neighbor recall expansion. Remaining product work: replace deterministic
 older-message previews with semantic compaction episodes.
+
+## 12. LLM Usage Trace Evidence
+
+Problem: evolution and trace review need objective LLM-call evidence, but
+planner/checker/reflector calls could complete without token usage being
+attached to their trace events. That made later arena evidence weaker than the
+provider runtime facts already available in `ModelPool`.
+
+Solution: provider usage facts now expose both canonical `input_tokens` /
+`output_tokens` and provider-native `prompt_tokens` / `completion_tokens`
+aliases, along with raw call material when the provider wrapper has it. The
+StateGraph records planner, checker, and reflector LLM trace events by splitting
+that evidence into prompt input, model response output, and compact usage facts
+attached to the corresponding role. The trace event remains observational: it
+records provider facts after the model call and does not drive routing.
+
+Status: Implemented for StateGraph LLM call evidence. Remaining product work:
+consume these trace facts in the beta-run evolution arena when generating
+proposal `evaluation_evidence`.
