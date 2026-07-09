@@ -146,7 +146,8 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
             execution_contexts=ALL_EXECUTION_CONTEXTS,
             description=(
                 "Send a file (and optional text message) to the user via Weixin. "
-                "This is a terminal action \u2014 no further tools can be called in this turn after sending."
+                "CRITICAL: Use this tool IMMEDIATELY when the user asks you to send them a file (e.g. '发我', 'send me'). "
+                "This is a terminal action — no further tools can be called in this turn after sending."
             ),
             input_schema={
                 "type": "object",
