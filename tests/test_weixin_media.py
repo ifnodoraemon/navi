@@ -285,7 +285,7 @@ async def test_weixin_send_file_returns_allowed_media_directive(tmp_path: Path):
     approval = runs.create_approval(
         run_id=run.id,
         action=APPROVAL_ACTION_CAPABILITY,
-        requested_tool="connector.weixin.send_file",
+        requested_tool="channel.send_file",
         requested_permission="write",
         args_json=json.dumps(args, ensure_ascii=False, sort_keys=True),
         reason="test approved outbound media staging",
@@ -294,7 +294,7 @@ async def test_weixin_send_file_returns_allowed_media_directive(tmp_path: Path):
     registry = build_capability_registry(tmp_path, project_dir=tmp_path, governed_run_id=run.id)
 
     result = await registry.invoke(
-        "connector.weixin.send_file",
+        "channel.send_file",
         args,
         permission="write",
         context=CapabilityContext(home=tmp_path, source="local", workspace=str(tmp_path)),

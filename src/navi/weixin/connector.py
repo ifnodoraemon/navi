@@ -141,12 +141,12 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
     )
     registry.register(
         ToolSpec(
-            name="connector.weixin.send_file",
+            name="channel.send_file",
             capability_class="connector.outbound_media",
             execution_contexts=ALL_EXECUTION_CONTEXTS,
             description=(
-                "Send a file (and optional text message) to the user via Weixin. "
-                "CRITICAL: Use this tool IMMEDIATELY when the user asks you to send them a file (e.g. '发我', 'send me'). "
+                "Send a file (and optional text message) to the user over the current active interaction channel. "
+                "This is the standard capability for delivering requested files or media back to the user. "
                 "This is a terminal action — no further tools can be called in this turn after sending."
             ),
             input_schema={
@@ -209,21 +209,21 @@ def _send_file_handler(home: Path, args: dict[str, Any]):
     text = args.get("text") or ""
     raw_path = str(args.get("path") or "").strip()
     if not raw_path:
-        return ToolResult(tool="connector.weixin.send_file", ok=False, error="path is required")
+        return ToolResult(tool="channel.send_file", ok=False, error="path is required")
     try:
         source = Path(raw_path).expanduser().resolve()
     except OSError as exc:
-        return ToolResult(tool="connector.weixin.send_file", ok=False, error=str(exc))
+        return ToolResult(tool="channel.send_file", ok=False, error=str(exc))
     if not source.exists():
         return ToolResult(
-            tool="connector.weixin.send_file",
+            tool="channel.send_file",
             ok=False,
             error=f"file not found: {source}",
             facts={"source_path": str(source)},
         )
     if not source.is_file():
         return ToolResult(
-            tool="connector.weixin.send_file",
+            tool="channel.send_file",
             ok=False,
             error=f"path is not a file: {source}",
             facts={"source_path": str(source)},
@@ -238,14 +238,14 @@ def _send_file_handler(home: Path, args: dict[str, Any]):
         shutil.copy2(source, target)
     except OSError as exc:
         return ToolResult(
-            tool="connector.weixin.send_file",
+            tool="channel.send_file",
             ok=False,
             error=str(exc),
             facts={"source_path": str(source), "outbound_path": str(target)},
         )
 
     return ToolResult(
-        tool="connector.weixin.send_file",
+        tool="channel.send_file",
         ok=True,
         terminal=True,
         action="connector_outbound",

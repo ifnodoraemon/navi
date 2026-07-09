@@ -112,7 +112,7 @@ def _send_file_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
             owner="tester",
         ),
         goal_id="goal-1",
-        allowed_capabilities=("connector.weixin.send_file",),
+        allowed_capabilities=("channel.send_file",),
         verification_ladder=(
             VerificationStep(
                 kind=VerificationKind.COMMAND_EXIT_CODE,
@@ -227,7 +227,7 @@ class _SendFilePlanningProvider:
             {
                 "syscalls": [
                     {
-                        "tool": "connector.weixin.send_file",
+                        "tool": "channel.send_file",
                         "permission": "write",
                         "args": {"path": str(self.path)},
                         "model_role": "executor",

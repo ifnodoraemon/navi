@@ -140,7 +140,7 @@ def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
         source="weixin",
         peer_id="peer-1",
         sender_id="sender-1",
-        requested_tool="connector.weixin.send_file",
+        requested_tool="channel.send_file",
         requested_permission="write",
         code="111111",
     )
@@ -151,7 +151,7 @@ def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
         source="weixin",
         peer_id="peer-1",
         sender_id="sender-1",
-        requested_tool="connector.weixin.send_file",
+        requested_tool="channel.send_file",
         requested_permission="write",
         code="222222",
     )
@@ -172,7 +172,7 @@ def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
             "id": pending.id,
             "run_id": run.id,
             "action": "capability",
-            "requested_tool": "connector.weixin.send_file",
+            "requested_tool": "channel.send_file",
             "requested_permission": "write",
             "source": "weixin",
             "peer_id": "peer-1",

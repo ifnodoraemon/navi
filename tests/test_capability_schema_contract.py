@@ -81,7 +81,7 @@ def test_mutating_tool_spec_defaults_to_local_side_effect_policy() -> None:
 
 def test_weixin_outbound_declares_staged_external_side_effect(tmp_path: Path) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
-    spec = registry.get("connector.weixin.send_file")
+    spec = registry.get("channel.send_file")
 
     assert spec is not None
     policy = spec.side_effect_policy
