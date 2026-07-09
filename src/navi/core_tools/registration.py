@@ -21,7 +21,7 @@ from .files import (
     _workspace_shadow_merge,
 )
 from .hooks import _hooks_list
-from .memory import _memory_conflicts, _memory_list, _memory_recall
+from .memory import _memory_conflicts, _memory_list, _memory_recall, _memory_record_activation
 from .provider import _provider_config
 from .shell import _shell_run
 from .skills import _skills_list, _skills_view
@@ -192,6 +192,10 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "query": {"type": "string"},
                     "goal": {"type": "string"},
                     "items": _array_of_objects(),
+                    "activation_candidate_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
                     "count": {"type": "integer"},
                     "limit": {"type": "integer"},
                     "rendered": {"type": "string"},
@@ -199,6 +203,43 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             ),
         ),
         lambda args: _memory_recall(home, args),
+    )
+    registry.register(
+        _core_tool_spec(
+            name="memory.record_activation",
+            capability_class="memory",
+            description=(
+                "Record that specific recalled memory items were used, so "
+                "maintenance can distinguish active knowledge from stale memory."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "item_ids": {"type": "array", "items": {"type": "string"}},
+                    "reason": {"type": "string"},
+                    "provenance": {"type": "string"},
+                },
+                "required": ["item_ids", "reason", "provenance"],
+            },
+            output_schema=_output_schema(
+                {
+                    "entity_type": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "state_transition": {"type": "string"},
+                    "turn_scope": {"type": "string"},
+                    "activated_items": _array_of_objects(),
+                    "activated_count": {"type": "integer"},
+                    "missing_item_ids": {"type": "array", "items": {"type": "string"}},
+                    "missing_count": {"type": "integer"},
+                    "reason": {"type": "string"},
+                    "provenance": {"type": "string"},
+                }
+            ),
+            facts_only=True,
+            mutates=True,
+            permission="write",
+        ),
+        lambda args: _memory_record_activation(home, args),
     )
     registry.register(
         _core_tool_spec(

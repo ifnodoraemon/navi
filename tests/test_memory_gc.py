@@ -134,3 +134,34 @@ def test_memory_gc_marks_low_confidence_decayed_memory_stale(tmp_path) -> None:
     assert updated is not None
     assert round(updated.confidence, 2) == 0.17
     assert updated.status == "stale"
+
+
+def test_memory_activation_prevents_recently_used_item_decay(tmp_path) -> None:
+    store = MemoryStore(tmp_path)
+    now = time.time()
+    old_anchor = now - 120 * 24 * 60 * 60
+    item = _add_memory(
+        store,
+        "recently used preference",
+        status="active",
+        memory_type="preference",
+        confidence=0.8,
+        last_verified_at=old_anchor,
+    )
+
+    activated = store.record_activation(
+        item.id,
+        now=now - 1,
+        reason="used in planner context",
+        provenance="unit-test",
+    )
+    facts = store.garbage_collect(now=now)
+
+    updated = store.get_item(item.id)
+    assert activated is not None
+    assert activated.metadata["recall_count"] == 1
+    assert activated.metadata["last_recalled_at"] == now - 1
+    assert facts["decayed_count"] == 0
+    assert updated is not None
+    assert updated.confidence == 0.8
+    assert updated.status == "active"

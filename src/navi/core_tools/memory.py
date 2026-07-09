@@ -82,9 +82,60 @@ def _memory_recall(home: Path, args: dict[str, Any]) -> ToolResult:
             "query": query,
             "goal": goal,
             "items": [_memory_recall_facts(recall) for recall in recalls],
+            "activation_candidate_ids": [recall.item.id for recall in recalls],
             "count": len(recalls),
             "limit": limit,
             "rendered": store.render_context(query, limit=limit, goal=goal),
+        },
+    )
+
+
+def _memory_record_activation(home: Path, args: dict[str, Any]) -> ToolResult:
+    raw_ids = args.get("item_ids")
+    if isinstance(raw_ids, str):
+        item_ids = [raw_ids.strip()] if raw_ids.strip() else []
+    elif isinstance(raw_ids, list):
+        item_ids = [str(item).strip() for item in raw_ids if str(item).strip()]
+    else:
+        item_ids = []
+    if not item_ids:
+        return ToolResult(tool="memory.record_activation", ok=False, error="item_ids is required")
+    reason = str(args.get("reason") or "").strip()
+    provenance = str(args.get("provenance") or "").strip()
+    if not reason:
+        return ToolResult(tool="memory.record_activation", ok=False, error="reason is required")
+    if not provenance:
+        return ToolResult(tool="memory.record_activation", ok=False, error="provenance is required")
+    store = MemoryStore(home)
+    activated = []
+    missing = []
+    try:
+        for item_id in item_ids:
+            item = store.record_activation(
+                item_id,
+                reason=reason,
+                provenance=provenance,
+            )
+            if item is None:
+                missing.append(item_id)
+            else:
+                activated.append(_memory_item_facts(item))
+    except ValueError as exc:
+        return ToolResult(tool="memory.record_activation", ok=False, error=str(exc))
+    return ToolResult(
+        tool="memory.record_activation",
+        ok=True,
+        facts={
+            "entity_type": "memory_activation",
+            "entity_id": ",".join(item_ids),
+            "state_transition": "recorded",
+            "turn_scope": "current",
+            "activated_items": activated,
+            "activated_count": len(activated),
+            "missing_item_ids": missing,
+            "missing_count": len(missing),
+            "reason": reason,
+            "provenance": provenance,
         },
     )
 
@@ -104,5 +155,4 @@ def _memory_conflicts(home: Path, args: dict[str, Any]) -> ToolResult:
             ),
         },
     )
-
 

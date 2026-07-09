@@ -166,6 +166,23 @@ Solution: `MemoryStore.garbage_collect()` now also decays inactive
 confidence active items move to `stale`; `constraint` and `negative` memories
 are excluded so durable red lines do not silently weaken.
 
-Status: Implemented for explicit memory maintenance. Remaining product work:
-track activation/use events so decay can be based on real recall usage instead
-of only `last_verified_at`/`updated_at` age.
+Status: Implemented for explicit memory maintenance. Activation metadata now
+feeds the decay anchor through the explicit activation contract below.
+
+## 10. Memory Activation Tracking
+
+Problem: confidence decay needed a real "was this memory used" signal, but
+`memory.recall` must remain read-only so a model cannot mutate durable state by
+searching memory.
+
+Solution: `memory.recall` now returns `activation_candidate_ids` for the
+recalled records, and `memory.record_activation` records explicit use with
+reason and provenance. The write updates `last_recalled_at`, increments
+`recall_count`, and passes through the governed memory-write hook. Decay checks
+`last_recalled_at` before verification or update timestamps, so recently used
+memories do not lose confidence just because their original verification is old.
+
+Status: Implemented for explicit activation recording and decay anchoring.
+Remaining product work: wire planner/runtime memory-context assembly to record
+activations automatically only after a memory was actually used in a decision
+or emitted fact.

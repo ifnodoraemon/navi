@@ -358,7 +358,12 @@ class MemoryStore:
                 continue
             if item.expires_at and item.expires_at <= current_time:
                 continue
-            anchor = item.last_verified_at or item.updated_at or item.created_at
+            anchor = (
+                _metadata_float(item.metadata, "last_recalled_at")
+                or item.last_verified_at
+                or item.updated_at
+                or item.created_at
+            )
             age_seconds = max(0.0, current_time - anchor)
             if age_seconds < grace_seconds:
                 continue
@@ -395,6 +400,49 @@ class MemoryStore:
                 }
             )
         return {"decayed_count": len(decayed), "decayed_items": decayed}
+
+    def record_activation(
+        self,
+        item_id: str,
+        *,
+        now: float | None = None,
+        reason: str,
+        provenance: str,
+    ) -> MemoryItem | None:
+        """Record that a memory item was explicitly used by a planner/tool path."""
+        current = self.get_item(item_id)
+        if current is None:
+            return None
+        reason = reason.strip()
+        provenance = provenance.strip()
+        if not reason:
+            raise ValueError("activation reason is required")
+        if not provenance:
+            raise ValueError("activation provenance is required")
+        current_time = time.time() if now is None else now
+        metadata = dict(current.metadata)
+        previous_count = _metadata_int(metadata, "recall_count")
+        metadata["last_recalled_at"] = current_time
+        metadata["recall_count"] = previous_count + 1
+        metadata["activation_reason"] = reason
+        metadata["activation_provenance"] = provenance
+        self._assert_memory_write_allowed(
+            memory_type=current.type,
+            status=current.status,
+            scope=current.scope,
+            source=current.source,
+            confidence=max(0.0, min(1.0, current.confidence)),
+            content_chars=len(current.content),
+            metadata_keys=sorted(metadata.keys()),
+        )
+        self.provider.store_item(
+            replace(
+                current,
+                metadata=metadata,
+                updated_at=current_time,
+            )
+        )
+        return self.get_item(item_id)
 
     def restore_item(self, item_dict: dict) -> None:
         if isinstance(item_dict.get("metadata"), str):
@@ -854,6 +902,20 @@ def _metadata_id_list(value) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
+
+def _metadata_float(metadata: dict, key: str) -> float:
+    try:
+        return max(0.0, float(metadata.get(key) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _metadata_int(metadata: dict, key: str) -> int:
+    try:
+        return max(0, int(metadata.get(key) or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _memory_conflict_status(item: MemoryItem, conflicting_item: MemoryItem | None) -> str:

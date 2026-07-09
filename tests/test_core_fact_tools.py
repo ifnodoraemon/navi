@@ -9,6 +9,7 @@ import pytest
 
 from navi.core_tools import web_search as web_search_utils
 from navi.loop_contracts import LockMode
+from navi.memory import MemoryStore
 from navi.tools import build_tool_gateway
 from navi.workspaces import WorkspaceLockStore
 
@@ -45,6 +46,44 @@ async def test_directory_list_returns_workspace_entries(tmp_path: Path) -> None:
     assert "visible.txt" in names
     assert ".hidden" not in names
     assert "response" not in result.facts
+
+
+@pytest.mark.asyncio
+async def test_memory_record_activation_marks_recalled_items(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = MemoryStore(home)
+    item = store.add_item(
+        "preference",
+        "prefer AST tools for Python code edits",
+        source="test",
+        status="active",
+        confidence=0.8,
+        reason="unit test",
+        provenance="tests/test_core_fact_tools.py",
+    )
+    gateway = build_tool_gateway(home, project_dir=workspace)
+
+    recall = await gateway.call("memory.recall", {"query": "Python code edits"})
+    activated = await gateway.call(
+        "memory.record_activation",
+        {
+            "item_ids": recall.facts["activation_candidate_ids"],
+            "reason": "used by planner",
+            "provenance": "test-trace",
+        },
+    )
+
+    updated = store.get_item(item.id)
+    assert recall.ok is True
+    assert item.id in recall.facts["activation_candidate_ids"]
+    assert activated.ok is True
+    assert activated.facts["activated_count"] == 1
+    assert updated is not None
+    assert updated.metadata["recall_count"] == 1
+    assert updated.metadata["activation_reason"] == "used by planner"
+    assert updated.metadata["activation_provenance"] == "test-trace"
 
 
 @pytest.mark.asyncio
