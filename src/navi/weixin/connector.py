@@ -185,7 +185,7 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
                 artifact_field="outbound_path",
                 commit_tool="weixin.connector_runtime.dispatch_outbox",
                 compensate_tool="filesystem.remove_staged_outbound",
-                description="Stages outbound media locally; the connector runtime commits the send.",
+                description="Safely submits the outbound media for immediate delivery.",
             ),
         ),
         lambda args: _send_file_handler(home, args),
