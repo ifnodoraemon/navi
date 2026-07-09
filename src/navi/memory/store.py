@@ -34,6 +34,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("navi.memory")
 
+MEMORY_CONFIDENCE_DECAY_TYPES = frozenset({"preference", "fact", "semantic"})
+MEMORY_CONFIDENCE_DECAY_GRACE_SECONDS = 90 * 24 * 60 * 60
+MEMORY_CONFIDENCE_DECAY_DELTA = 0.05
+MEMORY_CONFIDENCE_DECAY_STALE_THRESHOLD = 0.2
+
 
 class MemoryStore:
     def __init__(
@@ -309,21 +314,87 @@ class MemoryStore:
 
     def garbage_collect(self, *, now: float | None = None, limit: int = 1000) -> dict[str, Any]:
         """Run bounded working-memory GC and return objective facts."""
+        current_time = time.time() if now is None else now
         expired = self.expire_items(now=now, limit=limit)
+        decayed = self.decay_inactive_confidence(now=current_time, limit=limit)
         active_count = len(
             [
                 item
                 for item in self.list_items(limit=limit)
                 if item.status in ACTIVE_STATUSES
-                and (not item.expires_at or item.expires_at > (now or time.time()))
+                and (not item.expires_at or item.expires_at > current_time)
             ]
         )
         return {
             "gc": "working_memory",
             "expired_count": expired["expired_count"],
             "expired_items": expired["expired_items"],
+            "decayed_count": decayed["decayed_count"],
+            "decayed_items": decayed["decayed_items"],
             "active_count": active_count,
         }
+
+    def decay_inactive_confidence(
+        self,
+        *,
+        now: float | None = None,
+        limit: int = 1000,
+        grace_seconds: float = MEMORY_CONFIDENCE_DECAY_GRACE_SECONDS,
+        delta: float = MEMORY_CONFIDENCE_DECAY_DELTA,
+        stale_threshold: float = MEMORY_CONFIDENCE_DECAY_STALE_THRESHOLD,
+    ) -> dict[str, Any]:
+        """Lower confidence for old learnable facts without touching constraints.
+
+        This is explicit maintenance, not prompt-time filtering. Constraints and
+        negative memories are excluded so durable must/must-not boundaries do not
+        silently weaken with age.
+        """
+        current_time = time.time() if now is None else now
+        decayed: list[dict[str, Any]] = []
+        for item in self.list_items(limit=limit):
+            if item.type not in MEMORY_CONFIDENCE_DECAY_TYPES:
+                continue
+            if item.status != "active":
+                continue
+            if item.expires_at and item.expires_at <= current_time:
+                continue
+            anchor = item.last_verified_at or item.updated_at or item.created_at
+            age_seconds = max(0.0, current_time - anchor)
+            if age_seconds < grace_seconds:
+                continue
+            previous_confidence = max(0.0, min(1.0, item.confidence))
+            new_confidence = max(0.0, previous_confidence - max(0.0, delta))
+            self._assert_memory_write_allowed(
+                memory_type=item.type,
+                status=item.status,
+                scope=item.scope,
+                source=item.source,
+                confidence=new_confidence,
+                content_chars=len(item.content),
+                metadata_keys=sorted(item.metadata.keys()),
+            )
+            self.provider.update_item(
+                item.id,
+                confidence=new_confidence,
+                updated_at=current_time,
+            )
+            final = self.get_item(item.id)
+            final_status = final.status if final is not None else item.status
+            if new_confidence <= stale_threshold:
+                stale = self.set_status(item.id, "stale")
+                final_status = stale.status if stale is not None else final_status
+            decayed.append(
+                {
+                    "id": item.id,
+                    "type": item.type,
+                    "previous_confidence": previous_confidence,
+                    "confidence": new_confidence,
+                    "previous_status": item.status,
+                    "status": final_status,
+                    "age_seconds": age_seconds,
+                }
+            )
+        return {"decayed_count": len(decayed), "decayed_items": decayed}
 
     def restore_item(self, item_dict: dict) -> None:
         if isinstance(item_dict.get("metadata"), str):

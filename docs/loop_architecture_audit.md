@@ -154,3 +154,18 @@ returns structured blocked facts when parsing or symbol matching fails.
 Status: Implemented for Python function/class replacement. Remaining product
 work: route model code-edit plans toward AST tools by default and add
 language-specific structured patch tools where parsers exist.
+
+## 9. Memory Confidence Decay
+
+Problem: memory GC expired time-bounded items, but old learnable memories kept
+their original confidence indefinitely. That made stale preferences, facts, and
+semantic memories too sticky unless a user explicitly corrected them.
+
+Solution: `MemoryStore.garbage_collect()` now also decays inactive
+`preference`, `fact`, and `semantic` memories after a grace window. Low
+confidence active items move to `stale`; `constraint` and `negative` memories
+are excluded so durable red lines do not silently weaken.
+
+Status: Implemented for explicit memory maintenance. Remaining product work:
+track activation/use events so decay can be based on real recall usage instead
+of only `last_verified_at`/`updated_at` age.

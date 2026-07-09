@@ -5,13 +5,23 @@ import time
 from navi.memory.store import MemoryStore
 
 
-def _add_memory(store: MemoryStore, content: str, *, status: str, expires_at: float = 0.0):
+def _add_memory(
+    store: MemoryStore,
+    content: str,
+    *,
+    status: str,
+    expires_at: float = 0.0,
+    memory_type: str = "working",
+    confidence: float = 0.8,
+    last_verified_at: float | None = None,
+):
     return store.add_item(
-        "working",
+        memory_type,
         content,
         source="test",
         status=status,
-        confidence=0.8,
+        confidence=confidence,
+        last_verified_at=last_verified_at,
         expires_at=expires_at,
         reason="unit test",
         provenance="tests/test_memory_gc.py",
@@ -32,6 +42,7 @@ def test_memory_gc_expires_active_and_archives_nonactive_items(tmp_path) -> None
     retained_after = store.get_item(retained.id)
     assert facts["gc"] == "working_memory"
     assert facts["expired_count"] == 2
+    assert facts["decayed_count"] == 0
     assert active_after is not None
     assert active_after.status == "stale"
     assert proposed_after is not None
@@ -66,3 +77,60 @@ def test_memory_supersede_requires_existing_items_and_reason(tmp_path) -> None:
     item = _add_memory(store, "old", status="active")
 
     assert store.supersede_item(item.id, replacement_item_id="missing", reason="no replacement") is None
+
+
+def test_memory_gc_decays_old_learnable_memory_without_touching_constraints(tmp_path) -> None:
+    store = MemoryStore(tmp_path)
+    now = time.time()
+    old_anchor = now - 120 * 24 * 60 * 60
+    preference = _add_memory(
+        store,
+        "old preference",
+        status="active",
+        memory_type="preference",
+        confidence=0.8,
+        last_verified_at=old_anchor,
+    )
+    constraint = _add_memory(
+        store,
+        "old constraint",
+        status="active",
+        memory_type="constraint",
+        confidence=0.8,
+        last_verified_at=old_anchor,
+    )
+
+    facts = store.garbage_collect(now=now)
+
+    preference_after = store.get_item(preference.id)
+    constraint_after = store.get_item(constraint.id)
+    assert facts["decayed_count"] == 1
+    assert facts["decayed_items"][0]["id"] == preference.id
+    assert preference_after is not None
+    assert round(preference_after.confidence, 2) == 0.75
+    assert preference_after.status == "active"
+    assert constraint_after is not None
+    assert constraint_after.confidence == 0.8
+    assert constraint_after.status == "active"
+
+
+def test_memory_gc_marks_low_confidence_decayed_memory_stale(tmp_path) -> None:
+    store = MemoryStore(tmp_path)
+    now = time.time()
+    old_anchor = now - 120 * 24 * 60 * 60
+    item = _add_memory(
+        store,
+        "low confidence fact",
+        status="active",
+        memory_type="fact",
+        confidence=0.22,
+        last_verified_at=old_anchor,
+    )
+
+    facts = store.garbage_collect(now=now)
+
+    updated = store.get_item(item.id)
+    assert facts["decayed_count"] == 1
+    assert updated is not None
+    assert round(updated.confidence, 2) == 0.17
+    assert updated.status == "stale"
