@@ -21,6 +21,7 @@ class EvolutionProposalRequest(BaseModel):
 
 class EvolutionEvaluationRequest(BaseModel):
     evaluation_result: str
+    evaluation_evidence: str = ""
 
 def create_router(home, project_dir, api_capabilities):
     router = APIRouter()
@@ -70,7 +71,11 @@ def create_router(home, project_dir, api_capabilities):
     ) -> dict:
         result = await api_capabilities.invoke(
             "evolution.record_evaluation",
-            {"proposal_id": proposal_id, "evaluation_result": request.evaluation_result},
+            {
+                "proposal_id": proposal_id,
+                "evaluation_result": request.evaluation_result,
+                "evaluation_evidence": request.evaluation_evidence,
+            },
             permission="write",
             context=local_capability_context(home, project_dir=project_dir),
         )

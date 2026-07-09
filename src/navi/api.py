@@ -112,6 +112,7 @@ class EvolutionProposalRequest(BaseModel):
 
 class EvolutionEvaluationRequest(BaseModel):
     evaluation_result: str
+    evaluation_evidence: str = ""
 
 
 def _is_public_request(request: Request) -> bool:
@@ -623,7 +624,11 @@ def create_app(
     ) -> dict:
         result = await api_capabilities.invoke(
             "evolution.record_evaluation",
-            {"proposal_id": proposal_id, "evaluation_result": request.evaluation_result},
+            {
+                "proposal_id": proposal_id,
+                "evaluation_result": request.evaluation_result,
+                "evaluation_evidence": request.evaluation_evidence,
+            },
             permission="write",
             context=_local_capability_context(home, project_dir=project_dir),
         )

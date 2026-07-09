@@ -442,6 +442,7 @@ ACTION_SPECS = [
             "properties": {
                 "proposal_id": {"type": "string"},
                 "evaluation_result": {"type": "string"},
+                "evaluation_evidence": {"type": "string"},
             },
             "required": ["proposal_id", "evaluation_result"],
         },

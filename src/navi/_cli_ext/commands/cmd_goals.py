@@ -4,6 +4,7 @@ from navi.goals import GoalStore
 from navi.graph import GraphStore
 import typer
 import json
+import time
 from navi.paths import ensure_home
 from ..common import _invoke_capability
 
@@ -210,10 +211,18 @@ def evolution_apply_proposal(proposal_id: str) -> None:
     typer.echo(event.id)
 
 @evolution_app.command("record-evaluation")
-def evolution_record_evaluation(proposal_id: str, evaluation_result: str) -> None:
+def evolution_record_evaluation(
+    proposal_id: str,
+    evaluation_result: str,
+    evaluation_evidence: str = "",
+) -> None:
     """Attach post-apply evaluation evidence to an evolution proposal."""
     proposal = EvolutionLedger(ensure_home()).record_proposal_evaluation(
-        proposal_id, evaluation_result
+        proposal_id,
+        evaluation_result,
+        evaluation_evidence=evaluation_evidence,
+        approver_id="cli",
+        approved_at=time.time(),
     )
     if proposal is None:
         raise typer.BadParameter("proposal not found")

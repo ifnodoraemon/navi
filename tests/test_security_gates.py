@@ -46,11 +46,21 @@ def test_h4_l0_proposal_still_requires_evaluation(tmp_path):
     with pytest.raises(ValueError, match="evaluation_result='approved'"):
         ledger.assert_proposal_applicable(proposal)
 
-    # After recording an approved evaluation, apply is permitted.
+    with pytest.raises(ValueError, match="evaluation_evidence"):
+        ledger.record_proposal_evaluation(
+            proposal.id, "approved", approver_id="user-1", approved_at=1.0
+        )
+
+    # After recording an approved evaluation with evidence, apply is permitted.
     ledger.record_proposal_evaluation(
-        proposal.id, "approved", approver_id="user-1", approved_at=1.0
+        proposal.id,
+        "approved",
+        evaluation_evidence="arena=hard-traces passed=100 failed=0 checker=llm-judge",
+        approver_id="user-1",
+        approved_at=1.0,
     )
     refreshed = ledger.get_proposal(proposal.id)
+    assert refreshed.evaluation_evidence == "arena=hard-traces passed=100 failed=0 checker=llm-judge"
     ledger.assert_proposal_applicable(refreshed)  # no raise
 
 

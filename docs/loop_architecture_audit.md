@@ -123,3 +123,19 @@ through a saga port, compensates rejected/timed-out staged artifacts, and emits
 trace-visible `state_graph.side_effect.commit/compensate` decisions. Remaining
 product work is to add concrete commit adapters for future remote APIs beyond
 the current connector-egress handoff.
+
+## 7. Evolution Arena Gate
+
+Problem: evolution proposals already required an approved evaluation before
+apply, but the approval record only stored a result and approver. That made the
+arena evidence weak: a proposal could say "approved" without durable proof of
+which hard traces, checker, or acceptance evidence justified the decision.
+
+Solution: proposal evaluations now persist `evaluation_evidence`. Approved
+evaluations require both an approver and non-empty evidence, and apply checks
+that evidence again before side effects run. API, capability, and CLI surfaces
+all pass the evidence field through the same ledger gate.
+
+Status: Implemented for proposal apply safety. Remaining product work: build
+the actual beta-run arena that automatically fills `evaluation_evidence` from
+historical trace replays and checker results.

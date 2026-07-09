@@ -73,6 +73,7 @@ class EvolutionRecordEvaluationCapability(BaseCapability):
             proposal = EvolutionLedger(self.home).record_proposal_evaluation(
                 proposal_id,
                 evaluation_result,
+                evaluation_evidence=_arg_text(args, "evaluation_evidence"),
                 approver_id=context.sender_id or context.peer_id,
                 approved_at=__import__("time").time(),
             )
