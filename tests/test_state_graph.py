@@ -157,6 +157,31 @@ class _PlanningProvider:
         return {}
 
 
+class _MemoryAwarePlanningProvider(_PlanningProvider):
+    def __init__(self, used_memory_ids: tuple[str, ...] = ()) -> None:
+        super().__init__()
+        self.used_memory_ids = used_memory_ids
+
+    async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+        self.calls.append((role, messages))
+        assert role == "planner"
+        syscall = {
+            "tool": "file.write",
+            "permission": "write",
+            "args": {
+                "path": "app.py",
+                "content": "agent\n",
+                "mode": "overwrite",
+                "create_dirs": True,
+            },
+            "model_role": "executor",
+            "reason": "write requested file in shadow workspace",
+        }
+        if self.used_memory_ids:
+            syscall["used_memory_ids"] = list(self.used_memory_ids)
+        return json.dumps({"syscalls": [syscall]})
+
+
 class _RetryPlanningProvider:
     def __init__(self) -> None:
         self.calls = 0
@@ -379,6 +404,120 @@ async def test_planner_context_compacts_long_session_history(tmp_path: Path) -> 
     assert compaction["omitted_message_count"] == 6
     assert compaction["retained_recent_message_count"] == 12
     assert compaction["compacted_character_count"] <= compaction["max_character_count"]
+
+
+@pytest.mark.asyncio
+async def test_planner_records_declared_memory_activation(tmp_path: Path) -> None:
+    provider = _MemoryAwarePlanningProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    item = runtime.memory.add_item(
+        "preference",
+        "write app.py with the planned content",
+        source="test",
+        status="active",
+        confidence=0.8,
+        reason="unit test",
+        provenance="tests/test_state_graph.py",
+    )
+    provider.used_memory_ids = (item.id,)
+    planner_capabilities = CapabilityRegistry(
+        home=tmp_path,
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+    context = CapabilityContext(
+        home=tmp_path,
+        source="state_graph",
+        peer_id="state_graph",
+        sender_id="tester",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    runner = DurableStateGraphRunner(
+        home=tmp_path,
+        planner_port=ModelCapabilityPlannerPort(
+            runtime=runtime,
+            capabilities=planner_capabilities,
+        ),
+        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+    )
+
+    result = await runner.run_async(
+        _write_spec(_command("from pathlib import Path; assert Path('app.py').exists()")),
+        workspace=tmp_path,
+    )
+
+    turn_input = _planner_turn_input(provider)
+    memory_facts = _runtime_facts_from_turn_input(turn_input)["memory_context"]
+    planned = result.evidence["planned_capability"]
+    updated = runtime.memory.get_item(item.id)
+    assert result.terminal_state == LoopTerminalState.CONVERGED
+    assert "[MEMORY RECALL]" in turn_input
+    assert item.id in turn_input
+    assert item.id in memory_facts["candidate_ids"]
+    assert planned["used_memory_ids"] == [item.id]
+    assert planned["memory_activation"]["activated_ids"] == [item.id]
+    assert updated is not None
+    assert updated.metadata["recall_count"] == 1
+    assert updated.metadata["activation_reason"] == (
+        "planner selected file.write using recalled memory"
+    )
+    assert updated.metadata["activation_provenance"].endswith(":planner")
+
+
+@pytest.mark.asyncio
+async def test_planner_memory_injection_does_not_record_activation_without_model_use(
+    tmp_path: Path,
+) -> None:
+    provider = _MemoryAwarePlanningProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    item = runtime.memory.add_item(
+        "preference",
+        "write app.py with the planned content",
+        source="test",
+        status="active",
+        confidence=0.8,
+        reason="unit test",
+        provenance="tests/test_state_graph.py",
+    )
+    planner_capabilities = CapabilityRegistry(
+        home=tmp_path,
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+    context = CapabilityContext(
+        home=tmp_path,
+        source="state_graph",
+        peer_id="state_graph",
+        sender_id="tester",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    runner = DurableStateGraphRunner(
+        home=tmp_path,
+        planner_port=ModelCapabilityPlannerPort(
+            runtime=runtime,
+            capabilities=planner_capabilities,
+        ),
+        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+    )
+
+    result = await runner.run_async(
+        _write_spec(_command("from pathlib import Path; assert Path('app.py').exists()")),
+        workspace=tmp_path,
+    )
+
+    turn_input = _planner_turn_input(provider)
+    memory_facts = _runtime_facts_from_turn_input(turn_input)["memory_context"]
+    planned = result.evidence["planned_capability"]
+    updated = runtime.memory.get_item(item.id)
+    assert result.terminal_state == LoopTerminalState.CONVERGED
+    assert item.id in turn_input
+    assert item.id in memory_facts["candidate_ids"]
+    assert planned["used_memory_ids"] == []
+    assert planned["memory_activation"]["activated_count"] == 0
+    assert updated is not None
+    assert "recall_count" not in updated.metadata
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ class ModelSyscall:
     message: str = ""
     confidence: float = 0.0
     reason: str = ""
+    used_memory_ids: tuple[str, ...] = ()
 
 
 class ModelSyscallPlanner:
@@ -35,6 +36,7 @@ class ModelSyscallPlanner:
         permission_ceiling: str = "write",
         model_roles: list[str] | None = None,
         durable_constraints: str = "",
+        memory_context: str = "",
     ) -> list[ModelSyscall]:
         turn_input = assemble_planner_turn_input(
             text,
@@ -44,6 +46,7 @@ class ModelSyscallPlanner:
             permission_ceiling=permission_ceiling,
             model_roles=model_roles,
             durable_constraints=durable_constraints,
+            memory_context=memory_context,
         )
         response = await self.provider.complete_for(
             "planner",
@@ -160,6 +163,7 @@ class ModelSyscallPlanner:
             message=message,
             confidence=_confidence(data.get("confidence")),
             reason=str(data.get("reason") or ""),
+            used_memory_ids=_string_tuple(data.get("used_memory_ids")),
         )
 
 
@@ -202,6 +206,11 @@ def _single_syscall_schema() -> dict[str, Any]:
                 "type": "string",
                 "description": "Optional model rationale for audit only; runtime does not consume it for routing.",
             },
+            "used_memory_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Recalled memory ids this syscall decision actually depends on.",
+            },
         },
         "required": ["tool", "permission", "args", "model_role"],
         "additionalProperties": False,
@@ -216,3 +225,9 @@ def _confidence(value: object) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, min(parsed, 1.0))
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item).strip() for item in value if str(item).strip())

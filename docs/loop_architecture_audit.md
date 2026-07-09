@@ -182,7 +182,10 @@ reason and provenance. The write updates `last_recalled_at`, increments
 `last_recalled_at` before verification or update timestamps, so recently used
 memories do not lose confidence just because their original verification is old.
 
-Status: Implemented for explicit activation recording and decay anchoring.
-Remaining product work: wire planner/runtime memory-context assembly to record
-activations automatically only after a memory was actually used in a decision
-or emitted fact.
+Status: Implemented for explicit activation recording, decay anchoring, and
+durable planner intake. Planner calls receive ordinary recalled memories as a
+separate untrusted context block and candidate ids in runtime facts; activation
+is only recorded when the planner declares a selected syscall's
+`used_memory_ids`, so mere prompt injection does not keep a memory alive.
+Remaining product work: replace flat FTS recall with the semantic graph and
+background compaction daemon described in the blueprint.

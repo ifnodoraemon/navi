@@ -33,6 +33,7 @@ from .loop_contracts import (
 )
 from .loop_runs import LoopCheckpoint, LoopRunStore
 
+from .memory import ACTIVE_MEMORY_CONTEXT_LIMIT
 from .provider import ChatMessage, ModelPool
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
@@ -47,6 +48,7 @@ PLANNER_CONTEXT_MAX_CHARS = 12_000
 PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES = 8
 PLANNER_CONTEXT_OLDER_PREVIEW_CHARS = 220
 PLANNER_CONTEXT_RECENT_MESSAGE_MAX_CHARS = 2_000
+PLANNER_MEMORY_ITEM_MAX_CHARS = 800
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,8 @@ class PlannedCapabilityStep:
     permission: str
     model_role: str = "executor"
     reason: str = ""
+    used_memory_ids: tuple[str, ...] = ()
+    memory_activation: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +90,8 @@ class PlannedCapabilityStep:
             "permission": self.permission,
             "model_role": self.model_role,
             "reason": self.reason,
+            "used_memory_ids": list(self.used_memory_ids),
+            "memory_activation": dict(self.memory_activation),
         }
 
 
@@ -488,6 +494,13 @@ class PlannerConversationContext:
 
 
 @dataclass(frozen=True)
+class PlannerMemoryContext:
+    text: str
+    facts: dict[str, Any]
+    candidate_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class SideEffectSagaResult:
     action: str
     ok: bool
@@ -719,6 +732,96 @@ def _planner_conversation_context(
     )
 
 
+def _planner_memory_context(*, memory: Any, spec: LoopSpec) -> PlannerMemoryContext:
+    query = spec.goal.objective
+    recalls = memory.recall(query, limit=ACTIVE_MEMORY_CONTEXT_LIMIT)
+    candidate_ids = tuple(recall.item.id for recall in recalls)
+    facts = {
+        "policy": "planner_memory_context_v1",
+        "query": query,
+        "candidate_ids": list(candidate_ids),
+        "count": len(candidate_ids),
+        "limit": ACTIVE_MEMORY_CONTEXT_LIMIT,
+    }
+    if not recalls:
+        return PlannerMemoryContext(text="", facts=facts, candidate_ids=())
+    return PlannerMemoryContext(
+        text=_render_planner_memory_context(recalls),
+        facts=facts,
+        candidate_ids=candidate_ids,
+    )
+
+
+def _render_planner_memory_context(recalls: list[Any]) -> str:
+    lines = [
+        "Governed memory recall for planner context.",
+        "Each record has an id; planner syscall schema includes used_memory_ids.",
+    ]
+    for recall in recalls:
+        item = recall.item
+        lines.append(
+            f"- [id={item.id} type={item.type} scope={item.scope} "
+            f"confidence={item.confidence:.2f} score={recall.score:.4f}] "
+            f"{truncate_middle(item.content, PLANNER_MEMORY_ITEM_MAX_CHARS)}"
+        )
+        if recall.reasons:
+            lines.append(f"  reasons: {', '.join(recall.reasons)}")
+    return "\n".join(lines)
+
+
+def _selected_memory_ids(
+    requested_ids: tuple[str, ...] | list[str],
+    candidate_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    candidates = set(candidate_ids)
+    selected: list[str] = []
+    for item_id in requested_ids:
+        item_id = str(item_id).strip()
+        if not item_id or item_id not in candidates or item_id in selected:
+            continue
+        selected.append(item_id)
+    return tuple(selected)
+
+
+def _record_planner_memory_activation(
+    *,
+    memory: Any,
+    state: LoopRunState,
+    selected_tool: str,
+    used_memory_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    facts: dict[str, Any] = {
+        "policy": "planner_memory_activation_v1",
+        "requested_ids": list(used_memory_ids),
+        "activated_ids": [],
+        "missing_ids": [],
+        "activated_count": 0,
+        "missing_count": 0,
+        "ok": True,
+    }
+    if not used_memory_ids:
+        return facts
+    reason = f"planner selected {selected_tool} using recalled memory"
+    provenance = f"state_graph:{state.run_id}:attempt:{state.attempt}:planner"
+    try:
+        for item_id in used_memory_ids:
+            item = memory.record_activation(
+                item_id,
+                reason=reason,
+                provenance=provenance,
+            )
+            if item is None:
+                facts["missing_ids"].append(item_id)
+            else:
+                facts["activated_ids"].append(item_id)
+    except ValueError as exc:
+        facts["ok"] = False
+        facts["error"] = str(exc)
+    facts["activated_count"] = len(facts["activated_ids"])
+    facts["missing_count"] = len(facts["missing_ids"])
+    return facts
+
+
 def _format_conversation_message(message: Any, *, content: str | None = None) -> str:
     role = str(getattr(message, "role", "") or "").upper()
     created_at = float(getattr(message, "created_at", 0.0) or 0.0)
@@ -792,6 +895,7 @@ class ModelCapabilityPlannerPort:
             )
             conversation_context = context.text
             conversation_facts = context.facts
+        memory_context = _planner_memory_context(memory=self.runtime.memory, spec=spec)
 
         syscalls = await self.planner.plan(
             spec.goal.objective,
@@ -803,18 +907,32 @@ class ModelCapabilityPlannerPort:
                 "objective_evidence": dict(evidence),
                 "attempt_history": list(evidence.get("attempt_history") or []),
                 "conversation_compaction": conversation_facts,
+                "memory_context": memory_context.facts,
             },
             permission_ceiling=spec.goal.permission_ceiling,
             model_roles=self.runtime.model_roles(),
             durable_constraints=_goal_constraints(spec),
+            memory_context=memory_context.text,
         )
         selected = syscalls[0]
+        used_memory_ids = _selected_memory_ids(
+            selected.used_memory_ids,
+            memory_context.candidate_ids,
+        )
+        memory_activation = _record_planner_memory_activation(
+            memory=self.runtime.memory,
+            state=state,
+            selected_tool=selected.tool,
+            used_memory_ids=used_memory_ids,
+        )
         return PlannedCapabilityStep(
             tool=selected.tool,
             args=dict(selected.args),
             permission=selected.permission,
             model_role=selected.model_role,
             reason=selected.reason,
+            used_memory_ids=used_memory_ids,
+            memory_activation=memory_activation,
         )
 
 

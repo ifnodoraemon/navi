@@ -135,6 +135,7 @@ def assemble_planner_turn_input(
     permission_ceiling: str = "write",
     model_roles: list[str] | None = None,
     durable_constraints: str = "",
+    memory_context: str = "",
 ) -> PromptAssembly:
     model_roles = model_roles or list_agent_role_names()
     role_names = set(model_roles)
@@ -186,6 +187,18 @@ def assemble_planner_turn_input(
                     + json.dumps(runtime_facts, ensure_ascii=False, sort_keys=True, default=str)
                     + "\n</runtime_facts>"
                 ),
+                trusted=False,
+                mutable=True,
+            )
+        )
+
+    if memory_context.strip():
+        blocks.append(
+            PromptBlock(
+                "MEMORY RECALL",
+                "turn_input",
+                "memory.recall",
+                f"<memory_context>\n{memory_context.strip()}\n</memory_context>",
                 trusted=False,
                 mutable=True,
             )
