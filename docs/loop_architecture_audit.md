@@ -139,3 +139,18 @@ all pass the evidence field through the same ledger gate.
 Status: Implemented for proposal apply safety. Remaining product work: build
 the actual beta-run arena that automatically fills `evaluation_evidence` from
 historical trace replays and checker results.
+
+## 8. AST Patch Gate
+
+Problem: `file.write` can safely target shadow workspaces, but it still accepts
+raw text. For Python code edits, a malformed replacement can be detected before
+the file is mutated if the patch goes through an AST-aware boundary.
+
+Solution: `python.ast.replace_symbol` replaces exactly one Python function or
+class definition after parsing both the existing file and replacement. The tool
+validates the whole patched file before writing, supports shadow workspaces, and
+returns structured blocked facts when parsing or symbol matching fails.
+
+Status: Implemented for Python function/class replacement. Remaining product
+work: route model code-edit plans toward AST tools by default and add
+language-specific structured patch tools where parsers exist.

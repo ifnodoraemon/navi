@@ -15,6 +15,7 @@ from .environment import (
 from .files import (
     _file_read,
     _file_write,
+    _python_ast_replace_symbol,
     _workspace_shadow_create,
     _workspace_shadow_discard,
     _workspace_shadow_merge,
@@ -324,6 +325,60 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             permission="write",
         ),
         lambda args: _file_write(args, project_dir=registry.project_dir, home=home),
+    )
+    registry.register(
+        _core_tool_spec(
+            name="python.ast.replace_symbol",
+            capability_class="file.write",
+            description=(
+                "Replace one Python function or class definition after parsing both "
+                "the existing file and replacement with Python AST validation."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "symbol_name": {"type": "string"},
+                    "symbol_type": {
+                        "type": "string",
+                        "enum": ["any", "function", "class"],
+                        "default": "any",
+                    },
+                    "replacement": {"type": "string"},
+                    "shadow_run_id": {
+                        "type": "string",
+                        "default": "",
+                        "description": (
+                            "If set, patch that run's active shadow workspace "
+                            "instead of the real workspace."
+                        ),
+                    },
+                },
+                "required": ["path", "symbol_name", "replacement"],
+            },
+            output_schema=_output_schema(
+                {
+                    "entity_type": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "state_transition": {"type": "string"},
+                    "turn_scope": {"type": "string"},
+                    "path": {"type": "string"},
+                    "shadow_path": {"type": "string"},
+                    "shadow_run_id": {"type": "string"},
+                    "symbol_name": {"type": "string"},
+                    "symbol_type": {"type": "string"},
+                    "start_line": {"type": "integer"},
+                    "end_line": {"type": "integer"},
+                    "before_size": {"type": "integer"},
+                    "after_size": {"type": "integer"},
+                    "workspace_lock": {"type": "object"},
+                }
+            ),
+            facts_only=True,
+            mutates=True,
+            permission="write",
+        ),
+        lambda args: _python_ast_replace_symbol(args, project_dir=registry.project_dir, home=home),
     )
     registry.register(
         _core_tool_spec(

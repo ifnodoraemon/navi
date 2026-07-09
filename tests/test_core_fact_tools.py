@@ -181,6 +181,103 @@ async def test_shadow_discard_removes_shadow_without_real_change(tmp_path: Path)
     assert not Path(shadow.facts["shadow_workspace"]).exists()
 
 
+@pytest.mark.asyncio
+async def test_python_ast_replace_symbol_replaces_one_function(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "app.py"
+    target.write_text(
+        "def keep():\n    return 'keep'\n\n"
+        "def build():\n    return 'old'\n",
+        encoding="utf-8",
+    )
+    gateway = build_tool_gateway(home, project_dir=workspace)
+
+    result = await gateway.call(
+        "python.ast.replace_symbol",
+        {
+            "path": "app.py",
+            "symbol_name": "build",
+            "symbol_type": "function",
+            "replacement": "def build():\n    return 'new'\n",
+        },
+    )
+
+    assert result.ok is True
+    assert result.facts["state_transition"] == "ast_replaced"
+    assert result.facts["symbol_name"] == "build"
+    assert target.read_text(encoding="utf-8") == (
+        "def keep():\n    return 'keep'\n\n"
+        "def build():\n    return 'new'\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_python_ast_replace_symbol_rejects_invalid_patch_without_mutation(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "app.py"
+    original = "def build():\n    return 'old'\n"
+    target.write_text(original, encoding="utf-8")
+    gateway = build_tool_gateway(home, project_dir=workspace)
+
+    result = await gateway.call(
+        "python.ast.replace_symbol",
+        {
+            "path": "app.py",
+            "symbol_name": "build",
+            "replacement": "def build(:\n    return 'broken'\n",
+        },
+    )
+
+    assert result.ok is False
+    assert result.error == "replacement is not valid Python"
+    assert result.facts["state_transition"] == "blocked"
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.asyncio
+async def test_python_ast_replace_symbol_can_patch_shadow_then_merge(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "app.py"
+    target.write_text("class Service:\n    value = 'old'\n", encoding="utf-8")
+    gateway = build_tool_gateway(home, project_dir=workspace)
+
+    shadow = await gateway.call("workspace.shadow.create", {"run_id": "run-ast"})
+    patched = await gateway.call(
+        "python.ast.replace_symbol",
+        {
+            "path": "app.py",
+            "symbol_name": "Service",
+            "symbol_type": "class",
+            "replacement": "class Service:\n    value = 'new'\n",
+            "shadow_run_id": "run-ast",
+        },
+    )
+
+    assert shadow.ok is True
+    assert patched.ok is True
+    assert patched.facts["state_transition"] == "shadow_ast_replaced"
+    assert target.read_text(encoding="utf-8") == "class Service:\n    value = 'old'\n"
+    assert Path(patched.facts["shadow_path"]).read_text(encoding="utf-8") == (
+        "class Service:\n    value = 'new'\n"
+    )
+
+    merged = await gateway.call("workspace.shadow.merge", {"run_id": "run-ast"})
+
+    assert merged.ok is True
+    assert merged.facts["completion_evidence"] is True
+    assert target.read_text(encoding="utf-8") == "class Service:\n    value = 'new'\n"
+
+
 def test_web_search_uses_reachable_duckduckgo_endpoint(monkeypatch) -> None:
     captured: dict[str, list[str]] = {}
     monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "ddg")
