@@ -75,8 +75,8 @@ messages stay visible, older turns are reduced to provenance previews, and
 `runtime_facts.conversation_compaction` records the policy, counts, and limits.
 
 Status: Implemented for planner intake. Remaining product work: replace the
-deterministic older-message preview with the later semantic memory graph and
-background compaction daemon.
+deterministic older-message preview with semantic compaction summaries sourced
+from the graph index instead of only provenance previews.
 
 ## 4. Checker Independence
 
@@ -187,5 +187,25 @@ durable planner intake. Planner calls receive ordinary recalled memories as a
 separate untrusted context block and candidate ids in runtime facts; activation
 is only recorded when the planner declares a selected syscall's
 `used_memory_ids`, so mere prompt injection does not keep a memory alive.
-Remaining product work: replace flat FTS recall with the semantic graph and
-background compaction daemon described in the blueprint.
+Remaining product work: use semantic graph neighbors to improve recall ranking
+instead of relying only on flat FTS matches.
+
+## 11. Background Semantic Memory Graph
+
+Problem: memory records were still isolated rows plus FTS text. That made it
+hard for background maintenance to reason about dimensions such as memory type,
+status, scope, contradictions, and supersession without bespoke SQL scans.
+
+Solution: the graph store now supports typed edges. `MemoryStore` can rebuild a
+derived semantic graph from memory.db, creating `MemoryItem`, `MemoryType`,
+`MemoryStatus`, and `MemoryScope` nodes plus relation edges such as
+`has_memory_type`, `has_memory_status`, `contradicts`, `supersedes`, and
+`superseded_by`. The graph is explicitly derived from memory.db rather than a
+second source of truth. `SystemDaemon.process_memory_maintenance_once()` runs
+memory GC and graph sync as a model-free background maintenance tick, and
+`process_watches_once()` invokes it without surfacing internal maintenance as a
+user-visible watch result.
+
+Status: Implemented for typed memory graph indexing and daemon maintenance.
+Remaining product work: use graph neighbors in planner recall ranking and
+replace deterministic older-message previews with semantic compaction episodes.

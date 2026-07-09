@@ -231,6 +231,8 @@ class SystemDaemon:
     async def process_watches_once(self) -> list[dict]:
         created: list[dict] = []
 
+        await self.process_memory_maintenance_once()
+
         # 1. Run proactive event-driven checks
         events = await self.process_events_once()
         created.extend(events)
@@ -267,6 +269,25 @@ class SystemDaemon:
                 logging.getLogger("navi.daemon").error(f"Failed to process cron goal {g.id}: {e}", exc_info=True)
 
         return created
+
+    async def process_memory_maintenance_once(self) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(self._process_memory_maintenance)
+        except Exception as exc:
+            logger.error("Background memory maintenance failed: %s", exc, exc_info=True)
+            return {"ok": False, "error": str(exc)}
+
+    def _process_memory_maintenance(self) -> dict[str, Any]:
+        from .memory import MemoryStore
+
+        memory = MemoryStore(self.home)
+        gc_facts = memory.garbage_collect()
+        graph_facts = memory.sync_semantic_graph(graph_store=self.graph)
+        return {
+            "ok": True,
+            "memory_gc": gc_facts,
+            "semantic_graph": graph_facts,
+        }
 
 
     async def process_events_once(self) -> list[dict]:

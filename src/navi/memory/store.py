@@ -38,6 +38,15 @@ MEMORY_CONFIDENCE_DECAY_TYPES = frozenset({"preference", "fact", "semantic"})
 MEMORY_CONFIDENCE_DECAY_GRACE_SECONDS = 90 * 24 * 60 * 60
 MEMORY_CONFIDENCE_DECAY_DELTA = 0.05
 MEMORY_CONFIDENCE_DECAY_STALE_THRESHOLD = 0.2
+MEMORY_GRAPH_SYNC_LIMIT = 1000
+MEMORY_GRAPH_EDGE_RELATIONS = (
+    "has_memory_type",
+    "has_memory_status",
+    "has_memory_scope",
+    "contradicts",
+    "supersedes",
+    "superseded_by",
+)
 
 
 class MemoryStore:
@@ -443,6 +452,110 @@ class MemoryStore:
             )
         )
         return self.get_item(item_id)
+
+    def sync_semantic_graph(
+        self,
+        *,
+        graph_store: Any | None = None,
+        limit: int = MEMORY_GRAPH_SYNC_LIMIT,
+    ) -> dict[str, Any]:
+        """Sync typed memory records into the graph index.
+
+        memory.db remains the source of truth. The graph is a derived semantic
+        index that can be rebuilt by this method, so memory writes do not gain a
+        cross-database atomicity dependency.
+        """
+        if graph_store is None:
+            from ..graph import GraphStore
+
+            graph_store = GraphStore(self.home)
+
+        items = self.list_items(limit=limit)
+        synced: list[dict[str, Any]] = []
+        relation_counts = {relation: 0 for relation in MEMORY_GRAPH_EDGE_RELATIONS}
+        for item in items:
+            item_node = graph_store.upsert(
+                "MemoryItem",
+                item.id,
+                _memory_graph_item_data(item),
+            )
+            type_node = graph_store.upsert(
+                "MemoryType",
+                item.type,
+                {"memory_type": item.type},
+            )
+            status_node = graph_store.upsert(
+                "MemoryStatus",
+                item.status,
+                {"status": item.status},
+            )
+            scope_node = graph_store.upsert(
+                "MemoryScope",
+                item.scope,
+                {"scope": item.scope},
+            )
+            edges: list[tuple[str, str, dict[str, Any]]] = [
+                (type_node.id, "has_memory_type", {"memory_id": item.id, "type": item.type}),
+                (
+                    status_node.id,
+                    "has_memory_status",
+                    {"memory_id": item.id, "status": item.status},
+                ),
+                (
+                    scope_node.id,
+                    "has_memory_scope",
+                    {"memory_id": item.id, "scope": item.scope},
+                ),
+            ]
+            for target_id in _metadata_id_list(item.metadata.get("contradicts")):
+                target_node = _upsert_memory_graph_placeholder(graph_store, target_id)
+                edges.append(
+                    (
+                        target_node.id,
+                        "contradicts",
+                        {"memory_id": item.id, "target_memory_id": target_id},
+                    )
+                )
+            for target_id in _metadata_id_list(item.metadata.get("supersedes")):
+                target_node = _upsert_memory_graph_placeholder(graph_store, target_id)
+                edges.append(
+                    (
+                        target_node.id,
+                        "supersedes",
+                        {"memory_id": item.id, "target_memory_id": target_id},
+                    )
+                )
+            for target_id in _metadata_id_list(item.metadata.get("superseded_by")):
+                target_node = _upsert_memory_graph_placeholder(graph_store, target_id)
+                edges.append(
+                    (
+                        target_node.id,
+                        "superseded_by",
+                        {"memory_id": item.id, "target_memory_id": target_id},
+                    )
+                )
+            graph_edges = graph_store.replace_edges_for_source(
+                item_node.id,
+                MEMORY_GRAPH_EDGE_RELATIONS,
+                edges,
+            )
+            for edge in graph_edges:
+                relation_counts[edge.relation] = relation_counts.get(edge.relation, 0) + 1
+            synced.append(
+                {
+                    "memory_id": item.id,
+                    "graph_node_id": item_node.id,
+                    "edge_count": len(graph_edges),
+                }
+            )
+        return {
+            "semantic_graph": "memory",
+            "synced_count": len(synced),
+            "limit": limit,
+            "edge_relations": list(MEMORY_GRAPH_EDGE_RELATIONS),
+            "relation_counts": relation_counts,
+            "items": synced,
+        }
 
     def restore_item(self, item_dict: dict) -> None:
         if isinstance(item_dict.get("metadata"), str):
@@ -916,6 +1029,38 @@ def _metadata_int(metadata: dict, key: str) -> int:
         return max(0, int(metadata.get(key) or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _memory_graph_item_data(item: MemoryItem) -> dict[str, Any]:
+    return {
+        "memory_id": item.id,
+        "memory_type": item.type,
+        "status": item.status,
+        "scope": item.scope,
+        "source": item.source,
+        "confidence": item.confidence,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "last_verified_at": item.last_verified_at,
+        "expires_at": item.expires_at,
+        "metadata": dict(item.metadata),
+        "reason": item.reason,
+        "provenance": item.provenance,
+        "content": item.content,
+        "content_preview": truncate_middle(item.content, 240),
+        "placeholder": False,
+    }
+
+
+def _upsert_memory_graph_placeholder(graph_store: Any, memory_id: str):
+    return graph_store.upsert(
+        "MemoryItem",
+        memory_id,
+        {
+            "memory_id": memory_id,
+            "placeholder": True,
+        },
+    )
 
 
 def _memory_conflict_status(item: MemoryItem, conflicting_item: MemoryItem | None) -> str:

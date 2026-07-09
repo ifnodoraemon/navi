@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from navi.daemon import SystemDaemon
 from navi.detectors import ServiceLogDetector
+from navi.graph import GraphStore
+from navi.memory.store import MemoryStore
 from navi.trace import TraceStore
 
 
@@ -58,3 +62,25 @@ def test_daemon_mutation_trace_is_evaluated(tmp_path: Path) -> None:
     assert len(evaluations) == 1
     assert evaluations[0].outcome == "success"
     assert evaluations[0].failure_domain == "none"
+
+
+@pytest.mark.asyncio
+async def test_daemon_memory_maintenance_syncs_semantic_graph(tmp_path: Path) -> None:
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
+    item = MemoryStore(tmp_path).add_item(
+        "fact",
+        "semantic graph maintenance fact",
+        source="test",
+        status="active",
+        confidence=0.8,
+        reason="unit test",
+        provenance="tests/test_daemon.py",
+    )
+
+    facts = await daemon.process_memory_maintenance_once()
+
+    node = GraphStore(tmp_path).get_by_name("MemoryItem", item.id)
+    assert facts["ok"] is True
+    assert facts["semantic_graph"]["synced_count"] == 1
+    assert node is not None
+    assert node.data["memory_id"] == item.id
