@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import sys
 from dataclasses import replace
@@ -43,6 +44,19 @@ def _loop_decision_payloads_by_tool(home: Path, trace_id: str, tool: str) -> lis
         for event in TraceStore(home).list_loop_decisions(trace_id)
         if event.tool == tool and event.output_json.strip()
     ]
+
+
+def _planner_turn_input(provider: object) -> str:
+    calls = getattr(provider, "calls")
+    assert calls
+    messages = calls[0][1]
+    return messages[-1].content
+
+
+def _runtime_facts_from_turn_input(turn_input: str) -> dict:
+    match = re.search(r"<runtime_facts>\s*(.*?)\s*</runtime_facts>", turn_input, re.DOTALL)
+    assert match is not None
+    return json.loads(match.group(1))
 
 
 def _spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
@@ -298,6 +312,73 @@ async def test_durable_state_graph_async_plan_execute_uses_llm_and_capability_po
     assert result.evidence["capability_result"]["ok"] is True
     assert result.evidence["capability_result"]["facts"]["state_transition"] == "written"
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
+
+
+@pytest.mark.asyncio
+async def test_planner_context_compacts_long_session_history(tmp_path: Path) -> None:
+    provider = _PlanningProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    session_id = runtime.memory.create_session()
+    for index in range(18):
+        role = "user" if index % 2 == 0 else "assistant"
+        if index == 1:
+            content = "legacy-start " + ("x" * 800) + " legacy-tail-marker"
+        elif index == 17:
+            content = "recent full marker survives compaction"
+        else:
+            content = f"turn-{index} context"
+        runtime.memory.add_message(session_id, role, content)
+    planner_capabilities = CapabilityRegistry(
+        home=tmp_path,
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+    context = CapabilityContext(
+        home=tmp_path,
+        source="state_graph",
+        peer_id="state_graph",
+        sender_id="tester",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+    )
+    runner = DurableStateGraphRunner(
+        home=tmp_path,
+        planner_port=ModelCapabilityPlannerPort(
+            runtime=runtime,
+            capabilities=planner_capabilities,
+        ),
+        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+    )
+    spec = _write_spec(_command("from pathlib import Path; assert Path('app.py').exists()"))
+    spec = replace(
+        spec,
+        goal=replace(
+            spec.goal,
+            metadata={**spec.goal.metadata, "session_id": session_id},
+        ),
+    )
+
+    result = await runner.run_async(spec, workspace=tmp_path)
+
+    assert result.terminal_state == LoopTerminalState.CONVERGED
+    turn_input = _planner_turn_input(provider)
+    conversation = re.search(
+        r"<conversation_history>\s*(.*?)\s*</conversation_history>",
+        turn_input,
+        re.DOTALL,
+    )
+    assert conversation is not None
+    conversation_text = conversation.group(1)
+    assert "Conversation context was compacted before planner intake." in conversation_text
+    assert "legacy-start" in conversation_text
+    assert "legacy-tail-marker" not in conversation_text
+    assert "recent full marker survives compaction" in conversation_text
+    compaction = _runtime_facts_from_turn_input(turn_input)["conversation_compaction"]
+    assert compaction["compacted"] is True
+    assert compaction["message_count"] == 18
+    assert compaction["omitted_message_count"] == 6
+    assert compaction["retained_recent_message_count"] == 12
+    assert compaction["compacted_character_count"] <= compaction["max_character_count"]
 
 
 @pytest.mark.asyncio

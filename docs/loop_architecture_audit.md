@@ -69,10 +69,14 @@ Problem: after ordinary turns enter the durable loop, planner/checker context
 must stay tied to the original session/source/peer/sender.
 
 Solution: LoopSpec metadata now carries ingress identity and session metadata;
-planner context is assembled from the same session contract.
+planner context is assembled from the same session contract. Long session
+history now enters the planner through a bounded compaction policy: recent
+messages stay visible, older turns are reduced to provenance previews, and
+`runtime_facts.conversation_compaction` records the policy, counts, and limits.
 
-Status: Partially implemented. Remaining work: context compression policy for
-long histories.
+Status: Implemented for planner intake. Remaining product work: replace the
+deterministic older-message preview with the later semantic memory graph and
+background compaction daemon.
 
 ## 4. Checker Independence
 

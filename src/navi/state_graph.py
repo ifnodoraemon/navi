@@ -37,8 +37,16 @@ from .provider import ChatMessage, ModelPool
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
 from .resource_gateway import GlobalResourceGateway, ResourceGrant, ResourceLimits, ResourceRequest
+from .text_utils import truncate_middle
 from .trace import TraceStore
 from .workspaces import LockAcquireResult
+
+PLANNER_CONTEXT_MESSAGE_LIMIT = 200
+PLANNER_CONTEXT_RECENT_MESSAGES = 12
+PLANNER_CONTEXT_MAX_CHARS = 12_000
+PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES = 8
+PLANNER_CONTEXT_OLDER_PREVIEW_CHARS = 220
+PLANNER_CONTEXT_RECENT_MESSAGE_MAX_CHARS = 2_000
 
 
 @dataclass(frozen=True)
@@ -474,6 +482,12 @@ class _LLMReflection:
 
 
 @dataclass(frozen=True)
+class PlannerConversationContext:
+    text: str
+    facts: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class SideEffectSagaResult:
     action: str
     ok: bool
@@ -629,6 +643,97 @@ class SideEffectSagaPort:
         )
 
 
+def _planner_conversation_context(
+    *,
+    session_id: str,
+    messages: list[Any],
+) -> PlannerConversationContext:
+    relevant = [msg for msg in messages if str(getattr(msg, "role", "")) in {"user", "assistant"}]
+    raw_chars = sum(len(str(getattr(msg, "content", "") or "")) for msg in relevant)
+    base_facts: dict[str, Any] = {
+        "session_id": session_id,
+        "message_count": len(relevant),
+        "raw_character_count": raw_chars,
+        "max_character_count": PLANNER_CONTEXT_MAX_CHARS,
+        "recent_message_limit": PLANNER_CONTEXT_RECENT_MESSAGES,
+        "message_fetch_limit": PLANNER_CONTEXT_MESSAGE_LIMIT,
+        "policy": "planner_conversation_context_v1",
+    }
+    if not relevant:
+        return PlannerConversationContext(text="", facts={**base_facts, "compacted": False})
+
+    raw_text = "\n\n".join(_format_conversation_message(msg) for msg in relevant)
+    should_compact = (
+        len(relevant) > PLANNER_CONTEXT_RECENT_MESSAGES
+        or len(raw_text) > PLANNER_CONTEXT_MAX_CHARS
+    )
+    if not should_compact:
+        return PlannerConversationContext(
+            text=raw_text,
+            facts={
+                **base_facts,
+                "compacted": False,
+                "retained_message_count": len(relevant),
+                "omitted_message_count": 0,
+                "truncated_recent_message_count": 0,
+            },
+        )
+
+    recent = relevant[-PLANNER_CONTEXT_RECENT_MESSAGES:]
+    older = relevant[: -PLANNER_CONTEXT_RECENT_MESSAGES]
+    preview_items = older[-PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES:]
+    preview_lines = [
+        "Conversation context was compacted before planner intake.",
+        f"Older messages omitted: {len(older)}.",
+        "Older-message provenance preview:",
+    ]
+    for index, msg in enumerate(preview_items, start=max(1, len(older) - len(preview_items) + 1)):
+        preview = _head_preview(str(getattr(msg, "content", "") or ""))
+        preview_lines.append(
+            f"- older_index={index} role={str(getattr(msg, 'role', '') or '')} "
+            f"created_at={float(getattr(msg, 'created_at', 0.0) or 0.0):.3f} "
+            f"chars={len(str(getattr(msg, 'content', '') or ''))} preview={preview}"
+        )
+    recent_lines = ["Recent messages preserved for planner:"]
+    truncated_recent = 0
+    for msg in recent:
+        content = str(getattr(msg, "content", "") or "")
+        if len(content) > PLANNER_CONTEXT_RECENT_MESSAGE_MAX_CHARS:
+            truncated_recent += 1
+            content = truncate_middle(content, PLANNER_CONTEXT_RECENT_MESSAGE_MAX_CHARS)
+        recent_lines.append(_format_conversation_message(msg, content=content))
+    compacted_text = "\n".join(preview_lines + [""] + recent_lines)
+    if len(compacted_text) > PLANNER_CONTEXT_MAX_CHARS:
+        compacted_text = truncate_middle(compacted_text, PLANNER_CONTEXT_MAX_CHARS)
+    return PlannerConversationContext(
+        text=compacted_text,
+        facts={
+            **base_facts,
+            "compacted": True,
+            "retained_recent_message_count": len(recent),
+            "omitted_message_count": len(older),
+            "older_preview_count": len(preview_items),
+            "truncated_recent_message_count": truncated_recent,
+            "compacted_character_count": len(compacted_text),
+        },
+    )
+
+
+def _format_conversation_message(message: Any, *, content: str | None = None) -> str:
+    role = str(getattr(message, "role", "") or "").upper()
+    created_at = float(getattr(message, "created_at", 0.0) or 0.0)
+    body = str(getattr(message, "content", "") if content is None else content)
+    return f"{role} [created_at={created_at:.3f}]:\n{body}"
+
+
+def _head_preview(text: str) -> str:
+    clean = " ".join(text.split())
+    if len(clean) <= PLANNER_CONTEXT_OLDER_PREVIEW_CHARS:
+        return clean
+    omitted = len(clean) - PLANNER_CONTEXT_OLDER_PREVIEW_CHARS
+    return f"{clean[:PLANNER_CONTEXT_OLDER_PREVIEW_CHARS]} ... [truncated tail {omitted} chars]"
+
+
 class ModelCapabilityPlannerPort:
     """Planner node port for the durable StateGraph.
 
@@ -676,14 +781,17 @@ class ModelCapabilityPlannerPort:
             )
         session_id = spec.goal.metadata.get("session_id") or ""
         conversation_context = ""
+        conversation_facts: dict[str, Any] = {}
         if session_id:
-            messages = self.runtime.memory.get_messages(session_id)
-            if messages:
-                conversation_context = "\n\n".join(
-                    f"{msg.role.upper()}:\n{msg.content}"
-                    for msg in messages
-                    if msg.role in {"user", "assistant"}
-                )
+            context = _planner_conversation_context(
+                session_id=session_id,
+                messages=self.runtime.memory.get_messages(
+                    session_id,
+                    limit=PLANNER_CONTEXT_MESSAGE_LIMIT,
+                ),
+            )
+            conversation_context = context.text
+            conversation_facts = context.facts
 
         syscalls = await self.planner.plan(
             spec.goal.objective,
@@ -694,6 +802,7 @@ class ModelCapabilityPlannerPort:
                 "loop_run_state": state.to_dict(),
                 "objective_evidence": dict(evidence),
                 "attempt_history": list(evidence.get("attempt_history") or []),
+                "conversation_compaction": conversation_facts,
             },
             permission_ceiling=spec.goal.permission_ceiling,
             model_roles=self.runtime.model_roles(),
