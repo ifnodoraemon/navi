@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
 import uuid
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 
@@ -677,19 +679,36 @@ class MemoryStore:
         if not fts_results:
             return []
 
-        selected = []
+        ranked_candidates: list[tuple[str, float, list[str]]] = []
+        seen_candidate_ids: set[str] = set()
         for item_id, rank in fts_results:
+            if item_id in seen_candidate_ids:
+                continue
+            ranked_candidates.append((item_id, abs(rank), [f"fts_rank={rank:.4f}"]))
+            seen_candidate_ids.add(item_id)
+
+        graph_neighbors = self._semantic_graph_neighbors(
+            tuple(item_id for item_id, _rank in fts_results),
+            limit=limit * 3,
+        )
+        for item_id, reasons in graph_neighbors.items():
+            if item_id in seen_candidate_ids:
+                continue
+            ranked_candidates.append((item_id, 0.0, reasons))
+            seen_candidate_ids.add(item_id)
+
+        selected = []
+        for item_id, score, reasons in ranked_candidates:
             item = self.get_item(item_id)
             if not item:
                 continue
             if item.status not in ACTIVE_STATUSES or (item.expires_at and item.expires_at <= now):
                 continue
-            score = abs(rank)
             selected.append(
                 MemoryRecall(
                     item=item,
                     score=score,
-                    reasons=[f"fts_rank={rank:.4f}"],
+                    reasons=reasons,
                 )
             )
             if len(selected) >= limit:
@@ -699,6 +718,76 @@ class MemoryStore:
             return []
         conflicts = self.list_conflicts(limit=1000)
         return [self._with_conflict_reasons(recall, conflicts) for recall in selected]
+
+    def _semantic_graph_neighbors(
+        self,
+        seed_item_ids: tuple[str, ...],
+        *,
+        limit: int,
+    ) -> dict[str, list[str]]:
+        graph_db = db_paths(self.home).graph
+        if not seed_item_ids or not graph_db.exists():
+            return {}
+        neighbors: dict[str, list[str]] = {}
+        try:
+            graph_uri = f"{graph_db.resolve().as_uri()}?mode=ro"
+            with closing(sqlite3.connect(graph_uri, uri=True, timeout=30.0)) as conn:
+                conn.execute("PRAGMA query_only=ON")
+                has_edges = conn.execute(
+                    """
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'graph_edges'
+                    """
+                ).fetchone()
+                if not has_edges:
+                    return {}
+                for seed_id in seed_item_ids:
+                    seed_node = conn.execute(
+                        """
+                        SELECT id FROM graph_nodes
+                        WHERE type = 'MemoryItem' AND name = ?
+                        """,
+                        (seed_id,),
+                    ).fetchone()
+                    if seed_node is None:
+                        continue
+                    graph_node_id = str(seed_node[0])
+                    rows = conn.execute(
+                        """
+                        SELECT relation, source_id, target_id
+                        FROM graph_edges
+                        WHERE source_id = ? OR target_id = ?
+                        ORDER BY updated_at DESC
+                        LIMIT ?
+                        """,
+                        (graph_node_id, graph_node_id, limit),
+                    ).fetchall()
+                    for relation, source_id, target_id in rows:
+                        other_graph_id = target_id if source_id == graph_node_id else source_id
+                        other = conn.execute(
+                            """
+                            SELECT name FROM graph_nodes
+                            WHERE id = ? AND type = 'MemoryItem'
+                            """,
+                            (other_graph_id,),
+                        ).fetchone()
+                        if other is None:
+                            continue
+                        other_memory_id = str(other[0])
+                        if other_memory_id == seed_id:
+                            continue
+                        direction = "out" if source_id == graph_node_id else "in"
+                        reason = (
+                            f"semantic_graph_neighbor={direction}:"
+                            f"{relation}:{seed_id}"
+                        )
+                        reasons = neighbors.setdefault(other_memory_id, [])
+                        if reason not in reasons:
+                            reasons.append(reason)
+        except Exception:
+            logger.debug("semantic graph neighbor recall failed", exc_info=True)
+            return {}
+        return neighbors
 
     def render_context(
         self,

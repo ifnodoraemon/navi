@@ -83,3 +83,34 @@ def test_memory_semantic_graph_sync_replaces_stale_status_edges(tmp_path):
     assert [(edge.target_id, edge.relation) for edge in status_edges] == [
         (archived_node.id, "has_memory_status")
     ]
+
+
+def test_memory_recall_includes_active_semantic_graph_neighbors(tmp_path):
+    store = MemoryStore(tmp_path)
+    graph = GraphStore(tmp_path)
+    neighbor = _add_memory(store, "beta relation only")
+    seed = _add_memory(
+        store,
+        "alpha zqxj planner seed",
+        metadata={"supersedes": [neighbor.id]},
+    )
+    store.sync_semantic_graph(graph_store=graph)
+    graph_mtime_ns = (tmp_path / "graph.db").stat().st_mtime_ns
+
+    recalls = store.recall("zqxj planner", limit=5)
+
+    by_id = {recall.item.id: recall for recall in recalls}
+    assert (tmp_path / "graph.db").stat().st_mtime_ns == graph_mtime_ns
+    assert list(by_id)[:2] == [seed.id, neighbor.id]
+    assert by_id[neighbor.id].score == 0.0
+    assert f"semantic_graph_neighbor=out:supersedes:{seed.id}" in by_id[neighbor.id].reasons
+
+
+def test_memory_recall_does_not_create_graph_index_when_missing(tmp_path):
+    store = MemoryStore(tmp_path)
+    _add_memory(store, "read only zqxj recall seed")
+
+    recalls = store.recall("zqxj recall", limit=5)
+
+    assert recalls
+    assert not (tmp_path / "graph.db").exists()

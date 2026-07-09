@@ -187,8 +187,9 @@ durable planner intake. Planner calls receive ordinary recalled memories as a
 separate untrusted context block and candidate ids in runtime facts; activation
 is only recorded when the planner declares a selected syscall's
 `used_memory_ids`, so mere prompt injection does not keep a memory alive.
-Remaining product work: use semantic graph neighbors to improve recall ranking
-instead of relying only on flat FTS matches.
+Semantic graph neighbors now extend recall when the graph index already exists,
+without letting `memory.recall` create or mutate the graph. Remaining product
+work: use graph-derived compaction episodes for long conversation context.
 
 ## 11. Background Semantic Memory Graph
 
@@ -206,6 +207,6 @@ memory GC and graph sync as a model-free background maintenance tick, and
 `process_watches_once()` invokes it without surfacing internal maintenance as a
 user-visible watch result.
 
-Status: Implemented for typed memory graph indexing and daemon maintenance.
-Remaining product work: use graph neighbors in planner recall ranking and
-replace deterministic older-message previews with semantic compaction episodes.
+Status: Implemented for typed memory graph indexing, daemon maintenance, and
+graph-neighbor recall expansion. Remaining product work: replace deterministic
+older-message previews with semantic compaction episodes.
