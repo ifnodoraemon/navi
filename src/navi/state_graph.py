@@ -1200,7 +1200,7 @@ class DurableStateGraphRunner:
                         state,
                         node=LoopNode.REFLECT,
                         condition="no_route_available",
-                        terminal_state=LoopTerminalState.FAILED,
+                        terminal_state=LoopTerminalState.BLOCKED,
                         evidence=decision.to_dict(),
                     )
                     self.gateway.release()
