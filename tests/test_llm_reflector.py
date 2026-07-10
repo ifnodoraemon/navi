@@ -17,10 +17,9 @@ from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.lifecycle import Resolution
 from navi.loop_contracts import LoopTerminalState
-from navi.loop_control_service import LoopControlService, OpenGoalRequest
-from navi.loop_runs import LoopRunStore
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
+from navi.runs import RunStore
 
 
 class _ScriptedProvider:
@@ -87,6 +86,37 @@ def _file_write_syscall(path: str, content: str) -> dict:
     }
 
 
+async def _run_goal_with_approvals(
+    registry,
+    args: dict,
+    *,
+    home: Path,
+):
+    context = _context(home)
+    result = await registry.invoke(
+        "goal.open",
+        args,
+        permission="prepare",
+        context=context,
+    )
+    while result.facts["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL:
+        runs = RunStore(home)
+        approval = runs.pending_approval_for_run(result.run_id)
+        assert approval is not None
+        runs.resolve_approval(
+            approval.id,
+            decision="approve",
+            resolved_by="tester",
+        )
+        result = await registry.invoke(
+            "goal.resume",
+            {"goal_id": result.facts["goal_id"], "workspace": str(home)},
+            permission="prepare",
+            context=context,
+        )
+    return result
+
+
 @pytest.mark.asyncio
 async def test_semantic_checker_converges_when_goal_achieved(tmp_path: Path) -> None:
     """The isolated checker judges passed=true and converges."""
@@ -109,16 +139,15 @@ async def test_semantic_checker_converges_when_goal_achieved(tmp_path: Path) -> 
         runtime=runtime,
     )
 
-    result = await registry.invoke(
-        "goal.open",
+    result = await _run_goal_with_approvals(
+        registry,
         {
             "objective": "write done.txt",
             "workspace": str(tmp_path),
             "allowed_capabilities": ["file.write"],
             "verification_command": "",
         },
-        permission="prepare",
-        context=_context(tmp_path),
+        home=tmp_path,
     )
 
     assert result.ok is True
@@ -159,16 +188,15 @@ async def test_semantic_checker_retries_then_converges(tmp_path: Path) -> None:
         runtime=runtime,
     )
 
-    result = await registry.invoke(
-        "goal.open",
+    result = await _run_goal_with_approvals(
+        registry,
         {
             "objective": "write a file then verify",
             "workspace": str(tmp_path),
             "allowed_capabilities": ["file.write"],
             "verification_command": "",
         },
-        permission="prepare",
-        context=_context(tmp_path),
+        home=tmp_path,
     )
 
     assert result.ok is True
@@ -201,16 +229,15 @@ async def test_semantic_checker_blocks_when_should_continue_false(tmp_path: Path
         runtime=runtime,
     )
 
-    result = await registry.invoke(
-        "goal.open",
+    result = await _run_goal_with_approvals(
+        registry,
         {
             "objective": "write a file then verify",
             "workspace": str(tmp_path),
             "allowed_capabilities": ["file.write"],
             "verification_command": "",
         },
-        permission="prepare",
-        context=_context(tmp_path),
+        home=tmp_path,
     )
 
     assert result.ok is True
@@ -246,8 +273,8 @@ async def test_semantic_checker_terminates_at_max_attempts(tmp_path: Path) -> No
         runtime=runtime,
     )
 
-    result = await registry.invoke(
-        "goal.open",
+    result = await _run_goal_with_approvals(
+        registry,
         {
             "objective": "write a file then verify",
             "workspace": str(tmp_path),
@@ -255,8 +282,7 @@ async def test_semantic_checker_terminates_at_max_attempts(tmp_path: Path) -> No
             "verification_command": "",
             "timeout_seconds": 5,
         },
-        permission="prepare",
-        context=_context(tmp_path),
+        home=tmp_path,
     )
 
     # The loop must terminate (not hang forever) — either BLOCKED or FAILED

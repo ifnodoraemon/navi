@@ -7,6 +7,8 @@ import pytest
 from navi.daemon import SystemDaemon
 from navi.detectors import ServiceLogDetector
 from navi.graph import GraphStore
+from navi.goals import GoalStore
+from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.memory.store import MemoryStore
 from navi.trace import TraceStore
 
@@ -84,3 +86,45 @@ async def test_daemon_memory_maintenance_syncs_semantic_graph(tmp_path: Path) ->
     assert facts["semantic_graph"]["synced_count"] == 1
     assert node is not None
     assert node.data["memory_id"] == item.id
+
+
+@pytest.mark.asyncio
+async def test_daemon_materializes_due_cron_goal_as_child_run(tmp_path: Path, monkeypatch) -> None:
+    service = LoopControlService(tmp_path)
+    registered = service.open_goal(
+        OpenGoalRequest(
+            objective="daily reminder",
+            workspace=str(tmp_path),
+            loop_kind="scheduled",
+            cron_schedule="54 11 * * *",
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            allowed_capabilities=("respond",),
+        )
+    )
+    GoalStore(tmp_path).update_cron_run(registered.goal.id, 1.0)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
+
+    async def no_memory_maintenance():
+        return {"ok": True}
+
+    async def no_events():
+        return []
+
+    monkeypatch.setattr(daemon, "process_memory_maintenance_once", no_memory_maintenance)
+    monkeypatch.setattr(daemon, "process_events_once", no_events)
+
+    created = await daemon.process_watches_once()
+
+    assert len(created) == 1
+    assert created[0]["cron_goal_id"] == registered.goal.id
+    assert created[0]["peer_id"] == "peer-1"
+    assert created[0]["surface"] is False
+    child = GoalStore(tmp_path).get(created[0]["goal_id"])
+    assert child is not None
+    assert child.parent_goal_id == registered.goal.id
+    assert child.cron_schedule == ""
+    refreshed = GoalStore(tmp_path).get(registered.goal.id)
+    assert refreshed is not None
+    assert refreshed.next_run_at > 1.0

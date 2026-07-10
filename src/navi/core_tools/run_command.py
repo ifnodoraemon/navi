@@ -16,78 +16,10 @@ def _timeout_output_text(value: str | bytes | None) -> str:
     return value
 
 
-# Defense in depth (principle 13): a denylist of binaries that can cause
-# irreversible damage if the model is prompt-injected into running them.
-# This is *not* the primary safety boundary — governance, approval gates,
-# and the connector tool policy are — but it stops a model from trivially
-# running ``rm -rf /`` or exfiltrating via ``curl`` even when those higher
-# layers have granted execution. Allowlist-first is the goal; this denylist
-# is a pragmatic floor until per-project allowlists are configurable.
-_BLOCKED_BINARIES = frozenset(
-    {
-        "rm",
-        "rmdir",
-        "curl",
-        "wget",
-        "ssh",
-        "scp",
-        "nc",
-        "ncat",
-        "netcat",
-        "chmod",
-        "chown",
-        "chgrp",
-        "sudo",
-        "su",
-        "doas",
-        "mkfs",
-        "dd",
-        "shred",
-        "kill",
-        "killall",
-        "pkill",
-    }
-)
-
-
-def _binary_denied(command: list[str]) -> str:
-    """Return an error message if ``command[0]`` is on the blocked list."""
-    if not command:
-        return ""
-    binary = command[0]
-    if not binary:
-        return ""
-    # Normalize: strip directory component and common extensions.
-    name = os.path.basename(binary)
-    if name in _BLOCKED_BINARIES:
-        return f"binary '{name}' is on the denylist (irreversible or exfiltration risk)."
-    return ""
-
-
 def _run_command(
     command: list[str], *, cwd: Path, timeout: int, allocate_pty: bool = False
 ) -> dict[str, Any]:
     command = _normalize_argv(command)
-    denied = _binary_denied(command)
-    if denied:
-        return {
-            "stdout": "",
-            "stderr": denied,
-            "exit_code": 127,
-            "timed_out": False,
-            "error_reason": "binary_denied",
-            "binary": command[0],
-        }
-    binary_error = _resolve_binary_error(command)
-    if binary_error:
-        return {
-            "stdout": "",
-            "stderr": binary_error,
-            "exit_code": 127,
-            "timed_out": False,
-            "error_reason": "binary_not_found",
-            "binary": command[0],
-        }
     env = os.environ.copy()
     # Ensure common bin paths are in PATH
     home_dir = str(Path.home())
@@ -101,6 +33,16 @@ def _run_command(
         *nvm_paths,
     ]
     env["PATH"] = os.pathsep.join(extra_paths + [current_path])
+    binary_error = _resolve_binary_error(command, path=env["PATH"])
+    if binary_error:
+        return {
+            "stdout": "",
+            "stderr": binary_error,
+            "exit_code": 127,
+            "timed_out": False,
+            "error_reason": "binary_not_found",
+            "binary": command[0],
+        }
 
     if allocate_pty:
         import pty

@@ -177,7 +177,6 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
             facts_only=True,
             mutates=True,
             permission="write",
-            governance_exempt=True,
             source=f"connector.{spec.name}",
             side_effect_policy=SideEffectPolicy(
                 scope="external",

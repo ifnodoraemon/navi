@@ -428,6 +428,7 @@ class GoalStore:
         governance: str | None = None,
         acceptance: str | None = None,
         resolution: str | None = None,
+        task_status: str | None = None,
         blocked_reason: str = "",
         evidence: dict[str, Any] | None = None,
         event_type: str = "goal.state",
@@ -439,6 +440,7 @@ class GoalStore:
         next_governance = goal.governance if governance is None else governance
         next_acceptance = goal.acceptance if acceptance is None else acceptance
         next_resolution = goal.resolution if resolution is None else resolution
+        next_task_status = goal.task_status if task_status is None else task_status
         merged_evidence = _merge_evidence(goal.evidence_json, evidence)
         now = time.time()
         completed_at = (
@@ -450,7 +452,8 @@ class GoalStore:
             conn.execute(
                 """
                 UPDATE goals
-                SET phase = ?, governance = ?, acceptance = ?, resolution = ?, blocked_reason = ?, evidence_json = ?, updated_at = ?, completed_at = ?
+                SET phase = ?, governance = ?, acceptance = ?, resolution = ?, task_status = ?,
+                    blocked_reason = ?, evidence_json = ?, updated_at = ?, completed_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -458,6 +461,7 @@ class GoalStore:
                     next_governance,
                     next_acceptance,
                     next_resolution,
+                    next_task_status,
                     blocked_reason,
                     json.dumps(merged_evidence, ensure_ascii=False, sort_keys=True),
                     now,
@@ -533,6 +537,18 @@ class GoalStore:
             "run_resolution": run.resolution,
         }
         phase, governance, acceptance, resolution = _goal_state_for_run(run, evidence=evidence)
+        if phase == Phase.ENDED and resolution == Resolution.SUCCESS:
+            task_status = "done"
+        elif phase == Phase.ENDED or resolution in {
+            Resolution.BLOCKED,
+            Resolution.FAILED,
+            Resolution.CANCELED,
+        }:
+            task_status = "blocked"
+        elif governance == Governance.AWAITING_APPROVAL:
+            task_status = "pending"
+        else:
+            task_status = "in_progress"
         reason = ""
         if resolution == Resolution.BLOCKED:
             if run.phase == Phase.ENDED and run.resolution == Resolution.SUCCESS and not run.error:
@@ -544,6 +560,7 @@ class GoalStore:
         return self.update_state(
             goal.id,
             phase=phase, governance=governance, acceptance=acceptance, resolution=resolution,
+            task_status=task_status,
             blocked_reason=reason,
             evidence=evidence,
             event_type="goal.run_state",
@@ -594,6 +611,61 @@ class GoalStore:
             )
         return event
 
+    def find_active_cron_goal(
+        self,
+        *,
+        objective: str,
+        cron_schedule: str,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+    ) -> Goal | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"""
+                SELECT {GOALS_TABLE.select_list}
+                FROM goals
+                WHERE objective = ? AND cron_schedule = ? AND source = ?
+                  AND peer_id = ? AND sender_id = ? AND phase != ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (objective, cron_schedule, source, peer_id, sender_id, Phase.ENDED),
+            ).fetchone()
+        return Goal(*row) if row else None
+
+    def list_cron_goals(self) -> list[Goal]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {GOALS_TABLE.select_list}
+                FROM goals
+                WHERE cron_schedule != ''
+                ORDER BY created_at DESC
+                """
+            ).fetchall()
+        return [Goal(*row) for row in rows]
+
+    def due_cron_goals(self, now: float) -> list[Goal]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {GOALS_TABLE.select_list}
+                FROM goals
+                WHERE cron_schedule != '' AND next_run_at <= ? AND phase != ?
+                ORDER BY next_run_at ASC
+                """,
+                (now, Phase.ENDED),
+            ).fetchall()
+        return [Goal(*row) for row in rows]
+
+    def update_cron_run(self, goal_id: str, next_run_at: float) -> Goal | None:
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE goals SET next_run_at = ?, updated_at = ? WHERE id = ?",
+                (next_run_at, time.time(), goal_id),
+            )
+        return self.get(goal_id)
+
 
 def _goal_state_for_run(run: Run, *, evidence: dict[str, Any] | None = None) -> tuple[str, str, str, str]:
     if run.phase == Phase.ENDED and run.resolution == Resolution.SUCCESS:
@@ -618,50 +690,6 @@ def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict
     if evidence:
         return {**existing, **evidence}
     return existing
-
-
-
-    def list_cron_goals(self) -> typing.List[Goal]:
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
-                       workspace, run_id, trace_id, evidence_json, blocked_reason,
-                       stop_condition, timeout, max_retries,
-                       created_at, updated_at, completed_at,
-                       parent_goal_id, task_status, cron_schedule, next_run_at
-                FROM goals
-                WHERE cron_schedule != ''
-                ORDER BY created_at DESC
-                """
-            ).fetchall()
-        return [Goal(*row) for row in rows]
-
-    def due_cron_goals(self, now: float) -> typing.List[Goal]:
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
-                       workspace, run_id, trace_id, evidence_json, blocked_reason,
-                       stop_condition, timeout, max_retries,
-                       created_at, updated_at, completed_at,
-                       parent_goal_id, task_status, cron_schedule, next_run_at
-                FROM goals
-                WHERE cron_schedule != '' AND next_run_at <= ? AND phase != ?
-                ORDER BY next_run_at ASC
-                """,
-                (now, Phase.ENDED)
-            ).fetchall()
-        return [Goal(*row) for row in rows]
-
-    def update_cron_run(self, goal_id: str, next_run_at: float) -> None:
-        now = time.time()
-        with connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE goals SET next_run_at = ?, updated_at = ? WHERE id = ?",
-                (next_run_at, now, goal_id),
-            )
-
 GOALS_TABLE = Table(
     "goals",
     [

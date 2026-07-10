@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -213,6 +214,18 @@ class TurnController(TurnLifecycleMixin):
             trace_id=trace_id,
             input_text=text,
             event_bus=self.event_bus,
+            allowed_tools=(
+                frozenset(self.capabilities.allowed_tools)
+                if self.capabilities.allowed_tools is not None
+                else None
+            ),
+            disabled_tools=frozenset(self.capabilities.disabled_tools),
+            disabled_capability_classes=frozenset(
+                self.capabilities.disabled_capability_classes
+            ),
+            enforce_connector_source_policy=(
+                self.capabilities.enforce_connector_source_policy
+            ),
         )
         state_context = SurfaceContext(
             home=self.home,
@@ -227,6 +240,9 @@ class TurnController(TurnLifecycleMixin):
         runtime_facts: dict[str, Any] = {
             "current_state": current_state_facts(current_state),
         }
+        if intent_facts:
+            runtime_facts["intent_facts"] = dict(intent_facts)
+        context = replace(context, runtime_facts=runtime_facts)
         return resolved_session_id, trace_id, context, runtime_facts
 
     async def _response_from_facts(self, user_text: str, facts: dict[str, Any]) -> str:

@@ -80,6 +80,11 @@ class CapabilityContext:
     trace_id: str = ""
     input_text: str = ""
     event_bus: Any | None = None
+    allowed_tools: frozenset[str] | None = None
+    disabled_tools: frozenset[str] = frozenset()
+    disabled_capability_classes: frozenset[str] = frozenset()
+    enforce_connector_source_policy: bool = True
+    runtime_facts: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)

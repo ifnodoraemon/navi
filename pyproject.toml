@@ -27,6 +27,8 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=7.0",
     "coverage[toml]>=7.13",
+    "ruff>=0.12",
+    "build>=1.2",
 ]
 
 [project.scripts]
@@ -59,56 +61,8 @@ mypy_path = "typings"
 [tool.coverage.run]
 branch = true
 source = ["src/navi"]
-omit = [
-    "src/navi/_engine_phases.py",
-    "src/navi/acceptance.py",
-    "src/navi/actions/*",
-    "src/navi/api.py",
-    "src/navi/api_paths.py",
-    "src/navi/app_factory.py",
-    "src/navi/auth.py",
-    "src/navi/cli.py",
-    "src/navi/cli_providers.py",
-    "src/navi/config.py",
-    "src/navi/connector_runtime.py",
-    "src/navi/control.py",
-    "src/navi/core_tools/*",
-    "src/navi/cron.py",
-    "src/navi/daemon.py",
-    "src/navi/diagnostics.py",
-    "src/navi/db.py",
-    "src/navi/engine_types.py",
-    "src/navi/evals.py",
-    "src/navi/evolution.py",
-    "src/navi/execution.py",
-    "src/navi/goals.py",
-    "src/navi/governance.py",
-    "src/navi/graph.py",
-    "src/navi/hooks.py",
-    "src/navi/intent_agent.py",
-    "src/navi/json_utils.py",
-    "src/navi/lifecycle.py",
-    "src/navi/operating_context.py",
-    "src/navi/paths.py",
-    "src/navi/prompt_os.py",
-    "src/navi/prompting.py",
-    "src/navi/rag.py",
-    "src/navi/recovery.py",
-    "src/navi/result.py",
-    "src/navi/runtime.py",
-    "src/navi/runs/_approval_store.py",
-    "src/navi/runs/_execution_log_store.py",
-    "src/navi/runs/_watch_store.py",
-    "src/navi/runs/store.py",
-    "src/navi/service.py",
-    "src/navi/skills.py",
-    "src/navi/subagents.py",
-    "src/navi/syscalls.py",
-    "src/navi/telegram/*",
-    "src/navi/text_utils.py",
-    "src/navi/weixin/*",
-]
 
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+fail_under = 50

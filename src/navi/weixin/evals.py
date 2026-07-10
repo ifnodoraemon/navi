@@ -11,6 +11,7 @@ from typing import Any, AsyncGenerator
 import yaml
 
 from navi.provider import ChatMessage, ModelPool, ProviderUsage
+from navi.goals import GoalStore
 from navi.lifecycle import Phase, Resolution
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore

@@ -12,7 +12,6 @@ from typing import Any
 import yaml
 
 from .app_factory import build_runtime
-from .capabilities import build_capability_registry
 from .connector_registry import get_connector_adapter
 from .control_plane import TurnController
 from .goals import GoalStore
@@ -20,7 +19,6 @@ from .lifecycle import Phase, Resolution
 from .provider import ModelPool
 from .runtime import AgentRuntime
 from .runs import RunStore
-from .syscalls import ModelSyscall, ModelSyscallPlanner
 from .tools import ToolSpec
 
 
@@ -385,7 +383,7 @@ async def _run_daily_journey(
         else:
             for index, step in enumerate(journey["steps"]):
                 before_runs = runs.list(limit=500)
-                before_watches = GoalStore(home).list_cron_goals()
+                before_watches = goals.list_cron_goals()
                 expect = step.get("expect") or {}
                 if not isinstance(step, dict):
                     errors.append(f"step[{index}]: step must be a mapping")
@@ -411,7 +409,7 @@ async def _run_daily_journey(
                         "text": turn.text,
                     }
                 elif step.get("process_pending"):
-                    processed = await execution.process_pending_once(limit=5)
+                    processed = await _run_process_pending(engine, limit=5)
                     if processed:
                         latest_run_id = processed[-1].id
                     event = {
@@ -467,6 +465,13 @@ def _render_journey_text(text: str, runs: RunStore, *, latest_run_id: str) -> st
     if "{{run_id}}" in text:
         text = text.replace("{{run_id}}", latest_run_id)
     return text
+
+
+async def _run_process_pending(engine: Any, *, limit: int = 5) -> list[Any]:
+    execution = getattr(engine, "execution", None)
+    if execution is None:
+        return []
+    return await execution.process_pending_once(limit=limit)
 
 
 def _match_daily_expectation(
@@ -525,24 +530,24 @@ def _match_daily_expectation(
                 f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}"
             )
     if "watch_count_delta" in expect:
-        delta = len(GoalStore(home).list_cron_goals()) - before_watch_count
+        delta = len(goals.list_cron_goals()) - before_watch_count
         if delta != int(expect["watch_count_delta"]):
             errors.append(
                 f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}"
             )
     if "watch_count" in expect:
-        count = len(GoalStore(home).list_cron_goals())
+        count = len(goals.list_cron_goals())
         if count != int(expect["watch_count"]):
             errors.append(
                 f"{prefix}: watch_count expected {expect['watch_count']!r}, got {count!r}"
             )
     if "watch_kind" in expect:
-        watches = GoalStore(home).list_cron_goals()
+        watches = goals.list_cron_goals()
         actual = watches[0].objective if watches else ""
         if actual != str(expect["watch_kind"]):
             errors.append(f"{prefix}: watch_kind expected {expect['watch_kind']!r}, got {actual!r}")
     if "watch_cron" in expect:
-        watches = GoalStore(home).list_cron_goals()
+        watches = goals.list_cron_goals()
         actual = watches[0].cron_schedule if watches else ""
         if actual != str(expect["watch_cron"]):
             errors.append(f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}")

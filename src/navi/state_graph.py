@@ -18,7 +18,6 @@ from .loop import (
     LoopPhase,
     LoopReason,
     TraceFailureDomain,
-    TracePhase,
 )
 from .loop_contracts import (
     LoopNode,
@@ -35,7 +34,7 @@ from .loop_contracts import (
 from .loop_runs import LoopCheckpoint, LoopRunStore
 
 from .memory import ACTIVE_MEMORY_CONTEXT_LIMIT
-from .provider import ChatMessage, ModelPool
+from .provider import ChatMessage
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
 from .resource_gateway import GlobalResourceGateway, ResourceGrant, ResourceLimits, ResourceRequest
@@ -104,6 +103,7 @@ class ExecutedCapabilityStep:
     message: str = ""
     error_reason: str = ""
     terminal: bool = False
+    yields_control: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -113,6 +113,7 @@ class ExecutedCapabilityStep:
             "message": self.message,
             "error_reason": self.error_reason,
             "terminal": self.terminal,
+            "yields_control": self.yields_control,
         }
 
 
@@ -149,6 +150,9 @@ class SemanticCheckDecision:
             "evaluator_role": "checker",
             "isolated_context": True,
         }
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.to_facts()
 
 
 
@@ -845,9 +849,16 @@ class ModelCapabilityPlannerPort:
     tool manifest to the LoopSpec's allowed capabilities.
     """
 
-    def __init__(self, *, runtime: AgentRuntime, capabilities: CapabilityRegistry):
+    def __init__(
+        self,
+        *,
+        runtime: AgentRuntime,
+        capabilities: CapabilityRegistry,
+        context: CapabilityContext | None = None,
+    ):
         self.runtime = runtime
         self.capabilities = capabilities
+        self.context = context
         self.planner = ModelSyscallPlanner(runtime.provider)
 
     async def plan(
@@ -859,11 +870,14 @@ class ModelCapabilityPlannerPort:
         evidence: dict[str, Any],
     ) -> PlannedCapabilityStep:
         allowed = set(spec.allowed_capabilities)
-        context = CapabilityContext(
-            home=self.capabilities.home,
-            source="state_graph",
-            peer_id="state_graph",
-            sender_id=spec.goal.owner or "state_graph",
+        policy_context = replace(
+            self.context
+            or CapabilityContext(
+                home=self.capabilities.home,
+                source="state_graph",
+                peer_id="state_graph",
+                sender_id=spec.goal.owner or "state_graph",
+            ),
             permission_ceiling=spec.goal.permission_ceiling,
             workspace=str(workspace),
         )
@@ -871,7 +885,7 @@ class ModelCapabilityPlannerPort:
             item
             for item in self.capabilities.planner_specs(
                 permission_ceiling=spec.goal.permission_ceiling,
-                context=context,
+                context=policy_context,
             )
             if "*" in allowed or item.name in allowed
         ]
@@ -887,15 +901,15 @@ class ModelCapabilityPlannerPort:
         conversation_context = ""
         conversation_facts: dict[str, Any] = {}
         if session_id:
-            context = _planner_conversation_context(
+            conversation = _planner_conversation_context(
                 session_id=session_id,
                 messages=self.runtime.memory.get_messages(
                     session_id,
                     limit=PLANNER_CONTEXT_MESSAGE_LIMIT,
                 ),
             )
-            conversation_context = context.text
-            conversation_facts = context.facts
+            conversation_context = conversation.text
+            conversation_facts = conversation.facts
         memory_context = _planner_memory_context(memory=self.runtime.memory, spec=spec)
 
         syscalls = await self.planner.plan(
@@ -909,6 +923,7 @@ class ModelCapabilityPlannerPort:
                 "attempt_history": list(evidence.get("attempt_history") or []),
                 "conversation_compaction": conversation_facts,
                 "memory_context": memory_context.facts,
+                "ingress_facts": dict(policy_context.runtime_facts or {}),
             },
             permission_ceiling=spec.goal.permission_ceiling,
             model_roles=self.runtime.model_roles(),
@@ -940,9 +955,18 @@ class ModelCapabilityPlannerPort:
 class CapabilityExecutorPort:
     """Executor node port that invokes the capability registry in the node workspace."""
 
-    def __init__(self, *, home: Path, context: CapabilityContext):
+    def __init__(
+        self,
+        *,
+        home: Path,
+        context: CapabilityContext,
+        sensitive_approval_mode: str = "enforce",
+        governed_run_id: str = "",
+    ):
         self.home = home
         self.context = context
+        self.sensitive_approval_mode = sensitive_approval_mode
+        self.governed_run_id = governed_run_id
 
     async def execute(
         self,
@@ -955,10 +979,19 @@ class CapabilityExecutorPort:
         registry = CapabilityRegistry(
             home=self.home,
             project_dir=workspace,
+            allowed_tools=(
+                set(self.context.allowed_tools)
+                if self.context.allowed_tools is not None
+                else None
+            ),
+            disabled_tools=set(self.context.disabled_tools),
+            disabled_capability_classes=self.context.disabled_capability_classes,
             permission_ceiling=spec.goal.permission_ceiling,
-            enforce_connector_source_policy=False,
-            governed_run_id=state.run_id,
-            sensitive_approval_mode="skip",
+            enforce_connector_source_policy=(
+                self.context.enforce_connector_source_policy
+            ),
+            governed_run_id=self.governed_run_id or state.run_id,
+            sensitive_approval_mode=self.sensitive_approval_mode,
         )
         context = replace(
             self.context,
@@ -979,6 +1012,7 @@ class CapabilityExecutorPort:
             message=result.message,
             error_reason=result.error_reason,
             terminal=result.terminal,
+            yields_control=result.yields_control,
         )
 
 
@@ -1058,7 +1092,11 @@ class DurableStateGraphRunner:
         grants: list[ResourceGrant] = []
         harness_results: list[HarnessResult] = []
         checker_report: CheckerReport | None = None
-        planned_step: PlannedCapabilityStep | None = None
+        planned_step = (
+            self._planned_step_from_checkpoint(state.run_id)
+            if state.node == LoopNode.EXECUTE
+            else None
+        )
         execution_workspace = workspace
         shadow_workspace = None
         if str(spec.workspace_policy.mode) == str(WorkspaceMode.SHADOW):
@@ -1085,51 +1123,12 @@ class DurableStateGraphRunner:
                     inputs={"planner_node": "start"},
                     state=state.to_dict(),
                 )
-                if self._has_trace_context():
-                    self.trace_store.add_event(
-                        trace_id=self.trace_context.trace_id,
-                        session_id=self.trace_context.session_id or "",
-                        run_id=state.run_id,
-                        phase=str(TracePhase.PLANNER_CALL_START),
-                        source=self.trace_context.source,
-                        peer_id=self.trace_context.peer_id,
-                        sender_id=self.trace_context.sender_id,
-                        input_data={"objective": spec.goal.objective, "attempt": state.attempt},
-                    )
-
                 planned_step = await self.planner_port.plan(
                     spec,
                     state,
                     workspace=execution_workspace,
                     evidence=collected_evidence,
                 )
-
-                if self._has_trace_context():
-                    phase = str(TracePhase.PLANNER_SYSCALL)
-                    if planned_step.tool == "system.planner_error":
-                        phase = str(TracePhase.PLANNER_CALL_ERROR)
-
-                    output_data = planned_step.to_dict()
-                    usage_data = self._usage_for_role("planner")
-                    prompt_messages = usage_data.pop("messages", [])
-                    llm_response = usage_data.pop("response", "")
-                    output_data["usage"] = usage_data
-                    output_data["llm_response"] = llm_response
-
-                    self.trace_store.add_event(
-                        trace_id=self.trace_context.trace_id,
-                        session_id=self.trace_context.session_id or "",
-                        run_id=state.run_id,
-                        phase=phase,
-                        source=self.trace_context.source,
-                        peer_id=self.trace_context.peer_id,
-                        sender_id=self.trace_context.sender_id,
-                        tool=planned_step.tool,
-                        model_role="planner",
-                        ok=(planned_step.tool != "system.planner_error"),
-                        input_data={"prompt": prompt_messages},
-                        output_data=output_data,
-                    )
 
                 collected_evidence["planned_capability"] = planned_step.to_dict()
                 if planned_step.tool == "system.planner_error":
@@ -1198,6 +1197,13 @@ class DurableStateGraphRunner:
                 workspace=execution_workspace,
             )
             collected_evidence["capability_result"] = executed.to_dict()
+            # Preserve the most recent respond message across the whole loop,
+            # even when a later capability (e.g. send_file) overwrites
+            # capability_result. goal.open promotes this to the turn result so
+            # the user actually receives the question the model asked.
+            if executed.action in ("chat", "ask") and executed.message:
+                collected_evidence["responded_message"] = executed.message
+                collected_evidence["responded_action"] = executed.action
             attempt_history.append(
                 {
                     "attempt": state.attempt,
@@ -1212,6 +1218,26 @@ class DurableStateGraphRunner:
                 }
             )
             collected_evidence["attempt_history"] = attempt_history
+            if executed.yields_control:
+                state = self._transition(
+                    state,
+                    node=LoopNode.ESCALATE,
+                    condition="approval_required",
+                    evidence=executed.to_dict(),
+                )
+                state = self._transition(
+                    state,
+                    node=LoopNode.ESCALATE,
+                    condition="approval_required",
+                    terminal_state=LoopTerminalState.WAITING_APPROVAL,
+                    evidence=executed.to_dict(),
+                )
+                self.gateway.release()
+                return StateGraphRunResult(
+                    run_state=state,
+                    resource_grants=tuple(grants),
+                    evidence=collected_evidence,
+                )
             if not executed.ok:
                 self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
                 state = self._transition(
@@ -1286,6 +1312,25 @@ class DurableStateGraphRunner:
             harness_results=tuple(harness_results),
             evidence=collected_evidence,
         )
+
+    def _planned_step_from_checkpoint(self, run_id: str) -> PlannedCapabilityStep | None:
+        for checkpoint in reversed(self.store.list_checkpoints(run_id, limit=200)):
+            if str(checkpoint.node) != str(LoopNode.EXECUTE):
+                continue
+            inputs = json.loads(checkpoint.inputs_json or "{}")
+            raw = inputs.get("planned_capability") if isinstance(inputs, dict) else None
+            if not isinstance(raw, dict):
+                continue
+            return PlannedCapabilityStep(
+                tool=str(raw.get("tool") or ""),
+                args=dict(raw.get("args") or {}),
+                permission=str(raw.get("permission") or "read"),
+                model_role=str(raw.get("model_role") or "executor"),
+                reason=str(raw.get("reason") or ""),
+                used_memory_ids=tuple(str(item) for item in raw.get("used_memory_ids") or ()),
+                memory_activation=dict(raw.get("memory_activation") or {}),
+            )
+        return None
 
     def _discard_shadow_if_needed(
         self,
@@ -1401,42 +1446,9 @@ class DurableStateGraphRunner:
                     error_reason=cap_result.get("error_reason", "") if isinstance(cap_result, dict) else "",
                     terminal=bool(cap_result.get("terminal", False)) if isinstance(cap_result, dict) else False,
                 )
-                if self._has_trace_context():
-                    self.trace_store.add_event(
-                        trace_id=self.trace_context.trace_id,
-                        session_id=self.trace_context.session_id or "",
-                        run_id=state.run_id,
-                        phase=str(TracePhase.PLANNER_CALL_START),
-                        source=self.trace_context.source,
-                        peer_id=self.trace_context.peer_id,
-                        sender_id=self.trace_context.sender_id,
-                        input_data={"objective": spec.goal.objective, "attempt": state.attempt},
-                    )
-
                 decision = await self.llm_reflector_port.assess(
                     spec, state, executed=executed_step, evidence=collected_evidence
                 )
-
-                if self._has_trace_context():
-                    output_data = decision.to_dict()
-                    usage_data = self._usage_for_role("reflector")
-                    prompt_messages = usage_data.pop("messages", [])
-                    llm_response = usage_data.pop("response", "")
-                    output_data["usage"] = usage_data
-                    output_data["llm_response"] = llm_response
-                    self.trace_store.add_event(
-                        trace_id=self.trace_context.trace_id,
-                        session_id=self.trace_context.session_id or "",
-                        run_id=state.run_id,
-                        phase=str(TracePhase.PLANNER_SYSCALL),
-                        source=self.trace_context.source,
-                        peer_id=self.trace_context.peer_id,
-                        sender_id=self.trace_context.sender_id,
-                        tool="reflection",
-                        model_role="reflector",
-                        input_data={"prompt": prompt_messages},
-                        output_data=output_data,
-                    )
 
                 collected_evidence["reflection"] = decision.to_dict()
                 if decision.retry:
@@ -1774,17 +1786,6 @@ class DurableStateGraphRunner:
             if step.kind != VerificationKind.LLM_CHECKER:
                 continue
             key = step.evidence_key or step.name
-            if self._has_trace_context():
-                self.trace_store.add_event(
-                    trace_id=self.trace_context.trace_id,
-                    session_id=self.trace_context.session_id or "",
-                    run_id=state.run_id,
-                    phase=str(TracePhase.PLANNER_CALL_START),
-                    source=self.trace_context.source,
-                    peer_id=self.trace_context.peer_id,
-                    sender_id=self.trace_context.sender_id,
-                    input_data={"objective": spec.goal.objective, "attempt": state.attempt},
-                )
 
             decision = await self.semantic_checker_port.assess(
                 spec,
@@ -1792,53 +1793,9 @@ class DurableStateGraphRunner:
                 executed=executed_step,
             )
 
-            if self._has_trace_context():
-                output_data = decision.to_dict()
-                usage_data = self._usage_for_role("checker")
-                prompt_messages = usage_data.pop("messages", [])
-                llm_response = usage_data.pop("response", "")
-                output_data["usage"] = usage_data
-                output_data["llm_response"] = llm_response
-                self.trace_store.add_event(
-                    trace_id=self.trace_context.trace_id,
-                    session_id=self.trace_context.session_id or "",
-                    run_id=state.run_id,
-                    phase=str(TracePhase.PLANNER_SYSCALL),
-                    source=self.trace_context.source,
-                    peer_id=self.trace_context.peer_id,
-                    sender_id=self.trace_context.sender_id,
-                    tool="checker",
-                    model_role="checker",
-                    input_data={"prompt": prompt_messages},
-                    output_data=output_data,
-                )
-
             facts = {**decision.to_facts(), "attempt": state.attempt}
             collected_evidence[key] = facts
             collected_evidence["semantic_checker_result"] = facts
-
-    def _usage_for_role(self, role: str) -> dict[str, Any]:
-        for port in (
-            self.planner_port,
-            self.llm_reflector_port,
-            self.semantic_checker_port,
-        ):
-            runtime = getattr(port, "runtime", None)
-            provider = getattr(runtime, "provider", None)
-            usage_for = getattr(provider, "usage_for", None)
-            if not callable(usage_for):
-                continue
-            usage = usage_for(role)
-            if usage:
-                return dict(usage)
-        return {}
-
-    def _has_trace_context(self) -> bool:
-        return (
-            self.trace_store is not None
-            and self.trace_context is not None
-            and bool(self.trace_context.trace_id)
-        )
 
     def _gate_or_stop(
         self,

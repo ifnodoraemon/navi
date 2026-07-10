@@ -6,6 +6,7 @@ import hashlib
 import logging
 import shutil
 import socket
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from subprocess import SubprocessError
@@ -196,19 +197,23 @@ class SystemDaemon:
             try:
                 prepared = service.resume_loop(loop_run_id=state.run_id, workspace=goal.workspace)
                 
+                permission_ceiling = prepared.loop_spec.goal.permission_ceiling
                 planner_capabilities = CapabilityRegistry(
                     home=self.home,
                     project_dir=Path(goal.workspace),
-                    permission_ceiling=goal.permission_ceiling,
+                    permission_ceiling=permission_ceiling,
+                    enforce_connector_source_policy=False,
                     runtime=runtime,
                 )
                 context = CapabilityContext(
                     home=self.home,
-                    source="daemon",
-                    peer_id="daemon",
+                    source=goal.source,
+                    peer_id=goal.peer_id,
                     sender_id=goal.sender_id,
-                    permission_ceiling=goal.permission_ceiling,
+                    session_id=goal.session_id,
+                    permission_ceiling=permission_ceiling,
                     workspace=goal.workspace,
+                    enforce_connector_source_policy=False,
                 )
                 
                 result = await run_goal_loop_state_graph(
@@ -238,35 +243,36 @@ class SystemDaemon:
         created.extend(events)
 
 
-        # 2. Process Cron Goals
+        # 2. Materialize due recurring templates as ordinary child goals.
         from .cron import next_cron_time
-        from .goals import GoalStore
-        from .loop_control_service import LoopControlService
-        from .loop_control_service import OpenGoalRequest
-        import time
-        import logging
 
         now = time.time()
+        from .goals import GoalStore
+        from .loop_control_service import LoopControlService
+
         goal_store = GoalStore(self.home)
         service = LoopControlService(self.home)
         
         due_goals = goal_store.due_cron_goals(now)
         for g in due_goals:
             try:
-                request = OpenGoalRequest(
-                    objective=g.objective,
-                    source="cron",
-                    peer_id=g.peer_id,
-                    sender_id=g.sender_id,
-                    workspace=g.workspace,
-                )
-                service.open_goal(request)
-                
+                occurrence = service.open_scheduled_occurrence(g)
+
                 next_time = next_cron_time(g.cron_schedule, now=now)
                 goal_store.update_cron_run(g.id, next_time)
-                created.append({"cron_goal_id": g.id, "triggered": True})
+                created.append(
+                    {
+                        "cron_goal_id": g.id,
+                        "goal_id": occurrence.goal.id,
+                        "run_id": occurrence.run.id,
+                        "peer_id": g.peer_id,
+                        "triggered": True,
+                        "next_run_at": next_time,
+                        "surface": False,
+                    }
+                )
             except Exception as e:
-                logging.getLogger("navi.daemon").error(f"Failed to process cron goal {g.id}: {e}", exc_info=True)
+                logger.error("Failed to process cron goal %s: %s", g.id, e, exc_info=True)
 
         return created
 

@@ -477,6 +477,54 @@ def test_trace_meta_uses_evaluation_outcome_not_final_event_status(tmp_path):
     assert set(store.list_trace_ids(has_error=False)) == {"trace-degraded", "trace-success"}
 
 
+def test_trace_converged_without_failed_facts_is_success(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_event(trace_id="trace-converged", phase="turn.start", ok=True)
+    store.add_loop_decision(
+        trace_id="trace-converged",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.CONVERGED,
+            reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
+            failure_domain=TraceFailureDomain.NONE,
+        ),
+    )
+
+    evaluation = store.evaluate_trace("trace-converged")
+
+    assert evaluation.outcome == "success"
+    assert evaluation.failure_domain == "none"
+    assert json.loads(evaluation.evidence_json)["evaluation_rule"] == (
+        "loop_decision_converged"
+    )
+
+
+def test_trace_converged_after_capability_failure_is_degraded(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_event(
+        trace_id="trace-recovered-converged",
+        phase="capability.result",
+        tool="shell.run",
+        ok=False,
+        output_data={"facts": {"exit_code": 1}},
+    )
+    store.add_loop_decision(
+        trace_id="trace-recovered-converged",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.CONVERGED,
+            reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
+            failure_domain=TraceFailureDomain.NONE,
+        ),
+    )
+
+    evaluation = store.evaluate_trace("trace-recovered-converged")
+
+    assert evaluation.outcome == "degraded"
+    assert evaluation.failure_domain == "capability_failure"
+    assert json.loads(evaluation.evidence_json)["evaluation_rule"] == (
+        "capability_failed_then_recovered"
+    )
+
+
 def test_trace_evaluation_degrades_recovered_capability_failure(tmp_path):
     store = TraceStore(tmp_path)
     store.add_event(

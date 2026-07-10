@@ -1,6 +1,17 @@
 from __future__ import annotations
 
+import json
+import re
+
+import pytest
+
+from navi.capabilities import CapabilityRegistry
+from navi.connector_runtime import (
+    REMOTE_ALLOWED_TOOLS,
+    REMOTE_BLOCKED_CAPABILITY_CLASSES,
+)
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
+from navi.control_plane import TurnController
 from navi.goals import GoalStore
 from navi.loop_contracts import (
     GoalSpec,
@@ -10,7 +21,46 @@ from navi.loop_contracts import (
     VerificationStep,
 )
 from navi.loop_runs import LoopRunStore
+from navi.provider import ChatMessage
+from navi.runtime import AgentRuntime
+from navi.state_graph import (
+    CapabilityExecutorPort,
+    ModelCapabilityPlannerPort,
+    PlannedCapabilityStep,
+)
 from navi.workspaces import ShadowWorkspaceManager
+
+
+class _CapturingPlannerProvider:
+    def __init__(self) -> None:
+        self.messages: list[ChatMessage] = []
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        **kwargs,
+    ) -> str:
+        self.messages = messages
+        return json.dumps(
+            {
+                "syscalls": [
+                    {
+                        "tool": "respond",
+                        "permission": "read",
+                        "args": {"message": "I need one more fact."},
+                        "model_role": "executor",
+                        "reason": "ask from current facts",
+                    }
+                ]
+            }
+        )
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "executor", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
 
 
 def _loop_spec(goal_id: str, workspace: str) -> LoopSpec:
@@ -127,3 +177,101 @@ def test_current_state_includes_active_shadow_workspaces(tmp_path):
 
     assert facts["workspace_state"]["shadow_workspace"] == shadow.shadow_workspace
     assert facts["workspace_state"]["shadow_workspaces"][0]["run_id"] == "loop-run-1"
+
+
+@pytest.mark.asyncio
+async def test_remote_policy_and_ingress_facts_survive_planner_boundary(tmp_path):
+    provider = _CapturingPlannerProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    controller = TurnController(
+        home=tmp_path,
+        runtime=runtime,
+        project_dir=tmp_path,
+        allowed_tools=set(REMOTE_ALLOWED_TOOLS),
+        disabled_capability_classes=REMOTE_BLOCKED_CAPABILITY_CLASSES,
+        permission_ceiling="prepare",
+    )
+    _, _, context, runtime_facts = controller._initialize_turn(
+        "inspect current work",
+        "peer-1",
+        "sender-1",
+        "connector.weixin",
+        "session-1",
+        None,
+        {"connector_message": {"message_id": "message-1"}},
+    )
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="inspect current work",
+            scope=(f"repo:{tmp_path}",),
+            acceptance_criteria=("respond from current facts",),
+            permission_ceiling="prepare",
+            owner="sender-1",
+        ),
+        goal_id="goal-remote-policy",
+        allowed_capabilities=("*",),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                evidence_key="semantic_checker_result",
+            ),
+        ),
+    )
+    state = LoopRunStore(tmp_path).create_run(spec)
+    capabilities = CapabilityRegistry(
+        home=tmp_path,
+        project_dir=tmp_path,
+        allowed_tools=set(context.allowed_tools or ()),
+        disabled_capability_classes=context.disabled_capability_classes,
+        permission_ceiling=context.permission_ceiling,
+    )
+
+    planned = await ModelCapabilityPlannerPort(
+        runtime=runtime,
+        capabilities=capabilities,
+        context=context,
+    ).plan(spec, state, workspace=tmp_path, evidence={})
+
+    assert planned.tool == "respond"
+    turn_input = provider.messages[-1].content
+    facts_match = re.search(
+        r"<runtime_facts>\s*(.*?)\s*</runtime_facts>",
+        turn_input,
+        re.DOTALL,
+    )
+    assert facts_match is not None
+    planner_facts = json.loads(facts_match.group(1))
+    assert planner_facts["ingress_facts"] == runtime_facts
+    assert planner_facts["ingress_facts"]["current_state"]["connector_state"][
+        "source"
+    ] == "connector.weixin"
+    assert planner_facts["ingress_facts"]["intent_facts"]["connector_message"][
+        "message_id"
+    ] == "message-1"
+    manifest = json.loads(turn_input.split("[TOOL MANIFEST]\n", 1)[1])
+    manifest_names = {item["name"] for item in manifest}
+    assert manifest_names <= REMOTE_ALLOWED_TOOLS
+    assert "shell.run" not in manifest_names
+
+    executed = await CapabilityExecutorPort(
+        home=tmp_path,
+        context=context,
+        sensitive_approval_mode="enforce",
+        governed_run_id="governed-run",
+    ).execute(
+        PlannedCapabilityStep(
+            tool="shell.run",
+            permission="write",
+            args={"command": ["pwd"]},
+        ),
+        spec,
+        state,
+        workspace=tmp_path,
+    )
+    assert executed.ok is False
+    assert executed.error_reason in {
+        "not_found",
+        "remote_capability_class_blocked",
+        "remote_tool_not_allowed",
+    }

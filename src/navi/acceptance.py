@@ -232,7 +232,7 @@ def _evaluate_acceptance(
     goals = GoalStore(home)
     run = runs.get(run_id)
     goal = goals.get_by_run(run_id)
-    protocol = _latest_protocol(logs, phase="execute_protocol")
+    protocol = _loop_protocol(run=run, goal=goal)
     checks = _acceptance_checks(
         scenario.expected,
         workspace=workspace,
@@ -255,7 +255,7 @@ def _evaluate_acceptance(
     if goal is None:
         errors.append("goal not found for run")
     if not protocol:
-        errors.append("execute protocol log missing")
+        errors.append("state graph completion evidence missing")
     if failed_evidence:
         errors.append("execution evidence contains failed capability or verification result")
 
@@ -300,10 +300,7 @@ def _evaluate_acceptance(
         goal_phase=goal_phase,
         goal_resolution=goal_resolution,
         checks=checks,
-        evidence={
-            "protocol": _compact_protocol(protocol),
-            "execution_logs": [_log_facts(log) for log in logs[:12]],
-        },
+        evidence={"protocol": _compact_protocol(protocol)},
     )
 
 
@@ -389,6 +386,40 @@ def _state_snapshot(runs: RunStore, run_id: str) -> dict[str, Any]:
         "approval_statuses": [item.status for item in approvals],
         "log_count": 0,
         "last_log_exit_code": None,
+    }
+
+
+def _loop_protocol(*, run: Any, goal: Any) -> dict[str, Any]:
+    if run is None or goal is None:
+        return {}
+    try:
+        goal_evidence = json.loads(goal.evidence_json or "{}")
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(goal_evidence, dict):
+        return {}
+    terminal = str(goal_evidence.get("loop_terminal_state") or "")
+    checker = goal_evidence.get("checker_report")
+    checker = checker if isinstance(checker, dict) else {}
+    accepted = bool(checker.get("accepted"))
+    return {
+        "phase": "state_graph",
+        "terminal_state": terminal,
+        "completion": {
+            "status": (
+                Resolution.SUCCESS
+                if terminal == "converged" and run.resolution == Resolution.SUCCESS
+                else run.resolution
+            )
+        },
+        "verification": {"status": "verified" if accepted else "unverified"},
+        "evidence": [
+            {
+                "kind": "checker_report",
+                "ok": accepted,
+                "facts": checker,
+            }
+        ],
     }
 
 

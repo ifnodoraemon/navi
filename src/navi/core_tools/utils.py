@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlparse
 
-from .paths import _is_blocked_http_host, _is_public_http_host
 from ..tools import ToolResult
 
 # Caller-supplied http.fetch headers may not override these — they control
@@ -42,36 +41,24 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
         return ToolResult(tool="http.fetch", ok=False, error="only http/https URLs allowed")
     host = (parsed.hostname or "").lower()
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    if not host or not _is_public_http_host(host, port=port):
-        return ToolResult(
-            tool="http.fetch",
-            ok=False,
-            error="url host must be public; localhost, private, link-local, and metadata addresses are blocked",
-            facts={"url": url},
-        )
-    # FP-4/L7: pin the resolved IP for the actual TCP connection to defeat
-    # DNS rebinding. ``_is_public_http_host`` resolves once to verify; a
-    # hostile resolver could flip the record between that check and a
-    # second ``urlopen`` resolution. By resolving here and connecting to
-    # that exact IP (with the Host header / SNI kept on the original
-    # hostname), the two resolutions cannot diverge.
+    if not host:
+        return ToolResult(tool="http.fetch", ok=False, error="url host is required")
+    # The capability approval layer classifies private/local targets and
+    # credentialed or mutating requests before execution.  Once approved we
+    # still pin one resolved address so the reviewed target cannot be swapped
+    # by a second DNS lookup.
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except OSError as exc:
         return ToolResult(
             tool="http.fetch", ok=False, error=f"failed to resolve {host}: {exc}", facts={"url": url}
         )
-    pinned_ip: str | None = None
-    for _, _, _, _, sockaddr in infos:
-        candidate = str(sockaddr[0])
-        if not _is_blocked_http_host(candidate):
-            pinned_ip = candidate
-            break
-    if pinned_ip is None:
+    pinned_ip = str(infos[0][4][0]) if infos else ""
+    if not pinned_ip:
         return ToolResult(
             tool="http.fetch",
             ok=False,
-            error=f"host {host} resolved only to blocked addresses",
+            error=f"host {host} did not resolve to a usable address",
             facts={"url": url},
         )
 

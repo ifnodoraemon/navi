@@ -366,6 +366,14 @@ class WeixinService:
 
     async def process_background(self, account: WeixinAccount) -> None:
         for result in await self.daemon.process_watches_once():
+            if result.get("surface") is False:
+                self.record_event(
+                    "background.skipped",
+                    background_event="scheduled_run_queued",
+                    reason="wait_for_run_completion",
+                    run_id=str(result.get("run_id") or ""),
+                )
+                continue
             run_id = str(result.get("run_id") or "")
             task = self.daemon.runs.get(run_id) if run_id else None
             peer_id = str(result.get("peer_id") or "") or (

@@ -68,6 +68,39 @@ class _PlanningProvider:
 
 
 @pytest.mark.asyncio
+async def test_goal_open_scheduled_is_registration_not_immediate_execution(tmp_path: Path) -> None:
+    provider = _PlanningProvider()
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+    )
+
+    result = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "daily reminder",
+            "workspace": str(tmp_path),
+            "loop_kind": "scheduled",
+            "cron_schedule": "54 11 * * *",
+            "allowed_capabilities": ["respond"],
+        },
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+
+    assert result.ok is True
+    assert provider.calls == []
+    assert result.facts is not None
+    assert result.facts["state_transition"] == "scheduled"
+    assert result.facts["cron_schedule"] == "54 11 * * *"
+    assert result.facts["registration_evidence"] is True
+    assert result.facts["completion_evidence"] is True
+    assert result.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
+    assert LoopRunStore(tmp_path).list_active() == []
+
+
+@pytest.mark.asyncio
 async def test_goal_open_capability_auto_start_uses_runtime_state_graph(tmp_path: Path) -> None:
     provider = _PlanningProvider()
     registry = build_capability_registry(
@@ -94,11 +127,27 @@ async def test_goal_open_capability_auto_start_uses_runtime_state_graph(tmp_path
     assert result.ok is True
     assert provider.calls == ["planner"]
     assert result.facts is not None
-    assert result.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
-    assert result.facts["completion_evidence"] is True
+    assert result.facts["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL
+    assert result.facts["completion_evidence"] is False
     evidence = result.facts["state_graph_result"]["evidence"]
     assert evidence["planned_capability"]["tool"] == "file.write"
-    assert evidence["capability_result"]["ok"] is True
+    assert evidence["capability_result"]["yields_control"] is True
+    approval = RunStore(tmp_path).pending_approval_for_run(result.run_id)
+    assert approval is not None
+    RunStore(tmp_path).resolve_approval(
+        approval.id,
+        decision="approve",
+        resolved_by="tester",
+    )
+    resumed = await registry.invoke(
+        "goal.resume",
+        {"goal_id": result.facts["goal_id"], "workspace": str(tmp_path)},
+        permission="prepare",
+        context=_context(tmp_path, trace_id="trace-goal-open"),
+    )
+    assert provider.calls == ["planner"]
+    assert resumed.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
+    assert resumed.facts["completion_evidence"] is True
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
     decisions = [
         json.loads(event.output_json)
@@ -107,12 +156,13 @@ async def test_goal_open_capability_auto_start_uses_runtime_state_graph(tmp_path
     transitions = [item for item in decisions if "condition" in item.get("evidence", {})]
     conditions = [item["evidence"]["condition"] for item in transitions]
     assert "plan_ready" in conditions
+    assert "approval_required" in conditions
     assert "side_effect_recorded" in conditions
     assert transitions[-1]["decision"] == "converged"
     assert transitions[-1]["evidence"]["condition"] == "checker_passed"
     assert {
         item["evidence"]["loop_run_id"] for item in transitions
-    } == {result.facts["loop_run_id"]}
+    } == {resumed.facts["loop_run_id"]}
 
 
 @pytest.mark.asyncio
@@ -219,8 +269,23 @@ async def test_goal_resume_capability_runs_checkpointed_goal(tmp_path: Path) -> 
     assert provider.calls == ["planner"]
     assert resumed.facts["state_transition"] == "resumed"
     assert resumed.facts["loop_run_id"] == opened.facts["loop_run_id"]
-    assert resumed.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
-    assert resumed.facts["resolution"] == Resolution.SUCCESS
+    assert resumed.facts["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL
+    approval = RunStore(tmp_path).pending_approval_for_run(resumed.run_id)
+    assert approval is not None
+    RunStore(tmp_path).resolve_approval(
+        approval.id,
+        decision="approve",
+        resolved_by="tester",
+    )
+    completed = await registry.invoke(
+        "goal.resume",
+        {"goal_id": opened.facts["goal_id"], "workspace": str(tmp_path)},
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+    assert provider.calls == ["planner"]
+    assert completed.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
+    assert completed.facts["resolution"] == Resolution.SUCCESS
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
 
 

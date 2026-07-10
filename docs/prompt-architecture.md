@@ -1,102 +1,84 @@
 # Prompt Operating System
 
-Navi prompt content has four separate jobs. Keep them separate.
-
-Navi treats prompts as an operating-system interface, not loose strings. A prompt is assembled from named blocks with explicit tier, source, trust, mutability, and digest metadata. The rendered text is what the model sees; the manifest is what tests, traces, and future evolution systems can inspect.
+Navi treats prompts as an inspectable interface. Stable policy, volatile
+runtime facts, capability manifests, memory, and user content are separate
+blocks with source, trust, mutability, and digest metadata.
 
 Implementation: `src/navi/prompt_os.py`
 
-Inspection: `navi prompts inspect planner --json-output` and `navi prompts inspect responder --json-output`
+Inspection:
 
-Core objects:
-
-- `PromptBlock`: one named block with tier/source/trust/mutability metadata.
-- `PromptAssembly`: an ordered set of blocks that can render text and expose a digest manifest.
-- `assemble_planner_system_prompt`: stable planner policy.
-- `assemble_planner_turn_input`: turn-scoped runtime facts, roles, and tool manifest.
-- `assemble_responder_system_prompt`: user-facing response synthesis layers.
+```bash
+navi prompts inspect planner --json-output
+navi prompts inspect responder --json-output
+```
 
 ## Planner System Prompt
 
-Sources: `src/navi/specs_data.py` (SYSCALL_PLANNER_SPEC), `src/navi/prompt_os.py`
+Sources: `src/navi/specs_data.py`, `src/navi/prompt_os.py`
 
-This prompt owns syscall selection boundaries:
+The planner system prompt defines only generic protocol boundaries:
 
-- output contract
-- prompt and tool boundaries
-- generic schema, permission, and mutation constraints
-- runtime fact boundaries
-- security rules
+- structured syscall output;
+- trust boundaries for user, conversation, memory, and tool content;
+- schema, permission, mutation, and role constraints;
+- separation between facts, capabilities, and decisions.
 
-It must not contain product-flow routing, one-off fixes for a single tool result, or connector-specific recovery recipes. If a rule is needed after a capability mutates state, express it as a generic state-transition invariant or move deterministic behavior into runtime state/control-plane code.
+It must not encode product keyword routing, connector-specific recovery, or a
+one-off fix for a capability result. Deterministic behavior belongs in schemas,
+state machines, policy envelopes, hooks, or capability implementations.
 
 ## Planner Turn Input
 
 Sources: `ModelSyscallPlanner.plan`, `assemble_planner_turn_input`
 
-The user message sent to the planner contains turn-scoped data:
+Required turn input carries volatile data:
 
-- recent conversation inside `<conversation_history>`
-- runtime facts inside `<runtime_facts>`
-- current user request inside `<user_message>`
-- permission ceiling
-- model role contracts
-- available tool manifest
+- conversation history;
+- current user request;
+- LoopSpec and LoopRun state;
+- objective and prior-attempt evidence;
+- current durable state and approval facts;
+- recalled memory with provenance;
+- permission and capability policy;
+- the filtered tool manifest.
 
-This content is state and data, not policy. Conversation and user input are untrusted.
+Conversation, memory, connector payloads, and tool outputs are untrusted data.
+They cannot override the system prompt or execution policy envelope.
 
 ## Tool Manifest
 
-Sources: `src/navi/actions/specs.py`, `src/navi/core_tools.py`
+Sources: `src/navi/actions/specs.py`, `src/navi/core_tools/registration.py`
 
-Tool descriptions define capability semantics only: what the tool can do. They do not carry routing policy, product principles, refusal rules, or follow-up behavior.
+Tool descriptions define capability semantics, inputs, outputs, permissions,
+mutation behavior, and side-effect policy. They do not tell the planner which
+business workflow to choose.
 
-Mutating tools should return structured facts that describe state transitions, for example:
-
-```json
-{
-  "entity_type": "watch",
-  "entity_id": "watch-id",
-  "state_transition": "created",
-  "turn_scope": "current"
-}
-```
-
-The planner can reason over these generic facts without tool-specific prompt patches.
-
-All mutating capabilities should return the same minimum transition vocabulary:
+Mutating capabilities return a shared transition vocabulary where applicable:
 
 - `entity_type`
 - `entity_id`
 - `state_transition`
 - `turn_scope`
 
-Tool-specific fields may still be present, but they must not be the only way to understand whether state changed in the current turn.
+Tool-specific fields may extend this vocabulary but cannot be the only evidence
+that state changed.
 
-## Runtime Responder Prompt
+## Responder Prompt
 
-Sources: `src/navi/prompt_layers.py`, `build_system_prompt`, `assemble_responder_system_prompt`
+Sources: `assemble_fact_response_system_prompt`,
+`assemble_fact_response_turn_input`, `build_system_prompt`
 
-`build_system_prompt` composes identity, runtime facts, authorization, memory, skills, and style for user-facing response synthesis. It should not duplicate planner routing rules.
-
-Responder layers are not planner policy. They control how Navi explains known facts to the user.
+The responder converts verified facts into user-facing language. It does not
+re-plan execution, invent missing success, approve operations, or replace a
+pending clarification selected by the planner.
 
 ## Audit Contract
 
-Every prompt assembly exposes a manifest containing:
+Every prompt assembly exposes a manifest containing its assembly name, block
+names, tiers, sources, trust and mutability markers, per-block digests, and full
+digest. Tests and traces inspect this manifest instead of parsing rendered
+prose.
 
-- assembly name
-- block names
-- tiers
-- sources
-- trust and mutability markers
-- per-block digests
-- full assembly digest
-
-This gives prompt evolution and tests an inspectable surface without parsing rendered prose.
-
-The CLI inspection command is the supported headless audit surface for these manifests.
-
-## Reference Pattern
-
-Hermes documents a similar separation: stable prompt layers, context layers, and volatile runtime layers are assembled in order, while API-call-time overlays remain separate from the cached system prompt. Navi follows the same idea but splits planner policy, tool manifests, runtime facts, and responder persona more explicitly.
+Prompt changes that alter machine behavior require the same review, regression
+tests, and trace evidence as code changes.

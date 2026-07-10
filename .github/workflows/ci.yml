@@ -42,11 +42,11 @@ jobs:
       - name: Validate Claw eval dataset
         run: navi eval claw --validate-only --dataset evals/claw_navi.yaml
 
-      - name: Validate delegation eval dataset
-        run: navi eval delegations --validate-only --json-output
+      - name: Lint
+        run: ruff check src tests
 
       - name: Test with coverage report
-        run: pytest --cov=src/navi --cov-report=term-missing --cov-fail-under=0 -q -W error::pytest.PytestUnraisableExceptionWarning
+        run: pytest --cov=src/navi --cov-report=term-missing -q -W error::pytest.PytestUnraisableExceptionWarning
 
   package:
     name: Package

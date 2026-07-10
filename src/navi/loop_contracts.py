@@ -663,6 +663,7 @@ def default_state_graph() -> tuple[StateTransition, ...]:
         StateTransition(LoopNode.EXECUTE, LoopTerminalState.TIMED_OUT, "hard_timeout"),
         StateTransition(LoopNode.EXECUTE, LoopNode.PAUSE, "resource_pause"),
         StateTransition(LoopNode.EXECUTE, LoopNode.ESCALATE, "resource_escalate"),
+        StateTransition(LoopNode.EXECUTE, LoopNode.ESCALATE, "approval_required"),
         StateTransition(LoopNode.EXECUTE, LoopTerminalState.BLOCKED, "resource_blocked"),
         StateTransition(LoopNode.EVALUATE, LoopTerminalState.CONVERGED, "checker_passed"),
         StateTransition(LoopNode.EVALUATE, LoopNode.PLAN, "continue_iteration"),

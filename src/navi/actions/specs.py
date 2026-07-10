@@ -42,6 +42,14 @@ ACTION_SPECS = [
                     "type": "string",
                     "enum": ["turn", "control", "durable_goal", "scheduled"],
                 },
+                "cron_schedule": {
+                    "type": "string",
+                    "description": (
+                        "Required when loop_kind is scheduled. Use a five-field cron "
+                        "expression, for example '54 11 * * *' for daily at 11:54."
+                    ),
+                },
+                "parent_goal_id": {"type": "string"},
                 "scope": {"type": "array", "items": {"type": "string"}},
                 "constraints": {"type": "array", "items": {"type": "string"}},
                 "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
@@ -71,6 +79,9 @@ ACTION_SPECS = [
                 "loop_run_id": {"type": "string"},
                 "route": {"type": "string"},
                 "loop_kind": {"type": "string"},
+                "cron_schedule": {"type": "string"},
+                "next_run_at": {"type": "number"},
+                "registration_evidence": {"type": "boolean"},
                 "budget_policy": {"type": "object"},
                 "phase": {"type": "string"},
                 "governance": {"type": "string"},

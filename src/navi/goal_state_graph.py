@@ -34,15 +34,39 @@ async def run_goal_loop_state_graph(
         "run_id": base.run.id,
         **(evidence or {}),
     }
+    planner_port = ModelCapabilityPlannerPort(
+        runtime=runtime,
+        capabilities=planner_capabilities,
+        context=context,
+    )
+    executor_port = CapabilityExecutorPort(
+        home=home,
+        context=context,
+        sensitive_approval_mode="enforce",
+        governed_run_id=base.run.id,
+    )
+    reflector_port = LLMReflectorPort(runtime=runtime)
+    checker_port = LLMSemanticCheckerPort(runtime=runtime)
+
+    if context.trace_id:
+        from .trace_proxies import (
+            TracingPlannerPortProxy,
+            TracingExecutorPortProxy,
+            TracingReflectorPortProxy,
+            TracingSemanticCheckerPortProxy,
+        )
+        trace_store = TraceStore(home)
+        planner_port = TracingPlannerPortProxy(planner_port, trace_store, context)
+        executor_port = TracingExecutorPortProxy(executor_port, trace_store, context)
+        reflector_port = TracingReflectorPortProxy(reflector_port, trace_store, context)
+        checker_port = TracingSemanticCheckerPortProxy(checker_port, trace_store, context)
+
     runner = DurableStateGraphRunner(
         home=home,
-        planner_port=ModelCapabilityPlannerPort(
-            runtime=runtime,
-            capabilities=planner_capabilities,
-        ),
-        executor_port=CapabilityExecutorPort(home=home, context=context),
-        llm_reflector_port=LLMReflectorPort(runtime=runtime),
-        semantic_checker_port=LLMSemanticCheckerPort(runtime=runtime),
+        planner_port=planner_port,
+        executor_port=executor_port,
+        llm_reflector_port=reflector_port,
+        semantic_checker_port=checker_port,
         trace_store=TraceStore(home) if context.trace_id else None,
         trace_context=context,
     )

@@ -3,16 +3,17 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from ..tools import ToolResult
 from .codebase import _project_path
-from .paths import _is_browser_url
 from .run_command import _run_command
 from .utils import _positive_int
 
 def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     url = str(args.get("url") or "").strip()
-    if not _is_browser_url(url):
-        return ToolResult(tool="browser.screenshot", ok=False, error="url must be public http(s)")
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return ToolResult(tool="browser.screenshot", ok=False, error="url must be http(s)")
     output, error = _project_path(args.get("path"), project_dir=project_dir)
     if error:
         return ToolResult(tool="browser.screenshot", ok=False, error=error)
@@ -58,5 +59,4 @@ def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResul
             "size": output.stat().st_size if output.exists() else 0,
         },
     )
-
 

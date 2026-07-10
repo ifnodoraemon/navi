@@ -46,7 +46,7 @@ def _codebase_search(args: dict[str, Any], *, project_dir: Path, home: Path) -> 
         return ToolResult(tool="codebase.search", ok=False, error=str(exc))
 
 
-def _resolve_binary_error(command: list[str]) -> str:
+def _resolve_binary_error(command: list[str], *, path: str | None = None) -> str:
     """Pre-flight check: return an error message if ``command[0]`` is not on
     PATH. Without this guard a missing binary raises a confusing
     ``[Errno 2] No such file or directory: 'python'``."""
@@ -63,6 +63,6 @@ def _resolve_binary_error(command: list[str]) -> str:
         or os.path.altsep and os.path.altsep in binary
     ):
         return ""
-    if shutil.which(binary):
+    if shutil.which(binary, path=path):
         return ""
     return f"binary '{binary}' not found on PATH."

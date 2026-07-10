@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -83,15 +83,26 @@ class LoopRunStore:
             raise KeyError(f"loop spec not found: {spec_id}")
         return str(row[0])
 
-    def create_run(self, spec: LoopSpec, *, parent_run_id: str = "") -> LoopRunState:
+    def create_run(
+        self,
+        spec: LoopSpec,
+        *,
+        parent_run_id: str = "",
+        node: LoopNode | str = LoopNode.PLAN,
+        terminal_state: LoopTerminalState | str = "",
+        evidence: dict[str, Any] | None = None,
+        event_type: str = "loop.run_created",
+    ) -> LoopRunState:
         spec.validate()
         now = time.time()
         state = LoopRunState(
             run_id=uuid.uuid4().hex,
             goal_id=spec.goal_id,
             loop_spec_id=spec.id,
-            node=LoopNode.PLAN,
+            node=node,
+            terminal_state=terminal_state,
             parent_run_id=parent_run_id,
+            evidence=dict(evidence or {}),
             updated_at=now,
         )
         with connect(self.db_path) as conn:
@@ -107,7 +118,12 @@ class LoopRunStore:
                 """,
                 _loop_run_insert_values(state, created_at=now),
             )
-            _insert_event(conn, state, "loop.run_created", evidence={"loop_spec_id": spec.id})
+            _insert_event(
+                conn,
+                state,
+                event_type,
+                evidence={"loop_spec_id": spec.id, **(evidence or {})},
+            )
         return state
 
     def get_run(self, run_id: str) -> LoopRunState | None:
@@ -117,6 +133,45 @@ class LoopRunStore:
                 (run_id,),
             ).fetchone()
         return _loop_run_from_row(row) if row else None
+
+    def reopen_for_resume(self, run_id: str) -> LoopRunState:
+        """Reopen a paused loop at PLAN after its external gate is resolved."""
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"loop run not found: {run_id}")
+            current = _loop_run_from_row(row)
+            if str(current.terminal_state) not in {
+                str(LoopTerminalState.PAUSED),
+                str(LoopTerminalState.WAITING_APPROVAL),
+            }:
+                raise ValueError(
+                    f"loop run is not resumable from terminal state: {current.terminal_state}"
+                )
+            reopened = replace(
+                current,
+                node=LoopNode.EXECUTE,
+                terminal_state="",
+                updated_at=time.time(),
+            )
+            conn.execute(
+                """
+                UPDATE loop_runs
+                SET node = ?, terminal_state = '', updated_at = ?
+                WHERE id = ?
+                """,
+                (str(reopened.node), reopened.updated_at, run_id),
+            )
+            _insert_event(
+                conn,
+                reopened,
+                "loop.resumed",
+                evidence={"previous_terminal_state": str(current.terminal_state)},
+            )
+        return reopened
 
     def list_active(self, *, limit: int = 50) -> list[LoopRunState]:
         with connect(self.db_path) as conn:

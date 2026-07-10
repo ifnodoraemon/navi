@@ -7,7 +7,6 @@ from contextlib import closing
 import pytest
 
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
-from navi.control_plane import TurnController
 from navi.connector_runtime import ConnectorMessage, ConnectorIngressRuntime
 from navi.evolution import EvolutionEngine, EvolutionLedger
 from navi.capabilities import build_capability_registry

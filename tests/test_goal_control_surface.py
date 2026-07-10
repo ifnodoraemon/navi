@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shlex
 import sys
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
@@ -14,10 +15,23 @@ from navi.lifecycle import Resolution
 from navi.loop_contracts import LoopTerminalState
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
+from navi.runs import RunStore
 
 
 def _command(script: str) -> str:
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+
+def _approve_pending(home: Path, run_id: str) -> None:
+    runs = RunStore(home)
+    approval = runs.pending_approval_for_run(run_id)
+    assert approval is not None
+    resolved = runs.resolve_approval(
+        approval.id,
+        decision="approve",
+        resolved_by="tester",
+    )
+    assert resolved is not None
 
 
 class _PlanningProvider:
@@ -163,11 +177,22 @@ def test_goal_api_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch):
     opened = opened_response.json()["data"]["facts"]
     assert provider.calls == ["planner"]
     assert opened["state_transition"] == "opened"
-    assert opened["loop_terminal_state"] == LoopTerminalState.CONVERGED
-    assert opened["completion_evidence"] is True
+    assert opened["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL
+    assert opened["completion_evidence"] is False
     evidence = opened["state_graph_result"]["evidence"]
     assert evidence["planned_capability"]["tool"] == "file.write"
-    assert evidence["capability_result"]["ok"] is True
+    assert evidence["capability_result"]["yields_control"] is True
+    _approve_pending(tmp_path, opened["run_id"])
+    resumed_response = client.post(
+        api_path("goal_resume").format(goal_id=opened["goal_id"]),
+        json={"workspace": str(tmp_path)},
+        headers=headers,
+    )
+    assert resumed_response.status_code == 200, resumed_response.text
+    completed = resumed_response.json()["data"]["facts"]
+    assert provider.calls == ["planner"]
+    assert completed["loop_terminal_state"] == LoopTerminalState.CONVERGED
+    assert completed["completion_evidence"] is True
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
 
 
@@ -211,11 +236,21 @@ def test_goal_api_resume_uses_runtime_state_graph(tmp_path, monkeypatch):
     resumed = resumed_response.json()["data"]["facts"]
     assert provider.calls == ["planner"]
     assert resumed["state_transition"] == "resumed"
-    assert resumed["loop_terminal_state"] == LoopTerminalState.CONVERGED
-    assert resumed["completion_evidence"] is True
+    assert resumed["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL
     evidence = resumed["state_graph_result"]["evidence"]
     assert evidence["planned_capability"]["tool"] == "file.write"
-    assert evidence["capability_result"]["ok"] is True
+    assert evidence["capability_result"]["yields_control"] is True
+    _approve_pending(tmp_path, resumed["run_id"])
+    completed_response = client.post(
+        api_path("goal_resume").format(goal_id=opened["goal_id"]),
+        json={"workspace": str(tmp_path)},
+        headers=headers,
+    )
+    assert completed_response.status_code == 200, completed_response.text
+    completed = completed_response.json()["data"]["facts"]
+    assert provider.calls == ["planner"]
+    assert completed["loop_terminal_state"] == LoopTerminalState.CONVERGED
+    assert completed["completion_evidence"] is True
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
 
 
@@ -253,11 +288,22 @@ def test_goal_cli_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch):
     opened = json.loads(opened_result.output)
     assert provider.calls == ["planner"]
     assert opened["state_transition"] == "opened"
-    assert opened["loop_terminal_state"] == LoopTerminalState.CONVERGED
-    assert opened["completion_evidence"] is True
+    assert opened["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL
+    assert opened["completion_evidence"] is False
     evidence = opened["state_graph_result"]["evidence"]
     assert evidence["planned_capability"]["tool"] == "file.write"
-    assert evidence["capability_result"]["ok"] is True
+    assert evidence["capability_result"]["yields_control"] is True
+    _approve_pending(tmp_path, opened["run_id"])
+    resumed_result = runner.invoke(
+        cli_module.app,
+        ["goal", "resume", opened["goal_id"], "--workspace", str(tmp_path)],
+        env=env,
+    )
+    assert resumed_result.exit_code == 0, resumed_result.output
+    completed = json.loads(resumed_result.output)
+    assert provider.calls == ["planner"]
+    assert completed["loop_terminal_state"] == LoopTerminalState.CONVERGED
+    assert completed["completion_evidence"] is True
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
 
 
@@ -305,9 +351,19 @@ def test_goal_cli_resume_uses_runtime_state_graph(tmp_path, monkeypatch):
     resumed = json.loads(resumed_result.output)
     assert provider.calls == ["planner"]
     assert resumed["state_transition"] == "resumed"
-    assert resumed["loop_terminal_state"] == LoopTerminalState.CONVERGED
-    assert resumed["completion_evidence"] is True
+    assert resumed["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL
     evidence = resumed["state_graph_result"]["evidence"]
     assert evidence["planned_capability"]["tool"] == "file.write"
-    assert evidence["capability_result"]["ok"] is True
+    assert evidence["capability_result"]["yields_control"] is True
+    _approve_pending(tmp_path, resumed["run_id"])
+    completed_result = runner.invoke(
+        cli_module.app,
+        ["goal", "resume", opened["goal_id"], "--workspace", str(tmp_path)],
+        env=env,
+    )
+    assert completed_result.exit_code == 0, completed_result.output
+    completed = json.loads(completed_result.output)
+    assert provider.calls == ["planner"]
+    assert completed["loop_terminal_state"] == LoopTerminalState.CONVERGED
+    assert completed["completion_evidence"] is True
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"

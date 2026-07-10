@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any
 
 from .loop_contracts import RequestIntent, RequestRoute
-from .provider import ChatMessage, ModelPool
 
 
 @dataclass(frozen=True)
@@ -62,55 +60,6 @@ class RequestRouter:
         return request_router_contract()
 
 
-class ModelRequestRouter:
-    """LLM-backed intake validator that must output the same explicit contract."""
-
-    def __init__(self, provider: ModelPool):
-        self.provider = provider
-        self.validator = RequestRouter()
-
-    async def route(
-        self,
-        text: str,
-        *,
-        current_state: dict[str, Any],
-        connector_facts: dict[str, Any] | None = None,
-    ) -> RequestRoutingDecision:
-        response = await self.provider.complete_for(
-            "router",
-            [
-                ChatMessage(
-                    "system",
-                    (
-                        "You are Navi's unified loop intake validator. Classify the intent according to the provided schema. "
-                        "Do not answer the user and do not select capabilities."
-                    ),
-                ),
-                ChatMessage(
-                    "user",
-                    json.dumps(
-                        {
-                            "user_request": text,
-                            "current_state": current_state,
-                            "connector_facts": connector_facts or {},
-                            "contract": request_router_contract(),
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    ),
-                ),
-            ],
-            output_schema=_routing_output_schema(),
-        )
-        try:
-            parsed = json.loads(response)
-        except json.JSONDecodeError as exc:
-            raise ValueError("router returned invalid JSON") from exc
-        if not isinstance(parsed, dict):
-            raise ValueError("router JSON was not an object")
-        return self.validator.route_model_decision(parsed)
-
-
 def route_for_intent(intent: RequestIntent | str) -> RequestRoute:
     _parse_intent(intent)
     return RequestRoute.UNIFIED_LOOP
@@ -146,25 +95,3 @@ def _confidence(value: Any) -> float:
 
 def _facts(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
-
-
-def _routing_output_schema() -> dict[str, Any]:
-    return {
-        "name": "request_routing_decision",
-        "strict": False,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "intent": {
-                    "type": "string",
-                    "enum": [str(item) for item in RequestIntent],
-                },
-                "reason": {"type": "string"},
-                "confidence": {"type": "number"},
-                "goal_id": {"type": "string"},
-                "facts": {"type": "object"},
-            },
-            "required": ["intent", "reason", "confidence", "facts"],
-            "additionalProperties": False,
-        },
-    }

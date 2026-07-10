@@ -12,7 +12,6 @@ from .capability_contract import CAPABILITY_ERROR_REASON_KEY
 from .db import connect, check_schema_version, write_schema_version
 from .json_utils import json_object
 from .loop import (
-    LoopCheckName,
     LoopCheckResult,  # noqa: F401 - re-exported for trace tests and callers.
     LoopDecision,
     LoopDecisionKind,
@@ -671,6 +670,17 @@ def _event_input(event: TraceEvent) -> dict[str, Any]:
 def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRunView]:
     if not events:
         return []
+
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+
+    for event in events:
+        out = _event_output(event)
+        if out and "usage" in out and isinstance(out["usage"], dict):
+            u = out["usage"]
+            total_prompt_tokens += u.get("prompt_tokens", 0)
+            total_completion_tokens += u.get("completion_tokens", 0)
+
     first_session_id = next((event.session_id for event in events if event.session_id), "")
     draft = _evaluate_trace_with_rules(events, _base_trace_evidence(events))
     root = TraceRunView(
@@ -692,6 +702,11 @@ def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRu
             "event_count": len(events),
             "source": next((event.source for event in events if event.source), ""),
             "session_id": first_session_id,
+            "usage": {
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+                "total_tokens": total_prompt_tokens + total_completion_tokens,
+            }
         },
     )
 
@@ -1141,7 +1156,10 @@ def _successful_completion_after(
             event_tool=event.tool,
             event_run_id=event.run_id,
         )
-        if summary.decision != str(LoopDecisionKind.FINALIZE):
+        if summary.decision not in {
+            str(LoopDecisionKind.FINALIZE),
+            str(LoopDecisionKind.CONVERGED),
+        }:
             continue
         if summary.failure_domain not in {"", str(TraceFailureDomain.NONE)}:
             continue
@@ -1254,14 +1272,29 @@ def _converged_loop_decision_rule(
     events: list[TraceEvent],
     evidence: dict[str, Any],
 ) -> TraceEvaluationDraft | None:
-    del output, events
+    del output
     if summary.decision != LoopDecisionKind.CONVERGED:
         return None
+    has_issue = bool(summary.failed_checkers or summary.failed_gates)
+    failure_domain = summary.failure_domain
+    if failure_domain not in {"", str(TraceFailureDomain.NONE)}:
+        has_issue = True
+    if _first_failure(events) is not None and not has_issue:
+        # Let the phase-specific rules classify a recovered failure as
+        # degraded instead of allowing a final converged decision to hide it.
+        return None
+    if not has_issue:
+        return _evaluation(
+            TraceOutcome.SUCCESS,
+            TraceFailureDomain.NONE,
+            evidence,
+            rule="loop_decision_converged",
+        )
     return _evaluation(
         TraceOutcome.DEGRADED,
-        TraceFailureDomain.LOOP_NO_PROGRESS,
+        failure_domain or TraceFailureDomain.LOOP_NO_PROGRESS,
         evidence,
-        rule="loop_decision_converged",
+        rule="loop_decision_converged_with_issue",
     )
 
 

@@ -60,10 +60,15 @@ class GoalOpenCapability(BaseCapability):
             max_concurrent=_positive_int(args.get("max_concurrent"), default=1, maximum=100),
             auto_start=bool(args.get("auto_start", True)),
             cron_schedule=_arg_text(args, "cron_schedule"),
+            parent_goal_id=_arg_text(args, "parent_goal_id"),
         )
         try:
             service = LoopControlService(self.home)
-            if request.auto_start and self.runtime is not None:
+            if (
+                request.auto_start
+                and self.runtime is not None
+                and request.loop_kind != "scheduled"
+            ):
                 opened = service.open_goal(replace(request, auto_start=False))
                 result = await run_goal_loop_state_graph(
                     home=self.home,
@@ -73,8 +78,7 @@ class GoalOpenCapability(BaseCapability):
                     planner_capabilities=_planner_capabilities(
                         self.home,
                         opened.goal.workspace,
-                        permission_ceiling=request.permission_ceiling
-                        or context.permission_ceiling,
+                        context=context,
                         runtime=self.runtime,
                     ),
                     context=context,
@@ -93,7 +97,14 @@ class GoalOpenCapability(BaseCapability):
         promoted = _promote_outbound_facts(result)
         if promoted:
             facts = {**facts, **promoted}
-        return _fact_result("goal", facts, run_id=result.run.id)
+        responded_message = str(facts.get("responded_message") or "")
+        return CapabilityResult(
+            ok=True,
+            action="goal",
+            message=responded_message,
+            run_id=result.run.id,
+            facts=facts,
+        )
 
 
 @capability("goal_resume")
@@ -138,7 +149,7 @@ class GoalResumeCapability(BaseCapability):
                     planner_capabilities=_planner_capabilities(
                         self.home,
                         prepared.goal.workspace,
-                        permission_ceiling=context.permission_ceiling,
+                        context=context,
                         runtime=self.runtime,
                     ),
                     context=context,
@@ -239,13 +250,25 @@ def _nonnegative_float(value: Any, *, maximum: float) -> float:
     return max(0.0, min(parsed, maximum))
 
 
-def _planner_capabilities(home: Path, workspace: str, *, permission_ceiling: str, runtime: Any):
+def _planner_capabilities(
+    home: Path,
+    workspace: str,
+    *,
+    context: CapabilityContext,
+    runtime: Any,
+):
     from ..capabilities import CapabilityRegistry
 
     return CapabilityRegistry(
         home=home,
         project_dir=Path(workspace),
-        permission_ceiling=permission_ceiling,
+        allowed_tools=(
+            set(context.allowed_tools) if context.allowed_tools is not None else None
+        ),
+        disabled_tools=set(context.disabled_tools),
+        disabled_capability_classes=context.disabled_capability_classes,
+        permission_ceiling=context.permission_ceiling,
+        enforce_connector_source_policy=context.enforce_connector_source_policy,
         runtime=runtime,
     )
 
@@ -260,11 +283,22 @@ def _promote_outbound_facts(result: Any) -> dict[str, Any]:
     runtime's ``_send_reply`` can actually dispatch the file. Without this
     promotion the file is staged to the outbox but never sent, and the user
     receives nothing.
+
+    A ``respond`` capability's message is preserved in
+    ``evidence["responded_message"]`` across the whole loop (even when a
+    later capability overwrites ``capability_result``), so we promote it
+    here too — otherwise the question the model asked never reaches the user.
     """
     state_graph_result = getattr(result, "state_graph_result", None)
     if state_graph_result is None:
         return {}
     evidence = getattr(state_graph_result, "evidence", None) or {}
+    responded_message = str(evidence.get("responded_message") or "")
+    if responded_message:
+        return {
+            "responded_message": responded_message,
+            "responded_action": str(evidence.get("responded_action") or ""),
+        }
     capability_result = evidence.get("capability_result")
     if not isinstance(capability_result, dict):
         return {}
@@ -272,6 +306,11 @@ def _promote_outbound_facts(result: Any) -> dict[str, Any]:
     cap_facts = capability_result.get("facts")
     if not isinstance(cap_facts, dict):
         return {}
+    if action == "chat" or action == "ask":
+        message = str(capability_result.get("message") or "")
+        if not message:
+            return {}
+        return {"responded_message": message, "responded_action": action}
     outbound_path = str(cap_facts.get("outbound_path") or "")
     if action != "connector_outbound" or not outbound_path:
         return {}

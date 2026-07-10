@@ -32,10 +32,18 @@ def _parse_field(field: str, min_value: int, max_value: int) -> set[int]:
         return set(range(min_value, max_value + 1))
     if field.startswith("*/"):
         step = int(field[2:])
-        return set(range(min_value, max_value + 1, step))
-    if "," in field:
-        return {int(x) for x in field.split(",")}
-    return {int(field)}
+        if step <= 0:
+            raise ValueError("Cron step must be greater than zero")
+        values = set(range(min_value, max_value + 1, step))
+    elif "," in field:
+        values = {int(x) for x in field.split(",")}
+    else:
+        values = {int(field)}
+    if any(value < min_value or value > max_value for value in values):
+        raise ValueError(
+            f"Cron field value must be between {min_value} and {max_value}: {field}"
+        )
+    return values
 
 def _matches(field: str, value: int, min_value: int, max_value: int) -> bool:
     return value in _parse_field(field, min_value, max_value)

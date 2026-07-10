@@ -33,6 +33,7 @@ from navi.state_graph import (
     _transition_loop_decision,
 )
 from navi.trace import TraceStore
+from navi.trace_proxies import TracingPlannerPortProxy
 
 
 def _command(script: str) -> str:
@@ -70,6 +71,27 @@ def _spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
         ),
         goal_id="goal-1",
         allowed_capabilities=("test.run",),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.COMMAND_EXIT_CODE,
+                name="verification",
+                command=command,
+                timeout=TimeoutPolicy(seconds=timeout),
+            ),
+        ),
+    )
+
+
+def _respond_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
+    return LoopSpec.from_goal(
+        GoalSpec(
+            objective="ask the user a clarifying question",
+            scope=("repo:/tmp/project",),
+            acceptance_criteria=("verification command passes",),
+            permission_ceiling="read",
+        ),
+        goal_id="goal-1",
+        allowed_capabilities=("respond",),
         verification_ladder=(
             VerificationStep(
                 kind=VerificationKind.COMMAND_EXIT_CODE,
@@ -352,7 +374,11 @@ async def test_durable_state_graph_async_plan_execute_uses_llm_and_capability_po
             runtime=runtime,
             capabilities=planner_capabilities,
         ),
-        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
+        ),
     )
 
     result = await runner.run_async(
@@ -401,7 +427,11 @@ async def test_planner_context_compacts_long_session_history(tmp_path: Path) -> 
             runtime=runtime,
             capabilities=planner_capabilities,
         ),
-        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
+        ),
     )
     spec = _write_spec(_command("from pathlib import Path; assert Path('app.py').exists()"))
     spec = replace(
@@ -454,13 +484,21 @@ async def test_state_graph_traces_planner_usage(tmp_path: Path) -> None:
         trace_id="trace-planner-usage",
     )
     trace_store = TraceStore(tmp_path)
+
+    planner_port = ModelCapabilityPlannerPort(
+        runtime=runtime,
+        capabilities=planner_capabilities,
+    )
+    planner_port = TracingPlannerPortProxy(planner_port, trace_store, context)
+
     runner = DurableStateGraphRunner(
         home=tmp_path,
-        planner_port=ModelCapabilityPlannerPort(
-            runtime=runtime,
-            capabilities=planner_capabilities,
+        planner_port=planner_port,
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
         ),
-        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
         trace_store=trace_store,
         trace_context=context,
     )
@@ -523,7 +561,11 @@ async def test_state_graph_does_not_write_empty_trace_id_events(tmp_path: Path) 
             runtime=runtime,
             capabilities=planner_capabilities,
         ),
-        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
+        ),
         trace_store=trace_store,
         trace_context=context,
     )
@@ -570,7 +612,11 @@ async def test_planner_records_declared_memory_activation(tmp_path: Path) -> Non
             runtime=runtime,
             capabilities=planner_capabilities,
         ),
-        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
+        ),
     )
 
     result = await runner.run_async(
@@ -630,7 +676,11 @@ async def test_planner_memory_injection_does_not_record_activation_without_model
             runtime=runtime,
             capabilities=planner_capabilities,
         ),
-        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
+        ),
     )
 
     result = await runner.run_async(
@@ -675,7 +725,11 @@ async def test_durable_state_graph_uses_loop_budget_policy_and_traces_gate(tmp_p
             runtime=runtime,
             capabilities=planner_capabilities,
         ),
-        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
+        ),
         trace_store=TraceStore(tmp_path),
         trace_context=context,
     )
@@ -727,7 +781,11 @@ async def test_durable_state_graph_releases_staged_external_side_effect_after_ac
                 permission_ceiling="write",
             ),
         ),
-        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
+        ),
         trace_store=TraceStore(tmp_path),
         trace_context=context,
     )
@@ -781,7 +839,11 @@ async def test_durable_state_graph_compensates_staged_external_side_effect_on_re
                 permission_ceiling="write",
             ),
         ),
-        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
+        ),
         trace_store=TraceStore(tmp_path),
         trace_context=context,
     )
@@ -829,7 +891,11 @@ async def test_durable_state_graph_reflects_checker_failure_and_replans(tmp_path
             runtime=runtime,
             capabilities=planner_capabilities,
         ),
-        executor_port=CapabilityExecutorPort(home=tmp_path, context=context),
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
+        ),
     )
     spec = replace(
         _write_spec(_command("from pathlib import Path; assert Path('app.py').read_text() == 'agent\\n'")),
@@ -844,3 +910,90 @@ async def test_durable_state_graph_reflects_checker_failure_and_replans(tmp_path
     assert result.evidence["reflection"]["retry"] is True
     assert "recovery_fact" in result.evidence["reflection"]["facts"]
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
+
+
+class _RespondPlanningProvider:
+    """Planner that asks the user a clarifying question via respond.
+
+    Mirrors trace 1: the model calls ``respond`` to ask the user a question.
+    P1 requires that this message survives the loop and reaches the turn
+    result, instead of being silently dropped into ``collected_evidence``.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[ChatMessage]]] = []
+
+    async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+        del kwargs
+        self.calls.append((role, messages))
+        assert role == "planner"
+        return json.dumps(
+            {
+                "syscalls": [
+                    {
+                        "tool": "respond",
+                        "permission": "read",
+                        "args": {"message": "which investor should I send the resume to?"},
+                        "model_role": "executor",
+                        "reason": "objective is blocked by missing recipient identity",
+                    }
+                ]
+            }
+        )
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "executor", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_respond_message_is_preserved_across_loop(tmp_path: Path) -> None:
+    """P1: respond message must survive the loop and be promoted to evidence.
+
+    Before P1, ``respond``'s message was stored in
+    ``collected_evidence["capability_result"]["message"]`` but never promoted,
+    so the user never saw the question. P1 stores it in
+    ``responded_message`` so it reaches the turn result even when a later
+    capability overwrites ``capability_result``.
+    """
+    provider = _RespondPlanningProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    planner_capabilities = CapabilityRegistry(
+        home=tmp_path,
+        project_dir=tmp_path,
+        permission_ceiling="read",
+    )
+    context = CapabilityContext(
+        home=tmp_path,
+        source="state_graph",
+        peer_id="state_graph",
+        sender_id="tester",
+        permission_ceiling="read",
+        workspace=str(tmp_path),
+    )
+    runner = DurableStateGraphRunner(
+        home=tmp_path,
+        planner_port=ModelCapabilityPlannerPort(
+            runtime=runtime,
+            capabilities=planner_capabilities,
+        ),
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
+        ),
+    )
+    spec = replace(
+        _respond_spec(_command("print('ok')")),
+        retry_policy=RetryPolicy(max_attempts=1),
+    )
+
+    result = await runner.run_async(spec, workspace=tmp_path)
+
+    # The respond message must be preserved in evidence, not dropped.
+    assert result.evidence.get("responded_message") == (
+        "which investor should I send the resume to?"
+    )
+    assert result.evidence.get("responded_action") == "chat"

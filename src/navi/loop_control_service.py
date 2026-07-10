@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from .cron import next_cron_time, validate_cron
 from .goals import Goal, GoalStore
 from .lifecycle import Acceptance, Governance, Phase, Resolution
 from .loop_contracts import (
@@ -50,6 +52,7 @@ class OpenGoalRequest:
     max_concurrent: int = 1
     auto_start: bool = True
     cron_schedule: str = ""
+    parent_goal_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,11 @@ class LoopControlServiceResult:
             "loop_run_id": self.loop_run.run_id,
             "route": "unified_loop",
             "loop_kind": str((self.loop_spec.goal.metadata or {}).get("loop_kind") or ""),
+            "cron_schedule": self.goal.cron_schedule,
+            "next_run_at": self.goal.next_run_at,
+            "registration_evidence": bool(
+                self.goal.cron_schedule and self.goal.next_run_at > 0
+            ),
             "budget_policy": self.loop_spec.budget_policy.to_dict(),
             "phase": self.run.phase,
             "governance": self.run.governance,
@@ -80,7 +88,10 @@ class LoopControlServiceResult:
             "resolution": self.run.resolution,
             "loop_node": str(self.loop_run.node),
             "loop_terminal_state": str(self.loop_run.terminal_state),
-            "completion_evidence": self.loop_run.terminal_state == LoopTerminalState.CONVERGED,
+            "completion_evidence": (
+                self.loop_run.terminal_state == LoopTerminalState.CONVERGED
+                and self.run.resolution == Resolution.SUCCESS
+            ),
             "state_graph_result": self.state_graph_result.to_dict()
             if self.state_graph_result
             else {},
@@ -100,11 +111,38 @@ class LoopControlService:
         objective = request.objective.strip()
         if not objective:
             raise ValueError("OpenGoalRequest.objective is required")
+        loop_kind = _loop_kind(request.loop_kind)
+        cron_schedule = request.cron_schedule.strip()
+        if loop_kind == "scheduled":
+            if not cron_schedule:
+                raise ValueError("scheduled goal requires cron_schedule")
+            validate_cron(cron_schedule)
+            existing = self.goals.find_active_cron_goal(
+                objective=objective,
+                cron_schedule=cron_schedule,
+                source=request.source,
+                peer_id=request.peer_id,
+                sender_id=request.sender_id,
+            )
+            if existing is not None:
+                existing_run = self.runs.get(existing.run_id)
+                existing_loop_runs = self.loop_runs.list_by_goal(existing.id, limit=1)
+                if existing_run is not None and existing_loop_runs:
+                    existing_loop = existing_loop_runs[0]
+                    return LoopControlServiceResult(
+                        goal=existing,
+                        run=existing_run,
+                        loop_spec=_loop_spec_from_json(
+                            self.loop_runs.get_spec_json(existing_loop.loop_spec_id)
+                        ),
+                        loop_run=existing_loop,
+                        state_transition="existing",
+                    )
         workspace = _resolve_workspace(request.workspace)
         run = self.runs.create(
             title=objective[:120],
             prompt=objective,
-            kind=f"loop:{_loop_kind(request.loop_kind)}",
+            kind=f"loop:{loop_kind}",
             source=request.source,
             peer_id=request.peer_id,
             sender_id=request.sender_id,
@@ -113,36 +151,161 @@ class LoopControlService:
             governance=Governance.APPROVED,
             acceptance=Acceptance.NONE,
             resolution=Resolution.NONE,
-            why_now=f"trigger=unified_loop loop_kind={_loop_kind(request.loop_kind)}",
+            why_now=f"trigger=unified_loop loop_kind={loop_kind}",
         )
-        next_run_at = next_cron_time(request.cron_schedule, now=time.time()) if request.cron_schedule else 0.0
-        goal = self.goals.create(
-            objective=objective,
-            workspace=workspace,
-            source=request.source,
-            peer_id=request.peer_id,
-            sender_id=request.sender_id,
-            session_id=request.session_id,
-            run_id=run.id,
-            timeout=float(max(1, request.timeout_seconds)),
-            max_retries=1,
-            cron_schedule=request.cron_schedule,
-            next_run_at=next_run_at,
-            evidence={
-                "route": "unified_loop",
-                "loop_kind": _loop_kind(request.loop_kind),
-                "run_id": run.id,
-                "verification_command_declared": bool(request.verification_command.strip()),
-            },
+        goal: Goal | None = None
+        try:
+            next_run_at = (
+                next_cron_time(cron_schedule, now=time.time())
+                if cron_schedule
+                else 0.0
+            )
+            goal = self.goals.create(
+                objective=objective,
+                workspace=workspace,
+                source=request.source,
+                peer_id=request.peer_id,
+                sender_id=request.sender_id,
+                session_id=request.session_id,
+                run_id=run.id,
+                timeout=float(max(1, request.timeout_seconds)),
+                max_retries=1,
+                parent_goal_id=request.parent_goal_id,
+                task_status="scheduled" if loop_kind == "scheduled" else "in_progress",
+                cron_schedule=cron_schedule,
+                next_run_at=next_run_at,
+                evidence={
+                    "route": "unified_loop",
+                    "loop_kind": loop_kind,
+                    "run_id": run.id,
+                    "verification_command_declared": bool(
+                        request.verification_command.strip()
+                    ),
+                },
+            )
+            spec = self._loop_spec_for_goal(goal, request, workspace=workspace)
+            if loop_kind == "scheduled":
+                registration = {
+                    "state_transition": "schedule_registered",
+                    "cron_schedule": cron_schedule,
+                    "next_run_at": next_run_at,
+                }
+                loop_run = self.loop_runs.create_run(
+                    spec,
+                    node="evaluate",
+                    terminal_state=LoopTerminalState.CONVERGED,
+                    evidence=registration,
+                    event_type="loop.schedule_registered",
+                )
+                updated_run = self.runs.update_run(
+                    run.id,
+                    phase=Phase.ENDED,
+                    governance=Governance.NONE,
+                    acceptance=Acceptance.ACCEPTED,
+                    resolution=Resolution.SUCCESS,
+                    result_summary="schedule registered",
+                    error="",
+                )
+                if updated_run is not None:
+                    run = updated_run
+                updated_goal = self.goals.update_state(
+                    goal.id,
+                    phase=Phase.RUNNING,
+                    governance=Governance.APPROVED,
+                    acceptance=Acceptance.ACCEPTED,
+                    resolution=Resolution.NONE,
+                    task_status="scheduled",
+                    evidence=registration,
+                    event_type="goal.schedule_registered",
+                )
+                if updated_goal is not None:
+                    goal = updated_goal
+            else:
+                loop_run = self.loop_runs.create_run(spec)
+        except Exception as exc:
+            self._compensate_open_failure(run, goal=goal, error=exc)
+            raise
+        return LoopControlServiceResult(
+            goal=goal,
+            run=run,
+            loop_spec=spec,
+            loop_run=loop_run,
+            state_transition="scheduled" if loop_kind == "scheduled" else "opened",
         )
-        spec = self._loop_spec_for_goal(goal, request, workspace=workspace)
-        loop_run = self.loop_runs.create_run(spec)
-        return LoopControlServiceResult(goal=goal, run=run, loop_spec=spec, loop_run=loop_run)
+
+    def open_scheduled_occurrence(self, goal: Goal) -> LoopControlServiceResult:
+        if not goal.cron_schedule:
+            raise ValueError("scheduled occurrence requires a cron goal")
+        template_runs = self.loop_runs.list_by_goal(goal.id, limit=1)
+        if not template_runs:
+            raise ValueError("scheduled goal has no loop specification")
+        template = _loop_spec_from_json(
+            self.loop_runs.get_spec_json(template_runs[0].loop_spec_id)
+        )
+        verification_command = next(
+            (step.command for step in template.verification_ladder if step.command),
+            "",
+        )
+        return self.open_goal(
+            OpenGoalRequest(
+                objective=goal.objective,
+                workspace=goal.workspace,
+                loop_kind="durable_goal",
+                source=goal.source,
+                peer_id=goal.peer_id,
+                sender_id=goal.sender_id,
+                session_id=goal.session_id,
+                scope=template.goal.scope,
+                constraints=template.goal.constraints,
+                acceptance_criteria=template.goal.acceptance_criteria,
+                permission_ceiling=template.goal.permission_ceiling,
+                allowed_capabilities=template.allowed_capabilities,
+                verification_command=verification_command,
+                token_budget=template.budget_policy.token_budget,
+                call_budget=template.budget_policy.call_budget,
+                cost_budget=template.budget_policy.cost_budget,
+                qps_limit=template.budget_policy.qps_limit,
+                max_concurrent=template.budget_policy.max_concurrent,
+                auto_start=False,
+                parent_goal_id=goal.id,
+            )
+        )
+
+    def _compensate_open_failure(
+        self,
+        run: Run,
+        *,
+        goal: Goal | None,
+        error: Exception,
+    ) -> None:
+        failure = f"loop_open_failed:{type(error).__name__}"
+        failed_run = self.runs.update_run(
+            run.id,
+            phase=Phase.ENDED,
+            governance=Governance.NONE,
+            acceptance=Acceptance.REJECTED,
+            resolution=Resolution.FAILED,
+            result_summary="loop creation failed",
+            error=failure,
+        )
+        if goal is not None and failed_run is not None:
+            self.goals.update_for_run(
+                failed_run,
+                evidence={
+                    "state_transition": "open_compensated",
+                    "error": failure,
+                },
+            )
 
     def resume_loop(self, *, loop_run_id: str, workspace: str) -> LoopControlServiceResult:
         state = self.loop_runs.get_run(loop_run_id)
         if state is None:
             raise KeyError(f"loop run not found: {loop_run_id}")
+        if str(state.terminal_state) in {
+            str(LoopTerminalState.PAUSED),
+            str(LoopTerminalState.WAITING_APPROVAL),
+        }:
+            state = self.loop_runs.reopen_for_resume(loop_run_id)
         spec = _loop_spec_from_json(self.loop_runs.get_spec_json(state.loop_spec_id))
         goal = self.goals.get(state.goal_id)
         if goal is None:
@@ -207,8 +370,54 @@ class LoopControlService:
             raise KeyError(f"goal not found: {goal_id}")
         loop_run = self._active_loop_for_goal(goal_id)
         if loop_run is None:
+            if goal.cron_schedule:
+                return self._cancel_scheduled_goal(goal, reason=reason)
             raise ValueError(f"goal has no active loop run to cancel: {goal_id}")
         return self.cancel_loop(loop_run_id=loop_run.run_id, reason=reason)
+
+    def _cancel_scheduled_goal(
+        self,
+        goal: Goal,
+        *,
+        reason: str,
+    ) -> LoopControlServiceResult:
+        template_runs = self.loop_runs.list_by_goal(goal.id, limit=1)
+        if not template_runs:
+            raise ValueError(f"scheduled goal has no registration loop: {goal.id}")
+        loop_run = template_runs[0]
+        spec = _loop_spec_from_json(self.loop_runs.get_spec_json(loop_run.loop_spec_id))
+        run = self.runs.get(goal.run_id)
+        if run is None:
+            raise KeyError(f"run not found for goal: {goal.run_id}")
+        evidence = {"reason": reason.strip() or "schedule_cancel_requested"}
+        updated_run = self.runs.update_run(
+            run.id,
+            phase=Phase.ENDED,
+            governance=Governance.NONE,
+            acceptance=Acceptance.REJECTED,
+            resolution=Resolution.CANCELED,
+            result_summary="schedule cancelled",
+            error="loop_cancelled",
+        )
+        if updated_run is None:
+            raise KeyError(f"run not found: {run.id}")
+        updated_goal = self.goals.update_state(
+            goal.id,
+            phase=Phase.ENDED,
+            governance=Governance.NONE,
+            acceptance=Acceptance.REJECTED,
+            resolution=Resolution.CANCELED,
+            task_status="blocked",
+            evidence=evidence,
+            event_type="goal.schedule_cancelled",
+        )
+        return LoopControlServiceResult(
+            goal=updated_goal or goal,
+            run=updated_run,
+            loop_spec=spec,
+            loop_run=loop_run,
+            state_transition="cancelled",
+        )
 
     def cancel_loop(self, *, loop_run_id: str, reason: str = "") -> LoopControlServiceResult:
         state = self.loop_runs.get_run(loop_run_id)
@@ -261,6 +470,7 @@ class LoopControlService:
             governance=Governance.NONE,
             acceptance=Acceptance.REJECTED,
             resolution=Resolution.CANCELED,
+            task_status="blocked",
             evidence={"loop_run_id": cancelled.run_id, **evidence},
             event_type="goal.cancelled",
         )
@@ -389,6 +599,9 @@ class LoopControlService:
 
     def _update_run_for_loop(self, run_id: str, result: StateGraphRunResult) -> Run:
         terminal = result.terminal_state
+        current = self.runs.get(run_id)
+        existing_summary = current.result_summary if current is not None else ""
+        surface_message = _surface_message_from_result(result)
         if terminal == str(LoopTerminalState.CONVERGED):
             updated = self.runs.update_run(
                 run_id,
@@ -396,7 +609,7 @@ class LoopControlService:
                 governance=Governance.NONE,
                 acceptance=Acceptance.ACCEPTED,
                 resolution=Resolution.SUCCESS,
-                result_summary="loop converged",
+                result_summary=surface_message or "loop converged",
                 error="",
             )
         elif terminal == str(LoopTerminalState.PAUSED):
@@ -405,7 +618,7 @@ class LoopControlService:
                 phase=Phase.PAUSED,
                 acceptance=Acceptance.UNVERIFIED,
                 resolution=Resolution.BLOCKED,
-                result_summary="loop paused",
+                result_summary=existing_summary or surface_message or "loop paused",
                 error="",
             )
         elif terminal == str(LoopTerminalState.WAITING_APPROVAL):
@@ -415,7 +628,7 @@ class LoopControlService:
                 governance=Governance.AWAITING_APPROVAL,
                 acceptance=Acceptance.UNVERIFIED,
                 resolution=Resolution.BLOCKED,
-                result_summary="loop waiting approval",
+                result_summary=existing_summary or surface_message or "loop waiting approval",
                 error="",
             )
         elif terminal == str(LoopTerminalState.CONFLICTED):
@@ -435,7 +648,7 @@ class LoopControlService:
                 governance=Governance.NONE,
                 acceptance=Acceptance.REJECTED,
                 resolution=Resolution.BLOCKED,
-                result_summary="loop blocked",
+                result_summary=surface_message or "loop blocked",
                 error="loop_blocked",
             )
         elif terminal == str(LoopTerminalState.TIMED_OUT):
@@ -445,7 +658,7 @@ class LoopControlService:
                 governance=Governance.NONE,
                 acceptance=Acceptance.REJECTED,
                 resolution=Resolution.FAILED,
-                result_summary="loop timed out",
+                result_summary=surface_message or "loop timed out",
                 error="loop_timed_out",
             )
         elif terminal in {
@@ -468,7 +681,7 @@ class LoopControlService:
                 governance=Governance.NONE,
                 acceptance=Acceptance.REJECTED,
                 resolution=Resolution.FAILED,
-                result_summary="loop failed",
+                result_summary=surface_message or "loop failed",
                 error="loop_failed",
             )
         elif terminal:
@@ -496,7 +709,10 @@ class LoopControlService:
 
     def _active_loop_for_goal(self, goal_id: str) -> LoopRunState | None:
         for loop_run in self.loop_runs.list_by_goal(goal_id, limit=100):
-            if not loop_run.is_terminal():
+            if not loop_run.is_terminal() or str(loop_run.terminal_state) in {
+                str(LoopTerminalState.PAUSED),
+                str(LoopTerminalState.WAITING_APPROVAL),
+            }:
                 return loop_run
         return None
 
@@ -514,6 +730,29 @@ def _resolve_workspace(workspace: str) -> str:
 def _loop_kind(value: str) -> str:
     normalized = str(value or "").strip().lower().replace("-", "_")
     return normalized if normalized in {"turn", "control", "durable_goal", "scheduled"} else "durable_goal"
+
+
+def _surface_message_from_result(result: StateGraphRunResult) -> str:
+    evidence = result.evidence or {}
+    responded = str(evidence.get("responded_message") or "").strip()
+    if responded:
+        return responded
+    semantic = evidence.get("semantic_checker_result")
+    if isinstance(semantic, dict):
+        message = str(semantic.get("user_message") or "").strip()
+        if message:
+            return message
+    report = result.checker_report.to_dict() if result.checker_report else {}
+    for check in report.get("checker_results", []):
+        if not isinstance(check, dict):
+            continue
+        check_evidence = check.get("evidence")
+        if not isinstance(check_evidence, dict):
+            continue
+        message = str(check_evidence.get("user_message") or "").strip()
+        if message:
+            return message
+    return ""
 
 
 def _loop_spec_from_json(raw: str) -> LoopSpec:

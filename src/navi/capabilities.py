@@ -31,6 +31,7 @@ from .lifecycle import Governance, Phase, Resolution
 from .operating_context import PERMISSION_ORDER, permission_allows
 from .resource_gateway import GlobalResourceGateway, ResourceLimits, ResourceRequest
 from .runs import RunStore
+from .safeguards import CapabilityRiskAssessment, assess_capability_call
 from .tools import TURN_CONTEXT, ToolSpec, build_tool_gateway
 from .actions.registry import ActionCapabilityProvider  # noqa: F401
 from .actions.tools import ToolGatewayCapabilityProvider, ToolCapability, ToolsListCapability
@@ -80,7 +81,7 @@ class CapabilityRegistry:
         governed_run_id: str | None = None,
         sensitive_approval_mode: str = "enforce",
         runtime: Any | None = None,
-    ):
+    ) -> CapabilityRiskAssessment | None:
         self.home = home
         self.allow_sources = allow_sources
         self.allowed_tools = allowed_tools
@@ -303,13 +304,21 @@ class CapabilityRegistry:
                     "schema_errors": input_schema_errors,
                 },
             )
-        if self._sensitive_call_needs_approval(handler.spec, name, permission, call_args):
+        approval_risk = self._approval_risk_for_call(
+            handler.spec,
+            name,
+            permission,
+            call_args,
+            context=context,
+        )
+        if approval_risk is not None:
             if not self.governed_run_id:
                 return self._suspend_turn_for_sensitive_approval(
                     handler.spec,
                     name,
                     permission,
                     call_args,
+                    risk=approval_risk,
                     context=context,
                 )
             return self._suspend_for_sensitive_approval(
@@ -317,6 +326,7 @@ class CapabilityRegistry:
                 name,
                 permission,
                 call_args,
+                risk=approval_risk,
                 context=context,
             )
         before_decisions = self.hooks.run(
@@ -406,28 +416,45 @@ class CapabilityRegistry:
             self._audit_action_capability(handler.spec, call_args, result, started_at=started_at)
         return result
 
-    def _sensitive_call_needs_approval(
+    def _approval_risk_for_call(
         self,
         spec: ToolSpec,
         name: str,
         permission: str,
         call_args: dict[str, Any],
-    ) -> bool:
+        *,
+        context: CapabilityContext,
+    ):
         if self.sensitive_approval_mode == "skip":
-            return False
+            return None
         if spec.governance_exempt:
-            return False
-        if not spec.mutates and spec.permission != "write":
-            return False
-        args_json = _canonical_args_json(call_args)
-        approved = RunStore(self.home).approved_approval_for_run(
-            self.governed_run_id,
-            action=APPROVAL_ACTION_CAPABILITY,
-            requested_tool=name,
-            requested_permission=permission,
-            args_json=args_json,
+            return None
+        risk = assess_capability_call(
+            spec,
+            call_args,
+            workspace=context.workspace or str(self.gateway.project_dir),
         )
-        return approved is None
+        if not risk.confirmation_required and risk.risk_class != "high":
+            return None
+        args_json = _canonical_args_json(call_args)
+        runs = RunStore(self.home)
+        if self.governed_run_id:
+            approved = runs.approved_approval_for_run(
+                self.governed_run_id,
+                action=APPROVAL_ACTION_CAPABILITY,
+                requested_tool=name,
+                requested_permission=permission,
+                args_json=args_json,
+            )
+        else:
+            approved = self._approved_turn_capability_approval(
+                runs,
+                name=name,
+                permission=permission,
+                args_json=args_json,
+                context=context,
+            )
+        return None if approved is not None else risk
 
     def _suspend_turn_for_sensitive_approval(
         self,
@@ -436,6 +463,7 @@ class CapabilityRegistry:
         permission: str,
         call_args: dict[str, Any],
         *,
+        risk: CapabilityRiskAssessment,
         context: CapabilityContext,
     ) -> CapabilityResult:
         runs = RunStore(self.home)
@@ -470,7 +498,7 @@ class CapabilityRegistry:
                 requested_tool=name,
                 requested_permission=permission,
                 args_json=args_json,
-                reason=f"sensitive capability requires approval: {name}",
+                reason=f"{risk.reason_code}: {name} ({risk.risk_class})",
             )
             run = runs.update_run(
                 run.id,
@@ -489,6 +517,7 @@ class CapabilityRegistry:
             "status": APPROVAL_STATUS_PENDING,
             "requested_tool": name,
             "requested_permission": permission,
+            "risk": risk.to_facts(),
             "approval": {
                 "id": approval.id,
                 "run_id": approval.run_id,
@@ -541,6 +570,34 @@ class CapabilityRegistry:
                 return run, approval, "existing"
         return None, None, ""
 
+    def _approved_turn_capability_approval(
+        self,
+        runs: RunStore,
+        *,
+        name: str,
+        permission: str,
+        args_json: str,
+        context: CapabilityContext,
+    ):
+        marker = f"capability_approval:{name}:{permission}:{args_json}"
+        for run in runs.list_by_phases([Phase.PENDING, Phase.RUNNING], limit=100):
+            if run.kind != "capability_approval":
+                continue
+            if run.source != context.source or run.peer_id != context.peer_id:
+                continue
+            if run.sender_id != context.sender_id or run.plan_summary != marker:
+                continue
+            approval = runs.approved_approval_for_run(
+                run.id,
+                action=APPROVAL_ACTION_CAPABILITY,
+                requested_tool=name,
+                requested_permission=permission,
+                args_json=args_json,
+            )
+            if approval is not None:
+                return approval
+        return None
+
     def _suspend_for_sensitive_approval(
         self,
         spec: ToolSpec,
@@ -548,6 +605,7 @@ class CapabilityRegistry:
         permission: str,
         call_args: dict[str, Any],
         *,
+        risk: CapabilityRiskAssessment,
         context: CapabilityContext,
     ) -> CapabilityResult:
         runs = RunStore(self.home)
@@ -576,7 +634,7 @@ class CapabilityRegistry:
                 requested_tool=name,
                 requested_permission=permission,
                 args_json=args_json,
-                reason=f"sensitive capability requires approval: {name}",
+                reason=f"{risk.reason_code}: {name} ({risk.risk_class})",
             )
         runs.update_run(
             self.governed_run_id or "",
@@ -603,6 +661,9 @@ class CapabilityRegistry:
             "turn_scope": "current",
             "run_id": self.governed_run_id or "",
             "status": APPROVAL_STATUS_PENDING,
+            "requested_tool": name,
+            "requested_permission": permission,
+            "risk": risk.to_facts(),
             "approval": {
                 "id": approval.id,
                 "run_id": approval.run_id,

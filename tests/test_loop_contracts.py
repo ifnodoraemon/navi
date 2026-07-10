@@ -24,7 +24,6 @@ from navi.loop_contracts import (
     VerificationStep,
     WorkspaceLock,
     WorkspaceMode,
-    WorkspacePolicy,
     default_state_graph,
 )
 
