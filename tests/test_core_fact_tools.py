@@ -359,6 +359,52 @@ async def test_web_search_uses_exa_mcp_default(monkeypatch) -> None:
             "author": "Example",
         }
     ]
+    assert result.facts["response"] == {
+        "text_length": len(
+            "Title: Navi result\n"
+            "URL: https://example.com/navi\n"
+            "Published: 2026-07-13\n"
+            "Author: Example\n"
+            "Highlights:\nSearch result snippet"
+        ),
+        "truncated": False,
+        "result_count": 1,
+    }
+    assert "text" not in result.facts["response"]
+
+
+@pytest.mark.asyncio
+async def test_web_search_bounds_exa_snippets_without_raw_response_duplication(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "exa")
+    long_snippet = "fact " * 1000
+
+    async def fake_call(self, name, arguments):
+        del self, name, arguments
+        return {
+            "ok": True,
+            "is_error": False,
+            "content": [],
+            "structured_content": {},
+            "text": (
+                "Title: Bounded result\n"
+                "URL: https://example.com/bounded\n"
+                "Published: N/A\n"
+                "Author: N/A\n"
+                f"Highlights:\n{long_snippet}"
+            ),
+            "truncated": False,
+        }
+
+    monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
+
+    result = await web_search_utils._web_search({"query": "bounded search"})
+
+    assert result.ok is True
+    assert len(result.facts["results"][0]["snippet"]) < len(long_snippet)
+    assert result.facts["results"][0]["snippet"].endswith("[truncated]")
+    assert "text" not in result.facts["response"]
 
 
 @pytest.mark.asyncio

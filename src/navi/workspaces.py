@@ -77,6 +77,20 @@ class ShadowWorkspace:
             "baseline_fingerprint": self.baseline_fingerprint.to_dict(),
         }
 
+    def to_facts(self) -> dict[str, Any]:
+        """Project durable workspace evidence without embedding every file hash."""
+        return {
+            "run_id": self.run_id,
+            "real_workspace": self.real_workspace,
+            "baseline_workspace": self.baseline_workspace,
+            "shadow_workspace": self.shadow_workspace,
+            "baseline_fingerprint": {
+                "root": self.baseline_fingerprint.root,
+                "digest": self.baseline_fingerprint.digest,
+                "file_count": len(self.baseline_fingerprint.files),
+            },
+        }
+
 
 @dataclass(frozen=True)
 class ShadowWorkspaceRecord:

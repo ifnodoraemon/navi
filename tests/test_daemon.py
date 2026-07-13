@@ -9,6 +9,7 @@ from navi.detectors import ServiceLogDetector
 from navi.graph import GraphStore
 from navi.goals import GoalStore
 from navi.loop_control_service import LoopControlService, OpenGoalRequest
+from navi.loop_runs import LoopRunStore
 from navi.memory.store import MemoryStore
 from navi.trace import TraceStore
 
@@ -125,6 +126,34 @@ async def test_daemon_materializes_due_cron_goal_as_child_run(tmp_path: Path, mo
     assert child is not None
     assert child.parent_goal_id == registered.goal.id
     assert child.cron_schedule == ""
+    child_loop = LoopRunStore(tmp_path).list_by_goal(child.id, limit=1)[0]
+    assert child_loop.evidence["execution_mode"] == "background"
     refreshed = GoalStore(tmp_path).get(registered.goal.id)
     assert refreshed is not None
     assert refreshed.next_run_at > 1.0
+
+
+@pytest.mark.asyncio
+async def test_daemon_does_not_execute_foreground_or_manual_loops(tmp_path: Path) -> None:
+    service = LoopControlService(tmp_path)
+    foreground = service.open_goal(
+        OpenGoalRequest(
+            objective="foreground turn",
+            workspace=str(tmp_path),
+            auto_start=False,
+            execution_mode="foreground",
+        )
+    )
+    manual = service.open_goal(
+        OpenGoalRequest(
+            objective="manual goal",
+            workspace=str(tmp_path),
+            auto_start=False,
+        )
+    )
+
+    processed = await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
+
+    assert processed == []
+    assert str(LoopRunStore(tmp_path).get_run(foreground.loop_run.run_id).node) == "plan"
+    assert str(LoopRunStore(tmp_path).get_run(manual.loop_run.run_id).node) == "plan"

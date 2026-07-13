@@ -179,7 +179,8 @@ async def test_mcp_server_is_discovered_and_called_through_gateway(
     assert listed.facts["annotations_trusted_for_permission"] is False
     assert called.ok is True
     assert called.facts["structured_content"] == {"result": {"echo": "hello"}}
-    assert "hello" in called.facts["response"]["text"]
+    assert called.facts["content"][0]["text"] == '{"echo":"hello"}'
+    assert called.facts["response"] == {"text_length": 16, "truncated": False}
 
     blocked = await gateway.call(
         "mcp.echo.call",

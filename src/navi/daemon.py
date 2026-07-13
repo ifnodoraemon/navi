@@ -161,7 +161,10 @@ class SystemDaemon:
         from .goals import GoalStore
 
         loop_runs = LoopRunStore(self.home)
-        active_states = loop_runs.list_active(limit=10)
+        # Active is a lifecycle fact, not permission for the daemon to execute.
+        # Foreground turns and manually prepared goals have their own explicit
+        # owner; only loops created for background execution belong here.
+        active_states = loop_runs.list_active_for_execution_mode("background", limit=10)
         if not active_states:
             return []
 

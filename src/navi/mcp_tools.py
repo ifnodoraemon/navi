@@ -236,7 +236,10 @@ async def _call_server_tool(server: MCPServerConfig, args: dict[str, Any]) -> To
         "mcp_tool": tool_name,
         "content": result["content"],
         "structured_content": result["structured_content"],
-        "response": {"text": result["text"], "truncated": result["truncated"]},
+        "response": {
+            "text_length": len(result["text"]),
+            "truncated": result["truncated"],
+        },
     }
     if not result["ok"]:
         facts[CAPABILITY_ERROR_REASON_KEY] = "mcp_tool_error"

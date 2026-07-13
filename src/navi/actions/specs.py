@@ -79,6 +79,7 @@ ACTION_SPECS = [
                 "loop_run_id": {"type": "string"},
                 "route": {"type": "string"},
                 "loop_kind": {"type": "string"},
+                "execution_mode": {"type": "string"},
                 "cron_schedule": {"type": "string"},
                 "next_run_at": {"type": "number"},
                 "registration_evidence": {"type": "boolean"},

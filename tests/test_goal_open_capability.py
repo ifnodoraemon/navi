@@ -127,11 +127,15 @@ async def test_goal_open_capability_auto_start_uses_runtime_state_graph(tmp_path
     assert result.ok is True
     assert provider.calls == ["planner"]
     assert result.facts is not None
+    assert result.facts["execution_mode"] == "foreground"
     assert result.facts["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL
     assert result.facts["completion_evidence"] is False
     evidence = result.facts["state_graph_result"]["evidence"]
     assert evidence["planned_capability"]["tool"] == "file.write"
     assert evidence["capability_result"]["yields_control"] is True
+    assert "files" not in evidence["shadow_workspace"]["baseline_fingerprint"]
+    assert evidence["shadow_workspace"]["baseline_fingerprint"]["file_count"] >= 0
+    assert "evidence" not in result.facts["state_graph_result"]["run_state"]
     approval = RunStore(tmp_path).pending_approval_for_run(result.run_id)
     assert approval is not None
     RunStore(tmp_path).resolve_approval(
@@ -193,6 +197,7 @@ async def test_goal_open_capability_without_runtime_only_prepares_loop(tmp_path:
     assert result.facts["loop_terminal_state"] == ""
     assert result.facts["route"] == "unified_loop"
     assert result.facts["loop_kind"] == "turn"
+    assert result.facts["execution_mode"] == "background"
     assert result.facts["budget_policy"]["call_budget"] == 4
     assert result.facts["budget_policy"]["token_budget"] == 1000
     assert result.facts["budget_policy"]["cost_budget"] == 2.25
@@ -230,6 +235,7 @@ async def test_goal_open_capability_can_create_goal_without_starting_loop(tmp_pa
 
     assert result.ok is True
     assert result.facts is not None
+    assert result.facts["execution_mode"] == "manual"
     assert result.facts["completion_evidence"] is False
     assert result.facts["loop_terminal_state"] == ""
     assert LoopRunStore(tmp_path).get_run(result.facts["loop_run_id"]) is not None

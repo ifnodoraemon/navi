@@ -51,6 +51,7 @@ class OpenGoalRequest:
     qps_limit: int = 0
     max_concurrent: int = 1
     auto_start: bool = True
+    execution_mode: str = ""
     cron_schedule: str = ""
     parent_goal_id: str = ""
     trigger_facts: dict[str, Any] = field(default_factory=dict)
@@ -77,6 +78,9 @@ class LoopControlServiceResult:
             "loop_run_id": self.loop_run.run_id,
             "route": "unified_loop",
             "loop_kind": str((self.loop_spec.goal.metadata or {}).get("loop_kind") or ""),
+            "execution_mode": str(
+                (self.loop_spec.goal.metadata or {}).get("execution_mode") or ""
+            ),
             "cron_schedule": self.goal.cron_schedule,
             "next_run_at": self.goal.next_run_at,
             "registration_evidence": bool(
@@ -93,7 +97,7 @@ class LoopControlServiceResult:
                 self.loop_run.terminal_state == LoopTerminalState.CONVERGED
                 and self.run.resolution == Resolution.SUCCESS
             ),
-            "state_graph_result": self.state_graph_result.to_dict()
+            "state_graph_result": self.state_graph_result.to_facts()
             if self.state_graph_result
             else {},
         }
@@ -113,6 +117,7 @@ class LoopControlService:
         if not objective:
             raise ValueError("OpenGoalRequest.objective is required")
         loop_kind = _loop_kind(request.loop_kind)
+        execution_mode = _execution_mode(request, loop_kind=loop_kind)
         cron_schedule = request.cron_schedule.strip()
         if loop_kind == "scheduled":
             if not cron_schedule:
@@ -178,6 +183,7 @@ class LoopControlService:
                 evidence={
                     "route": "unified_loop",
                     "loop_kind": loop_kind,
+                    "execution_mode": execution_mode,
                     "run_id": run.id,
                     "trigger_facts": dict(request.trigger_facts),
                     "verification_command_declared": bool(
@@ -223,7 +229,10 @@ class LoopControlService:
                 if updated_goal is not None:
                     goal = updated_goal
             else:
-                loop_run = self.loop_runs.create_run(spec)
+                loop_run = self.loop_runs.create_run(
+                    spec,
+                    evidence={"execution_mode": execution_mode},
+                )
         except Exception as exc:
             self._compensate_open_failure(run, goal=goal, error=exc)
             raise
@@ -295,6 +304,7 @@ class LoopControlService:
                 qps_limit=template.budget_policy.qps_limit,
                 max_concurrent=template.budget_policy.max_concurrent,
                 auto_start=False,
+                execution_mode="background",
                 parent_goal_id=goal.id,
                 trigger_facts=trigger_facts,
             )
@@ -602,6 +612,10 @@ class LoopControlService:
                 "session_id": goal.session_id,
                 "route": "unified_loop",
                 "loop_kind": _loop_kind(request.loop_kind),
+                "execution_mode": _execution_mode(
+                    request,
+                    loop_kind=_loop_kind(request.loop_kind),
+                ),
                 "source": goal.source,
                 "peer_id": goal.peer_id,
                 "sender_id": goal.sender_id,
@@ -755,6 +769,19 @@ def _resolve_workspace(workspace: str) -> str:
     if not path.exists() or not path.is_dir():
         raise ValueError("workspace must be an existing directory")
     return str(path)
+
+
+def _execution_mode(request: OpenGoalRequest, *, loop_kind: str) -> str:
+    declared = request.execution_mode.strip().lower()
+    if declared:
+        if declared not in {"foreground", "background", "manual", "scheduled"}:
+            raise ValueError(f"unsupported execution_mode: {request.execution_mode}")
+        if loop_kind == "scheduled" and declared != "scheduled":
+            raise ValueError("scheduled goal registration requires execution_mode=scheduled")
+        return declared
+    if loop_kind == "scheduled":
+        return "scheduled"
+    return "background" if request.auto_start else "manual"
 
 
 def _loop_kind(value: str) -> str:

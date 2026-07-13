@@ -73,6 +73,19 @@ class StateGraphRunResult:
             "evidence": dict(self.evidence),
         }
 
+    def to_facts(self) -> dict[str, Any]:
+        """Return model-facing facts without duplicating durable run evidence."""
+        run_state = self.run_state.to_dict()
+        durable_evidence = run_state.pop("evidence", {})
+        run_state["evidence_keys"] = sorted(durable_evidence)
+        return {
+            "run_state": run_state,
+            "checker_report": self.checker_report.to_dict() if self.checker_report else {},
+            "resource_grants": [grant.to_dict() for grant in self.resource_grants],
+            "harness_results": [result.to_facts() for result in self.harness_results],
+            "evidence": dict(self.evidence),
+        }
+
 
 @dataclass(frozen=True)
 class PlannedCapabilityStep:
@@ -1096,7 +1109,7 @@ class DurableStateGraphRunner:
                 workspace=workspace,
             )
             execution_workspace = Path(shadow_workspace.shadow_workspace)
-            collected_evidence["shadow_workspace"] = shadow_workspace.to_dict()
+            collected_evidence["shadow_workspace"] = shadow_workspace.to_facts()
 
         if state.node == LoopNode.PLAN:
             state, stopped, grant = self._gate_or_stop(state, kind="state_graph.plan")

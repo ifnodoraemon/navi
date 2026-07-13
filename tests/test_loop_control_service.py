@@ -44,6 +44,7 @@ def test_loop_control_service_opens_goal_without_executing_state_graph(tmp_path)
     assert result.to_facts()["completion_evidence"] is False
     assert result.to_facts()["route"] == "unified_loop"
     assert result.to_facts()["loop_kind"] == "durable_goal"
+    assert result.to_facts()["execution_mode"] == "background"
     assert result.run.kind == "loop:durable_goal"
     assert json.loads(result.goal.evidence_json)["loop_kind"] == "durable_goal"
     assert result.to_facts()["budget_policy"]["call_budget"] == 7
@@ -53,6 +54,8 @@ def test_loop_control_service_opens_goal_without_executing_state_graph(tmp_path)
     assert result.loop_spec.budget_policy.max_concurrent == 2
     assert result.loop_spec.goal.metadata["route"] == "unified_loop"
     assert result.loop_spec.goal.metadata["loop_kind"] == "durable_goal"
+    assert result.loop_spec.goal.metadata["execution_mode"] == "background"
+    assert result.loop_run.evidence["execution_mode"] == "background"
     assert result.loop_spec.goal.metadata["session_id"] == "session-unified"
     assert result.loop_spec.goal.metadata["sender_id"] == "tester"
     assert LoopRunStore(tmp_path).get_run(result.loop_run.run_id) is not None
@@ -148,6 +151,8 @@ def test_scheduled_occurrence_is_child_active_goal_without_recurring_cron(tmp_pa
     assert occurrence.run.phase == Phase.RUNNING
     assert occurrence.goal.parent_goal_id == registered.goal.id
     assert occurrence.goal.cron_schedule == ""
+    assert occurrence.to_facts()["execution_mode"] == "background"
+    assert occurrence.loop_run.evidence["execution_mode"] == "background"
     assert occurrence.loop_run.terminal_state == ""
     assert [item.run_id for item in LoopRunStore(tmp_path).list_active()] == [
         occurrence.loop_run.run_id
@@ -232,7 +237,7 @@ def test_scheduled_goal_can_be_cancelled_after_registration(tmp_path):
 def test_open_goal_compensates_cross_store_failure(tmp_path, monkeypatch):
     service = LoopControlService(tmp_path)
 
-    def fail_loop_create(spec):
+    def fail_loop_create(spec, **kwargs):
         raise RuntimeError("injected loop store failure")
 
     monkeypatch.setattr(service.loop_runs, "create_run", fail_loop_create)
@@ -294,6 +299,8 @@ def test_loop_control_service_resumes_persisted_loop_spec_from_checkpoint(tmp_pa
 
     assert opened.loop_run.terminal_state == ""
     assert GoalStore(tmp_path).get(opened.goal.id) is not None
+    assert opened.to_facts()["execution_mode"] == "manual"
+    assert opened.loop_run.evidence["execution_mode"] == "manual"
 
     resumed = service.resume_loop(loop_run_id=opened.loop_run.run_id, workspace=str(tmp_path))
 

@@ -245,6 +245,27 @@ class LoopRunStore:
             ).fetchall()
         return [_loop_run_from_row(row) for row in rows]
 
+    def list_active_for_execution_mode(
+        self,
+        execution_mode: str,
+        *,
+        limit: int = 50,
+    ) -> list[LoopRunState]:
+        """Return active loops explicitly owned by one execution driver."""
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {LOOP_RUNS_TABLE.select_list}
+                FROM loop_runs
+                WHERE terminal_state = ''
+                  AND json_extract(evidence_json, '$.execution_mode') = ?
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                (execution_mode, limit),
+            ).fetchall()
+        return [_loop_run_from_row(row) for row in rows]
+
     def list_by_goal(self, goal_id: str, *, limit: int = 50) -> list[LoopRunState]:
         with connect(self.db_path) as conn:
             rows = conn.execute(

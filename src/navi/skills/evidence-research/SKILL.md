@@ -5,13 +5,26 @@ description: Research current or uncertain questions with web search, page retri
 
 # Evidence Research
 
-1. Define the question, decision, freshness requirement, and claims that need evidence before searching.
-2. Start with one focused query. Refine with domain, date, file type, or exact-phrase constraints only when the first result set exposes a concrete gap.
-3. Treat search snippets as discovery facts, not final evidence. Read the strongest result with an available fetch capability before relying on its claims.
-4. Prefer primary sources: official documentation, specifications, repositories, filings, datasets, or first-party announcements. Use reputable secondary sources to add context or independent confirmation.
-5. Cross-check material claims with two independent sources when practical. One authoritative primary source is sufficient for its own API contract, policy, release, or specification.
-6. Track each supported claim with source URL, publication or update date when available, and the exact fact it supports. Separate source statements from your own inference.
-7. For time-sensitive questions, compare publication date with the date the event occurred and search specifically for later corrections or superseding releases.
-8. Stop repeating an identical capability call when its facts say `retryable: false`. Discover another configured search or MCP capability, change the query based on evidence, or report the missing provider/configuration plainly.
-9. Synthesize only what the evidence supports. State disagreements, missing evidence, and confidence limits instead of filling gaps with plausible text.
-10. Put citations next to the claims they support and link directly to the source page, not a search-results page.
+## Frame the research
+
+Define the question, intended decision, freshness requirement, and material claims before searching. Distinguish current facts from background knowledge and opinion.
+
+## Build evidence progressively
+
+1. Use `web.search` for discovery. Write a semantically rich description of the ideal source; include a domain, date, document type, or exact phrase only when the question requires it.
+2. Inspect result titles, URLs, dates, and snippets. Treat snippets as leads, never as sufficient evidence for a detailed claim.
+3. Fetch the strongest primary source. Prefer `mcp.exa.call` with `web_fetch_exa` for clean page text when available; otherwise use another declared page-fetch capability.
+4. Search again only to close a specific gap, find an independent source, or check for a newer correction. Change the query based on what the first pass revealed.
+5. Stop when every material claim has adequate evidence, not after a fixed number of searches.
+
+Prefer official documentation, specifications, repositories, filings, datasets, and first-party announcements. Add an independent reputable source when the claim is disputed, consequential, or not fully established by the primary source. One authoritative primary source is enough for its own API contract, policy, release, or specification.
+
+## Keep an evidence ledger
+
+For each material claim, retain the source URL, publication or update date when available, the supporting fact, and whether the final statement is quoted, paraphrased, or inferred. For time-sensitive events, distinguish publication date from event date and check for superseding updates.
+
+## Handle failures honestly
+
+Do not repeat an identical call when its facts say `retryable: false`. Use another declared search or MCP capability, refine the query for a known gap, or report the missing provider or configuration. Never fill an evidence gap with plausible text.
+
+Synthesize only supported claims, state disagreements and confidence limits, and place direct source links next to the claims they support.

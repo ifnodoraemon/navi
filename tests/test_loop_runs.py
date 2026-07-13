@@ -86,6 +86,16 @@ def test_loop_run_store_persists_spec_run_checkpoint_and_transition(tmp_path):
     assert store.list_by_goal("goal-1") == [transitioned]
 
 
+def test_loop_run_store_filters_active_runs_by_execution_mode(tmp_path):
+    store = LoopRunStore(tmp_path)
+    background = store.create_run(_spec(), evidence={"execution_mode": "background"})
+    manual = store.create_run(_spec(), evidence={"execution_mode": "manual"})
+    store.create_run(_spec())
+
+    assert store.list_active_for_execution_mode("background") == [background]
+    assert store.list_active_for_execution_mode("manual") == [manual]
+
+
 def test_loop_run_store_terminal_runs_are_not_active_and_do_not_transition(tmp_path):
     store = LoopRunStore(tmp_path)
     run = store.create_run(_spec())

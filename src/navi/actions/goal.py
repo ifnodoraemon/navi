@@ -69,7 +69,13 @@ class GoalOpenCapability(BaseCapability):
                 and self.runtime is not None
                 and request.loop_kind != "scheduled"
             ):
-                opened = service.open_goal(replace(request, auto_start=False))
+                opened = service.open_goal(
+                    replace(
+                        request,
+                        auto_start=False,
+                        execution_mode="foreground",
+                    )
+                )
                 result = await run_goal_loop_state_graph(
                     home=self.home,
                     service=service,

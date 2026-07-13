@@ -23,6 +23,8 @@ from ..tools import ToolResult
 from .utils import _positive_int, _truncate_output
 
 _SEARCH_USER_AGENT = "Navi/1.0"
+_SEARCH_TITLE_MAX_CHARS = 300
+_SEARCH_SNIPPET_MAX_CHARS = 1200
 _WEB_SEARCH_PROVIDER_SEARXNG = "searxng"
 _WEB_SEARCH_PROVIDER_EXA_MCP = "exa_mcp"
 
@@ -254,8 +256,11 @@ def _normalize_searxng_results(payload: Any, *, limit: int) -> list[dict[str, An
         if not isinstance(item, dict):
             continue
         url = str(item.get("url") or "").strip()
-        title = _clean_search_text(item.get("title") or "")
-        content = _clean_search_text(item.get("content") or item.get("snippet") or "")
+        title = _bounded_search_text(item.get("title") or "", _SEARCH_TITLE_MAX_CHARS)
+        content = _bounded_search_text(
+            item.get("content") or item.get("snippet") or "",
+            _SEARCH_SNIPPET_MAX_CHARS,
+        )
         if not url and not title and not content:
             continue
         result = {
@@ -352,8 +357,8 @@ async def _exa_mcp_search(
             "endpoint": server.safe_endpoint,
             "results": results,
             "response": {
-                "text": text[:100_000],
-                "truncated": len(text) > 100_000,
+                "text_length": len(text),
+                "truncated": bool(result.get("truncated")),
                 "result_count": len(results),
             },
         },
@@ -367,7 +372,7 @@ def _normalize_exa_text_results(value: str, *, limit: int) -> list[dict[str, Any
         highlights = ""
         match = re.search(r"(?m)^Highlights:\s*\n?(.*)$", block, flags=re.DOTALL)
         if match:
-            highlights = _clean_search_text(match.group(1))
+            highlights = _bounded_search_text(match.group(1), _SEARCH_SNIPPET_MAX_CHARS)
             header = block[: match.start()]
         else:
             header = block
@@ -376,7 +381,7 @@ def _normalize_exa_text_results(value: str, *, limit: int) -> list[dict[str, Any
             if field_match:
                 fields[key.lower()] = field_match.group(1).strip()
         url = fields.get("url", "")
-        title = fields.get("title", "")
+        title = _bounded_search_text(fields.get("title", ""), _SEARCH_TITLE_MAX_CHARS)
         if not url and not title:
             continue
         item = {
@@ -399,6 +404,13 @@ def _normalize_exa_text_results(value: str, *, limit: int) -> list[dict[str, Any
 
 def _clean_search_text(value: Any) -> str:
     return re.sub(r"\s+", " ", html.unescape(str(value or ""))).strip()
+
+
+def _bounded_search_text(value: Any, limit: int) -> str:
+    text = _clean_search_text(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()} … [truncated]"
 
 
 def _as_string_list(value: Any) -> list[str]:
