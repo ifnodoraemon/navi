@@ -95,7 +95,7 @@ def test_deterministic_checker_timeout_and_missing_evidence_are_structured_state
     assert missing.checker_results[0].reason == "evidence_missing"
 
 
-def test_llm_checker_no_route_available_blocks_without_retry_signal():
+def test_llm_checker_reports_verdict_without_user_facing_copy():
     spec = LoopSpec.from_goal(
         GoalSpec(
             objective="semantic objective",
@@ -120,8 +120,7 @@ def test_llm_checker_no_route_available_blocks_without_retry_signal():
             "semantic_checker_result": {
                 "passed": False,
                 "should_continue": False,
-                "user_message": "Need more information.",
-                "next_step_hint": "ask user",
+                "evidence_summary": "required facts are missing",
                 "evaluator_role": "checker",
                 "isolated_context": True,
             }
@@ -133,3 +132,8 @@ def test_llm_checker_no_route_available_blocks_without_retry_signal():
     assert report.state_hint == LoopTerminalState.BLOCKED
     assert report.checker_results[0].reason == "no_route_available"
     assert report.checker_results[0].evidence["isolated_context"] is True
+    assert report.checker_results[0].evidence["evidence_summary"] == (
+        "required facts are missing"
+    )
+    assert "user_message" not in report.checker_results[0].evidence
+    assert "next_step_hint" not in report.checker_results[0].evidence

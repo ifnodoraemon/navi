@@ -133,13 +133,22 @@ class TurnController(TurnLifecycleMixin):
             },
             message=invoked.message,
         )
-        surface_text = invoked.message
-        if not surface_text and invoked.facts:
-            # Agentic principle: the capability produces facts; the LLM
-            # (responder role) synthesizes the user-facing reply. We never
-            # silently send an empty string — if the capability yielded no
-            # message, the LLM generates one from the verified facts.
-            surface_text = await self._response_from_facts(text, invoked.facts or {})
+        invoked_facts = dict(invoked.facts or {})
+        surface_text = str(invoked_facts.get("responded_message") or "").strip()
+        if not surface_text:
+            # Capability messages are machine observations, not user copy.
+            # Give the responder both the structured result and the raw
+            # observation as facts; never surface the observation directly.
+            response_facts = {
+                **invoked_facts,
+                "capability_result": {
+                    "ok": invoked.ok,
+                    "action": invoked.action,
+                    "error_reason": getattr(invoked, "error_reason", ""),
+                    "observation": invoked.message,
+                },
+            }
+            surface_text = await self._response_from_facts(text, response_facts)
         result = AgentTurnResult(
             text=surface_text,
             run_id=invoked.run_id,

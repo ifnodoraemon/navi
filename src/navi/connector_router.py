@@ -10,6 +10,11 @@ from .event_bus import (
     MessageIngressEvent,
     ResponseReadyEvent,
 )
+from .prompt_os import (
+    assemble_fact_response_system_prompt,
+    assemble_fact_response_turn_input,
+)
+from .provider import ChatMessage
 
 # Idle window: how long we tolerate *silence* on the response channel before
 # declaring the upstream unresponsive. A turn that is still working sends
@@ -148,7 +153,34 @@ class ConnectorRouter:
             trace_id=message.message_id,
             event_bus=self.event_bus,
         )
-        return result.message
+        if self.runtime is None or not _approval_result_needs_model_response(result.facts):
+            return result.message
+        try:
+            return await self.runtime.complete(
+                [
+                    ChatMessage("system", assemble_fact_response_system_prompt().render()),
+                    ChatMessage(
+                        "user",
+                        assemble_fact_response_turn_input(
+                            user_text=message.text,
+                            facts={"approval_control": result.facts},
+                        ).render(),
+                    ),
+                ],
+                role="responder",
+            )
+        except Exception:
+            return result.message
+
+
+def _approval_result_needs_model_response(facts: dict[str, object]) -> bool:
+    """Keep approval state deterministic; model-synthesize resumed task outcomes."""
+    continuation_status = str(facts.get("continuation_status") or "")
+    return bool(facts.get("loop_run_id")) and continuation_status not in {
+        "",
+        "queued",
+        "unavailable",
+    }
 
 
 def _parse_connector_approval_command(message: ConnectorMessage) -> tuple[str, str] | None:

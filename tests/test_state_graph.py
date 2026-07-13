@@ -356,6 +356,7 @@ def test_transition_decision_promotes_explicit_side_effect_summary() -> None:
                     "outbound_path": "/tmp/outbox/report.pdf",
                     "side_effect_commit": "weixin.connector_runtime.dispatch_outbox",
                     "side_effect_compensate": "filesystem.remove_staged_outbound",
+                    "side_effect_commit_strategy": "deferred",
                 },
             }
         },
@@ -368,6 +369,7 @@ def test_transition_decision_promotes_explicit_side_effect_summary() -> None:
         "action": "connector_outbound",
         "commit": "weixin.connector_runtime.dispatch_outbox",
         "compensate": "filesystem.remove_staged_outbound",
+        "commit_strategy": "deferred",
     }
 
 
@@ -825,7 +827,9 @@ async def test_durable_state_graph_releases_staged_external_side_effect_after_ac
 
     assert result.terminal_state == LoopTerminalState.CONVERGED
     assert result.evidence["capability_result"]["terminal"] is True
-    assert result.evidence["side_effect_commit_result"]["state"] == "released_for_connector_commit"
+    assert result.evidence["side_effect_commit_result"]["state"] == (
+        "released_for_deferred_commit"
+    )
     staged = Path(result.evidence["capability_result"]["facts"]["outbound_path"])
     assert staged.exists()
     commit_decisions = _loop_decision_payloads_by_tool(
@@ -836,7 +840,7 @@ async def test_durable_state_graph_releases_staged_external_side_effect_after_ac
     assert commit_decisions
     assert (
         commit_decisions[0]["evidence"]["side_effect"]["state"]
-        == "released_for_connector_commit"
+        == "released_for_deferred_commit"
     )
 
 

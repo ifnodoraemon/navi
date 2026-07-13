@@ -327,6 +327,7 @@ def _promote_outbound_facts(result: Any) -> dict[str, Any]:
         "side_effect_artifact",
         "side_effect_commit",
         "side_effect_compensate",
+        "side_effect_commit_strategy",
     ):
         if key in cap_facts:
             promoted[key] = cap_facts[key]

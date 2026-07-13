@@ -55,6 +55,7 @@ class CurrentState:
     delegation_state: dict[str, Any] = field(default_factory=dict)
     vault_handle_state: tuple[Any, ...] = ()
     connector_state: dict[str, Any] = field(default_factory=dict)
+    recent_deliveries: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -545,6 +546,7 @@ class CurrentStateBuilder:
         )
         active_goals = _active_goals(self.home, context)
         active_loop_runs = _active_loop_runs(self.home, active_goals)
+        recent_deliveries = _recent_deliveries(self.home, context)
         active_locks = WorkspaceLockStore(self.home).list_active()
         active_shadows = _active_shadow_workspaces(self.home, context)
         vault_handles = _vault_handles(self.home)
@@ -567,6 +569,7 @@ class CurrentStateBuilder:
                 "sender_id": context.sender_id,
                 "session_id": context.session_id or "",
             },
+            recent_deliveries=recent_deliveries,
         )
 
 
@@ -652,6 +655,7 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
         "delegation_state": dict(state.delegation_state),
         "vault_handle_state": [handle.to_prompt_dict() for handle in state.vault_handle_state],
         "connector_state": dict(state.connector_state),
+        "recent_deliveries": [dict(item) for item in state.recent_deliveries],
     }
 
 
@@ -664,6 +668,19 @@ def _active_goals(home: Path, context: SurfaceContext) -> tuple[Any, ...]:
         if goal.phase in {Phase.PENDING, Phase.RUNNING, Phase.PAUSED}
         and run_matches_context(goal, context)
         and _workspace_matches(goal.workspace, context.workspace)
+    )
+
+
+def _recent_deliveries(home: Path, context: SurfaceContext) -> tuple[dict[str, Any], ...]:
+    from .goals import GoalStore
+
+    return tuple(
+        GoalStore(home).list_recent_deliveries(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            limit=20,
+        )
     )
 
 

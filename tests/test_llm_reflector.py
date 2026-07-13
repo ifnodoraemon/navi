@@ -16,10 +16,18 @@ import pytest
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.lifecycle import Resolution
-from navi.loop_contracts import LoopTerminalState
+from navi.loop_contracts import (
+    GoalSpec,
+    LoopRunState,
+    LoopSpec,
+    LoopTerminalState,
+    VerificationKind,
+    VerificationStep,
+)
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
+from navi.state_graph import ExecutedCapabilityStep, LLMSemanticCheckerPort
 
 
 class _ScriptedProvider:
@@ -39,11 +47,13 @@ class _ScriptedProvider:
         self._planner_syscalls = list(planner_syscalls)
         self._checker_decisions = list(checker_decisions)
         self.calls: list[str] = []
+        self.messages: dict[str, list[ChatMessage]] = {}
 
     async def complete_for(
         self, role: str, messages: list[ChatMessage], **kwargs
     ) -> str:
         self.calls.append(role)
+        self.messages[role] = messages
         if role == "planner":
             syscall = self._planner_syscalls.pop(0)
             return json.dumps({"syscalls": [syscall]})
@@ -86,6 +96,69 @@ def _file_write_syscall(path: str, content: str) -> dict:
     }
 
 
+@pytest.mark.asyncio
+async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
+    tmp_path: Path,
+) -> None:
+    trigger_facts = {
+        "type": "scheduled_occurrence",
+        "occurrence_number": 2,
+        "prior_occurrences": [
+            {
+                "result_summary": "Lesson 1: foundations",
+                "delivery": {"state_transition": "delivered"},
+            }
+        ],
+    }
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="teach a progressive daily topic",
+            scope=(f"repo:{tmp_path}",),
+            acceptance_criteria=("respond for the current occurrence",),
+            metadata={"trigger_facts": trigger_facts},
+        ),
+        goal_id="scheduled-goal",
+        allowed_capabilities=("respond",),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                evidence_key="semantic_checker_result",
+            ),
+        ),
+    )
+    provider = _ScriptedProvider(
+        planner_syscalls=[],
+        checker_decisions=[
+            {
+                "passed": True,
+                "should_continue": False,
+                "evidence_summary": "current occurrence advanced the lesson",
+            }
+        ],
+    )
+
+    decision = await LLMSemanticCheckerPort(
+        runtime=AgentRuntime(home=tmp_path, provider=provider)
+    ).assess(
+        spec,
+        LoopRunState(
+            run_id="run-2",
+            goal_id=spec.goal_id,
+            loop_spec_id=spec.id,
+        ),
+        executed=ExecutedCapabilityStep(
+            ok=True,
+            action="respond",
+            facts={"responded_message": "Lesson 2: supervised learning"},
+        ),
+    )
+
+    assert decision.passed is True
+    checker_input = json.loads(provider.messages["checker"][-1].content)
+    assert checker_input["trigger_facts"] == trigger_facts
+
+
 async def _run_goal_with_approvals(
     registry,
     args: dict,
@@ -126,8 +199,6 @@ async def test_semantic_checker_converges_when_goal_achieved(tmp_path: Path) -> 
             {
                 "passed": True,
                 "should_continue": False,
-                "next_step_hint": "file written",
-                "user_message": "Done — wrote done.txt.",
                 "evidence_summary": "done.txt was written",
             }
         ],
@@ -168,15 +239,11 @@ async def test_semantic_checker_retries_then_converges(tmp_path: Path) -> None:
             {
                 "passed": False,
                 "should_continue": True,
-                "next_step_hint": "try writing v2.txt instead",
-                "user_message": "Let me try a different file.",
                 "evidence_summary": "first file does not satisfy the objective",
             },
             {
                 "passed": True,
                 "should_continue": False,
-                "next_step_hint": "v2.txt written",
-                "user_message": "Done — wrote v2.txt.",
                 "evidence_summary": "v2.txt was written",
             },
         ],
@@ -216,8 +283,6 @@ async def test_semantic_checker_blocks_when_should_continue_false(tmp_path: Path
             {
                 "passed": False,
                 "should_continue": False,
-                "next_step_hint": "cannot proceed without more info",
-                "user_message": "I need more details to complete this.",
                 "evidence_summary": "requested details are missing",
             }
         ],
@@ -258,8 +323,6 @@ async def test_semantic_checker_terminates_at_max_attempts(tmp_path: Path) -> No
     continue_decision = {
         "passed": False,
         "should_continue": True,
-        "next_step_hint": "keep trying",
-        "user_message": "Still working on it.",
         "evidence_summary": "not enough evidence yet",
     }
     provider = _ScriptedProvider(

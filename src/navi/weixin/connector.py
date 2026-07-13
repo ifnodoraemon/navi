@@ -172,6 +172,7 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
                     "side_effect_artifact": {"type": "string"},
                     "side_effect_commit": {"type": "string"},
                     "side_effect_compensate": {"type": "string"},
+                    "side_effect_commit_strategy": {"type": "string"},
                 },
             },
             facts_only=True,
@@ -262,6 +263,7 @@ def _send_file_handler(home: Path, args: dict[str, Any]):
             "side_effect_artifact": str(target),
             "side_effect_commit": "weixin.connector_runtime.dispatch_outbox",
             "side_effect_compensate": "filesystem.remove_staged_outbound",
+            "side_effect_commit_strategy": "deferred",
         },
     )
 

@@ -456,6 +456,7 @@ class WeixinService:
                 text_preview=delivery["text_preview"],
                 media_count=delivery["media_count"],
             )
+            self._record_background_delivery(task, delivery, text=text)
             try:
                 from navi.trace import TraceStore, TracePhase
                 TraceStore(self.home).add_event(
@@ -473,6 +474,24 @@ class WeixinService:
                 )
             except Exception:
                 pass
+
+    def _record_background_delivery(
+        self,
+        task: Run,
+        delivery: dict[str, object],
+        *,
+        text: str,
+    ) -> None:
+        from navi.goals import GoalStore
+
+        GoalStore(self.home).record_delivery(
+            run_id=task.id,
+            channel=self.local_source,
+            text_preview=str(delivery.get("text_preview") or ""),
+            text_length=len(text.strip()),
+            media_count=int(delivery.get("media_count") or 0),
+            trace_id=task.id,
+        )
 
     async def _compose_background_message(self, facts: dict, *, fallback: str) -> str:
         if facts.get("event") == "watch_result":

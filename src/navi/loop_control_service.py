@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +53,7 @@ class OpenGoalRequest:
     auto_start: bool = True
     cron_schedule: str = ""
     parent_goal_id: str = ""
+    trigger_facts: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -178,6 +179,7 @@ class LoopControlService:
                     "route": "unified_loop",
                     "loop_kind": loop_kind,
                     "run_id": run.id,
+                    "trigger_facts": dict(request.trigger_facts),
                     "verification_command_declared": bool(
                         request.verification_command.strip()
                     ),
@@ -246,6 +248,32 @@ class LoopControlService:
             (step.command for step in template.verification_ladder if step.command),
             "",
         )
+        children = self.goals.list_children(goal.id, limit=5, newest=True)
+        occurrence_number = self.goals.count_children(goal.id) + 1
+        prior_occurrences = []
+        for child in children:
+            run = self.runs.get(child.run_id) if child.run_id else None
+            prior_occurrences.append(
+                {
+                    "goal_id": child.id,
+                    "run_id": child.run_id,
+                    "created_at": child.created_at,
+                    "phase": child.phase,
+                    "acceptance": child.acceptance,
+                    "resolution": child.resolution,
+                    "task_status": child.task_status,
+                    "result_summary": str(run.result_summary or "") if run else "",
+                    "delivery": self.goals.latest_delivery(child.id),
+                }
+            )
+        trigger_facts = {
+            "type": "scheduled_occurrence",
+            "schedule_goal_id": goal.id,
+            "cron_schedule": goal.cron_schedule,
+            "triggered_at": time.time(),
+            "occurrence_number": occurrence_number,
+            "prior_occurrences": prior_occurrences,
+        }
         return self.open_goal(
             OpenGoalRequest(
                 objective=goal.objective,
@@ -268,6 +296,7 @@ class LoopControlService:
                 max_concurrent=template.budget_policy.max_concurrent,
                 auto_start=False,
                 parent_goal_id=goal.id,
+                trigger_facts=trigger_facts,
             )
         )
 
@@ -576,6 +605,7 @@ class LoopControlService:
                 "source": goal.source,
                 "peer_id": goal.peer_id,
                 "sender_id": goal.sender_id,
+                "trigger_facts": dict(request.trigger_facts),
             },
         )
         spec = LoopSpec.from_goal(
@@ -609,7 +639,7 @@ class LoopControlService:
                 governance=Governance.NONE,
                 acceptance=Acceptance.ACCEPTED,
                 resolution=Resolution.SUCCESS,
-                result_summary=surface_message or "loop converged",
+                result_summary=surface_message,
                 error="",
             )
         elif terminal == str(LoopTerminalState.PAUSED):
@@ -618,7 +648,7 @@ class LoopControlService:
                 phase=Phase.PAUSED,
                 acceptance=Acceptance.UNVERIFIED,
                 resolution=Resolution.BLOCKED,
-                result_summary=existing_summary or surface_message or "loop paused",
+                result_summary=existing_summary or surface_message,
                 error="",
             )
         elif terminal == str(LoopTerminalState.WAITING_APPROVAL):
@@ -628,7 +658,7 @@ class LoopControlService:
                 governance=Governance.AWAITING_APPROVAL,
                 acceptance=Acceptance.UNVERIFIED,
                 resolution=Resolution.BLOCKED,
-                result_summary=existing_summary or surface_message or "loop waiting approval",
+                result_summary=existing_summary or surface_message,
                 error="",
             )
         elif terminal == str(LoopTerminalState.CONFLICTED):
@@ -638,7 +668,7 @@ class LoopControlService:
                 governance=Governance.AWAITING_APPROVAL,
                 acceptance=Acceptance.UNVERIFIED,
                 resolution=Resolution.BLOCKED,
-                result_summary="loop merge conflict",
+                result_summary=surface_message,
                 error="loop_conflicted",
             )
         elif terminal == str(LoopTerminalState.BLOCKED):
@@ -648,7 +678,7 @@ class LoopControlService:
                 governance=Governance.NONE,
                 acceptance=Acceptance.REJECTED,
                 resolution=Resolution.BLOCKED,
-                result_summary=surface_message or "loop blocked",
+                result_summary=surface_message,
                 error="loop_blocked",
             )
         elif terminal == str(LoopTerminalState.TIMED_OUT):
@@ -658,7 +688,7 @@ class LoopControlService:
                 governance=Governance.NONE,
                 acceptance=Acceptance.REJECTED,
                 resolution=Resolution.FAILED,
-                result_summary=surface_message or "loop timed out",
+                result_summary=surface_message,
                 error="loop_timed_out",
             )
         elif terminal in {
@@ -671,7 +701,7 @@ class LoopControlService:
                 governance=Governance.NONE,
                 acceptance=Acceptance.REJECTED,
                 resolution=Resolution.CANCELED,
-                result_summary=f"loop terminal: {terminal}",
+                result_summary=surface_message,
                 error=f"loop_{terminal}",
             )
         elif terminal == str(LoopTerminalState.FAILED):
@@ -681,7 +711,7 @@ class LoopControlService:
                 governance=Governance.NONE,
                 acceptance=Acceptance.REJECTED,
                 resolution=Resolution.FAILED,
-                result_summary=surface_message or "loop failed",
+                result_summary=surface_message,
                 error="loop_failed",
             )
         elif terminal:
@@ -691,7 +721,7 @@ class LoopControlService:
                 governance=Governance.NONE,
                 acceptance=Acceptance.REJECTED,
                 resolution=Resolution.FAILED,
-                result_summary=f"loop terminal: {terminal}",
+                result_summary=surface_message,
                 error=f"loop_{terminal}",
             )
         else:
@@ -700,7 +730,7 @@ class LoopControlService:
                 phase=Phase.RUNNING,
                 acceptance=Acceptance.UNVERIFIED,
                 resolution=Resolution.BLOCKED,
-                result_summary="loop requires further control",
+                result_summary=surface_message,
                 error="",
             )
         if updated is None:
@@ -737,21 +767,6 @@ def _surface_message_from_result(result: StateGraphRunResult) -> str:
     responded = str(evidence.get("responded_message") or "").strip()
     if responded:
         return responded
-    semantic = evidence.get("semantic_checker_result")
-    if isinstance(semantic, dict):
-        message = str(semantic.get("user_message") or "").strip()
-        if message:
-            return message
-    report = result.checker_report.to_dict() if result.checker_report else {}
-    for check in report.get("checker_results", []):
-        if not isinstance(check, dict):
-            continue
-        check_evidence = check.get("evidence")
-        if not isinstance(check_evidence, dict):
-            continue
-        message = str(check_evidence.get("user_message") or "").strip()
-        if message:
-            return message
     return ""
 
 

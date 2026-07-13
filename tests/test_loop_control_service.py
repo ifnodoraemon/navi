@@ -152,6 +152,57 @@ def test_scheduled_occurrence_is_child_active_goal_without_recurring_cron(tmp_pa
     assert [item.run_id for item in LoopRunStore(tmp_path).list_active()] == [
         occurrence.loop_run.run_id
     ]
+    trigger = occurrence.loop_spec.goal.metadata["trigger_facts"]
+    assert trigger["type"] == "scheduled_occurrence"
+    assert trigger["schedule_goal_id"] == registered.goal.id
+    assert trigger["cron_schedule"] == "54 11 * * *"
+    assert trigger["occurrence_number"] == 1
+    assert trigger["prior_occurrences"] == []
+
+
+def test_scheduled_occurrence_exposes_prior_output_and_delivery_as_facts(tmp_path):
+    service = LoopControlService(tmp_path)
+    registered = service.open_goal(
+        OpenGoalRequest(
+            objective="teach a progressive daily topic",
+            workspace=str(tmp_path),
+            loop_kind="scheduled",
+            cron_schedule="54 11 * * *",
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            allowed_capabilities=("respond",),
+        )
+    )
+    first = service.open_scheduled_occurrence(registered.goal)
+    first_run = service.runs.update_run(
+        first.run.id,
+        phase=Phase.ENDED,
+        governance="none",
+        acceptance="accepted",
+        resolution=Resolution.SUCCESS,
+        result_summary="Lesson 1: foundations. Next topic: supervised learning.",
+        error="",
+    )
+    assert first_run is not None
+    service.goals.update_for_run(first_run)
+    service.goals.record_delivery(
+        run_id=first.run.id,
+        channel="weixin",
+        text_preview="Lesson 1: foundations.",
+        text_length=len(first_run.result_summary),
+        media_count=0,
+    )
+
+    second = service.open_scheduled_occurrence(registered.goal)
+
+    trigger = second.loop_spec.goal.metadata["trigger_facts"]
+    assert trigger["occurrence_number"] == 2
+    assert len(trigger["prior_occurrences"]) == 1
+    previous = trigger["prior_occurrences"][0]
+    assert previous["result_summary"] == first_run.result_summary
+    assert previous["delivery"]["state_transition"] == "delivered"
+    assert previous["delivery"]["channel"] == "weixin"
 
 
 def test_scheduled_goal_can_be_cancelled_after_registration(tmp_path):

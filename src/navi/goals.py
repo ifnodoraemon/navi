@@ -255,21 +255,37 @@ class GoalStore:
             rows = conn.execute(query, params).fetchall()
         return [Goal(*row) for row in rows]
 
-    def list_children(self, parent_goal_id: str, *, limit: int = 50) -> typing.List[Goal]:
+    def list_children(
+        self,
+        parent_goal_id: str,
+        *,
+        limit: int = 50,
+        newest: bool = False,
+    ) -> typing.List[Goal]:
         """List child goals of *parent_goal_id* (Gap F task tree)."""
+        order = "DESC" if newest else "ASC"
         with connect(self.db_path) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at,
                        parent_goal_id, task_status, cron_schedule, next_run_at
-                FROM goals WHERE parent_goal_id = ? ORDER BY created_at ASC LIMIT ?
+                FROM goals WHERE parent_goal_id = ? ORDER BY created_at {order} LIMIT ?
                 """,
                 (parent_goal_id, limit),
             ).fetchall()
-        return [Goal(*row) for row in rows]
+        goals = [Goal(*row) for row in rows]
+        return list(reversed(goals)) if newest else goals
+
+    def count_children(self, parent_goal_id: str) -> int:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM goals WHERE parent_goal_id = ?",
+                (parent_goal_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def update_task_status(self, goal_id: str, task_status: str) -> Goal | None:
         """Update the ``task_status`` of a goal (Gap F task tree).
@@ -611,6 +627,102 @@ class GoalStore:
             )
         return event
 
+    def record_delivery(
+        self,
+        *,
+        run_id: str,
+        channel: str,
+        text_preview: str,
+        text_length: int,
+        media_count: int,
+        trace_id: str = "",
+        sent_at: float | None = None,
+    ) -> GoalEvent | None:
+        """Append a connector-confirmed delivery fact without changing acceptance."""
+        goal = self.get_by_run(run_id)
+        if goal is None:
+            return None
+        recorded_at = time.time()
+        evidence = {
+            "state_transition": "delivered",
+            "channel": channel,
+            "sent_at": recorded_at if sent_at is None else float(sent_at),
+            "recorded_at": recorded_at,
+            "text_preview": text_preview,
+            "text_length": max(0, int(text_length)),
+            "media_count": max(0, int(media_count)),
+            "goal_id": goal.id,
+            "run_id": run_id,
+        }
+        event = self.record_event(
+            goal.id,
+            "goal.delivery_succeeded",
+            phase=goal.phase,
+            governance=goal.governance,
+            acceptance=goal.acceptance,
+            resolution=goal.resolution,
+            run_id=run_id,
+            trace_id=trace_id or run_id,
+            evidence=evidence,
+        )
+        if goal.parent_goal_id:
+            parent = self.get(goal.parent_goal_id)
+            if parent is not None:
+                self.record_event(
+                    parent.id,
+                    "goal.occurrence_delivery_succeeded",
+                    phase=parent.phase,
+                    governance=parent.governance,
+                    acceptance=parent.acceptance,
+                    resolution=parent.resolution,
+                    run_id=run_id,
+                    trace_id=trace_id or run_id,
+                    evidence=evidence,
+                )
+        return event
+
+    def latest_delivery(self, goal_id: str) -> dict[str, Any]:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT evidence_json FROM goal_events
+                WHERE goal_id = ? AND event_type = 'goal.delivery_succeeded'
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (goal_id,),
+            ).fetchone()
+        return _json_object(row[0]) if row else {}
+
+    def list_recent_deliveries(
+        self,
+        *,
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT e.evidence_json
+                FROM goal_events e
+                JOIN goals g ON g.id = e.goal_id
+                WHERE e.event_type = 'goal.delivery_succeeded'
+                  AND (? = '' OR g.source = ?)
+                  AND (? = '' OR g.peer_id = ?)
+                  AND (? = '' OR g.sender_id = ?)
+                  AND e.created_at = (
+                      SELECT MAX(latest.created_at)
+                      FROM goal_events latest
+                      WHERE latest.goal_id = e.goal_id
+                        AND latest.event_type = 'goal.delivery_succeeded'
+                  )
+                ORDER BY e.created_at DESC LIMIT ?
+                """,
+                (source, source, peer_id, peer_id, sender_id, sender_id, max(1, limit)),
+            ).fetchall()
+        return [_json_object(row[0]) for row in rows]
+
     def find_active_cron_goal(
         self,
         *,
@@ -690,6 +802,14 @@ def _merge_evidence(existing_json: str, evidence: dict[str, Any] | None) -> dict
     if evidence:
         return {**existing, **evidence}
     return existing
+
+
+def _json_object(raw: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
 GOALS_TABLE = Table(
     "goals",
     [

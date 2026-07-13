@@ -10,6 +10,7 @@ from navi.approval_contract import APPROVAL_ACTION_CAPABILITY, APPROVAL_DECISION
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.event_bus import ResponseReadyEvent
+from navi.goals import GoalStore
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
 from navi.runtime import AgentRuntime
 from navi.runs import Run, RunStore
@@ -229,6 +230,53 @@ async def test_background_completed_task_sends_media_directive_from_outbox(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_background_send_records_delivery_fact_after_client_success(tmp_path: Path):
+    task = Run(
+        id="run-delivery",
+        title="scheduled lesson",
+        phase=Phase.ENDED,
+        governance=Governance.NONE,
+        acceptance=Acceptance.ACCEPTED,
+        resolution=Resolution.SUCCESS,
+        created_at=1.0,
+        updated_at=1.0,
+        prompt="scheduled lesson",
+        source="weixin",
+        peer_id="wx-user",
+        sender_id="wx-user",
+        result_summary="Lesson 2: supervised learning.",
+    )
+    goal = GoalStore(tmp_path).create(
+        objective=task.prompt,
+        workspace=str(tmp_path),
+        source=task.source,
+        peer_id=task.peer_id,
+        sender_id=task.sender_id,
+        run_id=task.id,
+    )
+    client = CaptureWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.daemon = StaticDaemon([task])
+
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    delivery = GoalStore(tmp_path).latest_delivery(goal.id)
+    assert client.messages[0]["text"] == task.result_summary
+    assert delivery["state_transition"] == "delivered"
+    assert delivery["channel"] == "weixin"
+    assert delivery["text_length"] == len(task.result_summary)
+    assert delivery["media_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_service_deduplicates_message_id_across_instances(tmp_path: Path):
     account = WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
     update = WeixinUpdate(
@@ -310,6 +358,7 @@ async def test_weixin_send_file_returns_allowed_media_directive(tmp_path: Path):
     assert result.facts["side_effect_state"] == "staged"
     assert result.facts["side_effect_commit"] == "weixin.connector_runtime.dispatch_outbox"
     assert result.facts["side_effect_compensate"] == "filesystem.remove_staged_outbound"
+    assert result.facts["side_effect_commit_strategy"] == "deferred"
     staged = Path(result.facts["outbound_path"])
     assert result.facts["side_effect_artifact"] == str(staged)
     assert staged.is_file()

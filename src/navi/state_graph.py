@@ -136,8 +136,6 @@ class ReflectionDecision:
 class SemanticCheckDecision:
     passed: bool
     should_continue: bool
-    next_step_hint: str
-    user_message: str
     evidence_summary: str = ""
 
     def to_facts(self) -> dict[str, Any]:
@@ -145,8 +143,6 @@ class SemanticCheckDecision:
             "passed": self.passed,
             "ok": self.passed,
             "should_continue": self.should_continue,
-            "next_step_hint": self.next_step_hint,
-            "user_message": self.user_message,
             "evidence_summary": self.evidence_summary,
             "evaluator_role": "checker",
             "isolated_context": True,
@@ -255,15 +251,11 @@ class LLMSemanticCheckerPort:
             "properties": {
                 "passed": {"type": "boolean"},
                 "should_continue": {"type": "boolean"},
-                "next_step_hint": {"type": "string"},
-                "user_message": {"type": "string"},
                 "evidence_summary": {"type": "string"},
             },
             "required": [
                 "passed",
                 "should_continue",
-                "next_step_hint",
-                "user_message",
                 "evidence_summary",
             ],
             "additionalProperties": False,
@@ -287,8 +279,8 @@ class LLMSemanticCheckerPort:
                         "capability evidence against the objective and acceptance "
                         "criteria. You are not the maker: do not rely on planner "
                         "reasoning, attempt history, or prior self-assessment. "
-                        "Use only the objective, criteria, attempt number, and "
-                        "last capability result provided."
+                        "Use only the objective, criteria, authoritative trigger "
+                        "facts, attempt number, and last capability result provided."
                     ),
                 ),
                 ChatMessage(
@@ -297,6 +289,7 @@ class LLMSemanticCheckerPort:
                         {
                             "objective": spec.goal.objective,
                             "acceptance_criteria": list(spec.goal.acceptance_criteria),
+                            "trigger_facts": _goal_trigger_facts(spec),
                             "attempt": state.attempt,
                             "max_attempts": spec.retry_policy.max_attempts,
                             "last_capability": executed.to_dict(),
@@ -318,15 +311,11 @@ class LLMSemanticCheckerPort:
             return SemanticCheckDecision(
                 passed=False,
                 should_continue=False,
-                next_step_hint="",
-                user_message="",
                 evidence_summary="checker returned invalid JSON",
             )
         return SemanticCheckDecision(
             passed=bool(data.get("passed", False)),
             should_continue=bool(data.get("should_continue", False)),
-            next_step_hint=str(data.get("next_step_hint", "")),
-            user_message=str(data.get("user_message", "")),
             evidence_summary=str(data.get("evidence_summary", "")),
         )
 
@@ -344,7 +333,6 @@ class LLMReflectorPort:
       - ``should_continue`` (bool) — is it worth trying another capability?
       - ``next_step_hint`` (str) — a concrete suggestion for the next plan
         (which tool to try, what to search for, what to ask the user)
-      - ``user_message`` (str) — what to tell the user right now
     """
 
     def __init__(self, *, runtime: AgentRuntime):
@@ -359,13 +347,11 @@ class LLMReflectorPort:
                 "goal_achieved": {"type": "boolean"},
                 "should_continue": {"type": "boolean"},
                 "next_step_hint": {"type": "string"},
-                "user_message": {"type": "string"},
             },
             "required": [
                 "goal_achieved",
                 "should_continue",
                 "next_step_hint",
-                "user_message",
             ],
             "additionalProperties": False,
         },
@@ -388,7 +374,6 @@ class LLMReflectorPort:
                 reason_code="goal_achieved",
                 facts={
                     "goal_achieved": True,
-                    "user_message": decision.user_message,
                     "next_step_hint": decision.next_step_hint,
                 },
             )
@@ -401,7 +386,6 @@ class LLMReflectorPort:
                     "should_continue": decision.should_continue,
                     "attempt": state.attempt,
                     "max_attempts": max_attempts,
-                    "user_message": decision.user_message,
                     "next_step_hint": decision.next_step_hint,
                 },
             )
@@ -413,7 +397,6 @@ class LLMReflectorPort:
                 "should_continue": True,
                 "attempt": state.attempt,
                 "max_attempts": max_attempts,
-                "user_message": decision.user_message,
                 "next_step_hint": decision.next_step_hint,
             },
         )
@@ -437,13 +420,11 @@ class LLMReflectorPort:
             "user for the file name).\n"
             "- If you have exhausted reasonable approaches, set "
             "should_continue=false and explain what the user should do.\n"
-            "- user_message is what Navi sends to the user right now. Be concise, "
-            "honest, and actionable. Never say 'I cannot do this' if another tool "
-            "could help.\n"
         )
         user_prompt = json.dumps(
             {
                 "objective": spec.goal.objective,
+                "trigger_facts": _goal_trigger_facts(spec),
                 "attempt": state.attempt,
                 "max_attempts": spec.retry_policy.max_attempts,
                 "last_capability": {
@@ -477,13 +458,11 @@ class LLMReflectorPort:
                 goal_achieved=False,
                 should_continue=False,
                 next_step_hint="",
-                user_message="",
             )
         return _LLMReflection(
             goal_achieved=bool(data.get("goal_achieved", False)),
             should_continue=bool(data.get("should_continue", False)),
             next_step_hint=str(data.get("next_step_hint", "")),
-            user_message=str(data.get("user_message", "")),
         )
 
 
@@ -492,7 +471,11 @@ class _LLMReflection:
     goal_achieved: bool
     should_continue: bool
     next_step_hint: str
-    user_message: str
+
+
+def _goal_trigger_facts(spec: LoopSpec) -> dict[str, Any]:
+    value = spec.goal.metadata.get("trigger_facts")
+    return dict(value) if isinstance(value, dict) else {}
 
 
 @dataclass(frozen=True)
@@ -517,6 +500,7 @@ class SideEffectSagaResult:
     artifact: str = ""
     commit: str = ""
     compensate: str = ""
+    commit_strategy: str = ""
     reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -528,6 +512,7 @@ class SideEffectSagaResult:
             "artifact": self.artifact,
             "commit": self.commit,
             "compensate": self.compensate,
+            "commit_strategy": self.commit_strategy,
             "reason": self.reason,
         }
 
@@ -542,6 +527,7 @@ class SideEffectSagaPort:
         artifact = str(side_effect.get("artifact") or "")
         commit = str(side_effect.get("commit") or "")
         compensate = str(side_effect.get("compensate") or "")
+        commit_strategy = str(side_effect.get("commit_strategy") or "")
         if state not in {"staged", "prepared"}:
             return SideEffectSagaResult(
                 action="commit",
@@ -551,18 +537,20 @@ class SideEffectSagaPort:
                 artifact=artifact,
                 commit=commit,
                 compensate=compensate,
+                commit_strategy=commit_strategy,
                 reason="side_effect_not_staged",
             )
-        if commit and commit.endswith(".dispatch_outbox"):
+        if commit and commit_strategy == "deferred":
             return SideEffectSagaResult(
                 action="commit",
                 ok=True,
                 scope=scope,
-                state="released_for_connector_commit",
+                state="released_for_deferred_commit",
                 artifact=artifact,
                 commit=commit,
                 compensate=compensate,
-                reason="connector_runtime_dispatch_required",
+                commit_strategy=commit_strategy,
+                reason="deferred_commit_released",
             )
         return SideEffectSagaResult(
             action="commit",
@@ -572,6 +560,7 @@ class SideEffectSagaPort:
             artifact=artifact,
             commit=commit,
             compensate=compensate,
+            commit_strategy=commit_strategy,
             reason="no_state_graph_commit_handler",
         )
 
@@ -2238,6 +2227,7 @@ def _transition_side_effect(evidence: dict[str, Any]) -> dict[str, Any]:
         "action": str(executor.get("action") or ""),
         "commit": str(facts.get("side_effect_commit") or ""),
         "compensate": str(facts.get("side_effect_compensate") or ""),
+        "commit_strategy": str(facts.get("side_effect_commit_strategy") or ""),
     }
 
 

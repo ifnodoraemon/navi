@@ -27,6 +27,8 @@ class _ConnectorDeleteProvider:
 
     async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
         self.calls.append(role)
+        if role == "responder":
+            return "原删除任务已执行并验证。"
         assert role == "planner"
         return json.dumps(
             {
@@ -103,8 +105,6 @@ class _BareApprovalProvider(_ConnectorDeleteProvider):
                 {
                     "passed": True,
                     "should_continue": False,
-                    "next_step_hint": "",
-                    "user_message": "原删除任务已执行并验证。",
                     "evidence_summary": "approval continuation completed",
                 }
             )
@@ -237,7 +237,7 @@ async def test_connector_approval_resumes_original_goal_before_reply(tmp_path: P
         await ingress.event_bus.shutdown()
 
     assert response is not None
-    assert response.text == "loop converged"
+    assert response.text == "原删除任务已执行并验证。"
     assert target.exists() is False
     original = RunStore(tmp_path).get(opened.run_id)
     assert original is not None
@@ -250,7 +250,7 @@ async def test_connector_approval_resumes_original_goal_before_reply(tmp_path: P
     ]
     assert len(resumed_shell) == 1
     assert resumed_shell[0].ok is True
-    assert provider.calls == ["planner"]
+    assert provider.calls == ["planner", "responder"]
 
 
 @pytest.mark.asyncio

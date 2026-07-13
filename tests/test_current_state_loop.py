@@ -6,6 +6,7 @@ import re
 import pytest
 
 from navi.capabilities import CapabilityRegistry
+from navi.capabilities_types import CapabilityResult
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.control_plane import TurnController
 from navi.goals import GoalStore
@@ -55,6 +56,27 @@ class _CapturingPlannerProvider:
         return {}
 
 
+class _FactResponderProvider:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[ChatMessage]]] = []
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        **kwargs,
+    ) -> str:
+        self.calls.append((role, messages))
+        assert role == "responder"
+        return "模型根据失败事实生成的说明。"
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
+
+
 def _loop_spec(goal_id: str, workspace: str) -> LoopSpec:
     return LoopSpec.from_goal(
         GoalSpec(
@@ -75,6 +97,42 @@ def _loop_spec(goal_id: str, workspace: str) -> LoopSpec:
             ),
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_turn_controller_never_surfaces_capability_observation_as_user_copy(
+    tmp_path,
+    monkeypatch,
+):
+    provider = _FactResponderProvider()
+    controller = TurnController(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+    )
+
+    async def invoke(*args, **kwargs):
+        return CapabilityResult(
+            ok=False,
+            action="error",
+            message="machine-only failure observation",
+            error_reason="internal_error",
+            facts={"error_type": "RuntimeError"},
+        )
+
+    monkeypatch.setattr(controller.capabilities, "invoke", invoke)
+
+    result = await controller.handle(
+        "完成这个请求",
+        peer_id="cli",
+        sender_id="tester",
+        source="cli",
+    )
+
+    assert result.text == "模型根据失败事实生成的说明。"
+    assert result.text != "machine-only failure observation"
+    assert [role for role, _ in provider.calls] == ["responder"]
+    assert "machine-only failure observation" in provider.calls[0][1][-1].content
 
 
 def test_current_state_facts_include_active_goal_and_loop_run_state(tmp_path):
@@ -144,6 +202,65 @@ def test_current_state_filters_loop_runs_by_visible_goal_context(tmp_path):
 
     assert [item["id"] for item in facts["active_goals"]] == [visible_goal.id]
     assert [item["run_id"] for item in facts["active_loop_runs"]] == [visible_run.run_id]
+
+
+def test_current_state_includes_only_context_matching_delivery_facts(tmp_path):
+    visible = GoalStore(tmp_path).create(
+        objective="visible delivery",
+        workspace=str(tmp_path),
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        run_id="run-visible",
+    )
+    hidden = GoalStore(tmp_path).create(
+        objective="hidden delivery",
+        workspace=str(tmp_path),
+        source="telegram",
+        peer_id="peer-2",
+        sender_id="sender-2",
+        run_id="run-hidden",
+    )
+    store = GoalStore(tmp_path)
+    store.record_delivery(
+        run_id=visible.run_id,
+        channel="weixin",
+        text_preview="sent lesson",
+        text_length=11,
+        media_count=0,
+    )
+    store.record_delivery(
+        run_id=visible.run_id,
+        channel="weixin",
+        text_preview="corrected receipt",
+        text_length=17,
+        media_count=0,
+        sent_at=123.0,
+    )
+    store.record_delivery(
+        run_id=hidden.run_id,
+        channel="telegram",
+        text_preview="hidden",
+        text_length=6,
+        media_count=0,
+    )
+
+    facts = current_state_facts(
+        CurrentStateBuilder(tmp_path).build(
+            SurfaceContext(
+                home=tmp_path,
+                source="weixin",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                workspace=str(tmp_path),
+            )
+        )
+    )
+
+    assert len(facts["recent_deliveries"]) == 1
+    assert facts["recent_deliveries"][0]["run_id"] == visible.run_id
+    assert facts["recent_deliveries"][0]["channel"] == "weixin"
+    assert facts["recent_deliveries"][0]["sent_at"] == 123.0
 
 
 def test_current_state_includes_active_shadow_workspaces(tmp_path):
