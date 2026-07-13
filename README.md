@@ -114,3 +114,4 @@ Live model tests are opt-in and require a configured provider credential.
 - [Non-negotiable principles](docs/principles.md)
 - [Current architecture](docs/architecture.md)
 - [Prompt architecture](docs/prompt-architecture.md)
+- [MCP and web search](docs/mcp-and-search.md)

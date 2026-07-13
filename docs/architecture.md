@@ -97,6 +97,11 @@ they are visible to the planner: the shared risk assessment and durable approval
 gate pause them before any effect. Connector authentication and sender policy
 still determine who may enter the loop.
 
+Configured MCP servers join the same registry through governed discovery and
+call broker capabilities. Streamable HTTP and stdio are transport choices, not
+separate permission models; configured permission, durable approval, audit, and
+redaction apply to both.
+
 ## Known Current Deviations
 
 These are present code/contract discrepancies, not a future feature roadmap:

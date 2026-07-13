@@ -388,6 +388,11 @@ def load_tool_providers(home: Path, *, project_dir: Path) -> list[ToolProvider]:
             source="connectors",
             register=lambda registry: _register_connector_tools(registry, home=home),
         ),
+        ToolProvider(
+            name="mcp",
+            source="mcp",
+            register=lambda registry: _register_mcp_tools(registry, home=home),
+        ),
     ]
 
 
@@ -412,4 +417,9 @@ def _register_connector_tools(registry: ToolRegistry, *, home: Path) -> None:
     for adapter in load_connector_adapters():
         adapter.register_tools(registry, home)
 
+
+def _register_mcp_tools(registry: ToolRegistry, *, home: Path) -> None:
+    from .mcp_tools import register_mcp_tools
+
+    register_mcp_tools(registry, home=home)
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from .capability_contract import CAPABILITY_RETRYABLE_KEY
 from .capabilities import CapabilityRegistry
 from .capabilities_types import CapabilityContext
 from .checker import CheckerReport, DeterministicChecker
@@ -166,6 +167,7 @@ class CapabilityRecoveryPort:
         *,
         executed: ExecutedCapabilityStep,
     ) -> ReflectionDecision:
+        retryable = executed.facts.get(CAPABILITY_RETRYABLE_KEY) is not False
         recovery_facts = {
             "trigger": "capability.failed",
             "reason_code": "execution_failed",
@@ -175,12 +177,13 @@ class CapabilityRecoveryPort:
             "attempt": state.attempt,
             "goal_id": spec.goal_id,
             "error_reason": executed.error_reason,
+            "retryable": retryable,
             "message": executed.message,
             "facts": executed.facts,
         }
         return ReflectionDecision(
-            retry=state.attempt < spec.retry_policy.max_attempts,
-            reason_code="execution_failed",
+            retry=retryable and state.attempt < spec.retry_policy.max_attempts,
+            reason_code="execution_failed" if retryable else "execution_not_retryable",
             facts={
                 "recovery": recovery_facts,
                 "recovery_fact": json.dumps(

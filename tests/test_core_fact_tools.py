@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -12,10 +11,6 @@ from navi.loop_contracts import LockMode
 from navi.memory import MemoryStore
 from navi.tools import build_tool_gateway
 from navi.workspaces import WorkspaceLockStore
-
-# Shared constant: the DuckDuckGo HTML endpoint used by the fallback provider.
-_DDG_SEARCH_URL_FROM_UTILS = web_search_utils._DDG_SEARCH_URL
-
 
 @pytest.mark.asyncio
 async def test_codebase_search_uses_runtime_rag_and_navi_home_cache(tmp_path: Path) -> None:
@@ -317,46 +312,57 @@ async def test_python_ast_replace_symbol_can_patch_shadow_then_merge(
     assert target.read_text(encoding="utf-8") == "class Service:\n    value = 'new'\n"
 
 
-def test_web_search_uses_reachable_duckduckgo_endpoint(monkeypatch) -> None:
-    captured: dict[str, list[str]] = {}
-    monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "ddg")
+@pytest.mark.asyncio
+async def test_web_search_uses_exa_mcp_default(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.delenv("NAVI_WEB_SEARCH_PROVIDER", raising=False)
+    monkeypatch.delenv("NAVI_WEB_SEARCH_SEARXNG_URL", raising=False)
+    monkeypatch.delenv("NAVI_WEB_SEARCH_SEARXNG_URLS", raising=False)
 
-    def fake_run(cmd, **kwargs):
-        del kwargs
-        captured["cmd"] = cmd
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            stdout=(
-                '<html><body><div class="result">'
-                '<a class="result__a" '
-                'href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fnavi&amp;rut=abc">'
-                "Navi result</a>"
-                '<a class="result__snippet" href="#">Search result snippet</a>'
-                "</div></body></html>"
+    async def fake_call(self, name, arguments):
+        captured["endpoint"] = self.server.safe_endpoint
+        captured["name"] = name
+        captured["arguments"] = arguments
+        return {
+            "ok": True,
+            "is_error": False,
+            "content": [],
+            "structured_content": {},
+            "text": (
+                "Title: Navi result\n"
+                "URL: https://example.com/navi\n"
+                "Published: 2026-07-13\n"
+                "Author: Example\n"
+                "Highlights:\nSearch result snippet"
             ),
-            stderr="",
-        )
+            "truncated": False,
+        }
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
 
-    result = web_search_utils._web_search({"query": "navi smoke"})
+    result = await web_search_utils._web_search({"query": "navi smoke", "limit": 3})
 
     assert result.ok is True
-    assert _DDG_SEARCH_URL_FROM_UTILS in captured["cmd"]
-    assert result.facts["provider"] == "duckduckgo"
+    assert captured == {
+        "endpoint": "https://mcp.exa.ai/mcp",
+        "name": "web_search_exa",
+        "arguments": {"query": "navi smoke", "numResults": 3},
+    }
+    assert result.facts["provider"] == "exa_mcp"
     assert result.facts["results"] == [
         {
             "title": "Navi result",
             "url": "https://example.com/navi",
             "snippet": "Search result snippet",
-            "engine": "duckduckgo",
+            "engine": "exa",
+            "published_date": "2026-07-13",
+            "author": "Example",
         }
     ]
-    assert "Search result" in result.facts["response"]["text"]
 
 
-def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "searxng")
     monkeypatch.setenv("NAVI_WEB_SEARCH_SEARXNG_URL", "https://search.example")
@@ -397,7 +403,7 @@ def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> None:
 
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
 
-    result = web_search_utils._web_search(
+    result = await web_search_utils._web_search(
         {"query": "navi smoke", "limit": 3, "categories": "general", "language": "en"}
     )
 
@@ -431,7 +437,8 @@ def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> None:
     assert captured["max_bytes"] == 2_000_000
 
 
-def test_web_search_auto_falls_back_to_duckduckgo_with_provider_error_facts(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_web_search_auto_falls_back_to_exa_with_provider_error_facts(monkeypatch) -> None:
     monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "auto")
     monkeypatch.setenv("NAVI_WEB_SEARCH_SEARXNG_URL", "https://search.example")
 
@@ -439,28 +446,27 @@ def test_web_search_auto_falls_back_to_duckduckgo_with_provider_error_facts(monk
         del request, timeout
         raise OSError("temporary search outage")
 
-    def fake_run(cmd, **kwargs):
-        del kwargs
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            stdout=(
-                '<html><body><div class="result">'
-                '<a class="result__a" '
-                'href="//duckduckgo.com/l/?uddg=https%3A%2F%2Ffallback.example">Fallback</a>'
-                '<a class="result__snippet" href="#">Fallback result</a>'
-                "</div></body></html>"
+    async def fake_call(self, name, arguments):
+        del self, name, arguments
+        return {
+            "ok": True,
+            "is_error": False,
+            "content": [],
+            "structured_content": {},
+            "text": (
+                "Title: Fallback\nURL: https://fallback.example\n"
+                "Published: N/A\nAuthor: N/A\nHighlights:\nFallback result"
             ),
-            stderr="",
-        )
+            "truncated": False,
+        }
 
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
 
-    result = web_search_utils._web_search({"query": "navi smoke"})
+    result = await web_search_utils._web_search({"query": "navi smoke"})
 
     assert result.ok is True
-    assert result.facts["provider"] == "duckduckgo"
+    assert result.facts["provider"] == "exa_mcp"
     assert result.facts["results"][0]["url"] == "https://fallback.example"
     assert result.facts["provider_errors"] == [
         {
@@ -473,7 +479,8 @@ def test_web_search_auto_falls_back_to_duckduckgo_with_provider_error_facts(monk
     ]
 
 
-def test_web_search_explicit_searxng_failure_does_not_use_duckduckgo(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_web_search_explicit_searxng_failure_does_not_use_exa(monkeypatch) -> None:
     monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "searxng")
     monkeypatch.setenv("NAVI_WEB_SEARCH_SEARXNG_URL", "https://search.example")
 
@@ -481,18 +488,19 @@ def test_web_search_explicit_searxng_failure_does_not_use_duckduckgo(monkeypatch
         del request, timeout
         raise TimeoutError("timed out")
 
-    def fail_run(cmd, **kwargs):
-        del cmd, kwargs
-        raise AssertionError("explicit SearXNG mode must not call DuckDuckGo fallback")
+    async def fail_call(self, name, arguments):
+        del self, name, arguments
+        raise AssertionError("explicit SearXNG mode must not call Exa fallback")
 
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
-    monkeypatch.setattr(subprocess, "run", fail_run)
+    monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fail_call)
 
-    result = web_search_utils._web_search({"query": "navi smoke"})
+    result = await web_search_utils._web_search({"query": "navi smoke"})
 
     assert result.ok is False
     assert result.facts["provider"] == "searxng"
     assert result.facts["error_reason"] == "search_provider_error"
+    assert result.facts["retryable"] is False
     assert result.facts["provider_errors"] == [
         {
             "provider": "searxng",
@@ -503,69 +511,41 @@ def test_web_search_explicit_searxng_failure_does_not_use_duckduckgo(monkeypatch
     ]
 
 
-def test_web_search_explicit_searxng_without_endpoint_is_config_error(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_web_search_explicit_searxng_without_endpoint_is_config_error(monkeypatch) -> None:
     monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "searxng")
     monkeypatch.delenv("NAVI_WEB_SEARCH_SEARXNG_URL", raising=False)
     monkeypatch.delenv("NAVI_WEB_SEARCH_SEARXNG_URLS", raising=False)
 
-    def fail_run(cmd, **kwargs):
-        del cmd, kwargs
-        raise AssertionError("explicit SearXNG mode without endpoint must not call fallback")
-
-    monkeypatch.setattr(subprocess, "run", fail_run)
-
-    result = web_search_utils._web_search({"query": "navi smoke"})
+    result = await web_search_utils._web_search({"query": "navi smoke"})
 
     assert result.ok is False
     assert result.facts["provider"] == "searxng"
     assert result.facts["error_reason"] == "search_provider_config_error"
+    assert result.facts["retryable"] is False
     assert "NAVI_WEB_SEARCH_SEARXNG_URL" in result.error
 
 
-def test_web_search_duckduckgo_challenge_returns_blocked_fact(monkeypatch) -> None:
-    monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "ddg")
+@pytest.mark.asyncio
+async def test_web_search_exa_tool_error_is_not_retryable(monkeypatch) -> None:
+    monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "exa")
 
-    def fake_run(cmd, **kwargs):
-        del kwargs
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            stdout=(
-                '<html><body><form id="challenge-form">'
-                '<div class="anomaly-modal">Unfortunately, bots use DuckDuckGo too.</div>'
-                "</form></body></html>"
-            ),
-            stderr="",
-        )
+    async def fake_call(self, name, arguments):
+        del self, name, arguments
+        return {
+            "ok": False,
+            "is_error": True,
+            "content": [],
+            "structured_content": {},
+            "text": "rate limited",
+            "truncated": False,
+        }
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
 
-    result = web_search_utils._web_search({"query": "navi smoke"})
-
-    assert result.ok is False
-    assert result.facts["provider"] == "duckduckgo"
-    assert result.facts["error_reason"] == "search_provider_blocked"
-    assert result.facts["block_reason"] == "duckduckgo_anomaly_challenge"
-
-
-def test_web_search_returns_curl_transport_facts(monkeypatch) -> None:
-    monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "ddg")
-
-    def fake_run(cmd, **kwargs):
-        del kwargs
-        return subprocess.CompletedProcess(
-            cmd,
-            35,
-            stdout="",
-            stderr="SSL_ERROR_SYSCALL",
-        )
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    result = web_search_utils._web_search({"query": "navi smoke"})
+    result = await web_search_utils._web_search({"query": "navi smoke"})
 
     assert result.ok is False
-    assert result.facts["provider"] == "duckduckgo"
+    assert result.facts["provider"] == "exa_mcp"
     assert result.facts["error_reason"] == "search_provider_error"
-    assert result.facts["curl_exit_code"] == 35
-    assert result.facts["stderr"] == "SSL_ERROR_SYSCALL"
+    assert result.facts["retryable"] is False

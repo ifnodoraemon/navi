@@ -5,28 +5,29 @@ import html
 import json
 import os
 import re
-import subprocess
+from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
-from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY
+from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY, CAPABILITY_RETRYABLE_KEY
+from navi.config import load_runtime_env
+from navi.mcp_client import (
+    DEFAULT_EXA_MCP_URL,
+    MCPClient,
+    MCPServerConfig,
+    describe_mcp_exception,
+)
 
 from ..tools import ToolResult
 from .utils import _positive_int, _truncate_output
 
 _SEARCH_USER_AGENT = "Navi/1.0"
 _WEB_SEARCH_PROVIDER_SEARXNG = "searxng"
-_WEB_SEARCH_PROVIDER_DDG = "duckduckgo"
-_DDG_SEARCH_URL = "https://html.duckduckgo.com/html/"
-_DDG_BROWSER_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
-)
+_WEB_SEARCH_PROVIDER_EXA_MCP = "exa_mcp"
 
 
-def _web_search(args: dict[str, Any]) -> ToolResult:
+async def _web_search(args: dict[str, Any], *, home: Path | None = None) -> ToolResult:
     query = str(args.get("query") or "").strip()
     if not query:
         return ToolResult(
@@ -35,16 +36,18 @@ def _web_search(args: dict[str, Any]) -> ToolResult:
             error="query is required",
             facts={
                 CAPABILITY_ERROR_REASON_KEY: "missing_required_argument",
+                CAPABILITY_RETRYABLE_KEY: False,
                 "provider": "web.search",
             },
         )
 
     limit = _positive_int(args.get("limit"), default=5, maximum=10)
-    provider = str(os.environ.get("NAVI_WEB_SEARCH_PROVIDER") or "auto").strip().lower()
+    env = load_runtime_env(home) if home is not None else dict(os.environ)
+    provider = str(env.get("NAVI_WEB_SEARCH_PROVIDER") or "auto").strip().lower()
     provider_errors: list[dict[str, Any]] = []
 
     if provider in {"auto", _WEB_SEARCH_PROVIDER_SEARXNG, "searxng_json"}:
-        searxng_endpoints = _searxng_endpoints()
+        searxng_endpoints = _searxng_endpoints(env)
         if not searxng_endpoints and provider in {_WEB_SEARCH_PROVIDER_SEARXNG, "searxng_json"}:
             return ToolResult(
                 tool="web.search",
@@ -52,6 +55,7 @@ def _web_search(args: dict[str, Any]) -> ToolResult:
                 error="NAVI_WEB_SEARCH_SEARXNG_URL or NAVI_WEB_SEARCH_SEARXNG_URLS is required",
                 facts={
                     CAPABILITY_ERROR_REASON_KEY: "search_provider_config_error",
+                    CAPABILITY_RETRYABLE_KEY: False,
                     "query": query,
                     "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
                 },
@@ -62,13 +66,13 @@ def _web_search(args: dict[str, Any]) -> ToolResult:
                 limit=limit,
                 endpoint=endpoint,
                 categories=str(
-                    args.get("categories") or os.environ.get("NAVI_WEB_SEARCH_CATEGORIES") or ""
+                    args.get("categories") or env.get("NAVI_WEB_SEARCH_CATEGORIES") or ""
                 ).strip(),
                 language=str(
-                    args.get("language") or os.environ.get("NAVI_WEB_SEARCH_LANGUAGE") or ""
+                    args.get("language") or env.get("NAVI_WEB_SEARCH_LANGUAGE") or ""
                 ).strip(),
                 time_range=str(
-                    args.get("time_range") or os.environ.get("NAVI_WEB_SEARCH_TIME_RANGE") or ""
+                    args.get("time_range") or env.get("NAVI_WEB_SEARCH_TIME_RANGE") or ""
                 ).strip(),
             )
             if searxng_result.ok:
@@ -81,30 +85,32 @@ def _web_search(args: dict[str, Any]) -> ToolResult:
                 provider_errors=provider_errors,
             )
 
-    if provider not in {"auto", _WEB_SEARCH_PROVIDER_DDG, "ddg", "duckduckgo"}:
+    if provider not in {"auto", "exa", "exa_mcp", "mcp"}:
         return ToolResult(
             tool="web.search",
             ok=False,
             error=f"unsupported web search provider: {provider}",
             facts={
                 CAPABILITY_ERROR_REASON_KEY: "unsupported_search_provider",
+                CAPABILITY_RETRYABLE_KEY: False,
                 "query": query,
                 "provider": provider,
             },
         )
 
-    ddg_result = _duckduckgo_html_search(query, limit=limit)
+    exa_result = await _exa_mcp_search(query, limit=limit, env=env)
     if provider_errors:
-        ddg_result.facts["provider_errors"] = provider_errors
-    return ddg_result
+        exa_result.facts["provider_errors"] = provider_errors
+    return exa_result
 
 
-def _searxng_endpoints() -> tuple[str, ...]:
+def _searxng_endpoints(env: dict[str, str] | None = None) -> tuple[str, ...]:
+    env = env or dict(os.environ)
     raw = ",".join(
         value
         for value in (
-            os.environ.get("NAVI_WEB_SEARCH_SEARXNG_URLS", ""),
-            os.environ.get("NAVI_WEB_SEARCH_SEARXNG_URL", ""),
+            env.get("NAVI_WEB_SEARCH_SEARXNG_URLS", ""),
+            env.get("NAVI_WEB_SEARCH_SEARXNG_URL", ""),
         )
         if value
     )
@@ -267,179 +273,128 @@ def _normalize_searxng_results(payload: Any, *, limit: int) -> list[dict[str, An
     return results
 
 
-def _duckduckgo_html_search(query: str, *, limit: int) -> ToolResult:
+async def _exa_mcp_search(
+    query: str,
+    *,
+    limit: int,
+    env: dict[str, str] | None = None,
+) -> ToolResult:
+    env = env or dict(os.environ)
+    endpoint = str(
+        env.get("NAVI_WEB_SEARCH_EXA_MCP_URL") or DEFAULT_EXA_MCP_URL
+    ).strip()
+    api_key = str(env.get("NAVI_EXA_API_KEY") or env.get("EXA_API_KEY") or "")
+    headers = {"x-api-key": api_key} if api_key else {}
+    server = MCPServerConfig(
+        name="exa",
+        transport="streamable_http",
+        url=endpoint,
+        headers=headers,
+        timeout_seconds=30,
+        permission="network",
+        allowed_tools=("web_search_exa",),
+    )
     try:
-        result = subprocess.run(
-            [
-                "curl",
-                "-sL",
-                "-X",
-                "POST",
-                "-A",
-                _DDG_BROWSER_UA,
-                "-H",
-                "Content-Type: application/x-www-form-urlencoded",
-                "--data",
-                urlencode({"q": query}),
-                _DDG_SEARCH_URL,
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            stderr = _truncate_output(result.stderr.strip(), limit=2000)
-            return ToolResult(
-                tool="web.search",
-                ok=False,
-                error=stderr or f"curl exited with status {result.returncode}",
-                facts={
-                    CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
-                    "query": query,
-                    "provider": _WEB_SEARCH_PROVIDER_DDG,
-                    "curl_exit_code": result.returncode,
-                    "stderr": stderr,
-                },
-            )
-        raw_html = result.stdout
-        block_reason = _search_block_reason(raw_html)
-        if block_reason:
-            return ToolResult(
-                tool="web.search",
-                ok=False,
-                error=f"DuckDuckGo returned a bot challenge page: {block_reason}",
-                facts={
-                    CAPABILITY_ERROR_REASON_KEY: "search_provider_blocked",
-                    "query": query,
-                    "provider": _WEB_SEARCH_PROVIDER_DDG,
-                    "source_url": _DDG_SEARCH_URL,
-                    "block_reason": block_reason,
-                    "response_length": len(raw_html),
-                },
-            )
-        results = _extract_duckduckgo_results(raw_html, limit=limit)
-        if not results:
-            return ToolResult(
-                tool="web.search",
-                ok=False,
-                error="DuckDuckGo returned no parseable results",
-                facts={
-                    CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
-                    "query": query,
-                    "provider": _WEB_SEARCH_PROVIDER_DDG,
-                    "response_length": len(raw_html),
-                },
-            )
-        stripped_text = _html_to_text(raw_html)
-        return ToolResult(
-            tool="web.search",
-            ok=True,
-            facts={
-                "query": query,
-                "provider": _WEB_SEARCH_PROVIDER_DDG,
-                "source_url": _DDG_SEARCH_URL,
-                "results": results,
-                "response": {"text": stripped_text[:15000], "result_count": len(results)},
-            },
-        )
-    except subprocess.TimeoutExpired:
-        return ToolResult(
-            tool="web.search",
-            ok=False,
-            error="search request timed out",
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_timeout",
-                "query": query,
-                "provider": _WEB_SEARCH_PROVIDER_DDG,
-            },
+        result = await MCPClient(server).call_tool(
+            "web_search_exa",
+            {"query": query, "numResults": limit},
         )
     except Exception as exc:
+        error, timed_out = describe_mcp_exception(exc)
         return ToolResult(
             tool="web.search",
             ok=False,
-            error=str(exc),
+            error=error,
             facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
+                CAPABILITY_ERROR_REASON_KEY: "search_timeout" if timed_out else "search_provider_error",
+                CAPABILITY_RETRYABLE_KEY: timed_out,
                 "query": query,
-                "provider": _WEB_SEARCH_PROVIDER_DDG,
+                "provider": _WEB_SEARCH_PROVIDER_EXA_MCP,
+                "endpoint": server.safe_endpoint,
                 "error_type": type(exc).__name__,
             },
         )
-
-
-def _extract_duckduckgo_results(raw_html: str, *, limit: int) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    blocks = re.findall(
-        r'<div[^>]+class="[^"]*\bresult\b[^"]*"[^>]*>(.*?)(?=<div[^>]+class="[^"]*\bresult\b|</body>)',
-        raw_html,
-        flags=re.IGNORECASE | re.DOTALL,
+    if not result["ok"]:
+        return ToolResult(
+            tool="web.search",
+            ok=False,
+            error="Exa MCP reported a search tool error",
+            facts={
+                CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
+                CAPABILITY_RETRYABLE_KEY: False,
+                "query": query,
+                "provider": _WEB_SEARCH_PROVIDER_EXA_MCP,
+                "endpoint": server.safe_endpoint,
+            },
+        )
+    text = str(result.get("text") or "")
+    results = _normalize_exa_text_results(text, limit=limit)
+    if not results:
+        return ToolResult(
+            tool="web.search",
+            ok=False,
+            error="Exa MCP returned no parseable search results",
+            facts={
+                CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
+                CAPABILITY_RETRYABLE_KEY: False,
+                "query": query,
+                "provider": _WEB_SEARCH_PROVIDER_EXA_MCP,
+                "endpoint": server.safe_endpoint,
+                "response_length": len(text),
+            },
+        )
+    return ToolResult(
+        tool="web.search",
+        ok=True,
+        facts={
+            "query": query,
+            "provider": _WEB_SEARCH_PROVIDER_EXA_MCP,
+            "endpoint": server.safe_endpoint,
+            "results": results,
+            "response": {
+                "text": text[:100_000],
+                "truncated": len(text) > 100_000,
+                "result_count": len(results),
+            },
+        },
     )
-    for block in blocks:
-        title_match = re.search(
-            r'<a[^>]+class="[^"]*\bresult__a\b[^"]*"[^>]*>(.*?)</a>',
-            block,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        if not title_match:
+
+
+def _normalize_exa_text_results(value: str, *, limit: int) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for block in re.split(r"\n\s*---\s*\n", str(value or "")):
+        fields: dict[str, str] = {}
+        highlights = ""
+        match = re.search(r"(?m)^Highlights:\s*\n?(.*)$", block, flags=re.DOTALL)
+        if match:
+            highlights = _clean_search_text(match.group(1))
+            header = block[: match.start()]
+        else:
+            header = block
+        for key in ("Title", "URL", "Published", "Author"):
+            field_match = re.search(rf"(?m)^{key}:\s*(.*)$", header)
+            if field_match:
+                fields[key.lower()] = field_match.group(1).strip()
+        url = fields.get("url", "")
+        title = fields.get("title", "")
+        if not url and not title:
             continue
-        title = _html_to_text(title_match.group(1))
-        href_match = re.search(r'href=["\']([^"\']+)["\']', title_match.group(0), re.IGNORECASE)
-        url = ""
-        if href_match:
-            raw_href = html.unescape(href_match.group(1)).strip()
-            url = _resolve_ddg_redirect(raw_href)
-        snippet_match = re.search(
-            r'<a[^>]+class="[^"]*\bresult__snippet\b[^"]*"[^>]*>(.*?)</a>',
-            block,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        snippet = _html_to_text(snippet_match.group(1)) if snippet_match else ""
-        if title or url or snippet:
-            results.append({"title": title, "url": url, "snippet": snippet, "engine": "duckduckgo"})
+        item = {
+            "title": title,
+            "url": url,
+            "snippet": highlights,
+            "engine": "exa",
+        }
+        published = fields.get("published", "")
+        author = fields.get("author", "")
+        if published and published != "N/A":
+            item["published_date"] = published
+        if author and author != "N/A":
+            item["author"] = author
+        results.append(item)
         if len(results) >= limit:
             break
     return results
-
-
-def _resolve_ddg_redirect(href: str) -> str:
-    cleaned = href.strip()
-    if cleaned.startswith("//"):
-        cleaned = "https:" + cleaned
-    parsed = urlparse(cleaned)
-    if "duckduckgo.com" not in parsed.netloc:
-        return cleaned
-    query = parse_qs(parsed.query)
-    uddg = query.get("uddg", [""])[0]
-    return html.unescape(uddg) if uddg else cleaned
-
-
-def _html_to_text(value: str) -> str:
-    text = re.sub(
-        r"<(script|style|svg|symbol|use|path).*?>.*?</\1>",
-        " ",
-        str(value or ""),
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = html.unescape(text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _search_block_reason(raw_html: str) -> str:
-    lowered = str(raw_html or "").lower()
-    challenge_markers = {
-        "anomaly-modal": "duckduckgo_anomaly_challenge",
-        "unfortunately, bots use duckduckgo too": "duckduckgo_bot_challenge",
-        "challenge-form": "search_challenge_form",
-        "cloudflarehandlecaptcha": "cloudflare_captcha",
-        "turnstile": "turnstile",
-        "captcha": "captcha",
-    }
-    for marker, reason in challenge_markers.items():
-        if marker in lowered:
-            return reason
-    return ""
 
 
 def _clean_search_text(value: Any) -> str:
@@ -492,6 +447,7 @@ def _combined_search_failure(
         error="all configured web search providers failed",
         facts={
             CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
+            CAPABILITY_RETRYABLE_KEY: False,
             "query": query,
             "provider": provider,
             "provider_errors": provider_errors,

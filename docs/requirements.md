@@ -126,6 +126,14 @@ The supported product surfaces are:
 Core capabilities must remain usable and testable without a browser UI or a
 specific connector.
 
+MCP tool calls must pass through the same capability registry, approval, audit,
+and redaction boundaries as core and connector tools. Server annotations must
+not grant or lower permissions.
+
+Web search must use supported structured providers, surface provider and
+configuration facts, and stop retrying unchanged failures explicitly marked
+non-retryable.
+
 ## Verification Contract
 
 Required repository gates are:

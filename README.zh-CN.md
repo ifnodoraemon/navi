@@ -104,3 +104,4 @@ python -m build
 - [不可违反原则](docs/principles.md)
 - [当前架构](docs/architecture.md)
 - [Prompt 架构](docs/prompt-architecture.md)
+- [MCP 与网页搜索](docs/mcp-and-search.md)

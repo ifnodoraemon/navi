@@ -691,7 +691,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             capability_class="web",
             description=(
                 "Search the web and return structured result facts. Uses configured "
-                "SearXNG JSON endpoints when available, with DuckDuckGo HTML as a fallback."
+                "SearXNG JSON endpoints first and the official Exa MCP search service "
+                "as the default reliable fallback."
             ),
             input_schema={
                 "type": "object",
@@ -734,7 +735,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             ),
             permission="network",
         ),
-        _web_search,
+        lambda args: _web_search(args, home=home),
     )
     registry.register(
         _core_tool_spec(

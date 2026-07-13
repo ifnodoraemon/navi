@@ -93,11 +93,16 @@ def _first_env(env: dict[str, str], names: tuple[str, ...]) -> str:
     return ""
 
 
+def load_runtime_env(home: Path | None = None) -> dict[str, str]:
+    """Return Navi's env file overlaid by the current process environment."""
+    home = home or ensure_home()
+    return {**_load_env_file(home / "env"), **os.environ}
+
+
 def load_config(home: Path | None = None) -> NaviConfig:
     home = home or ensure_home()
     raw = _read_yaml(home / "config.yaml")
-    env_file = _load_env_file(home / "env")
-    env = {**env_file, **os.environ}
+    env = load_runtime_env(home)
 
     model_raw = raw.get("model") or {}
     runtime_raw = raw.get("runtime") or {}

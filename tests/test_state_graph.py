@@ -27,8 +27,10 @@ from navi.loop_contracts import (
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.state_graph import (
+    CapabilityRecoveryPort,
     CapabilityExecutorPort,
     DurableStateGraphRunner,
+    ExecutedCapabilityStep,
     ModelCapabilityPlannerPort,
     _transition_loop_decision,
 )
@@ -123,6 +125,32 @@ def _write_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
             ),
         ),
     )
+
+
+def test_capability_recovery_stops_on_non_retryable_failure() -> None:
+    spec = _spec(_command("print('ok')"))
+    state = LoopRunState(
+        run_id="run-non-retryable",
+        goal_id=spec.goal_id,
+        loop_spec_id=spec.id,
+        attempt=1,
+    )
+
+    decision = CapabilityRecoveryPort().recover(
+        spec,
+        state,
+        executed=ExecutedCapabilityStep(
+            ok=False,
+            action="tool",
+            facts={"retryable": False, "provider": "search"},
+            message="provider configuration will not change during this run",
+            error_reason="search_provider_config_error",
+        ),
+    )
+
+    assert decision.retry is False
+    assert decision.reason_code == "execution_not_retryable"
+    assert decision.facts["recovery"]["retryable"] is False
 
 
 def _send_file_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
