@@ -83,7 +83,6 @@ class CapabilityContext:
     allowed_tools: frozenset[str] | None = None
     disabled_tools: frozenset[str] = frozenset()
     disabled_capability_classes: frozenset[str] = frozenset()
-    enforce_connector_source_policy: bool = True
     runtime_facts: Mapping[str, Any] | None = None
 
 

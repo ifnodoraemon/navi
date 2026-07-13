@@ -173,7 +173,6 @@ async def resume_goal_loop_run(
         home=home,
         project_dir=Path(goal.workspace),
         permission_ceiling=permission_ceiling,
-        enforce_connector_source_policy=False,
         runtime=runtime,
     )
     context = CapabilityContext(
@@ -187,7 +186,6 @@ async def resume_goal_loop_run(
         trace_id=trace_id,
         input_text=input_text,
         event_bus=event_bus,
-        enforce_connector_source_policy=False,
     )
     return await run_goal_loop_state_graph(
         home=home,

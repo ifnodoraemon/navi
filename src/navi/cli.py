@@ -18,7 +18,6 @@ from .auth import AuthInspector
 from .capabilities import CapabilityContext, build_capability_registry
 from .config import load_config, write_default_config
 from .connector_registry import get_connector_adapter, load_connector_adapters
-from .connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
 from .diagnostics import run_diagnostics
 from .defaults import DEFAULT_API_HOST, DEFAULT_API_PORT
 from .daemon import SystemDaemon
@@ -118,7 +117,6 @@ def chat() -> None:
         home=home,
         runtime=runtime,
         project_dir=Path.cwd(),
-        disabled_capability_classes=LOCAL_CONVERSATIONAL_TOOL_POLICY.blocked_capability_classes,
         event_bus=daemon.event_bus,
     )
     session_id: str | None = None

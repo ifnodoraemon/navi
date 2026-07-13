@@ -1,7 +1,6 @@
 from navi.goals import GoalStore
 from navi.memory.store import MemoryStore
 from navi.diagnostics import run_diagnostics
-from navi.connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
 import typer
 import asyncio
 from pathlib import Path
@@ -35,7 +34,6 @@ def chat() -> None:
         home=home,
         runtime=runtime,
         project_dir=Path.cwd(),
-        disabled_capability_classes=LOCAL_CONVERSATIONAL_TOOL_POLICY.blocked_capability_classes,
         event_bus=daemon.event_bus,
     )
     session_id: str | None = None

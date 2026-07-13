@@ -42,7 +42,7 @@ The model owns semantic decisions:
 The runtime owns deterministic enforcement:
 
 - capability schemas and availability;
-- source allowlists and blocked capability classes;
+- execution-context capability restrictions and blocked capability classes;
 - permission ceilings and scoped approval grants;
 - path, workspace, timeout, concurrency, and resource boundaries;
 - checkpoint, merge, compensation, and audit requirements;
@@ -91,8 +91,11 @@ Tools execute or observe and return facts. Skills provide procedures. Plugins
 provide installed code and integrations. Hooks observe or gate lifecycle
 events. These extension types must not silently assume each other's authority.
 
-Remote connector policy is an explicit allowlist. Entering a goal, StateGraph,
-subagent, resumed run, or background worker must not broaden that allowlist.
+CLI, API, and connector ingress use the same capability catalog. Source identity
+scopes durable state, approvals, audit, and reply delivery; it does not implicitly
+narrow or broaden capability visibility. Explicit caller restrictions and the
+permission ceiling must survive every Goal, StateGraph, resume, and background
+boundary, while sensitive effects always require a matching durable approval.
 
 ## State And Persistence
 
@@ -139,4 +142,3 @@ Required repository gates are:
 
 Coverage must measure the control plane, capabilities, connectors, and stores.
 A zero threshold or broad omission of those modules is not an acceptance gate.
-

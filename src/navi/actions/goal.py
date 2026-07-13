@@ -268,7 +268,6 @@ def _planner_capabilities(
         disabled_tools=set(context.disabled_tools),
         disabled_capability_classes=context.disabled_capability_classes,
         permission_ceiling=context.permission_ceiling,
-        enforce_connector_source_policy=context.enforce_connector_source_policy,
         runtime=runtime,
     )
 

@@ -334,17 +334,8 @@ async def _run_daily_journey(
     )
     ceiling = journey.get("permission_ceiling", "write")
     
-    # Dynamically resolve source and disabled capability classes
     journey_id = str(journey.get("id") or "")
-    if journey_id.startswith("public_"):
-        source = "public_hermes"
-        from .connector_runtime import REMOTE_BLOCKED_CAPABILITY_CLASSES, REMOTE_BLOCKED_TOOLS
-        disabled_capability_classes = REMOTE_BLOCKED_CAPABILITY_CLASSES
-        disabled_tools = REMOTE_BLOCKED_TOOLS
-    else:
-        source = "cli"
-        disabled_capability_classes = frozenset()
-        disabled_tools = frozenset()
+    source = "public_hermes" if journey_id.startswith("public_") else "cli"
 
     from .event_bus import EventBus
     from .governance_agent import GovernanceAgent
@@ -356,8 +347,6 @@ async def _run_daily_journey(
         runtime=runtime,
         project_dir=project_dir,
         permission_ceiling=ceiling,
-        disabled_tools=set(disabled_tools),
-        disabled_capability_classes=disabled_capability_classes,
         event_bus=event_bus,
     )
     runs = RunStore(home)

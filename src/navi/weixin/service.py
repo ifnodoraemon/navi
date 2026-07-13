@@ -36,7 +36,6 @@ class WeixinService:
         local_source: str = "weixin",
         session_alias_prefix: str = "connector:weixin",
         project_dir: Path,
-        tool_policy=None,
         client=None,
     ):
         self.home = home
@@ -52,21 +51,11 @@ class WeixinService:
         self.typing_tickets: dict[str, str] = {}
         self.daemon = SystemDaemon(home, project_dir=self.project_dir)
         self.active = self.daemon
-        if tool_policy is None:
-            self.ingress = ConnectorIngressRuntime(
-                home=home,
-                runtime=runtime,
-                project_dir=self.project_dir,
-                allow_sources={"action", "core"},
-            )
-        else:
-            self.ingress = ConnectorIngressRuntime(
-                home=home,
-                runtime=runtime,
-                project_dir=self.project_dir,
-                allow_sources={"action", "core"},
-                tool_policy=tool_policy,
-            )
+        self.ingress = ConnectorIngressRuntime(
+            home=home,
+            runtime=runtime,
+            project_dir=self.project_dir,
+        )
 
     def _build_client(self):
         token = self.config.token

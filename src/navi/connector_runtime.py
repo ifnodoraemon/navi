@@ -8,7 +8,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, FrozenSet
+from typing import TYPE_CHECKING, Any
 
 from .control_plane import TurnController
 from .turn_result import AgentTurnResult
@@ -96,92 +96,6 @@ def format_approval_notification(
         ).strip()
     except (KeyError, IndexError):
         return ""
-
-
-# The remote-connector security boundary is an explicit preparation/read
-# allowlist. Remote surfaces can converse, ask, propose or inspect governed
-# work, and create prepared delegation state. New mutating capabilities do
-# not become remotely visible unless the policy names them.
-REMOTE_ALLOWED_TOOLS = frozenset(
-    (
-        "respond",
-        "approval.resolve",
-        "goal.open",
-        "goal.state",
-        "session.request_elevation",
-        "tools.list",
-    )
-)
-
-REMOTE_ELEVATED_ALLOWED_TOOLS = frozenset(
-    (
-        "approval.request",
-        "approval.resolve",
-    )
-)
-
-REMOTE_BLOCKED_CAPABILITY_CLASSES = frozenset(
-    (
-        "browser",
-        "codebase",
-        "directory",
-        "file.read",
-        "file.write",
-        "git",
-        "shell",
-        "service",
-        "system",
-        "test",
-    )
-)
-
-REMOTE_BLOCKED_TOOLS: FrozenSet[str] = frozenset()
-
-
-@dataclass(frozen=True)
-class ConnectorToolPolicy:
-    """Inspectable remote-surface capability policy."""
-
-    name: str
-    permission_ceiling: str
-    allowed_tools: FrozenSet[str]
-    blocked_tools: FrozenSet[str]
-    blocked_capability_classes: FrozenSet[str]
-    reason_code: str
-
-    def allowed_tool_names(self) -> set[str] | None:
-        if not self.allowed_tools:
-            return None
-        return set(self.allowed_tools)
-
-    def facts(self) -> dict:
-        return {
-            "name": self.name,
-            "permission_ceiling": self.permission_ceiling,
-            "allowed_tools": sorted(self.allowed_tools),
-            "blocked_tools": sorted(self.blocked_tools),
-            "blocked_capability_classes": sorted(self.blocked_capability_classes),
-            "reason_code": self.reason_code,
-        }
-
-
-REMOTE_CONNECTOR_TOOL_POLICY = ConnectorToolPolicy(
-    name="remote_connector_default",
-    permission_ceiling="prepare",
-    allowed_tools=REMOTE_ALLOWED_TOOLS,
-    blocked_tools=REMOTE_BLOCKED_TOOLS,
-    blocked_capability_classes=REMOTE_BLOCKED_CAPABILITY_CLASSES,
-    reason_code="remote_connector_policy",
-)
-
-LOCAL_CONVERSATIONAL_TOOL_POLICY = ConnectorToolPolicy(
-    name="local_conversational_default",
-    permission_ceiling="write",
-    allowed_tools=frozenset(),
-    blocked_tools=frozenset(),
-    blocked_capability_classes=frozenset(),
-    reason_code="local_conversational_policy",
-)
 
 
 @dataclass(frozen=True)
@@ -321,13 +235,14 @@ class ConnectorIngressRuntime:
         project_dir: Path,
         allow_sources: set[str] | None = None,
         allowed_tools: set[str] | None = None,
-        tool_policy: ConnectorToolPolicy = REMOTE_CONNECTOR_TOOL_POLICY,
+        disabled_tools: set[str] | None = None,
+        disabled_capability_classes: frozenset[str] = frozenset(),
+        permission_ceiling: str = "write",
         event_bus: "EventBus | None" = None,
     ):
         from .connector_router import ConnectorRouter
         from .event_bus import EventBus as _EventBus
 
-        self.tool_policy = tool_policy
         self.event_bus = event_bus or _EventBus()
         self.router = ConnectorRouter(home, self.event_bus, runtime=runtime)
         self.agent = TurnController(
@@ -336,10 +251,9 @@ class ConnectorIngressRuntime:
             project_dir=project_dir,
             allow_sources=allow_sources,
             allowed_tools=allowed_tools,
-            disabled_tools=set(tool_policy.blocked_tools),
-            disabled_capability_classes=tool_policy.blocked_capability_classes,
-            permission_ceiling=tool_policy.permission_ceiling,
-            enforce_connector_source_policy=(tool_policy is REMOTE_CONNECTOR_TOOL_POLICY),
+            disabled_tools=disabled_tools,
+            disabled_capability_classes=disabled_capability_classes,
+            permission_ceiling=permission_ceiling,
             event_bus=self.event_bus,
         )
         self._setup_event_subscriptions()

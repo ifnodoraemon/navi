@@ -6,10 +6,6 @@ import re
 import pytest
 
 from navi.capabilities import CapabilityRegistry
-from navi.connector_runtime import (
-    REMOTE_ALLOWED_TOOLS,
-    REMOTE_BLOCKED_CAPABILITY_CLASSES,
-)
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.control_plane import TurnController
 from navi.goals import GoalStore
@@ -23,11 +19,7 @@ from navi.loop_contracts import (
 from navi.loop_runs import LoopRunStore
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
-from navi.state_graph import (
-    CapabilityExecutorPort,
-    ModelCapabilityPlannerPort,
-    PlannedCapabilityStep,
-)
+from navi.state_graph import ModelCapabilityPlannerPort
 from navi.workspaces import ShadowWorkspaceManager
 
 
@@ -180,16 +172,13 @@ def test_current_state_includes_active_shadow_workspaces(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_remote_policy_and_ingress_facts_survive_planner_boundary(tmp_path):
+async def test_connector_source_and_ingress_facts_survive_shared_planner_boundary(tmp_path):
     provider = _CapturingPlannerProvider()
     runtime = AgentRuntime(home=tmp_path, provider=provider)
     controller = TurnController(
         home=tmp_path,
         runtime=runtime,
         project_dir=tmp_path,
-        allowed_tools=set(REMOTE_ALLOWED_TOOLS),
-        disabled_capability_classes=REMOTE_BLOCKED_CAPABILITY_CLASSES,
-        permission_ceiling="prepare",
     )
     _, _, context, runtime_facts = controller._initialize_turn(
         "inspect current work",
@@ -205,10 +194,10 @@ async def test_remote_policy_and_ingress_facts_survive_planner_boundary(tmp_path
             objective="inspect current work",
             scope=(f"repo:{tmp_path}",),
             acceptance_criteria=("respond from current facts",),
-            permission_ceiling="prepare",
+            permission_ceiling="write",
             owner="sender-1",
         ),
-        goal_id="goal-remote-policy",
+        goal_id="goal-shared-policy",
         allowed_capabilities=("*",),
         verification_ladder=(
             VerificationStep(
@@ -222,8 +211,6 @@ async def test_remote_policy_and_ingress_facts_survive_planner_boundary(tmp_path
     capabilities = CapabilityRegistry(
         home=tmp_path,
         project_dir=tmp_path,
-        allowed_tools=set(context.allowed_tools or ()),
-        disabled_capability_classes=context.disabled_capability_classes,
         permission_ceiling=context.permission_ceiling,
     )
 
@@ -251,27 +238,4 @@ async def test_remote_policy_and_ingress_facts_survive_planner_boundary(tmp_path
     ] == "message-1"
     manifest = json.loads(turn_input.split("[TOOL MANIFEST]\n", 1)[1])
     manifest_names = {item["name"] for item in manifest}
-    assert manifest_names <= REMOTE_ALLOWED_TOOLS
-    assert "shell.run" not in manifest_names
-
-    executed = await CapabilityExecutorPort(
-        home=tmp_path,
-        context=context,
-        sensitive_approval_mode="enforce",
-        governed_run_id="governed-run",
-    ).execute(
-        PlannedCapabilityStep(
-            tool="shell.run",
-            permission="write",
-            args={"command": ["pwd"]},
-        ),
-        spec,
-        state,
-        workspace=tmp_path,
-    )
-    assert executed.ok is False
-    assert executed.error_reason in {
-        "not_found",
-        "remote_capability_class_blocked",
-        "remote_tool_not_allowed",
-    }
+    assert {"respond", "shell.run", "web.search"} <= manifest_names

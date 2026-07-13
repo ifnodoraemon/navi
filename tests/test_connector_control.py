@@ -201,7 +201,6 @@ async def test_connector_approval_resumes_original_goal_before_reply(tmp_path: P
         permission_ceiling="write",
         workspace=str(tmp_path),
         trace_id="request-delete",
-        enforce_connector_source_policy=False,
     )
     opened = await registry.invoke(
         "goal.open",
@@ -281,7 +280,6 @@ async def test_connector_bare_approval_model_path_resumes_original_goal(tmp_path
             sender_id="sender-1",
             permission_ceiling="write",
             workspace=str(tmp_path),
-            enforce_connector_source_policy=False,
         ),
     )
     provider.approval_run_id = opened.run_id

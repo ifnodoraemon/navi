@@ -9,7 +9,6 @@ from typing import Any, Callable
 import yaml
 
 from .app_factory import build_runtime
-from .connector_runtime import LOCAL_CONVERSATIONAL_TOOL_POLICY
 from .daemon import SystemDaemon
 from .control_plane import AgentTurnResult, TurnController
 from .goals import GoalStore
@@ -101,7 +100,6 @@ async def run_product_acceptance(
         home=home,
         runtime=runtime,
         project_dir=workspace,
-        disabled_capability_classes=LOCAL_CONVERSATIONAL_TOOL_POLICY.blocked_capability_classes,
         event_bus=daemon.event_bus,
     )
 

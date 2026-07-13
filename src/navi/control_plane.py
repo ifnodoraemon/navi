@@ -45,7 +45,6 @@ class TurnController(TurnLifecycleMixin):
         permission_ceiling: str = "write",
         event_bus: Any | None = None,
         execution_context: str = "turn",
-        enforce_connector_source_policy: bool = True,
         governed_run_id: str | None = None,
         governed_workflow_id: str | None = None,
     ):
@@ -63,7 +62,6 @@ class TurnController(TurnLifecycleMixin):
             disabled_capability_classes=disabled_capability_classes,
             permission_ceiling=permission_ceiling,
             execution_context=execution_context,
-            enforce_connector_source_policy=enforce_connector_source_policy,
             governed_run_id=governed_run_id,
             runtime=runtime,
         )
@@ -222,9 +220,6 @@ class TurnController(TurnLifecycleMixin):
             disabled_tools=frozenset(self.capabilities.disabled_tools),
             disabled_capability_classes=frozenset(
                 self.capabilities.disabled_capability_classes
-            ),
-            enforce_connector_source_policy=(
-                self.capabilities.enforce_connector_source_policy
             ),
         )
         state_context = SurfaceContext(

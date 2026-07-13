@@ -39,7 +39,6 @@ class TelegramService:
             home=home,
             runtime=runtime,
             project_dir=self.project_dir,
-            allow_sources={"action", "core"},
         )
 
     def _build_client(self):

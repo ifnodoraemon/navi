@@ -11,7 +11,7 @@ Navi 是一个本地优先、受治理的个人 AI 助手 Agent OS。
 - 基于声明式、Schema 校验的 capability manifest 进行规划。
 - 持久化 Goal、Run、审批、循环 checkpoint 和 trace 证据。
 - 带类型、作用域、来源、置信度、冲突和撤销能力的记忆系统。
-- 权限上限、连接器 allowlist、hook、资源门禁和影子工作区。
+- 权限上限、持久审批、hook、资源门禁和影子工作区。
 - CLI 与需要 API Key 的本地 FastAPI 接口。
 - 通过 connector registry 加载 Weixin/iLink 和 Telegram 适配器。
 - 可检查的 Prompt manifest 和可审计的 evolution ledger。

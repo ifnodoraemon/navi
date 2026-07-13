@@ -14,7 +14,7 @@ policy, persistence, and audit evidence.
 - Capability-driven planning through a declared, schema-validated manifest.
 - Durable goals, runs, approvals, loop checkpoints, and trace evidence.
 - Typed memory with scope, provenance, confidence, conflicts, and revocation.
-- Permission ceilings, connector allowlists, hooks, resource gates, and shadow
+- Permission ceilings, durable approvals, hooks, resource gates, and shadow
   workspaces.
 - CLI and authenticated local FastAPI surfaces.
 - Weixin/iLink and Telegram adapters discovered through the connector registry.

@@ -885,7 +885,6 @@ class ModelCapabilityPlannerPort:
             item
             for item in self.capabilities.planner_specs(
                 permission_ceiling=spec.goal.permission_ceiling,
-                context=policy_context,
             )
             if "*" in allowed or item.name in allowed
         ]
@@ -989,9 +988,6 @@ class CapabilityExecutorPort:
             disabled_tools=set(self.context.disabled_tools),
             disabled_capability_classes=self.context.disabled_capability_classes,
             permission_ceiling=spec.goal.permission_ceiling,
-            enforce_connector_source_policy=(
-                self.context.enforce_connector_source_policy
-            ),
             governed_run_id=self.governed_run_id or state.run_id,
             sensitive_approval_mode=self.sensitive_approval_mode,
             runtime=self.runtime,

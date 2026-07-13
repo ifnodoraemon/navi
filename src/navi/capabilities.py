@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +28,7 @@ from .approval_contract import (
 from .hooks import HookDecision, HookEvent, HookRegistry
 from .json_utils import json_schema_errors
 from .lifecycle import Governance, Phase, Resolution
-from .operating_context import PERMISSION_ORDER, permission_allows
+from .operating_context import permission_allows
 from .resource_gateway import GlobalResourceGateway, ResourceLimits, ResourceRequest
 from .runs import RunStore
 from .safeguards import CapabilityRiskAssessment, assess_capability_call
@@ -77,7 +77,6 @@ class CapabilityRegistry:
         disabled_capability_classes: frozenset[str] | frozenset = frozenset(),
         permission_ceiling: str = "write",
         execution_context: str = TURN_CONTEXT,
-        enforce_connector_source_policy: bool = True,
         governed_run_id: str | None = None,
         sensitive_approval_mode: str = "enforce",
         runtime: Any | None = None,
@@ -89,11 +88,6 @@ class CapabilityRegistry:
         self.disabled_capability_classes = disabled_capability_classes
         self.permission_ceiling = permission_ceiling
         self.execution_context = execution_context
-        # When True (live ingress), invoke() re-derives the remote connector
-        # sandbox from context.source as defense-in-depth. The approved,
-        # already-governed background executor sets this False so it is not
-        # re-sandboxed by the surface its task happened to originate from.
-        self.enforce_connector_source_policy = enforce_connector_source_policy
         self.sensitive_approval_mode = sensitive_approval_mode
         self.runtime = runtime
         # When set, this registry executes on behalf of an approved background
@@ -126,7 +120,6 @@ class CapabilityRegistry:
         self,
         *,
         permission_ceiling: str | None = None,
-        context: CapabilityContext | None = None,
     ) -> list[ToolSpec]:
         ceiling = permission_ceiling or self.permission_ceiling
         return sorted(
@@ -134,7 +127,6 @@ class CapabilityRegistry:
                 handler.spec
                 for handler in self.handlers.values()
                 if permission_allows(handler.spec.permission, ceiling)
-                and self._source_policy_allows_spec(handler.spec, context)
             ],
             key=lambda spec: spec.name,
         )
@@ -168,23 +160,6 @@ class CapabilityRegistry:
     def list_sources(self) -> list[str]:
         return sorted({handler.spec.source for handler in self.handlers.values()})
 
-    def _source_policy_allows_spec(
-        self, spec: ToolSpec, context: CapabilityContext | None
-    ) -> bool:
-        if context is None or not self.enforce_connector_source_policy:
-            return True
-        source_policy = _connector_policy_for_source(context.source)
-        if source_policy is None:
-            return True
-        limits = _source_policy_limits(self.home, context, source_policy)
-        if spec.name in source_policy.blocked_tools:
-            return False
-        if spec.capability_class in source_policy.blocked_capability_classes:
-            return False
-        if limits.allowed_tools and spec.name not in limits.allowed_tools:
-            return False
-        return permission_allows(spec.permission, limits.permission_ceiling)
-
     def get(self, name: str) -> ToolSpec | None:
         handler = self.handlers.get(name)
         return handler.spec if handler else None
@@ -216,61 +191,6 @@ class CapabilityRegistry:
                 },
             )
         actual_ceiling = context.permission_ceiling
-        source_policy = (
-            _connector_policy_for_source(context.source)
-            if self.enforce_connector_source_policy
-            else None
-        )
-        if source_policy is not None:
-            limits = _source_policy_limits(self.home, context, source_policy)
-            if name in source_policy.blocked_tools:
-                return _capability_error(
-                    action=f"execute:{name}",
-                    error_reason="remote_tool_blocked",
-                    message=f"remote connector policy blocks capability {name}",
-                    observation_facts={
-                        "tool": name,
-                        "source": context.source,
-                        "policy": source_policy.name,
-                    },
-                )
-            if handler.spec.capability_class in source_policy.blocked_capability_classes:
-                capability_class = handler.spec.capability_class
-                return _capability_error(
-                    action=f"execute:{name}",
-                    error_reason="remote_capability_class_blocked",
-                    message=f"remote connector policy blocks capability class {capability_class}",
-                    observation_facts={
-                        "tool": name,
-                        "capability_class": capability_class,
-                        "source": context.source,
-                        "policy": source_policy.name,
-                    },
-                )
-            if limits.allowed_tools and name not in limits.allowed_tools:
-                return _capability_error(
-                    action=f"execute:{name}",
-                    error_reason="remote_tool_not_allowed",
-                    message=f"remote connector policy blocks capability {name}",
-                    observation_facts={
-                        "tool": name,
-                        "source": context.source,
-                        "policy": source_policy.name,
-                    },
-                )
-            if not permission_allows(permission, limits.permission_ceiling):
-                ceiling = limits.permission_ceiling
-                return _capability_error(
-                    action=f"execute:{name}",
-                    error_reason="remote_permission_ceiling",
-                    message=f"remote connector ceiling {ceiling} blocks requested permission {permission}",
-                    observation_facts={
-                        "requested_permission": permission,
-                        "permission_ceiling": ceiling,
-                        "source": context.source,
-                        "policy": source_policy.name,
-                    },
-                )
         if not permission_allows(permission, actual_ceiling):
             return _capability_error(
                 action=f"execute:{name}",
@@ -772,73 +692,6 @@ def _approval_visible_text(approval) -> str:
     )
 
 
-@dataclass(frozen=True)
-class _SourcePolicyLimits:
-    permission_ceiling: str
-    allowed_tools: frozenset[str]
-
-
-def _source_policy_limits(home: Path, context: CapabilityContext, source_policy) -> _SourcePolicyLimits:
-    ceiling = source_policy.permission_ceiling
-    allowed_tools = frozenset(source_policy.allowed_tools)
-    approval = RunStore(home).active_session_elevation(
-        source=context.source,
-        peer_id=context.peer_id,
-        sender_id=context.sender_id,
-    )
-    if approval is None:
-        return _SourcePolicyLimits(permission_ceiling=ceiling, allowed_tools=allowed_tools)
-    ceiling = _max_permission(ceiling, approval.requested_permission)
-    if permission_allows("write", ceiling):
-        if allowed_tools:
-            allowed_tools = frozenset((*allowed_tools, *_remote_elevated_allowed_tools()))
-        else:
-            allowed_tools = _remote_default_allowed_tools() | _remote_elevated_allowed_tools()
-    return _SourcePolicyLimits(permission_ceiling=ceiling, allowed_tools=allowed_tools)
-
-
-def _max_permission(current: str, requested: str) -> str:
-    current_level = PERMISSION_ORDER.get(current, 0)
-    requested_level = PERMISSION_ORDER.get(requested, 0)
-    return requested if requested_level > current_level else current
-
-
-def _remote_elevated_allowed_tools() -> frozenset[str]:
-    try:
-        from .connector_runtime import REMOTE_ELEVATED_ALLOWED_TOOLS
-    except ImportError:
-        return frozenset()
-    return REMOTE_ELEVATED_ALLOWED_TOOLS
-
-
-def _remote_default_allowed_tools() -> frozenset[str]:
-    try:
-        from .connector_runtime import REMOTE_ALLOWED_TOOLS
-    except ImportError:
-        return frozenset()
-    return REMOTE_ALLOWED_TOOLS
-
-
-def _connector_policy_for_source(source: str):
-    raw = source.strip()
-    if not raw:
-        return None
-    try:
-        from .connector_registry import load_connector_adapters
-        from .connector_runtime import REMOTE_CONNECTOR_TOOL_POLICY
-    except ImportError as exc:
-        logger.debug("connector adapters unavailable for source policy: %s", exc)
-        return None
-    connector_sources: set[str] = set()
-    for adapter in load_connector_adapters():
-        connector_sources.update({adapter.name, adapter.spec.surface, adapter.spec.local_source})
-    if raw.startswith("connector.") or raw in connector_sources:
-        return REMOTE_CONNECTOR_TOOL_POLICY
-    return None
-
-
-
-
 def build_capability_registry(
     home: Path,
     *,
@@ -848,7 +701,6 @@ def build_capability_registry(
     disabled_tools: set[str] | None = None,
     permission_ceiling: str = "write",
     execution_context: str = TURN_CONTEXT,
-    enforce_connector_source_policy: bool = True,
     governed_run_id: str | None = None,
     runtime: Any | None = None,
 ) -> CapabilityRegistry:
@@ -860,7 +712,6 @@ def build_capability_registry(
         disabled_tools=disabled_tools,
         permission_ceiling=permission_ceiling,
         execution_context=execution_context,
-        enforce_connector_source_policy=enforce_connector_source_policy,
         governed_run_id=governed_run_id,
         runtime=runtime,
     )

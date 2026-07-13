@@ -52,9 +52,10 @@ preserved through every port and resume boundary. It contains identity,
 current-state facts, capability allowlists, blocked classes, permission
 ceiling, approval grants, workspace, trace, and governed run identifiers.
 
-Inner layers may narrow this envelope. They must never reconstruct a broader
-one from only a permission string or replace the original source with an
-internal label such as `state_graph` for policy evaluation.
+Inner layers may narrow this envelope through explicit caller restrictions.
+They must never reconstruct a broader one from only a permission string. Source
+identity is preserved for state, approval, audit, and delivery correlation, but
+does not select a different capability catalog.
 
 ## Loop Responsibilities
 
@@ -90,9 +91,11 @@ Connector adapters own authentication, polling, message normalization, media
 transport, deduplication, and channel-local presentation. They publish the same
 turn contract used by local surfaces.
 
-Remote ingress starts with an explicit prepare/read allowlist and blocked
-capability classes. Session elevation may add only capabilities explicitly
-declared by remote policy; it does not expose direct OS access implicitly.
+Connector ingress uses the same capability catalog and default permission
+ceiling as local CLI ingress. Sensitive operations do not execute merely because
+they are visible to the planner: the shared risk assessment and durable approval
+gate pause them before any effect. Connector authentication and sender policy
+still determine who may enter the loop.
 
 ## Known Current Deviations
 
