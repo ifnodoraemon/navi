@@ -135,7 +135,7 @@ class LoopRunStore:
         return _loop_run_from_row(row) if row else None
 
     def reopen_for_resume(self, run_id: str) -> LoopRunState:
-        """Reopen a paused loop at PLAN after its external gate is resolved."""
+        """Reopen a paused loop at EXECUTE after its external gate is resolved."""
         with connect(self.db_path) as conn:
             row = conn.execute(
                 f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
@@ -172,6 +172,64 @@ class LoopRunStore:
                 evidence={"previous_terminal_state": str(current.terminal_state)},
             )
         return reopened
+
+    def reject_external_gate(
+        self,
+        run_id: str,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> LoopRunState:
+        """Terminate a paused approval gate after an explicit rejection.
+
+        External approval decisions are not ordinary state-graph edges, so
+        they need a narrow durable transition that is strict about the source
+        state and idempotent for repeated rejection commands.
+        """
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"loop run not found: {run_id}")
+            current = _loop_run_from_row(row)
+            if str(current.terminal_state) == str(LoopTerminalState.CANCELLED):
+                return current
+            if str(current.terminal_state) not in {
+                str(LoopTerminalState.PAUSED),
+                str(LoopTerminalState.WAITING_APPROVAL),
+            }:
+                raise ValueError(
+                    "loop run is not waiting at an external approval gate: "
+                    f"{current.terminal_state}"
+                )
+            now = time.time()
+            next_state = replace(
+                current,
+                terminal_state=LoopTerminalState.CANCELLED,
+                evidence={**current.evidence, **(evidence or {})},
+                updated_at=now,
+            )
+            conn.execute(
+                """
+                UPDATE loop_runs
+                SET terminal_state = ?, evidence_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(LoopTerminalState.CANCELLED),
+                    _json_dumps(next_state.evidence),
+                    now,
+                    run_id,
+                ),
+            )
+            _insert_event(
+                conn,
+                next_state,
+                "loop.approval_rejected",
+                evidence=evidence,
+            )
+        return next_state
 
     def list_active(self, *, limit: int = 50) -> list[LoopRunState]:
         with connect(self.db_path) as conn:

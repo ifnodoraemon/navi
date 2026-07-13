@@ -329,7 +329,7 @@ class ConnectorIngressRuntime:
 
         self.tool_policy = tool_policy
         self.event_bus = event_bus or _EventBus()
-        self.router = ConnectorRouter(home, self.event_bus)
+        self.router = ConnectorRouter(home, self.event_bus, runtime=runtime)
         self.agent = TurnController(
             home=home,
             runtime=runtime,

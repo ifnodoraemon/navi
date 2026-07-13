@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -7,6 +10,10 @@ import pytest
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.lifecycle import Phase
+from navi.loop_contracts import LoopTerminalState
+from navi.loop_runs import LoopRunStore
+from navi.provider import ChatMessage
+from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 from navi.safeguards import assess_capability_call
 
@@ -20,6 +27,46 @@ def _context(home: Path) -> CapabilityContext:
         workspace=str(home),
         permission_ceiling="write",
     )
+
+
+class _DeleteGoalProvider:
+    def __init__(self, target: Path) -> None:
+        self.target = target
+        self.calls: list[str] = []
+
+    async def complete_for(
+        self, role: str, messages: list[ChatMessage], **kwargs
+    ) -> str:
+        self.calls.append(role)
+        assert role == "planner"
+        return json.dumps(
+            {
+                "syscalls": [
+                    {
+                        "tool": "shell.run",
+                        "permission": "write",
+                        "args": {
+                            "command": ["rm", str(self.target)],
+                            "cwd": str(self.target.parent),
+                            "timeout_seconds": 10,
+                        },
+                        "model_role": "executor",
+                        "reason": "delete the exact requested file",
+                    }
+                ]
+            }
+        )
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "executor", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
+
+
+def _verification_command(target: Path) -> str:
+    script = f"from pathlib import Path; assert not Path({str(target)!r}).exists()"
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
 
 
 @pytest.mark.asyncio
@@ -101,6 +148,129 @@ async def test_shell_binary_is_approved_instead_of_name_blocked(tmp_path: Path) 
 
     assert executed.ok is True
     assert "rm (GNU coreutils)" in str((executed.facts or {}).get("stdout") or "")
+
+
+@pytest.mark.asyncio
+async def test_approval_resolve_resumes_original_shell_checkpoint(tmp_path: Path) -> None:
+    target = tmp_path / "performance-report.md"
+    target.write_text("important report\n", encoding="utf-8")
+    provider = _DeleteGoalProvider(target)
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        runtime=runtime,
+    )
+    context = _context(tmp_path)
+
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "delete the performance report",
+            "workspace": str(tmp_path),
+            "allowed_capabilities": ["shell.run"],
+            "verification_command": _verification_command(target),
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    assert opened.facts is not None
+    assert opened.facts["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL
+    assert target.exists()
+    approval = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
+    assert approval is not None
+
+    resolved = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": approval.code},
+        permission="prepare",
+        context=context,
+    )
+
+    assert resolved.ok is True
+    assert resolved.facts is not None
+    assert resolved.facts["continuation_status"] == "completed"
+    assert resolved.facts["completion_evidence"] is True
+    assert resolved.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
+    assert target.exists() is False
+    assert provider.calls == ["planner"]
+
+    repeated = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": approval.code},
+        permission="prepare",
+        context=context,
+    )
+
+    assert repeated.ok is True
+    assert repeated.facts is not None
+    assert repeated.facts["state_transition"] == "already_approved"
+    assert repeated.facts["continuation_status"] == "completed"
+    assert repeated.facts["completion_evidence"] is True
+    assert provider.calls == ["planner"]
+
+    conflicting = await registry.invoke(
+        "approval.resolve",
+        {"decision": "reject", "code": approval.code},
+        permission="prepare",
+        context=context,
+    )
+    assert conflicting.ok is False
+    assert conflicting.facts is not None
+    assert conflicting.facts["reason"] == "approval_already_approved"
+
+
+@pytest.mark.asyncio
+async def test_approval_reject_cancels_original_loop_without_execution(tmp_path: Path) -> None:
+    target = tmp_path / "keep-report.md"
+    target.write_text("keep me\n", encoding="utf-8")
+    provider = _DeleteGoalProvider(target)
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+    )
+    context = _context(tmp_path)
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "delete the report only if approved",
+            "workspace": str(tmp_path),
+            "allowed_capabilities": ["shell.run"],
+            "verification_command": _verification_command(target),
+        },
+        permission="prepare",
+        context=context,
+    )
+    approval = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
+    assert approval is not None
+
+    rejected = await registry.invoke(
+        "approval.resolve",
+        {"decision": "reject", "code": approval.code},
+        permission="prepare",
+        context=context,
+    )
+
+    assert rejected.ok is True
+    assert rejected.facts is not None
+    assert rejected.facts["continuation_status"] == "rejected"
+    assert rejected.facts["completion_evidence"] is False
+    assert rejected.facts["loop_terminal_state"] == LoopTerminalState.CANCELLED
+    assert target.read_text(encoding="utf-8") == "keep me\n"
+    loop = LoopRunStore(tmp_path).get_run(opened.facts["loop_run_id"])
+    assert loop is not None
+    assert loop.terminal_state == LoopTerminalState.CANCELLED
+
+    repeated = await registry.invoke(
+        "approval.resolve",
+        {"decision": "reject", "code": approval.code},
+        permission="prepare",
+        context=context,
+    )
+    assert repeated.ok is True
+    assert repeated.facts["state_transition"] == "already_rejected"
 
 
 @pytest.mark.asyncio

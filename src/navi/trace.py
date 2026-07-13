@@ -1266,6 +1266,25 @@ def _blocked_loop_decision_rule(
     return None
 
 
+def _waiting_approval_loop_decision_rule(
+    summary: LoopDecisionSummary,
+    output: dict[str, Any],
+    events: list[TraceEvent],
+    evidence: dict[str, Any],
+) -> TraceEvaluationDraft | None:
+    del output, events
+    if summary.reason != str(LoopReason.APPROVAL_REQUIRED):
+        return None
+    evidence["pending_external_gate"] = True
+    evidence["completion_evidence"] = False
+    return _evaluation(
+        TraceOutcome.SUCCESS,
+        TraceFailureDomain.NONE,
+        evidence,
+        rule="loop_decision_waiting_approval",
+    )
+
+
 def _converged_loop_decision_rule(
     summary: LoopDecisionSummary,
     output: dict[str, Any],
@@ -1300,6 +1319,7 @@ def _converged_loop_decision_rule(
 
 LOOP_DECISION_EVALUATION_RULES: tuple[LoopDecisionEvaluationRule, ...] = (
     _failed_loop_decision_rule,
+    _waiting_approval_loop_decision_rule,
     _blocked_loop_decision_rule,
     _converged_loop_decision_rule,
 )

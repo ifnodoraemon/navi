@@ -1,6 +1,6 @@
 """Navi local-first personal agent OS."""
 
-__version__ = "1.1.2"
+__version__ = "2.0.1"
 
 import logging
 from contextvars import ContextVar

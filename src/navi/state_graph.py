@@ -960,11 +960,13 @@ class CapabilityExecutorPort:
         *,
         home: Path,
         context: CapabilityContext,
+        runtime: AgentRuntime | None = None,
         sensitive_approval_mode: str = "enforce",
         governed_run_id: str = "",
     ):
         self.home = home
         self.context = context
+        self.runtime = runtime
         self.sensitive_approval_mode = sensitive_approval_mode
         self.governed_run_id = governed_run_id
 
@@ -992,6 +994,7 @@ class CapabilityExecutorPort:
             ),
             governed_run_id=self.governed_run_id or state.run_id,
             sensitive_approval_mode=self.sensitive_approval_mode,
+            runtime=self.runtime,
         )
         context = replace(
             self.context,

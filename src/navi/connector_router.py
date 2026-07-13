@@ -19,9 +19,10 @@ IDLE_TIMEOUT_SECONDS = 120.0
 
 
 class ConnectorRouter:
-    def __init__(self, home: Path, event_bus: EventBus) -> None:
+    def __init__(self, home: Path, event_bus: EventBus, *, runtime=None) -> None:
         self.home = home
         self.event_bus = event_bus
+        self.runtime = runtime
 
     async def route(self, message: ConnectorMessage) -> "ResponseReadyEvent | None":
         if not message.text.strip():
@@ -45,7 +46,7 @@ class ConnectorRouter:
         )
 
         try:
-            control_response = self._resolve_connector_control_message(message)
+            control_response = await self._resolve_connector_control_message(message)
             if control_response is not None:
                 trace.add_event(
                     trace_id=correlation_id,
@@ -123,14 +124,16 @@ class ConnectorRouter:
                 return item
             # Heartbeat (or any non-terminal signal): upstream is alive, keep waiting.
 
-    def _resolve_connector_control_message(self, message: ConnectorMessage) -> str | None:
+    async def _resolve_connector_control_message(
+        self, message: ConnectorMessage
+    ) -> str | None:
         command = _parse_connector_approval_command(message)
         if command is None:
             return None
         decision, code = command
         from .control import ApprovalService, SurfaceContext
 
-        result = ApprovalService(self.home).resolve(
+        result = await ApprovalService(self.home).resolve_and_continue(
             decision=decision,
             selection="explicit_code",
             context=SurfaceContext(
@@ -141,6 +144,9 @@ class ConnectorRouter:
                 input_text=message.text,
             ),
             code=code,
+            runtime=self.runtime,
+            trace_id=message.message_id,
+            event_bus=self.event_bus,
         )
         return result.message
 

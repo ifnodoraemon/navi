@@ -8,15 +8,18 @@ from typing import Any
 
 from .db import connect
 from .approval_contract import (
+    APPROVAL_ACTION_CAPABILITY,
+    APPROVAL_ACTION_RUN_EXECUTION,
     APPROVAL_ACTION_SESSION_ELEVATION,
     APPROVAL_DECISION_APPROVE,
     APPROVAL_DECISIONS,
     APPROVAL_STATUS_APPROVED,
+    APPROVAL_STATUS_EXPIRED,
     APPROVAL_STATUS_PENDING,
     APPROVAL_STATUS_REJECTED,
 )
 from .lifecycle import Acceptance, Governance, Phase, Resolution
-from .loop_contracts import BudgetState, WorkspaceLock, WorkspaceState
+from .loop_contracts import BudgetState, LoopTerminalState, WorkspaceLock, WorkspaceState
 from .loop_runs import LoopRunState
 from .runs import Run, RunStore
 from .runs.models import Approval
@@ -98,6 +101,13 @@ class ApprovalService:
                 peer_id=context.peer_id,
                 sender_id=context.sender_id,
             )
+            if approval is None:
+                approval = runs.approval_by_code(
+                    code,
+                    source=context.source,
+                    peer_id=context.peer_id,
+                    sender_id=context.sender_id,
+                )
             reason = "approval_code_not_found" if approval is None else ""
         elif run_id:
             approval = runs.pending_approval_for_run(
@@ -106,6 +116,13 @@ class ApprovalService:
                 peer_id=context.peer_id,
                 sender_id=context.sender_id,
             )
+            if approval is None:
+                approval = runs.approval_for_run(
+                    run_id,
+                    source=context.source,
+                    peer_id=context.peer_id,
+                    sender_id=context.sender_id,
+                )
             reason = "run_has_no_approval" if approval is None else ""
         else:
             reason = "approval_identifier_missing"
@@ -118,6 +135,16 @@ class ApprovalService:
                 active_run_count=len(candidates),
                 selection=selection,
                 run_id=run_id,
+            )
+
+        if approval.status != APPROVAL_STATUS_PENDING:
+            return self._resolve_existing_decision(
+                runs=runs,
+                approval=approval,
+                decision=normalized_decision,
+                selection=selection,
+                code_present=bool(code),
+                active_run_count=len(candidates),
             )
 
         with connect(runs.db_path) as conn:
@@ -150,7 +177,7 @@ class ApprovalService:
                     governance = Governance.APPROVED
                     acceptance = Acceptance.NONE
                     resolution = Resolution.NONE
-                    result_summary = ""
+                    result_summary = f"approval_continuation_ready:{resolved.id}"
                 runs.update_run_in_transaction(
                     conn,
                     resolved.run_id,
@@ -167,7 +194,7 @@ class ApprovalService:
                 phase = Phase.ENDED
                 governance = Governance.REJECTED
                 acceptance = Acceptance.REJECTED
-                resolution = Resolution.FAILED
+                resolution = Resolution.CANCELED
                 runs.update_run_in_transaction(
                     conn,
                     resolved.run_id,
@@ -176,18 +203,259 @@ class ApprovalService:
                     acceptance=acceptance,
                     resolution=resolution,
                     result_summary="approval_rejected",
-                    error="approval rejected by user",
+                    error="",
                 )
                 status = APPROVAL_STATUS_REJECTED
 
+        facts = self._resolution_facts(
+            resolved=resolved,
+            normalized_decision=normalized_decision,
+            selection=selection,
+            code_present=bool(code),
+            active_run_count=len(candidates),
+            status=status,
+            phase=phase,
+            governance=governance,
+            acceptance=acceptance,
+            resolution=resolution,
+            state_transition="resolved",
+        )
+        if status == APPROVAL_STATUS_REJECTED:
+            facts.update(self._reject_related_goal_loop(resolved))
+        return ApprovalResolution(
+            ok=True,
+            message=_approval_resolution_message(facts),
+            facts=facts,
+        )
+
+    async def resolve_and_continue(
+        self,
+        *,
+        decision: str,
+        selection: str,
+        context: SurfaceContext,
+        runtime: Any | None,
+        code: str = "",
+        run_id: str = "",
+        trace_id: str = "",
+        event_bus: Any | None = None,
+    ) -> ApprovalResolution:
+        """Resolve one approval and resume its exact durable loop checkpoint.
+
+        Approval is not completion evidence.  For capability/run execution
+        approvals this method returns success only after the original loop has
+        resumed and its own checker has produced the resulting durable state.
+        """
+        resolved = self.resolve(
+            decision=decision,
+            selection=selection,
+            context=context,
+            code=code,
+            run_id=run_id,
+        )
+        if not resolved.ok or resolved.facts.get("status") != APPROVAL_STATUS_APPROVED:
+            return resolved
+
+        action = str(resolved.facts.get("action") or "")
+        if action == APPROVAL_ACTION_SESSION_ELEVATION:
+            facts = {**resolved.facts, "continuation_status": "not_applicable"}
+            return ApprovalResolution(
+                ok=True,
+                message=_approval_resolution_message(facts),
+                facts=facts,
+            )
+        if action not in {APPROVAL_ACTION_CAPABILITY, APPROVAL_ACTION_RUN_EXECUTION}:
+            facts = {
+                **resolved.facts,
+                "continuation_status": "not_applicable",
+                "completion_evidence": False,
+            }
+            return ApprovalResolution(
+                ok=True,
+                message=_approval_resolution_message(facts),
+                facts=facts,
+            )
+
+        loop_context = self._related_goal_loop(str(resolved.facts.get("run_id") or ""))
+        if not loop_context:
+            facts = {
+                **resolved.facts,
+                "continuation_status": "unavailable",
+                "completion_evidence": False,
+                "reason": "approved_run_has_no_durable_loop",
+            }
+            return ApprovalResolution(
+                ok=True,
+                message=_approval_resolution_message(facts),
+                facts=facts,
+            )
+
+        goal, loop_run = loop_context
+        current_run = RunStore(self.home).get(goal.run_id)
+        if (
+            current_run is not None
+            and current_run.phase == Phase.ENDED
+            and str(loop_run.terminal_state) != str(LoopTerminalState.WAITING_APPROVAL)
+        ):
+            completion_evidence = (
+                current_run.resolution == Resolution.SUCCESS
+                and str(loop_run.terminal_state) == "converged"
+            )
+            facts = {
+                **resolved.facts,
+                "continuation_status": "completed",
+                "completion_evidence": completion_evidence,
+                "loop_run_id": loop_run.run_id,
+                "loop_terminal_state": str(loop_run.terminal_state),
+                "surface_message": current_run.result_summary,
+            }
+            return ApprovalResolution(
+                ok=True,
+                message=current_run.result_summary or _approval_resolution_message(facts),
+                facts=facts,
+            )
+        if runtime is None:
+            facts = {
+                **resolved.facts,
+                "continuation_status": "queued",
+                "completion_evidence": False,
+                "loop_run_id": loop_run.run_id,
+            }
+            return ApprovalResolution(
+                ok=True,
+                message=_approval_resolution_message(facts),
+                facts=facts,
+            )
+
+        try:
+            from .goal_state_graph import resume_goal_loop_run
+
+            continued = await resume_goal_loop_run(
+                home=self.home,
+                loop_run_id=loop_run.run_id,
+                runtime=runtime,
+                trace_id=trace_id,
+                input_text=context.input_text,
+                event_bus=event_bus,
+            )
+        except Exception as exc:
+            facts = {
+                **resolved.facts,
+                "continuation_status": "failed",
+                "completion_evidence": False,
+                "loop_run_id": loop_run.run_id,
+                "continuation_error": f"{type(exc).__name__}: {exc}",
+            }
+            return ApprovalResolution(
+                ok=False,
+                message=_approval_resolution_message(facts),
+                facts=facts,
+            )
+
+        completion_evidence = bool(continued.to_facts().get("completion_evidence"))
+        continuation_status = (
+            "completed"
+            if completion_evidence
+            else str(continued.loop_run.terminal_state or "running")
+        )
         facts = {
+            **resolved.facts,
+            "run_phase": str(continued.run.phase),
+            "run_governance": str(continued.run.governance),
+            "run_acceptance": str(continued.run.acceptance),
+            "run_resolution": str(continued.run.resolution),
+            "continuation_status": continuation_status,
+            "completion_evidence": completion_evidence,
+            "goal_id": continued.goal.id,
+            "loop_run_id": continued.loop_run.run_id,
+            "loop_terminal_state": str(continued.loop_run.terminal_state),
+            "surface_message": continued.run.result_summary,
+        }
+        return ApprovalResolution(
+            ok=True,
+            message=continued.run.result_summary or _approval_resolution_message(facts),
+            facts=facts,
+        )
+
+    def _resolve_existing_decision(
+        self,
+        *,
+        runs: RunStore,
+        approval: Approval,
+        decision: str,
+        selection: str,
+        code_present: bool,
+        active_run_count: int,
+    ) -> ApprovalResolution:
+        expected_status = (
+            APPROVAL_STATUS_APPROVED
+            if decision == APPROVAL_DECISION_APPROVE
+            else APPROVAL_STATUS_REJECTED
+        )
+        if approval.status != expected_status:
+            reason = (
+                "approval_expired"
+                if approval.status == APPROVAL_STATUS_EXPIRED
+                else f"approval_already_{approval.status}"
+            )
+            return _approval_not_resolved(
+                decision=decision,
+                reason=reason,
+                code_present=code_present,
+                active_run_count=active_run_count,
+                selection=selection,
+                run_id=approval.run_id,
+                approval_id=approval.id,
+            )
+        run = runs.get(approval.run_id)
+        phase = run.phase if run is not None else Phase.ENDED
+        governance = run.governance if run is not None else Governance.NONE
+        acceptance = run.acceptance if run is not None else Acceptance.NONE
+        resolution = run.resolution if run is not None else Resolution.NONE
+        facts = self._resolution_facts(
+            resolved=approval,
+            normalized_decision=decision,
+            selection=selection,
+            code_present=code_present,
+            active_run_count=active_run_count,
+            status=approval.status,
+            phase=phase,
+            governance=governance,
+            acceptance=acceptance,
+            resolution=resolution,
+            state_transition=f"already_{approval.status}",
+        )
+        return ApprovalResolution(
+            ok=True,
+            message=_approval_resolution_message(facts),
+            facts=facts,
+        )
+
+    @staticmethod
+    def _resolution_facts(
+        *,
+        resolved: Approval,
+        normalized_decision: str,
+        selection: str,
+        code_present: bool,
+        active_run_count: int,
+        status: str,
+        phase: str,
+        governance: str,
+        acceptance: str,
+        resolution: str,
+        state_transition: str,
+    ) -> dict[str, Any]:
+        return {
             "decision": normalized_decision,
             "selection": selection,
-            "code_present": bool(code),
-            "active_run_count": len(candidates),
+            "code_present": code_present,
+            "active_run_count": active_run_count,
             "run_id": resolved.run_id,
             "approval_id": resolved.id,
+            "action": resolved.action,
             "status": status,
+            "state_transition": state_transition,
             "run_phase": str(phase),
             "run_governance": str(governance),
             "run_acceptance": str(acceptance),
@@ -203,17 +471,57 @@ class ApprovalService:
                 "requested_permission": resolved.requested_permission,
             },
         }
-        message = (
-            "approval_resolved\n"
-            f"decision={normalized_decision}\n"
-            f"status={status}\n"
-            f"run_id={resolved.run_id}\n"
-            f"approval_id={resolved.id}\n"
-            f"run_phase={phase}\n"
-            f"run_governance={governance}\n"
-            f"run_resolution={resolution}"
+
+    def _related_goal_loop(self, run_id: str):
+        if not run_id:
+            return None
+        from .goals import GoalStore
+        from .loop_runs import LoopRunStore
+
+        goal = GoalStore(self.home).get_by_run(run_id)
+        if goal is None:
+            return None
+        loop_runs = LoopRunStore(self.home).list_by_goal(goal.id, limit=1)
+        if not loop_runs:
+            return None
+        return goal, loop_runs[0]
+
+    def _reject_related_goal_loop(self, approval: Approval) -> dict[str, Any]:
+        related = self._related_goal_loop(approval.run_id)
+        if not related:
+            return {
+                "continuation_status": "rejected",
+                "completion_evidence": False,
+            }
+        goal, loop_run = related
+        from .goals import GoalStore
+        from .loop_runs import LoopRunStore
+
+        rejected_loop = LoopRunStore(self.home).reject_external_gate(
+            loop_run.run_id,
+            evidence={
+                "approval_id": approval.id,
+                "decision": APPROVAL_STATUS_REJECTED,
+            },
         )
-        return ApprovalResolution(ok=True, message=message, facts=facts)
+        rejected_goal = GoalStore(self.home).update_state(
+            goal.id,
+            phase=Phase.ENDED,
+            governance=Governance.REJECTED,
+            acceptance=Acceptance.REJECTED,
+            resolution=Resolution.CANCELED,
+            task_status="blocked",
+            blocked_reason="approval_rejected",
+            evidence={"approval_id": approval.id, "decision": "reject"},
+            event_type="goal.approval_rejected",
+        )
+        return {
+            "continuation_status": "rejected",
+            "completion_evidence": False,
+            "goal_id": rejected_goal.id if rejected_goal is not None else goal.id,
+            "loop_run_id": rejected_loop.run_id,
+            "loop_terminal_state": str(rejected_loop.terminal_state),
+        }
 
 
 class CurrentStateBuilder:
@@ -497,3 +805,26 @@ def _approval_not_resolved(
         ),
         facts=facts,
     )
+
+
+def _approval_resolution_message(facts: dict[str, Any]) -> str:
+    """Render control facts without claiming that approval equals completion."""
+    lines = [
+        "approval_resolved",
+        f"decision={facts.get('decision') or ''}",
+        f"status={facts.get('status') or ''}",
+        f"state_transition={facts.get('state_transition') or ''}",
+        f"run_id={facts.get('run_id') or ''}",
+        f"approval_id={facts.get('approval_id') or ''}",
+        f"run_phase={facts.get('run_phase') or ''}",
+        f"run_governance={facts.get('run_governance') or ''}",
+        f"run_resolution={facts.get('run_resolution') or ''}",
+    ]
+    continuation_status = str(facts.get("continuation_status") or "")
+    if continuation_status:
+        lines.append(f"continuation_status={continuation_status}")
+        lines.append(
+            "completion_evidence="
+            f"{str(bool(facts.get('completion_evidence'))).lower()}"
+        )
+    return "\n".join(lines)

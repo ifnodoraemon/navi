@@ -196,6 +196,53 @@ class ApprovalStoreMixin:
         )
         return self._approval_where(clauses, params)
 
+    def approval_by_code(
+        self,
+        code: str,
+        *,
+        sender_id: str = "",
+        peer_id: str = "",
+        source: str = "",
+    ) -> Approval | None:
+        """Return the newest context-bound approval regardless of status.
+
+        This is intentionally separate from ``pending_approval_by_code`` so
+        repeated approve/reject commands can be handled idempotently without
+        treating an already-resolved approval as missing.
+        """
+        self.expire_pending_approvals()
+        clauses = ["code = ?"]
+        params: list[object] = [code]
+        self._append_approval_filters(
+            clauses,
+            params,
+            sender_id=sender_id,
+            peer_id=peer_id,
+            source=source,
+        )
+        return self._approval_where(clauses, params)
+
+    def approval_for_run(
+        self,
+        run_id: str,
+        *,
+        sender_id: str = "",
+        peer_id: str = "",
+        source: str = "",
+    ) -> Approval | None:
+        """Return the newest context-bound approval for a run in any status."""
+        self.expire_pending_approvals()
+        clauses = ["run_id = ?"]
+        params: list[object] = [run_id]
+        self._append_approval_filters(
+            clauses,
+            params,
+            sender_id=sender_id,
+            peer_id=peer_id,
+            source=source,
+        )
+        return self._approval_where(clauses, params)
+
     def approved_approval_for_run(
         self,
         run_id: str,

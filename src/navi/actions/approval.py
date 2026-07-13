@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from ..approval_contract import (
@@ -98,6 +99,10 @@ class ApprovalRequestCapability(BaseCapability):
 
 @capability("approval_resolve")
 class ApprovalResolveCapability(BaseCapability):
+    def __init__(self, spec, *, home: Path, runtime=None):
+        super().__init__(spec, home=home)
+        self.runtime = runtime
+
     @guarded
     async def invoke(
         self,
@@ -112,7 +117,7 @@ class ApprovalResolveCapability(BaseCapability):
         code = _arg_text(args, "code")
         run_id = _arg_text(args, "run_id")
         selection = _approval_selection(args, code=code, run_id=run_id)
-        resolved = ApprovalService(self.home).resolve(
+        resolved = await ApprovalService(self.home).resolve_and_continue(
             decision=decision,
             selection=selection,
             context=SurfaceContext(
@@ -126,6 +131,9 @@ class ApprovalResolveCapability(BaseCapability):
             ),
             code=code,
             run_id=run_id,
+            runtime=self.runtime,
+            trace_id=context.trace_id,
+            event_bus=context.event_bus,
         )
         facts = resolved.facts
         return CapabilityResult(

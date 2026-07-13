@@ -498,6 +498,39 @@ def test_trace_converged_without_failed_facts_is_success(tmp_path):
     )
 
 
+def test_trace_waiting_approval_is_successful_pause_not_failure(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_event(
+        trace_id="trace-waiting-approval",
+        phase="capability.result",
+        tool="shell.run",
+        ok=False,
+        output_data={
+            "facts": {
+                "entity_type": "approval_request",
+                "approval": {"id": "approval-1"},
+            }
+        },
+    )
+    store.add_loop_decision(
+        trace_id="trace-waiting-approval",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.BLOCKED,
+            reason=LoopReason.APPROVAL_REQUIRED,
+            failure_domain=TraceFailureDomain.SAFEGUARD_POLICY,
+        ),
+    )
+
+    evaluation = store.evaluate_trace("trace-waiting-approval")
+    evidence = json.loads(evaluation.evidence_json)
+
+    assert evaluation.outcome == "success"
+    assert evaluation.failure_domain == "none"
+    assert evidence["evaluation_rule"] == "loop_decision_waiting_approval"
+    assert evidence["pending_external_gate"] is True
+    assert evidence["completion_evidence"] is False
+
+
 def test_trace_converged_after_capability_failure_is_degraded(tmp_path):
     store = TraceStore(tmp_path)
     store.add_event(

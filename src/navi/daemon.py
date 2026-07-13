@@ -16,14 +16,13 @@ from .capabilities import CapabilityRegistry
 from .event_bus import (
     ActionApprovedEvent,
     AgentTurnCompletedEvent,
-    ApprovalResolvedEvent,
     EventBus,
     NaviEvent,
 )
 from .evolution import EvolutionEngine
 from .governance_agent import GovernanceAgent
 from .graph import GraphNode, GraphStore
-from .lifecycle import Governance, Phase, Resolution
+from .lifecycle import Phase
 from .runs import Run, RunStore
 from .safeguards import redact_secrets
 from .text_utils import truncate_middle
@@ -106,18 +105,6 @@ class SystemDaemon:
             if task and task.phase == Phase.PENDING:
                 self.runs.update_run(event.run_id, phase=Phase.PENDING, result_summary="")
 
-        async def on_approval_resolved(event: NaviEvent) -> None:
-            assert isinstance(event, ApprovalResolvedEvent)
-            task = self.runs.get(event.run_id)
-            if task and event.decision == "approved":
-                self.runs.update_run(
-                    event.run_id,
-                    phase=Phase.PENDING,
-                    governance=Governance.APPROVED,
-                    resolution=Resolution.NONE,
-                    result_summary="",
-                )
-
         async def on_turn_completed(event: NaviEvent) -> None:
             assert isinstance(event, AgentTurnCompletedEvent)
             if event.session_id:
@@ -163,7 +150,6 @@ class SystemDaemon:
                     logger.error(f"Background turn completed task failed: {e}", exc_info=True)
 
         self.event_bus.subscribe("action_approved", on_action_approved)
-        self.event_bus.subscribe("approval_resolved", on_approval_resolved)
         self.event_bus.subscribe("agent_turn_completed", on_turn_completed)
 
     async def process_queue_once(self) -> list[Run]:
@@ -171,10 +157,7 @@ class SystemDaemon:
         from .provider import build_provider
         from .runtime import AgentRuntime
         from .loop_runs import LoopRunStore
-        from .loop_control_service import LoopControlService
-        from .goal_state_graph import run_goal_loop_state_graph
-        from .capabilities import CapabilityRegistry
-        from .capabilities_types import CapabilityContext
+        from .goal_state_graph import resume_goal_loop_run
         from .goals import GoalStore
 
         loop_runs = LoopRunStore(self.home)
@@ -185,7 +168,6 @@ class SystemDaemon:
         config = load_config(self.home)
         provider = build_provider(config.model)
         runtime = AgentRuntime(home=self.home, provider=provider)
-        service = LoopControlService(self.home)
         goals = GoalStore(self.home)
 
         affected_runs = []
@@ -195,37 +177,11 @@ class SystemDaemon:
                 continue
 
             try:
-                prepared = service.resume_loop(loop_run_id=state.run_id, workspace=goal.workspace)
-                
-                permission_ceiling = prepared.loop_spec.goal.permission_ceiling
-                planner_capabilities = CapabilityRegistry(
+                result = await resume_goal_loop_run(
                     home=self.home,
-                    project_dir=Path(goal.workspace),
-                    permission_ceiling=permission_ceiling,
-                    enforce_connector_source_policy=False,
+                    loop_run_id=state.run_id,
                     runtime=runtime,
-                )
-                context = CapabilityContext(
-                    home=self.home,
-                    source=goal.source,
-                    peer_id=goal.peer_id,
-                    sender_id=goal.sender_id,
-                    session_id=goal.session_id,
-                    permission_ceiling=permission_ceiling,
-                    workspace=goal.workspace,
-                    enforce_connector_source_policy=False,
-                )
-                
-                result = await run_goal_loop_state_graph(
-                    home=self.home,
-                    service=service,
-                    base=prepared,
-                    runtime=runtime,
-                    planner_capabilities=planner_capabilities,
-                    context=context,
-                    evidence={"entrypoint": "daemon.process_queue_once", "resumed": True},
-                    result_evidence={"state_graph_mode": "llm_backed", "resumed": True},
-                    state_transition="resumed",
+                    event_bus=self.event_bus,
                 )
                 affected_runs.append(result.run)
             except Exception as e:
