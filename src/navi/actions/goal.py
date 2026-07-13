@@ -96,10 +96,8 @@ class GoalOpenCapability(BaseCapability):
         except ValueError as exc:
             raise SchemaMismatch(str(exc)) from exc
         facts = result.to_facts()
-        # Promote connector_outbound side effects (e.g. a staged file the
-        # weixin connector should actually send) to the top level so the
-        # connector runtime's _send_reply can dispatch them. Without this,
-        # the file sits in the outbox forever and the user gets nothing.
+        # Promote connector delivery contracts to the response boundary so the
+        # active adapter can execute them synchronously.
         promoted = _promote_outbound_facts(result)
         if promoted:
             facts = {**facts, **promoted}
@@ -169,7 +167,17 @@ class GoalResumeCapability(BaseCapability):
             raise NotFound(str(exc)) from exc
         except ValueError as exc:
             raise Conflict(str(exc)) from exc
-        return _fact_result("goal", result.to_facts(), run_id=result.run.id)
+        facts = result.to_facts()
+        promoted = _promote_outbound_facts(result)
+        if promoted:
+            facts = {**facts, **promoted}
+        return CapabilityResult(
+            ok=True,
+            action="goal",
+            message=str(facts.get("responded_message") or ""),
+            run_id=result.run.id,
+            facts=facts,
+        )
 
 
 @capability("goal_cancel")
@@ -279,15 +287,13 @@ def _planner_capabilities(
 
 
 def _promote_outbound_facts(result: Any) -> dict[str, Any]:
-    """Lift connector_outbound side effects to the top level of the facts.
+    """Lift a connector delivery contract to the connector response boundary.
 
     The planner ReAct loop executes capabilities and stores their results in
     ``state_graph_result.evidence["capability_result"]``. When the last
-    capability was a connector outbound (e.g. weixin send_file), its
-    ``outbound_path`` and ``action`` must be promoted so the connector
-    runtime's ``_send_reply`` can actually dispatch the file. Without this
-    promotion the file is staged to the outbox but never sent, and the user
-    receives nothing.
+    The active connector consumes the structured contract synchronously.  The
+    contract is connector-neutral so Weixin, email, Feishu, or another adapter
+    can implement the same boundary without a channel-specific staging area.
 
     A ``respond`` capability's message is preserved in
     ``evidence["responded_message"]`` across the whole loop (even when a
@@ -298,6 +304,16 @@ def _promote_outbound_facts(result: Any) -> dict[str, Any]:
     if state_graph_result is None:
         return {}
     evidence = getattr(state_graph_result, "evidence", None) or {}
+    from ..connector_delivery import connector_delivery_from_loop_result
+
+    delivery = connector_delivery_from_loop_result(result)
+    if delivery is not None:
+        return {
+            "action": "connector_outbound",
+            "connector_delivery": delivery.to_dict(),
+            "responded_message": delivery.text,
+            "responded_action": "connector_outbound",
+        }
     responded_message = str(evidence.get("responded_message") or "")
     if responded_message:
         return {
@@ -316,25 +332,4 @@ def _promote_outbound_facts(result: Any) -> dict[str, Any]:
         if not message:
             return {}
         return {"responded_message": message, "responded_action": action}
-    outbound_path = str(cap_facts.get("outbound_path") or "")
-    if action != "connector_outbound" or not outbound_path:
-        return {}
-    promoted = {
-        "action": action,
-        "outbound_path": outbound_path,
-        "outbound_message": str(capability_result.get("message") or ""),
-    }
-    for key in (
-        "entity_type",
-        "entity_id",
-        "state_transition",
-        "side_effect_scope",
-        "side_effect_state",
-        "side_effect_artifact",
-        "side_effect_commit",
-        "side_effect_compensate",
-        "side_effect_commit_strategy",
-    ):
-        if key in cap_facts:
-            promoted[key] = cap_facts[key]
-    return promoted
+    return {}

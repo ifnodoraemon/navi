@@ -57,6 +57,13 @@ class ToolCapability:
     ) -> CapabilityResult:
         result = await self.gateway.call(self.spec.name, args)
         facts = dict(result.facts or {})
+        if result.action == "connector_outbound":
+            from navi.connector_delivery import bind_connector_delivery_facts
+
+            facts = bind_connector_delivery_facts(
+                facts,
+                delivery_id=context.trace_id,
+            )
         error_reason = ""
         if not result.ok:
             error_reason = _tool_error_reason(result.error, facts)

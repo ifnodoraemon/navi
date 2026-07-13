@@ -28,6 +28,7 @@ from .skills import _skills_list, _skills_view
 from .tools_list import _tools_list
 from .utils import _http_fetch
 from .web_search import _web_search
+from ..connector_delivery import register_connector_delivery_tool
 
 
 def _core_tool_spec(**kwargs: Any) -> ToolSpec:
@@ -43,6 +44,7 @@ def _array_of_objects() -> dict[str, Any]:
 
 
 def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
+    register_connector_delivery_tool(registry, home=home)
     registry.register(
         _core_tool_spec(
             name="provider.config",

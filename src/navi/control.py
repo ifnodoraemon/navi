@@ -372,9 +372,19 @@ class ApprovalService:
             "loop_terminal_state": str(continued.loop_run.terminal_state),
             "surface_message": continued.run.result_summary,
         }
+        from .connector_delivery import connector_delivery_from_loop_result
+
+        delivery = connector_delivery_from_loop_result(continued)
+        if delivery is not None:
+            facts["connector_delivery"] = delivery.to_dict()
+            facts["surface_message"] = delivery.text
         return ApprovalResolution(
             ok=True,
-            message=continued.run.result_summary or _approval_resolution_message(facts),
+            message=(
+                delivery.text
+                if delivery is not None
+                else continued.run.result_summary or _approval_resolution_message(facts)
+            ),
             facts=facts,
         )
 

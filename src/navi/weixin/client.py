@@ -151,6 +151,7 @@ class WeixinClient:
         caption: str = "",
         context_token: str = "",
         force_file_attachment: bool = False,
+        idempotency_key: str = "",
     ) -> None:
         del account_id
         path = Path(file_path).expanduser()
@@ -170,7 +171,15 @@ class WeixinClient:
             path=path,
             force_file_attachment=force_file_attachment,
         )
-        client_id = f"navi-weixin-{uuid.uuid4().hex}"
+        if idempotency_key:
+            from navi.connector_delivery import connector_delivery_client_id
+
+            client_id = connector_delivery_client_id(
+                idempotency_key,
+                prefix="navi-weixin",
+            )
+        else:
+            client_id = f"navi-weixin-{uuid.uuid4().hex}"
         response = await self._post(
             "/ilink/bot/sendmessage",
             {

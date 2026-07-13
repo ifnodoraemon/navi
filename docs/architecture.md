@@ -24,7 +24,7 @@ DurableStateGraphRunner
 CapabilityRegistry -> tools, actions, hooks, resource and workspace gates
         |
         v
-SQLite stores + TraceStore + connector outboxes
+SQLite stores + TraceStore + connector delivery receipts
 ```
 
 The unified loop is a protocol boundary. `loop_kind` distinguishes a turn,
@@ -90,6 +90,13 @@ LoopRun records own active lifecycle state.
 Connector adapters own authentication, polling, message normalization, media
 transport, deduplication, and channel-local presentation. They publish the same
 turn contract used by local surfaces.
+
+Outbound files use the connector-neutral `ConnectorDelivery` contract. The
+kernel validates the original file and emits one structured synchronous
+delivery request; the active adapter (Weixin today, email or Feishu adapters in
+the future) sends it directly and records the real transport receipt. Textual
+`MEDIA:` directives, connector outboxes, and deferred connector commits are not
+delivery evidence and are not part of the real-time reply path.
 
 Connector ingress uses the same capability catalog and default permission
 ceiling as local CLI ingress. Sensitive operations do not execute merely because

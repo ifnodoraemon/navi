@@ -12,6 +12,7 @@ from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.connector_router import ConnectorRouter
 from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
+from navi.connector_delivery import connector_delivery_from_facts
 from navi.event_bus import EventBus
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
@@ -111,6 +112,50 @@ class _BareApprovalProvider(_ConnectorDeleteProvider):
         if role == "responder":
             return "原删除任务已执行并验证。"
         raise AssertionError(f"unexpected role: {role}")
+
+
+class _ConnectorFileProvider:
+    def __init__(self, target: Path) -> None:
+        self.target = target
+        self.calls: list[str] = []
+
+    async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+        del messages, kwargs
+        self.calls.append(role)
+        if role == "planner":
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "channel.send_file",
+                            "permission": "write",
+                            "args": {
+                                "path": str(self.target),
+                                "text": "这是你要的文件。",
+                            },
+                            "model_role": "executor",
+                            "reason": "deliver the requested file",
+                        }
+                    ]
+                }
+            )
+        if role == "checker":
+            return json.dumps(
+                {
+                    "passed": True,
+                    "should_continue": False,
+                    "evidence_summary": "delivery contract is ready",
+                }
+            )
+        if role == "responder":
+            raise AssertionError("a structured delivery must not be replaced by model prose")
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "executor", "checker", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
 
 
 def _missing_file_verification(target: Path) -> str:
@@ -251,6 +296,74 @@ async def test_connector_approval_resumes_original_goal_before_reply(tmp_path: P
     assert len(resumed_shell) == 1
     assert resumed_shell[0].ok is True
     assert provider.calls == ["planner", "responder"]
+
+
+@pytest.mark.asyncio
+async def test_connector_approval_preserves_synchronous_file_delivery_contract(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "approved-report.xlsx"
+    target.write_bytes(b"report")
+    provider = _ConnectorFileProvider(target)
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        runtime=runtime,
+    )
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "send approved report",
+            "workspace": str(tmp_path),
+            "allowed_capabilities": ["channel.send_file"],
+        },
+        permission="prepare",
+        context=CapabilityContext(
+            home=tmp_path,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+            permission_ceiling="write",
+            workspace=str(tmp_path),
+            trace_id="request-file",
+        ),
+    )
+    approval = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
+    assert approval is not None
+    assert not (tmp_path / "weixin" / "outbox").exists()
+
+    ingress = ConnectorIngressRuntime(
+        home=tmp_path,
+        runtime=runtime,
+        project_dir=tmp_path,
+    )
+    try:
+        response = await ingress.handle(
+            ConnectorMessage(
+                message_id="approve-file",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                text=f"批准 {approval.code}",
+                source="weixin",
+                session_alias_prefix="connector:weixin",
+            )
+        )
+    finally:
+        await ingress.event_bus.shutdown()
+
+    assert response is not None
+    assert response.action == "connector_outbound"
+    delivery = connector_delivery_from_facts(response.facts)
+    assert delivery is not None
+    assert delivery.path == str(target.resolve())
+    assert delivery.text == "这是你要的文件。"
+    assert delivery.delivery_id == opened.facts["loop_run_id"]
+    assert delivery.run_id == opened.run_id
+    assert "responder" not in provider.calls
+    response_events = TraceStore(tmp_path).list_events(trace_id="approve-file")
+    assert any(event.phase == "channel.response_ready" for event in response_events)
+    assert not any(event.phase == "channel.egress" for event in response_events)
 
 
 @pytest.mark.asyncio

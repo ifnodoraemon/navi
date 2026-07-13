@@ -785,7 +785,7 @@ async def test_durable_state_graph_uses_loop_budget_policy_and_traces_gate(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_durable_state_graph_releases_staged_external_side_effect_after_acceptance(
+async def test_durable_state_graph_keeps_synchronous_delivery_without_deferred_commit(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "resume.docx"
@@ -827,11 +827,12 @@ async def test_durable_state_graph_releases_staged_external_side_effect_after_ac
 
     assert result.terminal_state == LoopTerminalState.CONVERGED
     assert result.evidence["capability_result"]["terminal"] is True
-    assert result.evidence["side_effect_commit_result"]["state"] == (
-        "released_for_deferred_commit"
-    )
-    staged = Path(result.evidence["capability_result"]["facts"]["outbound_path"])
-    assert staged.exists()
+    assert result.evidence["side_effect_commit_result"]["state"] == "delivery_requested"
+    assert result.evidence["side_effect_commit_result"]["reason"] == "side_effect_not_staged"
+    delivery = result.evidence["capability_result"]["facts"]["connector_delivery"]
+    assert delivery["mode"] == "synchronous"
+    assert Path(delivery["path"]) == source.resolve()
+    assert source.exists()
     commit_decisions = _loop_decision_payloads_by_tool(
         tmp_path,
         "trace-side-effect-commit",
@@ -840,12 +841,12 @@ async def test_durable_state_graph_releases_staged_external_side_effect_after_ac
     assert commit_decisions
     assert (
         commit_decisions[0]["evidence"]["side_effect"]["state"]
-        == "released_for_deferred_commit"
+        == "delivery_requested"
     )
 
 
 @pytest.mark.asyncio
-async def test_durable_state_graph_compensates_staged_external_side_effect_on_rejection(
+async def test_durable_state_graph_does_not_compensate_original_delivery_file_on_rejection(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "resume.docx"
@@ -887,17 +888,20 @@ async def test_durable_state_graph_compensates_staged_external_side_effect_on_re
     result = await runner.run_async(spec, workspace=tmp_path)
 
     assert result.terminal_state == LoopTerminalState.FAILED
-    staged = Path(result.evidence["capability_result"]["facts"]["outbound_path"])
-    assert not staged.exists()
+    assert source.exists()
     compensation = result.evidence["side_effect_compensation_results"][0]
-    assert compensation["state"] == "compensated"
+    assert compensation["state"] == "delivery_requested"
+    assert compensation["reason"] == "side_effect_not_staged"
     compensation_decisions = _loop_decision_payloads_by_tool(
         tmp_path,
         "trace-side-effect-compensate",
         "state_graph.side_effect.compensate",
     )
     assert compensation_decisions
-    assert compensation_decisions[0]["evidence"]["side_effect"]["state"] == "compensated"
+    assert (
+        compensation_decisions[0]["evidence"]["side_effect"]["state"]
+        == "delivery_requested"
+    )
 
 
 @pytest.mark.asyncio

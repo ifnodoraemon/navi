@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -13,6 +12,7 @@ from navi.connector_runtime import (
     ConnectorIngressRuntime,
     ConnectorMessage,
 )
+from navi.connector_delivery import connector_delivery_from_facts
 from navi.event_bus import ResponseReadyEvent
 from navi.runtime import AgentRuntime
 from navi.runs import Run
@@ -259,6 +259,44 @@ class WeixinService:
             self.record_event(
                 "reply.error", peer_id=update.peer_id, error=f"{type(exc).__name__}: {exc}"
             )
+            failed_delivery = connector_delivery_from_facts(response.facts)
+            if failed_delivery is not None and failed_delivery.run_id:
+                try:
+                    from navi.goals import GoalStore
+
+                    GoalStore(self.home).record_delivery_failure(
+                        run_id=failed_delivery.run_id,
+                        channel=self.local_source,
+                        error=f"{type(exc).__name__}: {exc}",
+                        trace_id=update.message_id,
+                        delivery_id=failed_delivery.delivery_id,
+                    )
+                except Exception:
+                    pass
+            try:
+                from navi.trace import TraceStore, TracePhase
+
+                TraceStore(self.home).add_event(
+                    trace_id=update.message_id,
+                    phase=TracePhase.CHANNEL_EGRESS,
+                    run_id=failed_delivery.run_id if failed_delivery is not None else "",
+                    source=self.local_source,
+                    peer_id=update.peer_id,
+                    sender_id=update.sender_id,
+                    output_data={
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "media_count": 0,
+                        "delivery_id": (
+                            failed_delivery.delivery_id
+                            if failed_delivery is not None
+                            else ""
+                        ),
+                    },
+                    message="Channel delivery failed",
+                    ok=False,
+                )
+            except Exception:
+                pass
             raise
         self.record_event(
             "reply.sent",
@@ -266,6 +304,50 @@ class WeixinService:
             text_preview=delivery["text_preview"],
             media_count=delivery["media_count"],
         )
+        connector_delivery = connector_delivery_from_facts(response.facts)
+        delivery_run_id = connector_delivery.run_id if connector_delivery is not None else ""
+        if delivery_run_id:
+            try:
+                from navi.goals import GoalStore
+
+                GoalStore(self.home).record_delivery(
+                    run_id=delivery_run_id,
+                    channel=self.local_source,
+                    text_preview=str(delivery["text_preview"]),
+                    text_length=len(response.text.strip()),
+                    media_count=int(delivery["media_count"]),
+                    trace_id=update.message_id,
+                )
+            except Exception:
+                self.record_event(
+                    "reply.receipt.error",
+                    peer_id=update.peer_id,
+                    delivery_id=connector_delivery.delivery_id,
+                )
+        try:
+            from navi.trace import TraceStore, TracePhase
+
+            TraceStore(self.home).add_event(
+                trace_id=update.message_id,
+                phase=TracePhase.CHANNEL_EGRESS,
+                run_id=delivery_run_id,
+                source=self.local_source,
+                peer_id=update.peer_id,
+                sender_id=update.sender_id,
+                output_data={
+                    "response": delivery["text_preview"],
+                    "action": response.action,
+                    "media_count": delivery["media_count"],
+                    "delivery_id": (
+                        connector_delivery.delivery_id
+                        if connector_delivery is not None
+                        else ""
+                    ),
+                },
+                message="Delivered response to channel",
+            )
+        except Exception:
+            pass
         return True
 
     async def _handle_with_typing(
@@ -292,12 +374,12 @@ class WeixinService:
                 from navi.trace import TraceStore, TracePhase
                 TraceStore(self.home).add_event(
                     trace_id=update.message_id,
-                    phase=TracePhase.CHANNEL_EGRESS,
+                    phase=TracePhase.RESPONSE_READY,
                     source=self.local_source,
                     peer_id=update.peer_id,
                     sender_id=update.sender_id,
-                    output_data={"error_fallback": True, "error": str(exc)},
-                    message="Error fallback sent to channel",
+                    output_data={"error": str(exc)},
+                    message="Failed to prepare channel response",
                     ok=False,
                 )
             except Exception:
@@ -512,38 +594,11 @@ class WeixinService:
         context_token: str,
     ) -> dict[str, object]:
         facts = facts or {}
-        media_paths = []
-        cleaned_text = text
-        if action == "connector_outbound":
-            if "outbound_path" in facts:
-                media_paths.append(facts["outbound_path"])
-        else:
-            media_paths, cleaned_text = _extract_media_directives(text)
-            # Also dispatch files promoted from the planner ReAct loop
-            # (e.g. goal.open staged a weixin send_file). Without this
-            # the file sits in the outbox forever and the user gets nothing.
-            if "outbound_path" in facts:
-                media_paths.append(facts["outbound_path"])
+        delivery = connector_delivery_from_facts(facts)
+        if action == "connector_outbound" and delivery is None:
+            raise RuntimeError("connector_outbound response is missing a valid delivery contract")
         sent_media = 0
-        for media_path in media_paths:
-            allowed_path = self._allowed_outbound_media_path(media_path)
-            if allowed_path is None:
-                self.record_event("reply.media.blocked", peer_id=peer_id, path=media_path)
-                continue
-            await self.client.send_file(
-                account_id=account.account_id,
-                peer_id=peer_id,
-                file_path=allowed_path,
-                context_token=context_token,
-            )
-            sent_media += 1
-            self.record_event(
-                "reply.media.sent",
-                peer_id=peer_id,
-                path=str(allowed_path),
-                media_count=sent_media,
-            )
-        outbound_text = cleaned_text.strip()
+        outbound_text = (delivery.text if delivery is not None else text).strip()
         if outbound_text:
             await self.client.send_message(
                 account_id=account.account_id,
@@ -551,24 +606,26 @@ class WeixinService:
                 text=outbound_text,
                 context_token=context_token,
             )
+        if delivery is not None:
+            file_path = Path(delivery.path).expanduser().resolve()
+            if not file_path.is_file():
+                raise FileNotFoundError(f"connector delivery file not found: {file_path}")
+            await self.client.send_file(
+                account_id=account.account_id,
+                peer_id=peer_id,
+                file_path=file_path,
+                context_token=context_token,
+                idempotency_key=delivery.delivery_id,
+            )
+            sent_media = 1
+            self.record_event(
+                "reply.media.sent",
+                peer_id=peer_id,
+                path=str(file_path),
+                delivery_id=delivery.delivery_id,
+                media_count=sent_media,
+            )
         return {"media_count": sent_media, "text_preview": outbound_text[:120]}
-
-    def _allowed_outbound_media_path(self, raw_path: str) -> Path | None:
-        try:
-            candidate = Path(raw_path).expanduser().resolve()
-        except OSError:
-            return None
-        allowed_roots = (
-            self.home / "weixin" / "outbox",
-            self.home / "weixin" / "media" / "outbound",
-        )
-        for root in allowed_roots:
-            try:
-                candidate.relative_to(root.resolve())
-            except ValueError:
-                continue
-            return candidate if candidate.is_file() else None
-        return None
 
     def _task_surface_text(self, task: Run) -> str:
         # awaiting_approval carries the re-approval prompt (with the fresh code)
@@ -651,21 +708,6 @@ def _redact_event_facts(facts: dict) -> dict:
         else:
             redacted[key] = value
     return redacted
-
-
-_MEDIA_DIRECTIVE_RE = re.compile(r"(?m)^\s*MEDIA:(?P<path>\S+)\s*$")
-
-
-def _extract_media_directives(text: str) -> tuple[list[str], str]:
-    media_paths: list[str] = []
-
-    def _capture(match: re.Match[str]) -> str:
-        media_paths.append(match.group("path").strip())
-        return ""
-
-    cleaned = _MEDIA_DIRECTIVE_RE.sub(_capture, text or "")
-    cleaned = "\n".join(line for line in cleaned.splitlines() if line.strip()).strip()
-    return media_paths, cleaned
 
 
 def _weixin_message_facts(update: WeixinUpdate) -> dict[str, object]:

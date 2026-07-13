@@ -79,18 +79,19 @@ def test_mutating_tool_spec_defaults_to_local_side_effect_policy() -> None:
     }
 
 
-def test_weixin_outbound_declares_staged_external_side_effect(tmp_path: Path) -> None:
+def test_connector_delivery_declares_synchronous_external_side_effect(tmp_path: Path) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     spec = registry.get("channel.send_file")
 
     assert spec is not None
     policy = spec.side_effect_policy
     assert policy.scope == "external"
-    assert policy.mode == "staged"
+    assert policy.mode == "synchronous"
     assert policy.state_field == "side_effect_state"
-    assert policy.artifact_field == "outbound_path"
-    assert policy.commit_tool == "weixin.connector_runtime.dispatch_outbox"
-    assert policy.compensate_tool == "filesystem.remove_staged_outbound"
+    assert policy.artifact_field == "source_path"
+    assert policy.commit_tool == ""
+    assert policy.compensate_tool == ""
+    assert spec.source == "core.connector_delivery"
 
 
 @pytest.mark.asyncio

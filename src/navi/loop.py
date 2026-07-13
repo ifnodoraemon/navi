@@ -51,6 +51,7 @@ class TracePhase(StrEnum):
     CAPABILITY_RESULT = "capability.result"
     CHANNEL_INGRESS = "channel.ingress"
     CHANNEL_EGRESS = "channel.egress"
+    RESPONSE_READY = "channel.response_ready"
     PLANNER_CALL_ERROR = "planner.call.error"
     PLANNER_CALL_START = "planner.call.start"
     PLANNER_PARSE_ERROR = "planner.parse_error"

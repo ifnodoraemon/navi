@@ -681,6 +681,40 @@ class GoalStore:
                 )
         return event
 
+    def record_delivery_failure(
+        self,
+        *,
+        run_id: str,
+        channel: str,
+        error: str,
+        trace_id: str = "",
+        delivery_id: str = "",
+    ) -> GoalEvent | None:
+        """Append a connector-confirmed transport failure without claiming delivery."""
+        goal = self.get_by_run(run_id)
+        if goal is None:
+            return None
+        evidence = {
+            "state_transition": "delivery_failed",
+            "channel": channel,
+            "recorded_at": time.time(),
+            "error": error,
+            "delivery_id": delivery_id,
+            "goal_id": goal.id,
+            "run_id": run_id,
+        }
+        return self.record_event(
+            goal.id,
+            "goal.delivery_failed",
+            phase=goal.phase,
+            governance=goal.governance,
+            acceptance=goal.acceptance,
+            resolution=goal.resolution,
+            run_id=run_id,
+            trace_id=trace_id or run_id,
+            evidence=evidence,
+        )
+
     def latest_delivery(self, goal_id: str) -> dict[str, Any]:
         with connect(self.db_path) as conn:
             row = conn.execute(

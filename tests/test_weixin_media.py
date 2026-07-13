@@ -9,11 +9,13 @@ import pytest
 from navi.approval_contract import APPROVAL_ACTION_CAPABILITY, APPROVAL_DECISION_APPROVE
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
+from navi.connector_delivery import ConnectorDelivery, connector_delivery_client_id
 from navi.event_bus import ResponseReadyEvent
 from navi.goals import GoalStore
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
 from navi.runtime import AgentRuntime
 from navi.runs import Run, RunStore
+from navi.trace import TraceStore
 from navi.weixin.client import ITEM_FILE, MEDIA_FILE, WeixinClient
 from navi.weixin.config import WeixinConfig
 from navi.weixin.models import WeixinAccount, WeixinUpdate
@@ -103,11 +105,15 @@ async def test_send_file_uploads_cdn_media_item(tmp_path: Path, monkeypatch: pyt
         peer_id="wx-user",
         file_path=target,
         context_token="ctx",
+        idempotency_key="delivery-1",
     )
 
     send_payload = calls[-1][1]["msg"]
     assert send_payload["to_user_id"] == "wx-user"
     assert send_payload["context_token"] == "ctx"
+    assert send_payload["client_id"] == connector_delivery_client_id(
+        "delivery-1", prefix="navi-weixin"
+    )
     item = send_payload["item_list"][0]
     assert item["type"] == ITEM_FILE
     assert item["file_item"]["file_name"] == "report.pdf"
@@ -130,12 +136,31 @@ class CaptureWeixinClient:
         self.messages.append(kwargs)
 
 
+class FailingFileWeixinClient(CaptureWeixinClient):
+    async def send_file(self, **kwargs: Any) -> None:
+        self.files.append(kwargs)
+        raise RuntimeError("upload failed")
+
+
 class StaticIngress:
-    def __init__(self, text: str) -> None:
+    def __init__(
+        self,
+        text: str,
+        *,
+        action: str = "chat",
+        facts: dict[str, Any] | None = None,
+    ) -> None:
         self.text = text
+        self.action = action
+        self.facts = facts or {}
 
     async def handle(self, message: Any) -> "ResponseReadyEvent":
-        return ResponseReadyEvent(text=self.text, source="weixin")
+        return ResponseReadyEvent(
+            text=self.text,
+            source="weixin",
+            action=self.action,
+            facts=self.facts,
+        )
 
 
 class StaticDaemon:
@@ -152,10 +177,8 @@ class StaticDaemon:
 
 
 @pytest.mark.asyncio
-async def test_service_sends_media_directive_from_weixin_outbox(tmp_path: Path):
-    outbox = tmp_path / "weixin" / "outbox"
-    outbox.mkdir(parents=True)
-    report = outbox / "report.pdf"
+async def test_service_executes_structured_delivery_from_original_path(tmp_path: Path):
+    report = tmp_path / "report.pdf"
     report.write_bytes(b"report")
     client = CaptureWeixinClient()
     service = WeixinService(
@@ -165,7 +188,16 @@ async def test_service_sends_media_directive_from_weixin_outbox(tmp_path: Path):
         project_dir=tmp_path,
         client=client,
     )
-    service.ingress = StaticIngress(f"MEDIA:{report}\n已生成报告。")
+    contract = ConnectorDelivery(
+        path=str(report.resolve()),
+        text="已生成报告。",
+        delivery_id="delivery-report",
+    )
+    service.ingress = StaticIngress(
+        contract.text,
+        action="connector_outbound",
+        facts={"connector_delivery": contract.to_dict()},
+    )
 
     handled = await service.handle_update(
         WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
@@ -181,14 +213,14 @@ async def test_service_sends_media_directive_from_weixin_outbox(tmp_path: Path):
     assert handled is True
     assert client.files[0]["file_path"] == report.resolve()
     assert client.files[0]["context_token"] == "ctx"
+    assert client.files[0]["idempotency_key"] == "delivery-report"
     assert client.messages[0]["text"] == "已生成报告。"
+    assert not (tmp_path / "weixin" / "outbox").exists()
 
 
 @pytest.mark.asyncio
-async def test_background_completed_task_sends_media_directive_from_outbox(tmp_path: Path):
-    outbox = tmp_path / "weixin" / "outbox"
-    outbox.mkdir(parents=True)
-    resume = outbox / "resume.docx"
+async def test_background_text_does_not_execute_legacy_media_directive(tmp_path: Path):
+    resume = tmp_path / "resume.docx"
     resume.write_bytes(b"resume")
     client = CaptureWeixinClient()
     service = WeixinService(
@@ -222,11 +254,13 @@ async def test_background_completed_task_sends_media_directive_from_outbox(tmp_p
         WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
     )
 
-    assert client.files[0]["file_path"] == resume.resolve()
-    assert client.messages[0]["text"] == "Here is your resume file found in the home directory."
+    assert client.files == []
+    assert client.messages[0]["text"] == (
+        f"MEDIA:{resume}\nHere is your resume file found in the home directory."
+    )
     events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8").splitlines()
-    assert any('"event": "reply.media.sent"' in line for line in events)
-    assert any('"event": "background.sent"' in line and '"media_count": 1' in line for line in events)
+    assert not any('"event": "reply.media.sent"' in line for line in events)
+    assert any('"event": "background.sent"' in line and '"media_count": 0' in line for line in events)
 
 
 @pytest.mark.asyncio
@@ -277,6 +311,149 @@ async def test_background_send_records_delivery_fact_after_client_success(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_realtime_file_delivery_records_success_only_after_transport(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "report.xlsx"
+    report.write_bytes(b"report")
+    run = RunStore(tmp_path).create(
+        "deliver report",
+        kind="delegation",
+        source="weixin",
+        peer_id="wx-user",
+        sender_id="wx-user",
+        workspace=str(tmp_path),
+    )
+    goal = GoalStore(tmp_path).create(
+        objective=run.prompt,
+        workspace=str(tmp_path),
+        source=run.source,
+        peer_id=run.peer_id,
+        sender_id=run.sender_id,
+        run_id=run.id,
+    )
+    contract = ConnectorDelivery(
+        path=str(report.resolve()),
+        text="报告已发送。",
+        delivery_id="delivery-success",
+        run_id=run.id,
+        goal_id=goal.id,
+    )
+    client = CaptureWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.ingress = StaticIngress(
+        contract.text,
+        action="connector_outbound",
+        facts={"connector_delivery": contract.to_dict()},
+    )
+
+    assert await service.handle_update(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
+        WeixinUpdate(
+            message_id="msg-delivery-success",
+            peer_id="wx-user",
+            sender_id="wx-user",
+            text="发送报告",
+            context_token="ctx",
+        ),
+    ) is True
+
+    recorded = GoalStore(tmp_path).latest_delivery(goal.id)
+    assert recorded["state_transition"] == "delivered"
+    assert recorded["media_count"] == 1
+    assert recorded["channel"] == "weixin"
+    egress = [
+        event
+        for event in TraceStore(tmp_path).list_events(trace_id="msg-delivery-success")
+        if event.phase == "channel.egress"
+    ]
+    assert len(egress) == 1
+    assert egress[0].ok is True
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_delivery_failure_does_not_record_success(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "failed-report.xlsx"
+    report.write_bytes(b"report")
+    run = RunStore(tmp_path).create(
+        "deliver failed report",
+        kind="delegation",
+        source="weixin",
+        peer_id="wx-user",
+        sender_id="wx-user",
+        workspace=str(tmp_path),
+    )
+    goal = GoalStore(tmp_path).create(
+        objective=run.prompt,
+        workspace=str(tmp_path),
+        source=run.source,
+        peer_id=run.peer_id,
+        sender_id=run.sender_id,
+        run_id=run.id,
+    )
+    contract = ConnectorDelivery(
+        path=str(report.resolve()),
+        delivery_id="delivery-failure",
+        run_id=run.id,
+        goal_id=goal.id,
+    )
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=FailingFileWeixinClient(),
+    )
+    service.ingress = StaticIngress(
+        "",
+        action="connector_outbound",
+        facts={"connector_delivery": contract.to_dict()},
+    )
+
+    with pytest.raises(RuntimeError, match="upload failed"):
+        await service.handle_update(
+            WeixinAccount(
+                account_id="acct",
+                token="token",
+                base_url="https://ilink.example",
+            ),
+            WeixinUpdate(
+                message_id="msg-delivery-failure",
+                peer_id="wx-user",
+                sender_id="wx-user",
+                text="发送报告",
+                context_token="ctx",
+            ),
+        )
+
+    assert GoalStore(tmp_path).latest_delivery(goal.id) == {}
+    failure_events = [
+        event
+        for event in GoalStore(tmp_path).list_events(goal.id)
+        if event.event_type == "goal.delivery_failed"
+    ]
+    assert len(failure_events) == 1
+    events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8")
+    assert '"event": "reply.error"' in events
+    assert '"event": "reply.sent"' not in events
+    failed_egress = [
+        event
+        for event in TraceStore(tmp_path).list_events(trace_id="msg-delivery-failure")
+        if event.phase == "channel.egress"
+    ]
+    assert len(failed_egress) == 1
+    assert failed_egress[0].ok is False
+
+
+@pytest.mark.asyncio
 async def test_service_deduplicates_message_id_across_instances(tmp_path: Path):
     account = WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
     update = WeixinUpdate(
@@ -317,13 +494,13 @@ async def test_service_deduplicates_message_id_across_instances(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_weixin_send_file_returns_allowed_media_directive(tmp_path: Path):
+async def test_send_file_returns_connector_neutral_synchronous_delivery(tmp_path: Path):
     source = tmp_path / "resume.docx"
     source.write_bytes(b"resume")
     args = {"path": str(source)}
     runs = RunStore(tmp_path)
     run = runs.create(
-        "stage weixin file",
+        "deliver file",
         kind="delegation",
         source="local",
         workspace=str(tmp_path),
@@ -336,7 +513,7 @@ async def test_weixin_send_file_returns_allowed_media_directive(tmp_path: Path):
         requested_tool="channel.send_file",
         requested_permission="write",
         args_json=json.dumps(args, ensure_ascii=False, sort_keys=True),
-        reason="test approved outbound media staging",
+        reason="test approved outbound media delivery",
     )
     runs.resolve_approval(approval.id, decision=APPROVAL_DECISION_APPROVE, resolved_by="test")
     registry = build_capability_registry(tmp_path, project_dir=tmp_path, governed_run_id=run.id)
@@ -353,17 +530,16 @@ async def test_weixin_send_file_returns_allowed_media_directive(tmp_path: Path):
     assert result.action == "connector_outbound"
     assert result.facts is not None
     assert "entity_type" in result.facts
-    assert result.facts["entity_type"] == "outbound_media"
+    assert result.facts["entity_type"] == "connector_delivery"
     assert result.facts["side_effect_scope"] == "external"
-    assert result.facts["side_effect_state"] == "staged"
-    assert result.facts["side_effect_commit"] == "weixin.connector_runtime.dispatch_outbox"
-    assert result.facts["side_effect_compensate"] == "filesystem.remove_staged_outbound"
-    assert result.facts["side_effect_commit_strategy"] == "deferred"
-    staged = Path(result.facts["outbound_path"])
-    assert result.facts["side_effect_artifact"] == str(staged)
-    assert staged.is_file()
-    assert staged.read_bytes() == b"resume"
-    assert staged.is_relative_to((tmp_path / "weixin" / "outbox").resolve())
+    assert result.facts["side_effect_state"] == "delivery_requested"
+    assert result.facts["side_effect_artifact"] == str(source.resolve())
+    delivery = result.facts["connector_delivery"]
+    assert delivery["kind"] == "file"
+    assert delivery["mode"] == "synchronous"
+    assert delivery["channel"] == "current"
+    assert delivery["path"] == str(source.resolve())
+    assert not (tmp_path / "weixin" / "outbox").exists()
 
 
 @pytest.mark.asyncio

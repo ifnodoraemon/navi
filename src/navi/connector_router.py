@@ -55,21 +55,19 @@ class ConnectorRouter:
             if control_response is not None:
                 trace.add_event(
                     trace_id=correlation_id,
-                    phase=TracePhase.CHANNEL_EGRESS,
+                    phase=TracePhase.RESPONSE_READY,
                     run_id="",
                     source=message.source,
                     peer_id=message.peer_id,
                     sender_id=message.sender_id,
-                    output_data={"response": control_response, "control_message": True},
+                    output_data={
+                        "response": control_response.text,
+                        "action": control_response.action,
+                        "control_message": True,
+                    },
                     message="Resolved connector control message",
                 )
-                return ResponseReadyEvent(
-                    source_agent="router",
-                    text=control_response,
-                    source=message.source,
-                    peer_id=message.peer_id,
-                    sender_id=message.sender_id,
-                )
+                return control_response
 
             event = MessageIngressEvent(
                 source_agent="connector_router",
@@ -89,25 +87,25 @@ class ConnectorRouter:
             if response:
                 trace.add_event(
                     trace_id=correlation_id,
-                    phase=TracePhase.CHANNEL_EGRESS,
+                    phase=TracePhase.RESPONSE_READY,
                     run_id="",
                     source=message.source,
                     peer_id=message.peer_id,
                     sender_id=message.sender_id,
                     output_data={"response": response.text, "action": response.action},
-                    message="Sent response to channel",
+                    message="Prepared response for channel delivery",
                 )
             return response
         except Exception as e:
             trace.add_event(
                 trace_id=correlation_id,
-                phase=TracePhase.CHANNEL_EGRESS,
+                phase=TracePhase.RESPONSE_READY,
                 run_id="",
                 source=message.source,
                 peer_id=message.peer_id,
                 sender_id=message.sender_id,
                 output_data={"error": str(e)},
-                message="Error processing message",
+                message="Failed to prepare channel response",
                 ok=False,
             )
             raise
@@ -131,7 +129,7 @@ class ConnectorRouter:
 
     async def _resolve_connector_control_message(
         self, message: ConnectorMessage
-    ) -> str | None:
+    ) -> "ResponseReadyEvent | None":
         command = _parse_connector_approval_command(message)
         if command is None:
             return None
@@ -153,10 +151,30 @@ class ConnectorRouter:
             trace_id=message.message_id,
             event_bus=self.event_bus,
         )
+        from .connector_delivery import connector_delivery_from_facts
+
+        delivery = connector_delivery_from_facts(result.facts)
+        if delivery is not None:
+            return ResponseReadyEvent(
+                source_agent="router",
+                text=delivery.text,
+                source=message.source,
+                peer_id=message.peer_id,
+                sender_id=message.sender_id,
+                action="connector_outbound",
+                facts=result.facts,
+            )
         if self.runtime is None or not _approval_result_needs_model_response(result.facts):
-            return result.message
+            return ResponseReadyEvent(
+                source_agent="router",
+                text=result.message,
+                source=message.source,
+                peer_id=message.peer_id,
+                sender_id=message.sender_id,
+                facts=result.facts,
+            )
         try:
-            return await self.runtime.complete(
+            text = await self.runtime.complete(
                 [
                     ChatMessage("system", assemble_fact_response_system_prompt().render()),
                     ChatMessage(
@@ -170,7 +188,15 @@ class ConnectorRouter:
                 role="responder",
             )
         except Exception:
-            return result.message
+            text = result.message
+        return ResponseReadyEvent(
+            source_agent="router",
+            text=text,
+            source=message.source,
+            peer_id=message.peer_id,
+            sender_id=message.sender_id,
+            facts=result.facts,
+        )
 
 
 def _approval_result_needs_model_response(facts: dict[str, object]) -> bool:
