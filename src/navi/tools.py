@@ -201,6 +201,7 @@ class ToolResult:
     ended_at: float = 0.0
     action: str = "tool"
     terminal: bool = False
+    yields_control: bool = False
     message: str = ""
 
     @property
@@ -218,6 +219,7 @@ class ToolResult:
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "duration_ms": self.duration_ms,
+            "yields_control": self.yields_control,
         }
 
 
@@ -312,6 +314,7 @@ class ToolRegistry:
             error=result.error,
             action=result.action,
             terminal=result.terminal,
+            yields_control=result.yields_control,
             message=result.message,
             started_at=started_at,
             ended_at=time.time(),
@@ -422,4 +425,3 @@ def _register_mcp_tools(registry: ToolRegistry, *, home: Path) -> None:
     from .mcp_tools import register_mcp_tools
 
     register_mcp_tools(registry, home=home)
-

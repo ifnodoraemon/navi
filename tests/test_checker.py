@@ -128,9 +128,9 @@ def test_llm_checker_reports_verdict_without_user_facing_copy():
     )
 
     assert report.accepted is False
-    assert report.blocked is True
-    assert report.state_hint == LoopTerminalState.BLOCKED
-    assert report.checker_results[0].reason == "no_route_available"
+    assert report.blocked is False
+    assert report.state_hint == ""
+    assert report.checker_results[0].reason == "semantic_check_failed"
     assert report.checker_results[0].evidence["isolated_context"] is True
     assert report.checker_results[0].evidence["evidence_summary"] == (
         "required facts are missing"

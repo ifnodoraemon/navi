@@ -231,6 +231,95 @@ class LoopRunStore:
             )
         return next_state
 
+    def complete_external_delivery(
+        self,
+        run_id: str,
+        *,
+        success: bool,
+        evidence: dict[str, Any] | None = None,
+    ) -> LoopRunState:
+        """Close only a connector-delivery pause from an authoritative receipt."""
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"loop run not found: {run_id}")
+            current = _loop_run_from_row(row)
+            target = LoopTerminalState.CONVERGED if success else LoopTerminalState.FAILED
+            if str(current.terminal_state) == str(target):
+                return current
+            if str(current.terminal_state) != str(LoopTerminalState.PAUSED):
+                raise ValueError(
+                    "external delivery receipt requires a paused loop: "
+                    f"{current.terminal_state}"
+                )
+            if str(current.evidence.get("action") or "") != "connector_outbound":
+                raise ValueError("paused loop is not waiting for connector delivery")
+            now = time.time()
+            next_state = replace(
+                current,
+                terminal_state=target,
+                evidence={**current.evidence, **(evidence or {})},
+                updated_at=now,
+            )
+            conn.execute(
+                """
+                UPDATE loop_runs
+                SET terminal_state = ?, evidence_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (str(target), _json_dumps(next_state.evidence), now, run_id),
+            )
+            _insert_event(
+                conn,
+                next_state,
+                "loop.delivery_succeeded" if success else "loop.delivery_failed",
+                evidence=evidence,
+            )
+        return next_state
+
+    def fail_active_run(
+        self,
+        run_id: str,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> LoopRunState:
+        """Fail a non-terminal loop after an uncaught execution exception."""
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"loop run not found: {run_id}")
+            current = _loop_run_from_row(row)
+            if current.is_terminal():
+                return current
+            now = time.time()
+            next_state = replace(
+                current,
+                terminal_state=LoopTerminalState.FAILED,
+                evidence={**current.evidence, **(evidence or {})},
+                updated_at=now,
+            )
+            conn.execute(
+                """
+                UPDATE loop_runs
+                SET terminal_state = ?, evidence_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(LoopTerminalState.FAILED),
+                    _json_dumps(next_state.evidence),
+                    now,
+                    run_id,
+                ),
+            )
+            _insert_event(conn, next_state, "loop.execution_failed", evidence=evidence)
+        return next_state
+
     def list_active(self, *, limit: int = 50) -> list[LoopRunState]:
         with connect(self.db_path) as conn:
             rows = conn.execute(

@@ -224,7 +224,8 @@ def _send_file_handler(args: dict[str, Any]):
     return ToolResult(
         tool="channel.send_file",
         ok=True,
-        terminal=True,
+        terminal=False,
+        yields_control=True,
         action="connector_outbound",
         message=text,
         facts={

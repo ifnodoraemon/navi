@@ -391,6 +391,36 @@ class LoopControlService:
             state_transition=state_transition or base.state_transition,
         )
 
+    def fail_state_graph_execution(
+        self,
+        base: LoopControlServiceResult,
+        *,
+        error: Exception,
+    ) -> None:
+        failure = f"state_graph_exception:{type(error).__name__}"
+        self.loop_runs.fail_active_run(
+            base.loop_run.run_id,
+            evidence={"reason": failure, "error": str(error)},
+        )
+        failed_run = self.runs.update_run(
+            base.run.id,
+            phase=Phase.ENDED,
+            governance=Governance.NONE,
+            acceptance=Acceptance.REJECTED,
+            resolution=Resolution.FAILED,
+            result_summary="",
+            error=failure,
+        )
+        if failed_run is not None:
+            self.goals.update_for_run(
+                failed_run,
+                evidence={
+                    "state_transition": "state_graph_execution_failed",
+                    "loop_run_id": base.loop_run.run_id,
+                    "error": failure,
+                },
+            )
+
     def resume_goal(self, *, goal_id: str, workspace: str = "") -> LoopControlServiceResult:
         goal = self.goals.get(goal_id)
         if goal is None:

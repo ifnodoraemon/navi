@@ -591,9 +591,8 @@ class LoopRunState:
             str(self.node) == str(LoopNode.EVALUATE)
             and str(node) == str(LoopNode.PLAN)
         ):
-            # Each EVALUATE -> PLAN iteration (the agentic reflection loop)
-            # consumes one attempt so the loop terminates at max_attempts even
-            # if the LLM reflector keeps saying should_continue=true.
+            # Each EVALUATE -> PLAN iteration consumes one attempt so retries
+            # remain bounded independently of semantic-checker output.
             next_attempt += 1
         return replace(
             self,
@@ -664,6 +663,7 @@ def default_state_graph() -> tuple[StateTransition, ...]:
         StateTransition(LoopNode.EXECUTE, LoopNode.PAUSE, "resource_pause"),
         StateTransition(LoopNode.EXECUTE, LoopNode.ESCALATE, "resource_escalate"),
         StateTransition(LoopNode.EXECUTE, LoopNode.ESCALATE, "approval_required"),
+        StateTransition(LoopNode.EXECUTE, LoopTerminalState.BLOCKED, "repeated_progress_signature"),
         StateTransition(LoopNode.EXECUTE, LoopTerminalState.BLOCKED, "resource_blocked"),
         StateTransition(LoopNode.EVALUATE, LoopTerminalState.CONVERGED, "checker_passed"),
         StateTransition(LoopNode.EVALUATE, LoopNode.PLAN, "continue_iteration"),

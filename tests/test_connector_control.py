@@ -93,7 +93,6 @@ class _BareApprovalProvider(_ConnectorDeleteProvider):
                             "args": {
                                 "decision": "approve",
                                 "run_id": self.approval_run_id,
-                                "selection": "current_run",
                             },
                             "model_role": "executor",
                             "reason": "apply the user's explicit approval",
@@ -153,6 +152,96 @@ class _ConnectorFileProvider:
 
     def list_roles(self) -> list[str]:
         return ["planner", "executor", "checker", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
+
+
+class _FollowupApprovalProvider:
+    """Reproduce trace 7482656831535883656 without external delivery."""
+
+    def __init__(self, target: Path, *, bare_approval: bool) -> None:
+        self.target = target
+        self.bare_approval = bare_approval
+        self.approval_run_id = ""
+        self.planner_calls = 0
+        self.calls: list[str] = []
+
+    async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+        del messages, kwargs
+        self.calls.append(role)
+        if role == "planner":
+            self.planner_calls += 1
+            if self.planner_calls == 1:
+                return json.dumps(
+                    {
+                        "syscalls": [
+                            {
+                                "tool": "shell.run",
+                                "permission": "write",
+                                "args": {
+                                    "command": [
+                                        "find",
+                                        str(self.target.parent),
+                                        "-maxdepth",
+                                        "1",
+                                        "-name",
+                                        self.target.name,
+                                    ],
+                                    "cwd": str(self.target.parent),
+                                },
+                                "model_role": "executor",
+                                "reason": "locate the requested file",
+                            }
+                        ]
+                    }
+                )
+            if self.bare_approval and self.planner_calls == 2:
+                return json.dumps(
+                    {
+                        "syscalls": [
+                            {
+                                "tool": "approval.resolve",
+                                "permission": "prepare",
+                                "args": {
+                                    "decision": "approve",
+                                    "run_id": self.approval_run_id,
+                                },
+                                "model_role": "executor",
+                                "reason": "apply the user's approval",
+                            }
+                        ]
+                    }
+                )
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "channel.send_file",
+                            "permission": "write",
+                            "args": {
+                                "path": str(self.target),
+                                "text": "这是你要的文件。",
+                            },
+                            "model_role": "executor",
+                            "reason": "send the located file",
+                        }
+                    ]
+                }
+            )
+        if role == "checker":
+            return json.dumps(
+                {
+                    "passed": False,
+                    "evidence_summary": "the file was located but not sent",
+                }
+            )
+        if role == "responder":
+            raise AssertionError("a follow-up approval code must not be model-paraphrased")
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "checker", "responder"]
 
     def usage_for(self, role: str) -> dict:
         return {}
@@ -296,6 +385,132 @@ async def test_connector_approval_resumes_original_goal_before_reply(tmp_path: P
     assert len(resumed_shell) == 1
     assert resumed_shell[0].ok is True
     assert provider.calls == ["planner", "responder"]
+
+
+@pytest.mark.asyncio
+async def test_connector_explicit_approval_surfaces_the_next_exact_gate(tmp_path: Path):
+    target = tmp_path / "resume.md"
+    target.write_text("resume\n", encoding="utf-8")
+    provider = _FollowupApprovalProvider(target, bare_approval=False)
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        runtime=runtime,
+    )
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "locate and send my resume",
+            "workspace": str(tmp_path),
+            "allowed_capabilities": ["shell.run", "channel.send_file"],
+        },
+        permission="prepare",
+        context=CapabilityContext(
+            home=tmp_path,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+            permission_ceiling="write",
+            workspace=str(tmp_path),
+        ),
+    )
+    first = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
+    assert first is not None
+    assert first.requested_tool == "shell.run"
+
+    ingress = ConnectorIngressRuntime(
+        home=tmp_path,
+        runtime=runtime,
+        project_dir=tmp_path,
+    )
+    try:
+        response = await ingress.handle(
+            ConnectorMessage(
+                message_id="approve-locate-explicit",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                text=f"批准 {first.code}",
+                source="weixin",
+                session_alias_prefix="connector:weixin",
+            )
+        )
+    finally:
+        await ingress.event_bus.shutdown()
+
+    second = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
+    assert second is not None
+    assert second.id != first.id
+    assert second.requested_tool == "channel.send_file"
+    assert response is not None
+    assert response.text.startswith("approval_requested\n")
+    assert f"approval_code={second.code}" in response.text
+    assert "requested_tool=channel.send_file" in response.text
+    assert "responder" not in provider.calls
+    assert TraceStore(tmp_path).evaluate_trace("approve-locate-explicit").outcome == "success"
+
+
+@pytest.mark.asyncio
+async def test_connector_bare_approval_surfaces_the_next_exact_gate(tmp_path: Path):
+    target = tmp_path / "resume.md"
+    target.write_text("resume\n", encoding="utf-8")
+    provider = _FollowupApprovalProvider(target, bare_approval=True)
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        runtime=runtime,
+    )
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "locate and send my resume",
+            "workspace": str(tmp_path),
+            "allowed_capabilities": ["shell.run", "channel.send_file"],
+        },
+        permission="prepare",
+        context=CapabilityContext(
+            home=tmp_path,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+            permission_ceiling="write",
+            workspace=str(tmp_path),
+        ),
+    )
+    provider.approval_run_id = opened.run_id
+    first = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
+    assert first is not None
+
+    ingress = ConnectorIngressRuntime(
+        home=tmp_path,
+        runtime=runtime,
+        project_dir=tmp_path,
+    )
+    try:
+        response = await ingress.handle(
+            ConnectorMessage(
+                message_id="approve-locate-bare",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                text="批准",
+                source="weixin",
+                session_alias_prefix="connector:weixin",
+            )
+        )
+    finally:
+        await ingress.event_bus.shutdown()
+
+    second = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
+    assert second is not None
+    assert second.id != first.id
+    assert second.requested_tool == "channel.send_file"
+    assert response is not None
+    assert response.text.startswith("approval_requested\n")
+    assert f"approval_code={second.code}" in response.text
+    assert "requested_tool=channel.send_file" in response.text
+    assert "responder" not in provider.calls
+    assert TraceStore(tmp_path).evaluate_trace("approve-locate-bare").outcome == "success"
 
 
 @pytest.mark.asyncio

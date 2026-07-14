@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -292,6 +293,32 @@ class ApprovalService:
             )
 
         goal, loop_run = loop_context
+        if str(loop_run.terminal_state) == str(LoopTerminalState.WAITING_APPROVAL):
+            current_approval = self._current_gate_approval(
+                runs=RunStore(self.home),
+                loop_run=loop_run,
+                context=context,
+            )
+            if current_approval is None or current_approval.id != str(
+                resolved.facts.get("approval_id") or ""
+            ):
+                current_run = RunStore(self.home).get(goal.run_id)
+                facts = {
+                    **resolved.facts,
+                    "continuation_status": "waiting_approval",
+                    "completion_evidence": False,
+                    "loop_run_id": loop_run.run_id,
+                    "loop_terminal_state": str(loop_run.terminal_state),
+                    "surface_message": current_run.result_summary if current_run else "",
+                    "reason": "approval_gate_superseded",
+                }
+                if current_approval is not None:
+                    facts["current_approval"] = _approval_prompt_facts(current_approval)
+                return ApprovalResolution(
+                    ok=True,
+                    message=_approval_resolution_message(facts),
+                    facts=facts,
+                )
         current_run = RunStore(self.home).get(goal.run_id)
         if (
             current_run is not None
@@ -387,6 +414,19 @@ class ApprovalService:
             ),
             facts=facts,
         )
+
+    @staticmethod
+    def _current_gate_approval(
+        *,
+        runs: RunStore,
+        loop_run: LoopRunState,
+        context: SurfaceContext,
+    ) -> Approval | None:
+        expected_id = _waiting_approval_id(loop_run.evidence)
+        approval = runs.get_approval(expected_id) if expected_id else None
+        if approval is None or not run_matches_context(approval, context):
+            return None
+        return approval
 
     def _resolve_existing_decision(
         self,
@@ -618,42 +658,23 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
             for run in state.active_runs
         ],
         "pending_approvals": [
-            {
-                "id": approval.id,
-                "run_id": approval.run_id,
-                "action": approval.action,
-                "requested_tool": approval.requested_tool,
-                "requested_permission": approval.requested_permission,
-                "source": approval.source,
-                "peer_id": approval.peer_id,
-                "sender_id": approval.sender_id,
-                "status": approval.status,
-                "code": approval.code,
-                "expires_at": approval.expires_at,
-                "created_at": approval.created_at,
-                "updated_at": approval.updated_at,
-                "reason": approval.reason,
-            }
+            _approval_prompt_facts(approval)
             for approval in state.pending_approvals
         ],
         "active_goals": [_goal_facts(goal) for goal in state.active_goals],
-        "active_loop_runs": [loop_run.to_dict() for loop_run in state.active_loop_runs],
+        "active_loop_runs": [_loop_run_prompt_facts(loop_run) for loop_run in state.active_loop_runs],
         "goal_state": {
             "active_goals": [_goal_facts(goal) for goal in state.active_goals],
         },
         "loop_run_state": {
-            "active_loop_runs": [loop_run.to_dict() for loop_run in state.active_loop_runs],
+            "active_loop_runs": [
+                _loop_run_prompt_facts(loop_run) for loop_run in state.active_loop_runs
+            ],
         },
         "approval_state": {
             "pending_approvals": [
                 {
-                    "id": approval.id,
-                    "run_id": approval.run_id,
-                    "action": approval.action,
-                    "requested_tool": approval.requested_tool,
-                    "requested_permission": approval.requested_permission,
-                    "status": approval.status,
-                    "expires_at": approval.expires_at,
+                    **_approval_prompt_facts(approval),
                 }
                 for approval in state.pending_approvals
             ],
@@ -667,6 +688,61 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
         "connector_state": dict(state.connector_state),
         "recent_deliveries": [dict(item) for item in state.recent_deliveries],
     }
+
+
+def _approval_prompt_facts(approval: Approval) -> dict[str, Any]:
+    return {
+        "id": approval.id,
+        "run_id": approval.run_id,
+        "action": approval.action,
+        "requested_tool": approval.requested_tool,
+        "requested_permission": approval.requested_permission,
+        "source": approval.source,
+        "peer_id": approval.peer_id,
+        "sender_id": approval.sender_id,
+        "status": approval.status,
+        "code": approval.code,
+        "args_digest": hashlib.sha256(approval.args_json.encode("utf-8")).hexdigest(),
+        "expires_at": approval.expires_at,
+        "created_at": approval.created_at,
+        "updated_at": approval.updated_at,
+        "reason": approval.reason,
+    }
+
+
+def _loop_run_prompt_facts(loop_run: LoopRunState) -> dict[str, Any]:
+    return {
+        "run_id": loop_run.run_id,
+        "goal_id": loop_run.goal_id,
+        "loop_spec_id": loop_run.loop_spec_id,
+        "node": str(loop_run.node),
+        "terminal_state": str(loop_run.terminal_state),
+        "checkpoint_id": loop_run.checkpoint_id,
+        "attempt": loop_run.attempt,
+        "parent_run_id": loop_run.parent_run_id,
+        "evidence_keys": sorted(loop_run.evidence),
+        "updated_at": loop_run.updated_at,
+    }
+
+
+def _waiting_approval_id(evidence: dict[str, Any]) -> str:
+    for container in (
+        evidence,
+        evidence.get("capability_result") if isinstance(evidence, dict) else None,
+        evidence.get("executor") if isinstance(evidence, dict) else None,
+    ):
+        if not isinstance(container, dict):
+            continue
+        facts = container.get("facts")
+        if not isinstance(facts, dict):
+            continue
+        approval = facts.get("approval")
+        if isinstance(approval, dict) and str(approval.get("id") or ""):
+            return str(approval["id"])
+        entity_id = str(facts.get("entity_id") or "")
+        if facts.get("entity_type") == "approval_request" and entity_id:
+            return entity_id
+    return ""
 
 
 def _active_goals(home: Path, context: SurfaceContext) -> tuple[Any, ...]:

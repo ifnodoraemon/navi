@@ -295,6 +295,7 @@ class WeixinService:
                     message="Channel delivery failed",
                     ok=False,
                 )
+                TraceStore(self.home).evaluate_trace(update.message_id)
             except Exception:
                 pass
             raise
@@ -317,6 +318,7 @@ class WeixinService:
                     text_length=len(response.text.strip()),
                     media_count=int(delivery["media_count"]),
                     trace_id=update.message_id,
+                    delivery_id=connector_delivery.delivery_id,
                 )
             except Exception:
                 self.record_event(
@@ -346,6 +348,7 @@ class WeixinService:
                 },
                 message="Delivered response to channel",
             )
+            TraceStore(self.home).evaluate_trace(update.message_id)
         except Exception:
             pass
         return True
@@ -599,6 +602,8 @@ class WeixinService:
             raise RuntimeError("connector_outbound response is missing a valid delivery contract")
         sent_media = 0
         outbound_text = (delivery.text if delivery is not None else text).strip()
+        if not outbound_text and delivery is None:
+            raise RuntimeError("refusing to record an empty connector response as delivered")
         if outbound_text:
             await self.client.send_message(
                 account_id=account.account_id,

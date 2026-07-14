@@ -346,7 +346,10 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
     )
     assert facts_match is not None
     planner_facts = json.loads(facts_match.group(1))
-    assert planner_facts["ingress_facts"] == runtime_facts
+    assert planner_facts["ingress_facts"]["intent_facts"] == runtime_facts["intent_facts"]
+    assert planner_facts["ingress_facts"]["current_state"]["current_time"]["unix"] >= (
+        runtime_facts["current_state"]["current_time"]["unix"]
+    )
     assert planner_facts["ingress_facts"]["current_state"]["connector_state"][
         "source"
     ] == "connector.weixin"

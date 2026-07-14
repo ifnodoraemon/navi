@@ -164,6 +164,21 @@ class ConnectorRouter:
                 action="connector_outbound",
                 facts=result.facts,
             )
+        # A resumed action may stop at a new approval gate.  Its
+        # ``surface_message`` is deterministic control-plane output carrying
+        # the exact new code.  Returning it directly prevents a responder
+        # model from paraphrasing away that code and making the task
+        # impossible to continue.
+        surface_message = str(result.facts.get("surface_message") or "").strip()
+        if surface_message:
+            return ResponseReadyEvent(
+                source_agent="router",
+                text=surface_message,
+                source=message.source,
+                peer_id=message.peer_id,
+                sender_id=message.sender_id,
+                facts=result.facts,
+            )
         if self.runtime is None or not _approval_result_needs_model_response(result.facts):
             return ResponseReadyEvent(
                 source_agent="router",

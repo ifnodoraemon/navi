@@ -293,7 +293,7 @@ class ConnectorIngressRuntime:
 
         self.event_bus.subscribe("user_intent", on_user_intent)
 
-        from .event_bus import RunCompletedEvent, ActionSuspendedEvent
+        from .event_bus import ActionSuspendedEvent
 
         async def on_action_suspended(event: "NaviEvent") -> None:
             assert isinstance(event, ActionSuspendedEvent)
@@ -318,29 +318,6 @@ class ConnectorIngressRuntime:
 
         self.event_bus.subscribe("action_suspended", on_action_suspended)
 
-        async def on_run_completed(event: "NaviEvent") -> None:
-            assert isinstance(event, RunCompletedEvent)
-            if event.resolution == "failed":
-                text = (
-                    "delegated_subtask_completed\n"
-                    f"run_id={event.run_id}\n"
-                    f"phase={event.phase}\n"
-                    f"resolution={event.resolution}\n"
-                    f"error={event.error or ''}"
-                ).strip()
-                await self.event_bus.send_response(
-                    ResponseReadyEvent(
-                        source_agent="runtime",
-                        correlation_id=event.correlation_id,
-                        peer_id=event.peer_id,
-                        sender_id=event.sender_id,
-                        text=text,
-                        source="runtime",
-                    )
-                )
-
-        self.event_bus.subscribe("run_completed", on_run_completed)
-
         async def on_run_suspended(event) -> None:
             from .event_bus import RunSuspendedEvent
 
@@ -363,8 +340,8 @@ class ConnectorIngressRuntime:
         is never mistaken for a stuck upstream by the router's idle timeout.
 
         The handler runs as a task; a companion loop pings the response channel
-        until it finishes. Any handler failure is turned into a user-facing
-        message rather than left to hang the channel."""
+        until it finishes. Handler failures remain structured runtime facts;
+        this layer does not invent user-facing failure copy."""
         handler_task = asyncio.ensure_future(
             self.agent.handle(
                 event.text,

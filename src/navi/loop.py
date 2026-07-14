@@ -210,67 +210,6 @@ class LoopDecisionSummary:
         }
 
 
-@dataclass(frozen=True)
-class LoopProgressObservation:
-    signature: str
-    repeated: bool
-    count: int = 1
-    reason: str = ""
-
-
-@dataclass
-class LoopProgressGate:
-    seen_signatures: dict[str, int] = field(default_factory=dict)
-    history: list[tuple[str, str]] = field(default_factory=list)
-    no_progress_warnings: dict[str, int] = field(default_factory=dict)
-
-    def observe(self, signature: str, tool: str = "") -> LoopProgressObservation:
-        normalized = signature.strip()
-        if not normalized:
-            return LoopProgressObservation(signature="", repeated=False, count=1)
-            
-        self.seen_signatures[normalized] = self.seen_signatures.get(normalized, 0) + 1
-        self.history.append((tool, normalized))
-
-        # 1. Tool consecutive check (ignoring interleaving of other tools)
-        if tool:
-            tool_history = [s for t, s in self.history if t == tool]
-            if len(tool_history) >= 3:
-                consecutive_count = 1
-                for i in range(len(tool_history) - 2, -1, -1):
-                    if tool_history[i] == tool_history[-1]:
-                        consecutive_count += 1
-                    else:
-                        break
-                if consecutive_count >= 3:
-                    return LoopProgressObservation(signature=normalized, repeated=True, count=consecutive_count, reason="tool_repeated")
-
-        # 2. Chain cycle detection (A B A B A B)
-        n = len(self.history)
-        for L in range(1, n // 3 + 1):
-            if self.history[-L:] == self.history[-2*L:-L] == self.history[-3*L:-2*L]:
-                chain_count = 1
-                for i in range(1, n // L + 1):
-                    if self.history[-i*L:n if i==1 else -(i-1)*L] == self.history[-L:]:
-                        chain_count += 1
-                    else:
-                        break
-                return LoopProgressObservation(signature=normalized, repeated=True, count=chain_count, reason="chain_repeated")
-
-        count = self.seen_signatures[normalized]
-        repeated = count >= 5
-        
-        return LoopProgressObservation(signature=normalized, repeated=repeated, count=count)
-
-    def record_no_progress_warning(self, signature: str) -> int:
-        normalized = signature.strip()
-        if not normalized:
-            return 0
-        warning_count = self.no_progress_warnings.get(normalized, 0) + 1
-        self.no_progress_warnings[normalized] = warning_count
-        return warning_count
-
-
 NON_OK_LOOP_DECISIONS = frozenset(
     {LoopDecisionKind.BLOCKED, LoopDecisionKind.FAILED}
 )

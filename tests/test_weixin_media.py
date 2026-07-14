@@ -526,7 +526,8 @@ async def test_send_file_returns_connector_neutral_synchronous_delivery(tmp_path
     )
 
     assert result.ok is True
-    assert result.terminal is True
+    assert result.terminal is False
+    assert result.yields_control is True
     assert result.action == "connector_outbound"
     assert result.facts is not None
     assert "entity_type" in result.facts

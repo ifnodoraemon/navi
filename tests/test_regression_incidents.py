@@ -178,6 +178,7 @@ def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
             "sender_id": "sender-1",
             "status": "pending",
             "code": "222222",
+            "args_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "expires_at": pending.expires_at,
             "created_at": pending.created_at,
             "updated_at": pending.updated_at,

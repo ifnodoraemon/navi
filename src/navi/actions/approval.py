@@ -17,6 +17,7 @@ from ..capabilities_types import (
 )
 from ..control import ApprovalService, SurfaceContext
 from ..lifecycle import Phase, Governance, Resolution
+from ..loop_contracts import LoopTerminalState
 from ..result import NotFound, SchemaMismatch, guarded
 from ..runs import RunStore
 from .helpers import (
@@ -116,6 +117,11 @@ class ApprovalResolveCapability(BaseCapability):
             raise SchemaMismatch("approval.resolve requires decision approve or reject.")
         code = _arg_text(args, "code")
         run_id = _arg_text(args, "run_id")
+        if "selection" in args:
+            raise SchemaMismatch(
+                "approval.resolve does not accept a replacement selection; changed tool arguments "
+                "require a new approval"
+            )
         selection = _approval_selection(args, code=code, run_id=run_id)
         resolved = await ApprovalService(self.home).resolve_and_continue(
             decision=decision,
@@ -136,6 +142,12 @@ class ApprovalResolveCapability(BaseCapability):
             event_bus=context.event_bus,
         )
         facts = resolved.facts
+        continuation_status = str(facts.get("continuation_status") or "")
+        yields_control = continuation_status in {
+            str(LoopTerminalState.PAUSED),
+            str(LoopTerminalState.WAITING_APPROVAL),
+            "waiting_approval",
+        }
         return CapabilityResult(
             ok=resolved.ok,
             action="approval",
@@ -144,6 +156,7 @@ class ApprovalResolveCapability(BaseCapability):
             facts=facts,
             terminal=_approval_failure_is_terminal(facts),
             error_reason="" if resolved.ok else _approval_error_reason(facts),
+            yields_control=yields_control,
         )
 
 

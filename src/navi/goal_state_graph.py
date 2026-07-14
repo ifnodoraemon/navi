@@ -12,7 +12,6 @@ from .runtime import AgentRuntime
 from .state_graph import (
     CapabilityExecutorPort,
     DurableStateGraphRunner,
-    LLMReflectorPort,
     LLMSemanticCheckerPort,
     ModelCapabilityPlannerPort,
 )
@@ -49,37 +48,37 @@ async def run_goal_loop_state_graph(
         sensitive_approval_mode="enforce",
         governed_run_id=base.run.id,
     )
-    reflector_port = LLMReflectorPort(runtime=runtime)
     checker_port = LLMSemanticCheckerPort(runtime=runtime)
 
     if context.trace_id:
         from .trace_proxies import (
             TracingPlannerPortProxy,
             TracingExecutorPortProxy,
-            TracingReflectorPortProxy,
             TracingSemanticCheckerPortProxy,
         )
         trace_store = TraceStore(home)
         planner_port = TracingPlannerPortProxy(planner_port, trace_store, context)
         executor_port = TracingExecutorPortProxy(executor_port, trace_store, context)
-        reflector_port = TracingReflectorPortProxy(reflector_port, trace_store, context)
         checker_port = TracingSemanticCheckerPortProxy(checker_port, trace_store, context)
 
     runner = DurableStateGraphRunner(
         home=home,
         planner_port=planner_port,
         executor_port=executor_port,
-        llm_reflector_port=reflector_port,
         semantic_checker_port=checker_port,
         trace_store=TraceStore(home) if context.trace_id else None,
         trace_context=context,
     )
-    graph_result = await runner.run_async(
-        base.loop_spec,
-        workspace=Path(base.goal.workspace),
-        run_id=base.loop_run.run_id,
-        evidence=graph_evidence,
-    )
+    try:
+        graph_result = await runner.run_async(
+            base.loop_spec,
+            workspace=Path(base.goal.workspace),
+            run_id=base.loop_run.run_id,
+            evidence=graph_evidence,
+        )
+    except Exception as exc:
+        service.fail_state_graph_execution(base, error=exc)
+        raise
     return service.apply_state_graph_result(
         base,
         graph_result,
@@ -172,6 +171,11 @@ async def resume_goal_loop_run(
     planner_capabilities = CapabilityRegistry(
         home=home,
         project_dir=Path(goal.workspace),
+        allowed_tools=(
+            None
+            if "*" in prepared.loop_spec.allowed_capabilities
+            else set(prepared.loop_spec.allowed_capabilities)
+        ),
         permission_ceiling=permission_ceiling,
         runtime=runtime,
     )
@@ -186,6 +190,11 @@ async def resume_goal_loop_run(
         trace_id=trace_id,
         input_text=input_text,
         event_bus=event_bus,
+        allowed_tools=(
+            None
+            if "*" in prepared.loop_spec.allowed_capabilities
+            else frozenset(prepared.loop_spec.allowed_capabilities)
+        ),
     )
     return await run_goal_loop_state_graph(
         home=home,

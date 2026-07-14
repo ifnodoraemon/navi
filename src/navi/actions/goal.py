@@ -7,6 +7,7 @@ from typing import Any
 from ..capabilities_types import BaseCapability, CapabilityContext, CapabilityResult, capability
 from ..goal_state_graph import run_goal_loop_state_graph
 from ..loop_control_service import LoopControlService, OpenGoalRequest
+from ..loop_contracts import LoopTerminalState
 from ..result import Conflict, NotFound, SchemaMismatch, guarded
 from ..tools import ToolSpec
 from .helpers import arg_text as _arg_text, fact_result as _fact_result, positive_int as _positive_int
@@ -38,6 +39,18 @@ class GoalOpenCapability(BaseCapability):
         if not objective:
             raise SchemaMismatch("goal.open requires objective.")
         workspace = _arg_text(args, "workspace") or context.workspace or str(self.project_dir)
+        planner_capabilities = _planner_capabilities(
+            self.home,
+            workspace,
+            context=context,
+            runtime=self.runtime,
+        )
+        requested_capabilities = _string_tuple(args.get("allowed_capabilities"))
+        allowed_capabilities = _effective_allowed_capabilities(
+            requested=requested_capabilities,
+            context=context,
+            registry=planner_capabilities,
+        )
         request = OpenGoalRequest(
             objective=objective,
             workspace=workspace,
@@ -50,7 +63,7 @@ class GoalOpenCapability(BaseCapability):
             constraints=_string_tuple(args.get("constraints")),
             acceptance_criteria=_string_tuple(args.get("acceptance_criteria")),
             permission_ceiling=_arg_text(args, "permission_ceiling") or context.permission_ceiling,
-            allowed_capabilities=_string_tuple(args.get("allowed_capabilities")),
+            allowed_capabilities=allowed_capabilities,
             verification_command=_arg_text(args, "verification_command"),
             timeout_seconds=_positive_int(args.get("timeout_seconds"), default=120, maximum=3600),
             token_budget=_nonnegative_int(args.get("token_budget"), maximum=100_000_000),
@@ -81,12 +94,7 @@ class GoalOpenCapability(BaseCapability):
                     service=service,
                     base=opened,
                     runtime=self.runtime,
-                    planner_capabilities=_planner_capabilities(
-                        self.home,
-                        opened.goal.workspace,
-                        context=context,
-                        runtime=self.runtime,
-                    ),
+                    planner_capabilities=planner_capabilities,
                     context=context,
                     evidence={"entrypoint": "goal.open"},
                     result_evidence={"state_graph_mode": "llm_backed"},
@@ -102,12 +110,11 @@ class GoalOpenCapability(BaseCapability):
         if promoted:
             facts = {**facts, **promoted}
         responded_message = str(facts.get("responded_message") or "")
-        return CapabilityResult(
-            ok=True,
+        return _goal_result(
+            result=result,
+            facts=facts,
             action="goal",
             message=responded_message,
-            run_id=result.run.id,
-            facts=facts,
         )
 
 
@@ -171,12 +178,11 @@ class GoalResumeCapability(BaseCapability):
         promoted = _promote_outbound_facts(result)
         if promoted:
             facts = {**facts, **promoted}
-        return CapabilityResult(
-            ok=True,
+        return _goal_result(
+            result=result,
+            facts=facts,
             action="goal",
             message=str(facts.get("responded_message") or ""),
-            run_id=result.run.id,
-            facts=facts,
         )
 
 
@@ -264,6 +270,70 @@ def _nonnegative_float(value: Any, *, maximum: float) -> float:
     return max(0.0, min(parsed, maximum))
 
 
+def _effective_allowed_capabilities(
+    *,
+    requested: tuple[str, ...],
+    context: CapabilityContext,
+    registry: Any | None,
+) -> tuple[str, ...]:
+    if registry is None:
+        if context.allowed_tools is None:
+            raise SchemaMismatch("goal.open requires an explicit capability registry")
+        visible = set(context.allowed_tools)
+    else:
+        visible = {
+            spec.name
+            for spec in registry.planner_specs(
+                permission_ceiling=context.permission_ceiling,
+            )
+        }
+    if context.allowed_tools is not None:
+        visible &= set(context.allowed_tools)
+    if requested:
+        unknown = sorted(set(requested) - visible)
+        if unknown:
+            raise SchemaMismatch(
+                "goal.open capabilities are outside the current policy envelope: "
+                + ", ".join(unknown)
+            )
+        visible &= set(requested)
+    if not visible:
+        raise SchemaMismatch("goal.open has no capabilities in the current policy envelope")
+    return tuple(sorted(visible))
+
+
+def _goal_result(
+    *,
+    result: Any,
+    facts: dict[str, Any],
+    action: str,
+    message: str,
+) -> CapabilityResult:
+    terminal_state = str(result.loop_run.terminal_state or "")
+    failed_states = {
+        str(LoopTerminalState.BLOCKED),
+        str(LoopTerminalState.FAILED),
+        str(LoopTerminalState.TIMED_OUT),
+        str(LoopTerminalState.CONFLICTED),
+        str(LoopTerminalState.CANCELLED),
+        str(LoopTerminalState.SUPERSEDED),
+    }
+    paused_states = {
+        str(LoopTerminalState.PAUSED),
+        str(LoopTerminalState.WAITING_APPROVAL),
+    }
+    return CapabilityResult(
+        ok=terminal_state not in failed_states,
+        action=action,
+        message=message,
+        run_id=result.run.id,
+        terminal=bool(terminal_state) and terminal_state not in paused_states,
+        facts=facts,
+        error_reason=f"loop_{terminal_state}" if terminal_state in failed_states else "",
+        yields_control=terminal_state in paused_states,
+    )
+
+
 def _planner_capabilities(
     home: Path,
     workspace: str,
@@ -327,6 +397,18 @@ def _promote_outbound_facts(result: Any) -> dict[str, Any]:
     cap_facts = capability_result.get("facts")
     if not isinstance(cap_facts, dict):
         return {}
+    if action == "approval":
+        # Approval continuation can immediately encounter the next exact
+        # governance gate.  That gate is rendered by the control plane and is
+        # authoritative user-facing state (including the new approval code).
+        # Never pass it through the responder model: paraphrasing can drop the
+        # only value the user needs to continue the task.
+        surface_message = str(cap_facts.get("surface_message") or "").strip()
+        if surface_message:
+            return {
+                "responded_message": surface_message,
+                "responded_action": "approval",
+            }
     if action == "chat" or action == "ask":
         message = str(capability_result.get("message") or "")
         if not message:

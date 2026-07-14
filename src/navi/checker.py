@@ -119,8 +119,6 @@ def _evaluate_boolean_step(step: VerificationStep, *, key: str, facts: dict[str,
     reason = "fact_passed" if passed else "fact_failed"
     if step.kind == VerificationKind.LLM_CHECKER and not passed:
         reason = "semantic_check_failed"
-        if facts.get("should_continue") is False:
-            reason = "no_route_available"
     return LoopCheckResult(
         name=step.name,
         passed=passed,
@@ -129,7 +127,6 @@ def _evaluate_boolean_step(step: VerificationStep, *, key: str, facts: dict[str,
         evidence={
             "evidence_key": key,
             "kind": str(step.kind),
-            "should_continue": facts.get("should_continue", ""),
             "evidence_summary": str(facts.get("evidence_summary") or ""),
             "evaluator_role": str(facts.get("evaluator_role") or ""),
             "isolated_context": bool(facts.get("isolated_context", False)),

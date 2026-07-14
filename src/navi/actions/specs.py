@@ -240,7 +240,7 @@ ACTION_SPECS = [
         name="approval.resolve",
         capability_class="approval",
         execution_contexts=("turn", API_CONTEXT),
-        description="""Resolve one durable approval by code or run id, idempotently resume its original checkpoint, and return original-task completion facts.""",
+        description="""Resolve one durable approval by code or run id, resume only the approval gate bound to that record, and return original-task completion facts.""",
         input_schema={
             "type": "object",
             "properties": {
@@ -250,7 +250,6 @@ ACTION_SPECS = [
                 },
                 "code": {"type": "string"},
                 "run_id": {"type": "string"},
-                "selection": {"type": "string"},
             },
             "required": ["decision"],
         },
@@ -258,7 +257,6 @@ ACTION_SPECS = [
             "type": "object",
             "properties": {
                 "decision": {"type": "string"},
-                "selection": {"type": "string"},
                 "code_present": {"type": "boolean"},
                 "active_run_count": {"type": "integer"},
                 "run_id": {"type": "string"},

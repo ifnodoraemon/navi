@@ -636,9 +636,10 @@ class GoalStore:
         text_length: int,
         media_count: int,
         trace_id: str = "",
+        delivery_id: str = "",
         sent_at: float | None = None,
     ) -> GoalEvent | None:
-        """Append a connector-confirmed delivery fact without changing acceptance."""
+        """Apply an authoritative connector receipt to loop, run, and goal state."""
         goal = self.get_by_run(run_id)
         if goal is None:
             return None
@@ -653,14 +654,40 @@ class GoalStore:
             "media_count": max(0, int(media_count)),
             "goal_id": goal.id,
             "run_id": run_id,
+            "delivery_id": delivery_id,
         }
+        if delivery_id:
+            from .loop_runs import LoopRunStore
+
+            loop_runs = LoopRunStore(self.home)
+            if loop_runs.get_run(delivery_id) is not None:
+                loop_runs.complete_external_delivery(
+                    delivery_id,
+                    success=True,
+                    evidence=evidence,
+                )
+        from .runs import RunStore
+
+        runs = RunStore(self.home)
+        current_run = runs.get(run_id)
+        updated_run = runs.update_run(
+            run_id,
+            phase=Phase.ENDED,
+            governance=Governance.NONE,
+            acceptance=Acceptance.ACCEPTED,
+            resolution=Resolution.SUCCESS,
+            result_summary=(current_run.result_summary if current_run else "") or text_preview,
+            error="",
+        )
+        if updated_run is not None:
+            goal = self.update_for_run(updated_run, evidence=evidence) or goal
         event = self.record_event(
             goal.id,
             "goal.delivery_succeeded",
-            phase=goal.phase,
+            phase=Phase.ENDED,
             governance=goal.governance,
-            acceptance=goal.acceptance,
-            resolution=goal.resolution,
+            acceptance=Acceptance.ACCEPTED,
+            resolution=Resolution.SUCCESS,
             run_id=run_id,
             trace_id=trace_id or run_id,
             evidence=evidence,
@@ -690,7 +717,7 @@ class GoalStore:
         trace_id: str = "",
         delivery_id: str = "",
     ) -> GoalEvent | None:
-        """Append a connector-confirmed transport failure without claiming delivery."""
+        """Apply an authoritative connector failure to loop, run, and goal state."""
         goal = self.get_by_run(run_id)
         if goal is None:
             return None
@@ -703,13 +730,37 @@ class GoalStore:
             "goal_id": goal.id,
             "run_id": run_id,
         }
+        if delivery_id:
+            from .loop_runs import LoopRunStore
+
+            loop_runs = LoopRunStore(self.home)
+            if loop_runs.get_run(delivery_id) is not None:
+                loop_runs.complete_external_delivery(
+                    delivery_id,
+                    success=False,
+                    evidence=evidence,
+                )
+        from .runs import RunStore
+
+        runs = RunStore(self.home)
+        updated_run = runs.update_run(
+            run_id,
+            phase=Phase.ENDED,
+            governance=Governance.NONE,
+            acceptance=Acceptance.REJECTED,
+            resolution=Resolution.FAILED,
+            result_summary="",
+            error=error,
+        )
+        if updated_run is not None:
+            goal = self.update_for_run(updated_run, evidence=evidence) or goal
         return self.record_event(
             goal.id,
             "goal.delivery_failed",
-            phase=goal.phase,
+            phase=Phase.ENDED,
             governance=goal.governance,
-            acceptance=goal.acceptance,
-            resolution=goal.resolution,
+            acceptance=Acceptance.REJECTED,
+            resolution=Resolution.FAILED,
             run_id=run_id,
             trace_id=trace_id or run_id,
             evidence=evidence,

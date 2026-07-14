@@ -80,6 +80,7 @@ class ToolCapability:
             action=result.action,
             message=result.message if result.message else (result.error if not result.ok else ""),
             terminal=result.terminal,
+            yields_control=result.yields_control,
             facts=facts,
             error_reason=error_reason,
         )

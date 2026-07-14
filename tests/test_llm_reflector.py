@@ -275,17 +275,18 @@ async def test_semantic_checker_retries_then_converges(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_semantic_checker_blocks_when_should_continue_false(tmp_path: Path) -> None:
-    """When the checker says should_continue=false and not passed, block."""
+async def test_semantic_checker_verdict_does_not_own_loop_control(tmp_path: Path) -> None:
+    """A checker verdict cannot choose the next action or force an immediate stop."""
     provider = _ScriptedProvider(
-        planner_syscalls=[_file_write_syscall("v1.txt", "first")],
+        planner_syscalls=[_file_write_syscall("v1.txt", "first")] * 4,
         checker_decisions=[
             {
                 "passed": False,
                 "should_continue": False,
                 "evidence_summary": "requested details are missing",
             }
-        ],
+        ]
+        * 4,
     )
     runtime = AgentRuntime(home=tmp_path, provider=provider)
     registry = build_capability_registry(
@@ -305,9 +306,10 @@ async def test_semantic_checker_blocks_when_should_continue_false(tmp_path: Path
         home=tmp_path,
     )
 
-    assert result.ok is True
+    assert result.ok is False
     assert result.facts["loop_terminal_state"] == LoopTerminalState.BLOCKED
     assert result.facts["resolution"] == Resolution.BLOCKED
+    assert provider.calls.count("planner") == 4
 
 
 @pytest.mark.asyncio

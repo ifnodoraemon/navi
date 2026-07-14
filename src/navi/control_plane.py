@@ -149,6 +149,14 @@ class TurnController(TurnLifecycleMixin):
                 },
             }
             surface_text = await self._response_from_facts(text, response_facts)
+        from .connector_delivery import connector_delivery_from_facts
+
+        has_delivery = connector_delivery_from_facts(invoked_facts) is not None
+        has_surface_result = bool(surface_text) or has_delivery
+        turn_ok = invoked.ok and has_surface_result
+        turn_error_reason = getattr(invoked, "error_reason", "")
+        if invoked.ok and not has_surface_result:
+            turn_error_reason = "empty_response"
         result = AgentTurnResult(
             text=surface_text,
             run_id=invoked.run_id,
@@ -164,11 +172,11 @@ class TurnController(TurnLifecycleMixin):
                 },
             ),
             model_role="loop_kernel",
-            terminal=True,
-            ok=invoked.ok,
+            terminal=invoked.terminal,
+            ok=turn_ok,
             trace_id=trace_id,
             facts=invoked.facts or {},
-            error_reason=getattr(invoked, "error_reason", ""),
+            error_reason=turn_error_reason,
             yields_control=getattr(invoked, "yields_control", False),
         )
         return self._finalize_turn(

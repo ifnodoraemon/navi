@@ -10,7 +10,6 @@ from .capabilities_types import CapabilityContext
 from .state_graph import (
     ExecutedCapabilityStep,
     PlannedCapabilityStep,
-    ReflectionDecision,
     SemanticCheckDecision,
 )
 
@@ -152,75 +151,6 @@ class TracingSemanticCheckerPortProxy:
                 sender_id=self.trace_context.sender_id,
                 tool="checker",
                 model_role="checker",
-                ok=False,
-                output_data={"error": str(e), "traceback": traceback.format_exc()},
-            )
-            raise
-
-
-class TracingReflectorPortProxy:
-    def __init__(self, delegate: Any, trace_store: TraceStore, trace_context: CapabilityContext):
-        self.delegate = delegate
-        self.trace_store = trace_store
-        self.trace_context = trace_context
-
-    @property
-    def runtime(self) -> Any:
-        return getattr(self.delegate, "runtime", None)
-
-    async def assess(self, spec: LoopSpec, state: LoopRunState, *, executed: ExecutedCapabilityStep, evidence: dict[str, Any]) -> ReflectionDecision:
-        self.trace_store.add_event(
-            trace_id=self.trace_context.trace_id,
-            session_id=self.trace_context.session_id or "",
-            run_id=state.run_id,
-            phase=str(TracePhase.PLANNER_CALL_START),
-            source=self.trace_context.source,
-            peer_id=self.trace_context.peer_id,
-            sender_id=self.trace_context.sender_id,
-            input_data={"objective": spec.goal.objective, "attempt": state.attempt},
-        )
-
-        try:
-            decision = await self.delegate.assess(spec, state, executed=executed, evidence=evidence)
-            
-            output_data = decision.to_dict()
-            usage_data = {}
-            runtime = self.runtime
-            if runtime and hasattr(runtime.provider, "usage_for"):
-                usage = runtime.provider.usage_for("reflector")
-                if usage:
-                    usage_data = dict(usage)
-            
-            output_data["usage"] = usage_data
-            prompt_messages = usage_data.pop("messages", [])
-            output_data["llm_response"] = usage_data.pop("response", "")
-            
-            self.trace_store.add_event(
-                trace_id=self.trace_context.trace_id,
-                session_id=self.trace_context.session_id or "",
-                run_id=state.run_id,
-                phase=str(TracePhase.PLANNER_SYSCALL),
-                source=self.trace_context.source,
-                peer_id=self.trace_context.peer_id,
-                sender_id=self.trace_context.sender_id,
-                tool="reflection",
-                model_role="reflector",
-                input_data={"prompt": prompt_messages},
-                output_data=output_data,
-            )
-            return decision
-            
-        except Exception as e:
-            self.trace_store.add_event(
-                trace_id=self.trace_context.trace_id,
-                session_id=self.trace_context.session_id or "",
-                run_id=state.run_id,
-                phase=str(TracePhase.PLANNER_CALL_ERROR),
-                source=self.trace_context.source,
-                peer_id=self.trace_context.peer_id,
-                sender_id=self.trace_context.sender_id,
-                tool="reflection",
-                model_role="reflector",
                 ok=False,
                 output_data={"error": str(e), "traceback": traceback.format_exc()},
             )

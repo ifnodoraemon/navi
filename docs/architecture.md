@@ -68,9 +68,15 @@ Mutating capabilities are subject to approval, workspace, hook, and side-effect
 gates. Staged external effects are committed only after acceptance or
 compensated on rejection.
 
-The checker evaluates objective evidence independently from planner reasoning.
+The semantic checker evaluates objective evidence independently from planner
+reasoning and returns only a verdict plus evidence summary. Retry, stop, and
+next-action decisions remain deterministic loop-control responsibilities.
 Trace proxies record model calls and capability spans without changing their
 decisions.
+
+Connector delivery is a two-boundary operation: the capability records
+`delivery_requested` and pauses the loop; only the connector's authoritative
+transport receipt may converge the LoopRun and accept the Run and Goal.
 
 ## Persistence
 
