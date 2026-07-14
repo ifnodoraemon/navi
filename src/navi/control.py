@@ -62,7 +62,6 @@ class CurrentState:
 @dataclass(frozen=True)
 class ApprovalResolution:
     ok: bool
-    message: str
     facts: dict[str, Any]
 
 
@@ -226,7 +225,6 @@ class ApprovalService:
             facts.update(self._reject_related_goal_loop(resolved))
         return ApprovalResolution(
             ok=True,
-            message=_approval_resolution_message(facts),
             facts=facts,
         )
 
@@ -263,7 +261,6 @@ class ApprovalService:
             facts = {**resolved.facts, "continuation_status": "not_applicable"}
             return ApprovalResolution(
                 ok=True,
-                message=_approval_resolution_message(facts),
                 facts=facts,
             )
         if action not in {APPROVAL_ACTION_CAPABILITY, APPROVAL_ACTION_RUN_EXECUTION}:
@@ -274,7 +271,6 @@ class ApprovalService:
             }
             return ApprovalResolution(
                 ok=True,
-                message=_approval_resolution_message(facts),
                 facts=facts,
             )
 
@@ -288,7 +284,6 @@ class ApprovalService:
             }
             return ApprovalResolution(
                 ok=True,
-                message=_approval_resolution_message(facts),
                 facts=facts,
             )
 
@@ -309,14 +304,12 @@ class ApprovalService:
                     "completion_evidence": False,
                     "loop_run_id": loop_run.run_id,
                     "loop_terminal_state": str(loop_run.terminal_state),
-                    "surface_message": current_run.result_summary if current_run else "",
                     "reason": "approval_gate_superseded",
                 }
                 if current_approval is not None:
                     facts["current_approval"] = _approval_prompt_facts(current_approval)
                 return ApprovalResolution(
                     ok=True,
-                    message=_approval_resolution_message(facts),
                     facts=facts,
                 )
         current_run = RunStore(self.home).get(goal.run_id)
@@ -335,11 +328,10 @@ class ApprovalService:
                 "completion_evidence": completion_evidence,
                 "loop_run_id": loop_run.run_id,
                 "loop_terminal_state": str(loop_run.terminal_state),
-                "surface_message": current_run.result_summary,
+                "result_summary": current_run.result_summary,
             }
             return ApprovalResolution(
                 ok=True,
-                message=current_run.result_summary or _approval_resolution_message(facts),
                 facts=facts,
             )
         if runtime is None:
@@ -351,7 +343,6 @@ class ApprovalService:
             }
             return ApprovalResolution(
                 ok=True,
-                message=_approval_resolution_message(facts),
                 facts=facts,
             )
 
@@ -376,7 +367,6 @@ class ApprovalService:
             }
             return ApprovalResolution(
                 ok=False,
-                message=_approval_resolution_message(facts),
                 facts=facts,
             )
 
@@ -397,21 +387,22 @@ class ApprovalService:
             "goal_id": continued.goal.id,
             "loop_run_id": continued.loop_run.run_id,
             "loop_terminal_state": str(continued.loop_run.terminal_state),
-            "surface_message": continued.run.result_summary,
+            "result_summary": continued.run.result_summary,
         }
+        pending_approval = self._current_gate_approval(
+            runs=RunStore(self.home),
+            loop_run=continued.loop_run,
+            context=context,
+        )
+        if pending_approval is not None:
+            facts["pending_approval"] = _approval_prompt_facts(pending_approval)
         from .connector_delivery import connector_delivery_from_loop_result
 
         delivery = connector_delivery_from_loop_result(continued)
         if delivery is not None:
             facts["connector_delivery"] = delivery.to_dict()
-            facts["surface_message"] = delivery.text
         return ApprovalResolution(
             ok=True,
-            message=(
-                delivery.text
-                if delivery is not None
-                else continued.run.result_summary or _approval_resolution_message(facts)
-            ),
             facts=facts,
         )
 
@@ -478,7 +469,6 @@ class ApprovalService:
         )
         return ApprovalResolution(
             ok=True,
-            message=_approval_resolution_message(facts),
             facts=facts,
         )
 
@@ -900,34 +890,5 @@ def _approval_not_resolved(
     }
     return ApprovalResolution(
         ok=False,
-        message=(
-            "approval_not_resolved\n"
-            f"decision={decision}\n"
-            f"reason={reason}\n"
-            f"active_run_count={active_run_count}"
-        ),
         facts=facts,
     )
-
-
-def _approval_resolution_message(facts: dict[str, Any]) -> str:
-    """Render control facts without claiming that approval equals completion."""
-    lines = [
-        "approval_resolved",
-        f"decision={facts.get('decision') or ''}",
-        f"status={facts.get('status') or ''}",
-        f"state_transition={facts.get('state_transition') or ''}",
-        f"run_id={facts.get('run_id') or ''}",
-        f"approval_id={facts.get('approval_id') or ''}",
-        f"run_phase={facts.get('run_phase') or ''}",
-        f"run_governance={facts.get('run_governance') or ''}",
-        f"run_resolution={facts.get('run_resolution') or ''}",
-    ]
-    continuation_status = str(facts.get("continuation_status") or "")
-    if continuation_status:
-        lines.append(f"continuation_status={continuation_status}")
-        lines.append(
-            "completion_evidence="
-            f"{str(bool(facts.get('completion_evidence'))).lower()}"
-        )
-    return "\n".join(lines)

@@ -82,7 +82,7 @@ class ApprovalRequestCapability(BaseCapability):
             phase=Phase.PAUSED,
             governance=Governance.AWAITING_APPROVAL,
             resolution=Resolution.BLOCKED,
-            result_summary=_approval_visible_text(approval),
+            result_summary="",
             error="",
         )
 
@@ -142,6 +142,20 @@ class ApprovalResolveCapability(BaseCapability):
             event_bus=context.event_bus,
         )
         facts = resolved.facts
+        from ..connector_delivery import connector_delivery_from_facts
+
+        delivery = connector_delivery_from_facts(facts)
+        if delivery is not None:
+            return CapabilityResult(
+                ok=resolved.ok,
+                action="connector_outbound",
+                message=delivery.text,
+                run_id=str(facts.get("run_id") or ""),
+                facts=facts,
+                terminal=False,
+                error_reason="" if resolved.ok else _approval_error_reason(facts),
+                yields_control=True,
+            )
         continuation_status = str(facts.get("continuation_status") or "")
         yields_control = continuation_status in {
             str(LoopTerminalState.PAUSED),
@@ -174,19 +188,6 @@ def _canonical_args_json(value: Any) -> str:
     filtered = {k: v for k, v in value.items() if k not in {"_thought", "thought", "reasoning", "rationale"}}
     from ..safeguards import redact_secrets_deep
     return json.dumps(redact_secrets_deep(filtered), ensure_ascii=False, sort_keys=True)
-
-
-def _approval_visible_text(approval) -> str:
-    return (
-        "approval_requested\n"
-        f"run_id={approval.run_id}\n"
-        f"approval_id={approval.id}\n"
-        f"action={approval.action}\n"
-        f"approval_code={approval.code}\n"
-        f"requested_tool={approval.requested_tool}\n"
-        f"requested_permission={approval.requested_permission}\n"
-        f"status={approval.status}"
-    )
 
 
 def _approval_facts(approval) -> dict[str, Any]:

@@ -125,8 +125,8 @@ def connector_delivery_from_loop_result(result: Any) -> ConnectorDelivery | None
     return replace(
         delivery,
         delivery_id=loop_run_id or run_id or delivery.delivery_id,
-        run_id=run_id or delivery.run_id,
-        goal_id=goal_id or delivery.goal_id,
+        run_id=delivery.run_id or run_id,
+        goal_id=delivery.goal_id or goal_id,
     )
 
 

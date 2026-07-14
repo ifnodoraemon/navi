@@ -4,12 +4,6 @@ status_tool: connector.telegram.status
 status_description: Return Telegram connector configuration facts without secrets.
 session_alias_prefix: connector:telegram
 local_source: telegram
-approval_template: |
-  Approval is required before execution.
-  {task_line}
-  Approval code: `{code}`
-  {expiry}
-  Reply `{approve_command} {code}` to run it, or `{reject_command} {code}` to cancel.
 approval_commands:
   approve:
     - approve

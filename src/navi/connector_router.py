@@ -164,25 +164,10 @@ class ConnectorRouter:
                 action="connector_outbound",
                 facts=result.facts,
             )
-        # A resumed action may stop at a new approval gate.  Its
-        # ``surface_message`` is deterministic control-plane output carrying
-        # the exact new code.  Returning it directly prevents a responder
-        # model from paraphrasing away that code and making the task
-        # impossible to continue.
-        surface_message = str(result.facts.get("surface_message") or "").strip()
-        if surface_message:
+        if self.runtime is None:
             return ResponseReadyEvent(
                 source_agent="router",
-                text=surface_message,
-                source=message.source,
-                peer_id=message.peer_id,
-                sender_id=message.sender_id,
-                facts=result.facts,
-            )
-        if self.runtime is None or not _approval_result_needs_model_response(result.facts):
-            return ResponseReadyEvent(
-                source_agent="router",
-                text=result.message,
+                text="",
                 source=message.source,
                 peer_id=message.peer_id,
                 sender_id=message.sender_id,
@@ -203,7 +188,7 @@ class ConnectorRouter:
                 role="responder",
             )
         except Exception:
-            text = result.message
+            text = ""
         return ResponseReadyEvent(
             source_agent="router",
             text=text,
@@ -212,18 +197,6 @@ class ConnectorRouter:
             sender_id=message.sender_id,
             facts=result.facts,
         )
-
-
-def _approval_result_needs_model_response(facts: dict[str, object]) -> bool:
-    """Keep approval state deterministic; model-synthesize resumed task outcomes."""
-    continuation_status = str(facts.get("continuation_status") or "")
-    return bool(facts.get("loop_run_id")) and continuation_status not in {
-        "",
-        "queued",
-        "unavailable",
-    }
-
-
 def _parse_connector_approval_command(message: ConnectorMessage) -> tuple[str, str] | None:
     # This is a control-envelope check, not natural-language intent parsing.
     # Only a connector-declared command plus an approval code may bypass the

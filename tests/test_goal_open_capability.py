@@ -17,6 +17,7 @@ from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 from navi.trace import TraceStore
+from navi.actions.specs import ACTION_SPECS
 
 
 def _command(script: str) -> str:
@@ -33,6 +34,14 @@ def _context(home: Path, *, trace_id: str = "") -> CapabilityContext:
         workspace=str(home),
         trace_id=trace_id,
     )
+
+
+def test_goal_open_description_is_factual_capability_metadata() -> None:
+    spec = next(spec for spec in ACTION_SPECS if spec.name == "goal.open")
+
+    assert "current capability and permission envelope" in spec.description
+    assert "Use this when" not in spec.description
+    assert "full system capabilities" not in spec.description
 
 
 class _PlanningProvider:
@@ -164,9 +173,9 @@ async def test_goal_open_capability_auto_start_uses_runtime_state_graph(tmp_path
     assert "side_effect_recorded" in conditions
     assert transitions[-1]["decision"] == "converged"
     assert transitions[-1]["evidence"]["condition"] == "checker_passed"
-    assert {
-        item["evidence"]["loop_run_id"] for item in transitions
-    } == {resumed.facts["loop_run_id"]}
+    assert {item["evidence"]["loop_run_id"] for item in transitions} == {
+        resumed.facts["loop_run_id"]
+    }
 
 
 @pytest.mark.asyncio

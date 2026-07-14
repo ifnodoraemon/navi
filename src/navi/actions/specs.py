@@ -32,7 +32,10 @@ ACTION_SPECS = [
         name="goal.open",
         capability_class="goal",
         execution_contexts=("turn", API_CONTEXT),
-        description="""Delegate tasks to the local background engine. Use this when you lack permissions for a user request (like file access or terminal commands) or when a task is complex. The backend engine has full system capabilities.""",
+        description=(
+            "Create a durable, foreground, manual, or scheduled Goal/LoopRun "
+            "within the current capability and permission envelope."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -273,7 +276,8 @@ ACTION_SPECS = [
                 "goal_id": {"type": "string"},
                 "loop_run_id": {"type": "string"},
                 "loop_terminal_state": {"type": "string"},
-                "surface_message": {"type": "string"},
+                "result_summary": {"type": "string"},
+                "pending_approval": {"type": "object"},
                 "reason": {"type": "string"},
                 "approval_resolution": {"type": "object"},
             },

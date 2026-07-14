@@ -93,7 +93,7 @@ class PlannedCapabilityStep:
     tool: str
     args: dict[str, Any]
     permission: str
-    model_role: str = "executor"
+    model_role: str
     reason: str = ""
     used_memory_ids: tuple[str, ...] = ()
     memory_activation: dict[str, Any] = field(default_factory=dict)
@@ -164,7 +164,6 @@ class SemanticCheckDecision:
         return self.to_facts()
 
 
-
 class CapabilityRecoveryPort:
     """Recovery node port that turns failed capability executions into retry facts."""
 
@@ -190,7 +189,11 @@ class CapabilityRecoveryPort:
             "facts": executed.facts,
         }
         return ReflectionDecision(
-            retry=retryable and state.attempt < spec.retry_policy.max_attempts,
+            # ``retryable`` describes the failed capability call, not the
+            # whole objective. Return the failure facts to PLAN while the loop
+            # budget remains so the model can choose a different capability,
+            # refine its arguments, or report the blocker.
+            retry=state.attempt < spec.retry_policy.max_attempts,
             reason_code="execution_failed" if retryable else "execution_not_retryable",
             facts={
                 "recovery": recovery_facts,
@@ -205,6 +208,7 @@ class CapabilityRecoveryPort:
                 ),
             },
         )
+
 
 class RecoveryReflectorPort:
     """Reflector node port that turns failed evidence into retry facts."""
@@ -529,8 +533,7 @@ def _planner_conversation_context(
 
     raw_text = "\n\n".join(_format_conversation_message(msg) for msg in relevant)
     should_compact = (
-        len(relevant) > PLANNER_CONTEXT_RECENT_MESSAGES
-        or len(raw_text) > PLANNER_CONTEXT_MAX_CHARS
+        len(relevant) > PLANNER_CONTEXT_RECENT_MESSAGES or len(raw_text) > PLANNER_CONTEXT_MAX_CHARS
     )
     if not should_compact:
         return PlannerConversationContext(
@@ -545,7 +548,7 @@ def _planner_conversation_context(
         )
 
     recent = relevant[-PLANNER_CONTEXT_RECENT_MESSAGES:]
-    older = relevant[: -PLANNER_CONTEXT_RECENT_MESSAGES]
+    older = relevant[:-PLANNER_CONTEXT_RECENT_MESSAGES]
     preview_items = older[-PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES:]
     preview_lines = [
         "Conversation context was compacted before planner intake.",
@@ -1233,13 +1236,32 @@ class DurableStateGraphRunner:
                 continue
             inputs = json.loads(checkpoint.inputs_json or "{}")
             raw = inputs.get("planned_capability") if isinstance(inputs, dict) else None
-            if not isinstance(raw, dict):
+            if raw is None:
+                # EXECUTE also persists transition/gate checkpoints. They do
+                # not claim to carry a model plan, so keep looking for the
+                # most recent checkpoint that does.
                 continue
+            if not isinstance(raw, dict):
+                return None
+            tool = raw.get("tool")
+            args = raw.get("args")
+            permission = raw.get("permission")
+            model_role = raw.get("model_role")
+            if (
+                not isinstance(tool, str)
+                or not tool.strip()
+                or not isinstance(args, dict)
+                or not isinstance(permission, str)
+                or not permission.strip()
+                or not isinstance(model_role, str)
+                or not model_role.strip()
+            ):
+                return None
             return PlannedCapabilityStep(
-                tool=str(raw.get("tool") or ""),
-                args=dict(raw.get("args") or {}),
-                permission=str(raw.get("permission") or "read"),
-                model_role=str(raw.get("model_role") or "executor"),
+                tool=tool.strip(),
+                args=dict(args),
+                permission=permission.strip(),
+                model_role=model_role.strip(),
                 reason=str(raw.get("reason") or ""),
                 used_memory_ids=tuple(str(item) for item in raw.get("used_memory_ids") or ()),
                 memory_activation=dict(raw.get("memory_activation") or {}),
@@ -1362,7 +1384,11 @@ class DurableStateGraphRunner:
             )
         if checker_report.accepted:
             has_required_steps = any(step.required for step in spec.verification_ladder)
-            if not has_required_steps and not is_terminal and state.attempt < spec.retry_policy.max_attempts:
+            if (
+                not has_required_steps
+                and not is_terminal
+                and state.attempt < spec.retry_policy.max_attempts
+            ):
                 state = self._transition(
                     state,
                     node=LoopNode.PLAN,
@@ -1402,7 +1428,7 @@ class DurableStateGraphRunner:
                         self.harness.release_workspace_locks(
                             owner_run_id=state.run_id,
                             resource=lock_resource,
-                    )
+                        )
                 if merge_result.status == MergeStatus.CONFLICTED:
                     self._compensate_side_effects(state, collected_evidence)
                     state = self._transition(
@@ -1873,9 +1899,7 @@ def _transition_loop_decision(
         step_id=checkpoint_id,
         goal_ids=(to_state.goal_id,),
         progress_signature=str(
-            evidence.get("progress_signature")
-            or to_state.evidence.get("progress_signature")
-            or ""
+            evidence.get("progress_signature") or to_state.evidence.get("progress_signature") or ""
         ),
         checker_results=checker_results,
         gate_results=gate_results,
@@ -2018,10 +2042,15 @@ def _transition_failure_domain(
         return TraceFailureDomain.LOOP_NO_PROGRESS
     if condition in {"checker_failed", "checker_rejected", "no_route_available"}:
         return TraceFailureDomain.CHECKER_BLOCKED
-    if condition.startswith("resource_") or condition == "side_effect_commit_required" or terminal in {
-        str(LoopTerminalState.PAUSED),
-        str(LoopTerminalState.WAITING_APPROVAL),
-    }:
+    if (
+        condition.startswith("resource_")
+        or condition == "side_effect_commit_required"
+        or terminal
+        in {
+            str(LoopTerminalState.PAUSED),
+            str(LoopTerminalState.WAITING_APPROVAL),
+        }
+    ):
         return TraceFailureDomain.SAFEGUARD_POLICY
     if terminal in {
         str(LoopTerminalState.FAILED),
@@ -2071,16 +2100,19 @@ def _transition_side_effect(evidence: dict[str, Any]) -> dict[str, Any]:
     facts = executor.get("facts")
     if not isinstance(facts, dict):
         return {}
-    has_explicit_side_effect = any(
-        key in facts
-        for key in (
-            "side_effect_scope",
-            "side_effect_state",
-            "side_effect_artifact",
-            "side_effect_commit",
-            "side_effect_compensate",
+    has_explicit_side_effect = (
+        any(
+            key in facts
+            for key in (
+                "side_effect_scope",
+                "side_effect_state",
+                "side_effect_artifact",
+                "side_effect_commit",
+                "side_effect_compensate",
+            )
         )
-    ) or str(executor.get("action") or "") == "connector_outbound"
+        or str(executor.get("action") or "") == "connector_outbound"
+    )
     if not has_explicit_side_effect:
         return {}
     scope = str(facts.get("side_effect_scope") or "")
@@ -2195,11 +2227,7 @@ def _progress_signature(
         "entity_id",
         "source_path",
     )
-    stable_facts = {
-        key: executed.facts[key]
-        for key in stable_fact_keys
-        if key in executed.facts
-    }
+    stable_facts = {key: executed.facts[key] for key in stable_fact_keys if key in executed.facts}
     payload = {
         "tool": planned.tool,
         "args": planned.args,

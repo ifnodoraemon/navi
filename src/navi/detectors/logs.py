@@ -33,6 +33,9 @@ class ServiceLogDetector:
         state_updates: dict[str, Any] = {}
         project_path = context.project_path
         project_data = context.project_data
+        watchers = project_data.get("watchers")
+        if not isinstance(watchers, dict) or watchers.get("logs") is not True:
+            return events, state_updates
         log_dirs = [Path(project_path), Path(project_path) / "logs", Path(project_path) / "log"]
         for log_dir in log_dirs:
             if not log_dir.exists():
@@ -61,9 +64,7 @@ class ServiceLogDetector:
                         state_updates[log_key] = new_last_size
                         continue
 
-                    error_fingerprint = hashlib.sha256(
-                        "\n".join(error_lines).encode()
-                    ).hexdigest()
+                    error_fingerprint = hashlib.sha256("\n".join(error_lines).encode()).hexdigest()
                     fp_key = f"last_err_fp_{log_rel_path}"
                     last_fingerprint = project_data.get(fp_key, "")
                     if error_fingerprint == last_fingerprint:
@@ -82,10 +83,6 @@ class ServiceLogDetector:
                                 "matched_error_lines": error_lines,
                             },
                             state_updates={
-                                log_key: new_last_size,
-                                fp_key: error_fingerprint,
-                            },
-                            suppressed_state_updates={
                                 log_key: new_last_size,
                                 fp_key: error_fingerprint,
                             },

@@ -13,6 +13,8 @@ from navi.connector_delivery import ConnectorDelivery, connector_delivery_client
 from navi.event_bus import ResponseReadyEvent
 from navi.goals import GoalStore
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
+from navi.loop_contracts import LoopTerminalState
+from navi.loop_runs import LoopRunStore
 from navi.runtime import AgentRuntime
 from navi.runs import Run, RunStore
 from navi.trace import TraceStore
@@ -28,6 +30,87 @@ class NoModelCalls:
 
     def list_roles(self) -> list[str]:
         return []
+
+
+class WatchNotificationProvider:
+    def __init__(self, *, notify: bool, message: str) -> None:
+        self.notify = notify
+        self.message = message
+        self.calls: list[tuple[str, list[Any], dict[str, Any]]] = []
+
+    async def complete_for(self, role: str, messages: list[Any], **kwargs: Any) -> str:
+        self.calls.append((role, messages, kwargs))
+        return json.dumps({"notify": self.notify, "message": self.message})
+
+    def list_roles(self) -> list[str]:
+        return ["notification"]
+
+
+class BareApprovedFileProvider:
+    """Model path for a file request followed by a bare approval turn."""
+
+    def __init__(self, target: Path) -> None:
+        self.target = target
+        self.approval_run_id = ""
+        self.planner_calls = 0
+        self.calls: list[str] = []
+
+    async def complete_for(self, role: str, messages: list[Any], **kwargs: Any) -> str:
+        del messages, kwargs
+        self.calls.append(role)
+        if role == "planner":
+            self.planner_calls += 1
+            if self.planner_calls == 1:
+                return json.dumps(
+                    {
+                        "syscalls": [
+                            {
+                                "tool": "channel.send_file",
+                                "permission": "write",
+                                "args": {
+                                    "path": str(self.target),
+                                    "text": "这是你要的文件。",
+                                },
+                                "model_role": "executor",
+                                "reason": "deliver the requested file",
+                            }
+                        ]
+                    }
+                )
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "approval.resolve",
+                            "permission": "prepare",
+                            "args": {
+                                "decision": "approve",
+                                "run_id": self.approval_run_id,
+                            },
+                            "model_role": "executor",
+                            "reason": "apply the user's explicit approval",
+                        }
+                    ]
+                }
+            )
+        if role == "checker":
+            return json.dumps(
+                {
+                    "passed": True,
+                    "should_continue": False,
+                    "evidence_summary": "delivery contract is ready",
+                }
+            )
+        if role == "responder":
+            raise AssertionError("structured delivery must not be replaced by model prose")
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "executor", "checker", "responder"]
+
+    def usage_for(self, role: str) -> dict[str, Any]:
+        del role
+        return {}
 
 
 @pytest.mark.asyncio
@@ -260,7 +343,9 @@ async def test_background_text_does_not_execute_legacy_media_directive(tmp_path:
     )
     events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8").splitlines()
     assert not any('"event": "reply.media.sent"' in line for line in events)
-    assert any('"event": "background.sent"' in line and '"media_count": 0' in line for line in events)
+    assert any(
+        '"event": "background.sent"' in line and '"media_count": 0' in line for line in events
+    )
 
 
 @pytest.mark.asyncio
@@ -353,16 +438,19 @@ async def test_realtime_file_delivery_records_success_only_after_transport(
         facts={"connector_delivery": contract.to_dict()},
     )
 
-    assert await service.handle_update(
-        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
-        WeixinUpdate(
-            message_id="msg-delivery-success",
-            peer_id="wx-user",
-            sender_id="wx-user",
-            text="发送报告",
-            context_token="ctx",
-        ),
-    ) is True
+    assert (
+        await service.handle_update(
+            WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
+            WeixinUpdate(
+                message_id="msg-delivery-success",
+                peer_id="wx-user",
+                sender_id="wx-user",
+                text="发送报告",
+                context_token="ctx",
+            ),
+        )
+        is True
+    )
 
     recorded = GoalStore(tmp_path).latest_delivery(goal.id)
     assert recorded["state_transition"] == "delivered"
@@ -375,6 +463,93 @@ async def test_realtime_file_delivery_records_success_only_after_transport(
     ]
     assert len(egress) == 1
     assert egress[0].ok is True
+
+
+@pytest.mark.asyncio
+async def test_bare_approval_delivery_closes_original_and_transport_loops(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "approved-report.md"
+    report.write_text("approved report\n", encoding="utf-8")
+    provider = BareApprovedFileProvider(report)
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        runtime=runtime,
+    )
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "send approved report",
+            "workspace": str(tmp_path),
+            "allowed_capabilities": ["channel.send_file"],
+        },
+        permission="prepare",
+        context=CapabilityContext(
+            home=tmp_path,
+            source="weixin",
+            peer_id="wx-user",
+            sender_id="wx-user",
+            permission_ceiling="write",
+            workspace=str(tmp_path),
+            trace_id="request-approved-report",
+        ),
+    )
+    provider.approval_run_id = opened.run_id
+    approval = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
+    assert approval is not None
+    assert opened.facts["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL
+
+    client = CaptureWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=runtime,
+        project_dir=tmp_path,
+        client=client,
+    )
+    try:
+        handled = await service.handle_update(
+            WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
+            WeixinUpdate(
+                message_id="bare-approved-delivery",
+                peer_id="wx-user",
+                sender_id="wx-user",
+                text="批准",
+                context_token="ctx",
+            ),
+        )
+    finally:
+        await service.ingress.event_bus.shutdown()
+
+    assert handled is True
+    assert len(client.files) == 1
+    assert client.files[0]["file_path"] == report.resolve()
+    assert [message["text"] for message in client.messages] == ["这是你要的文件。"]
+    original_run = RunStore(tmp_path).get(opened.run_id)
+    assert original_run is not None
+    assert original_run.phase == Phase.ENDED
+    assert original_run.resolution == Resolution.SUCCESS
+    original_loop = LoopRunStore(tmp_path).get_run(opened.facts["loop_run_id"])
+    assert original_loop is not None
+    assert original_loop.terminal_state == LoopTerminalState.CONVERGED
+    assert LoopRunStore(tmp_path).list_active() == []
+    goals = GoalStore(tmp_path).list(limit=10)
+    assert len(goals) == 2
+    assert all(goal.phase == Phase.ENDED for goal in goals)
+    assert all(goal.resolution == Resolution.SUCCESS for goal in goals)
+    assert all(
+        RunStore(tmp_path).get(goal.run_id).resolution == Resolution.SUCCESS for goal in goals
+    )
+
+    decisions = [
+        json.loads(event.output_json)
+        for event in TraceStore(tmp_path).list_loop_decisions("bare-approved-delivery")
+    ]
+    conditions = [str(item.get("evidence", {}).get("condition") or "") for item in decisions]
+    assert "approval_required" not in conditions
+    assert "responder" not in provider.calls
 
 
 @pytest.mark.asyncio
@@ -599,3 +774,75 @@ async def test_background_watch_without_surface_text_does_not_record_sent_reply(
     events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8").splitlines()
     assert any('"event": "background.skipped"' in line for line in events)
     assert not any('"event": "background.sent"' in line for line in events)
+
+
+@pytest.mark.asyncio
+async def test_background_watch_notification_is_model_owned_and_fact_bound(tmp_path: Path):
+    client = CaptureWeixinClient()
+    provider = WatchNotificationProvider(
+        notify=True,
+        message="app.py 有新的未提交修改。",
+    )
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(home_channel="wx-home"),
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.daemon = StaticDaemon(
+        tasks=[],
+        watch_results=[
+            {
+                "message": "runtime-authored text must not be sent",
+                "workspace": str(tmp_path),
+                "facts": {
+                    "kind": "git_status_changed",
+                    "changed_files": ["M app.py"],
+                },
+            }
+        ],
+    )
+
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    assert [message["text"] for message in client.messages] == ["app.py 有新的未提交修改。"]
+    assert provider.calls[0][0] == "notification"
+    assert "runtime-authored text must not be sent" not in provider.calls[0][1][-1].content
+    assert "git_status_changed" in provider.calls[0][1][-1].content
+    assert provider.calls[0][2]["output_schema"]["name"] == "background_notification"
+    trace_store = TraceStore(tmp_path)
+    role_events = [
+        event
+        for trace_id in trace_store.list_trace_ids(limit=20)
+        for event in trace_store.list_events(trace_id)
+        if event.model_role == "notification"
+    ]
+    assert len(role_events) == 1
+    assert role_events[0].phase == "agent.role_result"
+
+
+@pytest.mark.asyncio
+async def test_background_watch_respects_model_decision_not_to_notify(tmp_path: Path):
+    client = CaptureWeixinClient()
+    provider = WatchNotificationProvider(notify=False, message="")
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(home_channel="wx-home"),
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.daemon = StaticDaemon(
+        tasks=[],
+        watch_results=[{"facts": {"kind": "port_went_offline", "port": 8000}}],
+    )
+
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    assert client.messages == []
+    assert provider.calls[0][0] == "notification"

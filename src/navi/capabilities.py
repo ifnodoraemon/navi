@@ -423,7 +423,7 @@ class CapabilityRegistry:
             run = runs.update_run(
                 run.id,
                 plan_summary=f"capability_approval:{name}:{permission}:{args_json}",
-                result_summary=_approval_visible_text(approval),
+                result_summary="",
                 error="",
             ) or run
             transition = "created"
@@ -561,16 +561,7 @@ class CapabilityRegistry:
             phase=Phase.PAUSED,
             governance=Governance.AWAITING_APPROVAL,
             resolution=Resolution.BLOCKED,
-            result_summary=(
-                "approval_requested\n"
-                f"run_id={self.governed_run_id or ''}\n"
-                f"approval_id={approval.id}\n"
-                f"action={approval.action}\n"
-                f"approval_code={approval.code}\n"
-                f"requested_tool={name}\n"
-                f"requested_permission={permission}\n"
-                f"status={APPROVAL_STATUS_PENDING}"
-            ),
+            result_summary="",
             error="",
         )
         facts = {
@@ -677,19 +668,6 @@ def _canonical_args_json(value: dict[str, Any]) -> str:
         filtered = value or {}
 
     return json.dumps(redact_secrets_deep(filtered), ensure_ascii=False, sort_keys=True)
-
-
-def _approval_visible_text(approval) -> str:
-    return (
-        "approval_requested\n"
-        f"run_id={approval.run_id}\n"
-        f"approval_id={approval.id}\n"
-        f"action={approval.action}\n"
-        f"approval_code={approval.code}\n"
-        f"requested_tool={approval.requested_tool}\n"
-        f"requested_permission={approval.requested_permission}\n"
-        f"status={approval.status}"
-    )
 
 
 def build_capability_registry(

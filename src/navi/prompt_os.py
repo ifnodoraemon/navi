@@ -271,7 +271,10 @@ def assemble_fact_response_system_prompt() -> PromptAssembly:
                 "fact_response.boundary",
                 (
                     "Generate the user-facing reply from the supplied facts only. "
-                    "Do not invent missing state, next actions, or hidden errors."
+                    "Do not invent missing state, next actions, or hidden errors. "
+                    "When an approval fact is pending, preserve its exact code, requested "
+                    "tool, requested permission, and pending status in the reply; do not "
+                    "claim that approval was granted or that the action completed."
                 ),
             ),
         ),
@@ -298,6 +301,42 @@ def assemble_fact_response_turn_input(
                 "VERIFIED FACTS",
                 "turn_input",
                 "runtime.final_facts",
+                json.dumps(facts, ensure_ascii=False, sort_keys=True, default=str),
+                trusted=False,
+                mutable=True,
+            ),
+        ),
+    )
+
+
+def assemble_notification_system_prompt() -> PromptAssembly:
+    return PromptAssembly(
+        "notification_system",
+        (
+            PromptBlock(
+                "NOTIFICATION DECISION BOUNDARY",
+                "stable",
+                "notification.boundary",
+                (
+                    "Decide whether the verified background event warrants a user "
+                    "notification. If it does, write concise connector-appropriate text "
+                    "using only the supplied facts. Do not invent causes, actions, hidden "
+                    "state, or completion. Return the structured notify/message decision; "
+                    "an empty or low-value event should not be surfaced."
+                ),
+            ),
+        ),
+    )
+
+
+def assemble_notification_turn_input(*, facts: dict[str, Any]) -> PromptAssembly:
+    return PromptAssembly(
+        "notification_turn_input",
+        (
+            PromptBlock(
+                "VERIFIED BACKGROUND FACTS",
+                "turn_input",
+                "runtime.background_facts",
                 json.dumps(facts, ensure_ascii=False, sort_keys=True, default=str),
                 trusted=False,
                 mutable=True,

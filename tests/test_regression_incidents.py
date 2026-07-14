@@ -242,12 +242,15 @@ async def test_connector_approval_command_returns_explicit_unresolved_fact(tmp_p
     class ApprovalProvider:
         def __init__(self):
             self.calls = 0
+            self.prompt = ""
 
         async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
             self.calls += 1
-            raise AssertionError("connector approval control envelope should not call the model")
+            assert role == "responder"
+            self.prompt = messages[-1].content
+            return "没有找到对应的待审批请求。"
         def list_roles(self) -> list[str]:
-            return ["planner"]
+            return ["planner", "responder"]
 
     ingress = ConnectorIngressRuntime(
         home=tmp_path,
@@ -268,9 +271,9 @@ async def test_connector_approval_command_returns_explicit_unresolved_fact(tmp_p
     finally:
         await ingress.event_bus.shutdown()
 
-    assert response.text.startswith("approval_not_resolved\n")
-    assert "reason=approval_code_not_found" in response.text
-    assert ingress.agent.runtime.provider.calls == 0
+    assert response.text == "没有找到对应的待审批请求。"
+    assert '"reason": "approval_code_not_found"' in ingress.agent.runtime.provider.prompt
+    assert ingress.agent.runtime.provider.calls == 1
 
 
 @pytest.mark.asyncio

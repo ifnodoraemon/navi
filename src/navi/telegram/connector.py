@@ -30,7 +30,6 @@ def _load_spec() -> ConnectorSpec:
         approval_reject_commands=tuple(
             str(item) for item in approval_commands.get("reject") or ()
         ),
-        approval_template=str(raw.get("approval_template") or ""),
     )
 
 

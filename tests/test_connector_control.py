@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -168,7 +169,7 @@ class _FollowupApprovalProvider:
         self.calls: list[str] = []
 
     async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
-        del messages, kwargs
+        del kwargs
         self.calls.append(role)
         if role == "planner":
             self.planner_calls += 1
@@ -237,7 +238,10 @@ class _FollowupApprovalProvider:
                 }
             )
         if role == "responder":
-            raise AssertionError("a follow-up approval code must not be model-paraphrased")
+            prompt = messages[-1].content
+            code_match = re.search(r'"code":\s*"(\d+)"', prompt)
+            assert code_match is not None
+            return f"发送文件需要再次批准，审批码 {code_match.group(1)}。"
         raise AssertionError(f"unexpected role: {role}")
 
     def list_roles(self) -> list[str]:
@@ -277,12 +281,16 @@ async def test_connector_approval_command_resolves_matching_pending_approval(tmp
     class ApprovalProvider:
         def __init__(self):
             self.calls = 0
+            self.prompt = ""
 
         async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
             self.calls += 1
-            raise AssertionError("connector approval control envelope should not call the model")
+            assert role == "responder"
+            self.prompt = messages[-1].content
+            return "审批已记录，但原任务没有可续跑的执行状态。"
+
         def list_roles(self) -> list[str]:
-            return ["planner"]
+            return ["planner", "responder"]
 
     ingress = ConnectorIngressRuntime(
         home=tmp_path,
@@ -303,13 +311,12 @@ async def test_connector_approval_command_resolves_matching_pending_approval(tmp
     finally:
         await ingress.event_bus.shutdown()
 
-        assert response.text.startswith("approval_resolved\n")
-        assert f"approval_id={approval.id}" in response.text
-        assert "decision=approve" in response.text
-        assert "status=approved" in response.text
-        assert ingress.agent.runtime.provider.calls == 0
-        print(list(TraceStore(tmp_path).list_events(trace_id="msg-approval")))
-        assert RunStore(tmp_path).get_approval(approval.id).status == "approved"
+    assert response.text == "审批已记录，但原任务没有可续跑的执行状态。"
+    assert f'"approval_id": "{approval.id}"' in ingress.agent.runtime.provider.prompt
+    assert '"decision": "approve"' in ingress.agent.runtime.provider.prompt
+    assert '"status": "approved"' in ingress.agent.runtime.provider.prompt
+    assert ingress.agent.runtime.provider.calls == 1
+    assert RunStore(tmp_path).get_approval(approval.id).status == "approved"
     updated = RunStore(tmp_path).get(run.id)
     assert updated.phase == Phase.PENDING
     assert updated.governance == Governance.APPROVED
@@ -443,10 +450,10 @@ async def test_connector_explicit_approval_surfaces_the_next_exact_gate(tmp_path
     assert second.id != first.id
     assert second.requested_tool == "channel.send_file"
     assert response is not None
-    assert response.text.startswith("approval_requested\n")
-    assert f"approval_code={second.code}" in response.text
-    assert "requested_tool=channel.send_file" in response.text
-    assert "responder" not in provider.calls
+    assert response.text == f"发送文件需要再次批准，审批码 {second.code}。"
+    assert response.facts["pending_approval"]["id"] == second.id
+    assert RunStore(tmp_path).get(opened.run_id).result_summary == ""
+    assert provider.calls[-1] == "responder"
     assert TraceStore(tmp_path).evaluate_trace("approve-locate-explicit").outcome == "success"
 
 
@@ -506,10 +513,10 @@ async def test_connector_bare_approval_surfaces_the_next_exact_gate(tmp_path: Pa
     assert second.id != first.id
     assert second.requested_tool == "channel.send_file"
     assert response is not None
-    assert response.text.startswith("approval_requested\n")
-    assert f"approval_code={second.code}" in response.text
-    assert "requested_tool=channel.send_file" in response.text
-    assert "responder" not in provider.calls
+    assert response.text == f"发送文件需要再次批准，审批码 {second.code}。"
+    assert response.facts["pending_approval"]["id"] == second.id
+    assert RunStore(tmp_path).get(opened.run_id).result_summary == ""
+    assert provider.calls[-1] == "responder"
     assert TraceStore(tmp_path).evaluate_trace("approve-locate-bare").outcome == "success"
 
 
@@ -646,10 +653,13 @@ async def test_connector_approval_command_returns_not_found_fact(tmp_path):
     class ApprovalProvider:
         def __init__(self):
             self.calls = 0
+            self.prompt = ""
 
         async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
             self.calls += 1
-            raise AssertionError("connector approval control envelope should not call the model")
+            assert role == "responder"
+            self.prompt = messages[-1].content
+            return "没有找到对应的待审批请求。"
         def list_roles(self) -> list[str]:
             return ["planner", "responder"]
 
@@ -672,9 +682,9 @@ async def test_connector_approval_command_returns_not_found_fact(tmp_path):
     finally:
         await ingress.event_bus.shutdown()
 
-    assert response.text.startswith("approval_not_resolved\n")
-    assert "reason=approval_code_not_found" in response.text
-    assert ingress.agent.runtime.provider.calls == 0
+    assert response.text == "没有找到对应的待审批请求。"
+    assert '"reason": "approval_code_not_found"' in ingress.agent.runtime.provider.prompt
+    assert ingress.agent.runtime.provider.calls == 1
 
 
 @pytest.mark.asyncio

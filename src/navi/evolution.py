@@ -11,10 +11,8 @@ from typing import Any, List
 
 from .db import connect
 from .graph import GraphStore
-from .json_utils import json_object
-from .loop import TracePhase
 from .paths import db_paths
-from .runs import Run, RunStore
+from .runs import RunStore
 
 logger = logging.getLogger(__name__)
 
@@ -133,10 +131,7 @@ GOVERNANCE_EVENT_TYPES: frozenset[str] = frozenset(
 
 def known_ledger_target_type(target_type: str) -> bool:
     """Whether ``target_type`` is a declared evolution target or governance event."""
-    return (
-        known_evolution_target(target_type)
-        or target_type in GOVERNANCE_EVENT_TYPES
-    )
+    return known_evolution_target(target_type) or target_type in GOVERNANCE_EVENT_TYPES
 
 
 # Data-driven map of which spec-file targets persist to (subdir, suffix) on apply.
@@ -148,64 +143,6 @@ _SPEC_FILE_TARGETS: dict[str, tuple[str, str]] = {
     "memory_schema": ("specs", ".yaml"),
     "eval_case": ("evals", ".json"),
 }
-
-
-def _summarize_trace_events(events: list[Any]) -> str:
-    lines: list[str] = []
-    for event in events:
-        if event.phase == TracePhase.TURN_START:
-            message = _json_field(event.input_json, "message")
-            if message:
-                lines.append(f"user: {message}")
-        elif event.phase == TracePhase.PLANNER_SYSCALL:
-            details = json_object(event.output_json)
-            tool = str(details.get("tool") or event.tool or "").strip()
-            reason = str(details.get("reason") or event.message or "").strip()
-            if tool:
-                lines.append(f"planner selected {tool}: {reason}")
-        elif event.phase == TracePhase.CAPABILITY_RESULT:
-            outcome = "ok" if event.ok else "failed"
-            lines.append(f"capability {event.tool} {outcome}: {event.message}".strip())
-        elif event.phase == TracePhase.TURN_FINAL:
-            lines.append(f"assistant: {event.message}")
-    return "\n".join(line for line in lines if line)[:12000]
-
-
-def _json_field(raw: str, field: str) -> str:
-    value = json_object(raw).get(field)
-    return str(value).strip() if value is not None else ""
-
-
-def _daily_journey_eval_schema() -> dict[str, Any]:
-    return {
-        "name": "daily_journey_eval",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "id": {"type": "string"},
-                "user_goal": {"type": "string"},
-                "steps": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "user": {"type": "string"},
-                            "expect": {
-                                "type": "object",
-                                "additionalProperties": True,
-                            },
-                        },
-                        "required": ["user", "expect"],
-                    },
-                },
-            },
-            "required": ["id", "user_goal", "steps"],
-        },
-    }
 
 
 class EvolutionLedger:
@@ -584,9 +521,7 @@ class EvolutionLedger:
         """
         if proposal.status != "proposed":
             raise ValueError(f"cannot apply proposal in status: {proposal.status}")
-        target = next(
-            (t for t in EVOLUTION_TARGETS if t.target_type == proposal.target_type), None
-        )
+        target = next((t for t in EVOLUTION_TARGETS if t.target_type == proposal.target_type), None)
         if target and target.permissions_can_expand:
             if proposal.required_approval_level not in ("L3", "L4"):
                 raise ValueError("permission-expanding proposals require L3/L4 approval level")
@@ -616,80 +551,9 @@ class EvolutionEngine:
         self.graph = GraphStore(home)
         self.runs = RunStore(home)
 
-        # Jarvis Memory components
-        from .config import load_config
-        from .provider import build_provider
         from .memory import MemoryStore
 
-        config = load_config(home)
-        self.provider = build_provider(config.model)
         self.memory = MemoryStore(home)
-
-    async def reflect_run(self, task: Run, *, success: bool) -> list[EvolutionEvent]:
-        events: list[EvolutionEvent] = []
-        reason = "task_reflection_success" if success else "task_reflection_failure"
-        events.append(self._update_graph(task, success=success, reason=reason))
-
-
-        return self.ledger.list_for_task(task.id)
-
-    async def extract_evals_from_session(self, session_id: str, *, run_id: str = "") -> None:
-        from navi.evals import load_daily_journey_eval_dataset
-        from navi.provider import ChatMessage
-        from navi.trace import TraceStore
-        import yaml
-
-        events = TraceStore(self.home).list_events_for_run_or_session(
-            run_id=run_id,
-            session_id=session_id,
-            limit=200,
-        )
-        if not events:
-            return
-
-        trace_summary = _summarize_trace_events(events)
-        if not trace_summary:
-            return
-
-        prompt = (
-            "Extract one daily user journey eval from these Navi trace facts. "
-            "Use only facts present in the trace. Do not invent hidden state.\n\n"
-            f"{trace_summary}"
-        )
-        response = await self.provider.complete_for(
-            "planner",
-            [ChatMessage(role="user", content=prompt)],
-            output_schema=_daily_journey_eval_schema(),
-        )
-        if not response.strip():
-            return
-
-        extracted = json.loads(response)
-        if not isinstance(extracted, dict) or not extracted.get("steps"):
-            return
-
-        evals_path = self.home.parent / "evals" / "auto_captured_journeys.yaml"
-        before = evals_path.read_text(encoding="utf-8") if evals_path.exists() else ""
-        if evals_path.exists():
-            data = load_daily_journey_eval_dataset(evals_path)
-        else:
-            data = {"version": 1, "journeys": []}
-        data["journeys"].append(extracted)
-        after = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
-        # FP-5: record the ledger event BEFORE the file side effect lands, so a
-        # crash between the two never leaves an unaudited change. Mirrors the
-        # apply_proposal ledger-before-side-effect ordering.
-        self.ledger.record(
-            run_id=run_id,
-            target_type="eval_case",
-            target_id=str(extracted.get("id") or session_id),
-            reason="journey_eval_auto_captured",
-            before=before,
-            after=after,
-        )
-        evals_path.parent.mkdir(parents=True, exist_ok=True)
-        evals_path.write_text(after, encoding="utf-8")
-        logger.info("extracted daily eval from session %s run %s", session_id, run_id)
 
     def apply_proposal(self, proposal_id: str) -> EvolutionEvent | None:
         proposal = self.ledger.get_proposal(proposal_id)
@@ -717,7 +581,9 @@ class EvolutionEngine:
                 target_id=proposal.target_id,
                 reason="proposal_apply_side_effect_failed",
                 before=event.after,
-                after=json.dumps({"error_type": type(exc).__name__, "error": str(exc)}, sort_keys=True),
+                after=json.dumps(
+                    {"error_type": type(exc).__name__, "error": str(exc)}, sort_keys=True
+                ),
             )
             raise
         self.ledger.mark_applied(proposal_id, event.id)
@@ -734,8 +600,7 @@ class EvolutionEngine:
             # Declared evolution targets that have no apply side effect must
             # fail loudly rather than recording a no-op event (principle 1.2).
             raise ValueError(
-                f"proposal apply has no side-effect handler for "
-                f"target_type={proposal.target_type}"
+                f"proposal apply has no side-effect handler for target_type={proposal.target_type}"
             )
         subdir, suffix = spec_target
         spec_path = self.home / subdir / f"{proposal.target_id}{suffix}"
@@ -825,29 +690,3 @@ class EvolutionEngine:
             elif spec_path.exists():
                 spec_path.unlink()
         return self.ledger.mark_rolled_back(event_id)
-
-    def _update_graph(self, task: Run, *, success: bool, reason: str) -> EvolutionEvent:
-        name = task.workspace.strip()
-        if not name:
-            raise ValueError(f"Run {task.id} has no workspace")
-        before_node = self.graph.get_by_name("Project", name)
-        before = json.dumps(before_node.data if before_node else {}, sort_keys=True)
-        node = self.graph.upsert(
-            "Project",
-            name,
-            {
-                "path": name,
-                "last_run_id": task.id,
-                "last_status": "success" if success else "failure",
-                "last_prompt": task.prompt,
-            },
-        )
-        after = json.dumps(node.data, sort_keys=True)
-        return self.ledger.record(
-            run_id=task.id,
-            target_type="graph_node",
-            target_id=node.id,
-            reason=reason,
-            before=before,
-            after=after,
-        )

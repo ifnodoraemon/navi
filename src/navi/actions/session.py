@@ -103,7 +103,7 @@ class SessionRequestElevationCapability(BaseCapability):
         task = runs.update_run(
             task.id,
             plan_summary=f"session_elevation:{target_permission}",
-            result_summary=f"approval_code={approval.code}",
+            result_summary="",
         ) or task
         facts = _elevation_facts(
             task_id=task.id,

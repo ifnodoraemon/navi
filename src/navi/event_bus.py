@@ -86,31 +86,10 @@ class RunCompletedEvent(NaviEvent):
 
 
 @dataclass(frozen=True)
-class RunSuspendedEvent(NaviEvent):
-    event_type: str = "run_suspended"
-    run_id: str = ""
-    text: str = ""
-    peer_id: str = ""
-    sender_id: str = ""
-    source: str = ""
-
-
-@dataclass(frozen=True)
 class ActionApprovedEvent(NaviEvent):
     event_type: str = "action_approved"
     run_id: str = ""
     reason: str = ""
-
-
-@dataclass(frozen=True)
-class ActionSuspendedEvent(NaviEvent):
-    event_type: str = "action_suspended"
-    run_id: str = ""
-    reason: str = ""
-    approval_code: str = ""
-    peer_id: str = ""
-    sender_id: str = ""
-    source: str = ""
 
 
 @dataclass(frozen=True)

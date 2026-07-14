@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
 from navi.daemon import SystemDaemon
-from navi.detectors import ServiceLogDetector
+from navi.daemon_types import ProjectEventContext, ProactiveEvent
+from navi.detectors import GitMutationDetector, PortEventDetector, ServiceLogDetector
 from navi.graph import GraphStore
 from navi.goals import GoalStore
 from navi.loop_control_service import LoopControlService, OpenGoalRequest
@@ -51,6 +53,75 @@ def test_read_log_diff_without_secrets_is_unchanged(tmp_path: Path) -> None:
 
     assert diff == body
     assert error_lines == []
+
+
+@pytest.mark.asyncio
+async def test_proactive_detectors_require_explicit_project_watchers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def run_inline(function, /, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    # The detector contract is asynchronous; keep this unit test deterministic
+    # and independent from the interpreter's default executor lifecycle.
+    monkeypatch.setattr(asyncio, "to_thread", run_inline)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "service.log").write_text("FATAL: explicit watcher test\n", encoding="utf-8")
+    context = ProjectEventContext(
+        project_path=str(tmp_path),
+        project_data={},
+        has_active_task=False,
+    )
+
+    git_events, git_updates = await GitMutationDetector().detect(context)
+    log_events, log_updates = await ServiceLogDetector().detect(context)
+    port_events, port_updates = await PortEventDetector().detect(context)
+
+    assert git_events == [] and git_updates == {}
+    assert log_events == [] and log_updates == {}
+    assert port_events == [] and port_updates == {}
+
+    watched_context = ProjectEventContext(
+        project_path=str(tmp_path),
+        project_data={"watchers": {"logs": True}},
+        has_active_task=False,
+    )
+    watched_events, _ = await ServiceLogDetector().detect(watched_context)
+    assert [event.facts["kind"] for event in watched_events] == ["log_error_detected"]
+
+
+@pytest.mark.asyncio
+async def test_active_task_defers_event_without_consuming_detector_state(tmp_path: Path) -> None:
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
+    event = ProactiveEvent(
+        source="event_git",
+        message="runtime-authored observation",
+        facts={"kind": "git_status_changed", "changed_files": ["M app.py"]},
+        state_updates={"last_git_status_hash": "new-hash"},
+    )
+    project_data = {"last_git_status_hash": "old-hash"}
+
+    created, changed, deferred_data = await daemon._apply_event_policy(
+        event,
+        project_data,
+        has_active_task=True,
+        workspace=str(tmp_path),
+    )
+
+    assert created is None
+    assert changed is False
+    assert deferred_data == project_data
+
+    created, changed, surfaced_data = await daemon._apply_event_policy(
+        event,
+        deferred_data,
+        has_active_task=False,
+        workspace=str(tmp_path),
+    )
+    assert created is not None
+    assert created["facts"] == event.facts
+    assert changed is True
+    assert surfaced_data["last_git_status_hash"] == "new-hash"
 
 
 def test_daemon_mutation_trace_is_evaluated(tmp_path: Path) -> None:

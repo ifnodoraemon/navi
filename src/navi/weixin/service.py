@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from collections.abc import Callable
@@ -14,9 +15,14 @@ from navi.connector_runtime import (
 )
 from navi.connector_delivery import connector_delivery_from_facts
 from navi.event_bus import ResponseReadyEvent
+from navi.prompt_os import (
+    assemble_notification_system_prompt,
+    assemble_notification_turn_input,
+)
+from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import Run
-from navi.safeguards import redact_secrets
+from navi.safeguards import redact_secrets, redact_secrets_deep
 from navi.daemon import SystemDaemon
 
 from .client import TYPING_START, TYPING_STOP, WeixinClient
@@ -24,6 +30,21 @@ from .config import WeixinConfig
 from .models import WeixinAccount, WeixinUpdate
 
 from .store import ContextTokenStore, WeixinStore
+
+
+_BACKGROUND_NOTIFICATION_SCHEMA = {
+    "name": "background_notification",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "notify": {"type": "boolean"},
+            "message": {"type": "string"},
+        },
+        "required": ["notify", "message"],
+        "additionalProperties": False,
+    },
+}
 
 
 class WeixinService:
@@ -287,9 +308,7 @@ class WeixinService:
                         "error": f"{type(exc).__name__}: {exc}",
                         "media_count": 0,
                         "delivery_id": (
-                            failed_delivery.delivery_id
-                            if failed_delivery is not None
-                            else ""
+                            failed_delivery.delivery_id if failed_delivery is not None else ""
                         ),
                     },
                     message="Channel delivery failed",
@@ -341,9 +360,7 @@ class WeixinService:
                     "action": response.action,
                     "media_count": delivery["media_count"],
                     "delivery_id": (
-                        connector_delivery.delivery_id
-                        if connector_delivery is not None
-                        else ""
+                        connector_delivery.delivery_id if connector_delivery is not None else ""
                     ),
                 },
                 message="Delivered response to channel",
@@ -375,6 +392,7 @@ class WeixinService:
             )
             try:
                 from navi.trace import TraceStore, TracePhase
+
                 TraceStore(self.home).add_event(
                     trace_id=update.message_id,
                     phase=TracePhase.RESPONSE_READY,
@@ -449,6 +467,7 @@ class WeixinService:
                 )
                 continue
             run_id = str(result.get("run_id") or "")
+            trace_id = run_id or uuid.uuid4().hex
             task = self.daemon.runs.get(run_id) if run_id else None
             peer_id = str(result.get("peer_id") or "") or (
                 task.peer_id if task else self.config.home_channel
@@ -459,7 +478,13 @@ class WeixinService:
                 {
                     "event": "watch_result" if not task else "watch_task_prepared",
                     "task": asdict(task) if task else None,
-                    "raw_result": result.get("message") or result.get("observation") or "",
+                    "event_facts": result.get("facts")
+                    if isinstance(result.get("facts"), dict)
+                    else {},
+                    "workspace": str(result.get("workspace") or ""),
+                    "trace_id": trace_id,
+                    "run_id": run_id,
+                    "peer_id": peer_id,
                 },
                 fallback=str(result.get("message") or result.get("observation") or ""),
             )
@@ -491,15 +516,17 @@ class WeixinService:
             )
             try:
                 from navi.trace import TraceStore, TracePhase
-                import uuid
-                trace_id = run_id or uuid.uuid4().hex
+
                 TraceStore(self.home).add_event(
                     trace_id=trace_id,
                     phase=TracePhase.CHANNEL_EGRESS,
                     run_id=run_id,
                     source=self.local_source,
                     peer_id=peer_id,
-                    output_data={"response": text, "background_event": "watch_result" if not task else "watch_task_prepared"},
+                    output_data={
+                        "response": text,
+                        "background_event": "watch_result" if not task else "watch_task_prepared",
+                    },
                     message="Sent background cron result to channel",
                 )
             except Exception:
@@ -544,6 +571,7 @@ class WeixinService:
             self._record_background_delivery(task, delivery, text=text)
             try:
                 from navi.trace import TraceStore, TracePhase
+
                 TraceStore(self.home).add_event(
                     trace_id=task.id,
                     phase=TracePhase.CHANNEL_EGRESS,
@@ -580,11 +608,84 @@ class WeixinService:
 
     async def _compose_background_message(self, facts: dict, *, fallback: str) -> str:
         if facts.get("event") == "watch_result":
-            raw_result = str(facts.get("raw_result") or "").strip()
-            if raw_result:
-                return redact_secrets(raw_result)
+            event_facts = facts.get("event_facts")
+            if not isinstance(event_facts, dict) or not event_facts:
+                return ""
+            verified_facts = redact_secrets_deep(
+                {
+                    "event": "watch_result",
+                    "workspace": str(facts.get("workspace") or ""),
+                    "facts": event_facts,
+                }
+            )
+            try:
+                response = await self.runtime.provider.complete_for(
+                    "notification",
+                    [
+                        ChatMessage(
+                            role="system",
+                            content=assemble_notification_system_prompt().render(),
+                        ),
+                        ChatMessage(
+                            role="user",
+                            content=assemble_notification_turn_input(facts=verified_facts).render(),
+                        ),
+                    ],
+                    output_schema=_BACKGROUND_NOTIFICATION_SCHEMA,
+                )
+                decision = json.loads(response)
+                notify = decision.get("notify")
+                message = decision.get("message")
+                if not isinstance(notify, bool) or not isinstance(message, str):
+                    raise ValueError("notification decision has invalid field types")
+                self._record_notification_role_result(
+                    facts=facts,
+                    verified_facts=verified_facts,
+                    notify=notify,
+                    message=message,
+                )
+                if not notify:
+                    return ""
+                return redact_secrets(message.strip())
+            except Exception as exc:
+                self.record_event(
+                    "background.notification.error",
+                    trace_id=str(facts.get("trace_id") or ""),
+                    run_id=str(facts.get("run_id") or ""),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                return ""
         stripped = fallback.strip()
         return redact_secrets(stripped)
+
+    def _record_notification_role_result(
+        self,
+        *,
+        facts: dict,
+        verified_facts: dict,
+        notify: bool,
+        message: str,
+    ) -> None:
+        try:
+            from navi.trace import TracePhase, TraceStore
+
+            TraceStore(self.home).add_event(
+                trace_id=str(facts.get("trace_id") or "") or TraceStore.new_trace_id(),
+                phase=TracePhase.AGENT_ROLE_RESULT,
+                run_id=str(facts.get("run_id") or ""),
+                source=self.local_source,
+                peer_id=str(facts.get("peer_id") or ""),
+                model_role="notification",
+                input_data=verified_facts,
+                output_data={"notify": notify, "message": message},
+                message="Notification model evaluated verified background facts",
+            )
+        except Exception as exc:
+            self.record_event(
+                "background.notification.trace_error",
+                trace_id=str(facts.get("trace_id") or ""),
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     async def _send_reply(
         self,
@@ -633,25 +734,9 @@ class WeixinService:
         return {"media_count": sent_media, "text_preview": outbound_text[:120]}
 
     def _task_surface_text(self, task: Run) -> str:
-        # awaiting_approval carries the re-approval prompt (with the fresh code)
-        # in result_summary; surface it verbatim rather than the empty error.
-        if task.governance == "awaiting_approval" or task.resolution == "blocked":
-            from navi.connector_runtime import format_approval_notification
-            import re
-            code_match = re.search(r"approval_code=(\d+)", task.result_summary or "")
-            code = code_match.group(1) if code_match else ""
-            rendered = format_approval_notification(
-                home=self.home,
-                source=self.local_source,
-                approval_code=code,
-                run_id=task.id,
-            )
-            if rendered:
-                return rendered
-            return (task.result_summary or "").strip()
         if task.phase == "ended" and task.resolution == "success":
             return (task.result_summary or "").strip()
-        return (task.error or "").strip()
+        return ""
 
     def _resolve_account(self) -> WeixinAccount:
         if self.config.account_id:
@@ -702,6 +787,7 @@ def _redact_event_facts(facts: dict) -> dict:
     that name a secret outright are masked regardless of value.
     """
     from ..safeguards import _REDACT_FIELD_NAMES, redact_secrets
+
     redacted = {}
     free_text_keys = ("text_preview", "error", "message", "raw_result", "detail")
     for key, value in facts.items():

@@ -20,7 +20,6 @@ class ConnectorSpec:
     local_source: str
     approval_approve_commands: tuple[str, ...] = field(default_factory=tuple)
     approval_reject_commands: tuple[str, ...] = field(default_factory=tuple)
-    approval_template: str = ""
 
 
 @dataclass(frozen=True)

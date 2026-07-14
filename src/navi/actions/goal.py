@@ -395,20 +395,14 @@ def _promote_outbound_facts(result: Any) -> dict[str, Any]:
         return {}
     action = str(capability_result.get("action") or "")
     cap_facts = capability_result.get("facts")
-    if not isinstance(cap_facts, dict):
-        return {}
-    if action == "approval":
-        # Approval continuation can immediately encounter the next exact
-        # governance gate.  That gate is rendered by the control plane and is
-        # authoritative user-facing state (including the new approval code).
-        # Never pass it through the responder model: paraphrasing can drop the
-        # only value the user needs to continue the task.
-        surface_message = str(cap_facts.get("surface_message") or "").strip()
-        if surface_message:
-            return {
-                "responded_message": surface_message,
-                "responded_action": "approval",
-            }
+    if action == "approval" and isinstance(cap_facts, dict):
+        pending = (
+            cap_facts.get("pending_approval")
+            or cap_facts.get("current_approval")
+            or cap_facts.get("approval")
+        )
+        if isinstance(pending, dict):
+            return {"pending_approval": dict(pending)}
     if action == "chat" or action == "ask":
         message = str(capability_result.get("message") or "")
         if not message:

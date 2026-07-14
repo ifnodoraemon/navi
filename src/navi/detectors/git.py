@@ -30,6 +30,9 @@ class GitMutationDetector:
         events: list[ProactiveEvent] = []
         project_path = context.project_path
         project_data = context.project_data
+        watchers = project_data.get("watchers")
+        if not isinstance(watchers, dict) or watchers.get("git") is not True:
+            return events, {}
         git_dir = Path(project_path) / ".git"
         if not git_dir.exists():
             return events, {}
@@ -73,7 +76,6 @@ class GitMutationDetector:
                         "changed_files": status_text.splitlines(),
                     },
                     state_updates={"last_git_status_hash": current_hash},
-                    suppressed_state_updates={"last_git_status_hash": current_hash},
                 )
             )
         except (OSError, SubprocessError) as e:

@@ -127,7 +127,7 @@ def _write_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
     )
 
 
-def test_capability_recovery_stops_on_non_retryable_failure() -> None:
+def test_capability_recovery_replans_after_non_retryable_call_failure() -> None:
     spec = _spec(_command("print('ok')"))
     state = LoopRunState(
         run_id="run-non-retryable",
@@ -148,9 +148,28 @@ def test_capability_recovery_stops_on_non_retryable_failure() -> None:
         ),
     )
 
-    assert decision.retry is False
+    assert decision.retry is True
     assert decision.reason_code == "execution_not_retryable"
     assert decision.facts["recovery"]["retryable"] is False
+
+
+def test_checkpoint_restore_rejects_model_fields_missing_from_plan(tmp_path: Path) -> None:
+    spec = _spec(_command("print('ok')"))
+    runner = DurableStateGraphRunner(home=tmp_path)
+    state = runner.store.create_run(spec)
+    runner.store.write_checkpoint(
+        state.run_id,
+        node=LoopNode.EXECUTE,
+        inputs={
+            "planned_capability": {
+                "tool": "test.run",
+                "args": {},
+            }
+        },
+        state=state.to_dict(),
+    )
+
+    assert runner._planned_step_from_checkpoint(state.run_id) is None
 
 
 def _send_file_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
@@ -225,8 +244,7 @@ class _TraceUsagePlanningProvider(_PlanningProvider):
             "completion_tokens": 5,
             "total_tokens": 18,
             "messages": [
-                {"role": message.role, "content": message.content}
-                for message in messages
+                {"role": message.role, "content": message.content} for message in messages
             ],
             "response": response,
         }
@@ -412,7 +430,9 @@ async def test_durable_state_graph_async_plan_execute_uses_llm_and_capability_po
     )
 
     result = await runner.run_async(
-        _write_spec(_command("from pathlib import Path; assert Path('app.py').read_text() == 'agent\\n'")),
+        _write_spec(
+            _command("from pathlib import Path; assert Path('app.py').read_text() == 'agent\\n'")
+        ),
         workspace=tmp_path,
     )
 
@@ -539,12 +559,8 @@ async def test_state_graph_traces_planner_usage(tmp_path: Path) -> None:
     )
 
     events = trace_store.list_events("trace-planner-usage")
-    planner_start = [
-        event for event in events if event.phase == str(TracePhase.PLANNER_CALL_START)
-    ]
-    planner_results = [
-        event for event in events if event.phase == str(TracePhase.PLANNER_SYSCALL)
-    ]
+    planner_start = [event for event in events if event.phase == str(TracePhase.PLANNER_CALL_START)]
+    planner_results = [event for event in events if event.phase == str(TracePhase.PLANNER_SYSCALL)]
     output = json.loads(planner_results[0].output_json)
     input_payload = json.loads(planner_results[0].input_json)
     assert result.terminal_state == LoopTerminalState.CONVERGED
@@ -918,7 +934,9 @@ async def test_durable_state_graph_reflects_checker_failure_and_replans(tmp_path
         ),
     )
     spec = replace(
-        _write_spec(_command("from pathlib import Path; assert Path('app.py').read_text() == 'agent\\n'")),
+        _write_spec(
+            _command("from pathlib import Path; assert Path('app.py').read_text() == 'agent\\n'")
+        ),
         retry_policy=RetryPolicy(max_attempts=2),
     )
 

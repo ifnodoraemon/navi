@@ -8,7 +8,6 @@ import socket
 from typing import Any
 
 from ..daemon_types import (
-    DEFAULT_DEV_PORTS,
     DEFAULT_PORT_PROBE_TIMEOUT_SECONDS,
     EventBatch,
     ProjectEventContext,
@@ -28,9 +27,8 @@ class PortEventDetector:
         events: list[ProactiveEvent] = []
         state_updates: dict[str, Any] = {}
         project_data = context.project_data
-        dev_ports = project_data.get("dev_ports", [])
-        if not dev_ports and context.use_default_ports:
-            dev_ports = DEFAULT_DEV_PORTS
+        watchers = project_data.get("watchers")
+        dev_ports = watchers.get("ports", []) if isinstance(watchers, dict) else []
         if not dev_ports:
             return events, state_updates
 
@@ -78,7 +76,6 @@ class PortEventDetector:
                             "active": is_active,
                         },
                         state_updates={port_key: is_active},
-                        suppressed_state_updates={port_key: is_active},
                     )
                 )
                 continue
@@ -89,9 +86,7 @@ class PortEventDetector:
 
     @staticmethod
     def _port_probe_timeout(project_data: dict[str, Any]) -> float:
-        raw = project_data.get(
-            "port_probe_timeout_seconds", DEFAULT_PORT_PROBE_TIMEOUT_SECONDS
-        )
+        raw = project_data.get("port_probe_timeout_seconds", DEFAULT_PORT_PROBE_TIMEOUT_SECONDS)
         try:
             return max(0.5, min(float(raw), 10.0))
         except (TypeError, ValueError):

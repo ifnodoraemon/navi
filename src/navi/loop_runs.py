@@ -250,13 +250,29 @@ class LoopRunStore:
             target = LoopTerminalState.CONVERGED if success else LoopTerminalState.FAILED
             if str(current.terminal_state) == str(target):
                 return current
-            if str(current.terminal_state) != str(LoopTerminalState.PAUSED):
+            action = str(current.evidence.get("action") or "")
+            facts = current.evidence.get("facts")
+            nested_delivery = (
+                facts.get("connector_delivery") if isinstance(facts, dict) else None
+            )
+            is_delivery_pause = (
+                str(current.terminal_state) == str(LoopTerminalState.PAUSED)
+                and action == "connector_outbound"
+            )
+            # Older approval continuations could wrap a real connector delivery
+            # as another approval gate.  A transport receipt is authoritative
+            # evidence that this envelope completed and may reconcile that
+            # durable misclassification without re-running the side effect.
+            is_legacy_delivery_envelope = (
+                str(current.terminal_state) == str(LoopTerminalState.WAITING_APPROVAL)
+                and action == "approval"
+                and isinstance(nested_delivery, dict)
+            )
+            if not is_delivery_pause and not is_legacy_delivery_envelope:
                 raise ValueError(
-                    "external delivery receipt requires a paused loop: "
-                    f"{current.terminal_state}"
+                    "external delivery receipt requires a delivery pause or envelope: "
+                    f"{current.terminal_state}/{action}"
                 )
-            if str(current.evidence.get("action") or "") != "connector_outbound":
-                raise ValueError("paused loop is not waiting for connector delivery")
             now = time.time()
             next_state = replace(
                 current,

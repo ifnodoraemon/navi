@@ -656,16 +656,12 @@ class GoalStore:
             "run_id": run_id,
             "delivery_id": delivery_id,
         }
-        if delivery_id:
-            from .loop_runs import LoopRunStore
-
-            loop_runs = LoopRunStore(self.home)
-            if loop_runs.get_run(delivery_id) is not None:
-                loop_runs.complete_external_delivery(
-                    delivery_id,
-                    success=True,
-                    evidence=evidence,
-                )
+        self._complete_delivery_loops(
+            goal_id=goal.id,
+            delivery_id=delivery_id,
+            success=True,
+            evidence=evidence,
+        )
         from .runs import RunStore
 
         runs = RunStore(self.home)
@@ -730,16 +726,12 @@ class GoalStore:
             "goal_id": goal.id,
             "run_id": run_id,
         }
-        if delivery_id:
-            from .loop_runs import LoopRunStore
-
-            loop_runs = LoopRunStore(self.home)
-            if loop_runs.get_run(delivery_id) is not None:
-                loop_runs.complete_external_delivery(
-                    delivery_id,
-                    success=False,
-                    evidence=evidence,
-                )
+        self._complete_delivery_loops(
+            goal_id=goal.id,
+            delivery_id=delivery_id,
+            success=False,
+            evidence=evidence,
+        )
         from .runs import RunStore
 
         runs = RunStore(self.home)
@@ -765,6 +757,76 @@ class GoalStore:
             trace_id=trace_id or run_id,
             evidence=evidence,
         )
+
+    def _complete_delivery_loops(
+        self,
+        *,
+        goal_id: str,
+        delivery_id: str,
+        success: bool,
+        evidence: dict[str, Any],
+    ) -> None:
+        """Close the transport envelope and its originating delivery loop."""
+        from .loop_contracts import LoopTerminalState
+        from .loop_runs import LoopRunStore
+
+        loop_runs = LoopRunStore(self.home)
+        candidate_ids = {delivery_id} if delivery_id else set()
+        for loop_run in loop_runs.list_by_goal(goal_id, limit=100):
+            if str(loop_run.terminal_state) != str(LoopTerminalState.PAUSED):
+                continue
+            if str(loop_run.evidence.get("action") or "") != "connector_outbound":
+                continue
+            candidate_ids.add(loop_run.run_id)
+        for loop_run_id in sorted(candidate_ids):
+            loop_run = loop_runs.get_run(loop_run_id)
+            if loop_run is None:
+                continue
+            loop_runs.complete_external_delivery(
+                loop_run_id,
+                success=success,
+                evidence=evidence,
+            )
+            if loop_run.goal_id != goal_id:
+                self._settle_delivery_envelope_goal(
+                    goal_id=loop_run.goal_id,
+                    success=success,
+                    evidence=evidence,
+                )
+
+    def _settle_delivery_envelope_goal(
+        self,
+        *,
+        goal_id: str,
+        success: bool,
+        evidence: dict[str, Any],
+    ) -> None:
+        """Settle the user-turn Goal/Run that transported another goal's delivery."""
+        goal = self.get(goal_id)
+        if goal is None or not goal.run_id:
+            return
+        from .runs import RunStore
+
+        runs = RunStore(self.home)
+        current = runs.get(goal.run_id)
+        if current is None:
+            return
+        envelope_evidence = {
+            **evidence,
+            "transport_envelope_goal_id": goal_id,
+            "origin_goal_id": str(evidence.get("goal_id") or ""),
+        }
+        updated = runs.update_run(
+            current.id,
+            phase=Phase.ENDED,
+            governance=Governance.NONE,
+            acceptance=Acceptance.ACCEPTED if success else Acceptance.REJECTED,
+            resolution=Resolution.SUCCESS if success else Resolution.FAILED,
+            result_summary=current.result_summary if success else "",
+            error="" if success else str(evidence.get("error") or "delivery failed"),
+        )
+        if updated is not None:
+            self.update_for_run(updated, evidence=envelope_evidence)
 
     def latest_delivery(self, goal_id: str) -> dict[str, Any]:
         with connect(self.db_path) as conn:
