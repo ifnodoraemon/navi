@@ -15,7 +15,6 @@ class ModelSyscall:
     tool: str
     permission: str = "read"
     args: dict[str, Any] = field(default_factory=dict)
-    model_role: str = "responder"
     message: str = ""
     confidence: float = 0.0
     reason: str = ""
@@ -34,7 +33,6 @@ class ModelSyscallPlanner:
         conversation_context: str = "",
         runtime_facts: dict[str, Any] | None = None,
         permission_ceiling: str = "write",
-        model_roles: list[str] | None = None,
         durable_constraints: str = "",
         memory_context: str = "",
     ) -> list[ModelSyscall]:
@@ -44,7 +42,6 @@ class ModelSyscallPlanner:
             conversation_context=conversation_context,
             runtime_facts=runtime_facts,
             permission_ceiling=permission_ceiling,
-            model_roles=model_roles,
             durable_constraints=durable_constraints,
             memory_context=memory_context,
         )
@@ -159,7 +156,6 @@ class ModelSyscallPlanner:
             tool=tool,
             permission=str(data["permission"]).strip(),
             args=args,
-            model_role=str(data["model_role"]).strip(),
             message=message,
             confidence=_confidence(data.get("confidence")),
             reason=str(data.get("reason") or ""),
@@ -197,10 +193,6 @@ def _single_syscall_schema() -> dict[str, Any]:
             },
             "permission": {"type": "string", "enum": ["read", "network", "prepare", "write"]},
             "args": {"type": "object", "description": "Arguments for the selected capability."},
-            "model_role": {
-                "type": "string",
-                "description": "Declared role for response synthesis.",
-            },
             "confidence": {"type": "number"},
             "reason": {
                 "type": "string",
@@ -212,7 +204,7 @@ def _single_syscall_schema() -> dict[str, Any]:
                 "description": "Recalled memory ids this syscall decision actually depends on.",
             },
         },
-        "required": ["tool", "permission", "args", "model_role"],
+        "required": ["tool", "permission", "args"],
         "additionalProperties": False,
     }
 

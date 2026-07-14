@@ -7,7 +7,6 @@ from .memory import MemoryStore
 from .operating_context import OperatingContext
 from .prompting import build_system_prompt
 from .provider import ChatMessage, ModelPool
-from .agent_roles import list_agent_role_names
 from .skills import SkillStore
 
 
@@ -45,9 +44,6 @@ class AgentRuntime:
 
     def usage_for(self, role: str) -> dict:
         return self.provider.usage_for(role)
-
-    def model_roles(self) -> list[str]:
-        return list_agent_role_names(self.provider.list_roles())
 
     def build_messages(
         self,

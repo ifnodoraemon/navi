@@ -62,7 +62,6 @@ class _PlanningProvider:
                             "mode": "overwrite",
                             "create_dirs": True,
                         },
-                        "model_role": "executor",
                         "reason": "write the requested file before verification",
                     }
                 ]

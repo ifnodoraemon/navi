@@ -41,6 +41,16 @@ AGENT_ROLES_SPEC: Any = {
             ],
             "parallel_safe": False,
         },
+        "checker": {
+            "purpose": "Judge capability evidence against the objective and acceptance criteria without choosing the next action or writing user-facing copy.",
+            "when_to_use": [
+                "Semantic verification after a capability result.",
+            ],
+            "evidence_required": [
+                "capability.result trace event with the checker verdict and evidence summary."
+            ],
+            "parallel_safe": False,
+        },
         "notification": {
             "purpose": "Convert verified task results into "
             "connector-appropriate notification text.",

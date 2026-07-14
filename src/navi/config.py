@@ -36,7 +36,9 @@ class ModelConfig:
     def get_role_params(self, role: str) -> dict[str, Any]:
         defaults = {
             "planner": {"temperature": 0.0, "max_tokens": 4096},
+            "checker": {"temperature": 0.0, "max_tokens": 2048},
             "responder": {"temperature": 0.6, "max_tokens": 16384},
+            "notification": {"temperature": 0.2, "max_tokens": 2048},
             "consolidator": {"temperature": 0.1, "max_tokens": 2048},
         }
         base = defaults.get(role, {"temperature": 0.3, "max_tokens": 8192})

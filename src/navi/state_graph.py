@@ -93,7 +93,6 @@ class PlannedCapabilityStep:
     tool: str
     args: dict[str, Any]
     permission: str
-    model_role: str
     reason: str = ""
     used_memory_ids: tuple[str, ...] = ()
     memory_activation: dict[str, Any] = field(default_factory=dict)
@@ -103,7 +102,6 @@ class PlannedCapabilityStep:
             "tool": self.tool,
             "args": dict(self.args),
             "permission": self.permission,
-            "model_role": self.model_role,
             "reason": self.reason,
             "used_memory_ids": list(self.used_memory_ids),
             "memory_activation": dict(self.memory_activation),
@@ -283,6 +281,8 @@ class LLMSemanticCheckerPort:
         *,
         executed: ExecutedCapabilityStep,
     ) -> SemanticCheckDecision:
+        from .control import current_time_facts
+
         response = await self.runtime.provider.complete_for(
             "checker",
             [
@@ -303,6 +303,7 @@ class LLMSemanticCheckerPort:
                         {
                             "objective": spec.goal.objective,
                             "acceptance_criteria": list(spec.goal.acceptance_criteria),
+                            "current_time": current_time_facts(),
                             "trigger_facts": _goal_trigger_facts(spec),
                             "attempt": state.attempt,
                             "max_attempts": spec.retry_policy.max_attempts,
@@ -743,7 +744,6 @@ class ModelCapabilityPlannerPort:
                 tool="system.planner_error",
                 permission="read",
                 args={"reason": "no_allowed_capabilities", "allowed_capabilities": sorted(allowed)},
-                model_role="planner",
                 reason="LoopSpec allowed no planner-visible capabilities",
             )
         session_id = spec.goal.metadata.get("session_id") or ""
@@ -766,16 +766,15 @@ class ModelCapabilityPlannerPort:
             tools=tools,
             conversation_context=conversation_context,
             runtime_facts={
-                "loop_spec": spec.to_dict(),
-                "loop_run_state": state.to_dict(),
-                "objective_evidence": dict(evidence),
-                "attempt_history": list(evidence.get("attempt_history") or []),
+                "loop_spec": _planner_loop_spec_facts(spec),
+                "loop_run_state": _planner_loop_run_facts(state),
+                "objective_evidence": _planner_objective_evidence(evidence),
+                "attempt_history": _planner_attempt_history(evidence),
                 "conversation_compaction": conversation_facts,
                 "memory_context": memory_context.facts,
                 "ingress_facts": _refreshed_ingress_facts(policy_context),
             },
             permission_ceiling=spec.goal.permission_ceiling,
-            model_roles=self.runtime.model_roles(),
             durable_constraints=_durable_constraints(self.runtime, spec),
             memory_context=memory_context.text,
         )
@@ -784,7 +783,6 @@ class ModelCapabilityPlannerPort:
                 tool="system.planner_error",
                 permission="read",
                 args={"reason": "planner_must_return_exactly_one_syscall", "count": len(syscalls)},
-                model_role="planner",
                 reason="StateGraph executes exactly one syscall per PLAN node",
             )
         selected = syscalls[0]
@@ -802,7 +800,6 @@ class ModelCapabilityPlannerPort:
             tool=selected.tool,
             args=dict(selected.args),
             permission=selected.permission,
-            model_role=selected.model_role,
             reason=selected.reason,
             used_memory_ids=used_memory_ids,
             memory_activation=memory_activation,
@@ -1246,22 +1243,18 @@ class DurableStateGraphRunner:
             tool = raw.get("tool")
             args = raw.get("args")
             permission = raw.get("permission")
-            model_role = raw.get("model_role")
             if (
                 not isinstance(tool, str)
                 or not tool.strip()
                 or not isinstance(args, dict)
                 or not isinstance(permission, str)
                 or not permission.strip()
-                or not isinstance(model_role, str)
-                or not model_role.strip()
             ):
                 return None
             return PlannedCapabilityStep(
                 tool=tool.strip(),
                 args=dict(args),
                 permission=permission.strip(),
-                model_role=model_role.strip(),
                 reason=str(raw.get("reason") or ""),
                 used_memory_ids=tuple(str(item) for item in raw.get("used_memory_ids") or ()),
                 memory_activation=dict(raw.get("memory_activation") or {}),
@@ -2199,6 +2192,13 @@ def _refreshed_ingress_facts(context: CapabilityContext) -> dict[str, Any]:
     from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 
     facts = dict(context.runtime_facts or {})
+    intent_facts = facts.get("intent_facts")
+    if isinstance(intent_facts, dict) and "current_state" in intent_facts:
+        # Intent intake and planner execution happen at different times. Keep
+        # intent provenance, but expose only the freshly rebuilt state below.
+        facts["intent_facts"] = {
+            key: value for key, value in intent_facts.items() if key != "current_state"
+        }
     surface = SurfaceContext(
         home=context.home,
         source=context.source,
@@ -2210,6 +2210,52 @@ def _refreshed_ingress_facts(context: CapabilityContext) -> dict[str, Any]:
     )
     facts["current_state"] = current_state_facts(CurrentStateBuilder(context.home).build(surface))
     return facts
+
+
+def _planner_loop_spec_facts(spec: LoopSpec) -> dict[str, Any]:
+    """Expose semantic loop contracts without serializing the runtime graph."""
+    return {
+        "id": spec.id,
+        "goal_id": spec.goal_id,
+        "goal": spec.goal.to_dict(),
+        "allowed_capabilities": list(spec.allowed_capabilities),
+        "verification_ladder": [item.to_dict() for item in spec.verification_ladder],
+        "retry_policy": spec.retry_policy.to_dict(),
+        "budget_policy": spec.budget_policy.to_dict(),
+    }
+
+
+def _planner_loop_run_facts(state: LoopRunState) -> dict[str, Any]:
+    facts = state.to_dict()
+    evidence = facts.pop("evidence", {})
+    facts["evidence_keys"] = sorted(evidence) if isinstance(evidence, dict) else []
+    return facts
+
+
+def _planner_objective_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    # Attempt history is exposed once, in compact form. The latest capability
+    # and checker facts remain complete so the model can decide what to do next.
+    return {key: value for key, value in evidence.items() if key != "attempt_history"}
+
+
+def _planner_attempt_history(evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for raw in evidence.get("attempt_history") or []:
+        if not isinstance(raw, dict):
+            continue
+        facts = raw.get("facts")
+        compact.append(
+            {
+                key: value
+                for key, value in raw.items()
+                if key not in {"facts", "message"}
+            }
+            | {
+                "fact_keys": sorted(facts) if isinstance(facts, dict) else [],
+                "message_present": bool(str(raw.get("message") or "").strip()),
+            }
+        )
+    return compact
 
 
 def _progress_signature(

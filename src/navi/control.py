@@ -614,15 +614,8 @@ class CurrentStateBuilder:
 
 
 def current_state_facts(state: CurrentState) -> dict[str, Any]:
-    now = time.time()
-    local_now = datetime.fromtimestamp(now).astimezone()
     return {
-        "current_time": {
-            "unix": now,
-            "iso": local_now.isoformat(),
-            "timezone": local_now.tzname() or "",
-            "utc_offset": local_now.strftime("%z"),
-        },
+        "current_time": current_time_facts(),
         "surface": state.surface,
         "peer_id": state.peer_id,
         "sender_id": state.sender_id,
@@ -677,6 +670,18 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
         "vault_handle_state": [handle.to_prompt_dict() for handle in state.vault_handle_state],
         "connector_state": dict(state.connector_state),
         "recent_deliveries": [dict(item) for item in state.recent_deliveries],
+    }
+
+
+def current_time_facts(*, now: float | None = None) -> dict[str, Any]:
+    """Return the runtime clock as explicit model-facing facts."""
+    timestamp = time.time() if now is None else now
+    local_now = datetime.fromtimestamp(timestamp).astimezone()
+    return {
+        "unix": timestamp,
+        "iso": local_now.isoformat(),
+        "timezone": local_now.tzname() or "",
+        "utc_offset": local_now.strftime("%z"),
     }
 
 

@@ -43,7 +43,6 @@ class _CapturePlanner:
                         "tool": "respond",
                         "permission": "read",
                         "args": {"message": "state inspected"},
-                        "model_role": "executor",
                         "reason": "respond from refreshed state",
                     }
                 ]
@@ -72,7 +71,6 @@ class _RejectedTerminalResponseProvider:
                             "tool": "respond",
                             "permission": "read",
                             "args": {"message": "I need to stop here."},
-                            "model_role": "executor",
                             "reason": "terminal response",
                         }
                     ]
@@ -110,7 +108,6 @@ class _RepeatedFactProvider:
                             "tool": "directory.list",
                             "permission": "read",
                             "args": {"path": ".", "limit": 10},
-                            "model_role": "executor",
                             "reason": "inspect the same directory",
                         }
                     ]

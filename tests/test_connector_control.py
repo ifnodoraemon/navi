@@ -43,7 +43,6 @@ class _ConnectorDeleteProvider:
                             "cwd": str(self.target.parent),
                             "timeout_seconds": 10,
                         },
-                        "model_role": "executor",
                         "reason": "execute the exact approved delete",
                     }
                 ]
@@ -79,7 +78,6 @@ class _BareApprovalProvider(_ConnectorDeleteProvider):
                                     "cwd": str(self.target.parent),
                                     "timeout_seconds": 10,
                                 },
-                                "model_role": "executor",
                                 "reason": "request approval for the exact delete",
                             }
                         ]
@@ -95,7 +93,6 @@ class _BareApprovalProvider(_ConnectorDeleteProvider):
                                 "decision": "approve",
                                 "run_id": self.approval_run_id,
                             },
-                            "model_role": "executor",
                             "reason": "apply the user's explicit approval",
                         }
                     ]
@@ -133,7 +130,6 @@ class _ConnectorFileProvider:
                                 "path": str(self.target),
                                 "text": "这是你要的文件。",
                             },
-                            "model_role": "executor",
                             "reason": "deliver the requested file",
                         }
                     ]
@@ -191,7 +187,6 @@ class _FollowupApprovalProvider:
                                     ],
                                     "cwd": str(self.target.parent),
                                 },
-                                "model_role": "executor",
                                 "reason": "locate the requested file",
                             }
                         ]
@@ -208,7 +203,6 @@ class _FollowupApprovalProvider:
                                     "decision": "approve",
                                     "run_id": self.approval_run_id,
                                 },
-                                "model_role": "executor",
                                 "reason": "apply the user's approval",
                             }
                         ]
@@ -224,7 +218,6 @@ class _FollowupApprovalProvider:
                                 "path": str(self.target),
                                 "text": "这是你要的文件。",
                             },
-                            "model_role": "executor",
                             "reason": "send the located file",
                         }
                     ]

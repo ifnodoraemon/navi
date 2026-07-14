@@ -91,7 +91,6 @@ def _file_write_syscall(path: str, content: str) -> dict:
             "mode": "overwrite",
             "create_dirs": True,
         },
-        "model_role": "executor",
         "reason": f"write {path}",
     }
 
@@ -157,6 +156,9 @@ async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
     assert decision.passed is True
     checker_input = json.loads(provider.messages["checker"][-1].content)
     assert checker_input["trigger_facts"] == trigger_facts
+    assert checker_input["current_time"]["unix"] > 0
+    assert checker_input["current_time"]["iso"]
+    assert "utc_offset" in checker_input["current_time"]
 
 
 async def _run_goal_with_approvals(

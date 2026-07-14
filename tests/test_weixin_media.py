@@ -71,7 +71,6 @@ class BareApprovedFileProvider:
                                     "path": str(self.target),
                                     "text": "这是你要的文件。",
                                 },
-                                "model_role": "executor",
                                 "reason": "deliver the requested file",
                             }
                         ]
@@ -87,7 +86,6 @@ class BareApprovedFileProvider:
                                 "decision": "approve",
                                 "run_id": self.approval_run_id,
                             },
-                            "model_role": "executor",
                             "reason": "apply the user's explicit approval",
                         }
                     ]

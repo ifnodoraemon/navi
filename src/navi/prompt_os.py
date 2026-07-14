@@ -6,7 +6,6 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from .agent_roles import list_agent_role_names, list_agent_role_specs
 from .operating_context import OperatingContext, PromptLayer, permission_allows
 from .provider import ChatMessage
 from .specs_data import SYSCALL_PLANNER_SPEC
@@ -133,18 +132,9 @@ def assemble_planner_turn_input(
     conversation_context: str = "",
     runtime_facts: dict[str, Any] | None = None,
     permission_ceiling: str = "write",
-    model_roles: list[str] | None = None,
     durable_constraints: str = "",
     memory_context: str = "",
 ) -> PromptAssembly:
-    model_roles = model_roles or list_agent_role_names()
-    role_names = set(model_roles)
-    role_contracts = [
-        spec.to_prompt_dict()
-        for spec in list_agent_role_specs(model_roles)
-        if spec.name in role_names
-    ]
-
     blocks: list[PromptBlock] = []
     if conversation_context.strip():
         blocks.append(
@@ -220,18 +210,6 @@ def assemble_planner_turn_input(
 
     blocks.extend(
         [
-            PromptBlock(
-                "MODEL ROLES",
-                "manifest",
-                "agent_roles",
-                json.dumps(model_roles, ensure_ascii=False),
-            ),
-            PromptBlock(
-                "MODEL ROLE CONTRACTS",
-                "manifest",
-                "agent_roles",
-                json.dumps(role_contracts, ensure_ascii=False),
-            ),
             PromptBlock(
                 "TOOL MANIFEST",
                 "manifest",

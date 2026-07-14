@@ -50,7 +50,6 @@ class _DeleteGoalProvider:
                             "cwd": str(self.target.parent),
                             "timeout_seconds": 10,
                         },
-                        "model_role": "executor",
                         "reason": "delete the exact requested file",
                     }
                 ]

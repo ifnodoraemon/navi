@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 
 import pytest
 
@@ -42,7 +43,6 @@ class _CapturingPlannerProvider:
                         "tool": "respond",
                         "permission": "read",
                         "args": {"message": "I need one more fact."},
-                        "model_role": "executor",
                         "reason": "ask from current facts",
                     }
                 ]
@@ -304,7 +304,10 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
         "connector.weixin",
         "session-1",
         None,
-        {"connector_message": {"message_id": "message-1"}},
+        {
+            "connector_message": {"message_id": "message-1"},
+            "current_state": {"stale": "x" * 20_000},
+        },
     )
     spec = LoopSpec.from_goal(
         GoalSpec(
@@ -324,7 +327,10 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
             ),
         ),
     )
-    state = LoopRunStore(tmp_path).create_run(spec)
+    state = replace(
+        LoopRunStore(tmp_path).create_run(spec),
+        evidence={"durable_payload": "x" * 20_000},
+    )
     capabilities = CapabilityRegistry(
         home=tmp_path,
         project_dir=tmp_path,
@@ -335,7 +341,25 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
         runtime=runtime,
         capabilities=capabilities,
         context=context,
-    ).plan(spec, state, workspace=tmp_path, evidence={})
+    ).plan(
+        spec,
+        state,
+        workspace=tmp_path,
+        evidence={
+            "capability_result": {"facts": {"latest": "kept"}},
+            "attempt_history": [
+                {
+                    "attempt": 1,
+                    "tool": "web.search",
+                    "args": {"query": "recent jobs"},
+                    "ok": True,
+                    "facts": {"results": ["x" * 20_000]},
+                    "message": "x" * 20_000,
+                    "progress_signature": "sig-1",
+                }
+            ],
+        },
+    )
 
     assert planned.tool == "respond"
     turn_input = provider.messages[-1].content
@@ -346,7 +370,24 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
     )
     assert facts_match is not None
     planner_facts = json.loads(facts_match.group(1))
-    assert planner_facts["ingress_facts"]["intent_facts"] == runtime_facts["intent_facts"]
+    assert "current_state" not in planner_facts["ingress_facts"]["intent_facts"]
+    assert "evidence" not in planner_facts["loop_run_state"]
+    assert planner_facts["loop_run_state"]["evidence_keys"] == ["durable_payload"]
+    assert "attempt_history" not in planner_facts["objective_evidence"]
+    assert planner_facts["objective_evidence"]["capability_result"]["facts"] == {
+        "latest": "kept"
+    }
+    assert planner_facts["attempt_history"] == [
+        {
+            "args": {"query": "recent jobs"},
+            "attempt": 1,
+            "fact_keys": ["results"],
+            "message_present": True,
+            "ok": True,
+            "progress_signature": "sig-1",
+            "tool": "web.search",
+        }
+    ]
     assert planner_facts["ingress_facts"]["current_state"]["current_time"]["unix"] >= (
         runtime_facts["current_state"]["current_time"]["unix"]
     )
@@ -356,6 +397,8 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
     assert planner_facts["ingress_facts"]["intent_facts"]["connector_message"][
         "message_id"
     ] == "message-1"
+    assert "[MODEL ROLES]" not in turn_input
+    assert "[MODEL ROLE CONTRACTS]" not in turn_input
     manifest = json.loads(turn_input.split("[TOOL MANIFEST]\n", 1)[1])
     manifest_names = {item["name"] for item in manifest}
     assert {"respond", "shell.run", "web.search"} <= manifest_names

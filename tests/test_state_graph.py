@@ -213,7 +213,6 @@ class _PlanningProvider:
                             "mode": "overwrite",
                             "create_dirs": True,
                         },
-                        "model_role": "executor",
                         "reason": "write requested file in shadow workspace",
                     }
                 ]
@@ -271,7 +270,6 @@ class _MemoryAwarePlanningProvider(_PlanningProvider):
                 "mode": "overwrite",
                 "create_dirs": True,
             },
-            "model_role": "executor",
             "reason": "write requested file in shadow workspace",
         }
         if self.used_memory_ids:
@@ -298,7 +296,6 @@ class _RetryPlanningProvider:
                             "mode": "overwrite",
                             "create_dirs": True,
                         },
-                        "model_role": "executor",
                     }
                 ]
             }
@@ -327,7 +324,6 @@ class _SendFilePlanningProvider:
                         "tool": "channel.send_file",
                         "permission": "write",
                         "args": {"path": str(self.path)},
-                        "model_role": "executor",
                         "reason": "stage outbound media for connector delivery",
                     }
                 ]
@@ -972,7 +968,6 @@ class _RespondPlanningProvider:
                         "tool": "respond",
                         "permission": "read",
                         "args": {"message": "which investor should I send the resume to?"},
-                        "model_role": "executor",
                         "reason": "objective is blocked by missing recipient identity",
                     }
                 ]

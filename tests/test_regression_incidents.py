@@ -206,7 +206,6 @@ class _PlannerSchemaProvider:
                         "tool": "respond",
                         "permission": "read",
                         "args": {"message": "ok"},
-                        "model_role": "responder",
                     }
                 ]
             }
@@ -401,7 +400,6 @@ def test_anthropic_structured_wrapper_returns_inner_planner_decision():
                     "tool": "goal.state",
                     "permission": "read",
                     "args": {"limit": 10},
-                    "model_role": "responder",
                     "confidence": 1,
                     "reason": "inspect run facts",
                 },
@@ -432,7 +430,7 @@ def test_anthropic_direct_tool_call_is_not_reconstructed_as_planner_decision():
 def test_planner_parser_rejects_markdown_fenced_json():
     decisions = ModelSyscallPlanner._parse_syscalls(
         '```json\n{"tool":"respond","permission":"read","args":{},'
-        '"model_role":"responder","confidence":1,"reason":"done"}\n```'
+        '"confidence":1,"reason":"done"}\n```'
     )
 
     assert isinstance(decisions, list)
@@ -450,7 +448,6 @@ def test_planner_parser_accepts_missing_optional_audit_fields():
                         "tool": "respond",
                         "permission": "read",
                         "args": {"message": "ok"},
-                        "model_role": "responder",
                     }
                 ]
             }
@@ -464,7 +461,7 @@ def test_planner_parser_accepts_missing_optional_audit_fields():
     assert decisions[0].reason == ""
 
 
-def test_planner_parser_rejects_missing_required_schema_fields():
+def test_planner_parser_accepts_without_model_role():
     decisions = ModelSyscallPlanner._parse_syscalls(
         json.dumps(
             {
@@ -481,9 +478,7 @@ def test_planner_parser_rejects_missing_required_schema_fields():
 
     assert isinstance(decisions, list)
     assert len(decisions) == 1
-    assert decisions[0].tool == "system.planner_error"
-    assert decisions[0].reason == "planner decision schema mismatch"
-    assert "$.syscalls[0].model_role is required" in decisions[0].args["schema_errors"]
+    assert decisions[0].tool == "respond"
 
 
 @pytest.mark.asyncio
@@ -504,7 +499,6 @@ async def test_planner_rejects_selected_capability_args_schema_mismatch():
                             "tool": "respond",
                             "permission": "read",
                             "args": {},
-                            "model_role": "responder",
                         }
                     ]
                 }
@@ -545,13 +539,11 @@ def test_planner_parser_parses_multiple_syscalls():
                         "tool": "goal.open",
                         "permission": "prepare",
                         "args": {"objective": "x"},
-                        "model_role": "planner",
                     },
                     {
                         "tool": "respond",
                         "permission": "read",
                         "args": {"message": "done"},
-                        "model_role": "responder",
                     },
                 ]
             }
