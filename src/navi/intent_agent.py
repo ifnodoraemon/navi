@@ -12,7 +12,6 @@ from .event_bus import (
     NaviEvent,
     UserIntentEvent,
 )
-from .request_router import request_router_contract
 from .runtime import AgentRuntime
 
 logger = logging.getLogger("navi.intent")
@@ -61,7 +60,6 @@ class IntentAgent:
             "source_agent": "intent_agent",
             "intent_basis": "current_state_facts",
             "current_state": current_state,
-            "request_router_contract": request_router_contract(),
         }
         if event.facts:
             facts["connector_message"] = event.facts

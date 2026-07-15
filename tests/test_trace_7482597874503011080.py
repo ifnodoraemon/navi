@@ -56,7 +56,7 @@ class _CapturePlanner:
         return {}
 
 
-class _RejectedTerminalResponseProvider:
+class _CorrectedTerminalResponseProvider:
     def __init__(self) -> None:
         self.planner_calls = 0
         self.checker_calls = 0
@@ -64,14 +64,19 @@ class _RejectedTerminalResponseProvider:
     async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
         if role == "planner":
             self.planner_calls += 1
+            message = (
+                "I need to stop here."
+                if self.planner_calls == 1
+                else "The verified answer is 42."
+            )
             return json.dumps(
                 {
                     "syscalls": [
                         {
                             "tool": "respond",
                             "permission": "read",
-                            "args": {"message": "I need to stop here."},
-                            "reason": "terminal response",
+                            "args": {"message": message},
+                            "reason": "candidate response",
                         }
                     ]
                 }
@@ -80,9 +85,12 @@ class _RejectedTerminalResponseProvider:
             self.checker_calls += 1
             return json.dumps(
                 {
-                    "passed": False,
-                    "should_continue": True,
-                    "evidence_summary": "the objective is not complete",
+                    "passed": self.checker_calls == 2,
+                    "evidence_summary": (
+                        "the objective is complete"
+                        if self.checker_calls == 2
+                        else "the objective is not complete"
+                    ),
                 }
             )
         raise AssertionError(f"unexpected role: {role}")
@@ -315,8 +323,8 @@ async def test_planner_rebuilds_current_state_after_approval_changes(tmp_path) -
 
 
 @pytest.mark.asyncio
-async def test_terminal_respond_is_not_overridden_by_checker_retry(tmp_path) -> None:
-    provider = _RejectedTerminalResponseProvider()
+async def test_checker_rejected_response_is_replanned_before_delivery(tmp_path) -> None:
+    provider = _CorrectedTerminalResponseProvider()
     registry = build_capability_registry(
         tmp_path,
         project_dir=tmp_path,
@@ -335,11 +343,12 @@ async def test_terminal_respond_is_not_overridden_by_checker_retry(tmp_path) -> 
         context=CapabilityContext(home=tmp_path, workspace=str(tmp_path)),
     )
 
-    assert provider.planner_calls == 1
-    assert provider.checker_calls == 1
-    assert result.ok is False
-    assert result.facts["loop_terminal_state"] == LoopTerminalState.BLOCKED
-    assert result.facts["responded_message"] == "I need to stop here."
+    assert provider.planner_calls == 2
+    assert provider.checker_calls == 2
+    assert result.ok is True
+    assert result.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
+    assert result.facts["responded_message"] == "The verified answer is 42."
+    assert "I need to stop here." not in result.facts["responded_message"]
 
 
 @pytest.mark.asyncio

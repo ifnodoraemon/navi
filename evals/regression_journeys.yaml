@@ -17,7 +17,7 @@ incidents:
   - id: deepseek_direct_shell_for_error_repair
     covered_by:
       - execution_protocol_error_how_to_fix_prepares_task
-      - tests/live_llm_cases.yaml:regression_execution_protocol_fix_request_uses_delegation
+      - tests/live_llm_cases.yaml:regression_execution_protocol_fix_request_uses_unified_loop
   - id: watch_protocol_verification_must_be_object
     covered_by:
       - tests/test_execution_protocol.py:test_watch_notification_does_not_fail_on_malformed_execution_protocol
@@ -147,32 +147,32 @@ journeys:
             - "Code Navigator"
             - "Memory Curator"
           text_not_contains_any:
-            - "watch.create"
-            - "delegate.spawn"
+            - "goal.open"
+            - "shell.run"
 
   - id: tools_query_lists_tools_not_skills
-    user_goal: Asking for tools should list callable tools and preserve one-shot watch semantics.
+    user_goal: Asking for tools should list capabilities that exist in the current registry.
     steps:
       - user: "你都有哪些工具"
         expect:
           action: tool
           run_count_delta: 0
           text_contains_any:
-            - "watch.create"
-            - "delegate.spawn"
-          text_contains: "kind=once"
+            - "goal.open"
+            - "goal.state"
+          text_contains: "loop_kind"
           text_not_contains_any:
             - "Code Navigator"
             - "Memory Curator"
 
   - id: capability_query_mentions_one_shot_and_recurring
-    user_goal: A broad capability question should be grounded in callable tools and mention one-shot versus recurring reminders.
+    user_goal: A broad capability question should be grounded in callable tools and scheduled-goal semantics.
     steps:
       - user: "你现在可以做什么"
         expect:
           action: tool
           run_count_delta: 0
           text_contains_any:
-            - "kind=once"
-            - "one-shot"
-          text_contains: "kind=recurring"
+            - "goal.open"
+            - "scheduled"
+          text_contains: "cron_schedule"

@@ -365,10 +365,9 @@ def _promote_outbound_facts(result: Any) -> dict[str, Any]:
     contract is connector-neutral so Weixin, email, Feishu, or another adapter
     can implement the same boundary without a channel-specific staging area.
 
-    A ``respond`` capability's message is preserved in
-    ``evidence["responded_message"]`` across the whole loop (even when a
-    later capability overwrites ``capability_result``), so we promote it
-    here too — otherwise the question the model asked never reaches the user.
+    Only an explicitly paused ask or a checker-accepted response is stored in
+    ``evidence["responded_message"]``. Raw capability output is not a reply
+    authority because it may have been rejected by verification.
     """
     state_graph_result = getattr(result, "state_graph_result", None)
     if state_graph_result is None:
@@ -403,9 +402,4 @@ def _promote_outbound_facts(result: Any) -> dict[str, Any]:
         )
         if isinstance(pending, dict):
             return {"pending_approval": dict(pending)}
-    if action == "chat" or action == "ask":
-        message = str(capability_result.get("message") or "")
-        if not message:
-            return {}
-        return {"responded_message": message, "responded_action": action}
     return {}

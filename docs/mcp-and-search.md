@@ -24,9 +24,11 @@ compatible deployment.
 Run `navi doctor` to inspect the effective provider without exposing secrets. Run
 `navi doctor --connectivity` for a real one-result search probe.
 
-Search failures include an `error_reason` and a generic `retryable` fact. A false value stops
-the durable loop from issuing the same call repeatedly when configuration, provider
-exhaustion, or a server-reported error cannot change during that run.
+Search failures include an `error_reason` and a generic `retryable` fact. A false value means
+the same provider call should not be repeated unchanged. The durable loop still exposes the
+failure to the planner, which may choose another capability or arguments, request missing
+configuration, or explain the blocker within the remaining governed budget. Repeated unchanged
+calls are bounded by the runtime's no-progress gate.
 
 ## MCP servers
 

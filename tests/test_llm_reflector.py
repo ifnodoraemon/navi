@@ -151,6 +151,35 @@ async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
             action="respond",
             facts={"responded_message": "Lesson 2: supervised learning"},
         ),
+        evidence={
+            "attempt_history": [
+                {
+                    "attempt": 1,
+                    "tool": "web.search",
+                    "args": {
+                        "query": "lesson progression",
+                        "token": "secret-token",
+                    },
+                    "ok": True,
+                    "action": "tool",
+                    "facts": {"result_count": 2, "provider": "test"},
+                    "message": "sources found",
+                    "error_reason": "",
+                    "terminal": False,
+                },
+                {
+                    "attempt": 2,
+                    "tool": "respond",
+                    "args": {"message": "Lesson 2: supervised learning"},
+                    "ok": True,
+                    "action": "respond",
+                    "facts": {},
+                    "message": "Lesson 2: supervised learning",
+                    "error_reason": "",
+                    "terminal": True,
+                },
+            ]
+        },
     )
 
     assert decision.passed is True
@@ -159,6 +188,12 @@ async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
     assert checker_input["current_time"]["unix"] > 0
     assert checker_input["current_time"]["iso"]
     assert "utc_offset" in checker_input["current_time"]
+    supporting = checker_input["observed_capability_evidence"]
+    assert [item["tool"] for item in supporting] == ["web.search"]
+    assert "result_count" in supporting[0]["facts_json"]
+    assert "secret-token" not in supporting[0]["args_json"]
+    assert "[REDACTED]" in supporting[0]["args_json"]
+    assert "reason" not in supporting[0]
 
 
 async def _run_goal_with_approvals(

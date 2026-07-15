@@ -16,18 +16,6 @@ AGENT_ROLES_SPEC: Any = {
             ],
             "parallel_safe": False,
         },
-        "router": {
-            "purpose": "Validate user-request intent facts for the unified loop intake "
-            "without executing tools or answering the user.",
-            "when_to_use": [
-                "Before or during loop intake when the provider exposes a router role.",
-                "When normalizing request intent before unified StateGraph execution.",
-            ],
-            "evidence_required": [
-                "agent.role_result trace event with validated request intent, unified_loop route, confidence, and facts."
-            ],
-            "parallel_safe": False,
-        },
         "responder": {
             "purpose": "Synthesize user-facing replies from verified facts.",
             "when_to_use": [
@@ -61,32 +49,6 @@ AGENT_ROLES_SPEC: Any = {
                 "output."
             ],
             "parallel_safe": True,
-        },
-        "critic": {
-            "purpose": "Review planner or executor output for missing evidence, unsafe "
-            "assumptions, and completion risks.",
-            "when_to_use": [
-                "High-risk local mutation.",
-                "Verifier failure.",
-                "Before marking long-running goals accepted with success resolution.",
-            ],
-            "evidence_required": [
-                "agent.role_result trace event with reviewed target, findings, and verdict."
-            ],
-            "parallel_safe": True,
-        },
-        "executor": {
-            "purpose": "Transform approved plans into concrete actuator instructions "
-            "while preserving evidence requirements.",
-            "when_to_use": [
-                "Capability-backed local execution after approval or governance policy grant.",
-                
-            ],
-            "evidence_required": [
-                "Execution protocol evidence with non-empty evidence "
-                "list, verification status, and completion summary."
-            ],
-            "parallel_safe": False,
         },
     }
 }

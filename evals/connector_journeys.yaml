@@ -113,11 +113,11 @@ journeys:
             - "Code Navigator"
             - "Memory Curator"
           sent_not_contains_any:
-            - "watch.create"
-            - "delegate.spawn"
+            - "goal.open"
+            - "shell.run"
 
   - id: weixin_tools_query_distinguishes_tools_from_skills
-    user_goal: Ask for tools through Weixin and receive callable capabilities, including one-shot scheduling semantics.
+    user_goal: Ask for tools through Weixin and receive capabilities from the current registry.
     steps:
       - inbound:
           text: "你都有哪些工具"
@@ -127,9 +127,9 @@ journeys:
           sent_count_delta: 1
           run_count_delta: 0
           sent_contains_any:
-            - "watch.create"
-            - "delegate.spawn"
-          sent_contains: "kind=once"
+            - "goal.open"
+            - "goal.state"
+          sent_contains: "loop_kind"
           sent_not_contains_any:
             - "Code Navigator"
             - "Memory Curator"

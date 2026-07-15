@@ -80,7 +80,6 @@ def _state_checks(home: Path) -> list[DiagnosticCheck]:
         "goals.db",
         "traces.db",
         "evolution.db",
-        "subagents.db",
     ):
         checks.append(_check_path(f"state.{filename}", home / filename, required=False))
     return checks

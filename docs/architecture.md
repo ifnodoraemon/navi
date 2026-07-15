@@ -69,10 +69,12 @@ gates. Staged external effects are committed only after acceptance or
 compensated on rejection.
 
 The semantic checker evaluates objective evidence independently from planner
-reasoning and returns only a verdict plus evidence summary. Retry, stop, and
-next-action decisions remain deterministic loop-control responsibilities.
-Trace proxies record model calls and capability spans without changing their
-decisions.
+reasoning and returns only a verdict plus evidence summary. The runtime enforces
+attempt budgets, timeouts, safety stops, and no-progress bounds; while another
+planning turn is allowed, the planner owns the semantic choice to gather facts,
+change capability or arguments, clarify, or explain a blocker. A checker verdict
+is evidence, not a runtime-selected next action. Trace proxies record model calls
+and capability spans without changing their decisions.
 
 Connector delivery is a two-boundary operation: the capability records
 `delivery_requested` and pauses the loop; only the connector's authoritative

@@ -7,19 +7,6 @@ from enum import StrEnum
 from typing import Any
 
 
-class RequestRoute(StrEnum):
-    UNIFIED_LOOP = "unified_loop"
-
-
-class RequestIntent(StrEnum):
-    ANSWER_NOW = "answer_now"
-    OPEN_GOAL = "open_goal"
-    RESUME_GOAL = "resume_goal"
-    CONTROL_GOAL = "control_goal"
-    REQUEST_ELEVATION = "request_elevation"
-    ASK_CLARIFICATION = "ask_clarification"
-
-
 class LoopNode(StrEnum):
     PLAN = "plan"
     EXECUTE = "execute"
@@ -39,14 +26,6 @@ class LoopTerminalState(StrEnum):
     SUPERSEDED = "superseded"
     CONFLICTED = "conflicted"
     TIMED_OUT = "timed_out"
-
-
-class AgentRole(StrEnum):
-    PLANNER = "planner"
-    EXECUTOR = "executor"
-    CHECKER = "checker"
-    REFLECTOR = "reflector"
-    RESPONDER = "responder"
 
 
 class VerificationKind(StrEnum):

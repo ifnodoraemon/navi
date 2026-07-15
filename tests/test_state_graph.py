@@ -148,7 +148,7 @@ def test_capability_recovery_replans_after_non_retryable_call_failure() -> None:
         ),
     )
 
-    assert decision.retry is True
+    assert decision.replan_allowed is True
     assert decision.reason_code == "execution_not_retryable"
     assert decision.facts["recovery"]["retryable"] is False
 
@@ -941,8 +941,11 @@ async def test_durable_state_graph_reflects_checker_failure_and_replans(tmp_path
     assert result.terminal_state == LoopTerminalState.CONVERGED
     assert provider.calls == 2
     assert result.run_state.attempt == 2
-    assert result.evidence["reflection"]["retry"] is True
+    assert result.evidence["reflection"]["replan_allowed"] is True
     assert "recovery_fact" in result.evidence["reflection"]["facts"]
+    recovery = result.evidence["reflection"]["facts"]["recovery"]
+    assert recovery["blocked"] is False
+    assert recovery["failure_domain"] == "verification_failed"
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
 
 

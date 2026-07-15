@@ -25,8 +25,10 @@ The planner system prompt defines only generic protocol boundaries:
 - separation between facts, capabilities, and decisions.
 
 It must not encode product keyword routing, connector-specific recovery, or a
-one-off fix for a capability result. Deterministic behavior belongs in schemas,
-state machines, policy envelopes, hooks, or capability implementations.
+one-off fix for a capability result. Deterministic enforcement and lifecycle
+belong in schemas, state machines, policy envelopes, hooks, or capability
+implementations; semantic routing, recovery, clarification, and response choices
+remain model-owned.
 
 ## Planner Turn Input
 

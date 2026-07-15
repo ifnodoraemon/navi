@@ -98,7 +98,14 @@ class TracingSemanticCheckerPortProxy:
     def runtime(self) -> Any:
         return getattr(self.delegate, "runtime", None)
 
-    async def assess(self, spec: LoopSpec, state: LoopRunState, *, executed: ExecutedCapabilityStep) -> SemanticCheckDecision:
+    async def assess(
+        self,
+        spec: LoopSpec,
+        state: LoopRunState,
+        *,
+        executed: ExecutedCapabilityStep,
+        evidence: dict[str, Any],
+    ) -> SemanticCheckDecision:
         self.trace_store.add_event(
             trace_id=self.trace_context.trace_id,
             session_id=self.trace_context.session_id or "",
@@ -111,7 +118,12 @@ class TracingSemanticCheckerPortProxy:
         )
 
         try:
-            decision = await self.delegate.assess(spec, state, executed=executed)
+            decision = await self.delegate.assess(
+                spec,
+                state,
+                executed=executed,
+                evidence=evidence,
+            )
             
             output_data = decision.to_dict()
             usage_data = {}

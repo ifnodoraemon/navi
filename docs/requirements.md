@@ -15,6 +15,7 @@ Navi must provide:
 - a CLI-first local experience, with API and connector surfaces using the same
   runtime contracts;
 - model-owned planning from current facts and declared capabilities;
+- model-owned clarification, semantic recovery, and user-facing synthesis;
 - durable goals, runs, approvals, checkpoints, memory, and trace evidence when
   work needs persistence;
 - explicit permission ceilings, source policies, approval grants, workspace
@@ -77,6 +78,9 @@ The loop must:
 - pause before unapproved sensitive effects;
 - require objective evidence before declaring completion;
 - expose failure, blocking, and no-progress facts without fabricating a result.
+- return checker rejection and capability-failure facts to the model while a
+  bounded replanning opportunity remains; the runtime must not choose the
+  semantic recovery route.
 
 ## Capability Contract
 
@@ -87,9 +91,12 @@ Capabilities are stable external contracts. Each capability declares:
 - whether it mutates state;
 - side-effect scope and stage/commit/compensate behavior when applicable.
 
-Tools execute or observe and return facts. Skills provide procedures. Plugins
-provide installed code and integrations. Hooks observe or gate lifecycle
-events. These extension types must not silently assume each other's authority.
+Tools execute or observe and return facts. Skills provide procedures and may
+package scripts, templates, or assets, but execution still passes through
+governed capabilities. Plugins provide installed code and integrations. Hooks
+observe or deterministically gate lifecycle events. These extension types must
+not silently assume each other's authority or make product-semantic choices for
+the model.
 
 CLI, API, and connector ingress use the same capability catalog. Source identity
 scopes durable state, approvals, audit, and reply delivery; it does not implicitly
@@ -131,8 +138,9 @@ and redaction boundaries as core and connector tools. Server annotations must
 not grant or lower permissions.
 
 Web search must use supported structured providers, surface provider and
-configuration facts, and stop retrying unchanged failures explicitly marked
-non-retryable.
+configuration facts, and label whether the same failed provider call is
+retryable. The loop may still let the model choose a different capability,
+arguments, clarification, or blocker response within its remaining budget.
 
 ## Verification Contract
 
