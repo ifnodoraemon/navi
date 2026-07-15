@@ -118,7 +118,7 @@ def test_cron_queries_preserve_goal_dataclass_field_order(tmp_path):
         stop_condition="explicit-stop",
         timeout=321.0,
         max_retries=7,
-        cron_schedule="54 11 * * *",
+        cron_schedule="15 8 * * *",
         next_run_at=1.0,
     )
 

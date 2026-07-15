@@ -376,7 +376,7 @@ def _latest_new_run_id(runs: RunStore, known_run_ids: set[str]) -> str:
 
 def _state_snapshot(runs: RunStore, run_id: str) -> dict[str, Any]:
     run = runs.get(run_id)
-    approvals = [item for item in runs.list_approvals(limit=200) if item.run_id == run_id]
+    approvals = runs.list_approvals(run_id=run_id, limit=200)
     return {
         "run_phase": run.phase if run else "",
         "run_governance": run.governance if run else "",

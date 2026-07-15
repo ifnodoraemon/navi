@@ -58,6 +58,14 @@ def test_terminal_shadow_still_resolves_to_durable_workspace(tmp_path: Path) -> 
     assert manager.durable_workspace_for(shadow.shadow_workspace) == str(repo.resolve())
 
 
+def test_unknown_managed_workspace_has_no_guessed_fallback(tmp_path: Path) -> None:
+    home = tmp_path / ".navi"
+    manager = ShadowWorkspaceManager(home)
+    unknown = manager.shadow_root / "missing-audit" / "shadow"
+
+    assert manager.durable_workspace_for(str(unknown)) == str(unknown.resolve())
+
+
 def test_terminal_artifact_gc_preserves_active_shadows(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

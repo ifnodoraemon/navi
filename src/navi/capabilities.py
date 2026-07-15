@@ -157,6 +157,11 @@ class CapabilityRegistry:
                     provider="tool_gateway" if isinstance(handler, ToolCapability) else "action",
                     description=spec.description,
                     side_effect_policy=spec.side_effect_policy.to_dict(),
+                    permission_policy=spec.permission_policy,
+                    risk_policy=spec.risk_policy,
+                    context_policy=spec.context_policy,
+                    runtime_policy=spec.runtime_policy,
+                    delegation_allowed=spec.delegation_allowed,
                 )
             )
         return sorted(nodes, key=lambda node: node.name)
@@ -518,13 +523,16 @@ class CapabilityRegistry:
         context: CapabilityContext,
     ):
         marker = f"capability_approval:{name}:{permission}:{args_json}"
-        for run in runs.list_by_phases([Phase.PAUSED, Phase.PENDING, Phase.RUNNING], limit=100):
-            if run.kind != "capability_approval":
-                continue
-            if run.source != context.source or run.peer_id != context.peer_id:
-                continue
-            if run.sender_id != context.sender_id or run.plan_summary != marker:
-                continue
+        for run in runs.list_by_phases_scoped(
+            [Phase.PAUSED, Phase.PENDING, Phase.RUNNING],
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            kind="capability_approval",
+            plan_summary=marker,
+            limit=100,
+        ):
             approval = runs.pending_approval_for_run(
                 run.id,
                 source=context.source,
@@ -549,13 +557,16 @@ class CapabilityRegistry:
         context: CapabilityContext,
     ):
         marker = f"capability_approval:{name}:{permission}:{args_json}"
-        for run in runs.list_by_phases([Phase.PENDING, Phase.RUNNING], limit=100):
-            if run.kind != "capability_approval":
-                continue
-            if run.source != context.source or run.peer_id != context.peer_id:
-                continue
-            if run.sender_id != context.sender_id or run.plan_summary != marker:
-                continue
+        for run in runs.list_by_phases_scoped(
+            [Phase.PENDING, Phase.RUNNING],
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            kind="capability_approval",
+            plan_summary=marker,
+            limit=100,
+        ):
             approval = runs.approved_approval_for_run(
                 run.id,
                 action=APPROVAL_ACTION_CAPABILITY,

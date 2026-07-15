@@ -108,7 +108,6 @@ class SQLiteMemoryProvider:
             conn.execute(SESSION_ALIASES_TABLE.ddl)
             assert_schema_exact(conn, SESSION_ALIASES_TABLE)
             conn.execute(MEMORY_ITEMS_TABLE.ddl)
-            self._migrate_memory_items(conn)
             assert_schema_exact(conn, MEMORY_ITEMS_TABLE)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)"
@@ -157,22 +156,6 @@ class SQLiteMemoryProvider:
                 "WHERE id NOT IN (SELECT id FROM memory_fts)"
             )
             write_schema_version(conn, "memory", MEMORY_SCHEMA_VERSION)
-
-    @staticmethod
-    def _migrate_memory_items(conn) -> None:
-        """Backfill reason/provenance on pre-schema-version memory.db.
-
-        Principle 1.2: the schema-exact guard rejects drift loudly, so the
-        on-disk shape must reach the current contract before the assertion
-        runs. reason/provenance were added after the initial memory_items
-        table; ALTER them in if missing."""
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_items)")}
-        if "reason" not in columns:
-            conn.execute("ALTER TABLE memory_items ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
-        if "provenance" not in columns:
-            conn.execute(
-                "ALTER TABLE memory_items ADD COLUMN provenance TEXT NOT NULL DEFAULT ''"
-            )
 
     def _item_from_row(self, row: tuple) -> MemoryItem:
         return MemoryItem(

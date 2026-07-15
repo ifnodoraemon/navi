@@ -147,6 +147,11 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="memory.list",
             capability_class="memory",
+            context_policy="actor_memory",
+            risk_class="medium",
+            sensitive_contexts=("memory",),
+            confirmation_required=False,
+            risk_reason_code="capability_safeguard_memory_list",
             description="Return typed memory item facts from Navi's local memory store.",
             input_schema={
                 "type": "object",
@@ -172,6 +177,11 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="memory.recall",
             capability_class="memory",
+            context_policy="actor_memory",
+            risk_class="medium",
+            sensitive_contexts=("memory",),
+            confirmation_required=False,
+            risk_reason_code="capability_safeguard_memory_recall",
             description="Recall goal-relevant memory facts from Navi's local memory store.",
             input_schema={
                 "type": "object",
@@ -203,6 +213,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="memory.record_activation",
             capability_class="memory",
+            context_policy="actor_memory",
             description=(
                 "Record that specific recalled memory items were used, so "
                 "maintenance can distinguish active knowledge from stale memory."
@@ -240,6 +251,11 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="memory.conflicts",
             capability_class="memory",
+            context_policy="actor_memory",
+            risk_class="medium",
+            sensitive_contexts=("memory",),
+            confirmation_required=False,
+            risk_reason_code="capability_safeguard_memory_conflicts",
             description="Return declared memory conflict facts from Navi's local memory store.",
             input_schema={
                 "type": "object",
@@ -260,6 +276,10 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="browser.screenshot",
             capability_class="browser",
+            risk_class="high",
+            sensitive_contexts=("browser", "untrusted_web", "artifact_write"),
+            confirmation_required=True,
+            risk_reason_code="capability_safeguard_browser_screenshot",
             description="Capture a browser screenshot artifact for a reachable page.",
             input_schema={
                 "type": "object",
@@ -292,6 +312,10 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="file.read",
             capability_class="file.read",
+            risk_class="medium",
+            sensitive_contexts=("filesystem", "untrusted_local_content"),
+            confirmation_required=False,
+            risk_reason_code="capability_safeguard_file_read",
             description="Read a UTF-8 text file inside the current project workspace.",
             input_schema={
                 "type": "object",
@@ -317,6 +341,10 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="file.write",
             capability_class="file.write",
+            risk_class="high",
+            sensitive_contexts=("filesystem", "local_state"),
+            confirmation_required=True,
+            risk_reason_code="capability_safeguard_file_write",
             description="Write UTF-8 text to a file inside the current project workspace.",
             input_schema={
                 "type": "object",
@@ -359,6 +387,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             facts_only=True,
             mutates=True,
             permission="write",
+            risk_policy="workspace_file_write",
         ),
         lambda args: _file_write(args, project_dir=registry.project_dir, home=home),
     )
@@ -528,6 +557,10 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="shell.run",
             capability_class="shell",
+            risk_class="high",
+            sensitive_contexts=("terminal", "local_state"),
+            confirmation_required=True,
+            risk_reason_code="capability_safeguard_shell_run",
             description=(
                 "Run one argv-only command in the project workspace and return bounded "
                 "stdout/stderr facts. Declared read-only commands require read permission, "
@@ -547,7 +580,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "allocate_pty": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Allocate a pseudo-terminal. Use only when the command strictly requires a tty (e.g. complains about stdin not being a tty). When enabled, stdout may contain ANSI escape codes and stderr is merged into stdout.",
+                        "description": "Allocate a pseudo-terminal. It is required by commands that reject non-TTY stdin. When enabled, stdout may contain ANSI escape codes and stderr is merged into stdout.",
                     },
                 },
                 "required": ["command"],
@@ -566,6 +599,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             facts_only=True,
             mutates=True,
             permission="read",
+            permission_policy="shell_argv",
+            risk_policy="shell_argv",
         ),
         lambda args: _shell_run(args, project_dir=registry.project_dir),
     )
@@ -573,6 +608,10 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="web.search",
             capability_class="web",
+            risk_class="low",
+            sensitive_contexts=("web",),
+            confirmation_required=False,
+            risk_reason_code="capability_safeguard_web_search",
             description=(
                 "Search the web and return structured result facts. Uses configured "
                 "SearXNG JSON endpoints first and the official Exa MCP search service "
@@ -625,6 +664,10 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="http.fetch",
             capability_class="web",
+            risk_class="medium",
+            sensitive_contexts=("web", "untrusted_web"),
+            confirmation_required=False,
+            risk_reason_code="capability_safeguard_http_fetch",
             description="Make an HTTP request and return the response. Supports GET/POST with custom headers.",
             input_schema={
                 "type": "object",
@@ -648,6 +691,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 }
             ),
             permission="network",
+            risk_policy="http_request",
         ),
         _http_fetch,
     )

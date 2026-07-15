@@ -15,6 +15,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
+from .permission_contract import normalize_permission
+
 DEFAULT_EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 
 
@@ -55,8 +57,10 @@ class MCPServerConfig:
                 errors.append("stdio transport requires command")
         else:
             errors.append(f"unsupported transport: {self.transport}")
-        if self.permission not in {"read", "network", "write"}:
-            errors.append(f"unsupported permission: {self.permission}")
+        try:
+            normalize_permission(self.permission)
+        except ValueError as exc:
+            errors.append(str(exc))
         if self.permission != "write" and not self.allowed_tools:
             errors.append("read/network permission requires allowed_tools")
         if self.timeout_seconds <= 0:

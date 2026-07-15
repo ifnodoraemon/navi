@@ -12,6 +12,7 @@ from typing import Any
 
 from .db import connect, check_schema_version, write_schema_version
 from .paths import db_paths
+from .persistence_scope import append_actor_scope
 from .runs import Run
 from .schema import Column, Table, assert_schema_exact
 
@@ -81,28 +82,18 @@ class GoalStore:
         self.db_path = db_paths(home).goals
         self._init_db()
 
-
-    @staticmethod
-    def _migrate_goals(conn) -> None:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(goals)")}
-        if "parent_goal_id" not in columns:
-            conn.execute("ALTER TABLE goals ADD COLUMN parent_goal_id TEXT NOT NULL DEFAULT ''")
-        if "task_status" not in columns:
-            conn.execute("ALTER TABLE goals ADD COLUMN task_status TEXT NOT NULL DEFAULT 'in_progress'")
-        if "cron_schedule" not in columns:
-            conn.execute("ALTER TABLE goals ADD COLUMN cron_schedule TEXT NOT NULL DEFAULT ''")
-        if "next_run_at" not in columns:
-            conn.execute("ALTER TABLE goals ADD COLUMN next_run_at REAL NOT NULL DEFAULT 0.0")
-
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
             conn.execute(GOALS_TABLE.ddl)
-            self._migrate_goals(conn)
             check_schema_version(conn, "goals", GOAL_STORE_SCHEMA_VERSION)
             assert_schema_exact(conn, GOALS_TABLE)
             conn.execute(GOAL_EVENTS_TABLE.ddl)
             assert_schema_exact(conn, GOAL_EVENTS_TABLE)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(phase, updated_at)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_goals_actor_scope "
+                "ON goals(source, peer_id, sender_id, workspace, updated_at)"
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_run ON goals(run_id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_goal_events_goal ON goal_events(goal_id, created_at)"
@@ -259,6 +250,95 @@ class GoalStore:
             rows = conn.execute(query, params).fetchall()
         return [Goal(*row) for row in rows]
 
+    def list_scoped(
+        self,
+        *,
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+        session_id: str = "",
+        workspace: str = "",
+        phases: tuple[str, ...] = (),
+        cron: bool | None = None,
+        child: bool | None = None,
+        limit: int | None = 50,
+    ) -> typing.List[Goal]:
+        """List goals after applying actor and workspace scope in SQL."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        append_actor_scope(
+            clauses,
+            params,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            workspace=workspace,
+        )
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if phases:
+            placeholders = ", ".join("?" for _ in phases)
+            clauses.append(f"phase IN ({placeholders})")
+            params.extend(phases)
+        if cron is not None:
+            clauses.append("cron_schedule != ''" if cron else "cron_schedule = ''")
+        if child is not None:
+            clauses.append("parent_goal_id != ''" if child else "parent_goal_id = ''")
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = " LIMIT ?"
+            params.append(max(1, int(limit)))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {GOAL_SELECT_LIST}
+                FROM goals{where}
+                ORDER BY updated_at DESC{limit_clause}
+                """,
+                params,
+            ).fetchall()
+        return [Goal(*row) for row in rows]
+
+    def count_scoped(
+        self,
+        *,
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+        session_id: str = "",
+        workspace: str = "",
+        phases: tuple[str, ...] = (),
+        cron: bool | None = None,
+        child: bool | None = None,
+    ) -> int:
+        clauses: list[str] = []
+        params: list[Any] = []
+        append_actor_scope(
+            clauses,
+            params,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            workspace=workspace,
+        )
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if phases:
+            placeholders = ", ".join("?" for _ in phases)
+            clauses.append(f"phase IN ({placeholders})")
+            params.extend(phases)
+        if cron is not None:
+            clauses.append("cron_schedule != ''" if cron else "cron_schedule = ''")
+        if child is not None:
+            clauses.append("parent_goal_id != ''" if child else "parent_goal_id = ''")
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with connect(self.db_path) as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM goals{where}", params).fetchone()
+        return int(row[0]) if row else 0
+
     def list_children(
         self,
         parent_goal_id: str,
@@ -283,11 +363,22 @@ class GoalStore:
         goals = [Goal(*row) for row in rows]
         return list(reversed(goals)) if newest else goals
 
-    def count_children(self, parent_goal_id: str) -> int:
+    def count_children(
+        self,
+        parent_goal_id: str,
+        *,
+        phases: tuple[str, ...] = (),
+    ) -> int:
+        clauses = ["parent_goal_id = ?"]
+        params: list[Any] = [parent_goal_id]
+        if phases:
+            placeholders = ", ".join("?" for _ in phases)
+            clauses.append(f"phase IN ({placeholders})")
+            params.extend(phases)
         with connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT COUNT(*) FROM goals WHERE parent_goal_id = ?",
-                (parent_goal_id,),
+                f"SELECT COUNT(*) FROM goals WHERE {' AND '.join(clauses)}",
+                params,
             ).fetchone()
         return int(row[0]) if row else 0
 
@@ -313,7 +404,7 @@ class GoalStore:
         return e.governance == Governance.AWAITING_APPROVAL or e.resolution in {Resolution.BLOCKED, Resolution.FAILED}
 
     async def compact_events(self, goal_id: str, runtime, *, threshold: int = 20) -> bool:
-        events = self.list_events(goal_id, limit=1000)
+        events = self.list_events(goal_id, limit=None)
         events.sort(key=lambda x: x.created_at)
         if len(events) <= threshold:
             return False
@@ -393,16 +484,49 @@ class GoalStore:
 
         return True
 
-    def list_events(self, goal_id: str, *, limit: int = 100) -> typing.List[GoalEvent]:
+    def list_events(
+        self,
+        goal_id: str,
+        *,
+        limit: int | None = 100,
+    ) -> typing.List[GoalEvent]:
+        limit_clause = ""
+        params: list[Any] = [goal_id]
+        if limit is not None:
+            limit_clause = " LIMIT ?"
+            params.append(max(1, int(limit)))
         with connect(self.db_path) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id, goal_id, event_type, phase, governance, acceptance, resolution, run_id, trace_id, evidence_json, created_at
-                FROM goal_events WHERE goal_id = ? ORDER BY created_at ASC LIMIT ?
+                FROM goal_events WHERE goal_id = ? ORDER BY created_at ASC{limit_clause}
                 """,
-                (goal_id, limit),
+                params,
             ).fetchall()
         return [GoalEvent(*row) for row in rows]
+
+    def count_events(
+        self,
+        goal_id: str,
+        *,
+        event_type: str = "",
+        resolutions: tuple[str, ...] = (),
+    ) -> int:
+        clauses = ["goal_id = ?"]
+        params: list[Any] = [goal_id]
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        if resolutions:
+            placeholders = ", ".join("?" for _ in resolutions)
+            clauses.append(f"resolution IN ({placeholders})")
+            params.extend(resolutions)
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM goal_events WHERE {' AND '.join(clauses)}",
+                params,
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def attach_trace(
         self,
@@ -525,11 +649,10 @@ class GoalStore:
                     "timeout_seconds": int(goal.timeout),
                 }
         if goal.max_retries > 0:
-            retries = sum(
-                1
-                for event in self.list_events(goal_id, limit=1000)
-                if event.event_type == "goal.run_state"
-                and event.resolution in {Resolution.BLOCKED, Resolution.FAILED}
+            retries = self.count_events(
+                goal_id,
+                event_type="goal.run_state",
+                resolutions=(Resolution.BLOCKED, Resolution.FAILED),
             )
             if retries >= goal.max_retries:
                 return {
@@ -776,11 +899,12 @@ class GoalStore:
 
         loop_runs = LoopRunStore(self.home)
         candidate_ids = {delivery_id} if delivery_id else set()
-        for loop_run in loop_runs.list_by_goal(goal_id, limit=100):
-            if str(loop_run.terminal_state) != str(LoopTerminalState.PAUSED):
-                continue
-            if str(loop_run.evidence.get("action") or "") != "connector_outbound":
-                continue
+        for loop_run in loop_runs.list_by_goal_filtered(
+            goal_id,
+            terminal_states=(LoopTerminalState.PAUSED,),
+            evidence_action="connector_outbound",
+            limit=None,
+        ):
             candidate_ids.add(loop_run.run_id)
         for loop_run_id in sorted(candidate_ids):
             delivery_loop = loop_runs.get_run(loop_run_id)
@@ -929,38 +1053,6 @@ class GoalStore:
             )
         return self.get(goal_id)
 
-    def update_cron_workspace(
-        self,
-        goal_id: str,
-        workspace: str,
-        *,
-        previous_workspace: str,
-    ) -> Goal | None:
-        goal = self.get(goal_id)
-        if goal is None or not goal.cron_schedule:
-            return goal
-        durable_workspace = _require_workspace(workspace)
-        with connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE goals SET workspace = ?, updated_at = ? WHERE id = ?",
-                (durable_workspace, time.time(), goal_id),
-            )
-        self.record_event(
-            goal_id,
-            "goal.schedule_workspace_repaired",
-            phase=goal.phase,
-            governance=goal.governance,
-            acceptance=goal.acceptance,
-            resolution=goal.resolution,
-            run_id=goal.run_id,
-            trace_id=goal.trace_id,
-            evidence={
-                "previous_workspace": previous_workspace,
-                "durable_workspace": durable_workspace,
-            },
-        )
-        return self.get(goal_id)
-
     def record_cron_failure(
         self,
         goal_id: str,
@@ -995,6 +1087,60 @@ class GoalStore:
                 "error_type": error_type,
                 "error": error,
             },
+        )
+        return self.get(goal_id)
+
+    def block_invalid_cron_schedule(
+        self,
+        goal_id: str,
+        *,
+        scheduled_for: float,
+        error_type: str,
+        error: str,
+        trace_id: str,
+    ) -> Goal | None:
+        """Fail closed when persisted recurring state violates the cron contract."""
+        goal = self.get(goal_id)
+        if goal is None:
+            return None
+        now = time.time()
+        evidence = {
+            "scheduled_for": scheduled_for,
+            "cron_schedule": goal.cron_schedule,
+            "error_type": error_type,
+            "error": error,
+            "state_transition": "schedule_blocked",
+        }
+        merged_evidence = _merge_evidence(goal.evidence_json, evidence)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE goals
+                SET phase = ?, resolution = ?, task_status = ?, blocked_reason = ?,
+                    next_run_at = 0.0, evidence_json = ?, updated_at = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (
+                    Phase.ENDED,
+                    Resolution.BLOCKED,
+                    "blocked",
+                    "invalid_cron_schedule",
+                    json.dumps(merged_evidence, ensure_ascii=False, sort_keys=True),
+                    now,
+                    now,
+                    goal_id,
+                ),
+            )
+        self.record_event(
+            goal_id,
+            "goal.schedule_invalid",
+            phase=Phase.ENDED,
+            governance=goal.governance,
+            acceptance=goal.acceptance,
+            resolution=Resolution.BLOCKED,
+            run_id=goal.run_id,
+            trace_id=trace_id,
+            evidence=evidence,
         )
         return self.get(goal_id)
 

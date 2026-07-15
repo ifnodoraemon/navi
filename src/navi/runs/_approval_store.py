@@ -17,6 +17,7 @@ from ..approval_contract import (
     APPROVAL_STATUS_REJECTED,
 )
 from ..db import connect
+from ..persistence_scope import append_actor_scope
 from ..schema import Column, Table
 from .models import Approval
 
@@ -124,6 +125,9 @@ class ApprovalStoreMixin:
         limit: int = 50,
         status: str = "",
         run_id: str = "",
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
     ) -> list[Approval]:
         self.expire_pending_approvals()
         clauses: list[str] = []
@@ -134,6 +138,13 @@ class ApprovalStoreMixin:
         if run_id:
             clauses.append("run_id = ?")
             params.append(run_id)
+        append_actor_scope(
+            clauses,
+            params,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+        )
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with connect(self.db_path) as conn:
             rows = conn.execute(

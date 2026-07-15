@@ -155,7 +155,7 @@ class _ConnectorFileProvider:
 
 
 class _FollowupApprovalProvider:
-    """Reproduce trace 7482656831535883656 without external delivery."""
+    """Exercise follow-up approval without external delivery."""
 
     def __init__(self, target: Path, *, bare_approval: bool) -> None:
         self.target = target

@@ -146,7 +146,7 @@ def _register_server_tools(registry: ToolRegistry, server: MCPServerConfig) -> N
             execution_contexts=ALL_EXECUTION_CONTEXTS,
             description=(
                 f"Call one tool on configured MCP server {server.name}. "
-                f"Discover its current schema with mcp.{server.name}.tools first."
+                f"Current input schemas are returned by mcp.{server.name}.tools."
             ),
             input_schema={
                 "type": "object",

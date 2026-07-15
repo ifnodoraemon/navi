@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shlex
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from navi.loop_runs import LoopRunStore
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
-from navi.safeguards import assess_capability_call
+from navi.safeguards import assess_capability_call, required_permission_for_call
 
 
 def _context(home: Path) -> CapabilityContext:
@@ -150,7 +151,7 @@ async def test_shell_binary_is_approved_instead_of_name_blocked(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_trace_7482957309616430216_uptime_is_read_without_approval(
+async def test_uptime_is_read_without_approval(
     tmp_path: Path,
 ) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
@@ -211,6 +212,52 @@ async def test_shell_effectful_command_cannot_hide_behind_read_permission(
     assert target.exists() is True
 
 
+@pytest.mark.asyncio
+async def test_existing_actor_approval_is_found_beyond_global_run_noise(
+    tmp_path: Path,
+) -> None:
+    runs = RunStore(tmp_path)
+    for index in range(101):
+        runs.create(
+            f"unrelated approval envelope {index}",
+            kind="capability_approval",
+            source="telegram",
+            peer_id="other-peer",
+            sender_id="other-sender",
+            workspace=str(tmp_path),
+            phase=Phase.PAUSED,
+        )
+
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    args = {"command": ["touch", str(tmp_path / "approval-target.txt")]}
+    first = await registry.invoke(
+        "shell.run",
+        args,
+        permission="read",
+        context=_context(tmp_path),
+    )
+    second = await registry.invoke(
+        "shell.run",
+        args,
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert first.error_reason == "sensitive_op_requires_approval"
+    assert second.error_reason == "sensitive_op_requires_approval"
+    assert second.facts["state_transition"] == "existing"
+    assert second.facts["approval"]["id"] == first.facts["approval"]["id"]
+    actor_approvals = runs.list_approvals(
+        source="local",
+        peer_id="peer-1",
+        sender_id="user-1",
+        limit=10,
+    )
+    assert [approval.id for approval in actor_approvals] == [
+        first.facts["approval"]["id"]
+    ]
+
+
 def test_shell_effect_classification_is_argument_sensitive(tmp_path: Path) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     spec = registry.get("shell.run")
@@ -226,23 +273,41 @@ def test_shell_effect_classification_is_argument_sensitive(tmp_path: Path) -> No
         {"command": ["find", ".", "-name", "*.tmp", "-delete"]},
         workspace=str(tmp_path),
     )
-    crontab_list = assess_capability_call(
-        spec,
-        {"command": ["crontab", "-l"]},
-        workspace=str(tmp_path),
-    )
-
     assert read_only.confirmation_required is False
     assert read_only.evidence["required_permission"] == "read"
     assert destructive.confirmation_required is True
     assert destructive.evidence["required_permission"] == "write"
-    assert crontab_list.confirmation_required is False
-    assert crontab_list.evidence["required_permission"] == "read"
+
+
+def test_call_policy_is_declared_by_contract_not_capability_name(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    shell_spec = registry.get("shell.run")
+    file_spec = registry.get("file.write")
+    http_spec = registry.get("http.fetch")
+    assert shell_spec is not None and file_spec is not None and http_spec is not None
+
+    renamed_shell = replace(shell_spec, name="process.inspect")
+    renamed_file = replace(file_spec, name="workspace.persist")
+    renamed_http = replace(http_spec, name="network.request")
+
+    assert required_permission_for_call(
+        renamed_shell,
+        {"command": ["find", ".", "-maxdepth", "1"]},
+    ) == "read"
+    assert assess_capability_call(
+        renamed_file,
+        {"path": "../outside.txt", "mode": "overwrite"},
+        workspace=str(tmp_path / "workspace"),
+    ).reason_code == "outside_workspace_write_requires_approval"
+    assert assess_capability_call(
+        renamed_http,
+        {"url": "http://model-gateway.internal/v1/models"},
+        workspace=str(tmp_path),
+    ).reason_code == "private_network_access_requires_approval"
 
 
 @pytest.mark.asyncio
 async def test_approval_resolve_resumes_original_shell_checkpoint(tmp_path: Path) -> None:
-    """Regression for traces 7482957409423991048 and 7482957901583633928."""
     target = tmp_path / "performance-report.md"
     target.write_text("important report\n", encoding="utf-8")
     provider = _DeleteGoalProvider(target)

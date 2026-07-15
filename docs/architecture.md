@@ -101,11 +101,11 @@ Trace events are append-oriented audit evidence. Materialized Run, Goal, and
 LoopRun records own active lifecycle state.
 
 Scheduled Goal templates persist the real workspace rather than the ephemeral
-shadow used by their registration turn. The daemon repairs legacy managed
-shadow paths from the workspace audit store before materializing due work. A
-materialization failure advances the recurring template, records a Goal event
-and a failed capability trace, and publishes structured notification facts, so
-one bad occurrence cannot spin the background loop or vanish without evidence.
+shadow used by their registration turn. The registration capability resolves
+that mapping from the workspace audit store. A materialization failure advances
+the recurring template, records a Goal event and a failed capability trace, and
+publishes structured notification facts, so one bad occurrence cannot spin the
+background loop or vanish without evidence.
 
 Durable memory items carry global, actor, session, or workspace scope. The
 planner and responder receive only scopes derived from the current execution

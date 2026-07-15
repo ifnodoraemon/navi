@@ -49,19 +49,25 @@ def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CO
     """Invoke a capability through the unified registry (same path the API
     takes), so CLI writes go through hook gates and schema validation."""
     home = ensure_home()
-    needs_runtime = name == "goal.resume" or (
-        name == "goal.open" and bool(args.get("auto_start", True))
-    )
-    runtime = build_runtime(home) if needs_runtime else None
     capabilities = build_capability_registry(
         home,
         project_dir=Path.cwd(),
         execution_context=execution_context,
-        runtime=runtime,
     )
     spec = capabilities.get(name)
     if spec is None:
         raise typer.BadParameter(f"capability not found: {name}")
+    needs_runtime = spec.runtime_policy == "required" or (
+        spec.runtime_policy == "when_auto_start" and bool(args.get("auto_start", True))
+    )
+    runtime = build_runtime(home) if needs_runtime else None
+    if runtime is not None:
+        capabilities = build_capability_registry(
+            home,
+            project_dir=Path.cwd(),
+            execution_context=execution_context,
+            runtime=runtime,
+        )
     result = asyncio.run(
         capabilities.invoke(
             name,

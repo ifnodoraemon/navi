@@ -34,8 +34,8 @@ ACTION_SPECS = [
         execution_contexts=("turn", API_CONTEXT),
         description=(
             "Manage depth-1 child Goals only through one operation-selected lifecycle "
-            "surface. This is not a global task or schedule listing. Use goal.state "
-            "for top-level tasks and recurring schedules. Read child operations are "
+            "surface. Records outside the specified parent/child scope are not returned "
+            "or mutated. Read child operations are "
             "list, state, and collect; mutating child operations are spawn, message, "
             "and cancel. The state operation requires child_goal_id."
         ),
@@ -84,6 +84,8 @@ ACTION_SPECS = [
         facts_only=True,
         mutates=True,
         permission="read",
+        permission_policy="agent_operation",
+        delegation_allowed=False,
         source="action",
         governance_exempt=True,
     ),
@@ -133,12 +135,18 @@ ACTION_SPECS = [
         facts_only=True,
         mutates=True,
         permission="prepare",
+        delegation_allowed=False,
         source="action",
         governance_exempt=True,
     ),
     ToolSpec(
         name="goal.open",
         capability_class="goal",
+        risk_class="medium",
+        sensitive_contexts=("task_control",),
+        confirmation_required=False,
+        risk_reason_code="capability_safeguard_goal_open",
+        runtime_policy="when_auto_start",
         execution_contexts=("turn", API_CONTEXT),
         description=(
             "Create a durable, foreground, manual, or scheduled Goal/LoopRun "
@@ -156,8 +164,8 @@ ACTION_SPECS = [
                 "cron_schedule": {
                     "type": "string",
                     "description": (
-                        "Required when loop_kind is scheduled. Use a five-field cron "
-                        "expression, for example '54 11 * * *' for daily at 11:54."
+                        "Required when loop_kind is scheduled; a five-field cron "
+                        "expression interpreted in the service's local timezone."
                     ),
                 },
                 "parent_goal_id": {"type": "string"},
@@ -214,6 +222,11 @@ ACTION_SPECS = [
     ToolSpec(
         name="goal.resume",
         capability_class="goal",
+        risk_class="high",
+        sensitive_contexts=("task_control", "local_state"),
+        confirmation_required=True,
+        risk_reason_code="capability_safeguard_goal_resume",
+        runtime_policy="required",
         execution_contexts=("turn", API_CONTEXT),
         description="""Resume a durable Goal/LoopRun from its persisted checkpoint through the LoopControlService.""",
         input_schema={
@@ -256,6 +269,10 @@ ACTION_SPECS = [
     ToolSpec(
         name="goal.cancel",
         capability_class="goal",
+        risk_class="high",
+        sensitive_contexts=("task_control",),
+        confirmation_required=True,
+        risk_reason_code="capability_safeguard_goal_cancel",
         execution_contexts=("turn", API_CONTEXT),
         description="""Cancel an active durable Goal/LoopRun through the StateGraph control edge and persist a cancelled terminal state.""",
         input_schema={
@@ -294,8 +311,12 @@ ACTION_SPECS = [
     ToolSpec(
         name="goal.state",
         capability_class="goal",
+        risk_class="medium",
+        sensitive_contexts=("task_control",),
+        confirmation_required=False,
+        risk_reason_code="capability_safeguard_goal_state",
         execution_contexts=("turn", API_CONTEXT),
-        description="""Read authoritative durable Goal and LoopRun state without mutating execution. With an ID, read that exact goal/run. Without an ID, use view=current for current active work, view=scheduled for this actor's recurring schedules, or view=all for this actor's task history. Do not use agent.control or shell commands to list top-level tasks or schedules.""",
+        description="""Read authoritative durable Goal and LoopRun state without mutating execution. An ID selects that exact goal or loop run. Without an ID, view=current returns current active work, view=scheduled returns the actor's recurring schedules, and view=all returns the actor's task history.""",
         input_schema={
             "type": "object",
             "properties": {
@@ -487,7 +508,7 @@ ACTION_SPECS = [
                     "type": "string",
                     "description": (
                         "Optional caller-relative scope kind: global, actor, session, "
-                        "or workspace. Omit to use actor scope."
+                        "or workspace. Omission selects actor scope."
                     ),
                 },
                 "source": {"type": "string"},

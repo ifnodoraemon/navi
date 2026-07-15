@@ -204,24 +204,6 @@ class EvolutionLedger:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_evolution_proposal_status ON evolution_proposals(status)"
             )
-            self._migrate_evolution_proposals(conn)
-
-    @staticmethod
-    def _migrate_evolution_proposals(conn) -> None:
-        """Backfill evaluation columns on pre-existing evolution.db installs."""
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(evolution_proposals)")}
-        if "evaluation_evidence" not in columns:
-            conn.execute(
-                "ALTER TABLE evolution_proposals ADD COLUMN evaluation_evidence TEXT NOT NULL DEFAULT ''"
-            )
-        if "approved_by" not in columns:
-            conn.execute(
-                "ALTER TABLE evolution_proposals ADD COLUMN approved_by TEXT NOT NULL DEFAULT ''"
-            )
-        if "approved_at" not in columns:
-            conn.execute(
-                "ALTER TABLE evolution_proposals ADD COLUMN approved_at REAL NOT NULL DEFAULT 0.0"
-            )
 
     def record(
         self,

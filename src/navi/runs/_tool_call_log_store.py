@@ -39,20 +39,6 @@ class ToolCallLogStoreMixin:
 
     db_path: Path
 
-    @staticmethod
-    def _migrate_tool_call_logs(conn) -> None:
-        """Backfill run_id/trace_id columns on pre-v2 runs.db installs.
-
-        Principle 1.2: schema drift is rejected loudly by _assert_schema_exact,
-        so migration must bring the on-disk shape to the current contract before
-        the assertion runs."""
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(tool_call_logs)")}
-        if "run_id" not in columns:
-            conn.execute("ALTER TABLE tool_call_logs ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
-        if "trace_id" not in columns:
-            conn.execute("ALTER TABLE tool_call_logs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''")
-
-
     def add_tool_call_log(
         self,
         *,

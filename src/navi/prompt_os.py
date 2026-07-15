@@ -102,18 +102,6 @@ def assemble_planner_system_prompt() -> PromptAssembly:
             spec.get("prompt_boundaries"),
         ),
         _list_block(
-            "INTENT CLARIFICATION & PRE-PLANNING",
-            "stable",
-            "syscall_planner.intent_clarification_rules",
-            spec.get("intent_clarification_rules"),
-        ),
-        _numbered_block(
-            "TASK ROUTING RULES",
-            "stable",
-            "syscall_planner.routing_rules",
-            spec.get("routing_rules"),
-        ),
-        _list_block(
             "SECURITY GUIDELINE",
             "stable",
             "syscall_planner.security_guidelines",
@@ -249,7 +237,8 @@ def assemble_fact_response_system_prompt() -> PromptAssembly:
                 "fact_response.boundary",
                 (
                     "Generate the user-facing reply from the supplied facts only. "
-                    "Do not invent missing state, next actions, or hidden errors. "
+                    "Every claim about state, errors, completion, or proposed actions "
+                    "must be grounded in the supplied facts. "
                     "When an approval fact is pending, preserve its exact code, requested "
                     "tool, requested permission, and pending status in the reply; do not "
                     "claim that approval was granted or that the action completed."
@@ -364,13 +353,6 @@ def _iterable_prompt_values(values: object) -> list[object]:
 def _list_block(name: str, tier: str, source: str, values: object) -> PromptBlock:
     items = [str(item) for item in _iterable_prompt_values(values)]
     return PromptBlock(name, tier, source, "\n".join(f"- {item}" for item in items))
-
-
-def _numbered_block(name: str, tier: str, source: str, values: object) -> PromptBlock:
-    items = [str(item) for item in _iterable_prompt_values(values)]
-    return PromptBlock(
-        name, tier, source, "\n".join(f"{idx}. {item}" for idx, item in enumerate(items, start=1))
-    )
 
 
 def _responder_tier(layer_name: str) -> str:

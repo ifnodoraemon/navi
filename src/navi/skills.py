@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 
 from .operating_context import permission_allows
+from .permission_contract import normalize_permission
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,9 @@ class Skill:
     trust_level: str = "verified"
     scope: str = "global"
     evaluation: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "permission", normalize_permission(self.permission))
 
 
 class SkillStore:
@@ -196,8 +200,8 @@ class SkillStore:
         return (
             "\n".join(lines)
             + "\n\nThese are available skills (procedural guidance), not tools. "
-            "Read a skill's full instructions on demand with the `skills.view` "
-            "tool (by name) when it is relevant to the current task."
+            "The catalog omits full bodies; `skills.view` returns a named skill's "
+            "full instructions."
         )
 
     @staticmethod

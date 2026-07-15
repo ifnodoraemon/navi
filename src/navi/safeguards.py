@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .specs_data import CAPABILITY_SAFEGUARDS_SPEC
 from .tools import ToolSpec
 
 
@@ -113,6 +112,13 @@ _NETWORK_READ_ONLY_COMMANDS = {
     "kubectl": frozenset({"describe", "get", "logs", "top"}),
 }
 
+_DEFAULT_SAFEGUARDS = {
+    "read": ("low", (), False, "default_read_safeguard"),
+    "network": ("medium", ("network",), False, "default_network_safeguard"),
+    "prepare": ("medium", ("task_control",), False, "default_prepare_safeguard"),
+    "write": ("high", ("local_state",), True, "default_write_safeguard"),
+}
+
 
 def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
     """Return a fail-closed effect classification for one argv-only shell call."""
@@ -132,9 +138,6 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
         elif binary == "find" and not _find_has_effectful_action(argv[1:]):
             permission = "read"
             reason = "find_without_effectful_action"
-        elif binary == "crontab" and argv[1:] == ["-l"]:
-            permission = "read"
-            reason = "crontab_list_read_only"
         elif (
             binary == "git"
             and _first_positional(argv[1:]) in _GIT_READ_ONLY_SUBCOMMANDS
@@ -173,9 +176,9 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def required_permission_for_call(spec: ToolSpec, args: dict[str, Any] | None) -> str:
-    if spec.name == "shell.run":
+    if spec.permission_policy == "shell_argv":
         return str(shell_call_policy(args)["required_permission"])
-    if spec.name == "agent.control":
+    if spec.permission_policy == "agent_operation":
         operation = str((args or {}).get("operation") or "").strip().lower()
         return "prepare" if operation in {"spawn", "message", "cancel"} else "read"
     return spec.permission
@@ -245,13 +248,13 @@ def classify_capability(spec: ToolSpec) -> CapabilitySafeguard:
         risk_class=str(raw.get("risk_class") or "low"),
         sensitive_contexts=tuple(str(item) for item in raw.get("sensitive_contexts") or []),
         confirmation_required=bool(raw.get("confirmation_required", False)),
-        reason_code=str(raw.get("reason_code") or _safeguard_reason_code(spec)),
+        reason_code=str(raw["reason_code"]),
     )
 
 
 def capability_safeguard_facts(spec: ToolSpec) -> dict:
     facts = classify_capability(spec).to_facts()
-    if spec.name in {"shell.run", "agent.control"}:
+    if spec.permission_policy != "static":
         facts["call_dependent_permission"] = True
         facts["static_policy"] = "unknown_or_mutating_effect_fails_closed"
     return facts
@@ -284,7 +287,7 @@ def assess_capability_call(
         contexts.append("external_side_effect")
         evidence["external_effect"] = True
 
-    if spec.name == "file.write":
+    if spec.risk_policy == "workspace_file_write":
         path_facts = _file_write_risk_facts(call_args, workspace=workspace)
         evidence.update(path_facts)
         if path_facts["outside_workspace"]:
@@ -297,7 +300,7 @@ def assess_capability_call(
             confirmation_required = True
             reason_code = "destructive_file_overwrite_requires_approval"
             contexts.append("destructive_overwrite")
-    elif spec.name == "shell.run":
+    elif spec.risk_policy == "shell_argv":
         shell_policy = shell_call_policy(call_args)
         evidence.update(shell_policy)
         required_permission = str(shell_policy["required_permission"])
@@ -316,7 +319,7 @@ def assess_capability_call(
             confirmation_required = True
             reason_code = "opaque_shell_effect_requires_approval"
             contexts.append("opaque_process_effect")
-    elif spec.name == "http.fetch":
+    elif spec.risk_policy == "http_request":
         network_facts = _http_fetch_risk_facts(call_args)
         evidence.update(network_facts)
         if network_facts["private_or_local_target"]:
@@ -412,27 +415,23 @@ def _http_fetch_risk_facts(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _declared_safeguard(spec: ToolSpec) -> dict:
-    policy = CAPABILITY_SAFEGUARDS_SPEC or {}
-    tools = policy.get("tools") if isinstance(policy, dict) else {}
-    if isinstance(tools, dict) and isinstance(tools.get(spec.name), dict):
-        return dict(tools[spec.name])
-    defaults = policy.get("defaults") if isinstance(policy, dict) else {}
     default_key = "write" if spec.mutates or spec.permission == "write" else spec.permission
-    if isinstance(defaults, dict) and isinstance(defaults.get(default_key), dict):
-        return dict(defaults[default_key])
-    sensitive_contexts = ["local_state"] if spec.mutates else []
+    default_risk, default_contexts, default_confirmation, default_reason = (
+        _DEFAULT_SAFEGUARDS[default_key]
+    )
+    sensitive_contexts = spec.sensitive_contexts or default_contexts
     if spec.side_effect_policy.scope == "external":
-        sensitive_contexts = [*sensitive_contexts, "external_side_effect"]
+        sensitive_contexts = (*sensitive_contexts, "external_side_effect")
     return {
-        "risk_class": "high" if spec.mutates else "low",
+        "risk_class": spec.risk_class or default_risk,
         "sensitive_contexts": sensitive_contexts,
-        "confirmation_required": bool(spec.mutates),
+        "confirmation_required": (
+            default_confirmation
+            if spec.confirmation_required is None
+            else spec.confirmation_required
+        ),
+        "reason_code": spec.risk_reason_code or default_reason,
     }
-
-
-def _safeguard_reason_code(spec: ToolSpec) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "_", spec.name.lower()).strip("_")
-    return f"capability_safeguard_{normalized or 'default'}"
 
 
 _SECRET_PATTERNS: list[tuple[str, str]] = [

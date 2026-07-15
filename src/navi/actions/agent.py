@@ -79,12 +79,11 @@ class AgentSpawnCapability(BaseCapability):
 
         store = GoalStore(self.home)
         parent = _parent_for_actor(store, args=args, context=context)
-        active_children = [
-            child
-            for child in store.list_children(parent.id, limit=1000, newest=True)
-            if child.phase != Phase.ENDED
-        ]
-        if len(active_children) >= MAX_ACTIVE_CHILDREN:
+        active_child_count = store.count_children(
+            parent.id,
+            phases=(Phase.PENDING, Phase.RUNNING, Phase.PAUSED),
+        )
+        if active_child_count >= MAX_ACTIVE_CHILDREN:
             raise Conflict(
                 "agent.control(operation=spawn) allows at most "
                 f"{MAX_ACTIVE_CHILDREN} active children per parent."
@@ -191,7 +190,7 @@ class AgentSpawnCapability(BaseCapability):
             "allowed_capabilities": list(allowed_capabilities),
             "budget_policy": opened.loop_spec.budget_policy.to_dict(),
             "timeout_seconds": timeout_seconds,
-            "active_children": len(active_children) + 1,
+            "active_children": active_child_count + 1,
             "max_active_children": MAX_ACTIVE_CHILDREN,
         }
         return _fact_result("agent", facts, run_id=opened.run.id)
@@ -588,14 +587,13 @@ def _child_capability_envelope(
     context_allowed = set(context.allowed_tools) if context.allowed_tools is not None else None
     eligible: set[str] = set()
     for spec in registry.planner_specs(permission_ceiling=_CHILD_WORK_PERMISSION_CEILING):
-        if spec.name == _CHILD_REPORT_CAPABILITY:
+        if not spec.delegation_allowed:
             continue
         if spec.capability_class in _BLOCKED_CHILD_CLASSES:
             continue
-        if (spec.mutates and spec.name != "shell.run") or spec.permission not in {
-            "read",
-            "network",
-        }:
+        if spec.mutates and spec.permission_policy == "static":
+            continue
+        if spec.permission not in {"read", "network"}:
             continue
         if "*" not in parent_allowed and spec.name not in parent_allowed:
             continue
@@ -649,7 +647,7 @@ def _child_state(home: Path, child: Goal) -> dict[str, Any]:
 
 def _agent_reports(store: GoalStore, child_goal_id: str) -> list[dict[str, Any]]:
     reports: list[dict[str, Any]] = []
-    for event in store.list_events(child_goal_id, limit=1000):
+    for event in store.list_events(child_goal_id, limit=None):
         if event.event_type != "agent.reported":
             continue
         try:

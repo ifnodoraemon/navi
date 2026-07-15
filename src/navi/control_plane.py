@@ -12,7 +12,7 @@ from .capabilities import CapabilityContext, CapabilityRegistry
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from .turn_result import AgentTurnResult
 from .loop import TracePhase
-from .operating_context import PERMISSION_ORDER
+from .operating_context import max_permission, normalize_permission
 from .prompt_os import assemble_fact_response_system_prompt, assemble_fact_response_turn_input
 from .provider import ChatMessage
 from .runtime import AgentRuntime
@@ -51,7 +51,7 @@ class TurnController(TurnLifecycleMixin):
         self.home = home
         self.project_dir = project_dir
         self.runtime = runtime
-        self.permission_ceiling = permission_ceiling
+        self.permission_ceiling = normalize_permission(permission_ceiling, default="write")
         self.event_bus = event_bus
         self.capabilities = CapabilityRegistry(
             home=home,
@@ -60,7 +60,7 @@ class TurnController(TurnLifecycleMixin):
             allowed_tools=allowed_tools,
             disabled_tools=disabled_tools,
             disabled_capability_classes=disabled_capability_classes,
-            permission_ceiling=permission_ceiling,
+            permission_ceiling=self.permission_ceiling,
             execution_context=execution_context,
             governed_run_id=governed_run_id,
             runtime=runtime,
@@ -315,7 +315,7 @@ class TurnController(TurnLifecycleMixin):
         )
         if approval is None or not approval.requested_permission:
             return self.permission_ceiling
-        return _max_permission(self.permission_ceiling, approval.requested_permission)
+        return max_permission(self.permission_ceiling, approval.requested_permission)
 
     async def shutdown(self, *, timeout: float = 10.0) -> None:
         if self.event_bus:
@@ -339,12 +339,6 @@ class TurnController(TurnLifecycleMixin):
             for task in list(self._background_tasks):
                 task.cancel()
             await asyncio.gather(*tuple(self._background_tasks), return_exceptions=True)
-
-
-def _max_permission(current: str, requested: str) -> str:
-    current_level = PERMISSION_ORDER.get(current, 0)
-    requested_level = PERMISSION_ORDER.get(requested, 0)
-    return requested if requested_level > current_level else current
 
 
 def _fact_event(kind: str, facts: dict[str, Any]) -> str:

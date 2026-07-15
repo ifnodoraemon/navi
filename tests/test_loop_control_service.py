@@ -6,6 +6,7 @@ import sys
 
 import pytest
 
+from navi.db import connect
 from navi.goals import GoalStore
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
 from navi.loop_contracts import LoopTerminalState, VerificationKind
@@ -61,13 +62,68 @@ def test_loop_control_service_opens_goal_without_executing_state_graph(tmp_path)
     assert LoopRunStore(tmp_path).get_run(result.loop_run.run_id) is not None
 
 
+def test_loop_control_service_rejects_unknown_loop_kind(tmp_path):
+    with pytest.raises(ValueError, match="unsupported loop_kind"):
+        LoopControlService(tmp_path).open_goal(
+            OpenGoalRequest(
+                objective="unknown loop contract",
+                workspace=str(tmp_path),
+                loop_kind="unknown-kind",
+            )
+        )
+
+    assert GoalStore(tmp_path).list(limit=10) == []
+
+
+def test_loop_control_service_rejects_incomplete_persisted_spec(tmp_path):
+    service = LoopControlService(tmp_path)
+    opened = service.open_goal(
+        OpenGoalRequest(
+            objective="strict persisted loop contract",
+            workspace=str(tmp_path),
+            auto_start=False,
+        )
+    )
+    raw = json.loads(service.loop_runs.get_spec_json(opened.loop_spec.id))
+    raw["goal"].pop("permission_ceiling")
+    with connect(service.loop_runs.db_path) as conn:
+        conn.execute(
+            "UPDATE loop_specs SET spec_json = ? WHERE id = ?",
+            (json.dumps(raw), opened.loop_spec.id),
+        )
+
+    with pytest.raises(KeyError, match="permission_ceiling"):
+        service.resume_goal(goal_id=opened.goal.id)
+
+
+def test_active_loop_lookup_is_not_hidden_by_newer_terminal_history(tmp_path):
+    service = LoopControlService(tmp_path)
+    opened = service.open_goal(
+        OpenGoalRequest(
+            objective="retain active loop authority",
+            workspace=str(tmp_path),
+            auto_start=False,
+        )
+    )
+    for _ in range(101):
+        service.loop_runs.create_run(
+            opened.loop_spec,
+            terminal_state=LoopTerminalState.CONVERGED,
+        )
+
+    cancelled = service.cancel_goal(goal_id=opened.goal.id, reason="explicit stop")
+
+    assert cancelled.loop_run.run_id == opened.loop_run.run_id
+    assert cancelled.loop_run.terminal_state == LoopTerminalState.CANCELLED
+
+
 def test_scheduled_goal_registration_converges_without_entering_active_queue(tmp_path):
     service = LoopControlService(tmp_path)
     request = OpenGoalRequest(
         objective="remind me to eat and teach one AI concept",
         workspace=str(tmp_path),
         loop_kind="scheduled",
-        cron_schedule="54 11 * * *",
+        cron_schedule="15 8 * * *",
         source="weixin",
         peer_id="peer-1",
         sender_id="user-1",
@@ -84,7 +140,7 @@ def test_scheduled_goal_registration_converges_without_entering_active_queue(tmp
     assert registered.goal.phase == Phase.RUNNING
     assert registered.goal.acceptance == Acceptance.ACCEPTED
     assert registered.goal.task_status == "scheduled"
-    assert registered.goal.cron_schedule == "54 11 * * *"
+    assert registered.goal.cron_schedule == "15 8 * * *"
     assert registered.goal.next_run_at > registered.goal.created_at
     assert registered.loop_run.terminal_state == LoopTerminalState.CONVERGED
     assert registered.to_facts()["completion_evidence"] is True
@@ -115,7 +171,7 @@ def test_scheduled_goal_requires_valid_cron_expression(tmp_path):
                 objective="invalid schedule",
                 workspace=str(tmp_path),
                 loop_kind="scheduled",
-                cron_schedule="54 11",
+                cron_schedule="15 8",
             )
         )
 
@@ -137,7 +193,7 @@ def test_scheduled_occurrence_is_child_active_goal_without_recurring_cron(tmp_pa
             objective="daily reminder",
             workspace=str(tmp_path),
             loop_kind="scheduled",
-            cron_schedule="54 11 * * *",
+            cron_schedule="15 8 * * *",
             source="weixin",
             peer_id="peer-1",
             sender_id="user-1",
@@ -160,7 +216,7 @@ def test_scheduled_occurrence_is_child_active_goal_without_recurring_cron(tmp_pa
     trigger = occurrence.loop_spec.goal.metadata["trigger_facts"]
     assert trigger["type"] == "scheduled_occurrence"
     assert trigger["schedule_goal_id"] == registered.goal.id
-    assert trigger["cron_schedule"] == "54 11 * * *"
+    assert trigger["cron_schedule"] == "15 8 * * *"
     assert trigger["occurrence_number"] == 1
     assert trigger["prior_occurrences"] == []
 
@@ -172,7 +228,7 @@ def test_scheduled_occurrence_exposes_prior_output_and_delivery_as_facts(tmp_pat
             objective="teach a progressive daily topic",
             workspace=str(tmp_path),
             loop_kind="scheduled",
-            cron_schedule="54 11 * * *",
+            cron_schedule="15 8 * * *",
             source="weixin",
             peer_id="peer-1",
             sender_id="user-1",
@@ -217,7 +273,7 @@ def test_scheduled_goal_can_be_cancelled_after_registration(tmp_path):
             objective="daily reminder",
             workspace=str(tmp_path),
             loop_kind="scheduled",
-            cron_schedule="54 11 * * *",
+            cron_schedule="15 8 * * *",
         )
     )
 

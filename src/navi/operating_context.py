@@ -4,15 +4,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .permission_contract import PERMISSION_ORDER, normalize_permission
 from .tools import ToolSpec
-
-
-PERMISSION_ORDER = {
-    "read": 0,
-    "network": 1,
-    "prepare": 2,
-    "write": 3,
-}
 
 
 @dataclass(frozen=True)
@@ -37,6 +30,18 @@ class OperatingContext:
         "style",
     )
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "permission_ceiling",
+            normalize_permission(self.permission_ceiling, default="write"),
+        )
+        object.__setattr__(
+            self,
+            "skill_permission_ceiling",
+            normalize_permission(self.skill_permission_ceiling),
+        )
+
     def allows_permission(self, permission: str) -> bool:
         return permission_allows(permission, self.permission_ceiling)
 
@@ -51,14 +56,20 @@ class PromptLayer:
     minimum_permission: str = "read"
 
 
-def normalize_permission(value: object, *, default: str = "read") -> str:
-    permission = str(value or "").strip().lower()
-    return permission if permission in PERMISSION_ORDER else default
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "minimum_permission",
+            normalize_permission(self.minimum_permission),
+        )
 
 
 def permission_allows(required: str, ceiling: str) -> bool:
-    required_level = PERMISSION_ORDER[normalize_permission(required)]
-    ceiling_level = PERMISSION_ORDER[normalize_permission(ceiling)]
+    try:
+        required_level = PERMISSION_ORDER[normalize_permission(required)]
+        ceiling_level = PERMISSION_ORDER[normalize_permission(ceiling)]
+    except ValueError:
+        return False
     return required_level <= ceiling_level
 
 

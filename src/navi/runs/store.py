@@ -10,6 +10,7 @@ from typing import Any
 
 from ..db import connect, check_schema_version, write_schema_version
 from ..paths import db_paths
+from ..persistence_scope import append_actor_scope
 from ..schema import Column, Table, assert_schema_exact
 from ._approval_store import APPROVALS_TABLE, ApprovalStoreMixin
 from ._tool_call_log_store import (
@@ -62,11 +63,14 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
             conn.execute(RUNS_TABLE.ddl)
             assert_schema_exact(conn, RUNS_TABLE)
             conn.execute(TOOL_CALL_LOGS_TABLE.ddl)
-            self._migrate_tool_call_logs(conn)
             assert_schema_exact(conn, TOOL_CALL_LOGS_TABLE)
             conn.execute(APPROVALS_TABLE.ddl)
             assert_schema_exact(conn, APPROVALS_TABLE)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_phase ON runs(phase, updated_at)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_actor_scope "
+                "ON runs(source, peer_id, sender_id, workspace, updated_at)"
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tool_call_logs_tool ON tool_call_logs(tool, started_at)"
             )
@@ -78,6 +82,10 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_approvals_run ON approvals(run_id, status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_approvals_actor_scope "
+                "ON approvals(source, peer_id, sender_id, status, created_at)"
             )
             write_schema_version(conn, "runs", RUN_STORE_SCHEMA_VERSION)
 
@@ -266,6 +274,90 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
                 [*phases, limit],
             ).fetchall()
         return [self._run_from_row(row) for row in rows]
+
+    def list_by_phases_scoped(
+        self,
+        phases: typing.List[str],
+        *,
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+        workspace: str = "",
+        kind: str = "",
+        plan_summary: str = "",
+        limit: int = 60,
+    ) -> typing.List[Run]:
+        if not phases:
+            return []
+        placeholders = ", ".join("?" for _ in phases)
+        clauses = [f"phase IN ({placeholders})"]
+        params: list[Any] = list(phases)
+        append_actor_scope(
+            clauses,
+            params,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            workspace=workspace,
+        )
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if plan_summary:
+            clauses.append("plan_summary = ?")
+            params.append(plan_summary)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, title, phase, governance, acceptance, resolution, created_at, updated_at, kind, prompt, source,
+                       peer_id, sender_id, provider, workspace, autonomy_level, trust_rule_id,
+                       why_now, plan_summary, result_summary, error
+                FROM runs WHERE {' AND '.join(clauses)} ORDER BY updated_at ASC LIMIT ?
+                """,
+                [*params, max(1, int(limit))],
+            ).fetchall()
+        return [self._run_from_row(row) for row in rows]
+
+    def count_by_phases_scoped(
+        self,
+        phases: typing.List[str],
+        *,
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+        workspace: str = "",
+    ) -> int:
+        if not phases:
+            return 0
+        placeholders = ", ".join("?" for _ in phases)
+        clauses = [f"phase IN ({placeholders})"]
+        params: list[Any] = list(phases)
+        append_actor_scope(
+            clauses,
+            params,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            workspace=workspace,
+        )
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM runs WHERE {' AND '.join(clauses)}",
+                params,
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def list_active_workspaces(self) -> set[str]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT workspace
+                FROM runs
+                WHERE phase IN (?, ?, ?) AND workspace != ''
+                """,
+                ("pending", "running", "paused"),
+            ).fetchall()
+        return {str(row[0]) for row in rows}
 
     def delete_run(self, run_id: str) -> Run | None:
         run = self.get(run_id)

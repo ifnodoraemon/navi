@@ -21,6 +21,11 @@ def _tools_list(registry: ToolRegistry) -> ToolResult:
                     "mutates": spec.mutates,
                     "source": spec.source,
                     "side_effect_policy": spec.side_effect_policy.to_dict(),
+                    "permission_policy": spec.permission_policy,
+                    "risk_policy": spec.risk_policy,
+                    "context_policy": spec.context_policy,
+                    "runtime_policy": spec.runtime_policy,
+                    "delegation_allowed": spec.delegation_allowed,
                     "input_properties": sorted((spec.input_schema.get("properties") or {}).keys()),
                     "required": list(spec.input_schema.get("required") or []),
                     "safeguards": capability_safeguard_facts(spec),
@@ -30,4 +35,3 @@ def _tools_list(registry: ToolRegistry) -> ToolResult:
             "count": len(specs),
         },
     )
-

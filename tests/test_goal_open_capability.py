@@ -92,7 +92,7 @@ async def test_goal_open_scheduled_is_registration_not_immediate_execution(tmp_p
             "objective": "daily reminder",
             "workspace": str(tmp_path),
             "loop_kind": "scheduled",
-            "cron_schedule": "54 11 * * *",
+            "cron_schedule": "15 8 * * *",
             "allowed_capabilities": ["respond"],
         },
         permission="prepare",
@@ -103,7 +103,7 @@ async def test_goal_open_scheduled_is_registration_not_immediate_execution(tmp_p
     assert provider.calls == []
     assert result.facts is not None
     assert result.facts["state_transition"] == "scheduled"
-    assert result.facts["cron_schedule"] == "54 11 * * *"
+    assert result.facts["cron_schedule"] == "15 8 * * *"
     assert result.facts["registration_evidence"] is True
     assert result.facts["completion_evidence"] is True
     assert result.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
@@ -137,7 +137,7 @@ async def test_goal_open_scheduled_persists_real_workspace_from_turn_shadow(
         {
             "objective": "daily reminder",
             "loop_kind": "scheduled",
-            "cron_schedule": "54 11 * * *",
+            "cron_schedule": "15 8 * * *",
             "allowed_capabilities": ["respond"],
         },
         permission="prepare",
@@ -457,7 +457,7 @@ async def test_goal_state_scheduled_view_is_actor_scoped_and_authoritative(
             "objective": "visible daily schedule",
             "workspace": str(tmp_path),
             "loop_kind": "scheduled",
-            "cron_schedule": "54 11 * * *",
+            "cron_schedule": "15 8 * * *",
             "allowed_capabilities": ["respond"],
         },
         permission="prepare",
@@ -489,3 +489,35 @@ async def test_goal_state_scheduled_view_is_actor_scoped_and_authoritative(
     assert [goal["id"] for goal in state.facts["scheduled_goals"]] == [
         visible.facts["goal_id"]
     ]
+
+
+@pytest.mark.asyncio
+async def test_goal_state_actor_scope_is_applied_before_limit(tmp_path: Path) -> None:
+    visible = GoalStore(tmp_path).create(
+        objective="visible older task",
+        workspace=str(tmp_path),
+        source="cli",
+        peer_id="cli",
+        sender_id="tester",
+    )
+    for index in range(101):
+        GoalStore(tmp_path).create(
+            objective=f"hidden newer task {index}",
+            workspace=str(tmp_path),
+            source="telegram",
+            peer_id="other-peer",
+            sender_id="other-user",
+        )
+
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    state = await registry.invoke(
+        "goal.state",
+        {"view": "all", "limit": 20},
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert state.ok is True
+    assert state.facts["authoritative_for"] == "actor_goals"
+    assert state.facts["matched_count"] == 1
+    assert [goal["id"] for goal in state.facts["goals"]] == [visible.id]

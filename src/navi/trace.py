@@ -322,11 +322,20 @@ class TraceStore:
         return self._resolve_events_blobs(events)
 
     def list_loop_decisions(self, trace_id: str, *, limit: int = 5000, offset: int = 0) -> list[TraceEvent]:
-        return [
-            event
-            for event in self.list_events(trace_id, limit=limit, offset=offset)
-            if event.phase == LOOP_DECISION_PHASE
-        ]
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, trace_id, session_id, run_id, phase, source, peer_id,
+                       sender_id, tool, model_role, ok, input_json, output_json,
+                       message, created_at
+                FROM trace_events
+                WHERE trace_id = ? AND phase = ?
+                ORDER BY created_at ASC LIMIT ? OFFSET ?
+                """,
+                (trace_id, LOOP_DECISION_PHASE, limit, offset),
+            ).fetchall()
+        events = [_trace_event_from_row(row) for row in rows]
+        return self._resolve_events_blobs(events)
 
     def list_run_views(self, trace_id: str, *, limit: int = 5000, offset: int = 0) -> list[TraceRunView]:
         events = self.list_events(trace_id, limit=limit, offset=offset)

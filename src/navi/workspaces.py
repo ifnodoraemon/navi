@@ -233,8 +233,6 @@ class ShadowWorkspaceManager:
     def durable_workspace_for(
         self,
         workspace: str,
-        *,
-        managed_fallback: Path | None = None,
     ) -> str:
         """Map an ephemeral managed workspace back to its durable real root.
 
@@ -259,29 +257,30 @@ class ShadowWorkspaceManager:
             ).fetchone()
         if row:
             real_workspace = Path(ShadowWorkspaceRecord(*row).real_workspace).expanduser().resolve()
-            if real_workspace.is_dir():
-                return str(real_workspace)
-
-        managed_root = self.shadow_root.expanduser().resolve()
-        if managed_fallback is not None and candidate.is_relative_to(managed_root):
-            fallback = managed_fallback.expanduser().resolve()
-            if fallback.is_dir():
-                return str(fallback)
+            return str(real_workspace)
         return str(candidate)
 
-    def list_shadows(self, *, status: str = "", limit: int = 100) -> tuple[ShadowWorkspaceRecord, ...]:
+    def list_shadows(
+        self,
+        *,
+        status: str = "",
+        real_workspace: str = "",
+        limit: int = 100,
+    ) -> tuple[ShadowWorkspaceRecord, ...]:
+        clauses: list[str] = []
+        params: list[Any] = []
         if status:
-            query = (
-                f"SELECT {SHADOW_WORKSPACES_TABLE.select_list} FROM shadow_workspaces "
-                "WHERE status = ? ORDER BY updated_at DESC LIMIT ?"
-            )
-            params: tuple[Any, ...] = (status, limit)
-        else:
-            query = (
-                f"SELECT {SHADOW_WORKSPACES_TABLE.select_list} FROM shadow_workspaces "
-                "ORDER BY updated_at DESC LIMIT ?"
-            )
-            params = (limit,)
+            clauses.append("status = ?")
+            params.append(status)
+        if real_workspace:
+            clauses.append("real_workspace = ?")
+            params.append(str(Path(real_workspace).expanduser().resolve()))
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = (
+            f"SELECT {SHADOW_WORKSPACES_TABLE.select_list} FROM shadow_workspaces"
+            f"{where} ORDER BY updated_at DESC LIMIT ?"
+        )
+        params.append(max(1, int(limit)))
         with connect(self.db_path) as conn:
             rows = conn.execute(query, params).fetchall()
         return tuple(ShadowWorkspaceRecord(*row) for row in rows)

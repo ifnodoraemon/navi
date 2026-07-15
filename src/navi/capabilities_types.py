@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from .permission_contract import normalize_permission
 from .tools import ToolSpec
 
 
@@ -88,6 +89,13 @@ class CapabilityContext:
     runtime_facts: Mapping[str, Any] | None = None
     execution_context: str = "turn"
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "permission_ceiling",
+            normalize_permission(self.permission_ceiling, default="write"),
+        )
+
 
 @dataclass(frozen=True)
 class CapabilityResult:
@@ -114,6 +122,11 @@ class CapabilityNode:
     provider: str
     description: str = ""
     side_effect_policy: dict[str, Any] | None = None
+    permission_policy: str = "static"
+    risk_policy: str = "declared"
+    context_policy: str = "none"
+    runtime_policy: str = "none"
+    delegation_allowed: bool = True
 
 
 class BaseCapability:

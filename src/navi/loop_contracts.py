@@ -6,6 +6,8 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
+from .permission_contract import normalize_permission
+
 
 class LoopNode(StrEnum):
     PLAN = "plan"
@@ -97,8 +99,7 @@ class GoalSpec:
             raise ValueError("GoalSpec.scope is required")
         if not self.acceptance_criteria:
             raise ValueError("GoalSpec.acceptance_criteria is required")
-        if not self.permission_ceiling.strip():
-            raise ValueError("GoalSpec.permission_ceiling is required")
+        normalize_permission(self.permission_ceiling)
 
     def to_dict(self) -> dict[str, Any]:
         return {

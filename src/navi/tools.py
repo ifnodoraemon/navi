@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .connector_registry import load_connector_adapters
+from .permission_contract import normalize_permission
 from .runs import RunStore
 
 
@@ -158,6 +159,15 @@ class ToolSpec:
     permission: str = "read"
     source: str = "core"
     side_effect_policy: SideEffectPolicy = field(default_factory=SideEffectPolicy)
+    permission_policy: str = "static"
+    risk_policy: str = "declared"
+    context_policy: str = "none"
+    runtime_policy: str = "none"
+    delegation_allowed: bool = True
+    risk_class: str = ""
+    sensitive_contexts: tuple[str, ...] = ()
+    confirmation_required: bool | None = None
+    risk_reason_code: str = ""
     # Governance primitives carry their own first-level guard and must not be
     # suspended by the approval mechanism they implement — that creates an
     # infinite approval loop. Declared per-spec so the exemption is data-driven,
@@ -172,6 +182,58 @@ class ToolSpec:
         if not contexts:
             raise ValueError(f"tool {self.name!r} must declare execution_contexts")
         object.__setattr__(self, "execution_contexts", contexts)
+        object.__setattr__(self, "permission", normalize_permission(self.permission))
+        permission_policy = str(self.permission_policy or "static").strip()
+        if permission_policy not in {"static", "shell_argv", "agent_operation"}:
+            raise ValueError(
+                f"tool {self.name!r} declares unsupported permission_policy "
+                f"{permission_policy!r}"
+            )
+        object.__setattr__(self, "permission_policy", permission_policy)
+        risk_policy = str(self.risk_policy or "declared").strip()
+        if risk_policy not in {
+            "declared",
+            "workspace_file_write",
+            "shell_argv",
+            "http_request",
+        }:
+            raise ValueError(
+                f"tool {self.name!r} declares unsupported risk_policy {risk_policy!r}"
+            )
+        object.__setattr__(self, "risk_policy", risk_policy)
+        context_policy = str(self.context_policy or "none").strip()
+        if context_policy not in {"none", "actor_memory"}:
+            raise ValueError(
+                f"tool {self.name!r} declares unsupported context_policy "
+                f"{context_policy!r}"
+            )
+        object.__setattr__(self, "context_policy", context_policy)
+        runtime_policy = str(self.runtime_policy or "none").strip()
+        if runtime_policy not in {"none", "required", "when_auto_start"}:
+            raise ValueError(
+                f"tool {self.name!r} declares unsupported runtime_policy "
+                f"{runtime_policy!r}"
+            )
+        object.__setattr__(self, "runtime_policy", runtime_policy)
+        risk_class = str(self.risk_class or "").strip().lower()
+        if risk_class and risk_class not in {"low", "medium", "high"}:
+            raise ValueError(
+                f"tool {self.name!r} declares unsupported risk_class {risk_class!r}"
+            )
+        object.__setattr__(self, "risk_class", risk_class)
+        sensitive_contexts = tuple(
+            dict.fromkeys(
+                str(item).strip() for item in self.sensitive_contexts if str(item).strip()
+            )
+        )
+        object.__setattr__(self, "sensitive_contexts", sensitive_contexts)
+        object.__setattr__(self, "risk_reason_code", str(self.risk_reason_code or "").strip())
+        if (
+            risk_class or sensitive_contexts or self.confirmation_required is not None
+        ) and not self.risk_reason_code:
+            raise ValueError(
+                f"tool {self.name!r} must declare risk_reason_code with custom risk facts"
+            )
         policy = self.side_effect_policy
         if self.mutates and policy.scope == "none":
             policy = SideEffectPolicy(

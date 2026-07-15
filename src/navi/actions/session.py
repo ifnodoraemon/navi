@@ -132,13 +132,15 @@ def _existing_elevation_request(
     sender_id: str,
     target_permission: str,
 ):
-    for run in runs.list(limit=100):
-        if run.kind != "elevation" or run.phase == Phase.ENDED:
-            continue
-        if run.source != source or run.peer_id != peer_id or run.sender_id != sender_id:
-            continue
-        if run.plan_summary != f"session_elevation:{target_permission}":
-            continue
+    for run in runs.list_by_phases_scoped(
+        [Phase.PENDING, Phase.RUNNING, Phase.PAUSED],
+        source=source,
+        peer_id=peer_id,
+        sender_id=sender_id,
+        kind="elevation",
+        plan_summary=f"session_elevation:{target_permission}",
+        limit=1,
+    ):
         approval = runs.pending_approval_for_run(
             run.id,
             source=source,

@@ -15,7 +15,6 @@ from .daemon_types import (
 from .detectors import GitMutationDetector, PortEventDetector, ServiceLogDetector
 from .event_bus import AgentTurnCompletedEvent, EventBus, NaviEvent
 from .graph import GraphNode, GraphStore
-from .lifecycle import Phase
 from .runs import Run, RunStore
 
 logger = logging.getLogger("navi.daemon")
@@ -50,14 +49,12 @@ class SystemDaemon:
                     from navi.goals import GoalStore
 
                     goal_store = GoalStore(self.home)
-                    goals = [
-                        g
-                        for g in goal_store.list()
-                        if g.phase in (Phase.PENDING, Phase.RUNNING, Phase.PAUSED)
-                    ]
+                    goals = goal_store.list_scoped(
+                        session_id=event.session_id,
+                        phases=(Phase.PENDING, Phase.RUNNING, Phase.PAUSED),
+                        limit=None,
+                    )
                     for g in goals:
-                        if g.session_id != event.session_id:
-                            continue
                         # Principle 17: enforce the goal's declared stop condition
                         # before doing more work on it, so a long-running goal is
                         # not kept active past its timeout / retry budget.
@@ -144,34 +141,71 @@ class SystemDaemon:
         now = time.time()
         from .goals import GoalStore
         from .loop_control_service import LoopControlService
-        from .workspaces import ShadowWorkspaceManager
 
         goal_store = GoalStore(self.home)
         service = LoopControlService(self.home)
-        workspace_manager = ShadowWorkspaceManager(self.home)
-
-        # Recurring templates must never retain a turn-scoped shadow path.  Repair
-        # pre-fix rows from the durable workspace audit table before checking due
-        # work, including templates that are not due yet.
-        for registered in goal_store.list_cron_goals():
-            durable_workspace = workspace_manager.durable_workspace_for(
-                registered.workspace,
-                managed_fallback=self.project_dir,
-            )
-            if durable_workspace != registered.workspace:
-                goal_store.update_cron_workspace(
-                    registered.id,
-                    durable_workspace,
-                    previous_workspace=registered.workspace,
-                )
 
         due_goals = goal_store.due_cron_goals(now)
         for g in due_goals:
             scheduled_for = g.next_run_at
+            trace_id = f"cron-{g.id}-{int(scheduled_for)}"
+            try:
+                next_time = next_cron_time(g.cron_schedule, now=now)
+            except Exception as schedule_error:
+                error_type = type(schedule_error).__name__
+                error = str(schedule_error)[:1000]
+                goal_store.block_invalid_cron_schedule(
+                    g.id,
+                    scheduled_for=scheduled_for,
+                    error_type=error_type,
+                    error=error,
+                    trace_id=trace_id,
+                )
+                from .loop import TracePhase
+                from .trace import TraceStore
+
+                failure_facts = {
+                    "kind": "scheduled_template_invalid",
+                    "cron_goal_id": g.id,
+                    "objective": g.objective,
+                    "cron_schedule": g.cron_schedule,
+                    "scheduled_for": scheduled_for,
+                    "state_transition": "schedule_blocked",
+                    "error_type": error_type,
+                    "error": error,
+                }
+                trace = TraceStore(self.home)
+                trace.add_event(
+                    trace_id=trace_id,
+                    phase=TracePhase.CAPABILITY_RESULT,
+                    run_id=g.run_id,
+                    source=g.source,
+                    peer_id=g.peer_id,
+                    sender_id=g.sender_id,
+                    tool="goal.schedule",
+                    ok=False,
+                    input_data={
+                        "cron_goal_id": g.id,
+                        "scheduled_for": scheduled_for,
+                    },
+                    output_data=failure_facts,
+                    message="Persisted schedule violates the cron contract",
+                )
+                trace.evaluate_trace(trace_id)
+                created.append(
+                    {
+                        "cron_goal_id": g.id,
+                        "peer_id": g.peer_id,
+                        "workspace": g.workspace,
+                        "trace_id": trace_id,
+                        "facts": failure_facts,
+                        "surface": True,
+                    }
+                )
+                continue
             try:
                 occurrence = service.open_scheduled_occurrence(g)
 
-                next_time = next_cron_time(g.cron_schedule, now=now)
                 goal_store.update_cron_run(g.id, next_time)
                 created.append(
                     {
@@ -186,13 +220,6 @@ class SystemDaemon:
                 )
             except Exception as e:
                 logger.error("Failed to process cron goal %s: %s", g.id, e, exc_info=True)
-                try:
-                    next_time = next_cron_time(g.cron_schedule, now=now)
-                except Exception:
-                    # A malformed persisted schedule must be bounded too; schema
-                    # validation prevents new rows from reaching this fallback.
-                    next_time = now + 3600.0
-                trace_id = f"cron-{g.id}-{int(scheduled_for)}"
                 error_type = type(e).__name__
                 error = str(e)[:1000]
                 goal_store.record_cron_failure(
@@ -392,9 +419,8 @@ class SystemDaemon:
 
     def _active_workspaces(self) -> set[str]:
         return {
-            self._canonical_path(task.workspace)
-            for task in self.runs.list_by_phases([Phase.RUNNING, Phase.PENDING, Phase.PAUSED])
-            if task.workspace
+            self._canonical_path(workspace)
+            for workspace in self.runs.list_active_workspaces()
         }
 
     @staticmethod

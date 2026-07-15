@@ -132,6 +132,25 @@ def test_trace_blob_resolution_preserves_non_blob_loop_decision_payloads(tmp_pat
     )
 
 
+def test_loop_decision_filter_is_applied_before_pagination(tmp_path):
+    store = TraceStore(tmp_path)
+    trace_id = "trace-decision-pagination"
+    for index in range(6):
+        store.add_event(trace_id=trace_id, phase="capability.result", message=str(index))
+    store.add_loop_decision(
+        trace_id=trace_id,
+        decision=LoopDecision(
+            decision=LoopDecisionKind.CONTINUE,
+            reason=LoopReason.CAPABILITY_FACT_RECORDED,
+        ),
+    )
+
+    decisions = store.list_loop_decisions(trace_id, limit=1)
+
+    assert len(decisions) == 1
+    assert decisions[0].phase == "loop.decision"
+
+
 def test_trace_store_redacts_legacy_rows_on_init(tmp_path):
     TraceStore(tmp_path)
     with connect(tmp_path / "traces.db") as conn:

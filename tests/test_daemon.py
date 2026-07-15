@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from navi.daemon import SystemDaemon
+from navi.db import connect
 from navi.daemon_types import ProjectEventContext, ProactiveEvent
 from navi.detectors import GitMutationDetector, PortEventDetector, ServiceLogDetector
 from navi.graph import GraphStore
@@ -14,7 +15,6 @@ from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.loop_runs import LoopRunStore
 from navi.memory.store import MemoryStore
 from navi.trace import TraceStore
-from navi.workspaces import ShadowWorkspaceManager
 
 
 def test_read_log_diff_redacts_secrets_in_diff_and_error_lines(tmp_path: Path) -> None:
@@ -125,6 +125,23 @@ async def test_active_task_defers_event_without_consuming_detector_state(tmp_pat
     assert surfaced_data["last_git_status_hash"] == "new-hash"
 
 
+def test_active_workspace_detection_is_not_truncated_by_global_run_limit(tmp_path: Path) -> None:
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
+    for index in range(61):
+        workspace = tmp_path / f"noise-{index}"
+        workspace.mkdir()
+        daemon.runs.create(
+            f"active noise {index}",
+            workspace=str(workspace),
+            phase="running",
+        )
+    target = tmp_path / "target-workspace"
+    target.mkdir()
+    daemon.runs.create("target active run", workspace=str(target), phase="running")
+
+    assert str(target.resolve()) in daemon._active_workspaces()
+
+
 def test_daemon_mutation_trace_is_evaluated(tmp_path: Path) -> None:
     daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
 
@@ -169,7 +186,7 @@ async def test_daemon_materializes_due_cron_goal_as_child_run(tmp_path: Path, mo
             objective="daily reminder",
             workspace=str(tmp_path),
             loop_kind="scheduled",
-            cron_schedule="54 11 * * *",
+            cron_schedule="15 8 * * *",
             source="weixin",
             peer_id="peer-1",
             sender_id="user-1",
@@ -206,62 +223,6 @@ async def test_daemon_materializes_due_cron_goal_as_child_run(tmp_path: Path, mo
 
 
 @pytest.mark.asyncio
-async def test_daemon_repairs_deleted_shadow_workspace_before_cron_materialization(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    home = tmp_path / ".navi"
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "app.py").write_text("base\n", encoding="utf-8")
-    manager = ShadowWorkspaceManager(home)
-    shadow = manager.create_shadow(run_id="register-turn", workspace=repo)
-    service = LoopControlService(home)
-    registered = service.open_goal(
-        OpenGoalRequest(
-            objective="daily durable reminder",
-            workspace=shadow.shadow_workspace,
-            loop_kind="scheduled",
-            cron_schedule="54 11 * * *",
-            source="weixin",
-            peer_id="peer-1",
-            sender_id="user-1",
-            allowed_capabilities=("respond",),
-        )
-    )
-    GoalStore(home).update_cron_run(registered.goal.id, 1.0)
-    manager.merge_run("register-turn")
-    assert not Path(shadow.shadow_workspace).exists()
-
-    daemon = SystemDaemon(home, project_dir=repo)
-
-    async def no_memory_maintenance():
-        return {"ok": True}
-
-    async def no_events():
-        return []
-
-    monkeypatch.setattr(daemon, "process_memory_maintenance_once", no_memory_maintenance)
-    monkeypatch.setattr(daemon, "process_events_once", no_events)
-
-    created = await daemon.process_background_once()
-
-    assert len(created) == 1
-    child = GoalStore(home).get(created[0]["goal_id"])
-    assert child is not None
-    assert child.workspace == str(repo.resolve())
-    repaired = GoalStore(home).get(registered.goal.id)
-    assert repaired is not None
-    assert repaired.workspace == str(repo.resolve())
-    repair_events = [
-        event
-        for event in GoalStore(home).list_events(registered.goal.id)
-        if event.event_type == "goal.schedule_workspace_repaired"
-    ]
-    assert len(repair_events) == 1
-
-
-@pytest.mark.asyncio
 async def test_daemon_advances_and_traces_failed_cron_occurrence(
     tmp_path: Path,
     monkeypatch,
@@ -275,7 +236,7 @@ async def test_daemon_advances_and_traces_failed_cron_occurrence(
             objective="daily reminder with missing workspace",
             workspace=str(vanished),
             loop_kind="scheduled",
-            cron_schedule="54 11 * * *",
+            cron_schedule="15 8 * * *",
             source="weixin",
             peer_id="peer-1",
             sender_id="user-1",
@@ -314,6 +275,59 @@ async def test_daemon_advances_and_traces_failed_cron_occurrence(
     assert trace_events[0].tool == "goal.open_scheduled_occurrence"
     assert trace_events[0].ok is False
 
+    assert await daemon.process_background_once() == []
+
+
+@pytest.mark.asyncio
+async def test_daemon_blocks_invalid_persisted_cron_without_guessed_retry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / ".navi"
+    registered = LoopControlService(home).open_goal(
+        OpenGoalRequest(
+            objective="persisted invalid schedule",
+            workspace=str(tmp_path),
+            loop_kind="scheduled",
+            cron_schedule="0 8 * * *",
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            allowed_capabilities=("respond",),
+        )
+    )
+    store = GoalStore(home)
+    with connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE goals SET cron_schedule = ?, next_run_at = ? WHERE id = ?",
+            ("invalid persisted value", 1.0, registered.goal.id),
+        )
+    daemon = SystemDaemon(home, project_dir=tmp_path)
+
+    async def no_memory_maintenance():
+        return {"ok": True}
+
+    async def no_events():
+        return []
+
+    monkeypatch.setattr(daemon, "process_memory_maintenance_once", no_memory_maintenance)
+    monkeypatch.setattr(daemon, "process_events_once", no_events)
+
+    created = await daemon.process_background_once()
+
+    assert len(created) == 1
+    assert created[0]["facts"]["kind"] == "scheduled_template_invalid"
+    assert created[0]["facts"]["state_transition"] == "schedule_blocked"
+    refreshed = store.get(registered.goal.id)
+    assert refreshed is not None
+    assert refreshed.phase == "ended"
+    assert refreshed.resolution == "blocked"
+    assert refreshed.task_status == "blocked"
+    assert refreshed.blocked_reason == "invalid_cron_schedule"
+    assert refreshed.next_run_at == 0.0
+    assert [
+        event.event_type for event in store.list_events(registered.goal.id)
+    ].count("goal.schedule_invalid") == 1
     assert await daemon.process_background_once() == []
 
 

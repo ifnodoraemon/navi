@@ -97,9 +97,9 @@ child-only terminal `agent.report` protocol. A report is a claim; completion
 remains separate and requires the child LoopRun and checker evidence to
 converge. Transient background resource pauses resume at their persisted node;
 they must not be mislabeled or replayed as approval continuations.
-`agent.control` lists and reads only these depth-1 children. Top-level task,
-history, and recurring-schedule queries use the actor-scoped `goal.state`
-views and must declare the scope for which an empty result is authoritative.
+`agent.control` exposes only depth-1 child records. `goal.state` exposes
+actor-scoped top-level task, history, and recurring-schedule views. Read
+results declare the scope for which an empty result is authoritative.
 
 ## Capability Contract
 
@@ -108,7 +108,12 @@ Capabilities are stable external contracts. Each capability declares:
 - name, source, capability class, execution contexts, and permission;
 - JSON input and output schemas;
 - whether it mutates state;
+- call-dependent permission, risk, actor-context, runtime, and delegation policies;
 - side-effect scope and stage/commit/compensate behavior when applicable.
+
+Governance code executes those declared policies generically. It must not infer
+permission, risk, context injection, runtime binding, or delegation eligibility
+from capability names.
 
 The capability surface must remain minimal. If an existing generic capability
 can express a new operation through parameters or an input-schema extension,
@@ -159,11 +164,11 @@ Trace is audit evidence, not the authoritative runtime state. Secrets and
 sensitive payloads must be redacted before persistence.
 
 Recurring Goal templates must persist a durable real workspace, never a
-turn-scoped shadow workspace. Pre-existing managed shadow paths must be repaired
-from workspace audit state. Occurrence-creation failures must advance the
-template out of the due queue, record a Goal event and failure trace, and expose
-structured facts to the connector notification boundary instead of retrying in
-a tight loop or disappearing silently.
+turn-scoped shadow workspace. Registration resolves managed paths from workspace
+audit state. Occurrence-creation failures must advance the template out of the
+due queue, record a Goal event and failure trace, and expose structured facts to
+the connector notification boundary instead of retrying in a tight loop or
+disappearing silently.
 
 ## Surfaces
 

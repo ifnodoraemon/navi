@@ -81,18 +81,20 @@ class ApprovalService:
         run_id: str = "",
     ) -> ApprovalResolution:
         runs = RunStore(self.home)
-        candidates = [
-            run
-            for run in runs.list_by_phases([Phase.PENDING, Phase.RUNNING, Phase.PAUSED], limit=100)
-            if run_matches_context(run, context)
-        ]
+        active_run_count = runs.count_by_phases_scoped(
+            [Phase.PENDING, Phase.RUNNING, Phase.PAUSED],
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+        )
         normalized_decision = decision.strip().lower()
         if normalized_decision not in APPROVAL_DECISIONS:
             return _approval_not_resolved(
                 decision=normalized_decision,
                 reason="invalid_decision",
                 code_present=bool(code),
-                active_run_count=len(candidates),
+                active_run_count=active_run_count,
                 selection=selection,
             )
 
@@ -135,7 +137,7 @@ class ApprovalService:
                 decision=normalized_decision,
                 reason=reason,
                 code_present=bool(code),
-                active_run_count=len(candidates),
+                active_run_count=active_run_count,
                 selection=selection,
                 run_id=run_id,
             )
@@ -147,7 +149,7 @@ class ApprovalService:
                 decision=normalized_decision,
                 selection=selection,
                 code_present=bool(code),
-                active_run_count=len(candidates),
+                active_run_count=active_run_count,
             )
 
         with connect(runs.db_path) as conn:
@@ -162,7 +164,7 @@ class ApprovalService:
                     decision=normalized_decision,
                     reason="approval_not_pending",
                     code_present=bool(code),
-                    active_run_count=len(candidates),
+                    active_run_count=active_run_count,
                     selection=selection,
                     run_id=approval.run_id,
                     approval_id=approval.id,
@@ -215,7 +217,7 @@ class ApprovalService:
             normalized_decision=normalized_decision,
             selection=selection,
             code_present=bool(code),
-            active_run_count=len(candidates),
+            active_run_count=active_run_count,
             status=status,
             phase=phase,
             governance=governance,
@@ -576,17 +578,23 @@ class CurrentStateBuilder:
     def build(self, context: SurfaceContext) -> CurrentState:
         runs = RunStore(self.home)
         active_runs = tuple(
-            run
-            for run in runs.list_by_phases([Phase.PENDING, Phase.RUNNING, Phase.PAUSED], limit=100)
-            if run_matches_context(run, context)
-        )
-        pending_approvals = tuple(
-            approval
-            for approval in runs.list_approvals(
-                status=APPROVAL_STATUS_PENDING,
+            runs.list_by_phases_scoped(
+                [Phase.PENDING, Phase.RUNNING, Phase.PAUSED],
+                source=context.source,
+                peer_id=context.peer_id,
+                sender_id=context.sender_id,
+                workspace=context.workspace,
                 limit=100,
             )
-            if run_matches_context(approval, context)
+        )
+        pending_approvals = tuple(
+            runs.list_approvals(
+                status=APPROVAL_STATUS_PENDING,
+                source=context.source,
+                peer_id=context.peer_id,
+                sender_id=context.sender_id,
+                limit=100,
+            )
         )
         active_goals = _active_goals(self.home, context)
         active_loop_runs = _active_loop_runs(self.home, active_goals)
@@ -779,11 +787,14 @@ def _active_goals(home: Path, context: SurfaceContext) -> tuple[Any, ...]:
     from .goals import GoalStore
 
     return tuple(
-        goal
-        for goal in GoalStore(home).list(limit=100)
-        if goal.phase in {Phase.PENDING, Phase.RUNNING, Phase.PAUSED}
-        and run_matches_context(goal, context)
-        and _workspace_matches(goal.workspace, context.workspace)
+        GoalStore(home).list_scoped(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            phases=(Phase.PENDING, Phase.RUNNING, Phase.PAUSED),
+            limit=100,
+        )
     )
 
 
@@ -809,12 +820,13 @@ def _recent_goal_outcomes(
     from .goals import GoalStore
     from .loop_runs import LoopRunStore
 
-    goals = [
-        goal
-        for goal in GoalStore(home).list(limit=100)
-        if run_matches_context(goal, context)
-        and _workspace_matches(goal.workspace, context.workspace)
-    ][:limit]
+    goals = GoalStore(home).list_scoped(
+        source=context.source,
+        peer_id=context.peer_id,
+        sender_id=context.sender_id,
+        workspace=context.workspace,
+        limit=limit,
+    )
     runs = RunStore(home)
     loop_runs = LoopRunStore(home)
     outcomes: list[dict[str, Any]] = []
@@ -850,16 +862,33 @@ def _recent_goal_outcomes(
 def _delegation_state(home: Path, context: SurfaceContext) -> dict[str, Any]:
     from .goals import GoalStore
 
-    children = [
-        goal
-        for goal in GoalStore(home).list(limit=100)
-        if goal.parent_goal_id
-        and run_matches_context(goal, context)
-        and _workspace_matches(goal.workspace, context.workspace)
-    ][:20]
+    children = GoalStore(home).list_scoped(
+        source=context.source,
+        peer_id=context.peer_id,
+        sender_id=context.sender_id,
+        workspace=context.workspace,
+        child=True,
+        limit=20,
+    )
+    child_count = GoalStore(home).count_scoped(
+        source=context.source,
+        peer_id=context.peer_id,
+        sender_id=context.sender_id,
+        workspace=context.workspace,
+        child=True,
+    )
+    active_child_count = GoalStore(home).count_scoped(
+        source=context.source,
+        peer_id=context.peer_id,
+        sender_id=context.sender_id,
+        workspace=context.workspace,
+        phases=(Phase.PENDING, Phase.RUNNING, Phase.PAUSED),
+        child=True,
+    )
     return {
-        "child_count": len(children),
-        "active_child_count": sum(goal.phase != Phase.ENDED for goal in children),
+        "child_count": child_count,
+        "returned_child_count": len(children),
+        "active_child_count": active_child_count,
         "children": [
             {
                 "child_goal_id": goal.id,
@@ -898,25 +927,19 @@ def _active_loop_runs(home: Path, active_goals: tuple[Any, ...]) -> tuple[LoopRu
     from .loop_runs import LoopRunStore
 
     goal_ids = {str(goal.id) for goal in active_goals}
-    return tuple(
-        loop_run
-        for loop_run in LoopRunStore(home).list_active(limit=100)
-        if loop_run.goal_id in goal_ids
-    )
+    return tuple(LoopRunStore(home).list_current_for_goals(goal_ids, limit=100))
 
 
 def _active_shadow_workspaces(home: Path, context: SurfaceContext) -> tuple[Any, ...]:
     try:
-        shadows = ShadowWorkspaceManager(home).list_shadows(status="active", limit=100)
+        shadows = ShadowWorkspaceManager(home).list_shadows(
+            status="active",
+            real_workspace=context.workspace,
+            limit=100,
+        )
     except Exception:
         return ()
-    if not context.workspace:
-        return shadows
-    return tuple(
-        shadow
-        for shadow in shadows
-        if _workspace_matches(shadow.real_workspace, context.workspace)
-    )
+    return shadows
 
 
 def _workspace_state(context: SurfaceContext, active_shadows: tuple[Any, ...]) -> WorkspaceState | None:

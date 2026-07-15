@@ -14,5 +14,5 @@ Use this skill when the user reports a failure, regression, timeout, missing res
 2. Gather facts before proposing a fix. Prefer service status, recent logs, trace records, config facts, test output, and repository status over speculation.
 3. Separate likely failure domains: input/request, model routing, tool invocation, connector delivery, persistence, background task execution, and final user-visible response.
 4. Reproduce the smallest failing path when possible. If a live connector is involved, add or run a connector-level journey rather than relying only on unit tests.
-5. Preserve the incident as a regression case when the bug was user-visible or likely to recur.
+5. Convert the failed contract into a general regression case when it is user-visible or likely to recur.
 6. After a fix, verify the original symptom and at least one nearby negative case so the fix does not overroute similar text.

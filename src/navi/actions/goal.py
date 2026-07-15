@@ -45,7 +45,6 @@ class GoalOpenCapability(BaseCapability):
 
             workspace = ShadowWorkspaceManager(self.home).durable_workspace_for(
                 workspace,
-                managed_fallback=self.project_dir,
             )
         planner_capabilities = _planner_capabilities(
             self.home,
@@ -380,23 +379,18 @@ def _scoped_goal_state(
     limit: int,
     view: str,
 ) -> dict[str, Any]:
-    from ..control import run_matches_context
-
     if view != "current":
-        candidates = (
-            service.goals.list_cron_goals()
-            if view == "scheduled"
-            else service.goals.list(limit=max(limit * 5, limit))
-        )
-        goals = []
-        for goal in candidates:
-            if not run_matches_context(goal, context):
-                continue
-            if view == "scheduled" and goal.phase == "ended":
-                continue
-            goals.append(asdict(goal))
-            if len(goals) >= limit:
-                break
+        goals = [
+            asdict(goal)
+            for goal in service.goals.list_scoped(
+                source=context.source,
+                peer_id=context.peer_id,
+                sender_id=context.sender_id,
+                phases=("pending", "running", "paused") if view == "scheduled" else (),
+                cron=True if view == "scheduled" else None,
+                limit=limit,
+            )
+        ]
         scheduled_goals = [goal for goal in goals if str(goal.get("cron_schedule") or "")]
         return {
             "entity_type": "goal",
@@ -415,18 +409,23 @@ def _scoped_goal_state(
             "active_loop_runs": [],
         }
 
-    active_loop_runs = []
-    active_goals = []
-    for loop_run in service.loop_runs.list_active(limit=max(limit * 5, limit)):
-        goal = service.goals.get(loop_run.goal_id)
-        if goal is None or not run_matches_context(goal, context):
-            continue
-        if context.workspace and goal.workspace and context.workspace != goal.workspace:
-            continue
-        active_loop_runs.append(loop_run.to_dict())
-        active_goals.append(asdict(goal))
-        if len(active_loop_runs) >= limit:
-            break
+    scoped_goals = service.goals.list_scoped(
+        source=context.source,
+        peer_id=context.peer_id,
+        sender_id=context.sender_id,
+        workspace=context.workspace,
+        phases=("pending", "running", "paused"),
+        cron=False,
+        limit=limit,
+    )
+    active_goals = [asdict(goal) for goal in scoped_goals]
+    active_loop_runs = [
+        loop_run.to_dict()
+        for loop_run in service.loop_runs.list_current_for_goals(
+            [goal.id for goal in scoped_goals],
+            limit=limit,
+        )
+    ]
     return {
         "entity_type": "goal",
         "entity_id": "",

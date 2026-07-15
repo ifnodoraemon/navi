@@ -51,7 +51,6 @@ class LoopRunStore:
             conn.execute(LOOP_SPECS_TABLE.ddl)
             assert_schema_exact(conn, LOOP_SPECS_TABLE)
             conn.execute(LOOP_RUNS_TABLE.ddl)
-            self._migrate_legacy_delivery_envelopes(conn)
             assert_schema_exact(conn, LOOP_RUNS_TABLE)
             conn.execute(LOOP_CHECKPOINTS_TABLE.ddl)
             assert_schema_exact(conn, LOOP_CHECKPOINTS_TABLE)
@@ -68,48 +67,6 @@ class LoopRunStore:
                 "CREATE INDEX IF NOT EXISTS idx_loop_events_run ON loop_events(run_id, created_at)"
             )
             write_schema_version(conn, "loop_runs", LOOP_RUN_STORE_SCHEMA_VERSION)
-
-    @staticmethod
-    def _migrate_legacy_delivery_envelopes(conn) -> None:
-        rows = conn.execute(
-            """
-            SELECT id, evidence_json
-            FROM loop_runs
-            WHERE terminal_state = ?
-            """,
-            (str(LoopTerminalState.WAITING_APPROVAL),),
-        ).fetchall()
-        now = time.time()
-        for run_id, evidence_json in rows:
-            try:
-                evidence = json.loads(str(evidence_json or "{}"))
-            except (TypeError, ValueError):
-                continue
-            facts = evidence.get("facts")
-            if (
-                evidence.get("action") != "approval"
-                or not isinstance(facts, dict)
-                or not isinstance(facts.get("connector_delivery"), dict)
-            ):
-                continue
-            evidence["action"] = "connector_outbound"
-            evidence["migration"] = {
-                "from": "approval_delivery_envelope",
-                "schema_version": LOOP_RUN_STORE_SCHEMA_VERSION,
-            }
-            conn.execute(
-                """
-                UPDATE loop_runs
-                SET terminal_state = ?, evidence_json = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    str(LoopTerminalState.PAUSED),
-                    _json_dumps(evidence),
-                    now,
-                    str(run_id),
-                ),
-            )
 
     def save_spec(self, spec: LoopSpec) -> None:
         spec.validate()
@@ -432,6 +389,43 @@ class LoopRunStore:
             ).fetchall()
         return [_loop_run_from_row(row) for row in rows]
 
+    def list_current_for_goals(
+        self,
+        goal_ids: list[str] | tuple[str, ...] | set[str],
+        *,
+        limit: int = 50,
+    ) -> list[LoopRunState]:
+        """List active or externally paused loops for an explicit goal scope."""
+        scoped_ids = tuple(dict.fromkeys(str(item) for item in goal_ids if str(item)))
+        if not scoped_ids:
+            return []
+        rows: list[tuple[Any, ...]] = []
+        with connect(self.db_path) as conn:
+            for offset in range(0, len(scoped_ids), 500):
+                chunk = scoped_ids[offset : offset + 500]
+                placeholders = ", ".join("?" for _ in chunk)
+                rows.extend(
+                    conn.execute(
+                        f"""
+                        SELECT {LOOP_RUNS_TABLE.select_list}
+                        FROM loop_runs
+                        WHERE goal_id IN ({placeholders})
+                          AND terminal_state IN ('', ?, ?)
+                        """,
+                        [
+                            *chunk,
+                            str(LoopTerminalState.PAUSED),
+                            str(LoopTerminalState.WAITING_APPROVAL),
+                        ],
+                    ).fetchall()
+                )
+        states = sorted(
+            (_loop_run_from_row(row) for row in rows),
+            key=lambda state: state.updated_at,
+            reverse=True,
+        )
+        return states[: max(1, int(limit))]
+
     def list_active_for_execution_mode(
         self,
         execution_mode: str,
@@ -505,6 +499,39 @@ class LoopRunStore:
                 LIMIT ?
                 """,
                 (goal_id, limit),
+            ).fetchall()
+        return [_loop_run_from_row(row) for row in rows]
+
+    def list_by_goal_filtered(
+        self,
+        goal_id: str,
+        *,
+        terminal_states: tuple[LoopTerminalState | str, ...] = (),
+        evidence_action: str = "",
+        limit: int | None = 50,
+    ) -> list[LoopRunState]:
+        clauses = ["goal_id = ?"]
+        params: list[Any] = [goal_id]
+        if terminal_states:
+            placeholders = ", ".join("?" for _ in terminal_states)
+            clauses.append(f"terminal_state IN ({placeholders})")
+            params.extend(str(item) for item in terminal_states)
+        if evidence_action:
+            clauses.append("json_extract(evidence_json, '$.action') = ?")
+            params.append(evidence_action)
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = " LIMIT ?"
+            params.append(max(1, int(limit)))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {LOOP_RUNS_TABLE.select_list}
+                FROM loop_runs
+                WHERE {' AND '.join(clauses)}
+                ORDER BY updated_at DESC{limit_clause}
+                """,
+                params,
             ).fetchall()
         return [_loop_run_from_row(row) for row in rows]
 
@@ -630,6 +657,34 @@ class LoopRunStore:
                 (run_id, limit),
             ).fetchall()
         return [LoopCheckpoint(*row) for row in rows]
+
+    def latest_checkpoint(
+        self,
+        run_id: str,
+        *,
+        node: LoopNode | str = "",
+        input_key: str = "",
+    ) -> LoopCheckpoint | None:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [run_id]
+        if node:
+            clauses.append("node = ?")
+            params.append(str(node))
+        if input_key:
+            clauses.append("json_type(inputs_json, ?) IS NOT NULL")
+            params.append(f"$.{input_key}")
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"""
+                SELECT {LOOP_CHECKPOINTS_TABLE.select_list}
+                FROM loop_checkpoints
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return LoopCheckpoint(*row) if row else None
 
     def list_events(self, run_id: str, *, limit: int = 100) -> list[LoopEvent]:
         with connect(self.db_path) as conn:

@@ -205,8 +205,86 @@ def test_current_state_filters_loop_runs_by_visible_goal_context(tmp_path):
     assert [item["run_id"] for item in facts["active_loop_runs"]] == [visible_run.run_id]
 
 
+def test_current_state_actor_scope_precedes_global_noise_limits(tmp_path):
+    runs = RunStore(tmp_path)
+    visible_run = runs.create(
+        "visible run",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        phase="running",
+    )
+    visible_approval = runs.create_approval(
+        run_id=visible_run.id,
+        action="run_execution",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+    )
+    visible_goal = GoalStore(tmp_path).create(
+        objective="visible older goal",
+        workspace=str(tmp_path),
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        run_id=visible_run.id,
+    )
+    visible_loop = LoopRunStore(tmp_path).create_run(
+        _loop_spec(visible_goal.id, str(tmp_path))
+    )
+
+    for index in range(101):
+        hidden_run = runs.create(
+            f"hidden run {index}",
+            source="telegram",
+            peer_id="other-peer",
+            sender_id="other-sender",
+            workspace=str(tmp_path),
+            phase="running",
+        )
+        runs.create_approval(
+            run_id=hidden_run.id,
+            action="run_execution",
+            source="telegram",
+            peer_id="other-peer",
+            sender_id="other-sender",
+        )
+        GoalStore(tmp_path).create(
+            objective=f"hidden newer goal {index}",
+            workspace=str(tmp_path),
+            source="telegram",
+            peer_id="other-peer",
+            sender_id="other-sender",
+            run_id=hidden_run.id,
+        )
+
+    facts = current_state_facts(
+        CurrentStateBuilder(tmp_path).build(
+            SurfaceContext(
+                home=tmp_path,
+                source="weixin",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                workspace=str(tmp_path),
+            )
+        )
+    )
+
+    assert [item["id"] for item in facts["active_runs"]] == [visible_run.id]
+    assert [item["id"] for item in facts["pending_approvals"]] == [
+        visible_approval.id
+    ]
+    assert [item["id"] for item in facts["active_goals"]] == [visible_goal.id]
+    assert [item["run_id"] for item in facts["active_loop_runs"]] == [
+        visible_loop.run_id
+    ]
+    assert [item["goal_id"] for item in facts["recent_goal_outcomes"]] == [
+        visible_goal.id
+    ]
+
+
 def test_current_state_separates_recent_outcomes_from_orphan_runtime_state(tmp_path):
-    """Regression for trace 7482957649409519368 follow-up task confusion."""
     runs = RunStore(tmp_path)
     visible_run = runs.create(
         "visible recent result",

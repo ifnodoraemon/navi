@@ -56,12 +56,7 @@ class ToolCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         call_args = dict(args)
-        if self.spec.name in {
-            "memory.list",
-            "memory.recall",
-            "memory.conflicts",
-            "memory.record_activation",
-        }:
+        if self.spec.context_policy == "actor_memory":
             from navi.memory.scopes import memory_scopes_for_context
 
             call_args["_allowed_scopes"] = list(
@@ -132,6 +127,11 @@ class ToolsListCapability:
                     "mutates": spec.mutates,
                     "source": spec.source,
                     "side_effect_policy": spec.side_effect_policy.to_dict(),
+                    "permission_policy": spec.permission_policy,
+                    "risk_policy": spec.risk_policy,
+                    "context_policy": spec.context_policy,
+                    "runtime_policy": spec.runtime_policy,
+                    "delegation_allowed": spec.delegation_allowed,
                     "input_properties": sorted((spec.input_schema.get("properties") or {}).keys()),
                     "required": list(spec.input_schema.get("required") or []),
                     "safeguards": capability_safeguard_facts(spec),

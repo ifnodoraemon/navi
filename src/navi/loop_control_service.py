@@ -796,13 +796,16 @@ class LoopControlService:
         return updated
 
     def _active_loop_for_goal(self, goal_id: str) -> LoopRunState | None:
-        for loop_run in self.loop_runs.list_by_goal(goal_id, limit=100):
-            if not loop_run.is_terminal() or str(loop_run.terminal_state) in {
-                str(LoopTerminalState.PAUSED),
-                str(LoopTerminalState.WAITING_APPROVAL),
-            }:
-                return loop_run
-        return None
+        matches = self.loop_runs.list_by_goal_filtered(
+            goal_id,
+            terminal_states=(
+                "",
+                LoopTerminalState.PAUSED,
+                LoopTerminalState.WAITING_APPROVAL,
+            ),
+            limit=1,
+        )
+        return matches[0] if matches else None
 
 
 def _resolve_workspace(workspace: str) -> str:
@@ -830,7 +833,11 @@ def _execution_mode(request: OpenGoalRequest, *, loop_kind: str) -> str:
 
 def _loop_kind(value: str) -> str:
     normalized = str(value or "").strip().lower().replace("-", "_")
-    return normalized if normalized in {"turn", "control", "durable_goal", "scheduled"} else "durable_goal"
+    if not normalized:
+        return "durable_goal"
+    if normalized not in {"turn", "control", "durable_goal", "scheduled"}:
+        raise ValueError(f"unsupported loop_kind: {value}")
+    return normalized
 
 
 def _surface_message_from_result(result: StateGraphRunResult) -> str:
@@ -844,23 +851,23 @@ def _surface_message_from_result(result: StateGraphRunResult) -> str:
 def _loop_spec_from_json(raw: str) -> LoopSpec:
     data = json.loads(raw)
     goal_data = data["goal"]
-    return LoopSpec(
+    spec = LoopSpec(
         id=str(data["id"]),
         goal_id=str(data["goal_id"]),
         goal=GoalSpec(
             objective=str(goal_data["objective"]),
-            scope=tuple(str(item) for item in goal_data.get("scope", ())),
-            constraints=tuple(str(item) for item in goal_data.get("constraints", ())),
+            scope=tuple(str(item) for item in goal_data["scope"]),
+            constraints=tuple(str(item) for item in goal_data["constraints"]),
             acceptance_criteria=tuple(
-                str(item) for item in goal_data.get("acceptance_criteria", ())
+                str(item) for item in goal_data["acceptance_criteria"]
             ),
-            permission_ceiling=str(goal_data.get("permission_ceiling") or "read"),
-            risk_level=str(goal_data.get("risk_level") or "normal"),
-            owner=str(goal_data.get("owner") or ""),
-            resume_policy=str(goal_data.get("resume_policy") or "checkpoint"),
-            cancel_policy=str(goal_data.get("cancel_policy") or "mark_cancelled"),
-            memory_policy=str(goal_data.get("memory_policy") or "governed"),
-            metadata=_dict(goal_data.get("metadata")),
+            permission_ceiling=str(goal_data["permission_ceiling"]),
+            risk_level=str(goal_data["risk_level"]),
+            owner=str(goal_data["owner"]),
+            resume_policy=str(goal_data["resume_policy"]),
+            cancel_policy=str(goal_data["cancel_policy"]),
+            memory_policy=str(goal_data["memory_policy"]),
+            metadata=_required_dict(goal_data, "metadata"),
         ),
         state_graph=tuple(
             StateTransition(
@@ -868,30 +875,35 @@ def _loop_spec_from_json(raw: str) -> LoopSpec:
                 target=str(item["target"]),
                 condition=str(item["condition"]),
             )
-            for item in data.get("state_graph", ())
+            for item in data["state_graph"]
         ),
-        allowed_capabilities=tuple(str(item) for item in data.get("allowed_capabilities", ())),
+        allowed_capabilities=tuple(str(item) for item in data["allowed_capabilities"]),
         verification_ladder=tuple(
             VerificationStep(
                 kind=str(item["kind"]),
                 name=str(item["name"]),
-                required=bool(item.get("required", True)),
-                command=str(item.get("command") or ""),
-                evidence_key=str(item.get("evidence_key") or ""),
-                timeout=TimeoutPolicy(**_dict(item.get("timeout"))),
+                required=bool(item["required"]),
+                command=str(item["command"]),
+                evidence_key=str(item["evidence_key"]),
+                timeout=TimeoutPolicy(**_required_dict(item, "timeout")),
             )
-            for item in data.get("verification_ladder", ())
+            for item in data["verification_ladder"]
         ),
-        workspace_policy=WorkspacePolicy(**_dict(data.get("workspace_policy"))),
-        checkpoint_policy=CheckpointPolicy(**_dict(data.get("checkpoint_policy"))),
-        retry_policy=RetryPolicy(**_dict(data.get("retry_policy"))),
-        budget_policy=BudgetPolicy(**_dict(data.get("budget_policy"))),
-        rollback_policy=RollbackPolicy(**_dict(data.get("rollback_policy"))),
-        escalation_policy=EscalationPolicy(**_dict(data.get("escalation_policy"))),
-        terminal_states=tuple(str(item) for item in data.get("terminal_states", ())),
-        created_at=float(data.get("created_at") or 0.0),
+        workspace_policy=WorkspacePolicy(**_required_dict(data, "workspace_policy")),
+        checkpoint_policy=CheckpointPolicy(**_required_dict(data, "checkpoint_policy")),
+        retry_policy=RetryPolicy(**_required_dict(data, "retry_policy")),
+        budget_policy=BudgetPolicy(**_required_dict(data, "budget_policy")),
+        rollback_policy=RollbackPolicy(**_required_dict(data, "rollback_policy")),
+        escalation_policy=EscalationPolicy(**_required_dict(data, "escalation_policy")),
+        terminal_states=tuple(str(item) for item in data["terminal_states"]),
+        created_at=float(data["created_at"]),
     )
+    spec.validate()
+    return spec
 
 
-def _dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
+def _required_dict(container: dict[str, Any], key: str) -> dict[str, Any]:
+    value = container[key]
+    if not isinstance(value, dict):
+        raise ValueError(f"LoopSpec.{key} must be an object")
+    return value
