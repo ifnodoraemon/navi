@@ -97,6 +97,9 @@ child-only terminal `agent.report` protocol. A report is a claim; completion
 remains separate and requires the child LoopRun and checker evidence to
 converge. Transient background resource pauses resume at their persisted node;
 they must not be mislabeled or replayed as approval continuations.
+`agent.control` lists and reads only these depth-1 children. Top-level task,
+history, and recurring-schedule queries use the actor-scoped `goal.state`
+views and must declare the scope for which an empty result is authoritative.
 
 ## Capability Contract
 
@@ -117,7 +120,10 @@ Local process operations use `shell.run` unless another capability has a real
 authority boundary. Directory listing, Git status, service inspection, system
 facts, and test commands are argv choices, not separate tools. The runtime must
 derive read, network, or write permission and approval requirements from the
-concrete argv and fail unknown effects closed.
+concrete argv and fail unknown effects closed. If that derived permission is
+higher than the model-declared permission, a sensitive call may proceed only
+after an exact durable approval for the derived permission and arguments; it
+must never execute directly or bypass the immutable permission ceiling.
 
 Tools execute or observe and return facts. Skills provide procedures and may
 package scripts, templates, or assets, but execution still passes through
@@ -151,6 +157,13 @@ permissions.
 
 Trace is audit evidence, not the authoritative runtime state. Secrets and
 sensitive payloads must be redacted before persistence.
+
+Recurring Goal templates must persist a durable real workspace, never a
+turn-scoped shadow workspace. Pre-existing managed shadow paths must be repaired
+from workspace audit state. Occurrence-creation failures must advance the
+template out of the due queue, record a Goal event and failure trace, and expose
+structured facts to the connector notification boundary instead of retrying in
+a tight loop or disappearing silently.
 
 ## Surfaces
 

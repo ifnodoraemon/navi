@@ -926,6 +926,75 @@ class GoalStore:
             )
         return self.get(goal_id)
 
+    def update_cron_workspace(
+        self,
+        goal_id: str,
+        workspace: str,
+        *,
+        previous_workspace: str,
+    ) -> Goal | None:
+        goal = self.get(goal_id)
+        if goal is None or not goal.cron_schedule:
+            return goal
+        durable_workspace = _require_workspace(workspace)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE goals SET workspace = ?, updated_at = ? WHERE id = ?",
+                (durable_workspace, time.time(), goal_id),
+            )
+        self.record_event(
+            goal_id,
+            "goal.schedule_workspace_repaired",
+            phase=goal.phase,
+            governance=goal.governance,
+            acceptance=goal.acceptance,
+            resolution=goal.resolution,
+            run_id=goal.run_id,
+            trace_id=goal.trace_id,
+            evidence={
+                "previous_workspace": previous_workspace,
+                "durable_workspace": durable_workspace,
+            },
+        )
+        return self.get(goal_id)
+
+    def record_cron_failure(
+        self,
+        goal_id: str,
+        *,
+        scheduled_for: float,
+        next_run_at: float,
+        error_type: str,
+        error: str,
+        trace_id: str,
+    ) -> Goal | None:
+        """Advance a failed recurring template and preserve one durable failure fact."""
+        goal = self.get(goal_id)
+        if goal is None:
+            return None
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE goals SET next_run_at = ?, updated_at = ? WHERE id = ?",
+                (next_run_at, time.time(), goal_id),
+            )
+        self.record_event(
+            goal_id,
+            "goal.schedule_occurrence_failed",
+            phase=goal.phase,
+            governance=goal.governance,
+            acceptance=goal.acceptance,
+            resolution=goal.resolution,
+            run_id=goal.run_id,
+            trace_id=trace_id,
+            evidence={
+                "scheduled_for": scheduled_for,
+                "next_run_at": next_run_at,
+                "error_type": error_type,
+                "error": error,
+            },
+        )
+        return self.get(goal_id)
+
 
 def _goal_state_for_run(run: Run, *, evidence: dict[str, Any] | None = None) -> tuple[str, str, str, str]:
     if run.phase == Phase.ENDED and run.resolution == Resolution.SUCCESS:

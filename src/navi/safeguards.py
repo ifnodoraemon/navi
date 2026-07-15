@@ -132,6 +132,9 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
         elif binary == "find" and not _find_has_effectful_action(argv[1:]):
             permission = "read"
             reason = "find_without_effectful_action"
+        elif binary == "crontab" and argv[1:] == ["-l"]:
+            permission = "read"
+            reason = "crontab_list_read_only"
         elif (
             binary == "git"
             and _first_positional(argv[1:]) in _GIT_READ_ONLY_SUBCOMMANDS

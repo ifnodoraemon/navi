@@ -38,7 +38,15 @@ class GoalOpenCapability(BaseCapability):
         objective = _arg_text(args, "objective")
         if not objective:
             raise SchemaMismatch("goal.open requires objective.")
+        loop_kind = _arg_text(args, "loop_kind") or "durable_goal"
         workspace = _arg_text(args, "workspace") or context.workspace or str(self.project_dir)
+        if loop_kind == "scheduled":
+            from ..workspaces import ShadowWorkspaceManager
+
+            workspace = ShadowWorkspaceManager(self.home).durable_workspace_for(
+                workspace,
+                managed_fallback=self.project_dir,
+            )
         planner_capabilities = _planner_capabilities(
             self.home,
             workspace,
@@ -54,7 +62,7 @@ class GoalOpenCapability(BaseCapability):
         request = OpenGoalRequest(
             objective=objective,
             workspace=workspace,
-            loop_kind=_arg_text(args, "loop_kind") or "durable_goal",
+            loop_kind=loop_kind,
             source=context.source,
             peer_id=context.peer_id,
             sender_id=context.sender_id,
@@ -246,6 +254,9 @@ class GoalStateCapability(BaseCapability):
     ) -> CapabilityResult:
         goal_id = _arg_text(args, "goal_id")
         loop_run_id = _arg_text(args, "loop_run_id")
+        view = (_arg_text(args, "view") or "current").lower()
+        if view not in {"current", "scheduled", "all"}:
+            raise SchemaMismatch("goal.state view must be current, scheduled, or all.")
         limit = _positive_int(args.get("limit"), default=20, maximum=200)
         service = LoopControlService(self.home)
         try:
@@ -262,10 +273,11 @@ class GoalStateCapability(BaseCapability):
                     limit=limit,
                 )
             else:
-                facts = _scoped_active_goal_state(
+                facts = _scoped_goal_state(
                     service,
                     context=context,
                     limit=limit,
+                    view=view,
                 )
         except KeyError as exc:
             raise NotFound(str(exc)) from exc
@@ -361,13 +373,47 @@ def _require_goal_scope(
         raise PermissionDenied("goal workspace does not match caller.")
 
 
-def _scoped_active_goal_state(
+def _scoped_goal_state(
     service: LoopControlService,
     *,
     context: CapabilityContext,
     limit: int,
+    view: str,
 ) -> dict[str, Any]:
     from ..control import run_matches_context
+
+    if view != "current":
+        candidates = (
+            service.goals.list_cron_goals()
+            if view == "scheduled"
+            else service.goals.list(limit=max(limit * 5, limit))
+        )
+        goals = []
+        for goal in candidates:
+            if not run_matches_context(goal, context):
+                continue
+            if view == "scheduled" and goal.phase == "ended":
+                continue
+            goals.append(asdict(goal))
+            if len(goals) >= limit:
+                break
+        scheduled_goals = [goal for goal in goals if str(goal.get("cron_schedule") or "")]
+        return {
+            "entity_type": "goal",
+            "entity_id": "",
+            "state_transition": "state_read",
+            "turn_scope": "actor",
+            "query_scope": "actor",
+            "view": view,
+            "authoritative_for": (
+                "actor_scheduled_goals" if view == "scheduled" else "actor_goals"
+            ),
+            "matched_count": len(goals),
+            "goals": goals,
+            "active_goals": [goal for goal in goals if goal.get("phase") != "ended"],
+            "scheduled_goals": scheduled_goals,
+            "active_loop_runs": [],
+        }
 
     active_loop_runs = []
     active_goals = []
@@ -386,6 +432,14 @@ def _scoped_active_goal_state(
         "entity_id": "",
         "state_transition": "state_read",
         "turn_scope": "current",
+        "query_scope": "current_workspace",
+        "view": "current",
+        "authoritative_for": "current_actor_active_goals",
+        "matched_count": len(active_goals),
+        "goals": active_goals,
+        "scheduled_goals": [
+            goal for goal in active_goals if str(goal.get("cron_schedule") or "")
+        ],
         "active_loop_runs": active_loop_runs,
         "active_goals": active_goals,
     }

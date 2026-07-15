@@ -18,6 +18,7 @@ from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 from navi.trace import TraceStore
+from navi.workspaces import ShadowWorkspaceManager
 from navi.actions.specs import ACTION_SPECS
 
 
@@ -107,6 +108,46 @@ async def test_goal_open_scheduled_is_registration_not_immediate_execution(tmp_p
     assert result.facts["completion_evidence"] is True
     assert result.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
     assert LoopRunStore(tmp_path).list_active() == []
+
+
+@pytest.mark.asyncio
+async def test_goal_open_scheduled_persists_real_workspace_from_turn_shadow(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / ".navi"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("base\n", encoding="utf-8")
+    shadow = ShadowWorkspaceManager(home).create_shadow(
+        run_id="turn-register",
+        workspace=repo,
+    )
+    registry = build_capability_registry(home, project_dir=repo)
+    context = CapabilityContext(
+        home=home,
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="user-1",
+        permission_ceiling="write",
+        workspace=shadow.shadow_workspace,
+    )
+
+    result = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "daily reminder",
+            "loop_kind": "scheduled",
+            "cron_schedule": "54 11 * * *",
+            "allowed_capabilities": ["respond"],
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    assert result.ok is True
+    registered = GoalStore(home).get(result.facts["goal_id"])
+    assert registered is not None
+    assert registered.workspace == str(repo.resolve())
 
 
 @pytest.mark.asyncio
@@ -403,3 +444,48 @@ async def test_goal_state_default_and_explicit_reads_are_caller_scoped(tmp_path:
     ]
     assert denied.ok is False
     assert denied.error_reason == "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_goal_state_scheduled_view_is_actor_scoped_and_authoritative(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    visible = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "visible daily schedule",
+            "workspace": str(tmp_path),
+            "loop_kind": "scheduled",
+            "cron_schedule": "54 11 * * *",
+            "allowed_capabilities": ["respond"],
+        },
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+    LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="other actor schedule",
+            workspace=str(tmp_path),
+            loop_kind="scheduled",
+            cron_schedule="30 7 * * *",
+            source="telegram",
+            peer_id="other-peer",
+            sender_id="other-user",
+            allowed_capabilities=("respond",),
+        )
+    )
+
+    state = await registry.invoke(
+        "goal.state",
+        {"view": "scheduled"},
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert state.ok is True
+    assert state.facts["authoritative_for"] == "actor_scheduled_goals"
+    assert state.facts["matched_count"] == 1
+    assert [goal["id"] for goal in state.facts["scheduled_goals"]] == [
+        visible.facts["goal_id"]
+    ]

@@ -175,18 +175,40 @@ async def test_shell_effectful_command_cannot_hide_behind_read_permission(
 ) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     target = tmp_path / "must-not-exist.txt"
+    args = {"command": ["touch", str(target)]}
 
-    denied = await registry.invoke(
+    suspended = await registry.invoke(
         "shell.run",
-        {"command": ["touch", str(target)]},
+        args,
         permission="read",
         context=_context(tmp_path),
     )
 
-    assert denied.ok is False
-    assert denied.error_reason == "permission_escalation"
-    assert denied.facts["required"] == "write"
+    assert suspended.ok is False
+    assert suspended.yields_control is True
+    assert suspended.error_reason == "sensitive_op_requires_approval"
+    assert suspended.facts["requested_permission"] == "write"
     assert target.exists() is False
+    approval = RunStore(tmp_path).pending_approval_for_run(suspended.run_id)
+    assert approval is not None
+    assert approval.requested_permission == "write"
+
+    resolved = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": approval.code},
+        permission="write",
+        context=_context(tmp_path),
+    )
+    assert resolved.ok is True
+
+    executed = await registry.invoke(
+        "shell.run",
+        args,
+        permission="read",
+        context=_context(tmp_path),
+    )
+    assert executed.ok is True
+    assert target.exists() is True
 
 
 def test_shell_effect_classification_is_argument_sensitive(tmp_path: Path) -> None:
@@ -204,11 +226,18 @@ def test_shell_effect_classification_is_argument_sensitive(tmp_path: Path) -> No
         {"command": ["find", ".", "-name", "*.tmp", "-delete"]},
         workspace=str(tmp_path),
     )
+    crontab_list = assess_capability_call(
+        spec,
+        {"command": ["crontab", "-l"]},
+        workspace=str(tmp_path),
+    )
 
     assert read_only.confirmation_required is False
     assert read_only.evidence["required_permission"] == "read"
     assert destructive.confirmation_required is True
     assert destructive.evidence["required_permission"] == "write"
+    assert crontab_list.confirmation_required is False
+    assert crontab_list.evidence["required_permission"] == "read"
 
 
 @pytest.mark.asyncio

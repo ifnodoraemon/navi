@@ -33,9 +33,11 @@ ACTION_SPECS = [
         capability_class="agent",
         execution_contexts=("turn", API_CONTEXT),
         description=(
-            "Manage depth-1 child Goals through one operation-selected lifecycle "
-            "surface. Read operations are list, state, and collect; mutating "
-            "operations are spawn, message, and cancel."
+            "Manage depth-1 child Goals only through one operation-selected lifecycle "
+            "surface. This is not a global task or schedule listing. Use goal.state "
+            "for top-level tasks and recurring schedules. Read child operations are "
+            "list, state, and collect; mutating child operations are spawn, message, "
+            "and cancel. The state operation requires child_goal_id."
         ),
         input_schema={
             "type": "object",
@@ -293,12 +295,16 @@ ACTION_SPECS = [
         name="goal.state",
         capability_class="goal",
         execution_contexts=("turn", API_CONTEXT),
-        description="""Read durable Goal and LoopRun control state from CurrentState-backed stores without mutating execution.""",
+        description="""Read authoritative durable Goal and LoopRun state without mutating execution. With an ID, read that exact goal/run. Without an ID, use view=current for current active work, view=scheduled for this actor's recurring schedules, or view=all for this actor's task history. Do not use agent.control or shell commands to list top-level tasks or schedules.""",
         input_schema={
             "type": "object",
             "properties": {
                 "goal_id": {"type": "string"},
                 "loop_run_id": {"type": "string"},
+                "view": {
+                    "type": "string",
+                    "description": "current, scheduled, or all; defaults to current.",
+                },
                 "limit": {"type": "integer"},
             },
         },

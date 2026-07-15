@@ -45,6 +45,19 @@ def test_merge_run_removes_terminal_shadow_artifacts(tmp_path: Path) -> None:
     assert not root.exists()
 
 
+def test_terminal_shadow_still_resolves_to_durable_workspace(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("base\n", encoding="utf-8")
+    manager = ShadowWorkspaceManager(tmp_path / ".navi")
+    shadow = manager.create_shadow(run_id="run-scheduled", workspace=repo)
+
+    manager.merge_run("run-scheduled")
+
+    assert not Path(shadow.shadow_workspace).exists()
+    assert manager.durable_workspace_for(shadow.shadow_workspace) == str(repo.resolve())
+
+
 def test_terminal_artifact_gc_preserves_active_shadows(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

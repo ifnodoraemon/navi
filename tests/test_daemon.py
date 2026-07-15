@@ -14,6 +14,7 @@ from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.loop_runs import LoopRunStore
 from navi.memory.store import MemoryStore
 from navi.trace import TraceStore
+from navi.workspaces import ShadowWorkspaceManager
 
 
 def test_read_log_diff_redacts_secrets_in_diff_and_error_lines(tmp_path: Path) -> None:
@@ -202,6 +203,118 @@ async def test_daemon_materializes_due_cron_goal_as_child_run(tmp_path: Path, mo
     refreshed = GoalStore(tmp_path).get(registered.goal.id)
     assert refreshed is not None
     assert refreshed.next_run_at > 1.0
+
+
+@pytest.mark.asyncio
+async def test_daemon_repairs_deleted_shadow_workspace_before_cron_materialization(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / ".navi"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("base\n", encoding="utf-8")
+    manager = ShadowWorkspaceManager(home)
+    shadow = manager.create_shadow(run_id="register-turn", workspace=repo)
+    service = LoopControlService(home)
+    registered = service.open_goal(
+        OpenGoalRequest(
+            objective="daily durable reminder",
+            workspace=shadow.shadow_workspace,
+            loop_kind="scheduled",
+            cron_schedule="54 11 * * *",
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            allowed_capabilities=("respond",),
+        )
+    )
+    GoalStore(home).update_cron_run(registered.goal.id, 1.0)
+    manager.merge_run("register-turn")
+    assert not Path(shadow.shadow_workspace).exists()
+
+    daemon = SystemDaemon(home, project_dir=repo)
+
+    async def no_memory_maintenance():
+        return {"ok": True}
+
+    async def no_events():
+        return []
+
+    monkeypatch.setattr(daemon, "process_memory_maintenance_once", no_memory_maintenance)
+    monkeypatch.setattr(daemon, "process_events_once", no_events)
+
+    created = await daemon.process_background_once()
+
+    assert len(created) == 1
+    child = GoalStore(home).get(created[0]["goal_id"])
+    assert child is not None
+    assert child.workspace == str(repo.resolve())
+    repaired = GoalStore(home).get(registered.goal.id)
+    assert repaired is not None
+    assert repaired.workspace == str(repo.resolve())
+    repair_events = [
+        event
+        for event in GoalStore(home).list_events(registered.goal.id)
+        if event.event_type == "goal.schedule_workspace_repaired"
+    ]
+    assert len(repair_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_daemon_advances_and_traces_failed_cron_occurrence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / ".navi"
+    vanished = tmp_path / "vanished"
+    vanished.mkdir()
+    service = LoopControlService(home)
+    registered = service.open_goal(
+        OpenGoalRequest(
+            objective="daily reminder with missing workspace",
+            workspace=str(vanished),
+            loop_kind="scheduled",
+            cron_schedule="54 11 * * *",
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            allowed_capabilities=("respond",),
+        )
+    )
+    GoalStore(home).update_cron_run(registered.goal.id, 1.0)
+    vanished.rmdir()
+    daemon = SystemDaemon(home, project_dir=tmp_path)
+
+    async def no_memory_maintenance():
+        return {"ok": True}
+
+    async def no_events():
+        return []
+
+    monkeypatch.setattr(daemon, "process_memory_maintenance_once", no_memory_maintenance)
+    monkeypatch.setattr(daemon, "process_events_once", no_events)
+
+    created = await daemon.process_background_once()
+
+    assert len(created) == 1
+    assert created[0]["surface"] is True
+    assert created[0]["facts"]["kind"] == "scheduled_occurrence_failed"
+    refreshed = GoalStore(home).get(registered.goal.id)
+    assert refreshed is not None
+    assert refreshed.next_run_at > 1.0
+    failure_events = [
+        event
+        for event in GoalStore(home).list_events(registered.goal.id)
+        if event.event_type == "goal.schedule_occurrence_failed"
+    ]
+    assert len(failure_events) == 1
+    trace_events = TraceStore(home).list_events(created[0]["trace_id"])
+    assert len(trace_events) == 1
+    assert trace_events[0].tool == "goal.open_scheduled_occurrence"
+    assert trace_events[0].ok is False
+
+    assert await daemon.process_background_once() == []
 
 
 @pytest.mark.asyncio

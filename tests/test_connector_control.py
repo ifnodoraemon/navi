@@ -244,9 +244,81 @@ class _FollowupApprovalProvider:
         return {}
 
 
+class _UnderdeclaredShellApprovalProvider:
+    def __init__(self, target: Path) -> None:
+        self.target = target
+
+    async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+        del kwargs
+        if role == "planner":
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "shell.run",
+                            "permission": "read",
+                            "args": {"command": ["touch", str(self.target)]},
+                            "reason": "request the exact operation",
+                        }
+                    ]
+                }
+            )
+        if role == "responder":
+            match = re.search(r'"code":\s*"(\d+)"', messages[-1].content)
+            assert match is not None
+            return f"该操作需要审批，审批码 {match.group(1)}。"
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
+
+
 def _missing_file_verification(target: Path) -> str:
     script = f"from pathlib import Path; assert not Path({str(target)!r}).exists()"
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+
+@pytest.mark.asyncio
+async def test_weixin_turn_surfaces_approval_for_underdeclared_shell_effect(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "must-wait-for-approval.txt"
+    runtime = AgentRuntime(
+        home=tmp_path,
+        provider=_UnderdeclaredShellApprovalProvider(target),
+    )
+    ingress = ConnectorIngressRuntime(
+        home=tmp_path,
+        runtime=runtime,
+        project_dir=tmp_path,
+    )
+    try:
+        response = await ingress.handle(
+            ConnectorMessage(
+                message_id="underdeclared-approval",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                text="创建文件",
+                source="weixin",
+                session_alias_prefix="connector:weixin",
+            )
+        )
+    finally:
+        await ingress.event_bus.shutdown()
+
+    assert response is not None
+    assert "审批码" in response.text
+    approvals = RunStore(tmp_path).list_approvals(limit=10)
+    assert len(approvals) == 1
+    assert approvals[0].requested_permission == "write"
+    assert approvals[0].source == "weixin"
+    assert approvals[0].peer_id == "peer-1"
+    assert target.exists() is False
+    response_events = TraceStore(tmp_path).list_events("underdeclared-approval")
+    assert any(event.phase == "channel.response_ready" for event in response_events)
 
 @pytest.mark.parametrize("approval_text", ["批准 {code}", "批准{code}", "approve {code}", "approve{code}"])
 @pytest.mark.asyncio

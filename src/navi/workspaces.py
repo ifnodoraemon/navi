@@ -230,6 +230,45 @@ class ShadowWorkspaceManager:
             ).fetchone()
         return ShadowWorkspaceRecord(*row) if row else None
 
+    def durable_workspace_for(
+        self,
+        workspace: str,
+        *,
+        managed_fallback: Path | None = None,
+    ) -> str:
+        """Map an ephemeral managed workspace back to its durable real root.
+
+        Scheduled goals outlive the turn that registered them.  A turn may run
+        inside a shadow workspace, but that path is intentionally removed after
+        merge.  The audit row is durable, so use it to recover the real workspace
+        even after the shadow files have been garbage-collected.
+        """
+        raw = str(workspace or "").strip()
+        if not raw:
+            return raw
+        candidate = Path(raw).expanduser().resolve()
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"""
+                SELECT {SHADOW_WORKSPACES_TABLE.select_list}
+                FROM shadow_workspaces
+                WHERE shadow_workspace = ? OR baseline_workspace = ?
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (str(candidate), str(candidate)),
+            ).fetchone()
+        if row:
+            real_workspace = Path(ShadowWorkspaceRecord(*row).real_workspace).expanduser().resolve()
+            if real_workspace.is_dir():
+                return str(real_workspace)
+
+        managed_root = self.shadow_root.expanduser().resolve()
+        if managed_fallback is not None and candidate.is_relative_to(managed_root):
+            fallback = managed_fallback.expanduser().resolve()
+            if fallback.is_dir():
+                return str(fallback)
+        return str(candidate)
+
     def list_shadows(self, *, status: str = "", limit: int = 100) -> tuple[ShadowWorkspaceRecord, ...]:
         if status:
             query = (

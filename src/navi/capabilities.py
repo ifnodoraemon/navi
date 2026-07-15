@@ -233,7 +233,34 @@ class CapabilityRegistry:
             handler.spec,
             call_args,
         )
-        if not permission_allows(effective_required_permission, permission):
+        if not permission_allows(effective_required_permission, actual_ceiling):
+            return _capability_error(
+                action=f"execute:{name}",
+                error_reason="permission_ceiling",
+                message=(
+                    f"capability {name} call requires {effective_required_permission} "
+                    f"but the permission ceiling is {actual_ceiling}"
+                ),
+                observation_facts={
+                    "tool": name,
+                    "requested": permission,
+                    "required": effective_required_permission,
+                    "permission_ceiling": actual_ceiling,
+                    "call_dependent_permission": True,
+                },
+            )
+        approval_risk, approval_granted = self._approval_state_for_call(
+            handler.spec,
+            name,
+            effective_required_permission,
+            call_args,
+            context=context,
+        )
+        permission_underdeclared = not permission_allows(
+            effective_required_permission,
+            permission,
+        )
+        if permission_underdeclared and approval_risk is None and not approval_granted:
             return _capability_error(
                 action=f"execute:{name}",
                 error_reason="permission_escalation",
@@ -248,19 +275,12 @@ class CapabilityRegistry:
                     "call_dependent_permission": True,
                 },
             )
-        approval_risk = self._approval_risk_for_call(
-            handler.spec,
-            name,
-            permission,
-            call_args,
-            context=context,
-        )
         if approval_risk is not None:
             if not self.governed_run_id:
                 return self._suspend_turn_for_sensitive_approval(
                     handler.spec,
                     name,
-                    permission,
+                    effective_required_permission,
                     call_args,
                     risk=approval_risk,
                     context=context,
@@ -268,17 +288,18 @@ class CapabilityRegistry:
             return self._suspend_for_sensitive_approval(
                 handler.spec,
                 name,
-                permission,
+                effective_required_permission,
                 call_args,
                 risk=approval_risk,
                 context=context,
             )
+        execution_permission = effective_required_permission
         before_decisions = self.hooks.run(
             HookEvent(
                 event="before_capability",
                 payload={
                     "tool": name,
-                    "permission": permission,
+                    "permission": execution_permission,
                     "source": context.source,
                     "sender_id": context.sender_id,
                     "workspace": context.workspace,
@@ -314,7 +335,11 @@ class CapabilityRegistry:
             )
         started_at = time.time()
         try:
-            result = await handler.invoke(call_args, permission=permission, context=context)
+            result = await handler.invoke(
+                call_args,
+                permission=execution_permission,
+                context=context,
+            )
         except Exception as exc:
             logger.exception(f"Unhandled exception in capability {name}: {exc}")
             return _capability_error(
@@ -345,7 +370,7 @@ class CapabilityRegistry:
                 event="after_capability",
                 payload={
                     "tool": name,
-                    "permission": permission,
+                    "permission": execution_permission,
                     "source": context.source,
                     "sender_id": context.sender_id,
                     "workspace": context.workspace,
@@ -360,7 +385,7 @@ class CapabilityRegistry:
             self._audit_action_capability(handler.spec, call_args, result, started_at=started_at)
         return result
 
-    def _approval_risk_for_call(
+    def _approval_state_for_call(
         self,
         spec: ToolSpec,
         name: str,
@@ -368,18 +393,18 @@ class CapabilityRegistry:
         call_args: dict[str, Any],
         *,
         context: CapabilityContext,
-    ):
+    ) -> tuple[CapabilityRiskAssessment | None, bool]:
         if self.sensitive_approval_mode == "skip":
-            return None
+            return None, False
         if spec.governance_exempt:
-            return None
+            return None, False
         risk = assess_capability_call(
             spec,
             call_args,
             workspace=context.workspace or str(self.gateway.project_dir),
         )
         if not risk.confirmation_required and risk.risk_class != "high":
-            return None
+            return None, False
         args_json = _canonical_args_json(call_args)
         runs = RunStore(self.home)
         if self.governed_run_id:
@@ -398,7 +423,7 @@ class CapabilityRegistry:
                 args_json=args_json,
                 context=context,
             )
-        return None if approved is not None else risk
+        return (None, True) if approved is not None else (risk, False)
 
     def _suspend_turn_for_sensitive_approval(
         self,
