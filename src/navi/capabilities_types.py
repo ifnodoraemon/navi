@@ -71,6 +71,8 @@ def construct_capability(
 @dataclass(frozen=True)
 class CapabilityContext:
     home: Path
+    goal_id: str = ""
+    loop_run_id: str = ""
     peer_id: str = ""
     sender_id: str = ""
     source: str = "local"
@@ -84,6 +86,7 @@ class CapabilityContext:
     disabled_tools: frozenset[str] = frozenset()
     disabled_capability_classes: frozenset[str] = frozenset()
     runtime_facts: Mapping[str, Any] | None = None
+    execution_context: str = "turn"
 
 
 @dataclass(frozen=True)

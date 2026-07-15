@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "navi-assistant"
-version = "2.0.3"
+version = "2.0.4"
 description = "Local-first agent OS for a governed personal AI assistant"
 readme = "README.md"
 requires-python = ">=3.13"

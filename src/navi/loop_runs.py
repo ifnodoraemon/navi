@@ -173,6 +173,58 @@ class LoopRunStore:
             )
         return reopened
 
+    def reopen_resource_pause(self, run_id: str) -> LoopRunState:
+        """Reopen a transient background resource pause at its original node."""
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"loop run not found: {run_id}")
+            current = _loop_run_from_row(row)
+            grant = current.evidence.get("resource_grant")
+            reason = str(grant.get("reason") or "") if isinstance(grant, dict) else ""
+            if str(current.terminal_state) != str(LoopTerminalState.PAUSED) or reason not in {
+                "rate_limited",
+                "provider_rate_limited",
+                "concurrency_limit",
+            }:
+                raise ValueError("loop run is not at a transient resource pause")
+            raw_node = str(current.evidence.get("resource_resume_node") or "")
+            if raw_node not in {str(LoopNode.PLAN), str(LoopNode.EXECUTE), str(LoopNode.EVALUATE)}:
+                raise ValueError("transient resource pause has no valid resume node")
+            now = time.time()
+            reopened = replace(
+                current,
+                node=raw_node,
+                terminal_state="",
+                evidence={
+                    **current.evidence,
+                    "resource_retry": {
+                        "reason": reason,
+                        "resumed_at": now,
+                        "resume_node": raw_node,
+                    },
+                },
+                updated_at=now,
+            )
+            conn.execute(
+                """
+                UPDATE loop_runs
+                SET node = ?, terminal_state = '', evidence_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (raw_node, _json_dumps(reopened.evidence), now, run_id),
+            )
+            _insert_event(
+                conn,
+                reopened,
+                "loop.resource_retry",
+                evidence=reopened.evidence["resource_retry"],
+            )
+        return reopened
+
     def reject_external_gate(
         self,
         run_id: str,
@@ -370,6 +422,47 @@ class LoopRunStore:
                 (execution_mode, limit),
             ).fetchall()
         return [_loop_run_from_row(row) for row in rows]
+
+    def list_retryable_background_pauses(
+        self,
+        *,
+        now: float | None = None,
+        limit: int = 50,
+    ) -> list[LoopRunState]:
+        """Return due background pauses caused only by transient resource gates."""
+        current_time = time.time() if now is None else now
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {LOOP_RUNS_TABLE.select_list}
+                FROM loop_runs
+                WHERE terminal_state = ?
+                  AND json_extract(evidence_json, '$.execution_mode') = 'background'
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                (str(LoopTerminalState.PAUSED), limit * 5),
+            ).fetchall()
+        ready: list[LoopRunState] = []
+        for row in rows:
+            state = _loop_run_from_row(row)
+            grant = state.evidence.get("resource_grant")
+            if not isinstance(grant, dict) or str(grant.get("reason") or "") not in {
+                "rate_limited",
+                "provider_rate_limited",
+                "concurrency_limit",
+            }:
+                continue
+            try:
+                retry_after = max(0.0, float(grant.get("retry_after_seconds") or 0.0))
+            except (TypeError, ValueError):
+                retry_after = 0.0
+            if state.updated_at + retry_after > current_time:
+                continue
+            ready.append(state)
+            if len(ready) >= limit:
+                break
+        return ready
 
     def list_by_goal(self, goal_id: str, *, limit: int = 50) -> list[LoopRunState]:
         with connect(self.db_path) as conn:

@@ -29,6 +29,112 @@ ACTION_SPECS = [
         source="action",
     ),
     ToolSpec(
+        name="agent.control",
+        capability_class="agent",
+        execution_contexts=("turn", API_CONTEXT),
+        description=(
+            "Manage depth-1 child Goals through one operation-selected lifecycle "
+            "surface. Read operations are list, state, and collect; mutating "
+            "operations are spawn, message, and cancel."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["spawn", "list", "state", "message", "cancel", "collect"],
+                },
+                "parent_goal_id": {"type": "string"},
+                "child_goal_id": {"type": "string"},
+                "objective": {"type": "string"},
+                "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+                "context_facts": {"type": "object"},
+                "allowed_capabilities": {"type": "array", "items": {"type": "string"}},
+                "message": {"type": "string"},
+                "facts": {"type": "object"},
+                "reason": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1},
+                "timeout_seconds": {"type": "integer", "minimum": 1},
+                "token_budget": {"type": "integer", "minimum": 1},
+                "call_budget": {"type": "integer", "minimum": 1},
+                "cost_budget": {"type": "number", "minimum": 0},
+                "qps_limit": {"type": "integer", "minimum": 1},
+            },
+            "required": ["operation"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "state_transition": {"type": "string"},
+                "turn_scope": {"type": "string"},
+                "parent_goal_id": {"type": "string"},
+                "child_goal_id": {"type": "string"},
+                "children": {"type": "array", "items": {"type": "object"}},
+                "child": {"type": "object"},
+                "reports": {"type": "array", "items": {"type": "object"}},
+                "latest_report": {"type": "object"},
+                "completion_evidence": {"type": "boolean"},
+            },
+            "required": ["entity_type", "entity_id", "state_transition", "turn_scope"],
+        },
+        facts_only=True,
+        mutates=True,
+        permission="read",
+        source="action",
+        governance_exempt=True,
+    ),
+    ToolSpec(
+        name="agent.report",
+        capability_class="agent",
+        execution_contexts=("turn",),
+        description=(
+            "Terminal child-only protocol action that reports findings and evidence "
+            "to the parent Goal; it never sends a user-facing response."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "findings": {"type": "array", "items": {"type": "object"}},
+                "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                "artifacts": {"type": "array", "items": {"type": "string"}},
+                "unresolved": {"type": "array", "items": {"type": "string"}},
+                "needs_parent_input": {"type": "boolean"},
+            },
+            "required": ["summary"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "state_transition": {"type": "string"},
+                "turn_scope": {"type": "string"},
+                "parent_goal_id": {"type": "string"},
+                "child_goal_id": {"type": "string"},
+                "report_id": {"type": "string"},
+                "report": {"type": "object"},
+            },
+            "required": [
+                "entity_type",
+                "entity_id",
+                "state_transition",
+                "turn_scope",
+                "parent_goal_id",
+                "child_goal_id",
+                "report_id",
+                "report",
+            ],
+        },
+        facts_only=True,
+        mutates=True,
+        permission="prepare",
+        source="action",
+        governance_exempt=True,
+    ),
+    ToolSpec(
         name="goal.open",
         capability_class="goal",
         execution_contexts=("turn", API_CONTEXT),
@@ -357,14 +463,27 @@ ACTION_SPECS = [
     ToolSpec(
         name="memory.add",
         capability_class="memory",
-        execution_contexts=("api",),
-        description="""Add one typed durable memory item through the capability boundary.""",
+        execution_contexts=("turn", API_CONTEXT),
+        description=(
+            "Add or revoke one typed durable memory item through the governed "
+            "capability boundary. Omitted scope defaults to the current actor; "
+            "explicit scope cannot exceed the caller's actor, session, or workspace "
+            "envelope. Global writes are reserved for the trusted local control surface."
+        ),
         input_schema={
             "type": "object",
             "properties": {
+                "operation": {"type": "string", "enum": ["add", "revoke"]},
+                "memory_id": {"type": "string"},
                 "type": {"type": "string"},
                 "content": {"type": "string"},
-                "scope": {"type": "string"},
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Optional caller-relative scope kind: global, actor, session, "
+                        "or workspace. Omit to use actor scope."
+                    ),
+                },
                 "source": {"type": "string"},
                 "status": {"type": "string"},
                 "confidence": {"type": "number"},
@@ -372,7 +491,7 @@ ACTION_SPECS = [
                 "provenance": {"type": "string"},
                 "metadata": {"type": "object"},
             },
-            "required": ["type", "content", "reason", "provenance"],
+            "required": ["reason", "provenance"],
         },
         output_schema={
             "type": "object",

@@ -53,8 +53,20 @@ class AgentRuntime:
         operating_context: OperatingContext | None = None,
     ) -> list[ChatMessage]:
         operating_context = operating_context or OperatingContext(home=self.home)
+        from .memory.scopes import memory_scopes_for_context
+
         memory_context = self.memory.render_context(
-            user_text, goal=operating_context.objective or ""
+            user_text,
+            goal=operating_context.objective or "",
+            allowed_scopes=set(
+                memory_scopes_for_context(
+                    source=operating_context.source,
+                    peer_id=operating_context.peer_id,
+                    sender_id=operating_context.sender_id,
+                    session_id=session_id,
+                    workspace=operating_context.workspace,
+                )
+            ),
         )
         skills_context = self.skills.render_prompt(
             permission_ceiling=operating_context.skill_permission_ceiling,

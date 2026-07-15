@@ -55,7 +55,25 @@ class ToolCapability:
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        result = await self.gateway.call(self.spec.name, args)
+        call_args = dict(args)
+        if self.spec.name in {
+            "memory.list",
+            "memory.recall",
+            "memory.conflicts",
+            "memory.record_activation",
+        }:
+            from navi.memory.scopes import memory_scopes_for_context
+
+            call_args["_allowed_scopes"] = list(
+                memory_scopes_for_context(
+                    source=context.source,
+                    peer_id=context.peer_id,
+                    sender_id=context.sender_id,
+                    session_id=context.session_id or "",
+                    workspace=context.workspace,
+                )
+            )
+        result = await self.gateway.call(self.spec.name, call_args)
         facts = dict(result.facts or {})
         if result.action == "connector_outbound":
             from navi.connector_delivery import bind_connector_delivery_facts

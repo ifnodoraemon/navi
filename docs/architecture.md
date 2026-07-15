@@ -14,6 +14,8 @@ TurnController + CurrentStateBuilder
         |
         v
 LoopControlService -> Run + Goal + LoopSpec + LoopRun
+        |                  |
+        |                  +-> depth-1 background child Goals
         |
         v
 DurableStateGraphRunner
@@ -30,6 +32,11 @@ SQLite stores + TraceStore + connector delivery receipts
 The unified loop is a protocol boundary. `loop_kind` distinguishes a turn,
 control action, durable goal, or scheduled run without creating an unrelated
 execution engine.
+
+Child agents reuse this exact loop. `agent.control(operation=...)` is the single
+parent lifecycle surface; `agent.report` is separate because it is a child-only
+terminal protocol with different authority. Child policy is the intersection of
+system, parent, and caller envelopes, and only the parent remains user-facing.
 
 ## Layer Ownership
 
@@ -92,6 +99,11 @@ live in separate databases.
 
 Trace events are append-oriented audit evidence. Materialized Run, Goal, and
 LoopRun records own active lifecycle state.
+
+Durable memory items carry global, actor, session, or workspace scope. The
+planner and responder receive only scopes derived from the current execution
+identity. Older assistant conversation messages are omitted during compaction,
+and retained assistant messages are labeled as non-authoritative candidates.
 
 ## Connector Boundary
 

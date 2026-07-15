@@ -30,6 +30,15 @@ def test_cli_memory_add_uses_control_surface_context(tmp_path):
     assert items[0].type == "preference"
     assert items[0].content == "Prefer direct answers."
 
+    revoked = runner.invoke(
+        app,
+        ["memory", "revoke", items[0].id],
+        env={"NAVI_HOME": str(tmp_path)},
+    )
+
+    assert revoked.exit_code == 0, revoked.output
+    assert MemoryStore(tmp_path).get_item(items[0].id).status == "revoked"
+
 
 def test_cli_eval_connector_default_dataset_validates(tmp_path):
     runner = CliRunner()

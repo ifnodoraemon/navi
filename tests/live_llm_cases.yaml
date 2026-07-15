@@ -27,18 +27,18 @@ syscall_cases:
       tool: tools.list
       permission: read
 
-  - id: local_directory_uses_directory_tool
+  - id: local_directory_uses_shell
     source: observed:.navi/memory.db
     message: "列一下我本机的目录"
     expect:
-      tool: directory.list
+      tool: shell.run
       permission: read
 
-  - id: service_start_time_uses_service_tool
+  - id: service_start_time_uses_shell
     source: observed:.navi/memory.db
     message: "你的最新启动时间是什么时候"
     expect:
-      tool: service.status
+      tool: shell.run
       permission: read
 
   - id: delegation_not_executed_uses_delegation_status_tool
@@ -67,11 +67,11 @@ syscall_cases:
         loop_kind: scheduled
         cron_schedule: "0 8 * * *"
 
-  - id: git_status_uses_git_tool
+  - id: git_status_uses_shell
     source: observed:manual-followup
     message: "检查 navi 仓库状态"
     expect:
-      tool: git.status
+      tool: shell.run
       permission: read
 
   - id: hermes_connector_alive_but_unresponsive
@@ -85,7 +85,7 @@ syscall_cases:
     source: https://github.com/NousResearch/hermes-agent/issues/29005
     message: "网关进程还活着但机器人没响应，检查 navi.service 状态"
     expect:
-      tool: service.status
+      tool: shell.run
       permission: read
 
   - id: hermes_provider_config_drift
@@ -110,8 +110,6 @@ syscall_cases:
         - tool: goal.open
           permission: prepare
         - tool: shell.run
-          permission: write
-        - tool: system.info
           permission: read
 
   - id: regression_execution_protocol_fix_request_uses_unified_loop

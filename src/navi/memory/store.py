@@ -138,12 +138,24 @@ class MemoryStore:
         *,
         memory_type: str | None = None,
         status: str | None = None,
+        allowed_scopes: set[str] | frozenset[str] | None = None,
         limit: int = 50,
     ) -> list[MemoryItem]:
-        return self.provider.get_items(memory_type=memory_type, status=status, limit=limit)
+        items = self.provider.get_items(
+            memory_type=memory_type,
+            status=status,
+            allowed_scopes=allowed_scopes,
+            limit=limit,
+        )
+        return items
 
-    def list_conflicts(self, *, limit: int = 50) -> list[MemoryConflict]:
-        items = self.list_items(limit=1000)
+    def list_conflicts(
+        self,
+        *,
+        limit: int = 50,
+        allowed_scopes: set[str] | frozenset[str] | None = None,
+    ) -> list[MemoryConflict]:
+        items = self.list_items(allowed_scopes=allowed_scopes, limit=1000)
         by_id = {item.id: item for item in items}
         conflicts: list[MemoryConflict] = []
         for item in items:
@@ -669,13 +681,24 @@ class MemoryStore:
 
     # ------------------------------------------------------------------ recall
 
-    def recall(self, query: str, *, limit: int = 8, goal: str = "") -> list[MemoryRecall]:
+    def recall(
+        self,
+        query: str,
+        *,
+        limit: int = 8,
+        goal: str = "",
+        allowed_scopes: set[str] | frozenset[str] | None = None,
+    ) -> list[MemoryRecall]:
         now = time.time()
         fts_query = f"{query} {goal}".strip()
         if not fts_query:
             return []
 
-        fts_results = self.provider.search_fts(fts_query, limit=limit * 3)
+        fts_results = self.provider.search_fts(
+            fts_query,
+            limit=limit * 3,
+            allowed_scopes=allowed_scopes,
+        )
         if not fts_results:
             return []
 
@@ -702,6 +725,8 @@ class MemoryStore:
             item = self.get_item(item_id)
             if not item:
                 continue
+            if allowed_scopes is not None and item.scope not in allowed_scopes:
+                continue
             if item.status not in ACTIVE_STATUSES or (item.expires_at and item.expires_at <= now):
                 continue
             selected.append(
@@ -716,7 +741,10 @@ class MemoryStore:
 
         if not selected:
             return []
-        conflicts = self.list_conflicts(limit=1000)
+        conflicts = self.list_conflicts(
+            limit=1000,
+            allowed_scopes=allowed_scopes,
+        )
         return [self._with_conflict_reasons(recall, conflicts) for recall in selected]
 
     def _semantic_graph_neighbors(
@@ -795,8 +823,14 @@ class MemoryStore:
         *,
         limit: int = ACTIVE_MEMORY_CONTEXT_LIMIT,
         goal: str = "",
+        allowed_scopes: set[str] | frozenset[str] | None = None,
     ) -> str:
-        recalls = self.recall(query, limit=limit, goal=goal)
+        recalls = self.recall(
+            query,
+            limit=limit,
+            goal=goal,
+            allowed_scopes=allowed_scopes,
+        )
         if not recalls:
             return ""
         lines: list[str] = []
@@ -817,7 +851,12 @@ class MemoryStore:
                 lines.append(f"  reasons: {reasons}")
         return "\n".join(lines)
 
-    def active_constraints(self, *, limit: int = 100) -> list[MemoryItem]:
+    def active_constraints(
+        self,
+        *,
+        limit: int = 100,
+        allowed_scopes: set[str] | frozenset[str] | None = None,
+    ) -> list[MemoryItem]:
         """Return all active constraint-type memories, unconditionally.
 
         Principle 12: durable must/must-not rules must survive context compression
@@ -829,17 +868,29 @@ class MemoryStore:
         now = time.time()
         return [
             item
-            for item in self.list_items(memory_type="constraint", limit=limit)
+            for item in self.list_items(
+                memory_type="constraint",
+                allowed_scopes=allowed_scopes,
+                limit=limit,
+            )
             if item.status in ACTIVE_STATUSES and (not item.expires_at or item.expires_at > now)
         ]
 
-    def render_durable_constraints(self, *, limit: int = 100) -> str:
+    def render_durable_constraints(
+        self,
+        *,
+        limit: int = 100,
+        allowed_scopes: set[str] | frozenset[str] | None = None,
+    ) -> str:
         """Render active constraints as authoritative facts for the planner.
 
         Returns "" when there are no active constraints. The output is trusted
         runtime state sourced from Navi's own governed memory store, not from
         untrusted conversation text."""
-        constraints = self.active_constraints(limit=limit)
+        constraints = self.active_constraints(
+            limit=limit,
+            allowed_scopes=allowed_scopes,
+        )
         if not constraints:
             return ""
         lines = ["Durable constraints (reloaded from governed memory; always in effect):"]

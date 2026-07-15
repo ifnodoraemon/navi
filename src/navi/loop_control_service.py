@@ -599,6 +599,18 @@ class LoopControlService:
             "active_goals": [asdict(goal) for goal in active_goals if goal is not None],
         }
 
+    def goal_loop_spec(self, goal_id: str) -> LoopSpec:
+        """Return the persisted policy envelope for a goal."""
+        goal = self.goals.get(goal_id)
+        if goal is None:
+            raise KeyError(f"goal not found: {goal_id}")
+        loop_runs = self.loop_runs.list_by_goal(goal_id, limit=1)
+        if not loop_runs:
+            raise KeyError(f"loop specification not found for goal: {goal_id}")
+        return _loop_spec_from_json(
+            self.loop_runs.get_spec_json(loop_runs[0].loop_spec_id)
+        )
+
     def _loop_spec_for_goal(
         self,
         goal: Goal,
@@ -649,6 +661,8 @@ class LoopControlService:
                 "source": goal.source,
                 "peer_id": goal.peer_id,
                 "sender_id": goal.sender_id,
+                "parent_goal_id": goal.parent_goal_id,
+                "workspace": goal.workspace,
                 "trigger_facts": dict(request.trigger_facts),
             },
         )

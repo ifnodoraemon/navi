@@ -150,7 +150,70 @@ async def test_shell_binary_is_approved_instead_of_name_blocked(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_trace_7482957309616430216_uptime_is_read_without_approval(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    result = await registry.invoke(
+        "shell.run",
+        {"command": ["uptime", "-s"]},
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert result.ok is True
+    assert result.yields_control is False
+    assert result.facts["exit_code"] == 0
+    assert str(result.facts["stdout"]).strip()
+    assert RunStore(tmp_path).list_approvals(limit=10) == []
+
+
+@pytest.mark.asyncio
+async def test_shell_effectful_command_cannot_hide_behind_read_permission(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    target = tmp_path / "must-not-exist.txt"
+
+    denied = await registry.invoke(
+        "shell.run",
+        {"command": ["touch", str(target)]},
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert denied.ok is False
+    assert denied.error_reason == "permission_escalation"
+    assert denied.facts["required"] == "write"
+    assert target.exists() is False
+
+
+def test_shell_effect_classification_is_argument_sensitive(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    spec = registry.get("shell.run")
+    assert spec is not None
+
+    read_only = assess_capability_call(
+        spec,
+        {"command": ["find", ".", "-maxdepth", "1", "-type", "f"]},
+        workspace=str(tmp_path),
+    )
+    destructive = assess_capability_call(
+        spec,
+        {"command": ["find", ".", "-name", "*.tmp", "-delete"]},
+        workspace=str(tmp_path),
+    )
+
+    assert read_only.confirmation_required is False
+    assert read_only.evidence["required_permission"] == "read"
+    assert destructive.confirmation_required is True
+    assert destructive.evidence["required_permission"] == "write"
+
+
+@pytest.mark.asyncio
 async def test_approval_resolve_resumes_original_shell_checkpoint(tmp_path: Path) -> None:
+    """Regression for traces 7482957409423991048 and 7482957901583633928."""
     target = tmp_path / "performance-report.md"
     target.write_text("important report\n", encoding="utf-8")
     provider = _DeleteGoalProvider(target)
@@ -192,6 +255,10 @@ async def test_approval_resolve_resumes_original_shell_checkpoint(tmp_path: Path
     assert resolved.facts["continuation_status"] == "completed"
     assert resolved.facts["completion_evidence"] is True
     assert resolved.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
+    assert resolved.facts["continuation_result"]["ok"] is True
+    assert resolved.facts["continuation_result"]["facts"]["command"][0] == "rm"
+    assert resolved.facts["continuation_result"]["facts"]["exit_code"] == 0
+    assert resolved.facts["continuation_checker_results"]
     assert target.exists() is False
     assert provider.calls == ["planner"]
 
@@ -207,6 +274,7 @@ async def test_approval_resolve_resumes_original_shell_checkpoint(tmp_path: Path
     assert repeated.facts["state_transition"] == "already_approved"
     assert repeated.facts["continuation_status"] == "completed"
     assert repeated.facts["completion_evidence"] is True
+    assert repeated.facts["continuation_result"]["facts"]["exit_code"] == 0
     assert provider.calls == ["planner"]
 
     conflicting = await registry.invoke(

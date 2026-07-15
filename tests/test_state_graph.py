@@ -72,7 +72,7 @@ def _spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
             permission_ceiling="read",
         ),
         goal_id="goal-1",
-        allowed_capabilities=("test.run",),
+        allowed_capabilities=("shell.run",),
         verification_ladder=(
             VerificationStep(
                 kind=VerificationKind.COMMAND_EXIT_CODE,
@@ -115,7 +115,7 @@ def _write_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
             owner="tester",
         ),
         goal_id="goal-1",
-        allowed_capabilities=("file.write", "test.run"),
+        allowed_capabilities=("file.write", "shell.run"),
         verification_ladder=(
             VerificationStep(
                 kind=VerificationKind.COMMAND_EXIT_CODE,
@@ -162,7 +162,7 @@ def test_checkpoint_restore_rejects_model_fields_missing_from_plan(tmp_path: Pat
         node=LoopNode.EXECUTE,
         inputs={
             "planned_capability": {
-                "tool": "test.run",
+                "tool": "shell.run",
                 "args": {},
             }
         },
@@ -500,13 +500,16 @@ async def test_planner_context_compacts_long_session_history(tmp_path: Path) -> 
     assert conversation is not None
     conversation_text = conversation.group(1)
     assert "Conversation context was compacted before planner intake." in conversation_text
-    assert "legacy-start" in conversation_text
+    assert "legacy-start" not in conversation_text
     assert "legacy-tail-marker" not in conversation_text
     assert "recent full marker survives compaction" in conversation_text
+    assert "ASSISTANT_CANDIDATE_NON_AUTHORITATIVE" in conversation_text
+    assert "Older assistant replies are omitted" in conversation_text
     compaction = _runtime_facts_from_turn_input(turn_input)["conversation_compaction"]
     assert compaction["compacted"] is True
     assert compaction["message_count"] == 18
     assert compaction["omitted_message_count"] == 6
+    assert compaction["omitted_older_assistant_message_count"] == 3
     assert compaction["retained_recent_message_count"] == 12
     assert compaction["compacted_character_count"] <= compaction["max_character_count"]
 

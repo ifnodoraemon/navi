@@ -51,7 +51,12 @@ def _memory_list(home: Path, args: dict[str, Any]) -> ToolResult:
     memory_type = str(args.get("type") or "").strip().lower() or None
     status = str(args.get("status") or "").strip().lower() or None
     try:
-        items = MemoryStore(home).list_items(memory_type=memory_type, status=status, limit=limit)
+        items = MemoryStore(home).list_items(
+            memory_type=memory_type,
+            status=status,
+            allowed_scopes=_allowed_scopes(args),
+            limit=limit,
+        )
     except ValueError as exc:
         return ToolResult(tool="memory.list", ok=False, error=str(exc))
     return ToolResult(
@@ -74,7 +79,13 @@ def _memory_recall(home: Path, args: dict[str, Any]) -> ToolResult:
     goal = str(args.get("goal") or "").strip()
     limit = _positive_int(args.get("limit"), default=8, maximum=50)
     store = MemoryStore(home)
-    recalls = store.recall(query, limit=limit, goal=goal)
+    allowed_scopes = _allowed_scopes(args)
+    recalls = store.recall(
+        query,
+        limit=limit,
+        goal=goal,
+        allowed_scopes=allowed_scopes,
+    )
     return ToolResult(
         tool="memory.recall",
         ok=True,
@@ -85,9 +96,21 @@ def _memory_recall(home: Path, args: dict[str, Any]) -> ToolResult:
             "activation_candidate_ids": [recall.item.id for recall in recalls],
             "count": len(recalls),
             "limit": limit,
-            "rendered": store.render_context(query, limit=limit, goal=goal),
+            "rendered": store.render_context(
+                query,
+                limit=limit,
+                goal=goal,
+                allowed_scopes=allowed_scopes,
+            ),
         },
     )
+
+
+def _allowed_scopes(args: dict[str, Any]) -> set[str] | None:
+    raw = args.get("_allowed_scopes")
+    if not isinstance(raw, list):
+        return None
+    return {str(item).strip() for item in raw if str(item).strip()}
 
 
 def _memory_record_activation(home: Path, args: dict[str, Any]) -> ToolResult:
@@ -107,10 +130,17 @@ def _memory_record_activation(home: Path, args: dict[str, Any]) -> ToolResult:
     if not provenance:
         return ToolResult(tool="memory.record_activation", ok=False, error="provenance is required")
     store = MemoryStore(home)
+    allowed_scopes = _allowed_scopes(args)
     activated = []
     missing = []
     try:
         for item_id in item_ids:
+            current = store.get_item(item_id)
+            if current is None or (
+                allowed_scopes is not None and current.scope not in allowed_scopes
+            ):
+                missing.append(item_id)
+                continue
             item = store.record_activation(
                 item_id,
                 reason=reason,
@@ -142,7 +172,10 @@ def _memory_record_activation(home: Path, args: dict[str, Any]) -> ToolResult:
 
 def _memory_conflicts(home: Path, args: dict[str, Any]) -> ToolResult:
     limit = _positive_int(args.get("limit"), default=20, maximum=100)
-    conflicts = MemoryStore(home).list_conflicts(limit=limit)
+    conflicts = MemoryStore(home).list_conflicts(
+        limit=limit,
+        allowed_scopes=_allowed_scopes(args),
+    )
     return ToolResult(
         tool="memory.conflicts",
         ok=True,
@@ -155,4 +188,3 @@ def _memory_conflicts(home: Path, args: dict[str, Any]) -> ToolResult:
             ),
         },
     )
-

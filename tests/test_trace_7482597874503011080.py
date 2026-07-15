@@ -113,9 +113,9 @@ class _RepeatedFactProvider:
                 {
                     "syscalls": [
                         {
-                            "tool": "directory.list",
+                            "tool": "shell.run",
                             "permission": "read",
-                            "args": {"path": ".", "limit": 10},
+                            "args": {"command": ["ls", "-1"], "cwd": "."},
                             "reason": "inspect the same directory",
                         }
                     ]
@@ -172,7 +172,7 @@ def _semantic_spec(goal_id: str, objective: str, workspace: str) -> LoopSpec:
             metadata={"session_id": "session-1"},
         ),
         goal_id=goal_id,
-        allowed_capabilities=("respond", "directory.list"),
+        allowed_capabilities=("respond", "shell.run"),
         verification_ladder=(
             VerificationStep(
                 kind=VerificationKind.LLM_CHECKER,
@@ -366,7 +366,7 @@ async def test_repeated_progress_is_bounded_before_max_attempts(tmp_path) -> Non
             "objective": "find evidence that does not exist",
             "workspace": str(tmp_path),
             "loop_kind": "turn",
-            "allowed_capabilities": ["directory.list"],
+            "allowed_capabilities": ["shell.run"],
         },
         permission="prepare",
         context=CapabilityContext(home=tmp_path, workspace=str(tmp_path)),

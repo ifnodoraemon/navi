@@ -66,7 +66,7 @@ def test_structured_output_validation_checks_array_items():
         },
     }
 
-    _validate_structured_output('{"tool_calls":[{"tool":"git.status"}]}', output_schema)
+    _validate_structured_output('{"tool_calls":[{"tool":"shell.run"}]}', output_schema)
 
     with pytest.raises(RuntimeError, match=r"tool_calls"):
         _validate_structured_output('{"tool_calls":[{"tool":404}]}', output_schema)

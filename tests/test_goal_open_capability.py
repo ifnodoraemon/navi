@@ -11,6 +11,7 @@ from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.goals import GoalStore
 from navi.lifecycle import Phase, Resolution
+from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.loop_contracts import LoopTerminalState
 from navi.loop_runs import LoopRunStore
 from navi.provider import ChatMessage
@@ -122,7 +123,7 @@ async def test_goal_open_capability_auto_start_uses_runtime_state_graph(tmp_path
         {
             "objective": "write app.py through runtime-backed goal capability",
             "workspace": str(tmp_path),
-            "allowed_capabilities": ["file.write", "test.run"],
+            "allowed_capabilities": ["file.write", "shell.run"],
             "verification_command": _command(
                 "from pathlib import Path; assert Path('app.py').read_text() == 'agent\\n'"
             ),
@@ -262,7 +263,7 @@ async def test_goal_resume_capability_runs_checkpointed_goal(tmp_path: Path) -> 
         {
             "objective": "resume through capability",
             "workspace": str(tmp_path),
-            "allowed_capabilities": ["file.write", "test.run"],
+            "allowed_capabilities": ["file.write", "shell.run"],
             "verification_command": _command(
                 "from pathlib import Path; assert Path('app.py').read_text() == 'agent\\n'"
             ),
@@ -357,3 +358,48 @@ async def test_goal_state_capability_reads_durable_loop_state(tmp_path: Path) ->
     assert state.facts["state_transition"] == "state_read"
     assert state.facts["goal"]["id"] == opened.facts["goal_id"]
     assert state.facts["loop_runs"][0]["run_id"] == opened.facts["loop_run_id"]
+
+
+@pytest.mark.asyncio
+async def test_goal_state_default_and_explicit_reads_are_caller_scoped(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    visible = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "visible current task",
+            "workspace": str(tmp_path),
+            "auto_start": False,
+        },
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+    hidden = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="other actor task",
+            workspace=str(tmp_path),
+            source="telegram",
+            peer_id="other-peer",
+            sender_id="other-user",
+            auto_start=False,
+        )
+    )
+
+    scoped = await registry.invoke(
+        "goal.state",
+        {},
+        permission="read",
+        context=_context(tmp_path),
+    )
+    denied = await registry.invoke(
+        "goal.state",
+        {"goal_id": hidden.goal.id},
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert scoped.ok is True
+    assert [goal["id"] for goal in scoped.facts["active_goals"]] == [
+        visible.facts["goal_id"]
+    ]
+    assert denied.ok is False
+    assert denied.error_reason == "permission_denied"

@@ -59,7 +59,12 @@ class MemoryProvider(Protocol):
     def store_item(self, item: MemoryItem) -> None: ...
     def store_item_with_contradictions(self, item: MemoryItem) -> MemoryItem: ...
     def get_items(
-        self, *, memory_type: str | None = None, status: str | None = None, limit: int = 50
+        self,
+        *,
+        memory_type: str | None = None,
+        status: str | None = None,
+        allowed_scopes: set[str] | frozenset[str] | None = None,
+        limit: int = 50,
     ) -> list[MemoryItem]: ...
     def get_item(self, item_id: str) -> MemoryItem | None: ...
     def update_item(
@@ -81,7 +86,13 @@ class MemoryProvider(Protocol):
     ) -> None: ...
     def get_session_alias(self, alias: str) -> SessionAlias | None: ...
     def list_session_aliases(self, limit: int = 50) -> list[SessionAlias]: ...
-    def search_fts(self, query: str, limit: int) -> list[tuple[str, float]]: ...
+    def search_fts(
+        self,
+        query: str,
+        limit: int,
+        *,
+        allowed_scopes: set[str] | frozenset[str] | None = None,
+    ) -> list[tuple[str, float]]: ...
 
 
 class SQLiteMemoryProvider:
@@ -295,7 +306,12 @@ class SQLiteMemoryProvider:
         )
 
     def get_items(
-        self, *, memory_type: str | None = None, status: str | None = None, limit: int = 50
+        self,
+        *,
+        memory_type: str | None = None,
+        status: str | None = None,
+        allowed_scopes: set[str] | frozenset[str] | None = None,
+        limit: int = 50,
     ) -> list[MemoryItem]:
         clauses = []
         values: list[object] = []
@@ -305,6 +321,12 @@ class SQLiteMemoryProvider:
         if status:
             clauses.append("status = ?")
             values.append(status)
+        if allowed_scopes is not None:
+            scopes = sorted(allowed_scopes)
+            if not scopes:
+                return []
+            clauses.append("scope IN (" + ",".join("?" for _ in scopes) + ")")
+            values.extend(scopes)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         values.append(limit)
         with connect(self.db_path) as conn:
@@ -370,21 +392,39 @@ class SQLiteMemoryProvider:
         with connect(self.db_path) as conn:
             conn.execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
 
-    def search_fts(self, query: str, limit: int) -> list[tuple[str, float]]:
+    def search_fts(
+        self,
+        query: str,
+        limit: int,
+        *,
+        allowed_scopes: set[str] | frozenset[str] | None = None,
+    ) -> list[tuple[str, float]]:
         """Query the FTS5 trigram table and return a list of (item_id, rank)."""
         # Escape double quotes to avoid FTS syntax errors if query has them
         safe_query = query.replace('"', '""')
         match_expr = f'"{safe_query}"'
         try:
             with connect(self.db_path) as conn:
-                rows = conn.execute(
-                    "SELECT id, rank "
-                    "FROM memory_fts "
-                    "WHERE memory_fts MATCH ? "
-                    "ORDER BY rank "
-                    "LIMIT ?",
-                    (match_expr, limit),
-                ).fetchall()
+                if allowed_scopes is None:
+                    rows = conn.execute(
+                        "SELECT id, rank FROM memory_fts "
+                        "WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
+                        (match_expr, limit),
+                    ).fetchall()
+                else:
+                    scopes = sorted(allowed_scopes)
+                    if not scopes:
+                        return []
+                    placeholders = ",".join("?" for _ in scopes)
+                    rows = conn.execute(
+                        "SELECT memory_fts.id, memory_fts.rank "
+                        "FROM memory_fts JOIN memory_items "
+                        "ON memory_items.id = memory_fts.id "
+                        "WHERE memory_fts MATCH ? "
+                        f"AND memory_items.scope IN ({placeholders}) "
+                        "ORDER BY memory_fts.rank LIMIT ?",
+                        (match_expr, *scopes, limit),
+                    ).fetchall()
                 return [(row[0], float(row[1])) for row in rows]
         except Exception:
             logger.debug("search_fts failed for query %r", query, exc_info=True)

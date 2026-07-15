@@ -27,7 +27,7 @@ def _spec() -> LoopSpec:
     return LoopSpec.from_goal(
         goal,
         goal_id="goal-1",
-        allowed_capabilities=("filesystem.write", "test.run"),
+        allowed_capabilities=("filesystem.write", "shell.run"),
         verification_ladder=(
             VerificationStep(
                 kind=VerificationKind.COMMAND_EXIT_CODE,

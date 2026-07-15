@@ -57,6 +57,8 @@ class CurrentState:
     vault_handle_state: tuple[Any, ...] = ()
     connector_state: dict[str, Any] = field(default_factory=dict)
     recent_deliveries: tuple[dict[str, Any], ...] = ()
+    recent_goal_outcomes: tuple[dict[str, Any], ...] = ()
+    runtime_state_anomalies: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -329,6 +331,7 @@ class ApprovalService:
                 "loop_run_id": loop_run.run_id,
                 "loop_terminal_state": str(loop_run.terminal_state),
                 "result_summary": current_run.result_summary,
+                **_approval_continuation_facts(loop_run),
             }
             return ApprovalResolution(
                 ok=True,
@@ -388,6 +391,7 @@ class ApprovalService:
             "loop_run_id": continued.loop_run.run_id,
             "loop_terminal_state": str(continued.loop_run.terminal_state),
             "result_summary": continued.run.result_summary,
+            **_approval_continuation_facts(continued.loop_run),
         }
         pending_approval = self._current_gate_approval(
             runs=RunStore(self.home),
@@ -586,6 +590,14 @@ class CurrentStateBuilder:
         )
         active_goals = _active_goals(self.home, context)
         active_loop_runs = _active_loop_runs(self.home, active_goals)
+        recent_goal_outcomes = _recent_goal_outcomes(self.home, context)
+        delegation_state = _delegation_state(self.home, context)
+        active_goal_run_ids = {str(goal.run_id) for goal in active_goals if goal.run_id}
+        orphan_active_runs = [
+            {"run_id": run.id, "title": run.title, "updated_at": run.updated_at}
+            for run in active_runs
+            if run.id not in active_goal_run_ids
+        ]
         recent_deliveries = _recent_deliveries(self.home, context)
         active_locks = WorkspaceLockStore(self.home).list_active()
         active_shadows = _active_shadow_workspaces(self.home, context)
@@ -609,7 +621,13 @@ class CurrentStateBuilder:
                 "sender_id": context.sender_id,
                 "session_id": context.session_id or "",
             },
+            delegation_state=delegation_state,
             recent_deliveries=recent_deliveries,
+            recent_goal_outcomes=recent_goal_outcomes,
+            runtime_state_anomalies={
+                "active_run_without_active_goal_count": len(orphan_active_runs),
+                "active_runs_without_active_goals": orphan_active_runs[:20],
+            },
         )
 
 
@@ -670,6 +688,8 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
         "vault_handle_state": [handle.to_prompt_dict() for handle in state.vault_handle_state],
         "connector_state": dict(state.connector_state),
         "recent_deliveries": [dict(item) for item in state.recent_deliveries],
+        "recent_goal_outcomes": [dict(item) for item in state.recent_goal_outcomes],
+        "runtime_state_anomalies": dict(state.runtime_state_anomalies),
     }
 
 
@@ -740,6 +760,21 @@ def _waiting_approval_id(evidence: dict[str, Any]) -> str:
     return ""
 
 
+def _approval_continuation_facts(loop_run: LoopRunState) -> dict[str, Any]:
+    """Expose the resumed operation's facts separately from approval metadata."""
+    evidence = loop_run.evidence if isinstance(loop_run.evidence, dict) else {}
+    executor = evidence.get("executor")
+    checker_results = evidence.get("checker_results")
+    facts: dict[str, Any] = {}
+    if isinstance(executor, dict):
+        facts["continuation_result"] = dict(executor)
+    if isinstance(checker_results, list):
+        facts["continuation_checker_results"] = [
+            dict(item) for item in checker_results if isinstance(item, dict)
+        ]
+    return facts
+
+
 def _active_goals(home: Path, context: SurfaceContext) -> tuple[Any, ...]:
     from .goals import GoalStore
 
@@ -763,6 +798,98 @@ def _recent_deliveries(home: Path, context: SurfaceContext) -> tuple[dict[str, A
             limit=20,
         )
     )
+
+
+def _recent_goal_outcomes(
+    home: Path,
+    context: SurfaceContext,
+    *,
+    limit: int = 8,
+) -> tuple[dict[str, Any], ...]:
+    from .goals import GoalStore
+    from .loop_runs import LoopRunStore
+
+    goals = [
+        goal
+        for goal in GoalStore(home).list(limit=100)
+        if run_matches_context(goal, context)
+        and _workspace_matches(goal.workspace, context.workspace)
+    ][:limit]
+    runs = RunStore(home)
+    loop_runs = LoopRunStore(home)
+    outcomes: list[dict[str, Any]] = []
+    for goal in goals:
+        run = runs.get(goal.run_id) if goal.run_id else None
+        goal_loop_runs = loop_runs.list_by_goal(goal.id, limit=1)
+        loop_run = goal_loop_runs[0] if goal_loop_runs else None
+        continuation = _approval_continuation_facts(loop_run) if loop_run else {}
+        outcomes.append(
+            {
+                "goal_id": goal.id,
+                "parent_goal_id": getattr(goal, "parent_goal_id", ""),
+                "objective": goal.objective,
+                "phase": goal.phase,
+                "resolution": goal.resolution,
+                "task_status": getattr(goal, "task_status", ""),
+                "run_id": goal.run_id,
+                "result_summary": _non_authoritative_run_summary(
+                    str(run.result_summary or "") if run else ""
+                ),
+                "result_summary_provenance": "assistant_candidate_non_authoritative",
+                "error": str(run.error or "") if run else "",
+                "loop_terminal_state": str(loop_run.terminal_state or "")
+                if loop_run
+                else "",
+                "continuation": _bounded_state_value(continuation),
+                "updated_at": goal.updated_at,
+            }
+        )
+    return tuple(outcomes)
+
+
+def _delegation_state(home: Path, context: SurfaceContext) -> dict[str, Any]:
+    from .goals import GoalStore
+
+    children = [
+        goal
+        for goal in GoalStore(home).list(limit=100)
+        if goal.parent_goal_id
+        and run_matches_context(goal, context)
+        and _workspace_matches(goal.workspace, context.workspace)
+    ][:20]
+    return {
+        "child_count": len(children),
+        "active_child_count": sum(goal.phase != Phase.ENDED for goal in children),
+        "children": [
+            {
+                "child_goal_id": goal.id,
+                "parent_goal_id": goal.parent_goal_id,
+                "objective": goal.objective,
+                "phase": goal.phase,
+                "resolution": goal.resolution,
+                "task_status": goal.task_status,
+                "updated_at": goal.updated_at,
+            }
+            for goal in children
+        ],
+    }
+
+
+def _bounded_state_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 3:
+        if isinstance(value, (dict, list, tuple)):
+            return {"truncated": True, "type": type(value).__name__}
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= 500 else value[:500] + " ... [truncated]"
+    if isinstance(value, dict):
+        return {
+            str(key): _bounded_state_value(nested, depth=depth + 1)
+            for key, nested in list(value.items())[:30]
+        }
+    if isinstance(value, (list, tuple)):
+        return [_bounded_state_value(item, depth=depth + 1) for item in value[:10]]
+    return value
 
 
 def _active_loop_runs(home: Path, active_goals: tuple[Any, ...]) -> tuple[LoopRunState, ...]:

@@ -29,15 +29,15 @@ async def test_codebase_search_uses_runtime_rag_and_navi_home_cache(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_directory_list_returns_workspace_entries(tmp_path: Path) -> None:
+async def test_shell_list_returns_workspace_entries(tmp_path: Path) -> None:
     (tmp_path / "visible.txt").write_text("ok", encoding="utf-8")
     (tmp_path / ".hidden").write_text("secret", encoding="utf-8")
 
     gateway = build_tool_gateway(tmp_path / "home", project_dir=tmp_path)
-    result = await gateway.call("directory.list", {"path": "."})
+    result = await gateway.call("shell.run", {"command": ["ls", "-1"], "cwd": "."})
 
     assert result.ok is True
-    names = {entry["name"] for entry in result.facts["entries"]}
+    names = set(result.facts["stdout"].splitlines())
     assert "visible.txt" in names
     assert ".hidden" not in names
     assert "response" not in result.facts

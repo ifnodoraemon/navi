@@ -82,6 +82,22 @@ The loop must:
   bounded replanning opportunity remains; the runtime must not choose the
   semantic recovery route.
 
+## Delegation Contract
+
+Delegation is ordinary governed Goal execution, not a second user-facing agent
+stack. A parent may use `agent.control` operations to spawn, inspect, message,
+cancel, and collect a depth-1 background child. A child receives an immutable
+intersection of system, parent-Goal, and caller policy with explicit objective,
+acceptance criteria, context facts, permission ceiling, workspace, timeout, and
+resource budgets. No more than three children may be active for one parent.
+
+Children cannot recursively delegate, contact the user, resolve approvals, use
+connectors, or mutate the workspace. They return findings only through the
+child-only terminal `agent.report` protocol. A report is a claim; completion
+remains separate and requires the child LoopRun and checker evidence to
+converge. Transient background resource pauses resume at their persisted node;
+they must not be mislabeled or replayed as approval continuations.
+
 ## Capability Contract
 
 Capabilities are stable external contracts. Each capability declares:
@@ -90,6 +106,18 @@ Capabilities are stable external contracts. Each capability declares:
 - JSON input and output schemas;
 - whether it mutates state;
 - side-effect scope and stage/commit/compensate behavior when applicable.
+
+The capability surface must remain minimal. If an existing generic capability
+can express a new operation through parameters or an input-schema extension,
+Navi must evolve that contract instead of adding an operation-specific tool.
+A new capability is justified only by a distinct authority boundary such as a
+different permission, effect, approval, lifecycle, or execution environment;
+unrelated authority boundaries must not be hidden behind one generic name.
+Local process operations use `shell.run` unless another capability has a real
+authority boundary. Directory listing, Git status, service inspection, system
+facts, and test commands are argv choices, not separate tools. The runtime must
+derive read, network, or write permission and approval requirements from the
+concrete argv and fail unknown effects closed.
 
 Tools execute or observe and return facts. Skills provide procedures and may
 package scripts, templates, or assets, but execution still passes through
@@ -114,8 +142,12 @@ explicit, recoverable saga. Partial failure must not leave an apparently active
 or approved orphan entity.
 
 Memory must be typed, scoped, provenance-bearing, revocable, and conflict
-visible. Preferences learned from prior approvals may inform explanations but
-must not expand permissions.
+visible. Recall, revocation, conflict reads, and activation records must stay
+inside global, actor, session, and workspace visibility scopes. User-facing
+actors cannot write global memory. Assistant conversation text and run result
+summaries are non-authoritative candidates, not durable facts. Preferences
+learned from prior approvals may inform explanations but must not expand
+permissions.
 
 Trace is audit evidence, not the authoritative runtime state. Secrets and
 sensitive payloads must be redacted before persistence.

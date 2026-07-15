@@ -20,6 +20,7 @@ from navi.loop_contracts import (
 )
 from navi.loop_runs import LoopRunStore
 from navi.provider import ChatMessage
+from navi.runs import RunStore
 from navi.runtime import AgentRuntime
 from navi.state_graph import ModelCapabilityPlannerPort
 from navi.workspaces import ShadowWorkspaceManager
@@ -87,7 +88,7 @@ def _loop_spec(goal_id: str, workspace: str) -> LoopSpec:
             permission_ceiling="write",
         ),
         goal_id=goal_id,
-        allowed_capabilities=("filesystem.write", "test.run"),
+        allowed_capabilities=("filesystem.write", "shell.run"),
         verification_ladder=(
             VerificationStep(
                 kind=VerificationKind.COMMAND_EXIT_CODE,
@@ -202,6 +203,81 @@ def test_current_state_filters_loop_runs_by_visible_goal_context(tmp_path):
 
     assert [item["id"] for item in facts["active_goals"]] == [visible_goal.id]
     assert [item["run_id"] for item in facts["active_loop_runs"]] == [visible_run.run_id]
+
+
+def test_current_state_separates_recent_outcomes_from_orphan_runtime_state(tmp_path):
+    """Regression for trace 7482957649409519368 follow-up task confusion."""
+    runs = RunStore(tmp_path)
+    visible_run = runs.create(
+        "visible recent result",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        phase="ended",
+    )
+    runs.update_run(
+        visible_run.id,
+        result_summary="model-authored candidate summary\napproval_code=must-not-leak",
+        resolution="success",
+    )
+    visible_goal = GoalStore(tmp_path).create(
+        objective="return the latest boot time",
+        workspace=str(tmp_path),
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        run_id=visible_run.id,
+    )
+    hidden_run = runs.create(
+        "hidden recent result",
+        source="telegram",
+        peer_id="other-peer",
+        sender_id="other-sender",
+        workspace=str(tmp_path),
+        phase="ended",
+    )
+    GoalStore(tmp_path).create(
+        objective="hidden task",
+        workspace=str(tmp_path),
+        source="telegram",
+        peer_id="other-peer",
+        sender_id="other-sender",
+        run_id=hidden_run.id,
+    )
+    orphan = runs.create(
+        "stale active approval envelope",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        phase="running",
+    )
+
+    facts = current_state_facts(
+        CurrentStateBuilder(tmp_path).build(
+            SurfaceContext(
+                home=tmp_path,
+                source="weixin",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                workspace=str(tmp_path),
+            )
+        )
+    )
+
+    assert [item["goal_id"] for item in facts["recent_goal_outcomes"]] == [
+        visible_goal.id
+    ]
+    recent = facts["recent_goal_outcomes"][0]
+    assert recent["objective"] == "return the latest boot time"
+    assert recent["result_summary"] == "model-authored candidate summary"
+    assert recent["result_summary_provenance"] == (
+        "assistant_candidate_non_authoritative"
+    )
+    anomalies = facts["runtime_state_anomalies"]
+    assert anomalies["active_run_without_active_goal_count"] == 1
+    assert anomalies["active_runs_without_active_goals"][0]["run_id"] == orphan.id
 
 
 def test_current_state_includes_only_context_matching_delivery_facts(tmp_path):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +8,7 @@ from ..capabilities_types import BaseCapability, CapabilityContext, CapabilityRe
 from ..goal_state_graph import run_goal_loop_state_graph
 from ..loop_control_service import LoopControlService, OpenGoalRequest
 from ..loop_contracts import LoopTerminalState
-from ..result import Conflict, NotFound, SchemaMismatch, guarded
+from ..result import Conflict, NotFound, PermissionDenied, SchemaMismatch, guarded
 from ..tools import ToolSpec
 from .helpers import arg_text as _arg_text, fact_result as _fact_result, positive_int as _positive_int
 
@@ -147,6 +147,12 @@ class GoalResumeCapability(BaseCapability):
         workspace = _arg_text(args, "workspace") or context.workspace or str(self.project_dir)
         service = LoopControlService(self.home)
         try:
+            _require_goal_scope(
+                service,
+                goal_id=goal_id,
+                loop_run_id=loop_run_id,
+                context=context,
+            )
             if loop_run_id:
                 prepared = service.resume_loop(loop_run_id=loop_run_id, workspace=workspace)
             else:
@@ -207,6 +213,12 @@ class GoalCancelCapability(BaseCapability):
         reason = _arg_text(args, "reason")
         service = LoopControlService(self.home)
         try:
+            _require_goal_scope(
+                service,
+                goal_id=goal_id,
+                loop_run_id=loop_run_id,
+                context=context,
+            )
             if loop_run_id:
                 result = service.cancel_loop(loop_run_id=loop_run_id, reason=reason)
             else:
@@ -232,12 +244,29 @@ class GoalStateCapability(BaseCapability):
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
+        goal_id = _arg_text(args, "goal_id")
+        loop_run_id = _arg_text(args, "loop_run_id")
+        limit = _positive_int(args.get("limit"), default=20, maximum=200)
+        service = LoopControlService(self.home)
         try:
-            facts = LoopControlService(self.home).goal_state(
-                goal_id=_arg_text(args, "goal_id"),
-                loop_run_id=_arg_text(args, "loop_run_id"),
-                limit=_positive_int(args.get("limit"), default=20, maximum=200),
-            )
+            if goal_id or loop_run_id:
+                _require_goal_scope(
+                    service,
+                    goal_id=goal_id,
+                    loop_run_id=loop_run_id,
+                    context=context,
+                )
+                facts = service.goal_state(
+                    goal_id=goal_id,
+                    loop_run_id=loop_run_id,
+                    limit=limit,
+                )
+            else:
+                facts = _scoped_active_goal_state(
+                    service,
+                    context=context,
+                    limit=limit,
+                )
         except KeyError as exc:
             raise NotFound(str(exc)) from exc
         run_id = str(facts.get("run", {}).get("id") or "")
@@ -300,6 +329,66 @@ def _effective_allowed_capabilities(
     if not visible:
         raise SchemaMismatch("goal.open has no capabilities in the current policy envelope")
     return tuple(sorted(visible))
+
+
+def _require_goal_scope(
+    service: LoopControlService,
+    *,
+    goal_id: str,
+    loop_run_id: str,
+    context: CapabilityContext,
+) -> None:
+    goal = None
+    if loop_run_id:
+        loop_run = service.loop_runs.get_run(loop_run_id)
+        if loop_run is None:
+            raise NotFound(f"loop run not found: {loop_run_id}")
+        goal = service.goals.get(loop_run.goal_id)
+    elif goal_id:
+        goal = service.goals.get(goal_id)
+    if goal is None:
+        raise NotFound("goal not found")
+    from ..control import run_matches_context
+
+    if not run_matches_context(goal, context):
+        raise PermissionDenied("goal identity does not match caller.")
+    if (
+        context.goal_id
+        and context.workspace
+        and goal.workspace
+        and context.workspace != goal.workspace
+    ):
+        raise PermissionDenied("goal workspace does not match caller.")
+
+
+def _scoped_active_goal_state(
+    service: LoopControlService,
+    *,
+    context: CapabilityContext,
+    limit: int,
+) -> dict[str, Any]:
+    from ..control import run_matches_context
+
+    active_loop_runs = []
+    active_goals = []
+    for loop_run in service.loop_runs.list_active(limit=max(limit * 5, limit)):
+        goal = service.goals.get(loop_run.goal_id)
+        if goal is None or not run_matches_context(goal, context):
+            continue
+        if context.workspace and goal.workspace and context.workspace != goal.workspace:
+            continue
+        active_loop_runs.append(loop_run.to_dict())
+        active_goals.append(asdict(goal))
+        if len(active_loop_runs) >= limit:
+            break
+    return {
+        "entity_type": "goal",
+        "entity_id": "",
+        "state_transition": "state_read",
+        "turn_scope": "current",
+        "active_loop_runs": active_loop_runs,
+        "active_goals": active_goals,
+    }
 
 
 def _goal_result(

@@ -23,7 +23,7 @@ def _spec() -> LoopSpec:
             permission_ceiling="read",
         ),
         goal_id="goal-1",
-        allowed_capabilities=("test.run",),
+        allowed_capabilities=("shell.run",),
         verification_ladder=(
             VerificationStep(
                 kind=VerificationKind.COMMAND_EXIT_CODE,

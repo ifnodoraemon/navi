@@ -192,7 +192,7 @@ class _FollowupApprovalProvider:
                         ]
                     }
                 )
-            if self.bare_approval and self.planner_calls == 2:
+            if self.bare_approval and self.approval_run_id:
                 return json.dumps(
                     {
                         "syscalls": [
@@ -388,7 +388,7 @@ async def test_connector_approval_resumes_original_goal_before_reply(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_connector_explicit_approval_surfaces_the_next_exact_gate(tmp_path: Path):
+async def test_connector_read_lookup_skips_approval_and_surfaces_delivery_gate(tmp_path: Path):
     target = tmp_path / "resume.md"
     target.write_text("resume\n", encoding="utf-8")
     provider = _FollowupApprovalProvider(target, bare_approval=False)
@@ -417,7 +417,7 @@ async def test_connector_explicit_approval_surfaces_the_next_exact_gate(tmp_path
     )
     first = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
     assert first is not None
-    assert first.requested_tool == "shell.run"
+    assert first.requested_tool == "channel.send_file"
 
     ingress = ConnectorIngressRuntime(
         home=tmp_path,
@@ -438,20 +438,17 @@ async def test_connector_explicit_approval_surfaces_the_next_exact_gate(tmp_path
     finally:
         await ingress.event_bus.shutdown()
 
-    second = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
-    assert second is not None
-    assert second.id != first.id
-    assert second.requested_tool == "channel.send_file"
     assert response is not None
-    assert response.text == f"发送文件需要再次批准，审批码 {second.code}。"
-    assert response.facts["pending_approval"]["id"] == second.id
-    assert RunStore(tmp_path).get(opened.run_id).result_summary == ""
-    assert provider.calls[-1] == "responder"
+    delivery = connector_delivery_from_facts(response.facts)
+    assert delivery is not None
+    assert delivery.path == str(target.resolve())
+    assert RunStore(tmp_path).pending_approval_for_run(opened.run_id) is None
+    assert "responder" not in provider.calls
     assert TraceStore(tmp_path).evaluate_trace("approve-locate-explicit").outcome == "success"
 
 
 @pytest.mark.asyncio
-async def test_connector_bare_approval_surfaces_the_next_exact_gate(tmp_path: Path):
+async def test_connector_bare_approval_resolves_the_delivery_gate(tmp_path: Path):
     target = tmp_path / "resume.md"
     target.write_text("resume\n", encoding="utf-8")
     provider = _FollowupApprovalProvider(target, bare_approval=True)
@@ -481,6 +478,7 @@ async def test_connector_bare_approval_surfaces_the_next_exact_gate(tmp_path: Pa
     provider.approval_run_id = opened.run_id
     first = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
     assert first is not None
+    assert first.requested_tool == "channel.send_file"
 
     ingress = ConnectorIngressRuntime(
         home=tmp_path,
@@ -501,15 +499,12 @@ async def test_connector_bare_approval_surfaces_the_next_exact_gate(tmp_path: Pa
     finally:
         await ingress.event_bus.shutdown()
 
-    second = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
-    assert second is not None
-    assert second.id != first.id
-    assert second.requested_tool == "channel.send_file"
     assert response is not None
-    assert response.text == f"发送文件需要再次批准，审批码 {second.code}。"
-    assert response.facts["pending_approval"]["id"] == second.id
-    assert RunStore(tmp_path).get(opened.run_id).result_summary == ""
-    assert provider.calls[-1] == "responder"
+    delivery = connector_delivery_from_facts(response.facts)
+    assert delivery is not None
+    assert delivery.path == str(target.resolve())
+    assert RunStore(tmp_path).pending_approval_for_run(opened.run_id) is None
+    assert provider.calls[-1] == "planner"
     assert TraceStore(tmp_path).evaluate_trace("approve-locate-bare").outcome == "success"
 
 

@@ -53,7 +53,7 @@ def test_loop_spec_from_goal_encodes_navi_2_contract():
     spec = LoopSpec.from_goal(
         _goal_spec(),
         goal_id="goal-1",
-        allowed_capabilities=("filesystem.write", "test.run"),
+        allowed_capabilities=("filesystem.write", "shell.run"),
         verification_ladder=_verification(),
     )
 

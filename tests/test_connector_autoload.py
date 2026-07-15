@@ -53,22 +53,29 @@ async def test_connector_manifest_matches_local_manifest(tmp_path: Path) -> None
     local_names = {tool["name"] for tool in (local_result.facts or {})["tools"]}
     assert connector_names == local_names
     assert {"file.read", "shell.run", "web.search"} <= connector_names
+    assert {
+        "directory.list",
+        "git.status",
+        "service.status",
+        "system.info",
+        "test.run",
+    }.isdisjoint(connector_names)
 
 
 @pytest.mark.asyncio
-async def test_connector_can_use_shared_nonsensitive_fact_capability(tmp_path: Path) -> None:
+async def test_connector_can_use_shared_nonsensitive_shell_capability(tmp_path: Path) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
 
     result = await registry.invoke(
-        "system.info",
-        {},
+        "shell.run",
+        {"command": ["pwd"]},
         permission="read",
         context=_context(tmp_path, source="connector.weixin"),
     )
 
     assert result.ok is True
     assert result.facts is not None
-    assert result.facts["project_dir"] == str(tmp_path)
+    assert result.facts["stdout"].strip() == str(tmp_path)
 
 
 @pytest.mark.asyncio

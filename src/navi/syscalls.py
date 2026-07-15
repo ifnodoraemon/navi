@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 from .json_utils import json_schema_errors
+from .operating_context import PERMISSION_ORDER, permission_allows
 from .provider import ChatMessage, ModelPool
 from .prompt_os import assemble_planner_system_prompt, assemble_planner_turn_input
 from .tools import ToolSpec
@@ -66,7 +67,29 @@ class ModelSyscallPlanner:
                 return [syscall]
             matching_spec = next((spec for spec in tools if spec.name == syscall.tool), None)
             if matching_spec:
-                syscall = replace(syscall, permission=matching_spec.permission)
+                if syscall.permission not in PERMISSION_ORDER:
+                    return [
+                        ModelSyscall(
+                            tool="system.planner_error",
+                            args={
+                                "selected_tool": syscall.tool,
+                                "selected_permission": syscall.permission,
+                            },
+                            reason="planner selected an unknown permission",
+                        )
+                    ]
+                if not permission_allows(matching_spec.permission, syscall.permission):
+                    return [
+                        ModelSyscall(
+                            tool="system.planner_error",
+                            args={
+                                "selected_tool": syscall.tool,
+                                "selected_permission": syscall.permission,
+                                "minimum_permission": matching_spec.permission,
+                            },
+                            reason="planner selected insufficient capability permission",
+                        )
+                    ]
                 schema_errors = json_schema_errors(syscall.args, matching_spec.input_schema)
                 if schema_errors:
                     return [

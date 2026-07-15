@@ -94,7 +94,7 @@ class TurnController(TurnLifecycleMixin):
         )
         # Unified loop path: every turn opens a loop record whose objective is
         # the user's message, then runs the planner ReAct loop. The planner picks
-        # capabilities (shell.run, directory.list, send_file, respond, ...),
+        # capabilities (shell.run, send_file, respond, ...),
         # the executor runs them, and the checker verifies whether the objective
         # is achieved.
         invoked = await self.capabilities.invoke(

@@ -562,13 +562,21 @@ def _planner_conversation_context(
 
     recent = relevant[-PLANNER_CONTEXT_RECENT_MESSAGES:]
     older = relevant[:-PLANNER_CONTEXT_RECENT_MESSAGES]
-    preview_items = older[-PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES:]
+    older_user_messages = [
+        (index, msg)
+        for index, msg in enumerate(older, start=1)
+        if str(getattr(msg, "role", "")) == "user"
+    ]
+    preview_items = older_user_messages[-PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES:]
     preview_lines = [
         "Conversation context was compacted before planner intake.",
         f"Older messages omitted: {len(older)}.",
-        "Older-message provenance preview:",
+        (
+            "Older user-message provenance preview. Older assistant replies are "
+            "omitted because they are non-authoritative candidate text:"
+        ),
     ]
-    for index, msg in enumerate(preview_items, start=max(1, len(older) - len(preview_items) + 1)):
+    for index, msg in preview_items:
         preview = _head_preview(str(getattr(msg, "content", "") or ""))
         preview_lines.append(
             f"- older_index={index} role={str(getattr(msg, 'role', '') or '')} "
@@ -594,6 +602,7 @@ def _planner_conversation_context(
             "retained_recent_message_count": len(recent),
             "omitted_message_count": len(older),
             "older_preview_count": len(preview_items),
+            "omitted_older_assistant_message_count": len(older) - len(older_user_messages),
             "truncated_recent_message_count": truncated_recent,
             "compacted_character_count": len(compacted_text),
         },
@@ -602,7 +611,12 @@ def _planner_conversation_context(
 
 def _planner_memory_context(*, memory: Any, spec: LoopSpec) -> PlannerMemoryContext:
     query = spec.goal.objective
-    recalls = memory.recall(query, limit=ACTIVE_MEMORY_CONTEXT_LIMIT)
+    allowed_scopes = _memory_scopes_for_spec(spec)
+    recalls = memory.recall(
+        query,
+        limit=ACTIVE_MEMORY_CONTEXT_LIMIT,
+        allowed_scopes=allowed_scopes,
+    )
     candidate_ids = tuple(recall.item.id for recall in recalls)
     facts = {
         "policy": "planner_memory_context_v1",
@@ -610,6 +624,7 @@ def _planner_memory_context(*, memory: Any, spec: LoopSpec) -> PlannerMemoryCont
         "candidate_ids": list(candidate_ids),
         "count": len(candidate_ids),
         "limit": ACTIVE_MEMORY_CONTEXT_LIMIT,
+        "allowed_scopes": sorted(allowed_scopes),
     }
     if not recalls:
         return PlannerMemoryContext(text="", facts=facts, candidate_ids=())
@@ -691,7 +706,10 @@ def _record_planner_memory_activation(
 
 
 def _format_conversation_message(message: Any, *, content: str | None = None) -> str:
-    role = str(getattr(message, "role", "") or "").upper()
+    raw_role = str(getattr(message, "role", "") or "")
+    role = raw_role.upper()
+    if raw_role == "assistant":
+        role = "ASSISTANT_CANDIDATE_NON_AUTHORITATIVE"
     created_at = float(getattr(message, "created_at", 0.0) or 0.0)
     body = str(getattr(message, "content", "") if content is None else content)
     return f"{role} [created_at={created_at:.3f}]:\n{body}"
@@ -967,6 +985,10 @@ class DurableStateGraphRunner:
             if state.node == LoopNode.EXECUTE
             else None
         )
+        if planned_step is None and state.node == LoopNode.EXECUTE:
+            planned_step = self._planned_step_from_raw(
+                collected_evidence.get("planned_capability")
+            )
         execution_workspace = workspace
         shadow_workspace = None
         if str(spec.workspace_policy.mode) == str(WorkspaceMode.SHADOW):
@@ -1258,28 +1280,32 @@ class DurableStateGraphRunner:
                 # not claim to carry a model plan, so keep looking for the
                 # most recent checkpoint that does.
                 continue
-            if not isinstance(raw, dict):
-                return None
-            tool = raw.get("tool")
-            args = raw.get("args")
-            permission = raw.get("permission")
-            if (
-                not isinstance(tool, str)
-                or not tool.strip()
-                or not isinstance(args, dict)
-                or not isinstance(permission, str)
-                or not permission.strip()
-            ):
-                return None
-            return PlannedCapabilityStep(
-                tool=tool.strip(),
-                args=dict(args),
-                permission=permission.strip(),
-                reason=str(raw.get("reason") or ""),
-                used_memory_ids=tuple(str(item) for item in raw.get("used_memory_ids") or ()),
-                memory_activation=dict(raw.get("memory_activation") or {}),
-            )
+            return self._planned_step_from_raw(raw)
         return None
+
+    @staticmethod
+    def _planned_step_from_raw(raw: Any) -> PlannedCapabilityStep | None:
+        if not isinstance(raw, dict):
+            return None
+        tool = raw.get("tool")
+        args = raw.get("args")
+        permission = raw.get("permission")
+        if (
+            not isinstance(tool, str)
+            or not tool.strip()
+            or not isinstance(args, dict)
+            or not isinstance(permission, str)
+            or not permission.strip()
+        ):
+            return None
+        return PlannedCapabilityStep(
+            tool=tool.strip(),
+            args=dict(args),
+            permission=permission.strip(),
+            reason=str(raw.get("reason") or ""),
+            used_memory_ids=tuple(str(item) for item in raw.get("used_memory_ids") or ()),
+            memory_activation=dict(raw.get("memory_activation") or {}),
+        )
 
     def _discard_shadow_if_needed(
         self,
@@ -1710,7 +1736,10 @@ class DurableStateGraphRunner:
         )
 
     def _stop_for_resource_grant(self, state: LoopRunState, grant: ResourceGrant) -> LoopRunState:
-        evidence = {"resource_grant": grant.to_dict()}
+        evidence = {
+            "resource_grant": grant.to_dict(),
+            "resource_resume_node": str(state.node),
+        }
         if grant.decision == ResourceDecision.PAUSE:
             paused = self._transition(
                 state,
@@ -2192,10 +2221,27 @@ def _goal_constraints(spec: LoopSpec) -> str:
 
 def _durable_constraints(runtime: AgentRuntime, spec: LoopSpec) -> str:
     parts = [_goal_constraints(spec)]
-    rendered = runtime.memory.render_durable_constraints().strip()
+    rendered = runtime.memory.render_durable_constraints(
+        allowed_scopes=_memory_scopes_for_spec(spec),
+    ).strip()
     if rendered:
         parts.extend(["Durable state constraints:", rendered])
     return "\n".join(parts)
+
+
+def _memory_scopes_for_spec(spec: LoopSpec) -> set[str]:
+    from .memory.scopes import memory_scopes_for_context
+
+    metadata = spec.goal.metadata
+    return set(
+        memory_scopes_for_context(
+            source=str(metadata.get("source") or ""),
+            peer_id=str(metadata.get("peer_id") or ""),
+            sender_id=str(metadata.get("sender_id") or ""),
+            session_id=str(metadata.get("session_id") or ""),
+            workspace=str(metadata.get("workspace") or ""),
+        )
+    )
 
 
 def _refreshed_ingress_facts(context: CapabilityContext) -> dict[str, Any]:
@@ -2219,6 +2265,28 @@ def _refreshed_ingress_facts(context: CapabilityContext) -> dict[str, Any]:
         input_text=context.input_text,
     )
     facts["current_state"] = current_state_facts(CurrentStateBuilder(context.home).build(surface))
+    if context.goal_id:
+        from .goals import GoalStore
+
+        events = GoalStore(context.home).list_events(context.goal_id, limit=1000)
+        inbox: list[dict[str, Any]] = []
+        for event in events:
+            if event.event_type != "agent.message_received":
+                continue
+            try:
+                payload = json.loads(event.evidence_json or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if isinstance(payload, dict):
+                inbox.append(
+                    {
+                        "message_id": event.id,
+                        "created_at": event.created_at,
+                        **payload,
+                    }
+                )
+        if inbox:
+            facts["agent_inbox"] = inbox[-20:]
     return facts
 
 

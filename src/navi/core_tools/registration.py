@@ -5,13 +5,6 @@ from typing import Any
 from ..tools import ALL_EXECUTION_CONTEXTS, ToolRegistry, ToolSpec
 from .browser import _browser_screenshot
 from .codebase import _codebase_search
-from .environment import (
-    _directory_list,
-    _git_status,
-    _service_status,
-    _system_info,
-    _test_run,
-)
 from .files import (
     _file_read,
     _file_write,
@@ -509,32 +502,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     )
     registry.register(
         _core_tool_spec(
-            name="directory.list",
-            capability_class="directory",
-            description="Return directory entry facts for a path inside the current project workspace.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "default": "."},
-                    "limit": {"type": "integer", "default": 100},
-                    "include_hidden": {"type": "boolean", "default": False},
-                },
-            },
-            output_schema=_output_schema(
-                {
-                    "path": {"type": "string"},
-                    "entries": _array_of_objects(),
-                    "count": {"type": "integer"},
-                    "limit": {"type": "integer"},
-                    "include_hidden": {"type": "boolean"},
-                }
-            ),
-            permission="read",
-        ),
-        lambda args: _directory_list(args, project_dir=registry.project_dir),
-    )
-    registry.register(
-        _core_tool_spec(
             name="codebase.search",
             capability_class="codebase",
             description="Perform a fast, semantic-like search across the entire project codebase.",
@@ -559,109 +526,24 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     )
     registry.register(
         _core_tool_spec(
-            name="git.status",
-            capability_class="git",
-            description="Return git branch and working-tree status facts for the current project workspace.",
-            input_schema={
-                "type": "object",
-                "properties": {"path": {"type": "string", "default": "."}},
-            },
-            output_schema=_output_schema(
-                {
-                    "path": {"type": "string"},
-                    "branch": {"type": "string"},
-                    "stdout": {"type": "string"},
-                    "stderr": {"type": "string"},
-                    "exit_code": {"type": "integer"},
-                }
-            ),
-            permission="read",
-        ),
-        lambda args: _git_status(args, project_dir=registry.project_dir),
-    )
-    registry.register(
-        _core_tool_spec(
-            name="system.info",
-            capability_class="system",
-            description="Return local system and project disk facts.",
-            input_schema={"type": "object", "properties": {}},
-            output_schema=_output_schema(
-                {
-                    "platform": {"type": "string"},
-                    "python_version": {"type": "string"},
-                    "cpu_count": {"type": "integer"},
-                    "project_dir": {"type": "string"},
-                    "disk": {"type": "object"},
-                }
-            ),
-            permission="read",
-        ),
-        lambda args: _system_info(args, project_dir=registry.project_dir),
-    )
-    registry.register(
-        _core_tool_spec(
-            name="service.status",
-            capability_class="service",
-            description="Return systemd user service status facts.",
-            input_schema={
-                "type": "object",
-                "properties": {"name": {"type": "string", "default": "navi.service"}},
-            },
-            output_schema=_output_schema(
-                {
-                    "name": {"type": "string"},
-                    "properties": {"type": "object"},
-                    "stdout": {"type": "string"},
-                    "stderr": {"type": "string"},
-                    "exit_code": {"type": "integer"},
-                }
-            ),
-            permission="read",
-        ),
-        _service_status,
-    )
-    registry.register(
-        _core_tool_spec(
-            name="test.run",
-            capability_class="test",
-            description="Run the project test command and return bounded process facts.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "command": {"type": "array", "items": {"type": "string"}},
-                    "cwd": {"type": "string", "default": "."},
-                    "timeout_seconds": {"type": "integer", "default": 120},
-                },
-            },
-            output_schema=_output_schema(
-                {
-                    "stdout": {"type": "string"},
-                    "stderr": {"type": "string"},
-                    "exit_code": {"type": "integer"},
-                    "timed_out": {"type": "boolean"},
-                    "command": {"type": "array", "items": {"type": "string"}},
-                    "cwd": {"type": "string"},
-                    "timeout_seconds": {"type": "integer"},
-                }
-            ),
-            facts_only=True,
-            mutates=True,
-            permission="write",
-        ),
-        lambda args: _test_run(args, project_dir=registry.project_dir),
-    )
-
-    registry.register(
-        _core_tool_spec(
             name="shell.run",
             capability_class="shell",
-            description="Run a command in the project workspace and return bounded stdout/stderr facts.",
+            description=(
+                "Run one argv-only command in the project workspace and return bounded "
+                "stdout/stderr facts. Declared read-only commands require read permission, "
+                "network reads require network permission, and unknown or effectful commands "
+                "fail closed to write permission and approval."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "command": {"type": "array", "items": {"type": "string"}},
                     "cwd": {"type": "string", "default": str(registry.project_dir)},
-                    "timeout_seconds": {"type": "integer", "default": 20},
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "default": 20,
+                        "maximum": 600,
+                    },
                     "allocate_pty": {
                         "type": "boolean",
                         "default": False,
@@ -683,7 +565,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             ),
             facts_only=True,
             mutates=True,
-            permission="write",
+            permission="read",
         ),
         lambda args: _shell_run(args, project_dir=registry.project_dir),
     )

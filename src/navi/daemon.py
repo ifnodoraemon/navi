@@ -131,7 +131,13 @@ class SystemDaemon:
         # Foreground turns and manually prepared goals have their own explicit
         # owner; only loops created for background execution belong here.
         active_states = loop_runs.list_active_for_execution_mode("background", limit=10)
-        if not active_states:
+        retryable_states = loop_runs.list_retryable_background_pauses(limit=10)
+        states = [
+            *active_states,
+            *(state for state in retryable_states if state.run_id not in {item.run_id for item in active_states}),
+        ]
+        retryable_ids = {state.run_id for state in retryable_states}
+        if not states:
             return []
 
         config = load_config(self.home)
@@ -140,7 +146,7 @@ class SystemDaemon:
         goals = GoalStore(self.home)
 
         affected_runs = []
-        for state in active_states:
+        for state in states:
             goal = goals.get(state.goal_id)
             if not goal:
                 continue
@@ -151,6 +157,10 @@ class SystemDaemon:
                     loop_run_id=state.run_id,
                     runtime=runtime,
                     event_bus=self.event_bus,
+                    entrypoint="system_daemon.process_queue_once",
+                    resume_reason="background_execution",
+                    state_transition="background_resumed",
+                    resource_retry=state.run_id in retryable_ids,
                 )
                 affected_runs.append(result.run)
             except Exception as e:

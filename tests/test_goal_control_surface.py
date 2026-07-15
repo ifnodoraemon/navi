@@ -163,7 +163,7 @@ def test_goal_api_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch):
         json={
             "objective": "api auto-start goal writes app.py",
             "workspace": str(tmp_path),
-            "allowed_capabilities": ["file.write", "test.run"],
+            "allowed_capabilities": ["file.write", "shell.run"],
             "verification_command": _command(
                 "from pathlib import Path; assert Path('app.py').read_text() == 'agent\\n'"
             ),
@@ -212,7 +212,7 @@ def test_goal_api_resume_uses_runtime_state_graph(tmp_path, monkeypatch):
         json={
             "objective": "api resume goal writes app.py",
             "workspace": str(tmp_path),
-            "allowed_capabilities": ["file.write", "test.run"],
+            "allowed_capabilities": ["file.write", "shell.run"],
             "verification_command": _command(
                 "from pathlib import Path; assert Path('app.py').read_text() == 'agent\\n'"
             ),
@@ -274,7 +274,7 @@ def test_goal_cli_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch):
             "--allowed-capability",
             "file.write",
             "--allowed-capability",
-            "test.run",
+            "shell.run",
             "--verification-command",
             _command("from pathlib import Path; assert Path('app.py').read_text() == 'agent\\n'"),
             "--timeout-seconds",
@@ -327,7 +327,7 @@ def test_goal_cli_resume_uses_runtime_state_graph(tmp_path, monkeypatch):
             "--allowed-capability",
             "file.write",
             "--allowed-capability",
-            "test.run",
+            "shell.run",
             "--verification-command",
             _command("from pathlib import Path; assert Path('app.py').read_text() == 'agent\\n'"),
             "--timeout-seconds",

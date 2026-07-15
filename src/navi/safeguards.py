@@ -52,6 +52,190 @@ class CapabilityRiskAssessment:
         }
 
 
+_LOCAL_READ_ONLY_COMMANDS = frozenset(
+    {
+        "arch",
+        "cat",
+        "df",
+        "du",
+        "free",
+        "grep",
+        "head",
+        "id",
+        "ls",
+        "lscpu",
+        "nproc",
+        "printenv",
+        "ps",
+        "pwd",
+        "readlink",
+        "realpath",
+        "rg",
+        "ss",
+        "stat",
+        "tail",
+        "uname",
+        "uptime",
+        "wc",
+        "who",
+        "whoami",
+    }
+)
+_GIT_READ_ONLY_SUBCOMMANDS = frozenset(
+    {
+        "blame",
+        "diff",
+        "grep",
+        "log",
+        "ls-files",
+        "ls-tree",
+        "rev-parse",
+        "show",
+        "status",
+    }
+)
+_SYSTEMCTL_READ_ONLY_SUBCOMMANDS = frozenset(
+    {
+        "cat",
+        "is-active",
+        "is-enabled",
+        "is-failed",
+        "list-dependencies",
+        "list-unit-files",
+        "list-units",
+        "show",
+        "status",
+    }
+)
+_NETWORK_READ_ONLY_COMMANDS = {
+    "curl": frozenset({"--head", "-I"}),
+    "docker": frozenset({"images", "info", "inspect", "logs", "ps", "version"}),
+    "kubectl": frozenset({"describe", "get", "logs", "top"}),
+}
+
+
+def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a fail-closed effect classification for one argv-only shell call."""
+    call_args = args or {}
+    command = call_args.get("command")
+    argv = [str(item) for item in command] if isinstance(command, list) else []
+    binary = Path(argv[0]).name if argv else ""
+    permission = "write"
+    reason = "opaque_or_effectful_command"
+    if argv and not bool(call_args.get("allocate_pty")):
+        if binary in _LOCAL_READ_ONLY_COMMANDS:
+            permission = "read"
+            reason = "declared_local_read_only_command"
+        elif binary == "hostname" and not _first_positional(argv[1:]):
+            permission = "read"
+            reason = "hostname_read_only_query"
+        elif binary == "find" and not _find_has_effectful_action(argv[1:]):
+            permission = "read"
+            reason = "find_without_effectful_action"
+        elif (
+            binary == "git"
+            and _first_positional(argv[1:]) in _GIT_READ_ONLY_SUBCOMMANDS
+            and not _git_has_output_file(argv[1:])
+        ):
+            permission = "read"
+            reason = "declared_git_read_only_subcommand"
+        elif (
+            binary == "systemctl"
+            and _first_positional(argv[1:]) in _SYSTEMCTL_READ_ONLY_SUBCOMMANDS
+        ):
+            permission = "read"
+            reason = "declared_systemctl_read_only_subcommand"
+        elif binary in {"curl", "docker", "kubectl"}:
+            subcommand = _first_positional(argv[1:])
+            allowed = _NETWORK_READ_ONLY_COMMANDS[binary]
+            if binary == "curl":
+                method = _curl_method(argv[1:])
+                if (
+                    method in {"GET", "HEAD"}
+                    and not _curl_has_output_file(argv[1:])
+                    and not _curl_has_credentials(argv[1:])
+                ):
+                    permission = "network"
+                    reason = "curl_read_only_request"
+            elif subcommand in allowed:
+                permission = "network"
+                reason = f"declared_{binary}_read_only_subcommand"
+    return {
+        "binary": binary,
+        "argument_count": max(0, len(argv) - 1),
+        "required_permission": permission,
+        "effect_is_declared": permission in {"read", "network"},
+        "effect_classification": reason,
+    }
+
+
+def required_permission_for_call(spec: ToolSpec, args: dict[str, Any] | None) -> str:
+    if spec.name == "shell.run":
+        return str(shell_call_policy(args)["required_permission"])
+    if spec.name == "agent.control":
+        operation = str((args or {}).get("operation") or "").strip().lower()
+        return "prepare" if operation in {"spawn", "message", "cancel"} else "read"
+    return spec.permission
+
+
+def _first_positional(args: list[str]) -> str:
+    return next((item for item in args if item and not item.startswith("-")), "")
+
+
+def _find_has_effectful_action(args: list[str]) -> bool:
+    effectful = {
+        "-delete",
+        "-exec",
+        "-execdir",
+        "-fprint",
+        "-fprint0",
+        "-fprintf",
+        "-fls",
+        "-ok",
+        "-okdir",
+    }
+    return any(item in effectful for item in args)
+
+
+def _curl_method(args: list[str]) -> str:
+    for index, item in enumerate(args):
+        if item in {"-X", "--request"} and index + 1 < len(args):
+            return args[index + 1].upper()
+    if any(
+        item in {"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--json", "-F", "--form"}
+        or item.startswith("--data-")
+        for item in args
+    ):
+        return "POST"
+    if any(item in {"-T", "--upload-file"} for item in args):
+        return "PUT"
+    return "HEAD" if any(item in {"-I", "--head"} for item in args) else "GET"
+
+
+def _curl_has_output_file(args: list[str]) -> bool:
+    return any(
+        item in {"-o", "--output", "-O", "--remote-name", "--remote-header-name"}
+        for item in args
+    )
+
+
+def _curl_has_credentials(args: list[str]) -> bool:
+    credential_flags = {"-u", "--user", "-b", "--cookie", "--oauth2-bearer"}
+    if any(item in credential_flags for item in args):
+        return True
+    for index, item in enumerate(args):
+        if item not in {"-H", "--header"} or index + 1 >= len(args):
+            continue
+        header = args[index + 1].strip().lower()
+        if header.startswith(("authorization:", "cookie:", "proxy-authorization:")):
+            return True
+    return False
+
+
+def _git_has_output_file(args: list[str]) -> bool:
+    return any(item == "--output" or item.startswith("--output=") for item in args)
+
+
 def classify_capability(spec: ToolSpec) -> CapabilitySafeguard:
     raw = _declared_safeguard(spec)
     return CapabilitySafeguard(
@@ -63,7 +247,11 @@ def classify_capability(spec: ToolSpec) -> CapabilitySafeguard:
 
 
 def capability_safeguard_facts(spec: ToolSpec) -> dict:
-    return classify_capability(spec).to_facts()
+    facts = classify_capability(spec).to_facts()
+    if spec.name in {"shell.run", "agent.control"}:
+        facts["call_dependent_permission"] = True
+        facts["static_policy"] = "unknown_or_mutating_effect_fails_closed"
+    return facts
 
 
 def assess_capability_call(
@@ -107,19 +295,24 @@ def assess_capability_call(
             reason_code = "destructive_file_overwrite_requires_approval"
             contexts.append("destructive_overwrite")
     elif spec.name == "shell.run":
-        command = call_args.get("command")
-        argv = [str(item) for item in command] if isinstance(command, list) else []
-        evidence.update(
-            {
-                "binary": Path(argv[0]).name if argv else "",
-                "argument_count": max(0, len(argv) - 1),
-                "effect_is_declared": False,
-            }
-        )
-        risk_class = "high"
-        confirmation_required = True
-        reason_code = "opaque_shell_effect_requires_approval"
-        contexts.append("opaque_process_effect")
+        shell_policy = shell_call_policy(call_args)
+        evidence.update(shell_policy)
+        required_permission = str(shell_policy["required_permission"])
+        if required_permission == "read":
+            risk_class = "medium"
+            confirmation_required = False
+            reason_code = "declared_shell_read_only"
+            contexts = ["terminal", "local_read"]
+        elif required_permission == "network":
+            risk_class = "medium"
+            confirmation_required = False
+            reason_code = "declared_shell_network_read"
+            contexts = ["terminal", "network"]
+        else:
+            risk_class = "high"
+            confirmation_required = True
+            reason_code = "opaque_shell_effect_requires_approval"
+            contexts.append("opaque_process_effect")
     elif spec.name == "http.fetch":
         network_facts = _http_fetch_risk_facts(call_args)
         evidence.update(network_facts)

@@ -31,6 +31,11 @@ async def run_goal_loop_state_graph(
     state_transition: str = "opened",
 ) -> LoopControlServiceResult:
     """Execute a prepared Goal/LoopRun through the durable LLM-backed StateGraph."""
+    execution_context = replace(
+        context,
+        goal_id=base.goal.id,
+        loop_run_id=base.loop_run.run_id,
+    )
     graph_evidence = {
         "goal_id": base.goal.id,
         "run_id": base.run.id,
@@ -39,11 +44,11 @@ async def run_goal_loop_state_graph(
     planner_port = ModelCapabilityPlannerPort(
         runtime=runtime,
         capabilities=planner_capabilities,
-        context=context,
+        context=execution_context,
     )
     executor_port = CapabilityExecutorPort(
         home=home,
-        context=context,
+        context=execution_context,
         runtime=runtime,
         sensitive_approval_mode="enforce",
         governed_run_id=base.run.id,
@@ -57,9 +62,13 @@ async def run_goal_loop_state_graph(
             TracingSemanticCheckerPortProxy,
         )
         trace_store = TraceStore(home)
-        planner_port = TracingPlannerPortProxy(planner_port, trace_store, context)
-        executor_port = TracingExecutorPortProxy(executor_port, trace_store, context)
-        checker_port = TracingSemanticCheckerPortProxy(checker_port, trace_store, context)
+        planner_port = TracingPlannerPortProxy(planner_port, trace_store, execution_context)
+        executor_port = TracingExecutorPortProxy(executor_port, trace_store, execution_context)
+        checker_port = TracingSemanticCheckerPortProxy(
+            checker_port,
+            trace_store,
+            execution_context,
+        )
 
     runner = DurableStateGraphRunner(
         home=home,
@@ -67,7 +76,7 @@ async def run_goal_loop_state_graph(
         executor_port=executor_port,
         semantic_checker_port=checker_port,
         trace_store=TraceStore(home) if context.trace_id else None,
-        trace_context=context,
+        trace_context=execution_context,
     )
     try:
         graph_result = await runner.run_async(
@@ -120,13 +129,17 @@ async def resume_goal_loop_run(
     trace_id: str = "",
     input_text: str = "",
     event_bus: Any | None = None,
+    entrypoint: str = "approval.resolve",
+    resume_reason: str = "approval_approved",
+    state_transition: str = "approval_resumed",
+    resource_retry: bool = False,
 ) -> LoopControlServiceResult:
-    """Resume one durable loop from its persisted approval checkpoint.
+    """Resume one durable loop from its persisted checkpoint.
 
     ``LoopRunStore.reopen_for_resume`` restores the EXECUTE node and the state
-    graph reloads the persisted ``planned_capability`` checkpoint.  The
-    capability registry then validates the approved grant against the exact
-    tool, permission and canonical args before executing it.
+    graph reloads any persisted ``planned_capability`` checkpoint. The caller
+    declares why it owns this resume edge so background work is not mislabeled
+    as an approval continuation.
     """
     service = LoopControlService(home)
     state = service.loop_runs.get_run(loop_run_id)
@@ -135,6 +148,13 @@ async def resume_goal_loop_run(
     goal = service.goals.get(state.goal_id)
     if goal is None:
         raise KeyError(f"goal not found for loop run: {state.goal_id}")
+    prior_evidence = dict(state.evidence) if resource_retry else {}
+    if resource_retry and "capability_result" not in prior_evidence:
+        executor = prior_evidence.get("executor")
+        if isinstance(executor, dict):
+            prior_evidence["capability_result"] = dict(executor)
+    if resource_retry:
+        service.loop_runs.reopen_resource_pause(loop_run_id)
     prepared = service.resume_loop(loop_run_id=loop_run_id, workspace=goal.workspace)
     permission_ceiling = prepared.loop_spec.goal.permission_ceiling
 
@@ -156,10 +176,12 @@ async def resume_goal_loop_run(
         task_status="in_progress",
         blocked_reason="",
         evidence={
-            "state_transition": "approval_continuation_started",
+            "state_transition": "loop_resume_started",
             "loop_run_id": loop_run_id,
+            "entrypoint": entrypoint,
+            "resume_reason": resume_reason,
         },
-        event_type="goal.approval_continuation_started",
+        event_type="goal.loop_resume_started",
     )
     if running is not None or active_goal is not None:
         prepared = replace(
@@ -204,14 +226,15 @@ async def resume_goal_loop_run(
         planner_capabilities=planner_capabilities,
         context=context,
         evidence={
-            "entrypoint": "approval.resolve",
+            **prior_evidence,
+            "entrypoint": entrypoint,
             "resumed": True,
-            "resume_reason": "approval_approved",
+            "resume_reason": resume_reason,
         },
         result_evidence={
             "state_graph_mode": "llm_backed",
             "resumed": True,
-            "resume_reason": "approval_approved",
+            "resume_reason": resume_reason,
         },
-        state_transition="approval_resumed",
+        state_transition=state_transition,
     )

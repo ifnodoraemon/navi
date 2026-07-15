@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +31,11 @@ from .lifecycle import Governance, Phase, Resolution
 from .operating_context import permission_allows
 from .resource_gateway import GlobalResourceGateway, ResourceLimits, ResourceRequest
 from .runs import RunStore
-from .safeguards import CapabilityRiskAssessment, assess_capability_call
+from .safeguards import (
+    CapabilityRiskAssessment,
+    assess_capability_call,
+    required_permission_for_call,
+)
 from .tools import TURN_CONTEXT, ToolSpec, build_tool_gateway
 from .actions.registry import ActionCapabilityProvider  # noqa: F401
 from .actions.tools import ToolGatewayCapabilityProvider, ToolCapability, ToolsListCapability
@@ -172,6 +176,7 @@ class CapabilityRegistry:
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
+        context = replace(context, execution_context=self.execution_context)
         handler = self.handlers.get(name)
         if handler is None:
             return _capability_error(
@@ -222,6 +227,25 @@ class CapabilityRegistry:
                 observation_facts={
                     "tool": name,
                     "schema_errors": input_schema_errors,
+                },
+            )
+        effective_required_permission = required_permission_for_call(
+            handler.spec,
+            call_args,
+        )
+        if not permission_allows(effective_required_permission, permission):
+            return _capability_error(
+                action=f"execute:{name}",
+                error_reason="permission_escalation",
+                message=(
+                    f"capability {name} call requires {effective_required_permission} "
+                    f"but requested {permission}"
+                ),
+                observation_facts={
+                    "tool": name,
+                    "requested": permission,
+                    "required": effective_required_permission,
+                    "call_dependent_permission": True,
                 },
             )
         approval_risk = self._approval_risk_for_call(

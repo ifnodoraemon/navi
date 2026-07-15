@@ -95,18 +95,25 @@ def memory_revoke(item_id: str) -> None:
     """Mark a memory item revoked."""
     store = MemoryStore(ensure_home())
     before = store.get_item(item_id)
-    item = store.set_status(item_id, "revoked")
-    if item is None:
-        raise typer.BadParameter("memory item not found")
+    result = _invoke_capability(
+        "memory.add",
+        {
+            "operation": "revoke",
+            "memory_id": item_id,
+            "reason": "CLI memory revoke",
+            "provenance": "cli",
+        },
+    )
+    item = result.get("item") or {}
     EvolutionLedger(ensure_home()).record(
         run_id=f"cli:memory:revoke:{item_id}",
         target_type="memory_item",
         target_id=item_id,
         reason="CLI memory revoke",
         before=json.dumps(before.__dict__, default=str) if before else "",
-        after=json.dumps(item.__dict__, default=str),
+        after=json.dumps(item, default=str),
     )
-    typer.echo(f"{item.id} {item.status}")
+    typer.echo(f"{item.get('id', item_id)} {item.get('status', 'revoked')}")
 
 @graph_app.command("list")
 def graph_list() -> None:
