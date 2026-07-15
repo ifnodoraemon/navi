@@ -107,6 +107,41 @@ def test_goal_stop_condition_reached_on_timeout(tmp_path):
     assert goals.stop_condition_reached(open_goal.id) == ""
 
 
+def test_cron_queries_preserve_goal_dataclass_field_order(tmp_path):
+    goals = GoalStore(tmp_path)
+    created = goals.create(
+        objective="ordered recurring goal",
+        workspace=str(tmp_path),
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="user-1",
+        stop_condition="explicit-stop",
+        timeout=321.0,
+        max_retries=7,
+        cron_schedule="54 11 * * *",
+        next_run_at=1.0,
+    )
+
+    listed = goals.list_cron_goals()[0]
+    due = goals.due_cron_goals(2.0)[0]
+    found = goals.find_active_cron_goal(
+        objective=created.objective,
+        cron_schedule=created.cron_schedule,
+        source=created.source,
+        peer_id=created.peer_id,
+        sender_id=created.sender_id,
+    )
+
+    for queried in (listed, due, found):
+        assert queried is not None
+        assert queried.stop_condition == "explicit-stop"
+        assert queried.timeout == 321.0
+        assert queried.max_retries == 7
+        assert queried.created_at == created.created_at
+        assert queried.updated_at == created.updated_at
+        assert queried.completed_at == created.completed_at
+
+
 def test_goal_stop_condition_reached_on_retry_ceiling(tmp_path):
     goals = GoalStore(tmp_path)
     goal = goals.create(

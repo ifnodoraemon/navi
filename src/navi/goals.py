@@ -6,7 +6,7 @@ import json
 import typing
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +69,9 @@ class GoalEvent:
     trace_id: str
     evidence_json: str
     created_at: float
+
+
+GOAL_SELECT_LIST = ", ".join(field.name for field in fields(Goal))
 
 
 class GoalStore:
@@ -883,7 +886,7 @@ class GoalStore:
         with connect(self.db_path) as conn:
             row = conn.execute(
                 f"""
-                SELECT {GOALS_TABLE.select_list}
+                SELECT {GOAL_SELECT_LIST}
                 FROM goals
                 WHERE objective = ? AND cron_schedule = ? AND source = ?
                   AND peer_id = ? AND sender_id = ? AND phase != ?
@@ -897,7 +900,7 @@ class GoalStore:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
-                SELECT {GOALS_TABLE.select_list}
+                SELECT {GOAL_SELECT_LIST}
                 FROM goals
                 WHERE cron_schedule != ''
                 ORDER BY created_at DESC
@@ -909,7 +912,7 @@ class GoalStore:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
-                SELECT {GOALS_TABLE.select_list}
+                SELECT {GOAL_SELECT_LIST}
                 FROM goals
                 WHERE cron_schedule != '' AND next_run_at <= ? AND phase != ?
                 ORDER BY next_run_at ASC
