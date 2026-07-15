@@ -250,7 +250,7 @@ class StaticDaemon:
         self._watch_results = list(watch_results or [])
         self.runs = {task.id: task for task in tasks}
 
-    async def process_watches_once(self) -> list[dict[str, Any]]:
+    async def process_background_once(self) -> list[dict[str, Any]]:
         return self._watch_results
 
     async def process_queue_once(self) -> list[Run]:

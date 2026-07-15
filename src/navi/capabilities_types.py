@@ -128,6 +128,15 @@ class BaseCapability:
         self.spec = spec
         self.home = home
 
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        raise NotImplementedError
+
 
 class Capability(Protocol):
     spec: ToolSpec

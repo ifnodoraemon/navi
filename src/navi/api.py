@@ -154,9 +154,6 @@ def create_app(
     }
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        if start_background:
-            daemon.start()
-
         setup_tasks = []
         if start_connectors:
             for adapter in connector_adapters:
@@ -173,7 +170,22 @@ def create_app(
                 import logging
                 logging.getLogger(__name__).exception(f"ERROR STARTING ADAPTER {adapter_to_run.name}: {e}")
 
+        async def _run_background() -> None:
+            while True:
+                try:
+                    await daemon.process_background_once()
+                    await daemon.process_queue_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    import logging
+
+                    logging.getLogger(__name__).exception("Background processing failed")
+                await asyncio.sleep(60)
+
         run_tasks: list[asyncio.Task] = []
+        if start_background:
+            run_tasks.append(asyncio.create_task(_run_background()))
         if start_connectors:
             for adapter in connector_adapters:
                 if adapter.run and adapter.enabled(home):
@@ -653,7 +665,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="connector not found")
         return handler()
 
-    dist_dir = project_dir / "trace_web_ui" / "dist"
+    dist_dir = Path(__file__).resolve().parent / "static" / "trace"
     if dist_dir.exists():
         app.mount("/ui/trace", StaticFiles(directory=str(dist_dir), html=True), name="trace_ui")
 

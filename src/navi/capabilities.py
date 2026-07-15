@@ -84,7 +84,7 @@ class CapabilityRegistry:
         governed_run_id: str | None = None,
         sensitive_approval_mode: str = "enforce",
         runtime: Any | None = None,
-    ) -> CapabilityRiskAssessment | None:
+    ) -> None:
         self.home = home
         self.allow_sources = allow_sources
         self.allowed_tools = allowed_tools

@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 from ..capabilities_types import CapabilityResult
-from ..connector_registry import load_connector_adapters
 from ..capability_contract import CAPABILITY_ERROR_REASON_KEY
 from ..json_utils import json_object
 
@@ -60,13 +57,6 @@ def approval_selection(args: dict[str, Any], *, code: str, run_id: str, batch_id
     return "current_run" if run_id and not code else "explicit_code"
 
 
-def approval_result_message(message: str, facts: dict[str, Any] | None) -> str:
-    reason = approval_reason(facts)
-    if reason == "run_has_no_approval":
-        return "Run has no approval request."
-    return message
-
-
 def approval_failure_is_terminal(facts: dict[str, Any] | None) -> bool:
     return approval_reason(facts) in {"approval_code_not_found", "approval_code_not_found_in_text"}
 
@@ -86,14 +76,6 @@ def approval_reason(facts: dict[str, Any] | None) -> str:
     return str(facts.get("reason") or "")
 
 
-def float_or_none(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-
 def positive_int(value: Any, *, default: int, maximum: int) -> int:
     try:
         parsed = int(value)
@@ -103,26 +85,3 @@ def positive_int(value: Any, *, default: int, maximum: int) -> int:
 
 
 json_dict = json_object
-
-
-def json_list(value: str) -> list[Any]:
-    try:
-        parsed = json.loads(value or "[]")
-    except json.JSONDecodeError:
-        return []
-    return parsed if isinstance(parsed, list) else []
-
-
-def remote_source(source: str) -> bool:
-    raw = source.strip()
-    if not raw:
-        return False
-    connector_sources: set[str] = set()
-    for adapter in load_connector_adapters():
-        connector_sources.update({adapter.name, adapter.spec.surface, adapter.spec.local_source})
-    return raw in connector_sources
-
-
-def resolve_workspace(workspace: str, *, default: Path) -> str:
-    raw = workspace.strip() if workspace else ""
-    return str(Path(raw).expanduser().resolve()) if raw else str(default.resolve())

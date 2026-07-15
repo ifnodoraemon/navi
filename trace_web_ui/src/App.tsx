@@ -1,20 +1,33 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { format } from 'date-fns';
 import { Activity, Code, CheckCircle2, XCircle, Search, Clock, ChevronDown, ChevronRight, Zap, Copy, Check, RefreshCw, Timer, ShieldAlert, Layers, Inbox, Send, Download, Play, Pause, Trash2, RotateCcw, Rocket, ListTree, MessageSquare, Database, BarChart2 } from 'lucide-react';
 import { JsonView } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 import ReactMarkdown from 'react-markdown';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
+import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
+import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
+import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown';
+import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
+import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript';
+import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import type { TraceData, TraceMeta, TraceRunView } from './types';
 import './App.css';
+
+SyntaxHighlighter.registerLanguage('bash', bash);
+SyntaxHighlighter.registerLanguage('json', json);
+SyntaxHighlighter.registerLanguage('markdown', markdown);
+SyntaxHighlighter.registerLanguage('python', python);
+SyntaxHighlighter.registerLanguage('typescript', typescript);
+SyntaxHighlighter.registerLanguage('yaml', yaml);
 
 const SmartMarkdown = ({ children }: { children: string }) => {
   return (
     <ReactMarkdown
       components={{
-        code({node, className, children, ...props}: any) {
+        code({node: _node, className, children, ...props}: any) {
           const match = /language-(\w+)/.exec(className || '')
           return match ? (
             <SyntaxHighlighter
@@ -64,7 +77,7 @@ const CollapsibleJson = ({ title, jsonStr, defaultOpen = false }: { title: strin
     let parsed;
     try {
       parsed = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
-    } catch (e) {
+    } catch {
       parsed = jsonStr;
     }
 
@@ -100,7 +113,7 @@ const CollapsibleJson = ({ title, jsonStr, defaultOpen = false }: { title: strin
       } else {
         textToCopy = JSON.stringify(jsonStr, null, 2);
       }
-    } catch (e) {}
+    } catch {}
     navigator.clipboard.writeText(textToCopy);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -463,19 +476,6 @@ function App() {
   // Live Mode
   const [autoRefresh, setAutoRefresh] = useState(false);
 
-  // Deep Linking URL Hash
-  useEffect(() => {
-    const handleHash = () => {
-      const hash = window.location.hash.replace('#', '');
-      if (hash && hash !== selectedTrace) {
-        loadTrace(hash);
-      }
-    };
-    handleHash();
-    window.addEventListener('hashchange', handleHash);
-    return () => window.removeEventListener('hashchange', handleHash);
-  }, []);
-
   useEffect(() => {
     if (selectedTrace) {
       window.location.hash = selectedTrace;
@@ -483,16 +483,6 @@ function App() {
       window.location.hash = '';
     }
   }, [selectedTrace]);
-
-  useEffect(() => {
-    fetchTraceIds();
-    const interval = setInterval(() => {
-      if (autoRefresh) {
-        fetchTraceIds(false);
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [listHasError, listShowDaemon, listLimit, autoRefresh, globalSearch]);
 
   // If autoRefresh is on and we have a selectedTrace, poll it
   useEffect(() => {
@@ -520,29 +510,7 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!selectedTrace || tracesMeta.length === 0) return;
-      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
-
-      const currentIndex = tracesMeta.findIndex(m => m.trace_id === selectedTrace);
-      if (currentIndex === -1) return;
-
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        const next = tracesMeta[currentIndex + 1];
-        if (next) loadTrace(next.trace_id);
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        const prev = tracesMeta[currentIndex - 1];
-        if (prev) loadTrace(prev.trace_id);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedTrace, tracesMeta]);
-
-  const fetchTraceIds = async (showRefresh = false) => {
+  const fetchTraceIds = useCallback(async (showRefresh = false) => {
     if (showRefresh) setIsRefreshing(true);
     try {
       const params: any = { limit: listLimit };
@@ -566,7 +534,7 @@ function App() {
         setTimeout(() => setIsRefreshing(false), 500);
       }
     }
-  };
+  }, [globalSearch, listHasError, listLimit, listShowDaemon]);
 
   const handleDeleteAll = async () => {
     if (!confirm("Are you sure you want to clear ALL traces? This cannot be undone.")) return;
@@ -575,7 +543,7 @@ function App() {
       setTracesMeta([]);
       setSelectedTrace(null);
       setTraceData(null);
-    } catch (err) {
+    } catch {
       alert("Failed to delete traces.");
     }
   };
@@ -588,12 +556,12 @@ function App() {
       fetchTraceIds(true);
       setSelectedTrace(null);
       setTraceData(null);
-    } catch (err) {
+    } catch {
       alert("Failed to delete trace.");
     }
   };
 
-  const loadTrace = async (id: string, append = false) => {
+  const loadTrace = useCallback(async (id: string, append = false) => {
     if (!append) {
       setSelectedTrace(id);
       setTraceData(null);
@@ -644,7 +612,53 @@ function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [traceData, traceOffset]);
+
+  // Deep links, list refresh, and keyboard navigation share stable callbacks so
+  // subscriptions always observe the current filters and pagination state.
+  useEffect(() => {
+    const handleHash = () => {
+      const hash = window.location.hash.replace('#', '');
+      if (hash && hash !== selectedTrace) {
+        loadTrace(hash);
+      }
+    };
+    handleHash();
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, [loadTrace, selectedTrace]);
+
+  useEffect(() => {
+    fetchTraceIds();
+    const interval = setInterval(() => {
+      if (autoRefresh) {
+        fetchTraceIds(false);
+      }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, fetchTraceIds]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!selectedTrace || tracesMeta.length === 0) return;
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
+
+      const currentIndex = tracesMeta.findIndex(m => m.trace_id === selectedTrace);
+      if (currentIndex === -1) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const next = tracesMeta[currentIndex + 1];
+        if (next) loadTrace(next.trace_id);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prev = tracesMeta[currentIndex - 1];
+        if (prev) loadTrace(prev.trace_id);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [loadTrace, selectedTrace, tracesMeta]);
 
   let totalDuration = 0;
   let rootRuns: TraceRunView[] = [];
@@ -797,7 +811,7 @@ function App() {
       await axios.post('/v1/chat', { message: replayText });
       setTimeout(() => fetchTraceIds(true), 2000);
       alert("Replay request sent!");
-    } catch(e) { alert("Replay failed"); }
+    } catch { alert("Replay failed"); }
   };
 
   const handleEval = async () => {
@@ -808,7 +822,7 @@ function App() {
     try {
       await axios.post(`/v1/trace_evaluate?trace_id=${selectedTrace}&session_id=${sessionId}`);
       alert("Evaluation task triggered.");
-    } catch(e) { alert("Eval failed"); }
+    } catch { alert("Eval failed"); }
   };
 
   let rootCauseError: any = null;

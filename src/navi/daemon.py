@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .capabilities import CapabilityRegistry
 from .daemon_types import (
     MAX_PROJECT_EVENT_CONCURRENCY,
     EventDetector,
@@ -14,13 +13,7 @@ from .daemon_types import (
     ProactiveEvent,
 )
 from .detectors import GitMutationDetector, PortEventDetector, ServiceLogDetector
-from .event_bus import (
-    ActionApprovedEvent,
-    AgentTurnCompletedEvent,
-    EventBus,
-    NaviEvent,
-)
-from .governance_agent import GovernanceAgent
+from .event_bus import AgentTurnCompletedEvent, EventBus, NaviEvent
 from .graph import GraphNode, GraphStore
 from .lifecycle import Phase
 from .runs import Run, RunStore
@@ -36,42 +29,11 @@ class SystemDaemon:
         self.project_dir = project_dir.resolve()
         self.runs = RunStore(home)
         self.event_bus = EventBus()
-        self.capabilities = CapabilityRegistry(home=home, project_dir=self.project_dir)
         self.graph = GraphStore(home)
-        self.governance = GovernanceAgent(home, self.event_bus)
 
-        self._setup_execution_subscription()
+        self._setup_subscriptions()
 
-    def start(self) -> None:
-        """Start background scheduling primitives.
-
-        Safe to call from synchronous entry points (CLI, API factory): if no
-        event loop is running we simply skip the scheduler-start (the
-        scheduler will be started lazily when the loop is up, or the daemon
-        will be driven manually via :meth:`process_queue_once`)."""
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            self.scheduler_runner = None
-            return
-        try:
-            from .scheduler import SchedulerStore, SchedulerRunner
-
-            self.scheduler_store = SchedulerStore(self.home)
-            self.scheduler_runner = SchedulerRunner(self.scheduler_store, self.event_bus)
-            self.scheduler_runner.start()
-        except RuntimeError:
-            # No running event loop - scheduler will not auto-advance.
-            # Callers that drive the daemon manually (process_queue_once) are unaffected.
-            self.scheduler_runner = None
-
-    def _setup_execution_subscription(self) -> None:
-        async def on_action_approved(event: NaviEvent) -> None:
-            assert isinstance(event, ActionApprovedEvent)
-            task = self.runs.get(event.run_id)
-            if task and task.phase == Phase.PENDING:
-                self.runs.update_run(event.run_id, phase=Phase.PENDING, result_summary="")
-
+    def _setup_subscriptions(self) -> None:
         async def on_turn_completed(event: NaviEvent) -> None:
             assert isinstance(event, AgentTurnCompletedEvent)
             if event.session_id:
@@ -115,7 +77,6 @@ class SystemDaemon:
                 except Exception as e:
                     logger.error(f"Background turn completed task failed: {e}", exc_info=True)
 
-        self.event_bus.subscribe("action_approved", on_action_approved)
         self.event_bus.subscribe("agent_turn_completed", on_turn_completed)
 
     async def process_queue_once(self) -> list[Run]:
@@ -168,7 +129,7 @@ class SystemDaemon:
 
         return affected_runs
 
-    async def process_watches_once(self) -> list[dict]:
+    async def process_background_once(self) -> list[dict]:
         created: list[dict] = []
 
         await self.process_memory_maintenance_once()
@@ -223,10 +184,14 @@ class SystemDaemon:
         memory = MemoryStore(self.home)
         gc_facts = memory.garbage_collect()
         graph_facts = memory.sync_semantic_graph(graph_store=self.graph)
+        from .workspaces import ShadowWorkspaceManager
+
+        workspace_facts = ShadowWorkspaceManager(self.home).purge_terminal_artifacts()
         return {
             "ok": True,
             "memory_gc": gc_facts,
             "semantic_graph": graph_facts,
+            "workspace_gc": workspace_facts,
         }
 
     async def process_events_once(self) -> list[dict]:

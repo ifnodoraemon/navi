@@ -29,6 +29,64 @@ def test_shadow_workspace_merge_back_applies_clean_agent_changes(tmp_path: Path)
     assert (repo / "new.txt").read_text(encoding="utf-8") == "created by agent\n"
 
 
+def test_merge_run_removes_terminal_shadow_artifacts(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("base\n", encoding="utf-8")
+    manager = ShadowWorkspaceManager(tmp_path / ".navi")
+    shadow = manager.create_shadow(run_id="run-clean", workspace=repo)
+    root = Path(shadow.shadow_workspace).parent
+    Path(shadow.shadow_workspace, "app.py").write_text("updated\n", encoding="utf-8")
+
+    result = manager.merge_run("run-clean")
+
+    assert result.status == MergeStatus.CLEAN
+    assert manager.get_shadow("run-clean").status == "merged"
+    assert not root.exists()
+
+
+def test_terminal_artifact_gc_preserves_active_shadows(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("base\n", encoding="utf-8")
+    manager = ShadowWorkspaceManager(tmp_path / ".navi")
+    merged = manager.create_shadow(run_id="run-merged", workspace=repo)
+    active = manager.create_shadow(run_id="run-active", workspace=repo)
+    manager._set_status("run-merged", "merged")
+
+    facts = manager.purge_terminal_artifacts()
+
+    assert facts == {"removed": 1, "already_missing": 0}
+    assert not Path(merged.shadow_workspace).parent.exists()
+    assert Path(active.shadow_workspace).parent.exists()
+
+
+def test_shadow_copy_ignores_generated_and_agent_metadata(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("base\n", encoding="utf-8")
+    for directory in ("dist", ".agents", ".ruff_cache", "package.egg-info"):
+        generated = repo / directory
+        generated.mkdir()
+        (generated / "artifact").write_text("generated\n", encoding="utf-8")
+    (repo / ".coverage").write_text("coverage\n", encoding="utf-8")
+
+    shadow = ShadowWorkspaceManager(tmp_path / ".navi").create_shadow(
+        run_id="run-ignore",
+        workspace=repo,
+    )
+    copied = Path(shadow.shadow_workspace)
+
+    assert (copied / "app.py").exists()
+    assert not (copied / "dist").exists()
+    assert not (copied / ".agents").exists()
+    assert not (copied / ".ruff_cache").exists()
+    assert not (copied / "package.egg-info").exists()
+    assert not (copied / ".coverage").exists()
+    assert shadow.baseline_fingerprint.paths() == {"app.py"}
+    assert fingerprint_workspace(repo).paths() == {"app.py"}
+
+
 def test_shadow_workspace_merge_back_preserves_human_edits_on_conflict(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

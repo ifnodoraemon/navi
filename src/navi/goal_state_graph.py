@@ -12,8 +12,11 @@ from .runtime import AgentRuntime
 from .state_graph import (
     CapabilityExecutorPort,
     DurableStateGraphRunner,
+    ExecutorPort,
     LLMSemanticCheckerPort,
     ModelCapabilityPlannerPort,
+    PlannerPort,
+    SemanticCheckerPort,
 )
 from .trace import TraceStore
 
@@ -41,19 +44,19 @@ async def run_goal_loop_state_graph(
         "run_id": base.run.id,
         **(evidence or {}),
     }
-    planner_port = ModelCapabilityPlannerPort(
+    planner_port: PlannerPort = ModelCapabilityPlannerPort(
         runtime=runtime,
         capabilities=planner_capabilities,
         context=execution_context,
     )
-    executor_port = CapabilityExecutorPort(
+    executor_port: ExecutorPort = CapabilityExecutorPort(
         home=home,
         context=execution_context,
         runtime=runtime,
         sensitive_approval_mode="enforce",
         governed_run_id=base.run.id,
     )
-    checker_port = LLMSemanticCheckerPort(runtime=runtime)
+    checker_port: SemanticCheckerPort = LLMSemanticCheckerPort(runtime=runtime)
 
     if context.trace_id:
         from .trace_proxies import (

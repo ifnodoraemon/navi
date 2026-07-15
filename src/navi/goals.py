@@ -1,4 +1,5 @@
 from __future__ import annotations
+import builtins
 from .lifecycle import Phase, Governance, Acceptance, Resolution
 
 import json
@@ -779,17 +780,17 @@ class GoalStore:
                 continue
             candidate_ids.add(loop_run.run_id)
         for loop_run_id in sorted(candidate_ids):
-            loop_run = loop_runs.get_run(loop_run_id)
-            if loop_run is None:
+            delivery_loop = loop_runs.get_run(loop_run_id)
+            if delivery_loop is None:
                 continue
             loop_runs.complete_external_delivery(
                 loop_run_id,
                 success=success,
                 evidence=evidence,
             )
-            if loop_run.goal_id != goal_id:
+            if delivery_loop.goal_id != goal_id:
                 self._settle_delivery_envelope_goal(
-                    goal_id=loop_run.goal_id,
+                    goal_id=delivery_loop.goal_id,
                     success=success,
                     evidence=evidence,
                 )
@@ -847,7 +848,7 @@ class GoalStore:
         peer_id: str = "",
         sender_id: str = "",
         limit: int = 20,
-    ) -> list[dict[str, Any]]:
+    ) -> builtins.list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -892,7 +893,7 @@ class GoalStore:
             ).fetchone()
         return Goal(*row) if row else None
 
-    def list_cron_goals(self) -> list[Goal]:
+    def list_cron_goals(self) -> builtins.list[Goal]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
@@ -904,7 +905,7 @@ class GoalStore:
             ).fetchall()
         return [Goal(*row) for row in rows]
 
-    def due_cron_goals(self, now: float) -> list[Goal]:
+    def due_cron_goals(self, now: float) -> builtins.list[Goal]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""

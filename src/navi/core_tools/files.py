@@ -372,7 +372,10 @@ def _single_replacement_node(
         return f"replacement must define exactly one matching top-level symbol, found {len(matches)}"
     if len(tree.body) != 1:
         return "replacement must contain only the replacement symbol"
-    return matches[0]
+    match = matches[0]
+    if isinstance(match, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return match
+    return "replacement matched an unsupported top-level symbol"
 
 
 def _symbol_matches(node: ast.AST, *, symbol_name: str, symbol_type: str) -> bool:

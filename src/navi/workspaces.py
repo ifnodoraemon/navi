@@ -15,11 +15,20 @@ from .paths import db_paths
 from .schema import Column, Table, assert_schema_exact
 
 WORKSPACE_STORE_SCHEMA_VERSION = 1
-_INTERNAL_DIRS = {
+_IGNORED_WORKSPACE_NAMES = {
+    ".agents",
+    ".claude",
+    ".coverage",
     ".git",
+    ".mypy_cache",
     ".navi",
+    ".opencode",
     ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
     "__pycache__",
+    "dist",
+    "htmlcov",
     "node_modules",
     ".venv",
     "venv",
@@ -245,17 +254,38 @@ class ShadowWorkspaceManager:
         result = self.merge_back(record.to_shadow())
         status = "conflicted" if result.status == MergeStatus.CONFLICTED else "merged"
         self._set_status(run_id, status)
+        if status == "merged":
+            self._remove_shadow_artifacts(record)
         return result
 
     def discard_run(self, run_id: str) -> bool:
         record = self.get_shadow(run_id)
         if record is None:
             return False
+        self._remove_shadow_artifacts(record)
+        self._set_status(run_id, "discarded")
+        return True
+
+    def purge_terminal_artifacts(self) -> dict[str, int]:
+        """Remove retained files for terminal shadows while preserving their audit rows."""
+        removed = 0
+        missing = 0
+        for record in self.list_shadows(limit=100_000):
+            if record.status not in {"merged", "discarded"}:
+                continue
+            root = Path(record.shadow_workspace).parent
+            if not root.exists():
+                missing += 1
+                continue
+            self._remove_shadow_artifacts(record)
+            removed += 1
+        return {"removed": removed, "already_missing": missing}
+
+    @staticmethod
+    def _remove_shadow_artifacts(record: ShadowWorkspaceRecord) -> None:
         root = Path(record.shadow_workspace).parent
         if root.exists():
             shutil.rmtree(root)
-        self._set_status(run_id, "discarded")
-        return True
 
     def merge_back(self, shadow: ShadowWorkspace) -> MergeResult:
         real = Path(shadow.real_workspace)
@@ -478,15 +508,25 @@ class WorkspaceLockStore:
         return tuple(WorkspaceLock(*row) for row in rows)
 
 
-def _copy_ignore(directory: str, names: list[str]) -> set[str]:
-    return {name for name in names if name in _INTERNAL_DIRS}
+def _copy_ignore(_directory: str, names: list[str]) -> set[str]:
+    return {name for name in names if _ignored_workspace_name(name)}
+
+
+def _ignored_workspace_name(name: str) -> bool:
+    return name in _IGNORED_WORKSPACE_NAMES or name.endswith(".egg-info")
 
 
 def _iter_workspace_files(root: Path) -> tuple[tuple[str, Path], ...]:
     items: list[tuple[str, Path]] = []
     for current, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = sorted(name for name in dirs if name not in _INTERNAL_DIRS)
+        dirs[:] = sorted(
+            name
+            for name in dirs
+            if not _ignored_workspace_name(name)
+        )
         for name in sorted(files):
+            if _ignored_workspace_name(name):
+                continue
             path = Path(current) / name
             rel = path.relative_to(root).as_posix()
             items.append((rel, path))

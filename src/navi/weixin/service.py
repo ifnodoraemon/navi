@@ -7,6 +7,7 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 from collections.abc import Callable
+from typing import TypedDict
 
 from navi.connector_runtime import (
     ConnectorIngressDeduplicator,
@@ -30,6 +31,11 @@ from .config import WeixinConfig
 from .models import WeixinAccount, WeixinUpdate
 
 from .store import ContextTokenStore, WeixinStore
+
+
+class DeliveryReceipt(TypedDict):
+    media_count: int
+    text_preview: str
 
 
 _BACKGROUND_NOTIFICATION_SCHEMA = {
@@ -326,7 +332,7 @@ class WeixinService:
         )
         connector_delivery = connector_delivery_from_facts(response.facts)
         delivery_run_id = connector_delivery.run_id if connector_delivery is not None else ""
-        if delivery_run_id:
+        if connector_delivery is not None and delivery_run_id:
             try:
                 from navi.goals import GoalStore
 
@@ -335,7 +341,7 @@ class WeixinService:
                     channel=self.local_source,
                     text_preview=str(delivery["text_preview"]),
                     text_length=len(response.text.strip()),
-                    media_count=int(delivery["media_count"]),
+                    media_count=delivery["media_count"],
                     trace_id=update.message_id,
                     delivery_id=connector_delivery.delivery_id,
                 )
@@ -457,7 +463,7 @@ class WeixinService:
             logging.getLogger("navi.weixin").warning("Failed to send typing: %s", e)
 
     async def process_background(self, account: WeixinAccount) -> None:
-        for result in await self.daemon.process_watches_once():
+        for result in await self.daemon.process_background_once():
             if result.get("surface") is False:
                 self.record_event(
                     "background.skipped",
@@ -591,7 +597,7 @@ class WeixinService:
     def _record_background_delivery(
         self,
         task: Run,
-        delivery: dict[str, object],
+        delivery: DeliveryReceipt,
         *,
         text: str,
     ) -> None:
@@ -602,7 +608,7 @@ class WeixinService:
             channel=self.local_source,
             text_preview=str(delivery.get("text_preview") or ""),
             text_length=len(text.strip()),
-            media_count=int(delivery.get("media_count") or 0),
+            media_count=delivery["media_count"],
             trace_id=task.id,
         )
 
@@ -694,9 +700,9 @@ class WeixinService:
         peer_id: str,
         text: str,
         action: str = "chat",
-        facts: dict = None,
+        facts: dict | None = None,
         context_token: str,
-    ) -> dict[str, object]:
+    ) -> DeliveryReceipt:
         facts = facts or {}
         delivery = connector_delivery_from_facts(facts)
         if action == "connector_outbound" and delivery is None:

@@ -50,8 +50,8 @@ journeys:
     steps:
       - user: "每天晚上 8 点讲解通识知识"
         expect:
-          action: watch
-          watch_count_delta: 1
+          action: goal
+          scheduled_goal_count_delta: 1
 
   - id: vague_reminder_asks_clarification
     user_goal: Ask for an underspecified one-off reminder and get a clarification question instead of a bogus watch.
@@ -60,7 +60,7 @@ journeys:
         expect:
           action: ask
           run_count_delta: 0
-          watch_count_delta: 0
+          scheduled_goal_count_delta: 0
 
   - id: user_can_ask_current_task_list
     user_goal: Ask what tasks Navi currently has after creating one.
@@ -114,20 +114,6 @@ journeys:
           run_count_delta: 0
           run_phase: ended
           goal_phase: ended
-
-  - id: user_can_clean_failed_tasks
-    user_goal: Clean up failed task leftovers after Navi reports them.
-    steps:
-      - seed_failed_run:
-          title: "old failed watch run"
-          source: watch
-          kind: delegation
-        expect:
-          failed_run_count: 1
-      - user: "清理失败任务"
-        expect:
-          action: delegation
-          failed_run_count: 0
 
   - id: user_can_check_model_provider_status
     user_goal: Ask whether model provider configuration is active without creating a task.
@@ -223,16 +209,14 @@ journeys:
           run_count_delta: 1
           run_phase: paused
 
-  - id: exact_one_shot_reminder_creates_once_watch
-    user_goal: Create a concrete one-shot reminder without converting it into a recurring watch.
+  - id: time_only_reminder_asks_for_a_date
+    user_goal: Ask for a time-only reminder and clarify the missing date instead of inventing recurrence.
     public_basis: openai_usage_planning_scheduling
     steps:
       - user: "15:30 提醒我检查 PR 评论"
         expect:
-          action: watch
-          watch_count_delta: 1
-          watch_kind: once
-          watch_cron: once
+          action: ask
+          scheduled_goal_count_delta: 0
 
   - id: broad_health_self_care_no_task
     user_goal: Ask for general self-care guidance without local action or medical claims.
@@ -287,9 +271,9 @@ journeys:
     steps:
       - user: "每天早上 9 点帮我检查服务器接口健康状态"
         expect:
-          action: watch
-          watch_count_delta: 1
-          watch_kind: recurring
+          action: goal
+          scheduled_goal_count_delta: 1
+          scheduled_goal_status: scheduled
 
   - id: customer_scenario_summarize_recent_commits
     user_goal: Read recent commits and summarize them.

@@ -5,7 +5,7 @@ import json
 import shlex
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from .capability_contract import CAPABILITY_RETRYABLE_KEY
 from .capabilities import CapabilityRegistry
@@ -164,6 +164,39 @@ class SemanticCheckDecision:
 
     def to_dict(self) -> dict[str, Any]:
         return self.to_facts()
+
+
+class PlannerPort(Protocol):
+    async def plan(
+        self,
+        spec: LoopSpec,
+        state: LoopRunState,
+        *,
+        workspace: Path,
+        evidence: dict[str, Any],
+    ) -> PlannedCapabilityStep: ...
+
+
+class ExecutorPort(Protocol):
+    async def execute(
+        self,
+        step: PlannedCapabilityStep,
+        spec: LoopSpec,
+        state: LoopRunState,
+        *,
+        workspace: Path,
+    ) -> ExecutedCapabilityStep: ...
+
+
+class SemanticCheckerPort(Protocol):
+    async def assess(
+        self,
+        spec: LoopSpec,
+        state: LoopRunState,
+        *,
+        executed: ExecutedCapabilityStep,
+        evidence: dict[str, Any],
+    ) -> SemanticCheckDecision: ...
 
 
 class CapabilityRecoveryPort:
@@ -916,11 +949,11 @@ class DurableStateGraphRunner:
         gateway: GlobalResourceGateway | None = None,
         harness: Harness | None = None,
         checker: DeterministicChecker | None = None,
-        planner_port: ModelCapabilityPlannerPort | None = None,
-        executor_port: CapabilityExecutorPort | None = None,
+        planner_port: PlannerPort | None = None,
+        executor_port: ExecutorPort | None = None,
         reflector_port: RecoveryReflectorPort | None = None,
         recovery_port: CapabilityRecoveryPort | None = None,
-        semantic_checker_port: LLMSemanticCheckerPort | None = None,
+        semantic_checker_port: SemanticCheckerPort | None = None,
         side_effect_saga_port: SideEffectSagaPort | None = None,
         trace_store: TraceStore | None = None,
         trace_context: CapabilityContext | None = None,
@@ -1329,6 +1362,9 @@ class DurableStateGraphRunner:
         harness_results: list[HarnessResult],
         checker_report: CheckerReport | None,
     ) -> StateGraphRunResult:
+        gateway = self.gateway
+        if gateway is None:
+            raise RuntimeError("resource gateway is not initialized")
         state, stopped, grant = self._gate_or_stop(state, kind="state_graph.evaluate")
         grants.append(grant)
         if stopped:
@@ -1337,7 +1373,7 @@ class DurableStateGraphRunner:
                 resource_grants=tuple(grants),
                 evidence=collected_evidence,
             )
-        self.gateway.release()
+        gateway.release()
         for step in spec.verification_ladder:
             if not _step_runs_command(step):
                 continue
@@ -1370,7 +1406,7 @@ class DurableStateGraphRunner:
                 collected_evidence["workspace_lock"] = lock_result.to_dict()
                 if not lock_result.acquired:
                     state = self._pause_for_lock_conflict(state, lock_result)
-                    self.gateway.release()
+                    gateway.release()
                     return StateGraphRunResult(
                         run_state=state,
                         resource_grants=tuple(grants),
@@ -1391,7 +1427,7 @@ class DurableStateGraphRunner:
                         owner_run_id=state.run_id,
                         resource=lock_resource,
                     )
-                self.gateway.release()
+                gateway.release()
             harness_results.append(result)
             collected_evidence[step.evidence_key or step.name] = result.to_facts()
 

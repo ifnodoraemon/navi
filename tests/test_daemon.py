@@ -187,7 +187,7 @@ async def test_daemon_materializes_due_cron_goal_as_child_run(tmp_path: Path, mo
     monkeypatch.setattr(daemon, "process_memory_maintenance_once", no_memory_maintenance)
     monkeypatch.setattr(daemon, "process_events_once", no_events)
 
-    created = await daemon.process_watches_once()
+    created = await daemon.process_background_once()
 
     assert len(created) == 1
     assert created[0]["cron_goal_id"] == registered.goal.id

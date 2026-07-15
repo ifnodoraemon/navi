@@ -97,26 +97,6 @@ tasks:
             run_phase: ended
             goal_phase: ended
 
-  - task_id: navi_general_failed_task_cleanup
-    split: general
-    category: task_lifecycle
-    language: zh
-    fixture: local_state
-    query: "清理失败任务"
-    rubric_dimensions: [completion, robustness]
-    journey:
-      steps:
-        - seed_failed_run:
-            title: "old failed watch run"
-            source: watch
-            kind: delegation
-          expect:
-            failed_run_count: 1
-        - user: "清理失败任务"
-          expect:
-            action: delegation
-            failed_run_count: 0
-
   - task_id: navi_general_exact_recurring_watch
     split: general
     category: scheduling
@@ -128,8 +108,8 @@ tasks:
       steps:
         - user: "每天晚上 8 点讲解通识知识"
           expect:
-            action: watch
-            watch_count_delta: 1
+            action: goal
+            scheduled_goal_count_delta: 1
 
   - task_id: navi_general_vague_reminder_clarifies
     split: general
@@ -144,7 +124,7 @@ tasks:
           expect:
             action: ask
             run_count_delta: 0
-            watch_count_delta: 0
+            scheduled_goal_count_delta: 0
 
   - task_id: navi_general_provider_diagnostics
     split: general
@@ -193,7 +173,7 @@ tasks:
           expect:
             action: ask
             run_count_delta: 0
-            watch_count_delta: 0
+            scheduled_goal_count_delta: 0
 
   - task_id: navi_public_hermes_pr_review_cron_to_messenger
     split: general
@@ -206,8 +186,8 @@ tasks:
       steps:
         - user: "每天晚上 8 点检查 GitHub PR，并把摘要发到 Telegram"
           expect:
-            action: watch
-            watch_count_delta: 1
+            action: goal
+            scheduled_goal_count_delta: 1
             run_count_delta: 0
 
   - task_id: navi_public_hermes_manual_pr_review_gets_approval
@@ -305,7 +285,7 @@ tasks:
           expect:
             action: ask
             run_count_delta: 0
-            watch_count_delta: 0
+            scheduled_goal_count_delta: 0
 
   - task_id: navi_public_chatgpt_writing_editing
     split: general

@@ -186,10 +186,8 @@ class ConnectorIngressRuntime:
 
     def _setup_event_subscriptions(self) -> None:
         from .event_bus import ResponseReadyEvent, UserIntentEvent
-        from .governance_agent import GovernanceAgent
         from .intent_agent import IntentAgent
 
-        self._governance = GovernanceAgent(self.agent.home, self.event_bus)
         self._intent = IntentAgent(self.agent.home, self.agent.runtime, self.event_bus)
 
         async def on_user_intent(event: "NaviEvent") -> None:

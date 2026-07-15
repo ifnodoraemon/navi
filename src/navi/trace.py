@@ -509,9 +509,11 @@ class TraceStore:
 
     def _resolve_events_blobs(self, events: list[TraceEvent]) -> list[TraceEvent]:
         hashes = set()
-        parsed_data = []
+        parsed_data: list[tuple[TraceEvent, dict[str, Any | None] | None]] = []
         for e in events:
-            if e.input_json and '"$blob"' in e.input_json or e.output_json and '"$blob"' in e.output_json:
+            if (e.input_json and '"$blob"' in e.input_json) or (
+                e.output_json and '"$blob"' in e.output_json
+            ):
                 data = {
                     "in": json.loads(e.input_json) if e.input_json else None,
                     "out": json.loads(e.output_json) if e.output_json else None,
@@ -549,11 +551,11 @@ class TraceStore:
             return d
 
         resolved_events = []
-        for e, data in parsed_data:
-            if data is None:
+        for e, parsed in parsed_data:
+            if parsed is None:
                 resolved_events.append(e)
             else:
-                resolved_data = _replace(data)
+                resolved_data = _replace(parsed)
                 resolved_events.append(
                     replace(
                         e,

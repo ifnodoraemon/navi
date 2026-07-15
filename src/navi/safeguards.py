@@ -373,7 +373,8 @@ def _http_fetch_risk_facts(args: dict[str, Any]) -> dict[str, Any]:
     parsed = urlparse(url)
     host = (parsed.hostname or "").strip().lower()
     method = str(args.get("method") or "GET").strip().upper()
-    headers = args.get("headers") if isinstance(args.get("headers"), dict) else {}
+    raw_headers = args.get("headers")
+    headers = raw_headers if isinstance(raw_headers, dict) else {}
     credentialed = any(
         str(key).strip().lower() in {"authorization", "cookie", "proxy-authorization"}
         for key in headers

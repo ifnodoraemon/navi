@@ -50,5 +50,5 @@ def api_client(navi_home, monkeypatch):
     monkeypatch.setenv("NAVI_API_KEY", api_key)
     
     app = create_app(navi_home)
-    client = TestClient(app, headers={"X-API-Key": api_key})
-    return client
+    with TestClient(app, headers={"X-API-Key": api_key}) as client:
+        yield client

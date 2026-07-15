@@ -6,7 +6,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from .loop_contracts import LockMode, MergeResult, TimeoutEvidence, TimeoutPolicy, VaultHandle
 from .safeguards import redact_secrets
@@ -40,6 +40,13 @@ class SecretVault:
             env[handle.env_var] = value
             secret_values.append(value)
         return env, tuple(secret_values)
+
+
+class VaultResolver(Protocol):
+    def resolve_env(
+        self,
+        handles: tuple[VaultHandle, ...],
+    ) -> tuple[dict[str, str], tuple[str, ...]]: ...
 
 
 @dataclass(frozen=True)
@@ -83,16 +90,18 @@ class HarnessResult:
 
 
 class Harness:
-    def __init__(self, *, home: Path | None = None, vault: SecretVault | None = None):
+    def __init__(self, *, home: Path | None = None, vault: VaultResolver | None = None):
         self.home = home
+        resolved_vault: VaultResolver
         if vault is not None:
-            self.vault = vault
+            resolved_vault = vault
         elif home is not None:
             from .vault import VaultStore
 
-            self.vault = VaultStore(home)
+            resolved_vault = VaultStore(home)
         else:
-            self.vault = SecretVault()
+            resolved_vault = SecretVault()
+        self.vault = resolved_vault
         self.shadow_workspaces = ShadowWorkspaceManager(home) if home is not None else None
         self.workspace_locks = WorkspaceLockStore(home) if home is not None else None
 

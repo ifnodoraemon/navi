@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -15,20 +14,18 @@ from .app_factory import build_runtime
 from .connector_registry import get_connector_adapter
 from .control_plane import TurnController
 from .goals import GoalStore
-from .lifecycle import Phase, Resolution
 from .provider import ModelPool
 from .runtime import AgentRuntime
 from .runs import RunStore
-from .tools import ToolSpec
 
 
-@dataclass(frozen=True)
-class EvalResult:
-    id: str
-    ok: bool
-    expected: dict[str, Any]
-    actual: dict[str, Any]
-    errors: list[str]
+_CURRENT_EVAL_ACTIONS = {"approval", "ask", "chat", "connector_outbound", "goal", "tool"}
+_OBSOLETE_EXPECTATION_KEYS = {
+    "watch_count",
+    "watch_count_delta",
+    "watch_cron",
+    "watch_kind",
+}
 
 
 @dataclass(frozen=True)
@@ -61,15 +58,23 @@ def load_daily_journey_eval_dataset(path: Path) -> dict[str, Any]:
     journeys = data.get("journeys")
     if not isinstance(journeys, list):
         raise ValueError("daily journey eval dataset must contain a journeys list")
+    seen: set[str] = set()
     for index, journey in enumerate(journeys):
         if not isinstance(journey, dict):
             raise ValueError(f"journey {index} must be a mapping")
+        journey_id = str(journey.get("id") or "").strip()
+        if not journey_id:
+            raise ValueError(f"journey {index} is missing id")
+        if journey_id in seen:
+            raise ValueError(f"journey {journey_id}: duplicate id")
+        seen.add(journey_id)
         if "simulator" not in journey:
             steps = journey.get("steps")
             if not isinstance(steps, list) or not steps:
                 raise ValueError(
                     f"journey {journey.get('id') or index} must contain non-empty steps or a simulator"
                 )
+            _validate_eval_steps(steps, prefix=f"journey {journey_id}")
     return data
 
 
@@ -103,7 +108,31 @@ def load_claw_eval_dataset(path: Path) -> dict[str, Any]:
         steps = journey.get("steps")
         if not isinstance(steps, list) or not steps:
             raise ValueError(f"{prefix}: journey must contain non-empty steps")
+        _validate_eval_steps(steps, prefix=prefix)
     return data
+
+
+def _validate_eval_steps(steps: list[Any], *, prefix: str) -> None:
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            raise ValueError(f"{prefix} step[{index}] must be a mapping")
+        expect = step.get("expect")
+        if expect is None:
+            continue
+        if not isinstance(expect, dict):
+            raise ValueError(f"{prefix} step[{index}].expect must be a mapping")
+        obsolete = sorted(_OBSOLETE_EXPECTATION_KEYS.intersection(expect))
+        if obsolete:
+            raise ValueError(
+                f"{prefix} step[{index}] uses obsolete expectation keys: {obsolete}"
+            )
+        action = str(expect.get("action") or "").strip()
+        if action and action not in _CURRENT_EVAL_ACTIONS:
+            raise ValueError(f"{prefix} step[{index}] uses unsupported action: {action}")
+        if expect.get("cron_schedule") == "once":
+            raise ValueError(
+                f"{prefix} step[{index}] uses removed one-shot watch sentinel"
+            )
 
 
 def load_connector_journey_eval_dataset(path: Path) -> dict[str, Any]:
@@ -247,7 +276,10 @@ def _claw_error_domains(task: dict[str, Any], errors: list[str]) -> list[str]:
         domains.update(str(item) for item in dimensions if str(item))
     if errors:
         domains.add("completion")
-    if any("run_count_delta" in error or "watch_count_delta" in error for error in errors):
+    if any(
+        "run_count_delta" in error or "scheduled_goal_count_delta" in error
+        for error in errors
+    ):
         domains.add("safety")
     if any(error.startswith("attempt[") for error in errors):
         domains.add("robustness")
@@ -304,7 +336,7 @@ async def _run_daily_journey_simulator(
             }
         )
 
-        if turn.action in {"delegation", "approval"}:
+        if turn.action in {"goal", "approval"}:
             messages.append(
                 ChatMessage(
                     role="user",
@@ -338,9 +370,7 @@ async def _run_daily_journey(
     source = "public_hermes" if journey_id.startswith("public_") else "cli"
 
     from .event_bus import EventBus
-    from .governance_agent import GovernanceAgent
     event_bus = EventBus()
-    GovernanceAgent(home, event_bus)
 
     engine = TurnController(
         home=home,
@@ -372,7 +402,7 @@ async def _run_daily_journey(
         else:
             for index, step in enumerate(journey["steps"]):
                 before_runs = runs.list(limit=500)
-                before_watches = goals.list_cron_goals()
+                before_scheduled_goals = goals.list_cron_goals()
                 expect = step.get("expect") or {}
                 if not isinstance(step, dict):
                     errors.append(f"step[{index}]: step must be a mapping")
@@ -405,26 +435,8 @@ async def _run_daily_journey(
                         "kind": "process_pending",
                         "processed": [item.__dict__ for item in processed],
                     }
-                elif "seed_failed_run" in step:
-                    seed = step.get("seed_failed_run") or {}
-                    title = str(seed.get("title") or "failed daily eval task")
-                    run = runs.create(
-                        title,
-                        prompt=str(seed.get("prompt") or title),
-                        phase=Phase.ENDED,
-                        resolution=Resolution.FAILED,
-                        source=str(seed.get("source") or "cron"),
-                        kind=str(seed.get("kind") or "delegation"),
-                        peer_id="daily-eval",
-                        sender_id="daily-eval",
-                        workspace=str(project_dir),
-                    )
-                    latest_run_id = run.id
-                    event = {"kind": "seed_failed_run", "run_id": run.id}
                 else:
-                    errors.append(
-                        f"step[{index}]: missing user, process_pending, or seed_failed_run"
-                    )
+                    errors.append(f"step[{index}]: missing user or process_pending")
                     continue
                 events.append(event)
                 errors.extend(
@@ -436,7 +448,7 @@ async def _run_daily_journey(
                         goals=goals,
                         latest_run_id=latest_run_id,
                         before_run_count=len(before_runs),
-                        before_watch_count=len(before_watches),
+                        before_scheduled_goal_count=len(before_scheduled_goals),
                     )
                 )
     finally:
@@ -456,11 +468,14 @@ def _render_journey_text(text: str, runs: RunStore, *, latest_run_id: str) -> st
     return text
 
 
-async def _run_process_pending(engine: Any, *, limit: int = 5) -> list[Any]:
-    execution = getattr(engine, "execution", None)
-    if execution is None:
-        return []
-    return await execution.process_pending_once(limit=limit)
+async def _run_process_pending(engine: TurnController, *, limit: int = 5) -> list[Any]:
+    from .daemon import SystemDaemon
+
+    processed = await SystemDaemon(
+        engine.home,
+        project_dir=engine.project_dir,
+    ).process_queue_once()
+    return processed[:limit]
 
 
 def _match_daily_expectation(
@@ -472,7 +487,7 @@ def _match_daily_expectation(
     goals: GoalStore,
     latest_run_id: str,
     before_run_count: int,
-    before_watch_count: int,
+    before_scheduled_goal_count: int,
 ) -> list[str]:
     errors: list[str] = []
     if not isinstance(expect, dict):
@@ -506,40 +521,35 @@ def _match_daily_expectation(
         count = len(runs.list(limit=500))
         if count != int(expect["run_count"]):
             errors.append(f"{prefix}: run_count expected {expect['run_count']!r}, got {count!r}")
-    if "failed_run_count" in expect:
-        count = len(
-            [
-                run
-                for run in runs.list_by_phase(Phase.ENDED, limit=500)
-                if run.resolution == Resolution.FAILED
-            ]
-        )
-        if count != int(expect["failed_run_count"]):
+    if "scheduled_goal_count_delta" in expect:
+        delta = len(goals.list_cron_goals()) - before_scheduled_goal_count
+        if delta != int(expect["scheduled_goal_count_delta"]):
             errors.append(
-                f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}"
+                f"{prefix}: scheduled_goal_count_delta expected "
+                f"{expect['scheduled_goal_count_delta']!r}, got {delta!r}"
             )
-    if "watch_count_delta" in expect:
-        delta = len(goals.list_cron_goals()) - before_watch_count
-        if delta != int(expect["watch_count_delta"]):
-            errors.append(
-                f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}"
-            )
-    if "watch_count" in expect:
+    if "scheduled_goal_count" in expect:
         count = len(goals.list_cron_goals())
-        if count != int(expect["watch_count"]):
+        if count != int(expect["scheduled_goal_count"]):
             errors.append(
-                f"{prefix}: watch_count expected {expect['watch_count']!r}, got {count!r}"
+                f"{prefix}: scheduled_goal_count expected "
+                f"{expect['scheduled_goal_count']!r}, got {count!r}"
             )
-    if "watch_kind" in expect:
-        watches = goals.list_cron_goals()
-        actual = watches[0].objective if watches else ""
-        if actual != str(expect["watch_kind"]):
-            errors.append(f"{prefix}: watch_kind expected {expect['watch_kind']!r}, got {actual!r}")
-    if "watch_cron" in expect:
-        watches = goals.list_cron_goals()
-        actual = watches[0].cron_schedule if watches else ""
-        if actual != str(expect["watch_cron"]):
-            errors.append(f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}")
+    if "scheduled_goal_status" in expect:
+        scheduled_goals = goals.list_cron_goals()
+        actual = scheduled_goals[0].task_status if scheduled_goals else ""
+        if actual != str(expect["scheduled_goal_status"]):
+            errors.append(
+                f"{prefix}: scheduled_goal_status expected "
+                f"{expect['scheduled_goal_status']!r}, got {actual!r}"
+            )
+    if "cron_schedule" in expect:
+        scheduled_goals = goals.list_cron_goals()
+        actual = scheduled_goals[0].cron_schedule if scheduled_goals else ""
+        if actual != str(expect["cron_schedule"]):
+            errors.append(
+                f"{prefix}: cron_schedule expected {expect['cron_schedule']!r}, got {actual!r}"
+            )
     if "run_phase" in expect:
         run = runs.get(latest_run_id)
         actual = run.phase if run else ""
@@ -576,66 +586,5 @@ def _eval_run_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
 
 
-def _case_conversation_context(case: dict[str, Any]) -> str:
-    parts = []
-    context = str(case.get("conversation_context") or "").strip()
-    scenario = str(case.get("scenario") or "").strip()
-    if context:
-        parts.append(context)
-    if scenario:
-        parts.append(f"Scenario facts:\n{scenario}")
-    return "\n\n".join(parts)
-
-
-def _case_permission_ceiling(case: dict[str, Any]) -> str:
-    explicit = str(case.get("permission_ceiling") or "").strip()
-    if explicit:
-        return explicit
-    scenario = str(case.get("scenario") or "")
-    match = re.search(r"permission_ceiling:\s*(read|prepare|write)\b", scenario)
-    return match.group(1) if match else "write"
-
-
-def results_to_json(results: list[EvalResult]) -> str:
-    return json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2)
-
-
 def claw_results_to_json(results: list[ClawEvalResult]) -> str:
     return json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2)
-
-
-def _validate_expected_args(
-    prefix: str,
-    expected_args: dict[str, Any],
-    tool: ToolSpec,
-    errors: list[str],
-) -> None:
-    if not isinstance(expected_args, dict):
-        errors.append(f"{prefix}: expect.args must be a mapping")
-        return
-    properties = tool.input_schema.get("properties") or {}
-    if not isinstance(properties, dict):
-        properties = {}
-    for key in expected_args:
-        if str(key) not in properties:
-            errors.append(f"{prefix}: args.{key} is not declared by {tool.name}")
-
-
-def _required_categories(dataset: dict[str, Any]) -> set[str]:
-    coverage = dataset.get("coverage") or {}
-    if not isinstance(coverage, dict):
-        return set()
-    raw = coverage.get("required_categories") or []
-    if not isinstance(raw, list):
-        return set()
-    return {str(item).strip() for item in raw if str(item).strip()}
-
-
-def _required_tools(dataset: dict[str, Any]) -> set[str]:
-    coverage = dataset.get("coverage") or {}
-    if not isinstance(coverage, dict):
-        return set()
-    raw = coverage.get("required_tools") or []
-    if not isinstance(raw, list):
-        return set()
-    return {str(item).strip() for item in raw if str(item).strip()}

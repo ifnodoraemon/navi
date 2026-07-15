@@ -112,7 +112,6 @@ def chat() -> None:
     runtime = build_runtime(home)
     config = load_config(home)
     daemon = SystemDaemon(home, project_dir=Path.cwd())
-    daemon.start()
     agent = TurnController(
         home=home,
         runtime=runtime,

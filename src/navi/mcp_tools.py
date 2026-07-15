@@ -41,10 +41,12 @@ def load_mcp_config(home: Path) -> MCPConfigReport:
         except (OSError, json.JSONDecodeError) as exc:
             raw = {}
             config_errors = [str(exc)]
-        raw_servers = raw.get("mcpServers") if isinstance(raw, dict) else None
-        if not isinstance(raw_servers, dict):
+        raw_servers_value = raw.get("mcpServers") if isinstance(raw, dict) else None
+        if not isinstance(raw_servers_value, dict):
             raw_servers = {}
             config_errors = ["mcp.json must contain an mcpServers object"]
+        else:
+            raw_servers = raw_servers_value
 
     servers: list[MCPServerConfig] = []
     errors: list[str] = config_errors
@@ -109,6 +111,13 @@ def register_mcp_tools(registry: ToolRegistry, *, home: Path) -> None:
 
 def _register_server_tools(registry: ToolRegistry, server: MCPServerConfig) -> None:
     source = f"mcp:{server.name}"
+
+    async def list_server_tools(_args: dict[str, Any]) -> ToolResult:
+        return await _list_server_tools(server)
+
+    async def call_server_tool(args: dict[str, Any]) -> ToolResult:
+        return await _call_server_tool(server, args)
+
     registry.register(
         ToolSpec(
             name=f"mcp.{server.name}.tools",
@@ -128,7 +137,7 @@ def _register_server_tools(registry: ToolRegistry, server: MCPServerConfig) -> N
             permission="network",
             source=source,
         ),
-        lambda args, configured=server: _list_server_tools(configured),
+        list_server_tools,
     )
     registry.register(
         ToolSpec(
@@ -160,7 +169,7 @@ def _register_server_tools(registry: ToolRegistry, server: MCPServerConfig) -> N
             permission=server.permission,
             source=source,
         ),
-        lambda args, configured=server: _call_server_tool(configured, args),
+        call_server_tool,
     )
 
 

@@ -12,7 +12,6 @@ import yaml
 
 from navi.provider import ChatMessage, ModelPool, ProviderUsage
 from navi.goals import GoalStore
-from navi.lifecycle import Phase, Resolution
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 
@@ -97,12 +96,44 @@ def load_journey_eval_dataset(path: Path) -> dict[str, Any]:
     journeys = data.get("journeys")
     if not isinstance(journeys, list):
         raise ValueError("connector journey eval dataset must contain a journeys list")
+    seen: set[str] = set()
     for index, journey in enumerate(journeys):
         if not isinstance(journey, dict):
             raise ValueError(f"journey {index} must be a mapping")
+        journey_id = str(journey.get("id") or "").strip()
+        if not journey_id:
+            raise ValueError(f"journey {index} is missing id")
+        if journey_id in seen:
+            raise ValueError(f"journey {journey_id}: duplicate id")
+        seen.add(journey_id)
         steps = journey.get("steps")
         if not isinstance(steps, list) or not steps:
             raise ValueError(f"journey {journey.get('id') or index} must contain non-empty steps")
+        for step_index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                raise ValueError(f"journey {journey_id} step[{step_index}] must be a mapping")
+            expect = step.get("expect")
+            if expect is not None and not isinstance(expect, dict):
+                raise ValueError(
+                    f"journey {journey_id} step[{step_index}].expect must be a mapping"
+                )
+            if not isinstance(expect, dict):
+                continue
+            obsolete = sorted(
+                {"watch_count", "watch_count_delta", "watch_cron", "watch_kind"}.intersection(
+                    expect
+                )
+            )
+            if obsolete:
+                raise ValueError(
+                    f"journey {journey_id} step[{step_index}] uses obsolete "
+                    f"expectation keys: {obsolete}"
+                )
+            if expect.get("cron_schedule") == "once":
+                raise ValueError(
+                    f"journey {journey_id} step[{step_index}] uses removed "
+                    "one-shot watch sentinel"
+                )
     return data
 
 
@@ -162,23 +193,9 @@ async def _run_journey(
             continue
         before_sent = len(getattr(service.client, "sent", []))
         before_runs = len(runs.list(limit=500))
-        before_watches = len(GoalStore(home).list_cron_goals())
+        before_scheduled_goals = len(GoalStore(home).list_cron_goals())
         expect = step.get("expect") or {}
-        if "seed_failed_run" in step:
-            seed = step.get("seed_failed_run") or {}
-            run = runs.create(
-                str(seed.get("title") or "failed connector eval task"),
-                prompt=str(seed.get("prompt") or seed.get("title") or "failed connector eval task"),
-                phase=Phase.ENDED,
-                resolution=Resolution.FAILED,
-                source=str(seed.get("source") or "cron"),
-                kind=str(seed.get("kind") or "delegation"),
-                peer_id="connector-eval-peer",
-                sender_id="connector-eval-sender",
-                workspace=str(project_dir),
-            )
-            event: dict[str, Any] = {"kind": "seed_failed_run", "run_id": run.id}
-        elif "inbound" in step:
+        if "inbound" in step:
             inbound = step.get("inbound") or {}
             message_index += 1
             update = WeixinUpdate(
@@ -197,7 +214,7 @@ async def _run_journey(
                 "sent": list(getattr(service.client, "sent", [])),
             }
         else:
-            errors.append(f"step[{index}]: missing inbound or seed_failed_run")
+            errors.append(f"step[{index}]: missing inbound")
             continue
         events.append(event)
         errors.extend(
@@ -210,7 +227,7 @@ async def _run_journey(
                 runs=runs,
                 before_sent_count=before_sent,
                 before_run_count=before_runs,
-                before_watch_count=before_watches,
+                before_scheduled_goal_count=before_scheduled_goals,
             )
         )
     return WeixinJourneyResult(
@@ -228,7 +245,7 @@ def _match_expectation(
     runs: RunStore,
     before_sent_count: int,
     before_run_count: int,
-    before_watch_count: int,
+    before_scheduled_goal_count: int,
 ) -> list[str]:
     errors: list[str] = []
     if not isinstance(expect, dict):
@@ -265,33 +282,27 @@ def _match_expectation(
             errors.append(
                 f"{prefix}: run_count_delta expected {expect['run_count_delta']!r}, got {delta!r}"
             )
-    if "watch_count_delta" in expect:
-        delta = len(GoalStore(home).list_cron_goals()) - before_watch_count
-        if delta != int(expect["watch_count_delta"]):
+    if "scheduled_goal_count_delta" in expect:
+        delta = len(GoalStore(home).list_cron_goals()) - before_scheduled_goal_count
+        if delta != int(expect["scheduled_goal_count_delta"]):
             errors.append(
-                f"{prefix}: watch_count_delta expected {expect['watch_count_delta']!r}, got {delta!r}"
+                f"{prefix}: scheduled_goal_count_delta expected "
+                f"{expect['scheduled_goal_count_delta']!r}, got {delta!r}"
             )
-    if "watch_kind" in expect:
-        watches = GoalStore(home).list_cron_goals()
-        actual = watches[0].objective if watches else ""
-        if actual != str(expect["watch_kind"]):
-            errors.append(f"{prefix}: watch_kind expected {expect['watch_kind']!r}, got {actual!r}")
-    if "watch_cron" in expect:
-        watches = GoalStore(home).list_cron_goals()
-        actual = watches[0].cron_schedule if watches else ""
-        if actual != str(expect["watch_cron"]):
-            errors.append(f"{prefix}: watch_cron expected {expect['watch_cron']!r}, got {actual!r}")
-    if "failed_run_count" in expect:
-        count = len(
-            [
-                run
-                for run in runs.list_by_phase(Phase.ENDED, limit=500)
-                if run.resolution == Resolution.FAILED
-            ]
-        )
-        if count != int(expect["failed_run_count"]):
+    if "scheduled_goal_status" in expect:
+        scheduled_goals = GoalStore(home).list_cron_goals()
+        actual = scheduled_goals[0].task_status if scheduled_goals else ""
+        if actual != str(expect["scheduled_goal_status"]):
             errors.append(
-                f"{prefix}: failed_run_count expected {expect['failed_run_count']!r}, got {count!r}"
+                f"{prefix}: scheduled_goal_status expected "
+                f"{expect['scheduled_goal_status']!r}, got {actual!r}"
+            )
+    if "cron_schedule" in expect:
+        scheduled_goals = GoalStore(home).list_cron_goals()
+        actual = scheduled_goals[0].cron_schedule if scheduled_goals else ""
+        if actual != str(expect["cron_schedule"]):
+            errors.append(
+                f"{prefix}: cron_schedule expected {expect['cron_schedule']!r}, got {actual!r}"
             )
     if "event_contains" in expect:
         event_names = _event_names(home)

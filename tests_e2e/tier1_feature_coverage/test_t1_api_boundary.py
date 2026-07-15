@@ -158,7 +158,10 @@ def test_t1_api_evolution_apply_routes_capability(
     # 2. Record proposal evaluation as approved
     eval_response = api_client.post(
         f"/v1/evolution-proposals/{proposal_id}/evaluation",
-        json={"evaluation_result": "approved"},
+        json={
+            "evaluation_result": "approved",
+            "evaluation_evidence": "E2E apply checks passed",
+        },
     )
     assert eval_response.status_code == 200
     assert eval_response.json()["data"]["evaluation_result"] == "approved"
@@ -199,7 +202,10 @@ def test_t1_api_evolution_rollback_routes_capability(
     # 2. Approve proposal
     eval_response = api_client.post(
         f"/v1/evolution-proposals/{proposal_id}/evaluation",
-        json={"evaluation_result": "approved"},
+        json={
+            "evaluation_result": "approved",
+            "evaluation_evidence": "E2E rollback checks passed",
+        },
     )
     assert eval_response.status_code == 200
 

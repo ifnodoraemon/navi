@@ -157,9 +157,7 @@ class ToolSpec:
     mutates: bool = False
     permission: str = "read"
     source: str = "core"
-    side_effect_policy: SideEffectPolicy | dict[str, Any] = field(
-        default_factory=SideEffectPolicy
-    )
+    side_effect_policy: SideEffectPolicy = field(default_factory=SideEffectPolicy)
     # Governance primitives carry their own first-level guard and must not be
     # suspended by the approval mechanism they implement — that creates an
     # infinite approval loop. Declared per-spec so the exemption is data-driven,
@@ -175,10 +173,6 @@ class ToolSpec:
             raise ValueError(f"tool {self.name!r} must declare execution_contexts")
         object.__setattr__(self, "execution_contexts", contexts)
         policy = self.side_effect_policy
-        if isinstance(policy, dict):
-            policy = SideEffectPolicy(**policy)
-        if not isinstance(policy, SideEffectPolicy):
-            raise ValueError(f"tool {self.name!r} must declare a valid side_effect_policy")
         if self.mutates and policy.scope == "none":
             policy = SideEffectPolicy(
                 scope="local_state",

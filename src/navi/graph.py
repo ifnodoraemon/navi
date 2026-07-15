@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import time
 import uuid
@@ -241,9 +242,9 @@ class GraphStore:
         target_id: str | None = None,
         relation: str | None = None,
         limit: int = 100,
-    ) -> list[GraphEdge]:
+    ) -> builtins.list[GraphEdge]:
         clauses = []
-        values: list[object] = []
+        values: builtins.list[object] = []
         if source_id:
             clauses.append("source_id = ?")
             values.append(source_id)
@@ -271,8 +272,8 @@ class GraphStore:
         self,
         source_id: str,
         relations: tuple[str, ...],
-        edges: list[tuple[str, str, dict[str, Any]]],
-    ) -> list[GraphEdge]:
+        edges: builtins.list[tuple[str, str, dict[str, Any]]],
+    ) -> builtins.list[GraphEdge]:
         if not relations:
             return [
                 self.upsert_edge(source_id, target_id, relation, data)

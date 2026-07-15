@@ -13,7 +13,7 @@ from .paths import db_paths
 from .schema import Column, Table, assert_schema_exact
 
 
-LOOP_RUN_STORE_SCHEMA_VERSION = 1
+LOOP_RUN_STORE_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -51,6 +51,7 @@ class LoopRunStore:
             conn.execute(LOOP_SPECS_TABLE.ddl)
             assert_schema_exact(conn, LOOP_SPECS_TABLE)
             conn.execute(LOOP_RUNS_TABLE.ddl)
+            self._migrate_legacy_delivery_envelopes(conn)
             assert_schema_exact(conn, LOOP_RUNS_TABLE)
             conn.execute(LOOP_CHECKPOINTS_TABLE.ddl)
             assert_schema_exact(conn, LOOP_CHECKPOINTS_TABLE)
@@ -67,6 +68,48 @@ class LoopRunStore:
                 "CREATE INDEX IF NOT EXISTS idx_loop_events_run ON loop_events(run_id, created_at)"
             )
             write_schema_version(conn, "loop_runs", LOOP_RUN_STORE_SCHEMA_VERSION)
+
+    @staticmethod
+    def _migrate_legacy_delivery_envelopes(conn) -> None:
+        rows = conn.execute(
+            """
+            SELECT id, evidence_json
+            FROM loop_runs
+            WHERE terminal_state = ?
+            """,
+            (str(LoopTerminalState.WAITING_APPROVAL),),
+        ).fetchall()
+        now = time.time()
+        for run_id, evidence_json in rows:
+            try:
+                evidence = json.loads(str(evidence_json or "{}"))
+            except (TypeError, ValueError):
+                continue
+            facts = evidence.get("facts")
+            if (
+                evidence.get("action") != "approval"
+                or not isinstance(facts, dict)
+                or not isinstance(facts.get("connector_delivery"), dict)
+            ):
+                continue
+            evidence["action"] = "connector_outbound"
+            evidence["migration"] = {
+                "from": "approval_delivery_envelope",
+                "schema_version": LOOP_RUN_STORE_SCHEMA_VERSION,
+            }
+            conn.execute(
+                """
+                UPDATE loop_runs
+                SET terminal_state = ?, evidence_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(LoopTerminalState.PAUSED),
+                    _json_dumps(evidence),
+                    now,
+                    str(run_id),
+                ),
+            )
 
     def save_spec(self, spec: LoopSpec) -> None:
         spec.validate()
@@ -303,26 +346,13 @@ class LoopRunStore:
             if str(current.terminal_state) == str(target):
                 return current
             action = str(current.evidence.get("action") or "")
-            facts = current.evidence.get("facts")
-            nested_delivery = (
-                facts.get("connector_delivery") if isinstance(facts, dict) else None
-            )
             is_delivery_pause = (
                 str(current.terminal_state) == str(LoopTerminalState.PAUSED)
                 and action == "connector_outbound"
             )
-            # Older approval continuations could wrap a real connector delivery
-            # as another approval gate.  A transport receipt is authoritative
-            # evidence that this envelope completed and may reconcile that
-            # durable misclassification without re-running the side effect.
-            is_legacy_delivery_envelope = (
-                str(current.terminal_state) == str(LoopTerminalState.WAITING_APPROVAL)
-                and action == "approval"
-                and isinstance(nested_delivery, dict)
-            )
-            if not is_delivery_pause and not is_legacy_delivery_envelope:
+            if not is_delivery_pause:
                 raise ValueError(
-                    "external delivery receipt requires a delivery pause or envelope: "
+                    "external delivery receipt requires a delivery pause: "
                     f"{current.terminal_state}/{action}"
                 )
             now = time.time()

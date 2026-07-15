@@ -4,40 +4,17 @@ description: Regression journeys for real Navi failures seen during Hermes/OpenC
 incidents:
   - id: weixin_hello_no_visible_reply
     covered_by:
-      - evals/weixin_journeys.yaml:weixin_hello_replies_and_records_events
-      - tests/test_weixin.py:test_weixin_handle_update_replies_and_saves_context
+      - evals/connector_journeys.yaml:weixin_hello_replies_and_records_events
   - id: terse_fix_lost_previous_error_context
     covered_by:
       - terse_fix_follow_up_uses_previous_error_context
-      - evals/weixin_journeys.yaml:weixin_terse_fix_follow_up_uses_previous_error_context
+      - evals/connector_journeys.yaml:weixin_terse_fix_follow_up_uses_previous_error_context
   - id: execution_protocol_evidence_must_be_list
     covered_by:
       - execution_protocol_error_how_to_fix_prepares_task
-      - tests/test_execution_protocol.py:test_watch_notification_does_not_fail_on_malformed_execution_protocol
-  - id: deepseek_direct_shell_for_error_repair
-    covered_by:
-      - execution_protocol_error_how_to_fix_prepares_task
-      - tests/live_llm_cases.yaml:regression_execution_protocol_fix_request_uses_unified_loop
-  - id: watch_protocol_verification_must_be_object
-    covered_by:
-      - tests/test_execution_protocol.py:test_watch_notification_does_not_fail_on_malformed_execution_protocol
-      - tests/test_weixin.py:test_weixin_background_watch_result_sends_visible_message_and_event
-  - id: delegated_prepare_protocol_shape_error_recovers_once
-    covered_by:
-      - tests/test_execution_protocol.py:test_execution_protocol_shape_error_gets_one_repair_attempt
-  - id: watch_created_then_delegate_status_false_failure
+  - id: scheduled_goal_registration_drift
     covered_by:
       - exact_schedule_watch_creation_returns_watch_without_new_run
-  - id: one_shot_push_became_daily_recurring_watch
-    covered_by:
-      - one_shot_time_push_creates_once_watch
-  - id: watch_notification_only_sent_title
-    covered_by:
-      - tests/test_execution_protocol.py:test_watch_notification_retries_title_only_output
-      - tests/test_execution_protocol.py:test_watch_notification_protocol_summary_is_logged_without_actuator
-  - id: weixin_watch_result_prefixed_instead_of_raw_push
-    covered_by:
-      - tests/test_weixin.py:test_weixin_background_watch_result_sends_visible_message_and_event
   - id: provider_diagnostics_drift
     covered_by:
       - provider_config_check_does_not_create_task
@@ -47,12 +24,12 @@ incidents:
   - id: skill_query_answered_with_tools
     covered_by:
       - skills_query_lists_skills_not_tools
-      - evals/weixin_journeys.yaml:weixin_skills_query_distinguishes_skills_from_tools
-  - id: tools_query_omitted_once_watch_semantics
+      - evals/connector_journeys.yaml:weixin_skills_query_distinguishes_skills_from_tools
+  - id: tools_query_omitted_scheduled_goal_semantics
     covered_by:
       - tools_query_lists_tools_not_skills
-      - capability_query_mentions_one_shot_and_recurring
-      - evals/weixin_journeys.yaml:weixin_tools_query_distinguishes_tools_from_skills
+      - capability_query_mentions_scheduled_goals
+      - evals/connector_journeys.yaml:weixin_tools_query_distinguishes_tools_from_skills
 journeys:
   - id: execution_protocol_error_how_to_fix_prepares_task
     user_goal: A concrete execution protocol error plus a fix request should create one approval task.
@@ -83,8 +60,8 @@ journeys:
     steps:
       - user: "每天晚上 8 点讲解通识知识"
         expect:
-          action: watch
-          watch_count_delta: 1
+          action: goal
+          scheduled_goal_count_delta: 1
           run_count_delta: 0
 
   - id: task_list_shows_existing_watch_without_runs
@@ -92,27 +69,25 @@ journeys:
     steps:
       - user: "每天晚上 8 点讲解通识知识"
         expect:
-          action: watch
-          watch_count_delta: 1
+          action: goal
+          scheduled_goal_count_delta: 1
       - user: "当前我们都有哪些任务"
         expect:
           action: tool
           run_count: 0
-          watch_count: 1
+          scheduled_goal_count: 1
           text_contains_any:
             - "watches"
             - "Watch"
             - "cron"
 
-  - id: one_shot_time_push_creates_once_watch
-    user_goal: A concrete non-recurring push request should create a one-shot watch, not a daily recurring cron watch.
+  - id: time_only_push_asks_for_a_date
+    user_goal: A time-only push request should clarify the missing date instead of inventing recurrence.
     steps:
       - user: "15:30的时候给我推送一下pmp相关知识"
         expect:
-          action: watch
-          watch_count_delta: 1
-          watch_kind: once
-          watch_cron: once
+          action: ask
+          scheduled_goal_count_delta: 0
 
   - id: provider_config_check_does_not_create_task
     user_goal: Provider diagnostics should return facts rather than a spurious delegation task.
@@ -165,7 +140,7 @@ journeys:
             - "Code Navigator"
             - "Memory Curator"
 
-  - id: capability_query_mentions_one_shot_and_recurring
+  - id: capability_query_mentions_scheduled_goals
     user_goal: A broad capability question should be grounded in callable tools and scheduled-goal semantics.
     steps:
       - user: "你现在可以做什么"

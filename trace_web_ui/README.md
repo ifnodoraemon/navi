@@ -1,32 +1,18 @@
-# React + TypeScript + Vite
+# Navi Trace Explorer
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The trace explorer is Navi's read-oriented browser UI for trace events, loop
+decisions, checkpoints, evaluations, and capability timing.
 
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm ci
+npm run lint
+npm run build
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+`npm run build` writes package assets to `src/navi/static/trace`. The FastAPI
+application serves that packaged directory at `/ui/trace`, so the UI is present
+in wheels, containers, and editable installs without depending on the repository
+layout at runtime.
+
+During development, run `npm run dev`; API requests continue to use the same
+`/v1` paths as the packaged application.

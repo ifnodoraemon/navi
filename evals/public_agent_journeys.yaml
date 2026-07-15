@@ -16,8 +16,8 @@ journeys:
     steps:
       - user: "每天晚上 8 点检查 GitHub PR，并把摘要发到 Telegram"
         expect:
-          action: watch
-          watch_count_delta: 1
+          action: goal
+          scheduled_goal_count_delta: 1
           run_count_delta: 0
 
   - id: public_hermes_manual_pr_review_gets_approval
@@ -133,7 +133,7 @@ journeys:
         expect:
           action: ask
           run_count_delta: 0
-          watch_count_delta: 0
+          scheduled_goal_count_delta: 0
 
   - id: public_chatgpt_writing_editing
     user_goal: Edit practical writing directly without creating a task.

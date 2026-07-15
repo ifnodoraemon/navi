@@ -479,7 +479,7 @@ def test_delivery_receipt_is_the_authoritative_completion_boundary(tmp_path) -> 
     assert completed_loop.terminal_state == LoopTerminalState.CONVERGED
 
 
-def test_delivery_receipt_reconciles_legacy_approval_envelope(tmp_path) -> None:
+def test_delivery_receipt_uses_migrated_legacy_approval_envelope(tmp_path) -> None:
     runs = RunStore(tmp_path)
     original_run = runs.create(
         "deliver report",
@@ -542,6 +542,12 @@ def test_delivery_receipt_reconciles_legacy_approval_envelope(tmp_path) -> None:
             },
         },
     )
+
+    migrated_envelope = LoopRunStore(tmp_path).get_run(envelope_loop.run_id)
+    assert migrated_envelope is not None
+    assert migrated_envelope.terminal_state == LoopTerminalState.PAUSED
+    assert migrated_envelope.evidence["action"] == "connector_outbound"
+    assert migrated_envelope.evidence["migration"]["schema_version"] == 2
 
     GoalStore(tmp_path).record_delivery(
         run_id=original_run.id,

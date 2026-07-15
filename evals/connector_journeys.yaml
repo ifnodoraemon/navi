@@ -83,11 +83,11 @@ journeys:
         expect:
           handled: true
           sent_count_delta: 1
-          watch_count_delta: 1
-          watch_kind: recurring
+          scheduled_goal_count_delta: 1
+          scheduled_goal_status: scheduled
 
-  - id: weixin_one_shot_push_creates_once_watch
-    user_goal: Schedule a one-shot push through Weixin without creating a daily recurring watch.
+  - id: weixin_time_only_push_asks_for_a_date
+    user_goal: Ask for a time-only push and clarify the missing date instead of inventing recurrence.
     steps:
       - inbound:
           text: "15:30的时候给我推送一下pmp相关知识"
@@ -95,9 +95,7 @@ journeys:
         expect:
           handled: true
           sent_count_delta: 1
-          watch_count_delta: 1
-          watch_kind: once
-          watch_cron: once
+          scheduled_goal_count_delta: 0
 
   - id: weixin_skills_query_distinguishes_skills_from_tools
     user_goal: Ask for skills through Weixin and receive actual procedural skills, not callable tools.
@@ -148,7 +146,7 @@ journeys:
             - "几点"
             - "exact recurring"
           run_count_delta: 0
-          watch_count_delta: 0
+          scheduled_goal_count_delta: 0
 
   - id: weixin_duplicate_message_is_ignored
     user_goal: Ensure duplicate Weixin delivery does not create duplicate replies.
@@ -167,20 +165,3 @@ journeys:
           sent_count_delta: 0
           event_contains:
             - message.duplicate
-
-  - id: weixin_clean_failed_tasks
-    user_goal: Clean old failed watch task records from Weixin.
-    steps:
-      - seed_failed_run:
-          title: "old failed watch run"
-          source: watch
-          kind: delegation
-        expect:
-          failed_run_count: 1
-      - inbound:
-          text: "清理失败任务"
-          message_id: "wx-clean-failed"
-        expect:
-          handled: true
-          sent_count_delta: 1
-          failed_run_count: 0

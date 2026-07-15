@@ -50,55 +50,12 @@ class UserIntentEvent(NaviEvent):
     facts: dict[str, Any] = field(default_factory=dict)
 
 
-# ─── Main Agent → Governance ───
-
-
-@dataclass(frozen=True)
-class ActionRequestedEvent(NaviEvent):
-    event_type: str = "action_requested"
-    run_id: str = ""
-    peer_id: str = ""
-    sender_id: str = ""
-    source: str = ""
-    autonomy_level: str = ""
-
-
-# ─── Governance → Execution ───
-
-
 @dataclass(frozen=True)
 class AgentTurnCompletedEvent(NaviEvent):
     event_type: str = "agent_turn_completed"
     session_id: str = ""
     run_id: str = ""
     action: str = ""
-
-
-@dataclass(frozen=True)
-class RunCompletedEvent(NaviEvent):
-    event_type: str = "run_completed"
-    run_id: str = ""
-    phase: str = ""
-    resolution: str = ""
-    error: str = ""
-    peer_id: str = ""
-    sender_id: str = ""
-
-
-@dataclass(frozen=True)
-class ActionApprovedEvent(NaviEvent):
-    event_type: str = "action_approved"
-    run_id: str = ""
-    reason: str = ""
-
-
-@dataclass(frozen=True)
-class ApprovalResolvedEvent(NaviEvent):
-    event_type: str = "approval_resolved"
-    run_id: str = ""
-    approval_id: str = ""
-    decision: str = ""
-    sender_id: str = ""
 
 
 # ─── Response ───
@@ -123,13 +80,6 @@ class HeartbeatEvent(NaviEvent):
     mistaken for an unresponsive upstream."""
 
     event_type: str = "heartbeat"
-
-
-@dataclass(frozen=True)
-class ScheduledTaskEvent(NaviEvent):
-    event_type: str = "scheduled_task"
-    action: str = ""
-    payload: dict[str, Any] = field(default_factory=dict)
 
 
 Handler = Callable[[NaviEvent], Awaitable[None]]
@@ -228,15 +178,6 @@ class EventBus:
         await self.publish(event)
         channel = self._response_channels.get(event.correlation_id)
         if channel:
-            await channel.put(event)
-
-    async def broadcast_proactive(self, event: ResponseReadyEvent) -> None:
-        """Send a proactive message to all waiting response channels.
-
-        Used when a background delegation run suspends and needs to push
-        a question to whichever connector is listening."""
-        await self.publish(event)
-        for channel in self._response_channels.values():
             await channel.put(event)
 
     async def send_heartbeat(self, correlation_id: str) -> None:

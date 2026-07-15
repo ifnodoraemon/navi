@@ -2,6 +2,10 @@
 .venv/
 __pycache__/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 *.pyc
 *.egg-info/
 build/
@@ -14,7 +18,3 @@ api.log
 run.log
 latest_trace.json
 traces.db
-analyze_trace.py
-fix_engine.py
-refactor.py
-split_engine.py
