@@ -230,9 +230,7 @@ def test_current_state_actor_scope_precedes_global_noise_limits(tmp_path):
         sender_id="sender-1",
         run_id=visible_run.id,
     )
-    visible_loop = LoopRunStore(tmp_path).create_run(
-        _loop_spec(visible_goal.id, str(tmp_path))
-    )
+    visible_loop = LoopRunStore(tmp_path).create_run(_loop_spec(visible_goal.id, str(tmp_path)))
 
     for index in range(101):
         hidden_run = runs.create(
@@ -272,16 +270,10 @@ def test_current_state_actor_scope_precedes_global_noise_limits(tmp_path):
     )
 
     assert [item["id"] for item in facts["active_runs"]] == [visible_run.id]
-    assert [item["id"] for item in facts["pending_approvals"]] == [
-        visible_approval.id
-    ]
+    assert [item["id"] for item in facts["pending_approvals"]] == [visible_approval.id]
     assert [item["id"] for item in facts["active_goals"]] == [visible_goal.id]
-    assert [item["run_id"] for item in facts["active_loop_runs"]] == [
-        visible_loop.run_id
-    ]
-    assert [item["goal_id"] for item in facts["recent_goal_outcomes"]] == [
-        visible_goal.id
-    ]
+    assert [item["run_id"] for item in facts["active_loop_runs"]] == [visible_loop.run_id]
+    assert [item["goal_id"] for item in facts["recent_goal_outcomes"]] == [visible_goal.id]
 
 
 def test_current_state_separates_recent_outcomes_from_orphan_runtime_state(tmp_path):
@@ -344,15 +336,11 @@ def test_current_state_separates_recent_outcomes_from_orphan_runtime_state(tmp_p
         )
     )
 
-    assert [item["goal_id"] for item in facts["recent_goal_outcomes"]] == [
-        visible_goal.id
-    ]
+    assert [item["goal_id"] for item in facts["recent_goal_outcomes"]] == [visible_goal.id]
     recent = facts["recent_goal_outcomes"][0]
     assert recent["objective"] == "return the latest boot time"
     assert recent["result_summary"] == "model-authored candidate summary"
-    assert recent["result_summary_provenance"] == (
-        "assistant_candidate_non_authoritative"
-    )
+    assert recent["result_summary_provenance"] == ("assistant_candidate_non_authoritative")
     anomalies = facts["runtime_state_anomalies"]
     assert anomalies["active_run_without_active_goal_count"] == 1
     assert anomalies["active_runs_without_active_goals"][0]["run_id"] == orphan.id
@@ -528,9 +516,7 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
     assert "evidence" not in planner_facts["loop_run_state"]
     assert planner_facts["loop_run_state"]["evidence_keys"] == ["durable_payload"]
     assert "attempt_history" not in planner_facts["objective_evidence"]
-    assert planner_facts["objective_evidence"]["capability_result"]["facts"] == {
-        "latest": "kept"
-    }
+    assert planner_facts["objective_evidence"]["capability_result"]["facts"] == {"latest": "kept"}
     assert planner_facts["attempt_history"] == [
         {
             "args": {"query": "recent jobs"},
@@ -542,17 +528,209 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
             "tool": "web.search",
         }
     ]
-    assert planner_facts["ingress_facts"]["current_state"]["current_time"]["unix"] >= (
-        runtime_facts["current_state"]["current_time"]["unix"]
+    assert (
+        planner_facts["ingress_facts"]["current_state"]["current_time"]["unix"]
+        >= (runtime_facts["current_state"]["current_time"]["unix"])
     )
-    assert planner_facts["ingress_facts"]["current_state"]["connector_state"][
-        "source"
-    ] == "connector.weixin"
-    assert planner_facts["ingress_facts"]["intent_facts"]["connector_message"][
-        "message_id"
-    ] == "message-1"
+    assert (
+        planner_facts["ingress_facts"]["current_state"]["connector_state"]["source"]
+        == "connector.weixin"
+    )
+    assert (
+        planner_facts["ingress_facts"]["intent_facts"]["connector_message"]["message_id"]
+        == "message-1"
+    )
     assert "[MODEL ROLES]" not in turn_input
     assert "[MODEL ROLE CONTRACTS]" not in turn_input
     manifest = json.loads(turn_input.split("[TOOL MANIFEST]\n", 1)[1])
     manifest_names = {item["name"] for item in manifest}
     assert {"respond", "shell.run", "web.search"} <= manifest_names
+
+
+@pytest.mark.asyncio
+async def test_planner_ingress_projects_ambient_goal_outcomes_by_task_context(
+    tmp_path,
+):
+    provider = _CapturingPlannerProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    controller = TurnController(
+        home=tmp_path,
+        runtime=runtime,
+        project_dir=tmp_path,
+    )
+    runs = RunStore(tmp_path)
+    goals = GoalStore(tmp_path)
+
+    leak_text = "AI Knowledge Lesson 5 should not leak into this task"
+    active_leak_text = "AI active task title should not leak into this task"
+    runs.create(
+        active_leak_text,
+        source="connector.weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        phase="running",
+    )
+    ambient_run = runs.create(
+        "ambient task result",
+        source="connector.weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        phase="ended",
+    )
+    goals.create(
+        objective="ambient progressive task",
+        workspace=str(tmp_path),
+        source="connector.weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        session_id="session-1",
+        run_id=ambient_run.id,
+        parent_goal_id="ambient-lineage",
+    )
+    updated_ambient = runs.update_run(
+        ambient_run.id,
+        phase="ended",
+        acceptance="accepted",
+        resolution="success",
+        result_summary=leak_text,
+    )
+    assert updated_ambient is not None
+    goals.update_for_run(updated_ambient)
+    goals.record_delivery(
+        run_id=ambient_run.id,
+        channel="weixin",
+        text_preview=leak_text,
+        text_length=len(leak_text),
+        media_count=0,
+    )
+
+    current_lineage = "current-lineage"
+    allowed_text = "General knowledge Lesson 1 is authoritative here"
+    current_prior_run = runs.create(
+        "current lineage prior result",
+        source="connector.weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        workspace=str(tmp_path),
+        phase="ended",
+    )
+    current_prior_goal = goals.create(
+        objective="current progressive task",
+        workspace=str(tmp_path),
+        source="connector.weixin",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        session_id="session-1",
+        run_id=current_prior_run.id,
+        parent_goal_id=current_lineage,
+    )
+    updated_current = runs.update_run(
+        current_prior_run.id,
+        phase="ended",
+        acceptance="accepted",
+        resolution="success",
+        result_summary=allowed_text,
+    )
+    assert updated_current is not None
+    goals.update_for_run(updated_current)
+
+    _, _, context, _ = controller._initialize_turn(
+        "continue the current progressive task",
+        "peer-1",
+        "sender-1",
+        "connector.weixin",
+        "session-1",
+        None,
+        {},
+    )
+    task_context = {
+        "lineage": {
+            "id": current_lineage,
+            "kind": "recurring_goal",
+        },
+        "progress": {
+            "scope": "lineage",
+            "sequence_number": 2,
+            "authority": "same_lineage_authoritative_prior_items",
+            "authoritative_prior_items": [
+                {
+                    "goal_id": current_prior_goal.id,
+                    "run_id": current_prior_run.id,
+                    "result_summary": allowed_text,
+                }
+            ],
+            "ambient_history_authoritative": False,
+        },
+    }
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="continue the current progressive task",
+            scope=(f"repo:{tmp_path}",),
+            acceptance_criteria=("respond from current task context",),
+            permission_ceiling="write",
+            owner="sender-1",
+            metadata={
+                "source": "connector.weixin",
+                "peer_id": "peer-1",
+                "sender_id": "sender-1",
+                "session_id": "session-1",
+                "workspace": str(tmp_path),
+                "task_context": task_context,
+            },
+        ),
+        goal_id="current-occurrence",
+        allowed_capabilities=("respond",),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                evidence_key="semantic_checker_result",
+            ),
+        ),
+    )
+    state = LoopRunStore(tmp_path).create_run(spec)
+    capabilities = CapabilityRegistry(
+        home=tmp_path,
+        project_dir=tmp_path,
+        permission_ceiling=context.permission_ceiling,
+    )
+
+    planned = await ModelCapabilityPlannerPort(
+        runtime=runtime,
+        capabilities=capabilities,
+        context=context,
+    ).plan(
+        spec,
+        state,
+        workspace=tmp_path,
+        evidence={},
+    )
+
+    assert planned.tool == "respond"
+    turn_input = provider.messages[-1].content
+    assert leak_text not in turn_input
+    assert active_leak_text not in turn_input
+    facts_match = re.search(
+        r"<runtime_facts>\s*(.*?)\s*</runtime_facts>",
+        turn_input,
+        re.DOTALL,
+    )
+    assert facts_match is not None
+    planner_facts = json.loads(facts_match.group(1))
+    ingress_facts = planner_facts["ingress_facts"]
+    assert ingress_facts["task_context"]["lineage"]["id"] == current_lineage
+    assert ingress_facts["task_context"]["progress"]["sequence_number"] == 2
+    current_state = ingress_facts["current_state"]
+    assert [item["goal_id"] for item in current_state["recent_goal_outcomes"]] == [
+        current_prior_goal.id
+    ]
+    assert current_state["recent_goal_outcomes"][0]["result_summary"] == allowed_text
+    assert current_state["ambient_goal_outcomes"][0]["goal_id"]
+    assert current_state["ambient_goal_outcomes"][0]["result_summary_omitted"] is True
+    assert current_state["ambient_goal_outcomes"][0]["objective_omitted"] is True
+    assert current_state["ambient_active_runs"][0]["title_omitted"] is True
+    assert current_state["ambient_recent_deliveries"][0]["text_preview_omitted"] is True
+    assert current_state["task_projection_policy"]["ambient_goal_outcome_count"] == 1
+    assert current_state["task_projection_policy"]["ambient_active_run_count"] == 1

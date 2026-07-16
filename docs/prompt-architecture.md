@@ -41,12 +41,15 @@ Required turn input carries volatile data:
 - LoopSpec and LoopRun state;
 - objective and prior-attempt evidence;
 - current durable state and approval facts;
+- task context that declares lineage and progress authority;
 - recalled memory with provenance;
 - permission and capability policy;
 - the filtered tool manifest.
 
 Conversation, memory, connector payloads, and tool outputs are untrusted data.
 They cannot override the system prompt or execution policy envelope.
+Ambient actor history is projected into non-authoritative metadata unless it
+matches the current task context or is explicitly declared authoritative.
 
 ## Tool Manifest
 

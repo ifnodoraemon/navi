@@ -55,6 +55,7 @@ class OpenGoalRequest:
     cron_schedule: str = ""
     parent_goal_id: str = ""
     trigger_facts: dict[str, Any] = field(default_factory=dict)
+    task_context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -78,14 +79,10 @@ class LoopControlServiceResult:
             "loop_run_id": self.loop_run.run_id,
             "route": "unified_loop",
             "loop_kind": str((self.loop_spec.goal.metadata or {}).get("loop_kind") or ""),
-            "execution_mode": str(
-                (self.loop_spec.goal.metadata or {}).get("execution_mode") or ""
-            ),
+            "execution_mode": str((self.loop_spec.goal.metadata or {}).get("execution_mode") or ""),
             "cron_schedule": self.goal.cron_schedule,
             "next_run_at": self.goal.next_run_at,
-            "registration_evidence": bool(
-                self.goal.cron_schedule and self.goal.next_run_at > 0
-            ),
+            "registration_evidence": bool(self.goal.cron_schedule and self.goal.next_run_at > 0),
             "budget_policy": self.loop_spec.budget_policy.to_dict(),
             "phase": self.run.phase,
             "governance": self.run.governance,
@@ -161,11 +158,7 @@ class LoopControlService:
         )
         goal: Goal | None = None
         try:
-            next_run_at = (
-                next_cron_time(cron_schedule, now=time.time())
-                if cron_schedule
-                else 0.0
-            )
+            next_run_at = next_cron_time(cron_schedule, now=time.time()) if cron_schedule else 0.0
             goal = self.goals.create(
                 objective=objective,
                 workspace=workspace,
@@ -186,9 +179,7 @@ class LoopControlService:
                     "execution_mode": execution_mode,
                     "run_id": run.id,
                     "trigger_facts": dict(request.trigger_facts),
-                    "verification_command_declared": bool(
-                        request.verification_command.strip()
-                    ),
+                    "verification_command_declared": bool(request.verification_command.strip()),
                 },
             )
             spec = self._loop_spec_for_goal(goal, request, workspace=workspace)
@@ -250,9 +241,7 @@ class LoopControlService:
         template_runs = self.loop_runs.list_by_goal(goal.id, limit=1)
         if not template_runs:
             raise ValueError("scheduled goal has no loop specification")
-        template = _loop_spec_from_json(
-            self.loop_runs.get_spec_json(template_runs[0].loop_spec_id)
-        )
+        template = _loop_spec_from_json(self.loop_runs.get_spec_json(template_runs[0].loop_spec_id))
         verification_command = next(
             (step.command for step in template.verification_ladder if step.command),
             "",
@@ -283,6 +272,12 @@ class LoopControlService:
             "occurrence_number": occurrence_number,
             "prior_occurrences": prior_occurrences,
         }
+        task_context = _lineage_task_context(
+            lineage_id=goal.id,
+            lineage_kind="recurring_goal",
+            sequence_number=occurrence_number,
+            authoritative_prior_items=prior_occurrences,
+        )
         return self.open_goal(
             OpenGoalRequest(
                 objective=goal.objective,
@@ -307,6 +302,7 @@ class LoopControlService:
                 execution_mode="background",
                 parent_goal_id=goal.id,
                 trigger_facts=trigger_facts,
+                task_context=task_context,
             )
         )
 
@@ -607,9 +603,7 @@ class LoopControlService:
         loop_runs = self.loop_runs.list_by_goal(goal_id, limit=1)
         if not loop_runs:
             raise KeyError(f"loop specification not found for goal: {goal_id}")
-        return _loop_spec_from_json(
-            self.loop_runs.get_spec_json(loop_runs[0].loop_spec_id)
-        )
+        return _loop_spec_from_json(self.loop_runs.get_spec_json(loop_runs[0].loop_spec_id))
 
     def _loop_spec_for_goal(
         self,
@@ -664,6 +658,7 @@ class LoopControlService:
                 "parent_goal_id": goal.parent_goal_id,
                 "workspace": goal.workspace,
                 "trigger_facts": dict(request.trigger_facts),
+                "task_context": _task_context_for_request(goal, request),
             },
         )
         spec = LoopSpec.from_goal(
@@ -818,6 +813,106 @@ def _resolve_workspace(workspace: str) -> str:
     return str(path)
 
 
+def _lineage_task_context(
+    *,
+    lineage_id: str,
+    lineage_kind: str,
+    sequence_number: int,
+    authoritative_prior_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return _normalize_task_context(
+        {
+            "lineage": {
+                "id": lineage_id,
+                "kind": lineage_kind,
+            },
+            "progress": {
+                "scope": "lineage",
+                "sequence_number": sequence_number,
+                "authority": "same_lineage_authoritative_prior_items",
+                "authoritative_prior_items": authoritative_prior_items,
+                "ambient_history_authoritative": False,
+            },
+        },
+        current_goal_id="",
+        parent_goal_id="",
+    )
+
+
+def _task_context_for_request(
+    goal: Goal,
+    request: OpenGoalRequest,
+) -> dict[str, Any]:
+    if request.task_context:
+        return _normalize_task_context(
+            request.task_context,
+            current_goal_id=goal.id,
+            parent_goal_id=goal.parent_goal_id,
+        )
+    return _normalize_task_context(
+        {
+            "lineage": {
+                "id": goal.parent_goal_id or goal.id,
+                "kind": "goal",
+            },
+            "progress": {
+                "scope": "goal",
+                "sequence_number": 0,
+                "authority": "current_goal",
+                "authoritative_prior_items": [],
+                "ambient_history_authoritative": False,
+            },
+        },
+        current_goal_id=goal.id,
+        parent_goal_id=goal.parent_goal_id,
+    )
+
+
+def _normalize_task_context(
+    raw: dict[str, Any],
+    *,
+    current_goal_id: str,
+    parent_goal_id: str,
+) -> dict[str, Any]:
+    lineage = raw.get("lineage") if isinstance(raw, dict) else {}
+    progress = raw.get("progress") if isinstance(raw, dict) else {}
+    lineage_dict = dict(lineage) if isinstance(lineage, dict) else {}
+    progress_dict = dict(progress) if isinstance(progress, dict) else {}
+    authoritative_prior_items = [
+        dict(item)
+        for item in progress_dict.get("authoritative_prior_items") or []
+        if isinstance(item, dict)
+    ]
+    return {
+        "lineage": {
+            "id": str(lineage_dict.get("id") or parent_goal_id or current_goal_id),
+            "kind": str(lineage_dict.get("kind") or "goal"),
+            "current_goal_id": current_goal_id,
+            "parent_goal_id": parent_goal_id,
+        },
+        "progress": {
+            "scope": str(progress_dict.get("scope") or "goal"),
+            "sequence_number": _int_or_default(
+                progress_dict.get("sequence_number"),
+                0,
+            ),
+            "authority": str(progress_dict.get("authority") or "current_goal"),
+            "authoritative_prior_items": authoritative_prior_items,
+            "authoritative_prior_item_count": len(authoritative_prior_items),
+            "ambient_history_authoritative": bool(
+                progress_dict.get("ambient_history_authoritative", False)
+            ),
+        },
+    }
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _execution_mode(request: OpenGoalRequest, *, loop_kind: str) -> str:
     declared = request.execution_mode.strip().lower()
     if declared:
@@ -858,9 +953,7 @@ def _loop_spec_from_json(raw: str) -> LoopSpec:
             objective=str(goal_data["objective"]),
             scope=tuple(str(item) for item in goal_data["scope"]),
             constraints=tuple(str(item) for item in goal_data["constraints"]),
-            acceptance_criteria=tuple(
-                str(item) for item in goal_data["acceptance_criteria"]
-            ),
+            acceptance_criteria=tuple(str(item) for item in goal_data["acceptance_criteria"]),
             permission_ceiling=str(goal_data["permission_ceiling"]),
             risk_level=str(goal_data["risk_level"]),
             owner=str(goal_data["owner"]),

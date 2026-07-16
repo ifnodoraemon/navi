@@ -219,6 +219,18 @@ def test_scheduled_occurrence_is_child_active_goal_without_recurring_cron(tmp_pa
     assert trigger["cron_schedule"] == "15 8 * * *"
     assert trigger["occurrence_number"] == 1
     assert trigger["prior_occurrences"] == []
+    task_context = occurrence.loop_spec.goal.metadata["task_context"]
+    assert task_context["lineage"] == {
+        "id": registered.goal.id,
+        "kind": "recurring_goal",
+        "current_goal_id": occurrence.goal.id,
+        "parent_goal_id": registered.goal.id,
+    }
+    assert task_context["progress"]["scope"] == "lineage"
+    assert task_context["progress"]["sequence_number"] == 1
+    assert task_context["progress"]["authority"] == ("same_lineage_authoritative_prior_items")
+    assert task_context["progress"]["authoritative_prior_items"] == []
+    assert task_context["progress"]["ambient_history_authoritative"] is False
 
 
 def test_scheduled_occurrence_exposes_prior_output_and_delivery_as_facts(tmp_path):
@@ -264,6 +276,12 @@ def test_scheduled_occurrence_exposes_prior_output_and_delivery_as_facts(tmp_pat
     assert previous["result_summary"] == first_run.result_summary
     assert previous["delivery"]["state_transition"] == "delivered"
     assert previous["delivery"]["channel"] == "weixin"
+    task_context = second.loop_spec.goal.metadata["task_context"]
+    assert task_context["lineage"]["id"] == registered.goal.id
+    assert task_context["lineage"]["current_goal_id"] == second.goal.id
+    assert task_context["progress"]["scope"] == "lineage"
+    assert task_context["progress"]["sequence_number"] == 2
+    assert task_context["progress"]["authoritative_prior_items"] == [previous]
 
 
 def test_scheduled_goal_can_be_cancelled_after_registration(tmp_path):

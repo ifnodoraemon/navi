@@ -101,6 +101,12 @@ they must not be mislabeled or replayed as approval continuations.
 actor-scoped top-level task, history, and recurring-schedule views. Read
 results declare the scope for which an empty result is authoritative.
 
+Planner and checker progress claims are governed by `task_context`, not by
+hardcoded task types, keywords, or connector names. A loop may declare a
+lineage, sequence number, progress authority, and authoritative prior items.
+Ambient actor/workspace history is background only unless the task context
+explicitly declares it authoritative for the current task.
+
 ## Capability Contract
 
 Capabilities are stable external contracts. Each capability declares:

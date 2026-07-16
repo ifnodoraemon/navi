@@ -49,9 +49,7 @@ class _ScriptedProvider:
         self.calls: list[str] = []
         self.messages: dict[str, list[ChatMessage]] = {}
 
-    async def complete_for(
-        self, role: str, messages: list[ChatMessage], **kwargs
-    ) -> str:
+    async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
         self.calls.append(role)
         self.messages[role] = messages
         if role == "planner":
@@ -109,14 +107,27 @@ async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
             }
         ],
     }
+    task_context = {
+        "lineage": {
+            "id": "daily-topic-lineage",
+            "kind": "recurring_goal",
+        },
+        "progress": {
+            "scope": "lineage",
+            "sequence_number": 2,
+            "authority": "same_lineage_authoritative_prior_items",
+            "authoritative_prior_items": trigger_facts["prior_occurrences"],
+            "ambient_history_authoritative": False,
+        },
+    }
     spec = LoopSpec.from_goal(
         GoalSpec(
             objective="teach a progressive daily topic",
             scope=(f"repo:{tmp_path}",),
             acceptance_criteria=("respond for the current occurrence",),
-            metadata={"trigger_facts": trigger_facts},
+            metadata={"trigger_facts": trigger_facts, "task_context": task_context},
         ),
-        goal_id="scheduled-goal",
+        goal_id="current-occurrence",
         allowed_capabilities=("respond",),
         verification_ladder=(
             VerificationStep(
@@ -185,6 +196,22 @@ async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
     assert decision.passed is True
     checker_input = json.loads(provider.messages["checker"][-1].content)
     assert checker_input["trigger_facts"] == trigger_facts
+    assert "task_lineage" not in checker_input
+    assert checker_input["task_context"]["lineage"] == {
+        "id": "daily-topic-lineage",
+        "kind": "recurring_goal",
+        "current_goal_id": "current-occurrence",
+        "parent_goal_id": "",
+    }
+    assert (
+        checker_input["task_context"]["progress"]["authority"]
+        == "same_lineage_authoritative_prior_items"
+    )
+    assert checker_input["task_context"]["progress"]["sequence_number"] == 2
+    assert (
+        checker_input["task_context"]["progress"]["authoritative_prior_items"]
+        == trigger_facts["prior_occurrences"]
+    )
     assert checker_input["current_time"]["unix"] > 0
     assert checker_input["current_time"]["iso"]
     assert "utc_offset" in checker_input["current_time"]
