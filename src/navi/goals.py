@@ -19,6 +19,9 @@ from .schema import Column, Table, assert_schema_exact
 GOAL_STORE_SCHEMA_VERSION = 4
 
 
+class ChildAdmissionConflict(ValueError):
+    """Raised when a child goal cannot be admitted under the parent limit."""
+
 
 def _require_workspace(workspace: str) -> str:
     value = workspace.strip()
@@ -56,6 +59,7 @@ class Goal:
     # Cron / recurring fields
     cron_schedule: str = ""
     next_run_at: float = 0.0
+
 
 @dataclass(frozen=True)
 class GoalEvent:
@@ -119,12 +123,16 @@ class GoalStore:
         task_status: str = "in_progress",
         cron_schedule: str = "",
         next_run_at: float = 0.0,
+        child_active_limit: int = 0,
     ) -> Goal:
         now = time.time()
         goal = Goal(
             id=uuid.uuid4().hex,
             objective=objective,
-            phase=Phase.RUNNING, governance=Governance.APPROVED, acceptance=Acceptance.NONE, resolution=Resolution.NONE,
+            phase=Phase.RUNNING,
+            governance=Governance.APPROVED,
+            acceptance=Acceptance.NONE,
+            resolution=Resolution.NONE,
             source=source,
             peer_id=peer_id,
             sender_id=sender_id,
@@ -146,6 +154,23 @@ class GoalStore:
             next_run_at=next_run_at,
         )
         with connect(self.db_path) as conn:
+            if goal.parent_goal_id and child_active_limit > 0:
+                conn.execute("BEGIN IMMEDIATE")
+                active = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM goals
+                    WHERE parent_goal_id = ?
+                      AND phase IN (?, ?, ?)
+                    """,
+                    (goal.parent_goal_id, Phase.PENDING, Phase.RUNNING, Phase.PAUSED),
+                ).fetchone()
+                active_count = int(active[0]) if active else 0
+                if active_count >= child_active_limit:
+                    raise ChildAdmissionConflict(
+                        "agent.control(operation=spawn) allows at most "
+                        f"{child_active_limit} active children per parent."
+                    )
             conn.execute(
                 """
                 INSERT INTO goals(
@@ -188,7 +213,10 @@ class GoalStore:
         self.record_event(
             goal.id,
             "goal.created",
-            phase=goal.phase, governance=goal.governance, acceptance=goal.acceptance, resolution=goal.resolution,
+            phase=goal.phase,
+            governance=goal.governance,
+            acceptance=goal.acceptance,
+            resolution=goal.resolution,
             run_id=run_id,
             trace_id=trace_id,
             evidence=evidence or {},
@@ -401,7 +429,10 @@ class GoalStore:
     # blocked state cannot be dropped by an LLM summary -- they are reloaded
     # from the store, not trusted to live only inside the model context window.
     def _is_constraint_event(self, e: GoalEvent) -> bool:
-        return e.governance == Governance.AWAITING_APPROVAL or e.resolution in {Resolution.BLOCKED, Resolution.FAILED}
+        return e.governance == Governance.AWAITING_APPROVAL or e.resolution in {
+            Resolution.BLOCKED,
+            Resolution.FAILED,
+        }
 
     async def compact_events(self, goal_id: str, runtime, *, threshold: int = 20) -> bool:
         events = self.list_events(goal_id, limit=None)
@@ -416,7 +447,10 @@ class GoalStore:
             {
                 "id": e.id,
                 "event_type": e.event_type,
-                "phase": e.phase, "governance": e.governance, "acceptance": e.acceptance, "resolution": e.resolution,
+                "phase": e.phase,
+                "governance": e.governance,
+                "acceptance": e.acceptance,
+                "resolution": e.resolution,
                 "run_id": e.run_id,
                 "trace_id": e.trace_id,
                 "evidence_json": e.evidence_json,
@@ -425,9 +459,7 @@ class GoalStore:
             for e in events
             if self._is_constraint_event(e)
         ]
-        deletable_ids = [
-            e.id for e in events if not self._is_constraint_event(e)
-        ]
+        deletable_ids = [e.id for e in events if not self._is_constraint_event(e)]
 
         from navi.provider import ChatMessage
 
@@ -446,7 +478,10 @@ class GoalStore:
             id=uuid.uuid4().hex,
             goal_id=goal_id,
             event_type="goal.compaction",
-            phase=Phase.RUNNING, governance=Governance.NONE, acceptance=Acceptance.NONE, resolution=Resolution.NONE,
+            phase=Phase.RUNNING,
+            governance=Governance.NONE,
+            acceptance=Acceptance.NONE,
+            resolution=Resolution.NONE,
             run_id="",
             trace_id="",
             evidence_json=json.dumps(
@@ -557,7 +592,10 @@ class GoalStore:
         self.record_event(
             goal_id,
             "goal.trace_attached",
-            phase=goal.phase, governance=goal.governance, acceptance=goal.acceptance, resolution=goal.resolution,
+            phase=goal.phase,
+            governance=goal.governance,
+            acceptance=goal.acceptance,
+            resolution=goal.resolution,
             run_id=goal.run_id,
             trace_id=trace_id,
             evidence=evidence or {},
@@ -587,11 +625,7 @@ class GoalStore:
         next_task_status = goal.task_status if task_status is None else task_status
         merged_evidence = _merge_evidence(goal.evidence_json, evidence)
         now = time.time()
-        completed_at = (
-            now
-            if next_phase == Phase.ENDED
-            else 0.0
-        )
+        completed_at = now if next_phase == Phase.ENDED else 0.0
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -702,7 +736,10 @@ class GoalStore:
                 evidence = {**evidence, "run_error": run.error}
         return self.update_state(
             goal.id,
-            phase=phase, governance=governance, acceptance=acceptance, resolution=resolution,
+            phase=phase,
+            governance=governance,
+            acceptance=acceptance,
+            resolution=resolution,
             task_status=task_status,
             blocked_reason=reason,
             evidence=evidence,
@@ -726,7 +763,10 @@ class GoalStore:
             id=uuid.uuid4().hex,
             goal_id=goal_id,
             event_type=event_type,
-            phase=phase, governance=governance, acceptance=acceptance, resolution=resolution,
+            phase=phase,
+            governance=governance,
+            acceptance=acceptance,
+            resolution=resolution,
             run_id=run_id,
             trace_id=trace_id,
             evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True),
@@ -1020,6 +1060,38 @@ class GoalStore:
             ).fetchone()
         return Goal(*row) if row else None
 
+    def find_active_cron_goal_by_schedule(
+        self,
+        *,
+        cron_schedule: str,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+        exclude_goal_id: str = "",
+    ) -> Goal | None:
+        clauses = [
+            "cron_schedule = ?",
+            "source = ?",
+            "peer_id = ?",
+            "sender_id = ?",
+            "phase != ?",
+        ]
+        params: list[Any] = [cron_schedule, source, peer_id, sender_id, Phase.ENDED]
+        if exclude_goal_id:
+            clauses.append("id != ?")
+            params.append(exclude_goal_id)
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"""
+                SELECT {GOAL_SELECT_LIST}
+                FROM goals
+                WHERE {" AND ".join(clauses)}
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return Goal(*row) if row else None
+
     def list_cron_goals(self) -> builtins.list[Goal]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
@@ -1052,6 +1124,52 @@ class GoalStore:
                 (next_run_at, time.time(), goal_id),
             )
         return self.get(goal_id)
+
+    def update_scheduled_template(
+        self,
+        goal_id: str,
+        *,
+        objective: str,
+        cron_schedule: str,
+        next_run_at: float,
+        evidence: dict[str, Any] | None = None,
+        event_type: str = "goal.updated",
+    ) -> Goal | None:
+        goal = self.get(goal_id)
+        if goal is None:
+            return None
+        merged_evidence = _merge_evidence(goal.evidence_json, evidence)
+        now = time.time()
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE goals
+                SET objective = ?, cron_schedule = ?, next_run_at = ?,
+                    evidence_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    objective,
+                    cron_schedule,
+                    next_run_at,
+                    json.dumps(merged_evidence, ensure_ascii=False, sort_keys=True),
+                    now,
+                    goal_id,
+                ),
+            )
+        updated = self.get(goal_id)
+        self.record_event(
+            goal_id,
+            event_type,
+            phase=updated.phase if updated else goal.phase,
+            governance=updated.governance if updated else goal.governance,
+            acceptance=updated.acceptance if updated else goal.acceptance,
+            resolution=updated.resolution if updated else goal.resolution,
+            run_id=updated.run_id if updated else goal.run_id,
+            trace_id=updated.trace_id if updated else goal.trace_id,
+            evidence=evidence or {},
+        )
+        return updated
 
     def record_cron_failure(
         self,
@@ -1145,7 +1263,9 @@ class GoalStore:
         return self.get(goal_id)
 
 
-def _goal_state_for_run(run: Run, *, evidence: dict[str, Any] | None = None) -> tuple[str, str, str, str]:
+def _goal_state_for_run(
+    run: Run, *, evidence: dict[str, Any] | None = None
+) -> tuple[str, str, str, str]:
     if run.phase == Phase.ENDED and run.resolution == Resolution.SUCCESS:
         return (Phase.ENDED, Governance.NONE, Acceptance.ACCEPTED, Resolution.SUCCESS)
     if run.phase == Phase.ENDED:
@@ -1176,6 +1296,8 @@ def _json_object(raw: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
 GOALS_TABLE = Table(
     "goals",
     [

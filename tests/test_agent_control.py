@@ -118,14 +118,17 @@ async def test_agent_control_uses_one_parent_surface_and_child_only_report(tmp_p
 
     names = {spec.name for spec in registry.list_specs()}
     assert {"agent.control", "agent.report"} <= names
-    assert not {
-        "agent.spawn",
-        "agent.list",
-        "agent.state",
-        "agent.message",
-        "agent.cancel",
-        "agent.collect",
-    } & names
+    assert (
+        not {
+            "agent.spawn",
+            "agent.list",
+            "agent.state",
+            "agent.message",
+            "agent.cancel",
+            "agent.collect",
+        }
+        & names
+    )
 
     insufficient = await registry.invoke(
         "agent.control",
@@ -200,9 +203,7 @@ async def test_agent_control_uses_one_parent_surface_and_child_only_report(tmp_p
         context=parent_context,
     )
     assert collected.ok is True
-    assert collected.facts["latest_report"]["summary"] == (
-        "repository contract inspected"
-    )
+    assert collected.facts["latest_report"]["summary"] == ("repository contract inspected")
     assert collected.facts["completion_evidence"] is False
 
 
@@ -277,6 +278,38 @@ async def test_agent_control_enforces_depth_identity_capability_and_concurrency(
 
 
 @pytest.mark.asyncio
+async def test_agent_spawn_uses_atomic_child_admission_when_action_count_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = _parent(tmp_path)
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    parent_context = _context(tmp_path, goal_id=parent.goal.id)
+
+    for index in range(3):
+        result = await registry.invoke(
+            "agent.control",
+            _spawn_args(parent.goal.id, objective=f"child task {index}"),
+            permission="prepare",
+            context=parent_context,
+        )
+        assert result.ok is True
+
+    monkeypatch.setattr(GoalStore, "count_children", lambda *args, **kwargs: 0)
+    fourth = await registry.invoke(
+        "agent.control",
+        _spawn_args(parent.goal.id, objective="fourth child from stale gate"),
+        permission="prepare",
+        context=parent_context,
+    )
+
+    assert fourth.ok is False
+    assert fourth.error_reason == "conflict"
+    actual_children = GoalStore(tmp_path).list_children(parent.goal.id, limit=10)
+    assert len([child for child in actual_children if child.phase != "ended"]) == 3
+
+
+@pytest.mark.asyncio
 async def test_daemon_resumes_background_child_and_parent_collects_completion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -312,13 +345,9 @@ async def test_daemon_resumes_background_child_and_parent_collects_completion(
         context=parent_context,
     )
     assert collected.ok is True
-    assert collected.facts["child"]["loop_terminal_state"] == (
-        LoopTerminalState.CONVERGED
-    )
+    assert collected.facts["child"]["loop_terminal_state"] == (LoopTerminalState.CONVERGED)
     assert collected.facts["completion_evidence"] is True
-    assert collected.facts["latest_report"]["summary"] == (
-        "background child completed"
-    )
+    assert collected.facts["latest_report"]["summary"] == ("background child completed")
 
 
 @pytest.mark.asyncio
@@ -345,9 +374,10 @@ async def test_background_child_retries_transient_resource_pauses_at_original_no
     assert first_state is not None
     assert first_state.terminal_state == LoopTerminalState.PAUSED
     assert first_state.evidence["resource_resume_node"] == "execute"
-    assert LoopRunStore(tmp_path).list_retryable_background_pauses(
-        now=float("inf")
-    )[0].run_id == loop_run_id
+    assert (
+        LoopRunStore(tmp_path).list_retryable_background_pauses(now=float("inf"))[0].run_id
+        == loop_run_id
+    )
 
     runtime = AgentRuntime(home=tmp_path, provider=provider)
     second = await resume_goal_loop_run(

@@ -29,6 +29,10 @@ from .runs import Run, RunStore
 from .state_graph import StateGraphRunResult
 
 
+class ScheduleConflict(ValueError):
+    """Raised when a recurring schedule operation would create ambiguity."""
+
+
 @dataclass(frozen=True)
 class OpenGoalRequest:
     objective: str
@@ -56,6 +60,28 @@ class OpenGoalRequest:
     parent_goal_id: str = ""
     trigger_facts: dict[str, Any] = field(default_factory=dict)
     task_context: dict[str, Any] = field(default_factory=dict)
+    allow_duplicate_schedule: bool = False
+    child_active_limit: int = 0
+
+
+@dataclass(frozen=True)
+class UpdateGoalRequest:
+    goal_id: str
+    objective: str = ""
+    cron_schedule: str = ""
+    scope: tuple[str, ...] | None = None
+    constraints: tuple[str, ...] | None = None
+    acceptance_criteria: tuple[str, ...] | None = None
+    permission_ceiling: str = ""
+    allowed_capabilities: tuple[str, ...] | None = None
+    verification_command: str | None = None
+    timeout_seconds: int = 0
+    token_budget: int = -1
+    call_budget: int = -1
+    cost_budget: float = -1.0
+    qps_limit: int = -1
+    max_concurrent: int = 0
+    allow_duplicate_schedule: bool = False
 
 
 @dataclass(frozen=True)
@@ -141,6 +167,19 @@ class LoopControlService:
                         loop_run=existing_loop,
                         state_transition="existing",
                     )
+            if not request.allow_duplicate_schedule:
+                conflict = self.goals.find_active_cron_goal_by_schedule(
+                    cron_schedule=cron_schedule,
+                    source=request.source,
+                    peer_id=request.peer_id,
+                    sender_id=request.sender_id,
+                )
+                if conflict is not None:
+                    raise ScheduleConflict(
+                        "active scheduled goal already exists for this actor and "
+                        "cron_schedule; use goal.update for an existing schedule "
+                        "or explicitly allow duplicate schedules."
+                    )
         workspace = _resolve_workspace(request.workspace)
         run = self.runs.create(
             title=objective[:120],
@@ -173,6 +212,7 @@ class LoopControlService:
                 task_status="scheduled" if loop_kind == "scheduled" else "in_progress",
                 cron_schedule=cron_schedule,
                 next_run_at=next_run_at,
+                child_active_limit=request.child_active_limit,
                 evidence={
                     "route": "unified_loop",
                     "loop_kind": loop_kind,
@@ -233,6 +273,144 @@ class LoopControlService:
             loop_spec=spec,
             loop_run=loop_run,
             state_transition="scheduled" if loop_kind == "scheduled" else "opened",
+        )
+
+    def update_goal(self, request: UpdateGoalRequest) -> LoopControlServiceResult:
+        goal_id = request.goal_id.strip()
+        if not goal_id:
+            raise ValueError("UpdateGoalRequest.goal_id is required")
+        goal = self.goals.get(goal_id)
+        if goal is None:
+            raise KeyError(f"goal not found: {goal_id}")
+        if goal.phase == Phase.ENDED:
+            raise ValueError(f"terminal goal cannot be updated: {goal_id}")
+        if not goal.cron_schedule:
+            raise ValueError("goal.update currently supports scheduled recurring goals")
+        template_runs = self.loop_runs.list_by_goal(goal.id, limit=1)
+        if not template_runs:
+            raise ValueError(f"scheduled goal has no registration loop: {goal.id}")
+        template_loop = template_runs[0]
+        previous_spec = _loop_spec_from_json(
+            self.loop_runs.get_spec_json(template_loop.loop_spec_id)
+        )
+        objective = request.objective.strip() or goal.objective
+        cron_schedule = request.cron_schedule.strip() or goal.cron_schedule
+        validate_cron(cron_schedule)
+        if not request.allow_duplicate_schedule:
+            conflict = self.goals.find_active_cron_goal_by_schedule(
+                cron_schedule=cron_schedule,
+                source=goal.source,
+                peer_id=goal.peer_id,
+                sender_id=goal.sender_id,
+                exclude_goal_id=goal.id,
+            )
+            if conflict is not None:
+                raise ScheduleConflict(
+                    "another active scheduled goal already exists for this actor "
+                    "and cron_schedule; choose that goal_id or explicitly allow "
+                    "duplicate schedules."
+                )
+        next_run_at = (
+            next_cron_time(cron_schedule, now=time.time())
+            if cron_schedule != goal.cron_schedule
+            else goal.next_run_at
+        )
+        evidence = {
+            "state_transition": "updated",
+            "previous_objective": goal.objective,
+            "objective": objective,
+            "previous_cron_schedule": goal.cron_schedule,
+            "cron_schedule": cron_schedule,
+            "next_run_at": next_run_at,
+        }
+        updated_goal = self.goals.update_scheduled_template(
+            goal.id,
+            objective=objective,
+            cron_schedule=cron_schedule,
+            next_run_at=next_run_at,
+            evidence=evidence,
+        )
+        if updated_goal is None:
+            raise KeyError(f"goal not found: {goal.id}")
+        run = self.runs.get(updated_goal.run_id)
+        if run is None:
+            raise KeyError(f"run not found for goal: {updated_goal.run_id}")
+        verification_command = _verification_command_from_spec(previous_spec)
+        update_request = OpenGoalRequest(
+            objective=updated_goal.objective,
+            workspace=updated_goal.workspace,
+            loop_kind="scheduled",
+            source=updated_goal.source,
+            peer_id=updated_goal.peer_id,
+            sender_id=updated_goal.sender_id,
+            session_id=updated_goal.session_id,
+            scope=request.scope if request.scope is not None else tuple(previous_spec.goal.scope),
+            constraints=request.constraints
+            if request.constraints is not None
+            else tuple(previous_spec.goal.constraints),
+            acceptance_criteria=request.acceptance_criteria
+            if request.acceptance_criteria is not None
+            else tuple(previous_spec.goal.acceptance_criteria),
+            permission_ceiling=request.permission_ceiling or previous_spec.goal.permission_ceiling,
+            allowed_capabilities=request.allowed_capabilities
+            if request.allowed_capabilities is not None
+            else tuple(previous_spec.allowed_capabilities),
+            verification_command=(
+                verification_command
+                if request.verification_command is None
+                else request.verification_command
+            ),
+            timeout_seconds=(
+                _timeout_seconds_from_spec(previous_spec)
+                if request.timeout_seconds <= 0
+                else request.timeout_seconds
+            ),
+            token_budget=(
+                previous_spec.budget_policy.token_budget
+                if request.token_budget < 0
+                else request.token_budget
+            ),
+            call_budget=(
+                previous_spec.budget_policy.call_budget
+                if request.call_budget < 0
+                else request.call_budget
+            ),
+            cost_budget=(
+                previous_spec.budget_policy.cost_budget
+                if request.cost_budget < 0
+                else request.cost_budget
+            ),
+            qps_limit=(
+                previous_spec.budget_policy.qps_limit
+                if request.qps_limit < 0
+                else request.qps_limit
+            ),
+            max_concurrent=(
+                previous_spec.budget_policy.max_concurrent
+                if request.max_concurrent <= 0
+                else request.max_concurrent
+            ),
+            auto_start=True,
+            execution_mode="scheduled",
+            cron_schedule=cron_schedule,
+        )
+        updated_spec = self._loop_spec_for_goal(
+            updated_goal,
+            update_request,
+            workspace=updated_goal.workspace,
+        )
+        updated_spec = replace(
+            updated_spec,
+            id=template_loop.loop_spec_id,
+            created_at=previous_spec.created_at,
+        )
+        self.loop_runs.save_spec(updated_spec)
+        return LoopControlServiceResult(
+            goal=updated_goal,
+            run=run,
+            loop_spec=updated_spec,
+            loop_run=template_loop,
+            state_transition="updated",
         )
 
     def open_scheduled_occurrence(self, goal: Goal) -> LoopControlServiceResult:
@@ -911,6 +1089,18 @@ def _int_or_default(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _verification_command_from_spec(spec: LoopSpec) -> str:
+    return next((step.command for step in spec.verification_ladder if step.command), "")
+
+
+def _timeout_seconds_from_spec(spec: LoopSpec) -> int:
+    seconds = next(
+        (step.timeout.seconds for step in spec.verification_ladder if step.timeout.seconds > 0),
+        120.0,
+    )
+    return max(1, int(seconds))
 
 
 def _execution_mode(request: OpenGoalRequest, *, loop_kind: str) -> str:

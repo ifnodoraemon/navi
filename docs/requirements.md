@@ -90,6 +90,9 @@ cancel, and collect a depth-1 background child. A child receives an immutable
 intersection of system, parent-Goal, and caller policy with explicit objective,
 acceptance criteria, context facts, permission ceiling, workspace, timeout, and
 resource budgets. No more than three children may be active for one parent.
+Admission to that active-child limit is reserved by the durable Goal store in a
+single transaction so concurrent API and daemon processes cannot both pass a
+stale sequential count.
 
 Children cannot recursively delegate, contact the user, resolve approvals, use
 connectors, or mutate the workspace. They return findings only through the
@@ -100,6 +103,9 @@ they must not be mislabeled or replayed as approval continuations.
 `agent.control` exposes only depth-1 child records. `goal.state` exposes
 actor-scoped top-level task, history, and recurring-schedule views. Read
 results declare the scope for which an empty result is authoritative.
+Recurring schedule changes use `goal.update` against an explicit `goal_id`;
+`goal.open` creates a new schedule and refuses same-actor same-cron duplicates
+unless the caller explicitly declares an independent duplicate schedule.
 
 Planner and checker progress claims are governed by `task_context`, not by
 hardcoded task types, keywords, or connector names. A loop may declare a

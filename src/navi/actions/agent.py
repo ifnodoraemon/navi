@@ -11,7 +11,7 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
-from ..goals import Goal, GoalStore
+from ..goals import ChildAdmissionConflict, Goal, GoalStore
 from ..lifecycle import Phase
 from ..loop_control_service import LoopControlService, OpenGoalRequest
 from ..loop_contracts import LoopSpec, LoopTerminalState
@@ -68,9 +68,7 @@ class AgentSpawnCapability(BaseCapability):
             raise SchemaMismatch("agent.control(operation=spawn) requires objective.")
         acceptance_criteria = _string_tuple(args.get("acceptance_criteria"))
         if not acceptance_criteria:
-            raise SchemaMismatch(
-                "agent.control(operation=spawn) requires acceptance_criteria."
-            )
+            raise SchemaMismatch("agent.control(operation=spawn) requires acceptance_criteria.")
         requested = _string_tuple(args.get("allowed_capabilities"))
         if not requested:
             raise SchemaMismatch(
@@ -137,9 +135,7 @@ class AgentSpawnCapability(BaseCapability):
         )
         context_facts = args.get("context_facts")
         if context_facts is not None and not isinstance(context_facts, dict):
-            raise SchemaMismatch(
-                "agent.control(operation=spawn) context_facts must be an object."
-            )
+            raise SchemaMismatch("agent.control(operation=spawn) context_facts must be an object.")
 
         request = OpenGoalRequest(
             objective=objective,
@@ -167,13 +163,17 @@ class AgentSpawnCapability(BaseCapability):
             auto_start=False,
             execution_mode="background",
             parent_goal_id=parent.id,
+            child_active_limit=MAX_ACTIVE_CHILDREN,
             trigger_facts={
                 "type": "agent_delegation",
                 "parent_goal_id": parent.id,
                 "context_facts": dict(context_facts or {}),
             },
         )
-        opened = service.open_goal(request)
+        try:
+            opened = service.open_goal(request)
+        except ChildAdmissionConflict as exc:
+            raise Conflict(str(exc)) from exc
         facts = {
             "entity_type": "agent",
             "entity_id": opened.goal.id,
@@ -268,19 +268,13 @@ class AgentMessageCapability(BaseCapability):
         parent = _parent_for_actor(store, args=args, context=context)
         child = _child_for_parent(store, parent=parent, args=args)
         if child.phase == Phase.ENDED:
-            raise Conflict(
-                "agent.control(operation=message) cannot update a terminal child."
-            )
+            raise Conflict("agent.control(operation=message) cannot update a terminal child.")
         message = _arg_text(args, "message")
         supplied_facts = args.get("facts")
         if supplied_facts is not None and not isinstance(supplied_facts, dict):
-            raise SchemaMismatch(
-                "agent.control(operation=message) facts must be an object."
-            )
+            raise SchemaMismatch("agent.control(operation=message) facts must be an object.")
         if not message and not supplied_facts:
-            raise SchemaMismatch(
-                "agent.control(operation=message) requires message or facts."
-            )
+            raise SchemaMismatch("agent.control(operation=message) requires message or facts.")
         evidence = {
             "state_transition": "message_received",
             "from_parent_goal_id": parent.id,
@@ -604,8 +598,7 @@ def _child_capability_envelope(
     if outside:
         raise SchemaMismatch(
             "agent.control(operation=spawn) capabilities are outside the child "
-            "policy envelope: "
-            + ", ".join(outside)
+            "policy envelope: " + ", ".join(outside)
         )
     return tuple(sorted({*requested, _CHILD_REPORT_CAPABILITY}))
 

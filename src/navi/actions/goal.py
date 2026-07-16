@@ -6,11 +6,20 @@ from typing import Any
 
 from ..capabilities_types import BaseCapability, CapabilityContext, CapabilityResult, capability
 from ..goal_state_graph import run_goal_loop_state_graph
-from ..loop_control_service import LoopControlService, OpenGoalRequest
+from ..loop_control_service import (
+    LoopControlService,
+    OpenGoalRequest,
+    ScheduleConflict,
+    UpdateGoalRequest,
+)
 from ..loop_contracts import LoopTerminalState
 from ..result import Conflict, NotFound, PermissionDenied, SchemaMismatch, guarded
 from ..tools import ToolSpec
-from .helpers import arg_text as _arg_text, fact_result as _fact_result, positive_int as _positive_int
+from .helpers import (
+    arg_text as _arg_text,
+    fact_result as _fact_result,
+    positive_int as _positive_int,
+)
 
 
 @capability("goal_open")
@@ -81,14 +90,11 @@ class GoalOpenCapability(BaseCapability):
             auto_start=bool(args.get("auto_start", True)),
             cron_schedule=_arg_text(args, "cron_schedule"),
             parent_goal_id=_arg_text(args, "parent_goal_id"),
+            allow_duplicate_schedule=bool(args.get("allow_duplicate_schedule", False)),
         )
         try:
             service = LoopControlService(self.home)
-            if (
-                request.auto_start
-                and self.runtime is not None
-                and request.loop_kind != "scheduled"
-            ):
+            if request.auto_start and self.runtime is not None and request.loop_kind != "scheduled":
                 opened = service.open_goal(
                     replace(
                         request,
@@ -108,6 +114,8 @@ class GoalOpenCapability(BaseCapability):
                 )
             else:
                 result = service.open_goal(request)
+        except ScheduleConflict as exc:
+            raise Conflict(str(exc)) from exc
         except ValueError as exc:
             raise SchemaMismatch(str(exc)) from exc
         facts = result.to_facts()
@@ -123,6 +131,115 @@ class GoalOpenCapability(BaseCapability):
             action="goal",
             message=responded_message,
         )
+
+
+@capability("goal_update")
+class GoalUpdateCapability(BaseCapability):
+    def __init__(
+        self,
+        spec: ToolSpec,
+        *,
+        home: Path,
+        project_dir: Path,
+        runtime: Any | None = None,
+    ):
+        super().__init__(spec, home=home)
+        self.project_dir = project_dir
+        self.runtime = runtime
+
+    @guarded
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        goal_id = _arg_text(args, "goal_id")
+        if not goal_id:
+            raise SchemaMismatch("goal.update requires goal_id.")
+        service = LoopControlService(self.home)
+        try:
+            _require_goal_scope(
+                service,
+                goal_id=goal_id,
+                loop_run_id="",
+                context=context,
+            )
+            goal = service.goals.get(goal_id)
+            if goal is None:
+                raise NotFound(f"goal not found: {goal_id}")
+            allowed_capabilities = _updated_allowed_capabilities(
+                args,
+                home=self.home,
+                workspace=goal.workspace,
+                context=context,
+                runtime=self.runtime,
+            )
+            result = service.update_goal(
+                UpdateGoalRequest(
+                    goal_id=goal_id,
+                    objective=_arg_text(args, "objective"),
+                    cron_schedule=_arg_text(args, "cron_schedule"),
+                    scope=_optional_string_tuple(args, "scope"),
+                    constraints=_optional_string_tuple(args, "constraints"),
+                    acceptance_criteria=_optional_string_tuple(
+                        args,
+                        "acceptance_criteria",
+                    ),
+                    permission_ceiling=_arg_text(args, "permission_ceiling"),
+                    allowed_capabilities=allowed_capabilities,
+                    verification_command=(
+                        _arg_text(args, "verification_command")
+                        if "verification_command" in args
+                        else None
+                    ),
+                    timeout_seconds=_optional_nonnegative_int(
+                        args,
+                        "timeout_seconds",
+                        maximum=3600,
+                        default=0,
+                    ),
+                    token_budget=_optional_nonnegative_int(
+                        args,
+                        "token_budget",
+                        maximum=100_000_000,
+                        default=-1,
+                    ),
+                    call_budget=_optional_nonnegative_int(
+                        args,
+                        "call_budget",
+                        maximum=100_000,
+                        default=-1,
+                    ),
+                    cost_budget=_optional_nonnegative_float(
+                        args,
+                        "cost_budget",
+                        maximum=1_000_000.0,
+                        default=-1.0,
+                    ),
+                    qps_limit=_optional_nonnegative_int(
+                        args,
+                        "qps_limit",
+                        maximum=10_000,
+                        default=-1,
+                    ),
+                    max_concurrent=_optional_nonnegative_int(
+                        args,
+                        "max_concurrent",
+                        maximum=100,
+                        default=0,
+                    ),
+                    allow_duplicate_schedule=bool(args.get("allow_duplicate_schedule", False)),
+                )
+            )
+        except KeyError as exc:
+            raise NotFound(str(exc)) from exc
+        except ScheduleConflict as exc:
+            raise Conflict(str(exc)) from exc
+        except ValueError as exc:
+            raise SchemaMismatch(str(exc)) from exc
+        return _fact_result("goal", result.to_facts(), run_id=result.run.id)
 
 
 @capability("goal_resume")
@@ -294,6 +411,12 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     return ()
 
 
+def _optional_string_tuple(args: dict[str, Any], key: str) -> tuple[str, ...] | None:
+    if key not in args:
+        return None
+    return _string_tuple(args.get(key))
+
+
 def _nonnegative_int(value: Any, *, maximum: int) -> int:
     try:
         parsed = int(value)
@@ -302,12 +425,61 @@ def _nonnegative_int(value: Any, *, maximum: int) -> int:
     return max(0, min(parsed, maximum))
 
 
+def _optional_nonnegative_int(
+    args: dict[str, Any],
+    key: str,
+    *,
+    maximum: int,
+    default: int,
+) -> int:
+    if key not in args:
+        return default
+    return _nonnegative_int(args.get(key), maximum=maximum)
+
+
 def _nonnegative_float(value: Any, *, maximum: float) -> float:
     try:
         parsed = float(value)
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, min(parsed, maximum))
+
+
+def _optional_nonnegative_float(
+    args: dict[str, Any],
+    key: str,
+    *,
+    maximum: float,
+    default: float,
+) -> float:
+    if key not in args:
+        return default
+    return _nonnegative_float(args.get(key), maximum=maximum)
+
+
+def _updated_allowed_capabilities(
+    args: dict[str, Any],
+    *,
+    home: Path,
+    workspace: str,
+    context: CapabilityContext,
+    runtime: Any | None,
+) -> tuple[str, ...] | None:
+    if "allowed_capabilities" not in args:
+        return None
+    requested = _string_tuple(args.get("allowed_capabilities"))
+    if not requested:
+        raise SchemaMismatch("goal.update allowed_capabilities must be non-empty when provided.")
+    return _effective_allowed_capabilities(
+        requested=requested,
+        context=context,
+        registry=_planner_capabilities(
+            home,
+            workspace,
+            context=context,
+            runtime=runtime,
+        ),
+    )
 
 
 def _effective_allowed_capabilities(
@@ -436,9 +608,7 @@ def _scoped_goal_state(
         "authoritative_for": "current_actor_active_goals",
         "matched_count": len(active_goals),
         "goals": active_goals,
-        "scheduled_goals": [
-            goal for goal in active_goals if str(goal.get("cron_schedule") or "")
-        ],
+        "scheduled_goals": [goal for goal in active_goals if str(goal.get("cron_schedule") or "")],
         "active_loop_runs": active_loop_runs,
         "active_goals": active_goals,
     }
@@ -488,9 +658,7 @@ def _planner_capabilities(
     return CapabilityRegistry(
         home=home,
         project_dir=Path(workspace),
-        allowed_tools=(
-            set(context.allowed_tools) if context.allowed_tools is not None else None
-        ),
+        allowed_tools=(set(context.allowed_tools) if context.allowed_tools is not None else None),
         disabled_tools=set(context.disabled_tools),
         disabled_capability_classes=context.disabled_capability_classes,
         permission_ceiling=context.permission_ceiling,

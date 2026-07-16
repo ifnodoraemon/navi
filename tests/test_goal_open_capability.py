@@ -151,6 +151,103 @@ async def test_goal_open_scheduled_persists_real_workspace_from_turn_shadow(
 
 
 @pytest.mark.asyncio
+async def test_goal_update_scheduled_template_reuses_goal_and_spec(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = _context(tmp_path)
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "daily weather",
+            "workspace": str(tmp_path),
+            "loop_kind": "scheduled",
+            "cron_schedule": "30 7 * * *",
+            "allowed_capabilities": ["respond"],
+            "acceptance_criteria": ["send the weather"],
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    updated = await registry.invoke(
+        "goal.update",
+        {
+            "goal_id": opened.facts["goal_id"],
+            "objective": "daily weather plus progressive AI hardware lesson",
+            "acceptance_criteria": ["send weather and the next AI hardware lesson"],
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    assert updated.ok is True
+    assert updated.facts["state_transition"] == "updated"
+    assert updated.facts["goal_id"] == opened.facts["goal_id"]
+    assert updated.facts["loop_spec_id"] == opened.facts["loop_spec_id"]
+    goals = [
+        goal
+        for goal in GoalStore(tmp_path).list_cron_goals()
+        if goal.phase != Phase.ENDED and goal.cron_schedule == "30 7 * * *"
+    ]
+    assert len(goals) == 1
+    assert goals[0].objective == "daily weather plus progressive AI hardware lesson"
+    spec = LoopControlService(tmp_path).goal_loop_spec(opened.facts["goal_id"])
+    assert spec.goal.objective == "daily weather plus progressive AI hardware lesson"
+    assert spec.goal.acceptance_criteria == ("send weather and the next AI hardware lesson",)
+
+
+@pytest.mark.asyncio
+async def test_goal_open_same_actor_same_cron_requires_update_or_duplicate_intent(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = _context(tmp_path)
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "daily weather",
+            "workspace": str(tmp_path),
+            "loop_kind": "scheduled",
+            "cron_schedule": "30 7 * * *",
+            "allowed_capabilities": ["respond"],
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    conflict = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "daily weather plus hardware lesson",
+            "workspace": str(tmp_path),
+            "loop_kind": "scheduled",
+            "cron_schedule": "30 7 * * *",
+            "allowed_capabilities": ["respond"],
+        },
+        permission="prepare",
+        context=context,
+    )
+    duplicate = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "independent daily hardware lesson",
+            "workspace": str(tmp_path),
+            "loop_kind": "scheduled",
+            "cron_schedule": "30 7 * * *",
+            "allowed_capabilities": ["respond"],
+            "allow_duplicate_schedule": True,
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    assert opened.ok is True
+    assert conflict.ok is False
+    assert conflict.error_reason == "conflict"
+    assert duplicate.ok is True
+    assert duplicate.facts["goal_id"] != opened.facts["goal_id"]
+
+
+@pytest.mark.asyncio
 async def test_goal_open_capability_auto_start_uses_runtime_state_graph(tmp_path: Path) -> None:
     provider = _PlanningProvider()
     registry = build_capability_registry(
@@ -439,9 +536,7 @@ async def test_goal_state_default_and_explicit_reads_are_caller_scoped(tmp_path:
     )
 
     assert scoped.ok is True
-    assert [goal["id"] for goal in scoped.facts["active_goals"]] == [
-        visible.facts["goal_id"]
-    ]
+    assert [goal["id"] for goal in scoped.facts["active_goals"]] == [visible.facts["goal_id"]]
     assert denied.ok is False
     assert denied.error_reason == "permission_denied"
 
@@ -486,9 +581,7 @@ async def test_goal_state_scheduled_view_is_actor_scoped_and_authoritative(
     assert state.ok is True
     assert state.facts["authoritative_for"] == "actor_scheduled_goals"
     assert state.facts["matched_count"] == 1
-    assert [goal["id"] for goal in state.facts["scheduled_goals"]] == [
-        visible.facts["goal_id"]
-    ]
+    assert [goal["id"] for goal in state.facts["scheduled_goals"]] == [visible.facts["goal_id"]]
 
 
 @pytest.mark.asyncio

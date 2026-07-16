@@ -37,6 +37,13 @@ Child agents reuse this exact loop. `agent.control(operation=...)` is the single
 parent lifecycle surface; `agent.report` is separate because it is a child-only
 terminal protocol with different authority. Child policy is the intersection of
 system, parent, and caller envelopes, and only the parent remains user-facing.
+The durable Goal store owns maximum-active-child admission so concurrent
+drivers share one atomic reservation boundary.
+
+Recurring schedules are mutable templates, not implicit natural-language
+dedupe. A planner reads them through `goal.state`, updates an existing template
+through `goal.update(goal_id=...)`, and uses `goal.open` only for new schedules
+or explicitly independent duplicate schedules.
 
 ## Layer Ownership
 
