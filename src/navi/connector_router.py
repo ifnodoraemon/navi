@@ -10,11 +10,7 @@ from .event_bus import (
     MessageIngressEvent,
     ResponseReadyEvent,
 )
-from .prompt_os import (
-    assemble_fact_response_system_prompt,
-    assemble_fact_response_turn_input,
-)
-from .provider import ChatMessage
+from .finalization import synthesize_user_reply_from_facts
 
 # Idle window: how long we tolerate *silence* on the response channel before
 # declaring the upstream unresponsive. A turn that is still working sends
@@ -173,22 +169,11 @@ class ConnectorRouter:
                 sender_id=message.sender_id,
                 facts=result.facts,
             )
-        try:
-            text = await self.runtime.complete(
-                [
-                    ChatMessage("system", assemble_fact_response_system_prompt().render()),
-                    ChatMessage(
-                        "user",
-                        assemble_fact_response_turn_input(
-                            user_text=message.text,
-                            facts={"approval_control": result.facts},
-                        ).render(),
-                    ),
-                ],
-                role="responder",
-            )
-        except Exception:
-            text = ""
+        text = await synthesize_user_reply_from_facts(
+            self.runtime,
+            user_text=message.text,
+            facts={"approval_control": result.facts},
+        )
         return ResponseReadyEvent(
             source_agent="router",
             text=text,

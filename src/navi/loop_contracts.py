@@ -636,6 +636,7 @@ def default_state_graph() -> tuple[StateTransition, ...]:
         StateTransition(LoopNode.PLAN, LoopNode.PAUSE, "resource_pause"),
         StateTransition(LoopNode.PLAN, LoopNode.ESCALATE, "resource_escalate"),
         StateTransition(LoopNode.PLAN, LoopTerminalState.BLOCKED, "resource_blocked"),
+        StateTransition(LoopNode.PLAN, LoopNode.REFLECT, "planner_failed"),
         StateTransition(LoopNode.PLAN, LoopTerminalState.FAILED, "planner_failed"),
         StateTransition(LoopNode.EXECUTE, LoopNode.EVALUATE, "side_effect_recorded"),
         StateTransition(LoopNode.EXECUTE, LoopNode.REFLECT, "capability_failed"),

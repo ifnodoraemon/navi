@@ -244,6 +244,56 @@ class CapabilityRecoveryPort:
         )
 
 
+class ContractViolationRecoveryPort:
+    """Expose runtime contract violations as facts for LLM-owned repair."""
+
+    def recover(
+        self,
+        spec: LoopSpec,
+        state: LoopRunState,
+        *,
+        planned: PlannedCapabilityStep,
+        domain: str,
+    ) -> ReflectionDecision:
+        reason_code = str(
+            planned.args.get("reason")
+            or planned.reason
+            or "runtime_contract_failed"
+        )
+        recovery_facts = {
+            "trigger": "runtime.contract_failed",
+            "reason_code": reason_code,
+            "blocked": False,
+            "failure_domain": domain,
+            "loop_run_id": state.run_id,
+            "attempt": state.attempt,
+            "max_attempts": spec.retry_policy.max_attempts,
+            "goal_id": spec.goal_id,
+            "contract_violation": planned.to_dict(),
+            "contract": {
+                "syscall_count": "exactly_one",
+                "runtime_executes_one_syscall_per_plan": True,
+                "respond_is_terminal": True,
+            },
+        }
+        return ReflectionDecision(
+            replan_allowed=state.attempt < spec.retry_policy.max_attempts,
+            reason_code=reason_code,
+            facts={
+                "recovery": recovery_facts,
+                "recovery_fact": json.dumps(
+                    {
+                        "fact_type": "runtime_contract_failed",
+                        "facts": recovery_facts,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ),
+            },
+        )
+
+
 class RecoveryReflectorPort:
     """Expose checker failure facts and whether the model may plan again."""
 
@@ -895,7 +945,11 @@ class ModelCapabilityPlannerPort:
             return PlannedCapabilityStep(
                 tool="system.planner_error",
                 permission="read",
-                args={"reason": "planner_must_return_exactly_one_syscall", "count": len(syscalls)},
+                args={
+                    "reason": "planner_must_return_exactly_one_syscall",
+                    "count": len(syscalls),
+                    "candidate_syscalls": [item.to_dict() for item in syscalls],
+                },
                 reason="StateGraph executes exactly one syscall per PLAN node",
             )
         selected = syscalls[0]
@@ -1003,6 +1057,7 @@ class DurableStateGraphRunner:
         executor_port: ExecutorPort | None = None,
         reflector_port: RecoveryReflectorPort | None = None,
         recovery_port: CapabilityRecoveryPort | None = None,
+        contract_violation_recovery_port: ContractViolationRecoveryPort | None = None,
         semantic_checker_port: SemanticCheckerPort | None = None,
         side_effect_saga_port: SideEffectSagaPort | None = None,
         trace_store: TraceStore | None = None,
@@ -1017,6 +1072,9 @@ class DurableStateGraphRunner:
         self.executor_port = executor_port
         self.reflector_port = reflector_port or RecoveryReflectorPort()
         self.recovery_port = recovery_port or CapabilityRecoveryPort()
+        self.contract_violation_recovery_port = (
+            contract_violation_recovery_port or ContractViolationRecoveryPort()
+        )
         self.semantic_checker_port = semantic_checker_port
         self.side_effect_saga_port = side_effect_saga_port or SideEffectSagaPort(home=home)
         self.trace_store = trace_store
@@ -1106,12 +1164,52 @@ class DurableStateGraphRunner:
                 collected_evidence["planned_capability"] = planned_step.to_dict()
                 if planned_step.tool == "system.planner_error":
                     self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
+                    planner_failures = list(
+                        collected_evidence.get("planner_failure_history") or []
+                    )
+                    planner_failures.append(
+                        {
+                            "attempt": state.attempt,
+                            "planned_capability": planned_step.to_dict(),
+                        }
+                    )
+                    collected_evidence["planner_failure_history"] = planner_failures[-5:]
+                    decision = self.contract_violation_recovery_port.recover(
+                        spec,
+                        state,
+                        planned=planned_step,
+                        domain="planner",
+                    )
+                    collected_evidence["reflection"] = decision.to_dict()
+                    if decision.replan_allowed:
+                        reflected = self._transition(
+                            state,
+                            node=LoopNode.REFLECT,
+                            condition="planner_failed",
+                            evidence=planned_step.to_dict(),
+                        )
+                        state = self._transition(
+                            reflected,
+                            node=LoopNode.PLAN,
+                            condition="new_route_available",
+                            evidence=decision.to_dict(),
+                        )
+                        self.gateway.release()
+                        return await self.run_async(
+                            spec,
+                            workspace=workspace,
+                            run_id=state.run_id,
+                            evidence=collected_evidence,
+                        )
                     state = self._transition(
                         state,
                         node=LoopNode.PLAN,
                         condition="planner_failed",
                         terminal_state=LoopTerminalState.FAILED,
-                        evidence=planned_step.to_dict(),
+                        evidence={
+                            **planned_step.to_dict(),
+                            "reflection": decision.to_dict(),
+                        },
                     )
                     self.gateway.release()
                     return StateGraphRunResult(
@@ -2099,6 +2197,7 @@ def _transition_decision_kind(
     if terminal:
         return LoopDecisionKind.FAILED
     if condition in {
+        "planner_failed",
         "capability_failed",
         "checker_failed",
         "new_route_available",

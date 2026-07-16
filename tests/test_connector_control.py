@@ -276,6 +276,43 @@ class _UnderdeclaredShellApprovalProvider:
         return {}
 
 
+class _UnrecoverablePlannerContractProvider:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+        del messages, kwargs
+        self.calls.append(role)
+        if role == "planner":
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "respond",
+                            "permission": "read",
+                            "args": {"message": "first invalid response"},
+                            "reason": "first response",
+                        },
+                        {
+                            "tool": "respond",
+                            "permission": "read",
+                            "args": {"message": "second invalid response"},
+                            "reason": "second response",
+                        },
+                    ]
+                }
+            )
+        if role == "responder":
+            return "运行时给出了 planner 合约失败事实，模型据此说明本轮没有完成。"
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "checker", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
+
+
 def _missing_file_verification(target: Path) -> str:
     script = f"from pathlib import Path; assert not Path({str(target)!r}).exists()"
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
@@ -319,6 +356,45 @@ async def test_weixin_turn_surfaces_approval_for_underdeclared_shell_effect(
     assert target.exists() is False
     response_events = TraceStore(tmp_path).list_events("underdeclared-approval")
     assert any(event.phase == "channel.response_ready" for event in response_events)
+
+
+@pytest.mark.asyncio
+async def test_weixin_internal_loop_failure_is_synthesized_from_facts(tmp_path: Path) -> None:
+    provider = _UnrecoverablePlannerContractProvider()
+    ingress = ConnectorIngressRuntime(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+    )
+    try:
+        response = await ingress.handle(
+            ConnectorMessage(
+                message_id="planner-contract-failure",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                text="我们什么情况下会委派子agent处理任务",
+                source="weixin",
+                session_alias_prefix="connector:weixin",
+            )
+        )
+    finally:
+        await ingress.event_bus.shutdown()
+
+    assert response is not None
+    assert response.text == "运行时给出了 planner 合约失败事实，模型据此说明本轮没有完成。"
+    assert "Verified Facts" not in response.text
+    assert provider.calls.count("planner") == 10
+    assert provider.calls[-1] == "responder"
+    final_events = [
+        event
+        for event in TraceStore(tmp_path).list_events("planner-contract-failure")
+        if event.phase == "turn.final"
+    ]
+    assert len(final_events) == 1
+    assert final_events[0].ok is False
+    assert final_events[0].message == response.text
+    assert "Verified Facts" not in final_events[0].message
+
 
 @pytest.mark.parametrize("approval_text", ["批准 {code}", "批准{code}", "approve {code}", "approve{code}"])
 @pytest.mark.asyncio

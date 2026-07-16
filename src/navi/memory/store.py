@@ -20,7 +20,6 @@ from .models import (
     LEARNABLE_MEMORY_TYPES,
     MEMORY_STATUSES,
     MEMORY_TYPES,
-    NORMATIVE_REVIEW_REQUIRED_TYPES,
     MemoryConflict,
     MemoryItem,
     MemoryRecall,
@@ -1090,15 +1089,10 @@ class MemoryStore:
         contradicts = learning.get("contradicts", [])
         if not isinstance(contradicts, list):
             contradicts = []
-        # Promotion path (principle 10/12): high-confidence NON-normative
-        # learnings are promoted to ``accepted`` so they are visible to recall
-        # and survive context compression. Normative learnings (constraint /
-        # negative) stay ``proposed`` pending explicit human review, so an
-        # injected instruction cannot become a persistent active constraint.
-        if m_type in NORMATIVE_REVIEW_REQUIRED_TYPES:
-            promoted_status = "proposed"
-        else:
-            promoted_status = "accepted" if conf_val >= 0.8 else "proposed"
+        # LLM-extracted learnings are proposals, not durable accepted memory.
+        # Promotion to accepted/active must go through the governed memory or
+        # evolution path with review evidence.
+        promoted_status = "proposed"
         new_item = self.add_item(
             memory_type=m_type,
             content=content,

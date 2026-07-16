@@ -11,8 +11,13 @@ from pathlib import Path
 
 import pytest
 
+from navi.approval_contract import (
+    APPROVAL_ACTION_EVOLUTION,
+    APPROVAL_DECISION_APPROVE,
+)
 from navi.capabilities_types import CapabilityContext
 from navi.evolution import EvolutionLedger
+from navi.runs import RunStore
 
 
 def _ctx(home: Path, *, sender_id: str = "creator1") -> CapabilityContext:
@@ -48,19 +53,44 @@ def test_h4_l0_proposal_still_requires_evaluation(tmp_path):
 
     with pytest.raises(ValueError, match="evaluation_evidence"):
         ledger.record_proposal_evaluation(
-            proposal.id, "approved", approver_id="user-1", approved_at=1.0
+            proposal.id, "approved"
         )
 
-    # After recording an approved evaluation with evidence, apply is permitted.
+    with pytest.raises(ValueError, match="approval_id"):
+        ledger.record_proposal_evaluation(
+            proposal.id,
+            "approved",
+            evaluation_evidence="arena=hard-traces passed=100 failed=0 checker=llm-judge",
+        )
+
+    runs = RunStore(tmp_path)
+    run = runs.create("Approve evolution apply", workspace=str(tmp_path))
+    approval = runs.create_approval(
+        run_id=run.id,
+        action=APPROVAL_ACTION_EVOLUTION,
+        requested_tool="evolution.apply",
+        requested_permission="write",
+        args_json=f'{{"proposal_id":"{proposal.id}"}}',
+        reason="apply evaluated proposal",
+    )
+    runs.resolve_approval(
+        approval.id,
+        decision=APPROVAL_DECISION_APPROVE,
+        resolved_by="user-1",
+    )
+
+    # After recording an approved evaluation with durable approval evidence,
+    # apply is permitted.
     ledger.record_proposal_evaluation(
         proposal.id,
         "approved",
         evaluation_evidence="arena=hard-traces passed=100 failed=0 checker=llm-judge",
-        approver_id="user-1",
-        approved_at=1.0,
+        approval_id=approval.id,
     )
     refreshed = ledger.get_proposal(proposal.id)
     assert refreshed.evaluation_evidence == "arena=hard-traces passed=100 failed=0 checker=llm-judge"
+    assert refreshed.approval_id == approval.id
+    assert refreshed.approved_by == "user-1"
     ledger.assert_proposal_applicable(refreshed)  # no raise
 
 

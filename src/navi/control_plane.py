@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -11,15 +10,12 @@ from .turn_lifecycle import TurnLifecycleMixin
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from .turn_result import AgentTurnResult
+from .finalization import synthesize_user_reply_from_facts
 from .loop import TracePhase
 from .operating_context import max_permission, normalize_permission
-from .prompt_os import assemble_fact_response_system_prompt, assemble_fact_response_turn_input
-from .provider import ChatMessage
 from .runtime import AgentRuntime
 from .runs import RunStore
 from .trace import TraceStore
-
-logger = logging.getLogger("navi.control_plane")
 
 __all__ = ["AgentTurnResult", "TurnController"]
 
@@ -147,6 +143,12 @@ class TurnController(TurnLifecycleMixin):
                     "error_reason": getattr(invoked, "error_reason", ""),
                     "observation": invoked.message,
                 },
+                "finalization": {
+                    "reason": "missing_model_response",
+                    "route": invoked_facts.get("route"),
+                    "loop_terminal_state": invoked_facts.get("loop_terminal_state"),
+                    "resolution": invoked_facts.get("resolution"),
+                },
             }
             surface_text = await self._response_from_facts(text, response_facts)
         from .connector_delivery import connector_delivery_from_facts
@@ -258,23 +260,11 @@ class TurnController(TurnLifecycleMixin):
         return resolved_session_id, trace_id, context, runtime_facts
 
     async def _response_from_facts(self, user_text: str, facts: dict[str, Any]) -> str:
-        try:
-            return await self.runtime.complete(
-                [
-                    ChatMessage("system", assemble_fact_response_system_prompt().render()),
-                    ChatMessage(
-                        "user",
-                        assemble_fact_response_turn_input(
-                            user_text=user_text,
-                            facts=facts,
-                        ).render(),
-                    ),
-                ],
-                role="responder",
-            )
-        except Exception:
-            logger.exception("failed to synthesize user-facing response from facts")
-            return ""
+        return await synthesize_user_reply_from_facts(
+            self.runtime,
+            user_text=user_text,
+            facts=facts,
+        )
 
     def _finalize_turn(
         self,

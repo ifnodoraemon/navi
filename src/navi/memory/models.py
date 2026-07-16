@@ -9,7 +9,6 @@ from ..specs_data import MEMORY_POLICY_SPEC
 _MEMORY_POLICY = MEMORY_POLICY_SPEC
 MEMORY_TYPES = {str(item) for item in _MEMORY_POLICY["types"]}
 LEARNABLE_MEMORY_TYPES = tuple(str(item) for item in _MEMORY_POLICY["learnable_types"])
-NORMATIVE_REVIEW_REQUIRED_TYPES = frozenset({"constraint", "negative"})
 MEMORY_STATUSES = {str(item) for item in _MEMORY_POLICY["statuses"]}
 ACTIVE_STATUSES = {str(item) for item in _MEMORY_POLICY["active_statuses"]}
 ACTIVE_MEMORY_CONTEXT_LIMIT = int(_MEMORY_POLICY["active_memory_context_limit"])

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List
 
+from .approval_contract import APPROVAL_DECISION_APPROVE, APPROVAL_STATUS_APPROVED
 from .db import connect
 from .graph import GraphStore
 from .paths import db_paths
@@ -58,6 +59,7 @@ class EvolutionProposal:
     evaluation_evidence: str = ""
     approved_by: str = ""
     approved_at: float = 0.0
+    approval_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -197,10 +199,18 @@ class EvolutionLedger:
                     evaluation_result TEXT NOT NULL,
                     evaluation_evidence TEXT NOT NULL,
                     approved_by TEXT NOT NULL,
-                    approved_at REAL NOT NULL
+                    approved_at REAL NOT NULL,
+                    approval_id TEXT NOT NULL
                 )
                 """
             )
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(evolution_proposals)").fetchall()
+            }
+            if "approval_id" not in columns:
+                conn.execute(
+                    "ALTER TABLE evolution_proposals ADD COLUMN approval_id TEXT NOT NULL DEFAULT ''"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_evolution_proposal_status ON evolution_proposals(status)"
             )
@@ -353,9 +363,9 @@ class EvolutionLedger:
                     before, after, diff, rollback_plan, required_approval_level,
                     evidence, source_run_id, status, created_at, applied_at,
                     applied_event_id, eval_cases, evaluation_result,
-                    evaluation_evidence, approved_by, approved_at
+                    evaluation_evidence, approved_by, approved_at, approval_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 tuple(proposal.__dict__.values()),
             )
@@ -372,7 +382,7 @@ class EvolutionLedger:
                            before, after, diff, rollback_plan, required_approval_level,
                            evidence, source_run_id, status, created_at, applied_at,
                            applied_event_id, eval_cases, evaluation_result,
-                           evaluation_evidence, approved_by, approved_at
+                           evaluation_evidence, approved_by, approved_at, approval_id
                     FROM evolution_proposals WHERE status = ? ORDER BY created_at DESC LIMIT ?
                     """,
                     (status, limit),
@@ -384,7 +394,7 @@ class EvolutionLedger:
                            before, after, diff, rollback_plan, required_approval_level,
                            evidence, source_run_id, status, created_at, applied_at,
                            applied_event_id, eval_cases, evaluation_result,
-                           evaluation_evidence, approved_by, approved_at
+                           evaluation_evidence, approved_by, approved_at, approval_id
                     FROM evolution_proposals ORDER BY created_at DESC LIMIT ?
                     """,
                     (limit,),
@@ -399,7 +409,7 @@ class EvolutionLedger:
                        before, after, diff, rollback_plan, required_approval_level,
                        evidence, source_run_id, status, created_at, applied_at,
                        applied_event_id, eval_cases, evaluation_result,
-                       evaluation_evidence, approved_by, approved_at
+                       evaluation_evidence, approved_by, approved_at, approval_id
                 FROM evolution_proposals WHERE id = ?
                 """,
                 (proposal_id,),
@@ -412,15 +422,14 @@ class EvolutionLedger:
         evaluation_result: str,
         *,
         evaluation_evidence: str = "",
-        approver_id: str = "",
-        approved_at: float = 0.0,
+        approval_id: str = "",
     ) -> EvolutionProposal | None:
-        """Record who approved an evolution proposal and when.
+        """Record model/checker evaluation evidence for an evolution proposal.
 
-        Principle 7/8/11: approval source of truth must be inspectable and
-        repairable, answering who approved, when, and via which record. An
-        ``approved`` result without an ``approver_id`` is rejected so approval
-        cannot be self-assigned by the model alone."""
+        An ``approved`` evaluation requires a durable approval whose arguments
+        bind it to the same proposal. The model may propose and evaluate, but it
+        cannot self-assign approval.
+        """
         proposal = self.get_proposal(proposal_id)
         if proposal is None:
             return None
@@ -430,23 +439,33 @@ class EvolutionLedger:
                 f"evaluation_result must be one of {sorted(_EVALUATION_RESULTS)}, "
                 f"got {evaluation_result!r}"
             )
-        if evaluation_result == "approved" and not approver_id.strip():
-            raise ValueError("approved evaluation requires an approver_id")
         evaluation_evidence = evaluation_evidence.strip()
         if evaluation_result == "approved" and not evaluation_evidence:
             raise ValueError("approved evaluation requires evaluation_evidence")
+        approver_id = ""
+        approved_at = 0.0
+        approval_id = approval_id.strip()
+        if evaluation_result == "approved":
+            approval = self._approved_evolution_apply_approval(
+                proposal_id=proposal_id,
+                approval_id=approval_id,
+            )
+            approver_id = approval.resolved_by
+            approved_at = approval.updated_at
         with connect(self.db_path) as conn:
             conn.execute(
                 """
                 UPDATE evolution_proposals
-                SET evaluation_result = ?, approved_by = ?, approved_at = ?, evaluation_evidence = ?
+                SET evaluation_result = ?, approved_by = ?, approved_at = ?,
+                    evaluation_evidence = ?, approval_id = ?
                 WHERE id = ?
                 """,
                 (
                     evaluation_result,
-                    approver_id.strip(),
+                    approver_id,
                     approved_at,
                     evaluation_evidence,
+                    approval_id if evaluation_result == "approved" else "",
                     proposal_id,
                 ),
             )
@@ -461,13 +480,34 @@ class EvolutionLedger:
                 {
                     "evaluation_result": evaluation_result,
                     "evaluation_evidence": evaluation_evidence,
-                    "approved_by": approver_id.strip(),
+                    "approved_by": approver_id,
                     "approved_at": approved_at,
+                    "approval_id": approval_id if evaluation_result == "approved" else "",
                 },
                 sort_keys=True,
             ),
         )
         return self.get_proposal(proposal_id)
+
+    def _approved_evolution_apply_approval(self, *, proposal_id: str, approval_id: str):
+        if not approval_id:
+            raise ValueError("approved evaluation requires approval_id")
+        approval = RunStore(self.home).get_approval(approval_id)
+        if approval is None:
+            raise ValueError("approved evaluation approval_id not found")
+        if approval.status != APPROVAL_STATUS_APPROVED or approval.decision != APPROVAL_DECISION_APPROVE:
+            raise ValueError("approved evaluation approval must be approved")
+        if approval.requested_tool != "evolution.apply":
+            raise ValueError("approved evaluation approval must target evolution.apply")
+        try:
+            approved_args = json.loads(approval.args_json or "{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError("approved evaluation approval args_json must be valid JSON") from exc
+        if str(approved_args.get("proposal_id") or "") != proposal_id:
+            raise ValueError("approved evaluation approval must reference the same proposal_id")
+        if not approval.resolved_by:
+            raise ValueError("approved evaluation approval must record resolved_by")
+        return approval
 
     def record_apply_event(self, proposal: EvolutionProposal) -> EvolutionEvent:
         """Record the evolution ledger event capturing before/after/diff.
@@ -513,6 +553,8 @@ class EvolutionLedger:
             )
         if not proposal.evaluation_evidence.strip():
             raise ValueError("approved proposal requires evaluation_evidence before apply")
+        if not proposal.approval_id.strip():
+            raise ValueError("approved proposal requires durable approval_id before apply")
 
     @staticmethod
     def _diff(before: str, after: str) -> str:

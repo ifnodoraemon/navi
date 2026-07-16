@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
-import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -1000,14 +999,14 @@ def evolution_record_evaluation(
     proposal_id: str,
     evaluation_result: str,
     evaluation_evidence: str = "",
+    approval_id: str = "",
 ) -> None:
     """Attach post-apply evaluation evidence to an evolution proposal."""
     proposal = EvolutionLedger(ensure_home()).record_proposal_evaluation(
         proposal_id,
         evaluation_result,
         evaluation_evidence=evaluation_evidence,
-        approver_id="cli",
-        approved_at=time.time(),
+        approval_id=approval_id,
     )
     if proposal is None:
         raise typer.BadParameter("proposal not found")

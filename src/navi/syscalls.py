@@ -21,6 +21,17 @@ class ModelSyscall:
     reason: str = ""
     used_memory_ids: tuple[str, ...] = ()
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool": self.tool,
+            "permission": self.permission,
+            "args": dict(self.args),
+            "message": self.message,
+            "confidence": self.confidence,
+            "reason": self.reason,
+            "used_memory_ids": list(self.used_memory_ids),
+        }
+
 
 class ModelSyscallPlanner:
     def __init__(self, provider: ModelPool):
@@ -74,6 +85,7 @@ class ModelSyscallPlanner:
                             args={
                                 "selected_tool": syscall.tool,
                                 "selected_permission": syscall.permission,
+                                "selected_args": dict(syscall.args),
                             },
                             reason="planner selected an unknown permission",
                         )
@@ -86,6 +98,7 @@ class ModelSyscallPlanner:
                                 "selected_tool": syscall.tool,
                                 "selected_permission": syscall.permission,
                                 "minimum_permission": matching_spec.permission,
+                                "selected_args": dict(syscall.args),
                             },
                             reason="planner selected insufficient capability permission",
                         )
@@ -97,6 +110,7 @@ class ModelSyscallPlanner:
                             tool="system.planner_error",
                             args={
                                 "selected_tool": syscall.tool,
+                                "selected_args": dict(syscall.args),
                                 "schema_errors": schema_errors,
                             },
                             reason="planner capability arguments schema mismatch",

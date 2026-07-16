@@ -74,8 +74,7 @@ class EvolutionRecordEvaluationCapability(BaseCapability):
                 proposal_id,
                 evaluation_result,
                 evaluation_evidence=_arg_text(args, "evaluation_evidence"),
-                approver_id=context.sender_id or context.peer_id,
-                approved_at=__import__("time").time(),
+                approval_id=_arg_text(args, "approval_id"),
             )
         except ValueError as exc:
             return _evolution_error(str(exc), reason="schema_mismatch", proposal_id=proposal_id)

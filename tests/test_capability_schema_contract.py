@@ -94,6 +94,16 @@ def test_connector_delivery_declares_synchronous_external_side_effect(tmp_path: 
     assert spec.source == "core.connector_delivery"
 
 
+def test_respond_is_user_facing_effect_not_facts_only(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    spec = registry.get("respond")
+
+    assert spec is not None
+    assert spec.capability_class == "conversation"
+    assert spec.facts_only is False
+    assert spec.mutates is False
+
+
 @pytest.mark.asyncio
 async def test_action_capability_input_schema_is_runtime_contract(tmp_path: Path) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)

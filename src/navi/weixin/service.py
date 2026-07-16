@@ -16,14 +16,9 @@ from navi.connector_runtime import (
 )
 from navi.connector_delivery import connector_delivery_from_facts
 from navi.event_bus import ResponseReadyEvent
-from navi.prompt_os import (
-    assemble_notification_system_prompt,
-    assemble_notification_turn_input,
-)
-from navi.provider import ChatMessage
+from navi.finalization import synthesize_background_notification
 from navi.runtime import AgentRuntime
 from navi.runs import Run
-from navi.safeguards import redact_secrets, redact_secrets_deep
 from navi.daemon import SystemDaemon
 
 from .client import TYPING_START, TYPING_STOP, WeixinClient
@@ -492,7 +487,6 @@ class WeixinService:
                     "run_id": run_id,
                     "peer_id": peer_id,
                 },
-                fallback=str(result.get("message") or result.get("observation") or ""),
             )
             if not text.strip():
                 self.record_event(
@@ -544,8 +538,10 @@ class WeixinService:
                 {
                     "event": "run_execution_finished",
                     "task": asdict(task),
+                    "run_id": task.id,
+                    "peer_id": task.peer_id,
+                    "trace_id": task.id,
                 },
-                fallback=self._task_surface_text(task),
             )
             if not text.strip():
                 self.record_event(
@@ -612,57 +608,46 @@ class WeixinService:
             trace_id=task.id,
         )
 
-    async def _compose_background_message(self, facts: dict, *, fallback: str) -> str:
+    async def _compose_background_message(self, facts: dict) -> str:
+        if not facts.get("event"):
+            return ""
         if facts.get("event") == "watch_result":
             event_facts = facts.get("event_facts")
             if not isinstance(event_facts, dict) or not event_facts:
                 return ""
-            verified_facts = redact_secrets_deep(
-                {
-                    "event": "watch_result",
-                    "workspace": str(facts.get("workspace") or ""),
-                    "facts": event_facts,
-                }
+            notification_facts = {
+                "event": "watch_result",
+                "workspace": str(facts.get("workspace") or ""),
+                "facts": event_facts,
+                "trace_id": str(facts.get("trace_id") or ""),
+                "run_id": str(facts.get("run_id") or ""),
+                "peer_id": str(facts.get("peer_id") or ""),
+            }
+        else:
+            notification_facts = dict(facts)
+        try:
+            decision = await synthesize_background_notification(
+                self.runtime,
+                facts=notification_facts,
+                output_schema=_BACKGROUND_NOTIFICATION_SCHEMA,
             )
-            try:
-                response = await self.runtime.provider.complete_for(
-                    "notification",
-                    [
-                        ChatMessage(
-                            role="system",
-                            content=assemble_notification_system_prompt().render(),
-                        ),
-                        ChatMessage(
-                            role="user",
-                            content=assemble_notification_turn_input(facts=verified_facts).render(),
-                        ),
-                    ],
-                    output_schema=_BACKGROUND_NOTIFICATION_SCHEMA,
-                )
-                decision = json.loads(response)
-                notify = decision.get("notify")
-                message = decision.get("message")
-                if not isinstance(notify, bool) or not isinstance(message, str):
-                    raise ValueError("notification decision has invalid field types")
-                self._record_notification_role_result(
-                    facts=facts,
-                    verified_facts=verified_facts,
-                    notify=notify,
-                    message=message,
-                )
-                if not notify:
-                    return ""
-                return redact_secrets(message.strip())
-            except Exception as exc:
-                self.record_event(
-                    "background.notification.error",
-                    trace_id=str(facts.get("trace_id") or ""),
-                    run_id=str(facts.get("run_id") or ""),
-                    error=f"{type(exc).__name__}: {exc}",
-                )
+            self._record_notification_role_result(
+                facts=facts,
+                verified_facts=decision.verified_facts,
+                notify=decision.notify,
+                message=decision.message,
+            )
+            if not decision.notify:
                 return ""
-        stripped = fallback.strip()
-        return redact_secrets(stripped)
+            return decision.message
+        except Exception as exc:
+            self.record_event(
+                "background.notification.error",
+                trace_id=str(facts.get("trace_id") or ""),
+                run_id=str(facts.get("run_id") or ""),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return ""
 
     def _record_notification_role_result(
         self,
@@ -738,11 +723,6 @@ class WeixinService:
                 media_count=sent_media,
             )
         return {"media_count": sent_media, "text_preview": outbound_text[:120]}
-
-    def _task_surface_text(self, task: Run) -> str:
-        if task.phase == "ended" and task.resolution == "success":
-            return (task.result_summary or "").strip()
-        return ""
 
     def _resolve_account(self) -> WeixinAccount:
         if self.config.account_id:

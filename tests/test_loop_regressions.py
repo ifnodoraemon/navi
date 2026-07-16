@@ -102,6 +102,73 @@ class _CorrectedTerminalResponseProvider:
         return {}
 
 
+class _PlannerContractRepairProvider:
+    def __init__(self) -> None:
+        self.planner_calls = 0
+        self.checker_calls = 0
+        self.repair_prompt = ""
+
+    async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
+        if role == "planner":
+            self.planner_calls += 1
+            if self.planner_calls == 1:
+                return json.dumps(
+                    {
+                        "syscalls": [
+                            {
+                                "tool": "respond",
+                                "permission": "read",
+                                "args": {"message": "draft answer"},
+                                "reason": "answer the user",
+                            },
+                            {
+                                "tool": "memory.add",
+                                "permission": "write",
+                                "args": {
+                                    "operation": "add",
+                                    "type": "note",
+                                    "content": "remember the draft",
+                                    "scope": "session",
+                                    "reason": "store a session note",
+                                    "provenance": "test",
+                                },
+                                "reason": "save related memory",
+                            },
+                        ]
+                    }
+                )
+            self.repair_prompt = messages[-1].content
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "respond",
+                            "permission": "read",
+                            "args": {
+                                "message": "委派子 agent 时，应由模型基于任务复杂度、并行性和持续性自行决定。"
+                            },
+                            "reason": "repair previous multi-syscall planner output",
+                        }
+                    ]
+                }
+            )
+        if role == "checker":
+            self.checker_calls += 1
+            return json.dumps(
+                {
+                    "passed": True,
+                    "evidence_summary": "the response answers the delegation question",
+                }
+            )
+        raise AssertionError(f"unexpected role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "checker", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
+
+
 class _RepeatedFactProvider:
     def __init__(self) -> None:
         self.planner_calls = 0
@@ -349,6 +416,37 @@ async def test_checker_rejected_response_is_replanned_before_delivery(tmp_path) 
     assert result.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
     assert result.facts["responded_message"] == "The verified answer is 42."
     assert "I need to stop here." not in result.facts["responded_message"]
+
+
+@pytest.mark.asyncio
+async def test_planner_contract_error_is_reflected_back_to_model(tmp_path) -> None:
+    provider = _PlannerContractRepairProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path, runtime=runtime)
+
+    result = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "我们什么情况下会委派子agent处理任务",
+            "workspace": str(tmp_path),
+            "loop_kind": "turn",
+            "allowed_capabilities": ["respond", "memory.add"],
+        },
+        permission="prepare",
+        context=CapabilityContext(home=tmp_path, workspace=str(tmp_path), session_id="session-1"),
+    )
+
+    assert provider.planner_calls == 2
+    assert provider.checker_calls == 1
+    assert result.ok is True
+    assert result.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
+    assert result.facts["responded_message"].startswith("委派子 agent 时")
+    assert "planner_must_return_exactly_one_syscall" in provider.repair_prompt
+    assert "candidate_syscalls" in provider.repair_prompt
+    evidence = result.facts["state_graph_result"]["evidence"]
+    first_failure = evidence["planner_failure_history"][0]["planned_capability"]
+    assert first_failure["args"]["candidate_syscalls"][0]["tool"] == "respond"
+    assert first_failure["args"]["candidate_syscalls"][1]["tool"] == "memory.add"
 
 
 @pytest.mark.asyncio

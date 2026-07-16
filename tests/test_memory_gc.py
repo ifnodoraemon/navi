@@ -136,6 +136,33 @@ def test_memory_gc_marks_low_confidence_decayed_memory_stale(tmp_path) -> None:
     assert updated.status == "stale"
 
 
+def test_llm_learning_adds_proposed_memory_even_with_high_confidence(tmp_path) -> None:
+    store = MemoryStore(tmp_path)
+
+    affected = store._apply_learnings(
+        [
+            {
+                "action": "add",
+                "type": "preference",
+                "content": "prefer concise architecture reports",
+                "confidence": 0.99,
+                "reason": "observed from conversation",
+            }
+        ],
+        [],
+        source="llm_learning",
+        provenance="unit-test",
+        ledger_run_id="run-1",
+        add_reason_fallback="memory_learning_added",
+    )
+
+    assert len(affected) == 1
+    item = store.get_item(affected[0].id)
+    assert item is not None
+    assert item.scope == "global"
+    assert item.status == "proposed"
+
+
 def test_memory_activation_prevents_recently_used_item_decay(tmp_path) -> None:
     store = MemoryStore(tmp_path)
     now = time.time()

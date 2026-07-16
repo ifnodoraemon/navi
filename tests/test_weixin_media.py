@@ -304,10 +304,14 @@ async def test_background_text_does_not_execute_legacy_media_directive(tmp_path:
     resume = tmp_path / "resume.docx"
     resume.write_bytes(b"resume")
     client = CaptureWeixinClient()
+    provider = WatchNotificationProvider(
+        notify=True,
+        message="Here is your resume file found in the home directory.",
+    )
     service = WeixinService(
         home=tmp_path,
         config=WeixinConfig(),
-        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
         client=client,
     )
@@ -336,9 +340,8 @@ async def test_background_text_does_not_execute_legacy_media_directive(tmp_path:
     )
 
     assert client.files == []
-    assert client.messages[0]["text"] == (
-        f"MEDIA:{resume}\nHere is your resume file found in the home directory."
-    )
+    assert client.messages[0]["text"] == "Here is your resume file found in the home directory."
+    assert f"MEDIA:{resume}" in provider.calls[0][1][-1].content
     events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8").splitlines()
     assert not any('"event": "reply.media.sent"' in line for line in events)
     assert any(
@@ -372,10 +375,14 @@ async def test_background_send_records_delivery_fact_after_client_success(tmp_pa
         run_id=task.id,
     )
     client = CaptureWeixinClient()
+    provider = WatchNotificationProvider(
+        notify=True,
+        message="Lesson 2: supervised learning.",
+    )
     service = WeixinService(
         home=tmp_path,
         config=WeixinConfig(),
-        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
         client=client,
     )
@@ -386,7 +393,8 @@ async def test_background_send_records_delivery_fact_after_client_success(tmp_pa
     )
 
     delivery = GoalStore(tmp_path).latest_delivery(goal.id)
-    assert client.messages[0]["text"] == task.result_summary
+    assert client.messages[0]["text"] == "Lesson 2: supervised learning."
+    assert provider.calls[0][0] == "notification"
     assert delivery["state_transition"] == "delivered"
     assert delivery["channel"] == "weixin"
     assert delivery["text_length"] == len(task.result_summary)
@@ -719,10 +727,11 @@ async def test_send_file_returns_connector_neutral_synchronous_delivery(tmp_path
 @pytest.mark.asyncio
 async def test_background_task_without_surface_text_does_not_synthesize_reply(tmp_path: Path):
     client = CaptureWeixinClient()
+    provider = WatchNotificationProvider(notify=False, message="")
     service = WeixinService(
         home=tmp_path,
         config=WeixinConfig(),
-        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
         project_dir=tmp_path,
         client=client,
     )
@@ -750,6 +759,7 @@ async def test_background_task_without_surface_text_does_not_synthesize_reply(tm
     )
 
     assert client.messages == []
+    assert provider.calls[0][0] == "notification"
 
 
 @pytest.mark.asyncio
