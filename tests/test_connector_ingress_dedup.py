@@ -71,6 +71,10 @@ def test_connector_ingress_deduplicates_message_id_across_instances(tmp_path):
     assert duplicate.reason == "message_id"
 
 
+def test_connector_session_alias_is_actor_scoped() -> None:
+    assert _message("msg-1").session_alias == "connector:test:peer-1:sender-1"
+
+
 def test_connector_ingress_scopes_message_id_and_content_to_peer(tmp_path):
     dedup = ConnectorIngressDeduplicator(tmp_path)
 

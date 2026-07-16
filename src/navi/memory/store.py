@@ -969,14 +969,56 @@ class MemoryStore:
     def list_session_aliases(self, *, limit: int = 50) -> list[SessionAlias]:
         return self.provider.list_session_aliases(limit)
 
-    def add_message(self, session_id: str, role: str, content: str) -> None:
-        self.provider.add_message(session_id, role, content, time.time())
+    def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        *,
+        message_id: str = "",
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+        trace_id: str = "",
+        run_id: str = "",
+    ) -> None:
+        self.provider.add_message(
+            session_id,
+            role,
+            content,
+            time.time(),
+            message_id=message_id or uuid.uuid4().hex,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            trace_id=trace_id,
+            run_id=run_id,
+        )
 
     def list_sessions(self) -> list[str]:
         return self.provider.list_sessions()
 
     def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]:
         return self.provider.get_messages(session_id, limit)
+
+    def search_messages(
+        self,
+        query: str,
+        *,
+        limit: int = 8,
+        session_id: str = "",
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+    ) -> list[tuple[StoredMessage, float, list[str]]]:
+        return self.provider.search_messages_fts(
+            query,
+            limit,
+            session_id=session_id,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+        )
 
     def clear_messages(self, session_id: str) -> int:
         """Delete all messages for *session_id*.

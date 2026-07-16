@@ -22,6 +22,12 @@ class StoredMessage:
     role: str
     content: str
     created_at: float
+    message_id: str = ""
+    source: str = ""
+    peer_id: str = ""
+    sender_id: str = ""
+    trace_id: str = ""
+    run_id: str = ""
 
 
 @dataclass(frozen=True)

@@ -205,7 +205,7 @@ class TurnController(TurnLifecycleMixin):
         resolved_session_id = session_id
         if not resolved_session_id and session_alias:
             resolved_session_id = self.runtime.memory.current_session_id(session_alias)
-        resolved_session_id = resolved_session_id or ""
+        resolved_session_id = resolved_session_id or self.runtime.memory.new_session_id()
         trace_id = trace_id or self.trace.new_trace_id()
         self.trace.add_event(
             trace_id=trace_id,
@@ -277,7 +277,15 @@ class TurnController(TurnLifecycleMixin):
         peer_id: str,
         sender_id: str,
     ) -> AgentTurnResult:
-        turn_res = self._record_turn(user_text, result, session_id=session_id)
+        turn_res = self._record_turn(
+            user_text,
+            result,
+            session_id=session_id,
+            trace_id=trace_id,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+        )
         turn_res = self._with_trace(turn_res, trace_id)
         goal_id = str((turn_res.facts or {}).get("goal_id") or "").strip()
         if goal_id:

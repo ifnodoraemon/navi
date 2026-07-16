@@ -20,6 +20,7 @@ class ModelSyscall:
     confidence: float = 0.0
     reason: str = ""
     used_memory_ids: tuple[str, ...] = ()
+    used_evidence_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -30,6 +31,7 @@ class ModelSyscall:
             "confidence": self.confidence,
             "reason": self.reason,
             "used_memory_ids": list(self.used_memory_ids),
+            "used_evidence_ids": list(self.used_evidence_ids),
         }
 
 
@@ -197,6 +199,7 @@ class ModelSyscallPlanner:
             confidence=_confidence(data.get("confidence")),
             reason=str(data.get("reason") or ""),
             used_memory_ids=_string_tuple(data.get("used_memory_ids")),
+            used_evidence_ids=_string_tuple(data.get("used_evidence_ids")),
         )
 
 
@@ -239,6 +242,11 @@ def _single_syscall_schema() -> dict[str, Any]:
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Recalled memory ids this syscall decision actually depends on.",
+            },
+            "used_evidence_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Context evidence ids this syscall decision actually depends on.",
             },
         },
         "required": ["tool", "permission", "args"],

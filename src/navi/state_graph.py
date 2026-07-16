@@ -99,6 +99,7 @@ class PlannedCapabilityStep:
     permission: str
     reason: str = ""
     used_memory_ids: tuple[str, ...] = ()
+    used_evidence_ids: tuple[str, ...] = ()
     memory_activation: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -108,6 +109,7 @@ class PlannedCapabilityStep:
             "permission": self.permission,
             "reason": self.reason,
             "used_memory_ids": list(self.used_memory_ids),
+            "used_evidence_ids": list(self.used_evidence_ids),
             "memory_activation": dict(self.memory_activation),
         }
 
@@ -969,6 +971,7 @@ class ModelCapabilityPlannerPort:
             permission=selected.permission,
             reason=selected.reason,
             used_memory_ids=used_memory_ids,
+            used_evidence_ids=selected.used_evidence_ids,
             memory_activation=memory_activation,
         )
 
@@ -1481,6 +1484,7 @@ class DurableStateGraphRunner:
             permission=permission.strip(),
             reason=str(raw.get("reason") or ""),
             used_memory_ids=tuple(str(item) for item in raw.get("used_memory_ids") or ()),
+            used_evidence_ids=tuple(str(item) for item in raw.get("used_evidence_ids") or ()),
             memory_activation=dict(raw.get("memory_activation") or {}),
         )
 

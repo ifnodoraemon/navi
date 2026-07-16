@@ -68,6 +68,15 @@ class ToolCapability:
                     workspace=context.workspace,
                 )
             )
+            call_args["_context"] = {
+                "source": context.source,
+                "peer_id": context.peer_id,
+                "sender_id": context.sender_id,
+                "session_id": context.session_id or "",
+                "workspace": context.workspace,
+                "trace_id": context.trace_id,
+                "input_text": context.input_text,
+            }
         result = await self.gateway.call(self.spec.name, call_args)
         facts = dict(result.facts or {})
         if result.action == "connector_outbound":

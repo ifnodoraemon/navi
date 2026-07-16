@@ -136,6 +136,51 @@ async def test_turn_controller_never_surfaces_capability_observation_as_user_cop
     assert "machine-only failure observation" in provider.calls[0][1][-1].content
 
 
+@pytest.mark.asyncio
+async def test_turn_controller_preallocates_session_for_first_turn(
+    tmp_path,
+    monkeypatch,
+):
+    provider = _FactResponderProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    controller = TurnController(
+        home=tmp_path,
+        runtime=runtime,
+        project_dir=tmp_path,
+    )
+    captured: dict[str, str] = {}
+
+    async def invoke(name, args, *, permission, context):
+        captured["name"] = name
+        captured["session_id"] = context.session_id or ""
+        captured["trace_id"] = context.trace_id
+        return CapabilityResult(
+            ok=True,
+            action="respond",
+            facts={"responded_message": "ok"},
+            terminal=True,
+            run_id="run-1",
+        )
+
+    monkeypatch.setattr(controller.capabilities, "invoke", invoke)
+
+    result = await controller.handle(
+        "hello",
+        peer_id="cli-peer",
+        sender_id="cli-sender",
+        source="cli",
+    )
+    messages = runtime.memory.get_messages(result.session_id)
+
+    assert captured["name"] == "goal.open"
+    assert captured["session_id"]
+    assert captured["session_id"] == result.session_id
+    assert messages[0].source == "cli"
+    assert messages[0].peer_id == "cli-peer"
+    assert messages[0].sender_id == "cli-sender"
+    assert messages[0].trace_id == captured["trace_id"]
+
+
 def test_current_state_facts_include_active_goal_and_loop_run_state(tmp_path):
     goal = GoalStore(tmp_path).create(
         objective="durable loop execution",

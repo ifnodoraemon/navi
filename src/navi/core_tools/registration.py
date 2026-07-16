@@ -14,6 +14,7 @@ from .files import (
     _workspace_shadow_merge,
 )
 from .hooks import _hooks_list
+from .context import _context_search
 from .memory import _memory_conflicts, _memory_list, _memory_recall, _memory_record_activation
 from .provider import _provider_config
 from .shell import _shell_run
@@ -142,6 +143,51 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             ),
         ),
         lambda args: _hooks_list(home),
+    )
+    registry.register(
+        _core_tool_spec(
+            name="context.search",
+            capability_class="context",
+            context_policy="actor_memory",
+            risk_class="medium",
+            sensitive_contexts=("memory",),
+            confirmation_required=False,
+            risk_reason_code="capability_safeguard_context_search",
+            description=(
+                "Return deterministic, source-attributed context evidence from the "
+                "current conversation and governed memory. The model decides how to use it."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "need": {"type": "array", "items": {"type": "string"}},
+                    "terms": {"type": "array", "items": {"type": "string"}},
+                    "time_hint": {"type": "string"},
+                    "scope_hint": {"type": "string"},
+                    "max_items": {"type": "integer", "default": 8},
+                },
+            },
+            output_schema=_output_schema(
+                {
+                    "policy": {"type": "string"},
+                    "query": {"type": "string"},
+                    "terms": {"type": "array", "items": {"type": "string"}},
+                    "need": {"type": "array", "items": {"type": "string"}},
+                    "time_hint": {"type": "string"},
+                    "scope_hint": {"type": "string"},
+                    "identity": {"type": "object"},
+                    "allowed_scopes": {"type": "array", "items": {"type": "string"}},
+                    "evidence": _array_of_objects(),
+                    "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                    "count": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                    "selection_policy": {"type": "string"},
+                    "model_decides_usage": {"type": "boolean"},
+                }
+            ),
+        ),
+        lambda args: _context_search(home, args),
     )
     registry.register(
         _core_tool_spec(

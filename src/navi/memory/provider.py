@@ -13,7 +13,7 @@ from .models import MemoryItem, SessionAlias, StoredMessage
 
 logger = logging.getLogger("navi.memory.provider")
 
-MEMORY_SCHEMA_VERSION = 1
+MEMORY_SCHEMA_VERSION = 2
 
 MESSAGES_TABLE = Table(
     "messages",
@@ -23,6 +23,12 @@ MESSAGES_TABLE = Table(
         Column("role", "TEXT", nullable=False),
         Column("content", "TEXT", nullable=False),
         Column("created_at", "REAL", nullable=False),
+        Column("message_id", "TEXT", nullable=False, default="''"),
+        Column("source", "TEXT", nullable=False, default="''"),
+        Column("peer_id", "TEXT", nullable=False, default="''"),
+        Column("sender_id", "TEXT", nullable=False, default="''"),
+        Column("trace_id", "TEXT", nullable=False, default="''"),
+        Column("run_id", "TEXT", nullable=False, default="''"),
     ],
 )
 SESSION_ALIASES_TABLE = Table(
@@ -77,8 +83,31 @@ class MemoryProvider(Protocol):
         confidence: float | None = None,
     ) -> None: ...
     def delete_item(self, item_id: str) -> None: ...
-    def add_message(self, session_id: str, role: str, content: str, created_at: float) -> None: ...
+    def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        created_at: float,
+        *,
+        message_id: str = "",
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+        trace_id: str = "",
+        run_id: str = "",
+    ) -> None: ...
     def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]: ...
+    def search_messages_fts(
+        self,
+        query: str,
+        limit: int,
+        *,
+        session_id: str = "",
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+    ) -> list[tuple[StoredMessage, float, list[str]]]: ...
     def clear_messages(self, session_id: str) -> int: ...
     def list_sessions(self) -> list[str]: ...
     def set_session_alias(
@@ -104,6 +133,7 @@ class SQLiteMemoryProvider:
         with connect(self.db_path) as conn:
             check_schema_version(conn, "memory", MEMORY_SCHEMA_VERSION)
             conn.execute(MESSAGES_TABLE.ddl)
+            _migrate_messages_table(conn)
             assert_schema_exact(conn, MESSAGES_TABLE)
             conn.execute(SESSION_ALIASES_TABLE.ddl)
             assert_schema_exact(conn, SESSION_ALIASES_TABLE)
@@ -113,10 +143,54 @@ class SQLiteMemoryProvider:
                 "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)"
             )
             conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_identity "
+                "ON messages(source, peer_id, sender_id, id)"
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_items(status, type)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_items(scope)")
-            
+
+            # FTS5 trigram table for deterministic conversation-message search.
+            conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5("
+                "message_id UNINDEXED, content, tokenize='trigram'"
+                ")"
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
+                BEGIN
+                    DELETE FROM messages_fts WHERE message_id = new.message_id;
+                    INSERT INTO messages_fts(message_id, content)
+                    VALUES (new.message_id, new.content);
+                END;
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages
+                BEGIN
+                    DELETE FROM messages_fts WHERE message_id = old.message_id;
+                END;
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages
+                BEGIN
+                    DELETE FROM messages_fts WHERE message_id = old.message_id;
+                    INSERT INTO messages_fts(message_id, content)
+                    VALUES (new.message_id, new.content);
+                END;
+                """
+            )
+            conn.execute(
+                "INSERT INTO messages_fts(message_id, content) "
+                "SELECT message_id, content FROM messages "
+                "WHERE message_id NOT IN (SELECT message_id FROM messages_fts)"
+            )
+
             # FTS5 trigram table for fast keyword search
             conn.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5("
@@ -173,6 +247,20 @@ class SQLiteMemoryProvider:
             metadata=json.loads(row[11]),
             reason=row[12],
             provenance=row[13],
+        )
+
+    def _message_from_row(self, row: tuple) -> StoredMessage:
+        return StoredMessage(
+            session_id=row[0],
+            role=row[1],
+            content=row[2],
+            created_at=row[3],
+            message_id=row[4],
+            source=row[5],
+            peer_id=row[6],
+            sender_id=row[7],
+            trace_id=row[8],
+            run_id=row[9],
         )
 
     def store_item(self, item: MemoryItem) -> None:
@@ -415,18 +503,49 @@ class SQLiteMemoryProvider:
 
 
 
-    def add_message(self, session_id: str, role: str, content: str, created_at: float) -> None:
+    def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        created_at: float,
+        *,
+        message_id: str = "",
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+        trace_id: str = "",
+        run_id: str = "",
+    ) -> None:
         with connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO messages(session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (session_id, role, content, created_at),
+                """
+                INSERT INTO messages(
+                    session_id, role, content, created_at, message_id,
+                    source, peer_id, sender_id, trace_id, run_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    role,
+                    content,
+                    created_at,
+                    message_id,
+                    source,
+                    peer_id,
+                    sender_id,
+                    trace_id,
+                    run_id,
+                ),
             )
 
     def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT session_id, role, content, created_at
+                SELECT session_id, role, content, created_at, message_id,
+                       source, peer_id, sender_id, trace_id, run_id
                 FROM messages
                 WHERE session_id = ?
                 ORDER BY id DESC
@@ -434,7 +553,96 @@ class SQLiteMemoryProvider:
                 """,
                 (session_id, limit),
             ).fetchall()
-        return [StoredMessage(*row) for row in reversed(rows)]
+        return [self._message_from_row(row) for row in reversed(rows)]
+
+    def search_messages_fts(
+        self,
+        query: str,
+        limit: int,
+        *,
+        session_id: str = "",
+        source: str = "",
+        peer_id: str = "",
+        sender_id: str = "",
+    ) -> list[tuple[StoredMessage, float, list[str]]]:
+        query = query.strip()
+        if not query:
+            return []
+        where_sql, where_values = _message_identity_filter(
+            session_id=session_id,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+        )
+        if not where_sql:
+            return []
+        safe_query = query.replace('"', '""')
+        match_expr = f'"{safe_query}"'
+        rows: list[tuple] = []
+        try:
+            with connect(self.db_path) as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT messages.session_id, messages.role, messages.content,
+                           messages.created_at, messages.message_id, messages.source,
+                           messages.peer_id, messages.sender_id, messages.trace_id,
+                           messages.run_id, messages_fts.rank
+                    FROM messages_fts JOIN messages
+                    ON messages.message_id = messages_fts.message_id
+                    WHERE messages_fts MATCH ? AND ({where_sql})
+                    ORDER BY messages_fts.rank, messages.created_at DESC
+                    LIMIT ?
+                    """,
+                    (match_expr, *where_values, limit),
+                ).fetchall()
+        except Exception:
+            logger.debug("search_messages_fts failed for query %r", query, exc_info=True)
+            rows = []
+        if rows:
+            return [
+                (
+                    self._message_from_row(row[:10]),
+                    float(row[10]),
+                    [f"message_fts_rank={float(row[10]):.4f}"],
+                )
+                for row in rows
+            ]
+        return self._search_messages_like(
+            query,
+            limit,
+            where_sql=where_sql,
+            where_values=where_values,
+        )
+
+    def _search_messages_like(
+        self,
+        query: str,
+        limit: int,
+        *,
+        where_sql: str,
+        where_values: list[object],
+    ) -> list[tuple[StoredMessage, float, list[str]]]:
+        like = f"%{query}%"
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT session_id, role, content, created_at, message_id,
+                       source, peer_id, sender_id, trace_id, run_id
+                FROM messages
+                WHERE content LIKE ? AND ({where_sql})
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (like, *where_values, limit),
+            ).fetchall()
+        return [
+            (
+                self._message_from_row(row),
+                float(index + 1),
+                ["message_exact_like"],
+            )
+            for index, row in enumerate(rows)
+        ]
 
     def clear_messages(self, session_id: str) -> int:
         """Delete all messages for *session_id*.
@@ -492,3 +700,47 @@ class SQLiteMemoryProvider:
                 (limit,),
             ).fetchall()
         return [SessionAlias(*row) for row in rows]
+
+
+def _migrate_messages_table(conn) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    for column in MESSAGES_TABLE.columns:
+        if column.name in existing:
+            continue
+        conn.execute(f"ALTER TABLE messages ADD COLUMN {_column_definition_for_alter(column)}")
+    conn.execute(
+        """
+        UPDATE messages
+        SET message_id = 'legacy:' || id
+        WHERE message_id = ''
+        """
+    )
+
+
+def _column_definition_for_alter(column: Column) -> str:
+    parts = [column.name, column.sql_type]
+    if not column.nullable:
+        parts.append("NOT NULL")
+    if column.default is not None:
+        parts.append(f"DEFAULT {column.default}")
+    return " ".join(parts)
+
+
+def _message_identity_filter(
+    *,
+    session_id: str = "",
+    source: str = "",
+    peer_id: str = "",
+    sender_id: str = "",
+) -> tuple[str, list[object]]:
+    clauses: list[str] = []
+    values: list[object] = []
+    if session_id:
+        clauses.append("messages.session_id = ?")
+        values.append(session_id)
+    if source and peer_id and sender_id:
+        clauses.append(
+            "(messages.source = ? AND messages.peer_id = ? AND messages.sender_id = ?)"
+        )
+        values.extend([source, peer_id, sender_id])
+    return " OR ".join(clauses), values

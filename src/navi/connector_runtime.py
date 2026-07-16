@@ -36,7 +36,9 @@ class ConnectorMessage:
 
     @property
     def session_alias(self) -> str:
-        return f"{self.session_alias_prefix}:{self.peer_id}"
+        peer_id = self.peer_id.strip() or "unknown"
+        sender_id = self.sender_id.strip() or "unknown"
+        return f"{self.session_alias_prefix}:{peer_id}:{sender_id}"
 
     @property
     def content_key(self) -> str:
