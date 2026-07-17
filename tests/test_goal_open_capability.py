@@ -10,7 +10,7 @@ import pytest
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.goals import GoalStore
-from navi.lifecycle import Phase, Resolution
+from navi.lifecycle import Governance, Phase, Resolution
 from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.loop_contracts import LoopTerminalState
 from navi.loop_runs import LoopRunStore
@@ -44,6 +44,32 @@ def test_goal_open_description_is_factual_capability_metadata() -> None:
     assert "current capability and permission envelope" in spec.description
     assert "Use this when" not in spec.description
     assert "full system capabilities" not in spec.description
+
+
+@pytest.mark.asyncio
+async def test_respond_options_are_suggestions_not_user_pause(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    response = await registry.invoke(
+        "respond",
+        {"message": "I can list the details.", "options": ["list details"]},
+        permission="read",
+        context=_context(tmp_path),
+    )
+    question = await registry.invoke(
+        "ask.user",
+        {"message": "Which task should I cancel?", "options": ["first"]},
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert response.ok is True
+    assert response.action == "chat"
+    assert response.yields_control is False
+    assert response.facts["options"] == ["list details"]
+    assert question.ok is True
+    assert question.action == "ask"
+    assert question.yields_control is True
 
 
 class _PlanningProvider:
@@ -148,6 +174,103 @@ async def test_goal_open_scheduled_persists_real_workspace_from_turn_shadow(
     registered = GoalStore(home).get(result.facts["goal_id"])
     assert registered is not None
     assert registered.workspace == str(repo.resolve())
+
+
+@pytest.mark.asyncio
+async def test_goal_cancel_scope_accepts_shadow_for_same_durable_workspace(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / ".navi"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("base\n", encoding="utf-8")
+    registry = build_capability_registry(home, project_dir=repo)
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "cancel from managed shadow",
+            "workspace": str(repo),
+            "auto_start": False,
+        },
+        permission="prepare",
+        context=CapabilityContext(
+            home=home,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            permission_ceiling="write",
+            workspace=str(repo),
+        ),
+    )
+    shadow = ShadowWorkspaceManager(home).create_shadow(
+        run_id="turn-cancel",
+        workspace=repo,
+    )
+
+    cancelled = await registry.invoke(
+        "goal.cancel",
+        {"goal_id": opened.facts["goal_id"], "reason": "user requested rebuild"},
+        permission="prepare",
+        context=CapabilityContext(
+            home=home,
+            goal_id=opened.facts["goal_id"],
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            permission_ceiling="write",
+            workspace=shadow.shadow_workspace,
+        ),
+    )
+
+    assert cancelled.ok is True
+    assert cancelled.facts["state_transition"] == "cancelled"
+    assert cancelled.facts["loop_terminal_state"] == LoopTerminalState.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_goal_cancel_scope_rejects_different_workspace_with_same_actor(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / ".navi"
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    registry = build_capability_registry(home, project_dir=repo_a)
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "workspace scoped task",
+            "workspace": str(repo_a),
+            "auto_start": False,
+        },
+        permission="prepare",
+        context=CapabilityContext(
+            home=home,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            permission_ceiling="write",
+            workspace=str(repo_a),
+        ),
+    )
+
+    denied = await registry.invoke(
+        "goal.cancel",
+        {"goal_id": opened.facts["goal_id"], "reason": "wrong workspace"},
+        permission="prepare",
+        context=CapabilityContext(
+            home=home,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            permission_ceiling="write",
+            workspace=str(repo_b),
+        ),
+    )
+
+    assert denied.ok is False
+    assert denied.error_reason == "permission_denied"
 
 
 @pytest.mark.asyncio
@@ -536,7 +659,8 @@ async def test_goal_state_default_and_explicit_reads_are_caller_scoped(tmp_path:
     )
 
     assert scoped.ok is True
-    assert [goal["id"] for goal in scoped.facts["active_goals"]] == [visible.facts["goal_id"]]
+    assert "active_goals" not in scoped.facts
+    assert [goal["id"] for goal in scoped.facts["current_goals"]] == [visible.facts["goal_id"]]
     assert denied.ok is False
     assert denied.error_reason == "permission_denied"
 
@@ -582,6 +706,7 @@ async def test_goal_state_scheduled_view_is_actor_scoped_and_authoritative(
     assert state.facts["authoritative_for"] == "actor_scheduled_goals"
     assert state.facts["matched_count"] == 1
     assert [goal["id"] for goal in state.facts["scheduled_goals"]] == [visible.facts["goal_id"]]
+    assert "active_goals" not in state.facts
 
 
 @pytest.mark.asyncio
@@ -605,12 +730,113 @@ async def test_goal_state_actor_scope_is_applied_before_limit(tmp_path: Path) ->
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     state = await registry.invoke(
         "goal.state",
-        {"view": "all", "limit": 20},
+        {"view": "history", "limit": 20},
         permission="read",
         context=_context(tmp_path),
     )
 
     assert state.ok is True
-    assert state.facts["authoritative_for"] == "actor_goals"
+    assert state.facts["authoritative_for"] == "actor_goal_history"
     assert state.facts["matched_count"] == 1
-    assert [goal["id"] for goal in state.facts["goals"]] == [visible.id]
+    assert [goal["id"] for goal in state.facts["history_goals"]] == [visible.id]
+
+
+@pytest.mark.asyncio
+async def test_goal_state_pending_approval_view_is_explicit(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    pending = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "delete report after approval",
+            "workspace": str(tmp_path),
+            "auto_start": False,
+        },
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+    done = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "ordinary active work",
+            "workspace": str(tmp_path),
+            "auto_start": False,
+        },
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+    store = GoalStore(tmp_path)
+    store.update_state(
+        pending.facts["goal_id"],
+        governance=Governance.AWAITING_APPROVAL,
+        task_status="pending",
+    )
+
+    state = await registry.invoke(
+        "goal.state",
+        {"view": "pending_approval"},
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert state.ok is True
+    assert state.facts["authoritative_for"] == "current_actor_pending_approval_goals"
+    assert state.facts["goal_counts"]["pending_approval"] == 1
+    assert [goal["id"] for goal in state.facts["pending_approval_goals"]] == [
+        pending.facts["goal_id"]
+    ]
+    assert done.facts["goal_id"] not in {
+        goal["id"] for goal in state.facts["pending_approval_goals"]
+    }
+    assert "active_goals" not in state.facts
+
+
+@pytest.mark.asyncio
+async def test_goal_cancel_explicit_pending_approval_ids_cancel_and_verify(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    opened_ids: list[str] = []
+    for objective in ("pending file write", "pending shell delete"):
+        opened = await registry.invoke(
+            "goal.open",
+            {
+                "objective": objective,
+                "workspace": str(tmp_path),
+                "auto_start": False,
+            },
+            permission="prepare",
+            context=_context(tmp_path),
+        )
+        opened_ids.append(opened.facts["goal_id"])
+    store = GoalStore(tmp_path)
+    for goal_id in opened_ids:
+        store.update_state(
+            goal_id,
+            governance=Governance.AWAITING_APPROVAL,
+            task_status="pending",
+        )
+
+    state = await registry.invoke(
+        "goal.state",
+        {"view": "pending_approval"},
+        permission="read",
+        context=_context(tmp_path),
+    )
+    pending_ids = [goal["id"] for goal in state.facts["pending_approval_goals"]]
+
+    cancelled = await registry.invoke(
+        "goal.cancel",
+        {"goal_ids": pending_ids, "reason": "user requested cleanup"},
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+
+    assert cancelled.ok is True
+    assert cancelled.facts["requested_count"] == 2
+    assert cancelled.facts["cancelled_count"] == 2
+    assert cancelled.facts["failed_count"] == 0
+    assert set(cancelled.facts["verified_after"]["cancelled_goal_ids"]) == set(opened_ids)
+    assert {item["goal_id"] for item in cancelled.facts["cancelled_goals"]} == set(opened_ids)
+    for item in cancelled.facts["cancelled_goals"]:
+        assert item["verified_goal"]["phase"] == Phase.ENDED
+        assert item["verified_goal"]["resolution"] == Resolution.CANCELED

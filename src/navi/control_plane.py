@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ from .runs import RunStore
 from .trace import TraceStore
 
 __all__ = ["AgentTurnResult", "TurnController"]
+
+logger = logging.getLogger(__name__)
 
 
 class TurnController(TurnLifecycleMixin):

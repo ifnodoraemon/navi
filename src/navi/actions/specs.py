@@ -6,7 +6,7 @@ ACTION_SPECS = [
         name="respond",
         capability_class="conversation",
         execution_contexts=("turn", "actuator", CONTROL_PLANE_CONTEXT),
-        description="""Send a message to the user. This is a terminal action — no further tools can be called in this turn after responding.""",
+        description="""Send a terminal user-facing message. This action never pauses the loop or waits for input. Options are non-blocking presentation facts.""",
         input_schema={
             "type": "object",
             "properties": {
@@ -29,6 +29,32 @@ ACTION_SPECS = [
         source="action",
     ),
     ToolSpec(
+        name="ask.user",
+        capability_class="conversation",
+        execution_contexts=("turn", "actuator", CONTROL_PLANE_CONTEXT),
+        description="""Ask the user a blocking question and pause the loop until the user responds. This action yields control to the user.""",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The question to present to the user.",
+                },
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional explicit choices for the user to pick from.",
+                },
+            },
+            "required": ["message"],
+        },
+        output_schema={"type": "object", "properties": {"message": {"type": "string"}}},
+        facts_only=False,
+        mutates=False,
+        permission="read",
+        source="action",
+    ),
+    ToolSpec(
         name="agent.control",
         capability_class="agent",
         execution_contexts=("turn", API_CONTEXT),
@@ -37,7 +63,9 @@ ACTION_SPECS = [
             "surface. Records outside the specified parent/child scope are not returned "
             "or mutated. Read child operations are "
             "list, state, and collect; mutating child operations are spawn, message, "
-            "and cancel. The state operation requires child_goal_id."
+            "and cancel. The state operation requires child_goal_id. Top-level goals, "
+            "scheduled goals, pending approval goals, approvals, and general task "
+            "cleanup are outside this capability's authority."
         ),
         input_schema={
             "type": "object",
@@ -230,9 +258,8 @@ ACTION_SPECS = [
         runtime_policy="required",
         execution_contexts=("turn", API_CONTEXT),
         description=(
-            "Update an existing scheduled recurring Goal template selected by "
-            "goal_id. Use this for user requests that modify, append to, or "
-            "reschedule an existing recurring task."
+            "Update mutable fields on one existing scheduled recurring Goal "
+            "template selected by goal_id."
         ),
         input_schema={
             "type": "object",
@@ -351,11 +378,12 @@ ACTION_SPECS = [
         confirmation_required=True,
         risk_reason_code="capability_safeguard_goal_cancel",
         execution_contexts=("turn", API_CONTEXT),
-        description="""Cancel an active durable Goal/LoopRun through the StateGraph control edge and persist a cancelled terminal state.""",
+        description="""Cancel durable Goal lifecycle records and verify the final state. goal_id selects one goal, loop_run_id selects one loop, and goal_ids selects an explicit batch within the caller scope.""",
         input_schema={
             "type": "object",
             "properties": {
                 "goal_id": {"type": "string"},
+                "goal_ids": {"type": "array", "items": {"type": "string"}},
                 "loop_run_id": {"type": "string"},
                 "reason": {"type": "string"},
             },
@@ -377,6 +405,9 @@ ACTION_SPECS = [
                 "loop_node": {"type": "string"},
                 "loop_terminal_state": {"type": "string"},
                 "completion_evidence": {"type": "boolean"},
+                "verified_goal": {"type": "object"},
+                "verified_state": {"type": "object"},
+                "verified_after": {"type": "object"},
             },
         },
         facts_only=True,
@@ -393,7 +424,7 @@ ACTION_SPECS = [
         confirmation_required=False,
         risk_reason_code="capability_safeguard_goal_state",
         execution_contexts=("turn", API_CONTEXT),
-        description="""Read authoritative durable Goal and LoopRun state without mutating execution. An ID selects that exact goal or loop run. Without an ID, view=current returns current active work, view=scheduled returns the actor's recurring schedules, and view=all returns the actor's task history.""",
+        description="""Read authoritative durable Goal and LoopRun state without mutating execution. An ID selects that exact goal or loop run. Without an ID, view names declare the returned authority: current foreground goals, scheduled recurring goals, goals waiting for approval, or task history.""",
         input_schema={
             "type": "object",
             "properties": {
@@ -401,7 +432,7 @@ ACTION_SPECS = [
                 "loop_run_id": {"type": "string"},
                 "view": {
                     "type": "string",
-                    "description": "current, scheduled, or all; defaults to current.",
+                    "description": "current, scheduled, pending_approval, or history; defaults to current. all is not accepted.",
                 },
                 "limit": {"type": "integer"},
             },

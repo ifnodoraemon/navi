@@ -17,6 +17,7 @@ from navi.connector_runtime import (
 from navi.connector_delivery import connector_delivery_from_facts
 from navi.event_bus import ResponseReadyEvent
 from navi.finalization import synthesize_background_notification
+from navi.goals import GoalDeliveryOutboxItem, GoalStore
 from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.daemon import SystemDaemon
@@ -467,164 +468,253 @@ class WeixinService:
                     run_id=str(result.get("run_id") or ""),
                 )
                 continue
-            run_id = str(result.get("run_id") or "")
-            trace_id = run_id or uuid.uuid4().hex
-            task = self.daemon.runs.get(run_id) if run_id else None
-            peer_id = str(result.get("peer_id") or "") or (
-                task.peer_id if task else self.config.home_channel
-            )
-            if not peer_id:
-                continue
-            text = await self._compose_background_message(
-                {
-                    "event": "watch_result" if not task else "watch_task_prepared",
-                    "task": asdict(task) if task else None,
-                    "event_facts": result.get("facts")
-                    if isinstance(result.get("facts"), dict)
-                    else {},
-                    "workspace": str(result.get("workspace") or ""),
-                    "trace_id": trace_id,
-                    "run_id": run_id,
-                    "peer_id": peer_id,
-                },
-            )
-            if not text.strip():
-                self.record_event(
-                    "background.skipped",
-                    peer_id=peer_id,
-                    background_event="watch_result" if not task else "watch_task_prepared",
-                    reason="empty_surface_text",
-                    run_id=run_id,
-                    phase=task.phase if task else "",
-                    governance=task.governance if task else "",
-                    resolution=task.resolution if task else "",
-                )
-                continue
-            await self._send_reply(
-                account=account,
-                peer_id=peer_id,
-                text=text,
-                action="chat",
-                facts={},
-                context_token=self.context_tokens.get(account.account_id, peer_id),
-            )
-            self.record_event(
-                "background.sent",
-                peer_id=peer_id,
-                background_event="watch_result" if not task else "watch_task_prepared",
-                text_preview=text[:120],
-            )
-            try:
-                from navi.trace import TraceStore, TracePhase
-
-                TraceStore(self.home).add_event(
-                    trace_id=trace_id,
-                    phase=TracePhase.CHANNEL_EGRESS,
-                    run_id=run_id,
-                    source=self.local_source,
-                    peer_id=peer_id,
-                    output_data={
-                        "response": text,
-                        "background_event": "watch_result" if not task else "watch_task_prepared",
-                    },
-                    message="Sent background cron result to channel",
-                )
-            except Exception:
-                pass
+            await self._surface_background_event(account, result)
         for task in await self.daemon.process_queue_once():
-            if not task.peer_id:
-                continue
-            text = await self._compose_background_message(
-                {
-                    "event": "run_execution_finished",
-                    "task": asdict(task),
-                    "run_id": task.id,
-                    "peer_id": task.peer_id,
-                    "trace_id": task.id,
-                },
-            )
-            if not text.strip():
-                self.record_event(
-                    "background.skipped",
-                    peer_id=task.peer_id,
-                    background_event="run_execution_finished",
-                    reason="empty_surface_text",
-                    run_id=task.id,
-                    phase=task.phase,
-                    governance=task.governance,
-                    resolution=task.resolution,
-                )
-                continue
-            delivery = await self._send_reply(
-                account=account,
-                peer_id=task.peer_id,
-                text=text,
-                action="chat",
-                facts={},
-                context_token=self.context_tokens.get(account.account_id, task.peer_id),
-            )
-            self.record_event(
-                "background.sent",
-                peer_id=task.peer_id,
-                background_event="run_execution_finished",
-                text_preview=delivery["text_preview"],
-                media_count=delivery["media_count"],
-            )
-            self._record_background_delivery(task, delivery, text=text)
-            try:
-                from navi.trace import TraceStore, TracePhase
+            await self._surface_background_task(account, task)
+        await self._drain_delivery_outbox(account)
 
-                TraceStore(self.home).add_event(
-                    trace_id=task.id,
-                    phase=TracePhase.CHANNEL_EGRESS,
-                    run_id=task.id,
-                    source=self.local_source,
-                    peer_id=task.peer_id,
-                    output_data={
-                        "response": delivery["text_preview"],
-                        "background_event": "run_execution_finished",
-                        "media_count": delivery["media_count"],
-                    },
-                    message="Sent background task execution finished to channel",
-                )
-            except Exception:
-                pass
-
-    def _record_background_delivery(
+    async def _surface_background_event(
         self,
-        task: Run,
-        delivery: DeliveryReceipt,
-        *,
-        text: str,
+        account: WeixinAccount,
+        result: dict,
     ) -> None:
-        from navi.goals import GoalStore
+        run_id = str(result.get("run_id") or "")
+        trace_id = str(result.get("trace_id") or "") or run_id or uuid.uuid4().hex
+        peer_id = str(result.get("peer_id") or "") or self.config.home_channel
+        if not peer_id:
+            return
+        event_facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
+        text = await self._compose_event_notification(
+            {
+                "event": "background_event",
+                "facts": event_facts,
+                "workspace": str(result.get("workspace") or ""),
+                "trace_id": trace_id,
+                "run_id": run_id,
+                "peer_id": peer_id,
+            },
+        )
+        if not text.strip():
+            self.record_event(
+                "background.skipped",
+                peer_id=peer_id,
+                background_event="background_event",
+                reason="empty_surface_text",
+                run_id=run_id,
+            )
+            return
+        await self._send_reply(
+            account=account,
+            peer_id=peer_id,
+            text=text,
+            action="chat",
+            facts={},
+            context_token=self.context_tokens.get(account.account_id, peer_id),
+        )
+        self.record_event(
+            "background.sent",
+            peer_id=peer_id,
+            background_event="background_event",
+            text_preview=text[:120],
+        )
+        try:
+            from navi.trace import TracePhase, TraceStore
 
-        GoalStore(self.home).record_delivery(
-            run_id=task.id,
+            TraceStore(self.home).add_event(
+                trace_id=trace_id,
+                phase=TracePhase.CHANNEL_EGRESS,
+                run_id=run_id,
+                source=self.local_source,
+                peer_id=peer_id,
+                output_data={
+                    "response": text,
+                    "background_event": "background_event",
+                },
+                message="Sent background event notification to channel",
+            )
+        except Exception:
+            pass
+
+    async def _surface_background_task(
+        self,
+        account: WeixinAccount,
+        task: Run,
+    ) -> None:
+        if not task.peer_id:
+            return
+        task_facts = self._background_task_facts(task)
+        has_notify_input = bool(
+            str(task_facts.get("error") or "").strip()
+            or task.resolution not in {"", "none", "success"}
+        )
+        if not has_notify_input:
+            self.record_event(
+                "background.skipped",
+                peer_id=task.peer_id,
+                background_event="background_task_result",
+                reason="empty_surface_text",
+                run_id=task.id,
+                phase=task.phase,
+                governance=task.governance,
+                resolution=task.resolution,
+            )
+            return
+        decision_text = await self._compose_event_notification(
+            {
+                "event": "background_task_result",
+                "facts": task_facts,
+                "workspace": task.workspace,
+                "trace_id": task.id,
+                "run_id": task.id,
+                "peer_id": task.peer_id,
+            },
+        )
+        if not decision_text.strip():
+            self.record_event(
+                "background.skipped",
+                peer_id=task.peer_id,
+                background_event="background_task_result",
+                reason="notification_declined",
+                run_id=task.id,
+                phase=task.phase,
+                governance=task.governance,
+                resolution=task.resolution,
+            )
+            return
+        text = decision_text
+        delivery = await self._send_reply(
+            account=account,
+            peer_id=task.peer_id,
+            text=text,
+            action="chat",
+            facts={},
+            context_token=self.context_tokens.get(account.account_id, task.peer_id),
+        )
+        self.record_event(
+            "background.sent",
+            peer_id=task.peer_id,
+            background_event="background_task_result",
+            text_preview=delivery["text_preview"],
+            media_count=delivery["media_count"],
+        )
+        try:
+            from navi.trace import TracePhase, TraceStore
+
+            TraceStore(self.home).add_event(
+                trace_id=task.id,
+                phase=TracePhase.CHANNEL_EGRESS,
+                run_id=task.id,
+                source=self.local_source,
+                peer_id=task.peer_id,
+                output_data={
+                    "response": text,
+                    "background_event": "background_task_result",
+                    "media_count": delivery["media_count"],
+                },
+                message="Sent background task result to channel",
+            )
+        except Exception:
+            pass
+
+    async def _drain_delivery_outbox(self, account: WeixinAccount) -> None:
+        store = GoalStore(self.home)
+        for item in store.claim_pending_delivery_outbox(channel=self.local_source, limit=10):
+            try:
+                await self._send_delivery_outbox_item(account, item)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                store.mark_delivery_outbox_failed(item.id, error=error)
+                if item.attempts >= 3:
+                    store.record_delivery_failure(
+                        run_id=item.run_id,
+                        channel=self.local_source,
+                        error=error,
+                        trace_id=item.trace_id,
+                        delivery_id=item.id,
+                    )
+                self.record_event(
+                    "background.delivery_outbox.error",
+                    peer_id=item.peer_id,
+                    run_id=item.run_id,
+                    error=error,
+                )
+
+    async def _send_delivery_outbox_item(
+        self,
+        account: WeixinAccount,
+        item: GoalDeliveryOutboxItem,
+    ) -> None:
+        delivery = await self._send_reply(
+            account=account,
+            peer_id=item.peer_id,
+            text=item.body,
+            action="chat",
+            facts={},
+            context_token=self.context_tokens.get(account.account_id, item.peer_id),
+        )
+        store = GoalStore(self.home)
+        store.record_delivery(
+            run_id=item.run_id,
             channel=self.local_source,
             text_preview=str(delivery.get("text_preview") or ""),
-            text_length=len(text.strip()),
+            text_length=len(item.body.strip()),
             media_count=delivery["media_count"],
-            trace_id=task.id,
+            trace_id=item.trace_id,
+            delivery_id=item.id,
         )
+        store.mark_delivery_outbox_sent(item.id, delivery_id=item.id)
+        self.record_event(
+            "background.sent",
+            peer_id=item.peer_id,
+            background_event="accepted_result_delivery",
+            text_preview=delivery["text_preview"],
+            media_count=delivery["media_count"],
+            run_id=item.run_id,
+        )
+        try:
+            from navi.trace import TracePhase, TraceStore
 
-    async def _compose_background_message(self, facts: dict) -> str:
-        if not facts.get("event"):
+            TraceStore(self.home).add_event(
+                trace_id=item.trace_id,
+                phase=TracePhase.CHANNEL_EGRESS,
+                run_id=item.run_id,
+                source=self.local_source,
+                peer_id=item.peer_id,
+                output_data={
+                    "response": item.body,
+                    "background_event": "accepted_result_delivery",
+                    "media_count": delivery["media_count"],
+                    "outbox_id": item.id,
+                    "body_provenance": item.body_provenance,
+                },
+                message="Sent accepted background result to channel",
+            )
+        except Exception:
+            pass
+
+    def _background_task_facts(self, task: Run) -> dict[str, object]:
+        return {
+            "kind": "background_task_result",
+            "run_id": task.id,
+            "title": task.title,
+            "phase": task.phase,
+            "governance": task.governance,
+            "acceptance": task.acceptance,
+            "resolution": task.resolution,
+            "source": task.source,
+            "peer_id": task.peer_id,
+            "sender_id": task.sender_id,
+            "workspace": task.workspace,
+            "error": str(task.error or ""),
+        }
+
+    async def _compose_event_notification(self, facts: dict) -> str:
+        if facts.get("event") not in {"background_event", "background_task_result"}:
             return ""
-        if facts.get("event") == "watch_result":
-            event_facts = facts.get("event_facts")
-            if not isinstance(event_facts, dict) or not event_facts:
-                return ""
-            notification_facts = {
-                "event": "watch_result",
-                "workspace": str(facts.get("workspace") or ""),
-                "facts": event_facts,
-                "trace_id": str(facts.get("trace_id") or ""),
-                "run_id": str(facts.get("run_id") or ""),
-                "peer_id": str(facts.get("peer_id") or ""),
-            }
-        else:
-            notification_facts = dict(facts)
+        event_facts = facts.get("facts")
+        if not isinstance(event_facts, dict) or not event_facts:
+            return ""
+        notification_facts = dict(facts)
         try:
             decision = await synthesize_background_notification(
                 self.runtime,

@@ -533,11 +533,16 @@ def create_app(
         args = request.model_dump(exclude_none=True)
         if not args.get("workspace"):
             args["workspace"] = str(project_dir)
+        context = _local_capability_context(
+            home,
+            project_dir=project_dir,
+            workspace=str(args["workspace"]),
+        )
         result = await api_capabilities.invoke(
             "goal.open",
             args,
             permission="prepare",
-            context=_local_capability_context(home, project_dir=project_dir),
+            context=context,
         )
         _raise_capability_error(result)
         return _capability_result_dict(result)
@@ -558,11 +563,16 @@ def create_app(
         args["goal_id"] = goal_id
         if not args.get("workspace"):
             args["workspace"] = str(project_dir)
+        context = _local_capability_context(
+            home,
+            project_dir=project_dir,
+            workspace=str(args["workspace"]),
+        )
         result = await api_capabilities.invoke(
             "goal.resume",
             args,
             permission="prepare",
-            context=_local_capability_context(home, project_dir=project_dir),
+            context=context,
         )
         _raise_capability_error(result, not_found_status=404)
         return _capability_result_dict(result)
@@ -571,22 +581,28 @@ def create_app(
     async def cancel_goal(goal_id: str, request: GoalCancelRequest) -> dict:
         args = request.model_dump(exclude_none=True)
         args["goal_id"] = goal_id
+        goal = goal_store.get(goal_id)
+        workspace = goal.workspace if goal is not None else str(project_dir)
+        context = _local_capability_context(home, project_dir=project_dir, workspace=workspace)
         result = await api_capabilities.invoke(
             "goal.cancel",
             args,
             permission="prepare",
-            context=_local_capability_context(home, project_dir=project_dir),
+            context=context,
         )
         _raise_capability_error(result, not_found_status=404)
         return _capability_result_dict(result)
 
     @app.get(api_path("goal_state"))
     async def goal_state(goal_id: str) -> dict:
+        goal = goal_store.get(goal_id)
+        workspace = goal.workspace if goal is not None else str(project_dir)
+        context = _local_capability_context(home, project_dir=project_dir, workspace=workspace)
         result = await api_capabilities.invoke(
             "goal.state",
             {"goal_id": goal_id},
             permission="read",
-            context=_local_capability_context(home, project_dir=project_dir),
+            context=context,
         )
         _raise_capability_error(result, not_found_status=404)
         return _capability_result_dict(result)
@@ -689,7 +705,12 @@ def _public_approval(approval) -> dict:
     }
 
 
-def _local_capability_context(home: Path, *, project_dir: Path) -> CapabilityContext:
+def _local_capability_context(
+    home: Path,
+    *,
+    project_dir: Path,
+    workspace: str | None = None,
+) -> CapabilityContext:
     local_surface = load_config(home).runtime.local_surface
     return CapabilityContext(
         home=home,
@@ -697,7 +718,7 @@ def _local_capability_context(home: Path, *, project_dir: Path) -> CapabilityCon
         sender_id=local_surface,
         source=local_surface,
         permission_ceiling="write",
-        workspace=str(project_dir),
+        workspace=str(workspace or project_dir),
     )
 
 

@@ -6,6 +6,7 @@ from typing import Any
 
 from ..capabilities_types import BaseCapability, CapabilityContext, CapabilityResult, capability
 from ..goal_state_graph import run_goal_loop_state_graph
+from ..lifecycle import Governance, Phase, Resolution
 from ..loop_control_service import (
     LoopControlService,
     OpenGoalRequest,
@@ -15,6 +16,7 @@ from ..loop_control_service import (
 from ..loop_contracts import LoopTerminalState
 from ..result import Conflict, NotFound, PermissionDenied, SchemaMismatch, guarded
 from ..tools import ToolSpec
+from ..workspaces import workspaces_match
 from .helpers import (
     arg_text as _arg_text,
     fact_result as _fact_result,
@@ -332,11 +334,31 @@ class GoalCancelCapability(BaseCapability):
     ) -> CapabilityResult:
         goal_id = _arg_text(args, "goal_id")
         loop_run_id = _arg_text(args, "loop_run_id")
-        if not goal_id and not loop_run_id:
-            raise SchemaMismatch("goal.cancel requires goal_id or loop_run_id.")
+        goal_ids = _string_tuple(args.get("goal_ids"))
         reason = _arg_text(args, "reason")
         service = LoopControlService(self.home)
+        if not goal_id and not loop_run_id and not goal_ids:
+            raise SchemaMismatch(
+                "goal.cancel requires goal_id, loop_run_id, or explicit goal_ids."
+            )
         try:
+            if goal_ids:
+                if loop_run_id or goal_id:
+                    raise SchemaMismatch(
+                        "goal.cancel batch selectors cannot be combined with goal_id or loop_run_id."
+                    )
+                selected = [service.goals.get(item) for item in goal_ids]
+                missing = [goal_id for goal_id, goal in zip(goal_ids, selected) if goal is None]
+                goals = [goal for goal in selected if goal is not None]
+                if missing:
+                    raise NotFound("goal not found: " + ", ".join(missing))
+                return _cancel_goal_batch(
+                    service,
+                    goals=goals,
+                    context=context,
+                    reason=reason,
+                    selector={"goal_ids": list(goal_ids)},
+                )
             _require_goal_scope(
                 service,
                 goal_id=goal_id,
@@ -351,7 +373,8 @@ class GoalCancelCapability(BaseCapability):
             raise NotFound(str(exc)) from exc
         except ValueError as exc:
             raise Conflict(str(exc)) from exc
-        return _fact_result("goal", result.to_facts(), run_id=result.run.id)
+        facts = _with_verified_goal(service, result.to_facts(), result.goal.id)
+        return _fact_result("goal", facts, run_id=result.run.id)
 
 
 @capability("goal_state")
@@ -371,8 +394,10 @@ class GoalStateCapability(BaseCapability):
         goal_id = _arg_text(args, "goal_id")
         loop_run_id = _arg_text(args, "loop_run_id")
         view = (_arg_text(args, "view") or "current").lower()
-        if view not in {"current", "scheduled", "all"}:
-            raise SchemaMismatch("goal.state view must be current, scheduled, or all.")
+        if view not in {"current", "scheduled", "pending_approval", "history"}:
+            raise SchemaMismatch(
+                "goal.state view must be current, scheduled, pending_approval, or history."
+            )
         limit = _positive_int(args.get("limit"), default=20, maximum=200)
         service = LoopControlService(self.home)
         try:
@@ -539,7 +564,7 @@ def _require_goal_scope(
         context.goal_id
         and context.workspace
         and goal.workspace
-        and context.workspace != goal.workspace
+        and not workspaces_match(service.home, goal.workspace, context.workspace)
     ):
         raise PermissionDenied("goal workspace does not match caller.")
 
@@ -551,46 +576,20 @@ def _scoped_goal_state(
     limit: int,
     view: str,
 ) -> dict[str, Any]:
-    if view != "current":
-        goals = [
-            asdict(goal)
-            for goal in service.goals.list_scoped(
-                source=context.source,
-                peer_id=context.peer_id,
-                sender_id=context.sender_id,
-                phases=("pending", "running", "paused") if view == "scheduled" else (),
-                cron=True if view == "scheduled" else None,
-                limit=limit,
-            )
-        ]
-        scheduled_goals = [goal for goal in goals if str(goal.get("cron_schedule") or "")]
-        return {
-            "entity_type": "goal",
-            "entity_id": "",
-            "state_transition": "state_read",
-            "turn_scope": "actor",
-            "query_scope": "actor",
-            "view": view,
-            "authoritative_for": (
-                "actor_scheduled_goals" if view == "scheduled" else "actor_goals"
-            ),
-            "matched_count": len(goals),
-            "goals": goals,
-            "active_goals": [goal for goal in goals if goal.get("phase") != "ended"],
-            "scheduled_goals": scheduled_goals,
-            "active_loop_runs": [],
-        }
-
-    scoped_goals = service.goals.list_scoped(
-        source=context.source,
-        peer_id=context.peer_id,
-        sender_id=context.sender_id,
-        workspace=context.workspace,
-        phases=("pending", "running", "paused"),
-        cron=False,
-        limit=limit,
-    )
-    active_goals = [asdict(goal) for goal in scoped_goals]
+    scoped_goals = _goals_for_view(service, context=context, view=view, limit=limit)
+    goal_rows = [asdict(goal) for goal in scoped_goals]
+    pending_approval_goals = [
+        goal
+        for goal in goal_rows
+        if goal.get("governance") == Governance.AWAITING_APPROVAL
+        or goal.get("task_status") == "pending"
+    ]
+    scheduled_goals = [goal for goal in goal_rows if str(goal.get("cron_schedule") or "")]
+    current_goals = [
+        goal
+        for goal in goal_rows
+        if goal.get("phase") != Phase.ENDED and not str(goal.get("cron_schedule") or "")
+    ]
     active_loop_runs = [
         loop_run.to_dict()
         for loop_run in service.loop_runs.list_current_for_goals(
@@ -598,19 +597,241 @@ def _scoped_goal_state(
             limit=limit,
         )
     ]
-    return {
+    facts = {
         "entity_type": "goal",
         "entity_id": "",
         "state_transition": "state_read",
-        "turn_scope": "current",
-        "query_scope": "current_workspace",
-        "view": "current",
-        "authoritative_for": "current_actor_active_goals",
-        "matched_count": len(active_goals),
-        "goals": active_goals,
-        "scheduled_goals": [goal for goal in active_goals if str(goal.get("cron_schedule") or "")],
+        "turn_scope": "actor" if view in {"scheduled", "history"} else "current",
+        "query_scope": _goal_view_query_scope(view),
+        "view": view,
+        "authoritative_for": _goal_view_authority(view),
+        "matched_count": len(goal_rows),
+        "goal_counts": _goal_counts(service, context=context),
+        "goals": goal_rows,
+        "current_goals": current_goals,
+        "scheduled_goals": scheduled_goals,
+        "pending_approval_goals": pending_approval_goals,
+        "history_goals": goal_rows if view == "history" else [],
         "active_loop_runs": active_loop_runs,
-        "active_goals": active_goals,
+    }
+    return facts
+
+
+def _goals_for_view(
+    service: LoopControlService,
+    *,
+    context: CapabilityContext,
+    view: str,
+    limit: int,
+) -> list[Any]:
+    if view == "scheduled":
+        return service.goals.list_scoped(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            phases=(Phase.PENDING, Phase.RUNNING, Phase.PAUSED),
+            cron=True,
+            limit=limit,
+        )
+    if view == "pending_approval":
+        return service.goals.list_scoped(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            phases=(Phase.PENDING, Phase.RUNNING, Phase.PAUSED),
+            governance=(Governance.AWAITING_APPROVAL,),
+            cron=False,
+            limit=limit,
+        )
+    if view == "history":
+        return service.goals.list_scoped(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            child=False,
+            limit=limit,
+        )
+    return service.goals.list_scoped(
+        source=context.source,
+        peer_id=context.peer_id,
+        sender_id=context.sender_id,
+        workspace=context.workspace,
+        phases=(Phase.PENDING, Phase.RUNNING, Phase.PAUSED),
+        governance=(Governance.APPROVED, Governance.NONE),
+        cron=False,
+        child=False,
+        limit=limit,
+    )
+
+
+def _goal_view_authority(view: str) -> str:
+    return {
+        "current": "current_actor_foreground_goals",
+        "scheduled": "actor_scheduled_goals",
+        "pending_approval": "current_actor_pending_approval_goals",
+        "history": "actor_goal_history",
+    }[view]
+
+
+def _goal_view_query_scope(view: str) -> str:
+    return "actor_workspace" if view in {"current", "pending_approval", "history"} else "actor"
+
+
+def _goal_counts(
+    service: LoopControlService,
+    *,
+    context: CapabilityContext,
+) -> dict[str, int]:
+    active_phases = (Phase.PENDING, Phase.RUNNING, Phase.PAUSED)
+    return {
+        "current": service.goals.count_scoped(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            phases=active_phases,
+            governance=(Governance.APPROVED, Governance.NONE),
+            cron=False,
+            child=False,
+        ),
+        "scheduled": service.goals.count_scoped(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            phases=active_phases,
+            cron=True,
+        ),
+        "pending_approval": service.goals.count_scoped(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            phases=active_phases,
+            governance=(Governance.AWAITING_APPROVAL,),
+            cron=False,
+        ),
+        "history": service.goals.count_scoped(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            child=False,
+        ),
+    }
+
+
+def _cancel_goal_batch(
+    service: LoopControlService,
+    *,
+    goals: list[Any],
+    context: CapabilityContext,
+    reason: str,
+    selector: dict[str, Any],
+) -> CapabilityResult:
+    cancelled: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    for goal in goals:
+        try:
+            _require_goal_scope(
+                service,
+                goal_id=goal.id,
+                loop_run_id="",
+                context=context,
+            )
+            if context.workspace and goal.workspace and not workspaces_match(
+                service.home,
+                goal.workspace,
+                context.workspace,
+            ):
+                raise PermissionDenied("goal workspace does not match caller.")
+            result = service.cancel_goal(
+                goal_id=goal.id,
+                reason=reason or "batch_cancel:goal_ids",
+            )
+            facts = _with_verified_goal(service, result.to_facts(), result.goal.id)
+            item = {
+                "goal_id": result.goal.id,
+                "objective": result.goal.objective,
+                "state_transition": facts.get("state_transition"),
+                "verified_goal": facts.get("verified_goal", {}),
+            }
+            if _cancel_result_verified(item):
+                cancelled.append(item)
+            else:
+                failed.append(
+                    {
+                        **item,
+                        "error_reason": "verification_failed",
+                        "message": "goal remained in selected lifecycle view after cancellation",
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 - batch result must report per-target facts.
+            failed.append(
+                {
+                    "goal_id": getattr(goal, "id", ""),
+                    "objective": getattr(goal, "objective", ""),
+                    "error_reason": type(exc).__name__,
+                    "message": str(exc),
+                }
+            )
+    facts = {
+        "entity_type": "goal_collection",
+        "entity_id": "",
+        "state_transition": "batch_cancelled",
+        "turn_scope": "current",
+        "selector": selector,
+        "requested_count": len(goals),
+        "cancelled_count": len(cancelled),
+        "failed_count": len(failed),
+        "cancelled_goals": cancelled,
+        "failed_goals": failed,
+        "verified_after": {
+            "cancelled_goal_ids": [item["goal_id"] for item in cancelled],
+            "failed_goal_ids": [item["goal_id"] for item in failed],
+        },
+        "completion_evidence": len(failed) == 0,
+    }
+    return CapabilityResult(
+        ok=not failed,
+        action="goal",
+        facts=facts,
+        error_reason="partial_batch_failure" if failed else "",
+    )
+
+
+def _cancel_result_verified(item: dict[str, Any]) -> bool:
+    verified = item.get("verified_goal")
+    if not isinstance(verified, dict):
+        return False
+    return verified.get("phase") == Phase.ENDED and verified.get("resolution") == Resolution.CANCELED
+
+
+def _with_verified_goal(
+    service: LoopControlService,
+    facts: dict[str, Any],
+    goal_id: str,
+) -> dict[str, Any]:
+    verified = service.goals.get(goal_id)
+    if verified is None:
+        return facts
+    verified_goal = asdict(verified)
+    return {
+        **facts,
+        "verified_goal": verified_goal,
+        "verified_state": {
+            "goal_id": verified.id,
+            "phase": verified.phase,
+            "governance": verified.governance,
+            "acceptance": verified.acceptance,
+            "resolution": verified.resolution,
+            "task_status": verified.task_status,
+            "cron_schedule": verified.cron_schedule,
+        },
+        "verification_evidence": True,
     }
 
 

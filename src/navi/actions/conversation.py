@@ -32,10 +32,9 @@ class RespondCapability(BaseCapability):
         if has_options:
             return CapabilityResult(
                 ok=True,
-                action=CONVERSATION_ACTION_ASK,
+                action=CONVERSATION_ACTION_CHAT,
                 message=message,
                 terminal=True,
-                yields_control=True,
                 facts={"options": options},
             )
 
@@ -44,4 +43,30 @@ class RespondCapability(BaseCapability):
             action=CONVERSATION_ACTION_CHAT,
             message=message,
             terminal=True,
+        )
+
+
+@capability("ask_user")
+class AskUserCapability(BaseCapability):
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        message = _arg_text(args, "message")
+        if not message:
+            raise SchemaMismatch("ask.user requires message")
+        options = args.get("options")
+        facts: dict[str, Any] = {}
+        if isinstance(options, list) and options:
+            facts["options"] = options
+        return CapabilityResult(
+            ok=True,
+            action=CONVERSATION_ACTION_ASK,
+            message=message,
+            terminal=True,
+            yields_control=True,
+            facts=facts,
         )

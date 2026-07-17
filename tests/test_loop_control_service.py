@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 import shlex
 import sys
+from dataclasses import replace
 
 import pytest
 
 from navi.db import connect
 from navi.goals import GoalStore
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
-from navi.loop_contracts import LoopTerminalState, VerificationKind
+from navi.loop_contracts import LoopNode, LoopTerminalState, VerificationKind
 from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.loop_runs import LoopRunStore
+from navi.state_graph import StateGraphRunResult
 
 
 def _command(script: str) -> str:
@@ -60,6 +62,40 @@ def test_loop_control_service_opens_goal_without_executing_state_graph(tmp_path)
     assert result.loop_spec.goal.metadata["session_id"] == "session-unified"
     assert result.loop_spec.goal.metadata["sender_id"] == "tester"
     assert LoopRunStore(tmp_path).get_run(result.loop_run.run_id) is not None
+
+
+def test_background_converged_result_creates_delivery_outbox(tmp_path):
+    service = LoopControlService(tmp_path)
+    opened = service.open_goal(
+        OpenGoalRequest(
+            objective="send accepted lesson",
+            workspace=str(tmp_path),
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            allowed_capabilities=("respond",),
+            auto_start=False,
+            execution_mode="background",
+        )
+    )
+    terminal = replace(
+        opened.loop_run,
+        terminal_state=LoopTerminalState.CONVERGED,
+        evidence={**opened.loop_run.evidence, "execution_mode": "background"},
+    )
+
+    service.apply_state_graph_result(
+        opened,
+        StateGraphRunResult(
+            run_state=terminal,
+            evidence={"responded_message": "Accepted lesson body."},
+        ),
+    )
+
+    accepted = service.goals.accepted_result_for_run(opened.run.id)
+    assert accepted["body"] == "Accepted lesson body."
+    assert accepted["body_provenance"] == "state_graph.evidence.responded_message"
+    assert accepted["delivery_status"] == "pending"
 
 
 def test_loop_control_service_rejects_unknown_loop_kind(tmp_path):
@@ -259,6 +295,14 @@ def test_scheduled_occurrence_exposes_prior_output_and_delivery_as_facts(tmp_pat
     )
     assert first_run is not None
     service.goals.update_for_run(first_run)
+    service.goals.record_result_delivery_outbox(
+        run=first_run,
+        goal=first.goal,
+        body="Lesson 1: foundations. Next topic: supervised learning.",
+        body_provenance="state_graph.evidence.responded_message",
+        channel="weixin",
+        trace_id=first.loop_run.run_id,
+    )
     service.goals.record_delivery(
         run_id=first.run.id,
         channel="weixin",
@@ -273,7 +317,10 @@ def test_scheduled_occurrence_exposes_prior_output_and_delivery_as_facts(tmp_pat
     assert trigger["occurrence_number"] == 2
     assert len(trigger["prior_occurrences"]) == 1
     previous = trigger["prior_occurrences"][0]
-    assert previous["result_summary"] == first_run.result_summary
+    assert previous["accepted_result_text"] == first_run.result_summary
+    assert previous["accepted_result"]["body_provenance"] == (
+        "state_graph.evidence.responded_message"
+    )
     assert previous["delivery"]["state_transition"] == "delivered"
     assert previous["delivery"]["channel"] == "weixin"
     task_context = second.loop_spec.goal.metadata["task_context"]
@@ -434,6 +481,62 @@ def test_loop_control_service_cancels_active_goal_through_control_edge(tmp_path)
     assert cancelled.run.resolution == Resolution.CANCELED
     assert cancelled.goal.phase == Phase.ENDED
     assert cancelled.goal.resolution == Resolution.CANCELED
+
+
+def test_loop_control_service_cancels_goal_waiting_for_approval(tmp_path):
+    service = LoopControlService(tmp_path)
+    opened = service.open_goal(
+        OpenGoalRequest(
+            objective="delete file after approval",
+            workspace=str(tmp_path),
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+            auto_start=False,
+        )
+    )
+    with connect(service.loop_runs.db_path) as conn:
+        conn.execute(
+            """
+            UPDATE loop_runs
+            SET node = ?, terminal_state = ?, evidence_json = ?
+            WHERE id = ?
+            """,
+            (
+                str(LoopNode.ESCALATE),
+                str(LoopTerminalState.WAITING_APPROVAL),
+                json.dumps({"action": "approval"}),
+                opened.loop_run.run_id,
+            ),
+        )
+    service.runs.update_run(
+        opened.run.id,
+        phase=Phase.PAUSED,
+        governance=Governance.AWAITING_APPROVAL,
+        acceptance=Acceptance.NONE,
+        resolution=Resolution.NONE,
+    )
+    service.goals.update_state(
+        opened.goal.id,
+        phase=Phase.RUNNING,
+        governance=Governance.AWAITING_APPROVAL,
+        task_status="pending",
+    )
+
+    cancelled = service.cancel_goal(
+        goal_id=opened.goal.id,
+        reason="user cancelled pending approval",
+    )
+
+    assert cancelled.state_transition == "cancelled"
+    assert cancelled.loop_run.terminal_state == LoopTerminalState.CANCELLED
+    assert cancelled.run.phase == Phase.ENDED
+    assert cancelled.run.governance == Governance.NONE
+    assert cancelled.run.resolution == Resolution.CANCELED
+    assert cancelled.goal.phase == Phase.ENDED
+    assert cancelled.goal.governance == Governance.NONE
+    assert cancelled.goal.resolution == Resolution.CANCELED
+    assert cancelled.goal.task_status == "blocked"
 
 
 def test_loop_control_service_reads_goal_state(tmp_path):

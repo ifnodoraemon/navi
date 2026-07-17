@@ -300,85 +300,131 @@ async def test_service_executes_structured_delivery_from_original_path(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_background_text_does_not_execute_legacy_media_directive(tmp_path: Path):
+async def test_background_outbox_sends_accepted_result_verbatim(tmp_path: Path):
     resume = tmp_path / "resume.docx"
     resume.write_bytes(b"resume")
-    client = CaptureWeixinClient()
-    provider = WatchNotificationProvider(
-        notify=True,
-        message="Here is your resume file found in the home directory.",
+    body = f"MEDIA:{resume}\nHere is your resume file found in the home directory."
+    run = RunStore(tmp_path).create(
+        "send resume",
+        kind="loop:durable_goal",
+        source="weixin",
+        peer_id="wx-user",
+        sender_id="wx-user",
+        workspace=str(tmp_path),
     )
+    goal_store = GoalStore(tmp_path)
+    goal = goal_store.create(
+        objective=run.prompt,
+        workspace=str(tmp_path),
+        source=run.source,
+        peer_id=run.peer_id,
+        sender_id=run.sender_id,
+        run_id=run.id,
+    )
+    goal_store.record_result_delivery_outbox(
+        run=run,
+        goal=goal,
+        body=body,
+        body_provenance="state_graph.evidence.responded_message",
+        channel="weixin",
+        trace_id=run.id,
+    )
+    client = CaptureWeixinClient()
     service = WeixinService(
         home=tmp_path,
         config=WeixinConfig(),
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
         client=client,
     )
-    service.daemon = StaticDaemon(
-        [
-            Run(
-                id="run-media",
-                title="send resume",
-                phase=Phase.ENDED,
-                governance=Governance.APPROVED,
-                acceptance=Acceptance.NONE,
-                resolution=Resolution.SUCCESS,
-                created_at=1.0,
-                updated_at=1.0,
-                prompt="send resume",
-                source="weixin",
-                peer_id="wx-user",
-                sender_id="wx-user",
-                result_summary=f"MEDIA:{resume}\nHere is your resume file found in the home directory.",
-            )
-        ]
-    )
+    service.daemon = StaticDaemon([])
 
     await service.process_background(
         WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
     )
 
+    delivery = GoalStore(tmp_path).latest_delivery(goal.id)
     assert client.files == []
-    assert client.messages[0]["text"] == "Here is your resume file found in the home directory."
-    assert f"MEDIA:{resume}" in provider.calls[0][1][-1].content
+    assert client.messages[0]["text"] == body
+    assert delivery["state_transition"] == "delivered"
+    assert delivery["text_length"] == len(body)
     events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8").splitlines()
     assert not any('"event": "reply.media.sent"' in line for line in events)
     assert any(
-        '"event": "background.sent"' in line and '"media_count": 0' in line for line in events
+        '"event": "background.sent"' in line
+        and '"background_event": "accepted_result_delivery"' in line
+        for line in events
     )
 
 
 @pytest.mark.asyncio
 async def test_background_send_records_delivery_fact_after_client_success(tmp_path: Path):
+    body = "Lesson 2: supervised learning."
+    run = RunStore(tmp_path).create(
+        "scheduled lesson",
+        kind="loop:durable_goal",
+        source="weixin",
+        peer_id="wx-user",
+        sender_id="wx-user",
+        workspace=str(tmp_path),
+    )
+    goal = GoalStore(tmp_path).create(
+        objective=run.prompt,
+        workspace=str(tmp_path),
+        source=run.source,
+        peer_id=run.peer_id,
+        sender_id=run.sender_id,
+        run_id=run.id,
+    )
+    GoalStore(tmp_path).record_result_delivery_outbox(
+        run=run,
+        goal=goal,
+        body=body,
+        body_provenance="state_graph.evidence.responded_message",
+        channel="weixin",
+        trace_id=run.id,
+    )
+    client = CaptureWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.daemon = StaticDaemon([])
+
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    delivery = GoalStore(tmp_path).latest_delivery(goal.id)
+    assert client.messages[0]["text"] == body
+    assert delivery["state_transition"] == "delivered"
+    assert delivery["channel"] == "weixin"
+    assert delivery["text_length"] == len(body)
+    assert delivery["media_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_background_failure_task_respects_notification_decision_not_to_notify(tmp_path: Path):
     task = Run(
-        id="run-delivery",
+        id="run-muted",
         title="scheduled lesson",
         phase=Phase.ENDED,
         governance=Governance.NONE,
-        acceptance=Acceptance.ACCEPTED,
-        resolution=Resolution.SUCCESS,
+        acceptance=Acceptance.REJECTED,
+        resolution=Resolution.FAILED,
         created_at=1.0,
         updated_at=1.0,
         prompt="scheduled lesson",
         source="weixin",
         peer_id="wx-user",
         sender_id="wx-user",
-        result_summary="Lesson 2: supervised learning.",
-    )
-    goal = GoalStore(tmp_path).create(
-        objective=task.prompt,
-        workspace=str(tmp_path),
-        source=task.source,
-        peer_id=task.peer_id,
-        sender_id=task.sender_id,
-        run_id=task.id,
+        error="loop_failed",
     )
     client = CaptureWeixinClient()
-    provider = WatchNotificationProvider(
-        notify=True,
-        message="Lesson 2: supervised learning.",
-    )
+    provider = WatchNotificationProvider(notify=False, message="")
     service = WeixinService(
         home=tmp_path,
         config=WeixinConfig(),
@@ -392,13 +438,8 @@ async def test_background_send_records_delivery_fact_after_client_success(tmp_pa
         WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
     )
 
-    delivery = GoalStore(tmp_path).latest_delivery(goal.id)
-    assert client.messages[0]["text"] == "Lesson 2: supervised learning."
+    assert client.messages == []
     assert provider.calls[0][0] == "notification"
-    assert delivery["state_transition"] == "delivered"
-    assert delivery["channel"] == "weixin"
-    assert delivery["text_length"] == len(task.result_summary)
-    assert delivery["media_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -727,11 +768,10 @@ async def test_send_file_returns_connector_neutral_synchronous_delivery(tmp_path
 @pytest.mark.asyncio
 async def test_background_task_without_surface_text_does_not_synthesize_reply(tmp_path: Path):
     client = CaptureWeixinClient()
-    provider = WatchNotificationProvider(notify=False, message="")
     service = WeixinService(
         home=tmp_path,
         config=WeixinConfig(),
-        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
         client=client,
     )
@@ -759,7 +799,6 @@ async def test_background_task_without_surface_text_does_not_synthesize_reply(tm
     )
 
     assert client.messages == []
-    assert provider.calls[0][0] == "notification"
 
 
 @pytest.mark.asyncio

@@ -260,6 +260,7 @@ class ShadowWorkspaceManager:
             return str(real_workspace)
         return str(candidate)
 
+
     def list_shadows(
         self,
         *,
@@ -406,6 +407,16 @@ class ShadowWorkspaceManager:
                 encoding="utf-8",
             )
         return artifact_dir
+
+
+def durable_workspace_identity(home: Path, workspace: str) -> str:
+    return ShadowWorkspaceManager(home).durable_workspace_for(workspace)
+
+
+def workspaces_match(home: Path, left: str, right: str) -> bool:
+    if not left or not right:
+        return True
+    return durable_workspace_identity(home, left) == durable_workspace_identity(home, right)
 
 
 class WorkspaceLockStore:

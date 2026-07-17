@@ -16,7 +16,7 @@ from .persistence_scope import append_actor_scope
 from .runs import Run
 from .schema import Column, Table, assert_schema_exact
 
-GOAL_STORE_SCHEMA_VERSION = 4
+GOAL_STORE_SCHEMA_VERSION = 5
 
 
 class ChildAdmissionConflict(ValueError):
@@ -76,7 +76,31 @@ class GoalEvent:
     created_at: float
 
 
+@dataclass(frozen=True)
+class GoalDeliveryOutboxItem:
+    id: str
+    goal_id: str
+    run_id: str
+    channel: str
+    source: str
+    peer_id: str
+    sender_id: str
+    trace_id: str
+    body: str
+    body_provenance: str
+    status: str
+    attempts: int
+    error: str
+    delivery_id: str
+    created_at: float
+    updated_at: float
+    sent_at: float
+
+
 GOAL_SELECT_LIST = ", ".join(field.name for field in fields(Goal))
+GOAL_DELIVERY_OUTBOX_SELECT_LIST = ", ".join(
+    field.name for field in fields(GoalDeliveryOutboxItem)
+)
 
 
 class GoalStore:
@@ -93,6 +117,8 @@ class GoalStore:
             assert_schema_exact(conn, GOALS_TABLE)
             conn.execute(GOAL_EVENTS_TABLE.ddl)
             assert_schema_exact(conn, GOAL_EVENTS_TABLE)
+            conn.execute(GOAL_DELIVERY_OUTBOX_TABLE.ddl)
+            assert_schema_exact(conn, GOAL_DELIVERY_OUTBOX_TABLE)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(phase, updated_at)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_goals_actor_scope "
@@ -101,6 +127,10 @@ class GoalStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_run ON goals(run_id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_goal_events_goal ON goal_events(goal_id, created_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_goal_delivery_outbox_pending "
+                "ON goal_delivery_outbox(status, channel, created_at)"
             )
             write_schema_version(conn, "goals", GOAL_STORE_SCHEMA_VERSION)
 
@@ -287,6 +317,9 @@ class GoalStore:
         session_id: str = "",
         workspace: str = "",
         phases: tuple[str, ...] = (),
+        governance: tuple[str, ...] = (),
+        task_status: tuple[str, ...] = (),
+        resolution: tuple[str, ...] = (),
         cron: bool | None = None,
         child: bool | None = None,
         limit: int | None = 50,
@@ -309,6 +342,18 @@ class GoalStore:
             placeholders = ", ".join("?" for _ in phases)
             clauses.append(f"phase IN ({placeholders})")
             params.extend(phases)
+        if governance:
+            placeholders = ", ".join("?" for _ in governance)
+            clauses.append(f"governance IN ({placeholders})")
+            params.extend(governance)
+        if task_status:
+            placeholders = ", ".join("?" for _ in task_status)
+            clauses.append(f"task_status IN ({placeholders})")
+            params.extend(task_status)
+        if resolution:
+            placeholders = ", ".join("?" for _ in resolution)
+            clauses.append(f"resolution IN ({placeholders})")
+            params.extend(resolution)
         if cron is not None:
             clauses.append("cron_schedule != ''" if cron else "cron_schedule = ''")
         if child is not None:
@@ -338,6 +383,9 @@ class GoalStore:
         session_id: str = "",
         workspace: str = "",
         phases: tuple[str, ...] = (),
+        governance: tuple[str, ...] = (),
+        task_status: tuple[str, ...] = (),
+        resolution: tuple[str, ...] = (),
         cron: bool | None = None,
         child: bool | None = None,
     ) -> int:
@@ -358,6 +406,18 @@ class GoalStore:
             placeholders = ", ".join("?" for _ in phases)
             clauses.append(f"phase IN ({placeholders})")
             params.extend(phases)
+        if governance:
+            placeholders = ", ".join("?" for _ in governance)
+            clauses.append(f"governance IN ({placeholders})")
+            params.extend(governance)
+        if task_status:
+            placeholders = ", ".join("?" for _ in task_status)
+            clauses.append(f"task_status IN ({placeholders})")
+            params.extend(task_status)
+        if resolution:
+            placeholders = ", ".join("?" for _ in resolution)
+            clauses.append(f"resolution IN ({placeholders})")
+            params.extend(resolution)
         if cron is not None:
             clauses.append("cron_schedule != ''" if cron else "cron_schedule = ''")
         if child is not None:
@@ -793,6 +853,164 @@ class GoalStore:
                 ),
             )
         return event
+
+    def record_result_delivery_outbox(
+        self,
+        *,
+        run: Run,
+        goal: Goal,
+        body: str,
+        body_provenance: str,
+        channel: str = "",
+        trace_id: str = "",
+    ) -> GoalDeliveryOutboxItem | None:
+        """Persist an accepted model result as a channel-deliverable artifact."""
+        text = body.strip()
+        surface = channel.strip() or goal.source or run.source
+        peer_id = goal.peer_id or run.peer_id
+        if not text or not surface or not peer_id:
+            return None
+        existing = self._delivery_outbox_by_run(run.id)
+        if existing is not None:
+            return existing
+        now = time.time()
+        item = GoalDeliveryOutboxItem(
+            id=uuid.uuid4().hex,
+            goal_id=goal.id,
+            run_id=run.id,
+            channel=surface,
+            source=goal.source or run.source,
+            peer_id=peer_id,
+            sender_id=goal.sender_id or run.sender_id,
+            trace_id=trace_id or goal.trace_id or run.id,
+            body=text,
+            body_provenance=body_provenance,
+            status="pending",
+            attempts=0,
+            error="",
+            delivery_id="",
+            created_at=now,
+            updated_at=now,
+            sent_at=0.0,
+        )
+        with connect(self.db_path) as conn:
+            conn.execute(
+                f"""
+                INSERT INTO goal_delivery_outbox({GOAL_DELIVERY_OUTBOX_SELECT_LIST})
+                VALUES ({", ".join("?" for _ in fields(GoalDeliveryOutboxItem))})
+                """,
+                tuple(getattr(item, field.name) for field in fields(GoalDeliveryOutboxItem)),
+            )
+        return item
+
+    def claim_pending_delivery_outbox(
+        self,
+        *,
+        channel: str,
+        limit: int = 10,
+    ) -> builtins.list[GoalDeliveryOutboxItem]:
+        now = time.time()
+        claimed: list[GoalDeliveryOutboxItem] = []
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {GOAL_DELIVERY_OUTBOX_SELECT_LIST}
+                FROM goal_delivery_outbox
+                WHERE status = 'pending' AND channel = ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (channel, max(1, limit)),
+            ).fetchall()
+            for row in rows:
+                item = _delivery_outbox_from_row(row)
+                cursor = conn.execute(
+                    """
+                    UPDATE goal_delivery_outbox
+                    SET status = 'sending', attempts = attempts + 1, updated_at = ?
+                    WHERE id = ? AND status = 'pending'
+                    """,
+                    (now, item.id),
+                )
+                if cursor.rowcount == 1:
+                    claimed.append(
+                        GoalDeliveryOutboxItem(
+                            **{
+                                **item.__dict__,
+                                "status": "sending",
+                                "attempts": item.attempts + 1,
+                                "updated_at": now,
+                            }
+                        )
+                    )
+        return claimed
+
+    def mark_delivery_outbox_sent(
+        self,
+        outbox_id: str,
+        *,
+        delivery_id: str = "",
+        sent_at: float | None = None,
+    ) -> None:
+        now = time.time()
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE goal_delivery_outbox
+                SET status = 'sent', delivery_id = ?, sent_at = ?, updated_at = ?, error = ''
+                WHERE id = ?
+                """,
+                (delivery_id, now if sent_at is None else float(sent_at), now, outbox_id),
+            )
+
+    def mark_delivery_outbox_failed(
+        self,
+        outbox_id: str,
+        *,
+        error: str,
+        max_attempts: int = 3,
+    ) -> None:
+        now = time.time()
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT attempts FROM goal_delivery_outbox WHERE id = ?",
+                (outbox_id,),
+            ).fetchone()
+            attempts = int(row[0]) if row else max_attempts
+            status = "failed" if attempts >= max_attempts else "pending"
+            conn.execute(
+                """
+                UPDATE goal_delivery_outbox
+                SET status = ?, error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, error[:1000], now, outbox_id),
+            )
+
+    def _delivery_outbox_by_run(self, run_id: str) -> GoalDeliveryOutboxItem | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"""
+                SELECT {GOAL_DELIVERY_OUTBOX_SELECT_LIST}
+                FROM goal_delivery_outbox
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        return _delivery_outbox_from_row(row) if row else None
+
+    def accepted_result_for_run(self, run_id: str) -> dict[str, Any]:
+        item = self._delivery_outbox_by_run(run_id)
+        if item is None:
+            return {}
+        return {
+            "body": item.body,
+            "body_provenance": item.body_provenance,
+            "delivery_status": item.status,
+            "channel": item.channel,
+            "sent_at": item.sent_at,
+            "outbox_id": item.id,
+        }
 
     def record_delivery(
         self,
@@ -1298,6 +1516,28 @@ def _json_object(raw: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _delivery_outbox_from_row(row: tuple[Any, ...]) -> GoalDeliveryOutboxItem:
+    return GoalDeliveryOutboxItem(
+        id=str(row[0]),
+        goal_id=str(row[1]),
+        run_id=str(row[2]),
+        channel=str(row[3]),
+        source=str(row[4]),
+        peer_id=str(row[5]),
+        sender_id=str(row[6]),
+        trace_id=str(row[7]),
+        body=str(row[8]),
+        body_provenance=str(row[9]),
+        status=str(row[10]),
+        attempts=int(row[11]),
+        error=str(row[12]),
+        delivery_id=str(row[13]),
+        created_at=float(row[14]),
+        updated_at=float(row[15]),
+        sent_at=float(row[16]),
+    )
+
+
 GOALS_TABLE = Table(
     "goals",
     [
@@ -1348,5 +1588,28 @@ GOAL_EVENTS_TABLE = Table(
         Column("trace_id", "TEXT", nullable=False),
         Column("evidence_json", "TEXT", nullable=False),
         Column("created_at", "REAL", nullable=False),
+    ],
+)
+
+GOAL_DELIVERY_OUTBOX_TABLE = Table(
+    "goal_delivery_outbox",
+    [
+        Column("id", "TEXT", primary_key=True),
+        Column("goal_id", "TEXT", nullable=False),
+        Column("run_id", "TEXT", nullable=False, unique=True),
+        Column("channel", "TEXT", nullable=False),
+        Column("source", "TEXT", nullable=False),
+        Column("peer_id", "TEXT", nullable=False),
+        Column("sender_id", "TEXT", nullable=False),
+        Column("trace_id", "TEXT", nullable=False),
+        Column("body", "TEXT", nullable=False),
+        Column("body_provenance", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("attempts", "INTEGER", nullable=False),
+        Column("error", "TEXT", nullable=False),
+        Column("delivery_id", "TEXT", nullable=False),
+        Column("created_at", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+        Column("sent_at", "REAL", nullable=False),
     ],
 )

@@ -428,7 +428,9 @@ class LoopControlService:
         occurrence_number = self.goals.count_children(goal.id) + 1
         prior_occurrences = []
         for child in children:
-            run = self.runs.get(child.run_id) if child.run_id else None
+            accepted_result = (
+                self.goals.accepted_result_for_run(child.run_id) if child.run_id else {}
+            )
             prior_occurrences.append(
                 {
                     "goal_id": child.id,
@@ -438,7 +440,8 @@ class LoopControlService:
                     "acceptance": child.acceptance,
                     "resolution": child.resolution,
                     "task_status": child.task_status,
-                    "result_summary": str(run.result_summary or "") if run else "",
+                    "accepted_result_text": str(accepted_result.get("body") or ""),
+                    "accepted_result": accepted_result,
                     "delivery": self.goals.latest_delivery(child.id),
                 }
             )
@@ -556,8 +559,21 @@ class LoopControlService:
             updated_run,
             evidence=merged_evidence,
         )
+        goal = updated_goal or base.goal
+        if (
+            graph_result.terminal_state == str(LoopTerminalState.CONVERGED)
+            and str(graph_result.run_state.evidence.get("execution_mode") or "") == "background"
+        ):
+            self.goals.record_result_delivery_outbox(
+                run=updated_run,
+                goal=goal,
+                body=_surface_message_from_result(graph_result),
+                body_provenance="state_graph.evidence.responded_message",
+                channel=goal.source,
+                trace_id=graph_result.run_state.run_id,
+            )
         return LoopControlServiceResult(
-            goal=updated_goal or base.goal,
+            goal=goal,
             run=updated_run,
             loop_spec=base.loop_spec,
             loop_run=graph_result.run_state,
@@ -673,7 +689,16 @@ class LoopControlService:
         run = self.runs.get(goal.run_id) if goal.run_id else None
         if run is None:
             raise KeyError(f"run not found for goal: {goal.run_id}")
-        if state.is_terminal():
+        if str(state.terminal_state) in {
+            str(LoopTerminalState.PAUSED),
+            str(LoopTerminalState.WAITING_APPROVAL),
+        }:
+            evidence = {"reason": reason.strip() or "cancel_requested"}
+            cancelled = self.loop_runs.cancel_external_wait(
+                state.run_id,
+                evidence=evidence,
+            )
+        elif state.is_terminal():
             return LoopControlServiceResult(
                 goal=goal,
                 run=run,
@@ -681,21 +706,22 @@ class LoopControlService:
                 loop_run=state,
                 state_transition="already_terminal",
             )
-        evidence = {"reason": reason.strip() or "cancel_requested"}
-        checkpoint = self.loop_runs.write_checkpoint(
-            state.run_id,
-            node=state.node,
-            inputs={"control": "cancel", **evidence},
-            state=state.to_dict(),
-        )
-        cancelled = self.loop_runs.transition(
-            state.run_id,
-            node=state.node,
-            checkpoint_id=checkpoint.id,
-            terminal_state=LoopTerminalState.CANCELLED,
-            condition="cancel_requested",
-            evidence=evidence,
-        )
+        else:
+            evidence = {"reason": reason.strip() or "cancel_requested"}
+            checkpoint = self.loop_runs.write_checkpoint(
+                state.run_id,
+                node=state.node,
+                inputs={"control": "cancel", **evidence},
+                state=state.to_dict(),
+            )
+            cancelled = self.loop_runs.transition(
+                state.run_id,
+                node=state.node,
+                checkpoint_id=checkpoint.id,
+                terminal_state=LoopTerminalState.CANCELLED,
+                condition="cancel_requested",
+                evidence=evidence,
+            )
         updated_run = self.runs.update_run(
             run.id,
             phase=Phase.ENDED,

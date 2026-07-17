@@ -102,7 +102,11 @@ async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
         "occurrence_number": 2,
         "prior_occurrences": [
             {
-                "result_summary": "Lesson 1: foundations",
+                "accepted_result_text": "Lesson 1: foundations",
+                "accepted_result": {
+                    "body": "Lesson 1: foundations",
+                    "body_provenance": "state_graph.evidence.responded_message",
+                },
                 "delivery": {"state_transition": "delivered"},
             }
         ],

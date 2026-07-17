@@ -24,7 +24,7 @@ from .loop_contracts import BudgetState, LoopTerminalState, WorkspaceLock, Works
 from .loop_runs import LoopRunState
 from .runs import Run, RunStore
 from .runs.models import Approval
-from .workspaces import ShadowWorkspaceManager, WorkspaceLockStore
+from .workspaces import ShadowWorkspaceManager, WorkspaceLockStore, workspaces_match
 
 
 @dataclass(frozen=True)
@@ -987,21 +987,28 @@ def _goal_facts(goal: Any) -> dict[str, Any]:
     }
 
 
-def _workspace_matches(record_workspace: str, context_workspace: str) -> bool:
+def _workspace_matches(record_workspace: str, context_workspace: str, *, home: Path | None = None) -> bool:
     if not record_workspace or not context_workspace:
         return True
-    return record_workspace == context_workspace
+    if home is not None:
+        return workspaces_match(home, record_workspace, context_workspace)
+    return Path(record_workspace).expanduser().resolve() == Path(context_workspace).expanduser().resolve()
 
 
 def run_matches_context(record: Any, context: Any) -> bool:
     record_sender = getattr(record, "sender_id", "")
     record_peer = getattr(record, "peer_id", "")
     record_source = getattr(record, "source", "")
+    record_workspace = getattr(record, "workspace", "")
+    context_workspace = getattr(context, "workspace", "")
+    context_home = getattr(context, "home", None)
     if record_sender and context.sender_id and record_sender != context.sender_id:
         return False
     if record_peer and context.peer_id and record_peer != context.peer_id:
         return False
     if record_source and context.source and record_source != context.source:
+        return False
+    if not _workspace_matches(record_workspace, context_workspace, home=context_home):
         return False
     return True
 

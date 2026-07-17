@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from navi.capabilities import CapabilityRegistry
-from navi.capabilities_types import CapabilityContext
+from navi.capabilities_types import CapabilityContext, CapabilityResult
 from navi.loop import TracePhase
 from navi.loop_contracts import (
     BudgetPolicy,
@@ -32,6 +32,7 @@ from navi.state_graph import (
     DurableStateGraphRunner,
     ExecutedCapabilityStep,
     ModelCapabilityPlannerPort,
+    PlannedCapabilityStep,
     _transition_loop_decision,
 )
 from navi.trace import TraceStore
@@ -151,6 +152,74 @@ def test_capability_recovery_replans_after_non_retryable_call_failure() -> None:
     assert decision.replan_allowed is True
     assert decision.reason_code == "execution_not_retryable"
     assert decision.facts["recovery"]["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_executor_keeps_scope_workspace_durable_while_using_shadow_project_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    shadow = tmp_path / "shadow"
+    repo.mkdir()
+    shadow.mkdir()
+    captured: dict[str, str] = {}
+
+    async def fake_invoke(
+        self,
+        name: str,
+        args: dict,
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        del name, args, permission
+        captured["context_workspace"] = context.workspace
+        captured["project_dir"] = str(self.gateway.project_dir)
+        return CapabilityResult(ok=True, action="tool", facts={"ok": True})
+
+    monkeypatch.setattr(CapabilityRegistry, "invoke", fake_invoke)
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="run inside shadow",
+            scope=(f"repo:{repo}",),
+            acceptance_criteria=("tool executes",),
+            permission_ceiling="write",
+            metadata={"workspace": str(repo)},
+        ),
+        goal_id="goal-shadow-scope",
+        allowed_capabilities=("tools.list",),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="checker",
+            ),
+        ),
+    )
+
+    executed = await CapabilityExecutorPort(
+        home=tmp_path,
+        context=CapabilityContext(
+            home=tmp_path,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            workspace=str(repo),
+        ),
+    ).execute(
+        PlannedCapabilityStep(tool="tools.list", permission="read", args={}),
+        spec,
+        LoopRunState(
+            run_id="loop-shadow-scope",
+            goal_id=spec.goal_id,
+            loop_spec_id=spec.id,
+        ),
+        workspace=shadow,
+    )
+
+    assert executed.ok is True
+    assert captured["context_workspace"] == str(repo)
+    assert captured["project_dir"] == str(shadow)
 
 
 def test_checkpoint_restore_rejects_model_fields_missing_from_plan(tmp_path: Path) -> None:

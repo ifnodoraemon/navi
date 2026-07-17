@@ -550,6 +550,144 @@ def test_trace_waiting_approval_is_successful_pause_not_failure(tmp_path):
     assert evidence["completion_evidence"] is False
 
 
+def test_trace_ordinary_ask_recorded_as_approval_gate_is_degraded(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_event(
+        trace_id="trace-ordinary-ask",
+        phase="capability.result",
+        tool="ask.user",
+        ok=True,
+        output_data={
+            "action": "ask",
+            "facts": {"options": ["one"]},
+        },
+    )
+    store.add_loop_decision(
+        trace_id="trace-ordinary-ask",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.BLOCKED,
+            reason=LoopReason.APPROVAL_REQUIRED,
+            failure_domain=TraceFailureDomain.SAFEGUARD_POLICY,
+        ),
+    )
+
+    evaluation = store.evaluate_trace("trace-ordinary-ask")
+    evidence = json.loads(evaluation.evidence_json)
+
+    assert evaluation.outcome == "degraded"
+    assert evaluation.failure_domain == "safeguard_policy"
+    assert evidence["evaluation_rule"] == "ordinary_ask_recorded_as_approval_gate"
+    assert evidence["ordinary_ask_recorded_as_approval_gate"] is True
+
+
+def test_trace_duplicate_entity_mutation_is_degraded(tmp_path):
+    store = TraceStore(tmp_path)
+    for _ in range(2):
+        store.add_event(
+            trace_id="trace-duplicate-cancel",
+            phase="capability.result",
+            tool="goal.cancel",
+            ok=True,
+            output_data={
+                "facts": {
+                    "entity_type": "goal",
+                    "entity_id": "goal-1",
+                    "goal_id": "goal-1",
+                    "state_transition": "cancelled",
+                }
+            },
+        )
+    store.add_loop_decision(
+        trace_id="trace-duplicate-cancel",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.CONVERGED,
+            reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
+            failure_domain=TraceFailureDomain.NONE,
+        ),
+    )
+
+    evaluation = store.evaluate_trace("trace-duplicate-cancel")
+    evidence = json.loads(evaluation.evidence_json)
+
+    assert evaluation.outcome == "degraded"
+    assert evaluation.failure_domain == "loop_no_progress"
+    assert evidence["evaluation_rule"] == "duplicate_entity_mutation"
+    assert evidence["duplicate_mutation"]["refs"] == {"goal:goal-1:cancelled": 2}
+
+
+def test_trace_duplicate_collection_entity_mutation_is_degraded(tmp_path):
+    store = TraceStore(tmp_path)
+    for _ in range(2):
+        store.add_event(
+            trace_id="trace-duplicate-batch-cancel",
+            phase="capability.result",
+            tool="goal.cancel",
+            ok=True,
+            output_data={
+                "facts": {
+                    "entity_type": "goal_collection",
+                    "state_transition": "batch_cancelled",
+                    "cancelled_goals": [
+                        {
+                            "goal_id": "goal-1",
+                            "state_transition": "already_terminal",
+                        }
+                    ],
+                }
+            },
+        )
+    store.add_loop_decision(
+        trace_id="trace-duplicate-batch-cancel",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.FAILED,
+            reason=LoopReason.COMPLETION_CHECKER_BLOCKED,
+            failure_domain=TraceFailureDomain.CHECKER_BLOCKED,
+        ),
+    )
+
+    evaluation = store.evaluate_trace("trace-duplicate-batch-cancel")
+    evidence = json.loads(evaluation.evidence_json)
+
+    assert evaluation.outcome == "degraded"
+    assert evaluation.failure_domain == "loop_no_progress"
+    assert evidence["evaluation_rule"] == "duplicate_entity_mutation"
+    assert evidence["duplicate_mutation"]["refs"] == {
+        "cancelled_goals:goal-1:already_terminal": 2
+    }
+
+
+def test_trace_final_text_keywords_do_not_drive_evaluation(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_event(
+        trace_id="trace-final-keywords",
+        phase="capability.result",
+        tool="goal.state",
+        ok=True,
+        output_data={"facts": {"view": "current", "current_goals": []}},
+    )
+    store.add_event(
+        trace_id="trace-final-keywords",
+        phase="turn.final",
+        ok=True,
+        message="当前共有 18 个任务，其中后台计划任务 3 个。",
+    )
+    store.add_loop_decision(
+        trace_id="trace-final-keywords",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.CONVERGED,
+            reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
+            failure_domain=TraceFailureDomain.NONE,
+        ),
+    )
+
+    evaluation = store.evaluate_trace("trace-final-keywords")
+    evidence = json.loads(evaluation.evidence_json)
+
+    assert evaluation.outcome == "success"
+    assert evaluation.failure_domain == "none"
+    assert evidence["evaluation_rule"] == "loop_decision_converged"
+
+
 def test_trace_converged_after_capability_failure_is_degraded(tmp_path):
     store = TraceStore(tmp_path)
     store.add_event(

@@ -288,8 +288,10 @@ def assemble_notification_system_prompt() -> PromptAssembly:
                     "Decide whether the verified background event warrants a user "
                     "notification. If it does, write concise connector-appropriate text "
                     "using only the supplied facts. Do not invent causes, actions, hidden "
-                    "state, or completion. Return the structured notify/message decision; "
-                    "an empty or low-value event should not be surfaced."
+                    "state, or completion. Accepted result bodies are delivered through "
+                    "the result outbox, not by this notification role. Return the "
+                    "structured notify/message decision; an empty or low-value event "
+                    "should not be surfaced."
                 ),
             ),
         ),

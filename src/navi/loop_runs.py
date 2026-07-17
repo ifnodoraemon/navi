@@ -283,6 +283,59 @@ class LoopRunStore:
             )
         return next_state
 
+    def cancel_external_wait(
+        self,
+        run_id: str,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> LoopRunState:
+        """Cancel a loop that is parked at an external wait boundary."""
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"loop run not found: {run_id}")
+            current = _loop_run_from_row(row)
+            if str(current.terminal_state) == str(LoopTerminalState.CANCELLED):
+                return current
+            if str(current.terminal_state) not in {
+                str(LoopTerminalState.PAUSED),
+                str(LoopTerminalState.WAITING_APPROVAL),
+            }:
+                raise ValueError(
+                    "loop run is not waiting at an external boundary: "
+                    f"{current.terminal_state}"
+                )
+            now = time.time()
+            next_state = replace(
+                current,
+                terminal_state=LoopTerminalState.CANCELLED,
+                evidence={**current.evidence, **(evidence or {})},
+                updated_at=now,
+            )
+            conn.execute(
+                """
+                UPDATE loop_runs
+                SET terminal_state = ?, evidence_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(LoopTerminalState.CANCELLED),
+                    _json_dumps(next_state.evidence),
+                    now,
+                    run_id,
+                ),
+            )
+            _insert_event(
+                conn,
+                next_state,
+                "loop.cancelled",
+                evidence=evidence,
+            )
+        return next_state
+
     def complete_external_delivery(
         self,
         run_id: str,

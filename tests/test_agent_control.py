@@ -367,6 +367,7 @@ async def test_background_child_retries_transient_resource_pauses_at_original_no
     loop_run_id = spawned.facts["loop_run_id"]
     provider = _ChildReportProvider()
     monkeypatch.setattr("navi.provider.build_provider", lambda _config: provider)
+    monkeypatch.setattr("navi.resource_gateway.time.time", lambda: 1000.0)
 
     first = await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
     first_state = LoopRunStore(tmp_path).get_run(loop_run_id)

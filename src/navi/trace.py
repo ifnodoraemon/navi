@@ -678,6 +678,11 @@ def _event_input(event: TraceEvent) -> dict[str, Any]:
     return json_object(event.input_json)
 
 
+def _event_facts(event: TraceEvent) -> dict[str, Any]:
+    facts = _event_output(event).get("facts")
+    return facts if isinstance(facts, dict) else {}
+
+
 def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRunView]:
     if not events:
         return []
@@ -1283,9 +1288,17 @@ def _waiting_approval_loop_decision_rule(
     events: list[TraceEvent],
     evidence: dict[str, Any],
 ) -> TraceEvaluationDraft | None:
-    del output, events
+    del output
     if summary.reason != str(LoopReason.APPROVAL_REQUIRED):
         return None
+    if not _trace_contains_approval_request(events) and _trace_contains_user_ask(events):
+        evidence["ordinary_ask_recorded_as_approval_gate"] = True
+        return _evaluation(
+            TraceOutcome.DEGRADED,
+            TraceFailureDomain.SAFEGUARD_POLICY,
+            evidence,
+            rule="ordinary_ask_recorded_as_approval_gate",
+        )
     evidence["pending_external_gate"] = True
     evidence["completion_evidence"] = False
     return _evaluation(
@@ -1326,6 +1339,74 @@ def _converged_loop_decision_rule(
         evidence,
         rule="loop_decision_converged_with_issue",
     )
+
+
+def _duplicate_entity_mutation_rule(
+    events: list[TraceEvent], evidence: dict[str, Any]
+) -> TraceEvaluationDraft | None:
+    seen: dict[str, int] = {}
+    for event in events:
+        if event.phase != TracePhase.CAPABILITY_RESULT or not event.ok:
+            continue
+        facts = _event_facts(event)
+        for mutation_ref in _entity_mutation_refs(facts):
+            seen[mutation_ref] = seen.get(mutation_ref, 0) + 1
+    duplicates = {ref: count for ref, count in seen.items() if count > 1}
+    if not duplicates:
+        return None
+    evidence["duplicate_mutation"] = {
+        "refs": duplicates,
+    }
+    return _evaluation(
+        TraceOutcome.DEGRADED,
+        TraceFailureDomain.LOOP_NO_PROGRESS,
+        evidence,
+        rule="duplicate_entity_mutation",
+    )
+
+
+def _entity_mutation_refs(facts: dict[str, Any]) -> list[str]:
+    refs = _single_entity_mutation_refs(facts)
+    for key, value in facts.items():
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, dict):
+                refs.extend(_single_entity_mutation_refs(item, collection=key))
+    return refs
+
+
+def _single_entity_mutation_refs(
+    facts: dict[str, Any],
+    *,
+    collection: str = "",
+) -> list[str]:
+    transition = str(facts.get("state_transition") or "")
+    if not transition or transition == "state_read":
+        return []
+    entity_type = str(facts.get("entity_type") or collection or "entity")
+    entity_id = _entity_id_from_facts(facts)
+    if not entity_id:
+        return []
+    return [f"{entity_type}:{entity_id}:{transition}"]
+
+
+def _entity_id_from_facts(facts: dict[str, Any]) -> str:
+    for key in (
+        "entity_id",
+        "goal_id",
+        "run_id",
+        "loop_run_id",
+        "approval_id",
+        "session_id",
+        "memory_id",
+        "trace_id",
+        "delivery_id",
+    ):
+        value = str(facts.get(key) or "")
+        if value:
+            return value
+    return ""
 
 
 LOOP_DECISION_EVALUATION_RULES: tuple[LoopDecisionEvaluationRule, ...] = (
@@ -1499,6 +1580,7 @@ def _missing_trace_rule(
 
 
 TRACE_EVALUATION_RULES: tuple[TraceEvaluationRule, ...] = (
+    _duplicate_entity_mutation_rule,
     _loop_decision_rule,
     _planner_failure_rule,
     _safeguard_failure_rule,
@@ -1514,6 +1596,37 @@ def _capability_result_has_safeguard_decision(event: TraceEvent) -> bool:
     output = _event_output(event)
     facts = output.get("facts")
     return isinstance(facts, dict) and isinstance(facts.get("hook_decision"), dict)
+
+
+def _trace_contains_approval_request(events: list[TraceEvent]) -> bool:
+    for event in events:
+        if event.phase != TracePhase.CAPABILITY_RESULT:
+            continue
+        facts = _event_facts(event)
+        if _capability_result_is_approval_request(facts):
+            return True
+        if isinstance(facts.get("pending_approval"), dict):
+            return True
+        if isinstance(facts.get("current_approval"), dict):
+            return True
+        if isinstance(facts.get("approval"), dict) and str(facts.get("entity_type") or "") in {
+            "approval",
+            "approval_request",
+        }:
+            return True
+    return False
+
+
+def _trace_contains_user_ask(events: list[TraceEvent]) -> bool:
+    for event in events:
+        if event.phase != TracePhase.CAPABILITY_RESULT or not event.ok:
+            continue
+        output = _event_output(event)
+        if event.tool == "ask.user":
+            return True
+        if str(output.get("action") or "") == "ask" and event.tool in {"respond", "ask.user"}:
+            return True
+    return False
 
 
 def _capability_result_is_approval_request(facts: Any) -> bool:

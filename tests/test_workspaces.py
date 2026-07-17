@@ -7,7 +7,12 @@ import pytest
 import navi.workspaces as workspaces_module
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.loop_contracts import LockMode, MergeStatus
-from navi.workspaces import ShadowWorkspaceManager, WorkspaceLockStore, fingerprint_workspace
+from navi.workspaces import (
+    ShadowWorkspaceManager,
+    WorkspaceLockStore,
+    fingerprint_workspace,
+    workspaces_match,
+)
 
 
 def test_shadow_workspace_merge_back_applies_clean_agent_changes(tmp_path: Path) -> None:
@@ -64,6 +69,19 @@ def test_unknown_managed_workspace_has_no_guessed_fallback(tmp_path: Path) -> No
     unknown = manager.shadow_root / "missing-audit" / "shadow"
 
     assert manager.durable_workspace_for(str(unknown)) == str(unknown.resolve())
+
+
+def test_workspace_match_uses_durable_shadow_identity(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("base\n", encoding="utf-8")
+    home = tmp_path / ".navi"
+    shadow = ShadowWorkspaceManager(home).create_shadow(
+        run_id="run-match",
+        workspace=repo,
+    )
+
+    assert workspaces_match(home, str(repo), shadow.shadow_workspace) is True
 
 
 def test_terminal_artifact_gc_preserves_active_shadows(tmp_path: Path) -> None:
