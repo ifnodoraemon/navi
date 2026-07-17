@@ -2,6 +2,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from navi.config import ModelConfig
 from navi.provider import (
     ChatMessage,
     ModelPool,
@@ -11,6 +12,14 @@ from navi.provider import (
     _validate_structured_output,
 )
 from navi.resource_gateway import ResourceRequest
+
+
+def test_model_config_role_params_use_global_defaults_and_overrides():
+    config = ModelConfig(role_params={"planner": {"max_tokens": 1234}})
+
+    assert config.get_role_params("planner") == {"temperature": 0.0, "max_tokens": 1234}
+    assert config.get_role_params("unknown") == {"temperature": 0.3, "max_tokens": 8192}
+
 
 @patch("navi.provider.resolve_model_config")
 def test_openai_provider_init(mock_resolve):

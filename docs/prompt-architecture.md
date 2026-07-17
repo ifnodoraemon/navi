@@ -78,6 +78,14 @@ The responder converts verified facts into user-facing language. It does not
 re-plan execution, invent missing success, approve operations, or replace a
 pending clarification selected by the planner.
 
+## Checker And Maintenance Prompts
+
+Source: `src/navi/prompt_os.py`
+
+The semantic checker prompt and goal-event compaction prompt are assembled in
+the prompt OS as well. Runtime modules pass bounded facts into these assemblers;
+they must not embed durable prompt text inline in loop or persistence modules.
+
 ## Audit Contract
 
 Every prompt assembly exposes a manifest containing its assembly name, block

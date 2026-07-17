@@ -14,6 +14,7 @@ from .defaults import (
     DEFAULT_MODEL_TIMEOUT_SECONDS,
     DEFAULT_MODEL_MODEL,
     DEFAULT_MODEL_PROVIDER,
+    DEFAULT_MODEL_ROLE_PARAMS,
     DEFAULT_SERVICE_NAME,
 )
 from .paths import ensure_home
@@ -34,15 +35,14 @@ class ModelConfig:
     role_params: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def get_role_params(self, role: str) -> dict[str, Any]:
-        defaults = {
-            "planner": {"temperature": 0.0, "max_tokens": 4096},
-            "checker": {"temperature": 0.0, "max_tokens": 2048},
-            "responder": {"temperature": 0.6, "max_tokens": 16384},
-            "notification": {"temperature": 0.2, "max_tokens": 2048},
-            "consolidator": {"temperature": 0.1, "max_tokens": 2048},
-        }
-        base = defaults.get(role, {"temperature": 0.3, "max_tokens": 8192})
-        base.update(self.role_params.get(role, {}))
+        base = dict(
+            DEFAULT_MODEL_ROLE_PARAMS.get(role)
+            or DEFAULT_MODEL_ROLE_PARAMS.get("default")
+            or {"temperature": 0.3, "max_tokens": 8192}
+        )
+        overrides = self.role_params.get(role, {})
+        if isinstance(overrides, dict):
+            base.update(overrides)
         return base
 
 

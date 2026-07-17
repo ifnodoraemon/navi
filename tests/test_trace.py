@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from contextlib import contextmanager
 
 import pytest
 from fastapi.testclient import TestClient
@@ -151,7 +153,7 @@ def test_loop_decision_filter_is_applied_before_pagination(tmp_path):
     assert decisions[0].phase == "loop.decision"
 
 
-def test_trace_store_redacts_legacy_rows_on_init(tmp_path):
+def test_trace_store_redacts_legacy_rows_on_schema_migration(tmp_path):
     TraceStore(tmp_path)
     with connect(tmp_path / "traces.db") as conn:
         conn.execute(
@@ -206,6 +208,15 @@ def test_trace_store_redacts_legacy_rows_on_init(tmp_path):
                 2_000_000_000.0,
             ),
         )
+        conn.execute(
+            """
+            INSERT INTO schema_versions(component, version, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(component) DO UPDATE
+            SET version = excluded.version, updated_at = excluded.updated_at
+            """,
+            ("traces", 1, 2_000_000_000.0),
+        )
 
     store = TraceStore(tmp_path)
     event = store.list_events("trace-legacy")[0]
@@ -223,6 +234,27 @@ def test_trace_store_redacts_legacy_rows_on_init(tmp_path):
             "SELECT content FROM trace_blobs WHERE hash = ?", ("legacy-hash",)
         ).fetchone()[0]
     assert blob_content == "简历 电话：[REDACTED_PHONE] 邮箱：[REDACTED_EMAIL]"
+
+
+def test_trace_store_locked_write_does_not_fail_runtime(tmp_path, monkeypatch):
+    store = TraceStore(tmp_path)
+
+    @contextmanager
+    def locked_connect(_path):
+        raise sqlite3.OperationalError("database is locked")
+        yield
+
+    monkeypatch.setattr("navi.trace.connect", locked_connect)
+
+    event = store.add_event(
+        trace_id="trace-locked",
+        phase="planner.syscall",
+        input_data={"text": "ifnodoraemon@example.com"},
+    )
+
+    assert event.trace_id == "trace-locked"
+    assert event.phase == "planner.syscall"
+    assert json.loads(event.input_json) == {"text": "[REDACTED_EMAIL]"}
 
 
 def test_trace_store_reinitializes_schema_drift(tmp_path):

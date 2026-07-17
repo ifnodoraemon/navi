@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -33,7 +34,7 @@ from .paths import db_paths
 from .schema import Column, Table
 
 
-TRACE_STORE_SCHEMA_VERSION = 1
+TRACE_STORE_SCHEMA_VERSION = 2
 LOOP_DECISION_PHASE = LoopPhase.DECISION
 
 
@@ -117,7 +118,13 @@ class TraceStore:
         self._init_db()
 
     def _init_db(self) -> None:
+        maintenance_needed = False
         with connect(self.db_path) as conn:
+            had_trace_events = _table_exists(conn, "trace_events")
+            previous_version = _schema_version(conn, "traces")
+            maintenance_needed = had_trace_events and (
+                previous_version is None or previous_version < TRACE_STORE_SCHEMA_VERSION
+            )
             check_schema_version(conn, "traces", TRACE_STORE_SCHEMA_VERSION)
             conn.execute(TRACE_EVENTS_TABLE.ddl)
             _ensure_schema_current(conn, TRACE_EVENTS_TABLE)
@@ -132,8 +139,16 @@ class TraceStore:
             conn.execute(TRACE_BLOBS_TABLE.ddl)
             _ensure_schema_current(conn, TRACE_BLOBS_TABLE)
             write_schema_version(conn, "traces", TRACE_STORE_SCHEMA_VERSION)
-        self._redact_existing_trace_data()
-        self.clean_old_traces()
+        if maintenance_needed:
+            self._run_startup_maintenance()
+
+    def _run_startup_maintenance(self) -> None:
+        try:
+            self._redact_existing_trace_data()
+        except sqlite3.OperationalError as exc:
+            if _sqlite_locked(exc):
+                return
+            raise
 
     def clean_old_traces(self, days: int = 30) -> None:
         """Deletes traces older than the specified number of days to prevent DB bloat."""
@@ -249,30 +264,37 @@ class TraceStore:
             message=redacted_message,
             created_at=time.time(),
         )
-        with connect(self.db_path) as conn:
-            for h, c in blobs_to_insert.items():
-                conn.execute("INSERT OR IGNORE INTO trace_blobs(hash, content) VALUES (?, ?)", (h, c))
-            values: dict[str, Any] = {
-                "id": event.id,
-                "trace_id": event.trace_id,
-                "session_id": event.session_id,
-                "run_id": event.run_id,
-                "phase": event.phase,
-                "source": event.source,
-                "peer_id": event.peer_id,
-                "sender_id": event.sender_id,
-                "tool": event.tool,
-                "model_role": event.model_role,
-                "ok": int(event.ok),
-                "input_json": event.input_json,
-                "output_json": event.output_json,
-                "message": event.message,
-                "created_at": event.created_at,
-            }
-            conn.execute(
-                f"INSERT INTO trace_events({', '.join(_TRACE_EVENT_COLUMNS)}) VALUES ({', '.join('?' for _ in _TRACE_EVENT_COLUMNS)})",
-                tuple(values[name] for name in _TRACE_EVENT_COLUMNS),
-            )
+        try:
+            with connect(self.db_path) as conn:
+                for h, c in blobs_to_insert.items():
+                    conn.execute(
+                        "INSERT OR IGNORE INTO trace_blobs(hash, content) VALUES (?, ?)",
+                        (h, c),
+                    )
+                values: dict[str, Any] = {
+                    "id": event.id,
+                    "trace_id": event.trace_id,
+                    "session_id": event.session_id,
+                    "run_id": event.run_id,
+                    "phase": event.phase,
+                    "source": event.source,
+                    "peer_id": event.peer_id,
+                    "sender_id": event.sender_id,
+                    "tool": event.tool,
+                    "model_role": event.model_role,
+                    "ok": int(event.ok),
+                    "input_json": event.input_json,
+                    "output_json": event.output_json,
+                    "message": event.message,
+                    "created_at": event.created_at,
+                }
+                conn.execute(
+                    f"INSERT INTO trace_events({', '.join(_TRACE_EVENT_COLUMNS)}) VALUES ({', '.join('?' for _ in _TRACE_EVENT_COLUMNS)})",
+                    tuple(values[name] for name in _TRACE_EVENT_COLUMNS),
+                )
+        except sqlite3.OperationalError as exc:
+            if not _sqlite_locked(exc):
+                raise
         return replace(
             event,
             input_json=json.dumps(_redact(input_data or {}), ensure_ascii=False, sort_keys=True, default=str),
@@ -1748,6 +1770,31 @@ TRACE_BLOBS_TABLE = Table(
 _TRACE_EVENT_COLUMNS = [col.name for col in TRACE_EVENTS_TABLE.columns]
 
 
+def _schema_version(conn, component: str) -> int | None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_versions (
+            component TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    row = conn.execute(
+        "SELECT version FROM schema_versions WHERE component = ?",
+        (component,),
+    ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def _table_exists(conn, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
 def _ensure_schema_current(conn, table: Table) -> None:
     """Trace tables are ephemeral audit data: on schema drift we drop and
     recreate them rather than blocking agent startup. This differs from the
@@ -1766,3 +1813,7 @@ def _table_schema(conn, table: str) -> list[tuple[str, str, int, int]]:
         (row[1], str(row[2]).upper(), int(row[3]), int(row[5]))
         for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
     ]
+
+
+def _sqlite_locked(exc: sqlite3.OperationalError) -> bool:
+    return "locked" in str(exc).lower()

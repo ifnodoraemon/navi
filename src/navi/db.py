@@ -11,10 +11,18 @@ from pathlib import Path
 def connect(path: Path) -> Iterator[sqlite3.Connection]:
     """Open a SQLite connection that commits/rolls back and always closes."""
     with closing(sqlite3.connect(path, timeout=30.0)) as conn:
-        _execute_with_busy_retry(conn, "PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        _ensure_wal_mode(conn)
         conn.execute("PRAGMA foreign_keys=ON")
         with conn:
             yield conn
+
+
+def _ensure_wal_mode(conn: sqlite3.Connection) -> None:
+    row = conn.execute("PRAGMA journal_mode").fetchone()
+    mode = str(row[0]).lower() if row else ""
+    if mode != "wal":
+        _execute_with_busy_retry(conn, "PRAGMA journal_mode=WAL")
 
 
 def _execute_with_busy_retry(conn: sqlite3.Connection, sql: str) -> None:

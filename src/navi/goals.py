@@ -13,6 +13,7 @@ from typing import Any
 from .db import connect, check_schema_version, write_schema_version
 from .paths import db_paths
 from .persistence_scope import append_actor_scope
+from .prompt_os import assemble_goal_event_compaction_messages
 from .runs import Run
 from .schema import Column, Table, assert_schema_exact
 
@@ -521,18 +522,11 @@ class GoalStore:
         ]
         deletable_ids = [e.id for e in events if not self._is_constraint_event(e)]
 
-        from navi.provider import ChatMessage
-
         lines = []
         for e in events:
             lines.append(f"[{e.created_at}] {e.event_type} {e.phase} {e.evidence_json}")
 
-        prompt = (
-            "Summarize the following goal events to preserve intent, completed steps, pending approvals, "
-            "unresolved questions, and safety constraints. Do not lose any constraints or pending approvals.\n\n"
-            + "\n".join(lines)
-        )
-        summary = await runtime.complete([ChatMessage("user", prompt)], role="planner")
+        summary = await runtime.complete(assemble_goal_event_compaction_messages(lines), role="planner")
 
         event = GoalEvent(
             id=uuid.uuid4().hex,
