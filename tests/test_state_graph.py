@@ -1042,7 +1042,12 @@ class _RespondPlanningProvider:
                     {
                         "tool": "respond",
                         "permission": "read",
-                        "args": {"message": "which investor should I send the resume to?"},
+                        "args": {
+                            "message": "which investor should I send the resume to?",
+                            "private_evidence": {
+                                "smoke_token": "STATE_GRAPH_PRIVATE_TOKEN"
+                            },
+                        },
                         "reason": "objective is blocked by missing recipient identity",
                     }
                 ]
@@ -1105,3 +1110,7 @@ async def test_respond_message_is_preserved_across_loop(tmp_path: Path) -> None:
         "which investor should I send the resume to?"
     )
     assert result.evidence.get("responded_action") == "chat"
+    assert "STATE_GRAPH_PRIVATE_TOKEN" not in result.evidence.get("responded_message")
+    assert result.evidence["capability_result"]["facts"]["private_evidence"] == {
+        "smoke_token": "STATE_GRAPH_PRIVATE_TOKEN"
+    }

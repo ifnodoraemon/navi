@@ -6,7 +6,12 @@ ACTION_SPECS = [
         name="respond",
         capability_class="conversation",
         execution_contexts=("turn", "actuator", CONTROL_PLANE_CONTEXT),
-        description="""Send a terminal user-facing message. This action never pauses the loop or waits for input. Options are non-blocking presentation facts.""",
+        description=(
+            "Send a terminal user-facing message. This action never pauses the "
+            "loop or waits for input. message is the only user-visible body. "
+            "private_evidence is structured checker/trace evidence and is never "
+            "delivered to the user. Options are non-blocking presentation facts."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -19,10 +24,24 @@ ACTION_SPECS = [
                     "items": {"type": "string"},
                     "description": "Optional list of explicit choices for the user to pick from.",
                 },
+                "private_evidence": {
+                    "type": "object",
+                    "description": (
+                        "Structured non-user-visible evidence for checker/trace "
+                        "validation, such as smoke markers or audit facts."
+                    ),
+                },
             },
             "required": ["message"],
         },
-        output_schema={"type": "object", "properties": {"message": {"type": "string"}}},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "message": {"type": "string"},
+                "options": {"type": "array", "items": {"type": "string"}},
+                "private_evidence": {"type": "object"},
+            },
+        },
         facts_only=False,
         mutates=False,
         permission="read",

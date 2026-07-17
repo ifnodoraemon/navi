@@ -72,6 +72,29 @@ async def test_respond_options_are_suggestions_not_user_pause(tmp_path: Path) ->
     assert question.yields_control is True
 
 
+@pytest.mark.asyncio
+async def test_respond_private_evidence_is_not_user_visible(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    token = "PRIVATE_SMOKE_TOKEN"
+
+    response = await registry.invoke(
+        "respond",
+        {
+            "message": "定时任务投递测试已完成，结果正文已按原文送达。",
+            "private_evidence": {"smoke_token": token},
+        },
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert response.ok is True
+    assert response.action == "chat"
+    assert response.message == "定时任务投递测试已完成，结果正文已按原文送达。"
+    assert token not in response.message
+    assert response.facts["private_evidence"] == {"smoke_token": token}
+    assert response.facts["private_evidence_provenance"] == "respond.private_evidence"
+
+
 class _PlanningProvider:
     def __init__(self) -> None:
         self.calls: list[str] = []

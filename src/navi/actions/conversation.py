@@ -28,21 +28,21 @@ class RespondCapability(BaseCapability):
             raise SchemaMismatch("respond requires message")
         options = args.get("options")
         has_options = isinstance(options, list) and len(options) > 0
+        private_evidence = args.get("private_evidence")
+        facts: dict[str, Any] = {}
 
         if has_options:
-            return CapabilityResult(
-                ok=True,
-                action=CONVERSATION_ACTION_CHAT,
-                message=message,
-                terminal=True,
-                facts={"options": options},
-            )
+            facts["options"] = options
+        if isinstance(private_evidence, dict) and private_evidence:
+            facts["private_evidence"] = private_evidence
+            facts["private_evidence_provenance"] = "respond.private_evidence"
 
         return CapabilityResult(
             ok=True,
             action=CONVERSATION_ACTION_CHAT,
             message=message,
             terminal=True,
+            facts=facts or None,
         )
 
 

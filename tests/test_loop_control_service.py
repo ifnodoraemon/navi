@@ -66,6 +66,7 @@ def test_loop_control_service_opens_goal_without_executing_state_graph(tmp_path)
 
 def test_background_converged_result_creates_delivery_outbox(tmp_path):
     service = LoopControlService(tmp_path)
+    token = "OUTBOX_PRIVATE_TOKEN"
     opened = service.open_goal(
         OpenGoalRequest(
             objective="send accepted lesson",
@@ -88,12 +89,21 @@ def test_background_converged_result_creates_delivery_outbox(tmp_path):
         opened,
         StateGraphRunResult(
             run_state=terminal,
-            evidence={"responded_message": "Accepted lesson body."},
+            evidence={
+                "responded_message": "Accepted lesson body.",
+                "capability_result": {
+                    "facts": {
+                        "private_evidence": {"smoke_token": token},
+                        "private_evidence_provenance": "respond.private_evidence",
+                    }
+                },
+            },
         ),
     )
 
     accepted = service.goals.accepted_result_for_run(opened.run.id)
     assert accepted["body"] == "Accepted lesson body."
+    assert token not in accepted["body"]
     assert accepted["body_provenance"] == "state_graph.evidence.responded_message"
     assert accepted["delivery_status"] == "pending"
 
