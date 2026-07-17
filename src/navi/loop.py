@@ -28,6 +28,7 @@ class LoopReason(StrEnum):
     CAPABILITY_FACT_RECORDED = "capability_fact_recorded"
     COMPLETION_CHECKER_BLOCKED = "completion_checker_blocked"
     COMPLETION_EVIDENCE_TRUE = "completion_evidence_true"
+    EXTERNAL_PAUSE = "external_pause"
     PLANNER_OR_PARSER_FAILURE = "planner_or_parser_failure"
     PROVIDER_NO_RESPONSE = "provider_no_response"
     REPEATED_PROGRESS_SIGNATURE = "repeated_progress_signature"
@@ -40,6 +41,7 @@ class LoopCheckName(StrEnum):
     CAPABILITY_RESULT = "capability_result"
     COMPLETION_CHECKER = "completion_checker"
     COMPLETION_EVIDENCE = "completion_evidence"
+    EXTERNAL_PAUSE = "external_pause"
     NO_PROGRESS_GATE = "no_progress_gate"
     PLANNER_RESULT = "planner_result"
     TERMINAL_RESULT = "terminal_result"
@@ -218,6 +220,11 @@ TRACE_FAILURE_DOMAIN_VALUES = frozenset(item.value for item in TraceFailureDomai
 
 
 def loop_decision_ok(decision: LoopDecision) -> bool:
+    if (
+        str(decision.reason) == str(LoopReason.EXTERNAL_PAUSE)
+        and str(decision.failure_domain) in {"", str(TraceFailureDomain.NONE)}
+    ):
+        return True
     return str(decision.decision) not in NON_OK_LOOP_DECISION_VALUES
 
 
@@ -269,6 +276,8 @@ def classify_loop_failure(output: dict[str, Any]) -> TraceFailureDomain:
 
 def classify_loop_blocked(output: dict[str, Any]) -> TraceFailureDomain:
     summary = loop_decision_summary(output)
+    if summary.reason == str(LoopReason.EXTERNAL_PAUSE):
+        return TraceFailureDomain.NONE
     if summary.failure_domain and summary.failure_domain != str(TraceFailureDomain.NONE):
         return TraceFailureDomain(summary.failure_domain)
     if str(LoopCheckName.NO_PROGRESS_GATE) in summary.failed_gates:

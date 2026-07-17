@@ -11,7 +11,7 @@ import pytest
 
 from navi.capabilities import CapabilityRegistry
 from navi.capabilities_types import CapabilityContext, CapabilityResult
-from navi.loop import TracePhase
+from navi.loop import LoopCheckName, LoopDecisionKind, LoopReason, TraceFailureDomain, TracePhase
 from navi.loop_contracts import (
     BudgetPolicy,
     GoalSpec,
@@ -454,6 +454,35 @@ def test_transition_decision_promotes_explicit_side_effect_summary() -> None:
         "compensate": "filesystem.remove_staged_outbound",
         "commit_strategy": "deferred",
     }
+
+
+def test_transition_decision_records_connector_outbound_as_external_pause() -> None:
+    decision = _transition_loop_decision(
+        from_state=LoopRunState(
+            run_id="loop-1",
+            goal_id="goal-1",
+            loop_spec_id="spec-1",
+            node=LoopNode.EXECUTE,
+        ),
+        to_state=LoopRunState(
+            run_id="loop-1",
+            goal_id="goal-1",
+            loop_spec_id="spec-1",
+            node=LoopNode.PAUSE,
+        ),
+        checkpoint_id="checkpoint-1",
+        condition="resource_or_user_pause",
+        terminal_state=LoopTerminalState.PAUSED,
+        evidence={"executor": {"action": "connector_outbound", "facts": {}}},
+    )
+
+    assert decision.decision == LoopDecisionKind.BLOCKED
+    assert decision.reason == LoopReason.EXTERNAL_PAUSE
+    assert decision.failure_domain == TraceFailureDomain.NONE
+    assert decision.gate_results
+    assert decision.gate_results[0].name == LoopCheckName.EXTERNAL_PAUSE
+    assert decision.gate_results[0].passed is True
+    assert not decision.checker_results
 
 
 @pytest.mark.asyncio

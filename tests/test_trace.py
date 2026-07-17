@@ -582,6 +582,51 @@ def test_trace_waiting_approval_is_successful_pause_not_failure(tmp_path):
     assert evidence["completion_evidence"] is False
 
 
+def test_trace_external_pause_is_successful_pause_not_approval(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_event(
+        trace_id="trace-external-pause",
+        phase="capability.result",
+        tool="channel.send_file",
+        ok=True,
+        output_data={
+            "action": "connector_outbound",
+            "facts": {
+                "connector_delivery": {
+                    "mode": "synchronous",
+                    "path": "/tmp/report.xlsx",
+                }
+            },
+        },
+    )
+    decision_event = store.add_loop_decision(
+        trace_id="trace-external-pause",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.BLOCKED,
+            reason=LoopReason.EXTERNAL_PAUSE,
+            failure_domain=TraceFailureDomain.NONE,
+            tool="connector_outbound",
+            gate_results=(
+                LoopCheckResult(
+                    name=LoopCheckName.EXTERNAL_PAUSE,
+                    passed=True,
+                    reason=str(LoopReason.EXTERNAL_PAUSE),
+                ),
+            ),
+        ),
+    )
+
+    evaluation = store.evaluate_trace("trace-external-pause")
+    evidence = json.loads(evaluation.evidence_json)
+
+    assert decision_event.ok is True
+    assert evaluation.outcome == "success"
+    assert evaluation.failure_domain == "none"
+    assert evidence["evaluation_rule"] == "loop_decision_external_pause"
+    assert evidence["pending_external_action"] is True
+    assert "pending_external_gate" not in evidence
+
+
 def test_trace_ordinary_ask_recorded_as_approval_gate_is_degraded(tmp_path):
     store = TraceStore(tmp_path)
     store.add_event(

@@ -2038,11 +2038,7 @@ def _transition_loop_decision(
     failure_domain = _transition_failure_domain(condition, terminal_state)
     check = LoopCheckResult(
         name=_transition_check_name(condition, terminal_state),
-        passed=str(decision)
-        not in {
-            str(LoopDecisionKind.BLOCKED),
-            str(LoopDecisionKind.FAILED),
-        },
+        passed=_transition_check_passed(condition, decision),
         reason=str(reason),
         evidence={
             "from_node": str(from_state.node),
@@ -2058,6 +2054,7 @@ def _transition_loop_decision(
     checker_results: tuple[LoopCheckResult, ...] = (check,)
     if str(check.name) in {
         str(LoopCheckName.APPROVAL_GATE),
+        str(LoopCheckName.EXTERNAL_PAUSE),
         str(LoopCheckName.NO_PROGRESS_GATE),
     }:
         gate_results = (check,)
@@ -2169,6 +2166,8 @@ def _transition_decision_kind(
         return LoopDecisionKind.BLOCKED
     if terminal:
         return LoopDecisionKind.FAILED
+    if condition == "resource_pause":
+        return LoopDecisionKind.CONTINUE
     if condition in {
         "planner_failed",
         "capability_failed",
@@ -2196,10 +2195,10 @@ def _transition_reason(
         return LoopReason.REPEATED_PROGRESS_SIGNATURE
     if condition in {"checker_failed", "checker_rejected", "no_route_available"}:
         return LoopReason.COMPLETION_CHECKER_BLOCKED
+    if condition in {"resource_pause", "resource_or_user_pause"}:
+        return LoopReason.EXTERNAL_PAUSE
     if condition in {
         "approval_required",
-        "resource_pause",
-        "resource_or_user_pause",
         "resource_escalate",
         "side_effect_commit_required",
     }:
@@ -2228,12 +2227,15 @@ def _transition_failure_domain(
         return TraceFailureDomain.LOOP_NO_PROGRESS
     if condition in {"checker_failed", "checker_rejected", "no_route_available"}:
         return TraceFailureDomain.CHECKER_BLOCKED
+    if condition in {"resource_pause", "resource_or_user_pause"} or terminal == str(
+        LoopTerminalState.PAUSED
+    ):
+        return TraceFailureDomain.NONE
     if (
-        condition.startswith("resource_")
+        condition in {"resource_escalate", "resource_blocked"}
         or condition == "side_effect_commit_required"
         or terminal
         in {
-            str(LoopTerminalState.PAUSED),
             str(LoopTerminalState.WAITING_APPROVAL),
         }
     ):
@@ -2259,11 +2261,22 @@ def _transition_check_name(
         return LoopCheckName.CAPABILITY_RESULT
     if condition == "repeated_progress_signature":
         return LoopCheckName.NO_PROGRESS_GATE
+    if condition in {"resource_pause", "resource_or_user_pause"}:
+        return LoopCheckName.EXTERNAL_PAUSE
     if condition.startswith("resource_") or condition == "side_effect_commit_required":
         return LoopCheckName.APPROVAL_GATE
     if terminal_state:
         return LoopCheckName.TERMINAL_RESULT
     return LoopCheckName.COMPLETION_CHECKER
+
+
+def _transition_check_passed(condition: str, decision: LoopDecisionKind | str) -> bool:
+    if condition in {"resource_pause", "resource_or_user_pause"}:
+        return True
+    return str(decision) not in {
+        str(LoopDecisionKind.BLOCKED),
+        str(LoopDecisionKind.FAILED),
+    }
 
 
 def _transition_tool(evidence: dict[str, Any]) -> str:

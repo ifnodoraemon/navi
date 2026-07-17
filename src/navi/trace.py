@@ -1331,6 +1331,25 @@ def _waiting_approval_loop_decision_rule(
     )
 
 
+def _external_pause_loop_decision_rule(
+    summary: LoopDecisionSummary,
+    output: dict[str, Any],
+    events: list[TraceEvent],
+    evidence: dict[str, Any],
+) -> TraceEvaluationDraft | None:
+    del output, events
+    if summary.reason != str(LoopReason.EXTERNAL_PAUSE):
+        return None
+    evidence["pending_external_action"] = True
+    evidence["completion_evidence"] = False
+    return _evaluation(
+        TraceOutcome.SUCCESS,
+        TraceFailureDomain.NONE,
+        evidence,
+        rule="loop_decision_external_pause",
+    )
+
+
 def _converged_loop_decision_rule(
     summary: LoopDecisionSummary,
     output: dict[str, Any],
@@ -1434,6 +1453,7 @@ def _entity_id_from_facts(facts: dict[str, Any]) -> str:
 LOOP_DECISION_EVALUATION_RULES: tuple[LoopDecisionEvaluationRule, ...] = (
     _failed_loop_decision_rule,
     _waiting_approval_loop_decision_rule,
+    _external_pause_loop_decision_rule,
     _blocked_loop_decision_rule,
     _converged_loop_decision_rule,
 )

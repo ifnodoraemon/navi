@@ -4,7 +4,8 @@ Navi treats prompts as an inspectable interface. Stable policy, volatile
 runtime facts, capability manifests, memory, and user content are separate
 blocks with source, trust, mutability, and digest metadata.
 
-Implementation: `src/navi/prompt_os.py`
+Implementation: stable prompt specifications live in `src/navi/specs_data.py`;
+assembly, rendering, and manifest generation live in `src/navi/prompt_os.py`.
 
 Inspection:
 
@@ -71,7 +72,7 @@ that state changed.
 
 ## Responder Prompt
 
-Sources: `assemble_fact_response_system_prompt`,
+Sources: `src/navi/specs_data.py`, `assemble_fact_response_system_prompt`,
 `assemble_fact_response_turn_input`, `build_system_prompt`
 
 The responder converts verified facts into user-facing language. It does not
@@ -80,11 +81,12 @@ pending clarification selected by the planner.
 
 ## Checker And Maintenance Prompts
 
-Source: `src/navi/prompt_os.py`
+Sources: `src/navi/specs_data.py`, `src/navi/prompt_os.py`
 
-The semantic checker prompt and goal-event compaction prompt are assembled in
-the prompt OS as well. Runtime modules pass bounded facts into these assemblers;
-they must not embed durable prompt text inline in loop or persistence modules.
+The semantic checker, notification, summarizer, and goal-event compaction
+prompts keep stable wording in the global prompt specs. Runtime modules pass
+bounded facts into prompt OS assemblers; they must not embed durable prompt text
+inline in loop, connector, or persistence modules.
 
 ## Audit Contract
 
@@ -95,3 +97,7 @@ prose.
 
 Prompt changes that alter machine behavior require the same review, regression
 tests, and trace evidence as code changes.
+
+`tests/test_prompt_os.py` enforces that runtime prompt assemblies are backed by
+global specs and that stable runtime prompt text does not scatter across source
+modules.
