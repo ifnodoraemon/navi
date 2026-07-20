@@ -249,13 +249,39 @@ class ConnectorIngressRuntime:
         except Exception as exc:
             import logging
 
+            from .safeguards import redact_secrets
+
             logging.getLogger("navi.connector").error(
                 "Agent turn failed for correlation %s: %s",
                 event.correlation_id,
                 exc,
                 exc_info=True,
             )
-            return None
+            error = redact_secrets(str(exc))
+            return AgentTurnResult(
+                text="",
+                session_id=event.session_id,
+                action="chat",
+                trace_id=event.correlation_id,
+                ok=False,
+                error_reason="runtime_exception",
+                facts={
+                    "entity_type": "runtime_exception",
+                    "entity_id": event.correlation_id,
+                    "state_transition": "failed",
+                    "turn_scope": "current",
+                    "source_agent": "main_agent",
+                    "reason": "agent_turn_exception",
+                    "exception_type": type(exc).__name__,
+                    "error": error,
+                    "model_response_present": False,
+                    "finalization": {
+                        "reason": "runtime_exception",
+                        "trace_id": event.correlation_id,
+                        "model_response_present": False,
+                    },
+                },
+            )
         finally:
             heartbeat_task.cancel()
 

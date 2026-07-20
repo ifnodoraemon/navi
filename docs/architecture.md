@@ -90,6 +90,13 @@ change capability or arguments, clarify, or explain a blocker. A checker verdict
 is evidence, not a runtime-selected next action. Trace proxies record model calls
 and capability spans without changing their decisions.
 
+Prompt assembly is an inspectable interface, not scattered inline runtime text.
+Stable prompt specifications live in `src/navi/specs_data.py`; assembly,
+rendering, and manifest generation live in `src/navi/prompt_os.py`. Runtime
+modules pass bounded facts into prompt OS assemblers, and tests or traces should
+inspect prompt manifests and digests rather than parse rendered prose.
+`navi prompts inspect planner --json-output` is the current inspection surface.
+
 Connector delivery is a two-boundary operation: the capability records
 `delivery_requested` and pauses the loop; only the connector's authoritative
 transport receipt may converge the LoopRun and accept the Run and Goal.

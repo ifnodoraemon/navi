@@ -16,20 +16,19 @@ journeys:
             - message.received
             - reply.sent
 
-  - id: weixin_provider_failure_returns_visible_fallback
+  - id: weixin_provider_failure_skips_runtime_authored_reply
     provider: failing
-    user_goal: See a local error reply when the model provider fails instead of silent no-response.
+    user_goal: Provider failure should not create a runtime-authored user reply.
     steps:
       - inbound:
           text: "你好"
           message_id: "wx-provider-failure"
         expect:
           handled: true
-          sent_count_delta: 1
-          sent_contains: "Planner provider failed"
+          sent_count_delta: 0
           event_contains:
             - message.received
-            - reply.sent
+            - reply.skipped
 
   - id: weixin_local_work_request_gets_approval
     user_goal: Ask from Weixin to fix a local problem and receive one approval task.

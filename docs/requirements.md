@@ -149,6 +149,12 @@ observe or deterministically gate lifecycle events. These extension types must
 not silently assume each other's authority or make product-semantic choices for
 the model.
 
+First-class lifecycle entities need a complete governed surface inside the
+caller policy envelope: scoped list, create/start, read, update, cancel/delete
+or revoke, mutation read-back evidence, and terminal history. Compatibility
+aliases for old internal contracts do not satisfy this requirement. Ambiguous
+views should be split instead of silently folded into a generic field.
+
 CLI, API, and connector ingress use the same capability catalog. Source identity
 scopes durable state, approvals, audit, and reply delivery; it does not implicitly
 narrow or broaden capability visibility. Explicit caller restrictions and the
@@ -197,12 +203,18 @@ specific connector.
 
 MCP tool calls must pass through the same capability registry, approval, audit,
 and redaction boundaries as core and connector tools. Server annotations must
-not grant or lower permissions.
+not grant or lower permissions. Additional MCP servers are configured in
+`.navi/mcp.json` using the common `mcpServers` shape; enabled servers expose
+governed discovery and call capabilities only. MCP prompts, resources, sampling,
+elicitation, and server-driven permission changes are not enabled.
 
 Web search must use supported structured providers, surface provider and
 configuration facts, and label whether the same failed provider call is
 retryable. The loop may still let the model choose a different capability,
 arguments, clarification, or blocker response within its remaining budget.
+Supported modes are `auto`, `searxng`, and `exa`; configuration belongs in
+`.navi/env` or the process environment, with `navi doctor` and
+`navi doctor --connectivity` as the inspection and live probe surfaces.
 
 ## Verification Contract
 

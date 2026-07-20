@@ -269,6 +269,36 @@ class WeixinService:
         response = await self._handle_with_typing(update, message, context_token=context_token)
         if not response:
             return True
+        response_delivery = connector_delivery_from_facts(response.facts)
+        if response_delivery is None and not response.text.strip():
+            self.record_event(
+                "reply.skipped",
+                peer_id=update.peer_id,
+                reason="empty_response",
+                action=response.action,
+            )
+            try:
+                from navi.trace import TraceStore, TracePhase
+
+                TraceStore(self.home).add_event(
+                    trace_id=update.message_id,
+                    phase=TracePhase.CHANNEL_EGRESS,
+                    run_id="",
+                    source=self.local_source,
+                    peer_id=update.peer_id,
+                    sender_id=update.sender_id,
+                    output_data={
+                        "action": response.action,
+                        "reason": "empty_response",
+                        "delivery_attempted": False,
+                        "media_count": 0,
+                    },
+                    message="Skipped empty channel response",
+                )
+                TraceStore(self.home).evaluate_trace(update.message_id)
+            except Exception:
+                pass
+            return True
         try:
             delivery = await self._send_reply(
                 account=account,

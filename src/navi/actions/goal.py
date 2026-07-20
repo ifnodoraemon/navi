@@ -20,6 +20,7 @@ from ..workspaces import workspaces_match
 from .helpers import (
     arg_text as _arg_text,
     fact_result as _fact_result,
+    failure_result as _failure_result,
     positive_int as _positive_int,
 )
 
@@ -117,7 +118,7 @@ class GoalOpenCapability(BaseCapability):
             else:
                 result = service.open_goal(request)
         except ScheduleConflict as exc:
-            raise Conflict(str(exc)) from exc
+            return _schedule_conflict_result(exc)
         except ValueError as exc:
             raise SchemaMismatch(str(exc)) from exc
         facts = result.to_facts()
@@ -238,7 +239,7 @@ class GoalUpdateCapability(BaseCapability):
         except KeyError as exc:
             raise NotFound(str(exc)) from exc
         except ScheduleConflict as exc:
-            raise Conflict(str(exc)) from exc
+            return _schedule_conflict_result(exc)
         except ValueError as exc:
             raise SchemaMismatch(str(exc)) from exc
         return _fact_result("goal", result.to_facts(), run_id=result.run.id)
@@ -537,6 +538,15 @@ def _effective_allowed_capabilities(
     if not visible:
         raise SchemaMismatch("goal.open has no capabilities in the current policy envelope")
     return tuple(sorted(visible))
+
+
+def _schedule_conflict_result(exc: ScheduleConflict) -> CapabilityResult:
+    return _failure_result(
+        "error",
+        str(exc),
+        error_reason="conflict",
+        facts=exc.to_facts(),
+    )
 
 
 def _require_goal_scope(

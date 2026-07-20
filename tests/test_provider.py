@@ -5,6 +5,7 @@ import pytest
 from navi.config import ModelConfig
 from navi.provider import (
     ChatMessage,
+    FallbackProvider,
     ModelPool,
     OpenAICompatibleProvider,
     ProviderUsage,
@@ -105,6 +106,31 @@ class _UsageProvider:
             raw={"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
         )
         return "ok"
+
+
+class _EmptyFailureProvider:
+    last_usage: ProviderUsage | None = None
+
+    async def complete(self, messages: list[ChatMessage], **kwargs) -> str:
+        del messages, kwargs
+        raise RuntimeError()
+
+
+@pytest.mark.asyncio
+async def test_fallback_provider_preserves_empty_exception_type(monkeypatch):
+    import asyncio
+
+    async def no_sleep(delay: float) -> None:
+        del delay
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    provider = FallbackProvider([_EmptyFailureProvider()])
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"all model providers failed: _EmptyFailureProvider: RuntimeError",
+    ):
+        await provider.complete([ChatMessage("user", "hi")])
 
 
 @pytest.mark.asyncio

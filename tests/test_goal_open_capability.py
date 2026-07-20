@@ -389,8 +389,73 @@ async def test_goal_open_same_actor_same_cron_requires_update_or_duplicate_inten
     assert opened.ok is True
     assert conflict.ok is False
     assert conflict.error_reason == "conflict"
+    assert conflict.message == (
+        "active scheduled goal already exists for this actor and cron_schedule."
+    )
+    assert "use goal.update" not in conflict.message
+    assert "choose" not in conflict.message
+    assert conflict.facts["reason"] == "active_actor_cron_schedule_conflict"
+    assert conflict.facts["operation"] == "goal.open"
+    assert conflict.facts["conflict_goal_id"] == opened.facts["goal_id"]
+    assert conflict.facts["conflict_goal"]["cron_schedule"] == "30 7 * * *"
     assert duplicate.ok is True
     assert duplicate.facts["goal_id"] != opened.facts["goal_id"]
+
+
+@pytest.mark.asyncio
+async def test_goal_update_same_actor_same_cron_returns_conflict_facts(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = _context(tmp_path)
+    morning = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "morning lesson",
+            "workspace": str(tmp_path),
+            "loop_kind": "scheduled",
+            "cron_schedule": "30 7 * * *",
+            "allowed_capabilities": ["respond"],
+        },
+        permission="prepare",
+        context=context,
+    )
+    evening = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "evening lesson",
+            "workspace": str(tmp_path),
+            "loop_kind": "scheduled",
+            "cron_schedule": "0 20 * * *",
+            "allowed_capabilities": ["respond"],
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    conflict = await registry.invoke(
+        "goal.update",
+        {
+            "goal_id": evening.facts["goal_id"],
+            "cron_schedule": "30 7 * * *",
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    assert morning.ok is True
+    assert evening.ok is True
+    assert conflict.ok is False
+    assert conflict.error_reason == "conflict"
+    assert conflict.message == (
+        "another active scheduled goal already exists for this actor and cron_schedule."
+    )
+    assert "choose" not in conflict.message
+    assert "explicitly allow" not in conflict.message
+    assert conflict.facts["reason"] == "active_actor_cron_schedule_conflict"
+    assert conflict.facts["operation"] == "goal.update"
+    assert conflict.facts["conflict_goal_id"] == morning.facts["goal_id"]
+    assert conflict.facts["allow_duplicate_schedule"] is False
 
 
 @pytest.mark.asyncio

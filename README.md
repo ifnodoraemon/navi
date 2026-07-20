@@ -110,8 +110,10 @@ Live model tests are opt-in and require a configured provider credential.
 
 ## Canonical Docs
 
+Docs are intentionally limited to the long-lived contract set below. Current
+CLI/API behavior comes from code and `--help`; completed plans, incident notes,
+and topic checklists should be folded into these files or deleted.
+
 - [Product requirements](docs/requirements.md)
 - [Non-negotiable principles](docs/principles.md)
 - [Current architecture](docs/architecture.md)
-- [Prompt architecture](docs/prompt-architecture.md)
-- [MCP and web search](docs/mcp-and-search.md)

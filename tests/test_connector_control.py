@@ -839,7 +839,16 @@ async def test_connector_timeout_surfaces_structured_fact(tmp_path, monkeypatch)
         )
     )
 
-    assert response is None
+    assert response is not None
+    assert response.text == ""
+    assert response.facts["entity_type"] == "connector_response_wait"
+    assert response.facts["state_transition"] == "timeout"
+    assert response.facts["reason"] == "upstream_idle_timeout"
+    assert response.facts["model_response_present"] is False
+    trace_events = TraceStore(tmp_path).list_events("msg-timeout")
+    response_events = [event for event in trace_events if event.phase == "channel.response_ready"]
+    assert len(response_events) == 1
+    assert response_events[0].ok is False
 
 
 @pytest.mark.asyncio
@@ -874,3 +883,8 @@ async def test_connector_runtime_exception_surfaces_structured_fact(tmp_path):
         await ingress.event_bus.shutdown()
 
     assert response.text == ""
+    assert response.facts["entity_type"] == "runtime_exception"
+    assert response.facts["state_transition"] == "failed"
+    assert response.facts["reason"] == "agent_turn_exception"
+    assert response.facts["exception_type"] == "RuntimeError"
+    assert response.facts["finalization"]["model_response_present"] is False

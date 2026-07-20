@@ -300,6 +300,52 @@ async def test_service_executes_structured_delivery_from_original_path(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_service_skips_empty_runtime_response_without_delivery_error(tmp_path: Path):
+    client = CaptureWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.ingress = StaticIngress(
+        "",
+        action="error",
+        facts={"error_reason": "internal_error"},
+    )
+
+    handled = await service.handle_update(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
+        WeixinUpdate(
+            message_id="msg-empty-runtime-response",
+            peer_id="wx-user",
+            sender_id="wx-user",
+            text="你好",
+            context_token="ctx",
+        ),
+    )
+
+    assert handled is True
+    assert client.messages == []
+    assert client.files == []
+    events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8")
+    assert '"event": "reply.skipped"' in events
+    assert '"reason": "empty_response"' in events
+    assert '"event": "reply.error"' not in events
+    egress_events = [
+        event
+        for event in TraceStore(tmp_path).list_events("msg-empty-runtime-response")
+        if event.phase == "channel.egress"
+    ]
+    assert len(egress_events) == 1
+    assert egress_events[0].ok is True
+    assert egress_events[0].message == "Skipped empty channel response"
+    egress_output = json.loads(egress_events[0].output_json)
+    assert egress_output["delivery_attempted"] is False
+
+
+@pytest.mark.asyncio
 async def test_background_outbox_sends_accepted_result_verbatim(tmp_path: Path):
     resume = tmp_path / "resume.docx"
     resume.write_bytes(b"resume")

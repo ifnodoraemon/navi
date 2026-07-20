@@ -280,8 +280,6 @@ class FallbackProvider:
         import asyncio
         import httpx
 
-        from .safeguards import redact_secrets
-
         errors: list[str] = []
         max_retries = 3
 
@@ -298,18 +296,17 @@ class FallbackProvider:
                     if isinstance(exc, httpx.HTTPStatusError):
                         status = exc.response.status_code
                         if status not in (429, 500, 502, 503, 504):
-                            errors.append(
-                                redact_secrets(f"{provider.__class__.__name__}: {exc}")
-                            )
+                            errors.append(_provider_error(provider, exc))
                             break  # don't retry on 400, 401, 403 etc.
 
                     if attempt == max_retries - 1:
-                        errors.append(
-                            redact_secrets(f"{provider.__class__.__name__}: {exc}")
-                        )
+                        errors.append(_provider_error(provider, exc))
                     else:
                         logger.warning(
-                            f"Provider {provider.__class__.__name__} failed (attempt {attempt + 1}/{max_retries}): {exc}. Retrying..."
+                            "Provider failed (attempt %s/%s): %s. Retrying...",
+                            attempt + 1,
+                            max_retries,
+                            _provider_error(provider, exc),
                         )
                         await asyncio.sleep(2**attempt)  # 1s, 2s
 
@@ -321,8 +318,6 @@ class FallbackProvider:
         """Try each provider's stream(); commit after the first yielded token."""
         import asyncio
         import httpx
-
-        from .safeguards import redact_secrets
 
         errors: list[str] = []
         max_retries = 3
@@ -345,23 +340,31 @@ class FallbackProvider:
                     if isinstance(exc, httpx.HTTPStatusError):
                         status = exc.response.status_code
                         if status not in (429, 500, 502, 503, 504):
-                            errors.append(
-                                redact_secrets(f"{provider.__class__.__name__}: {exc}")
-                            )
+                            errors.append(_provider_error(provider, exc))
                             break
 
                     if attempt == max_retries - 1:
-                        errors.append(
-                            redact_secrets(f"{provider.__class__.__name__}: {exc}")
-                        )
+                        errors.append(_provider_error(provider, exc))
                     else:
                         logger.warning(
-                            f"Provider {provider.__class__.__name__} stream failed "
-                            f"(attempt {attempt + 1}/{max_retries}): {exc}. Retrying..."
+                            "Provider stream failed (attempt %s/%s): %s. Retrying...",
+                            attempt + 1,
+                            max_retries,
+                            _provider_error(provider, exc),
                         )
                         await asyncio.sleep(2**attempt)
 
         raise RuntimeError("all model providers failed (stream): " + "; ".join(errors))
+
+
+def _provider_error(provider: ChatProvider, exc: Exception) -> str:
+    from .safeguards import redact_secrets
+
+    detail = str(exc).strip()
+    exc_name = exc.__class__.__name__
+    if detail:
+        return redact_secrets(f"{provider.__class__.__name__}: {exc_name}: {detail}")
+    return redact_secrets(f"{provider.__class__.__name__}: {exc_name}")
 
 
 class ModelPool:

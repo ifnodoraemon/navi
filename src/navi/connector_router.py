@@ -79,18 +79,32 @@ class ConnectorRouter:
 
             await self.event_bus.publish(event)
             response = await self._await_response(channel, correlation_id=correlation_id)
+            timed_out = response is None
+            if response is None:
+                response = _timeout_response(message)
 
-            if response:
-                trace.add_event(
-                    trace_id=correlation_id,
-                    phase=TracePhase.RESPONSE_READY,
-                    run_id="",
-                    source=message.source,
-                    peer_id=message.peer_id,
-                    sender_id=message.sender_id,
-                    output_data={"response": response.text, "action": response.action},
-                    message="Prepared response for channel delivery",
-                )
+            response_failed = _response_ready_failed(response)
+            output_data = {
+                "response": response.text,
+                "action": response.action,
+            }
+            if response_failed and response.facts:
+                output_data["facts"] = response.facts
+            trace.add_event(
+                trace_id=correlation_id,
+                phase=TracePhase.RESPONSE_READY,
+                run_id="",
+                source=message.source,
+                peer_id=message.peer_id,
+                sender_id=message.sender_id,
+                output_data=output_data,
+                message=(
+                    "Timed out waiting for channel response"
+                    if timed_out
+                    else "Prepared response for channel delivery"
+                ),
+                ok=not response_failed,
+            )
             return response
         except Exception as e:
             trace.add_event(
@@ -202,6 +216,49 @@ def _parse_connector_approval_command(message: ConnectorMessage) -> tuple[str, s
     if code:
         return ("reject", code)
     return None
+
+
+def _timeout_response(message: ConnectorMessage) -> ResponseReadyEvent:
+    facts = {
+        "entity_type": "connector_response_wait",
+        "entity_id": message.message_id,
+        "state_transition": "timeout",
+        "turn_scope": "current",
+        "reason": "upstream_idle_timeout",
+        "idle_timeout_seconds": IDLE_TIMEOUT_SECONDS,
+        "model_response_present": False,
+        "finalization": {
+            "reason": "upstream_idle_timeout",
+            "trace_id": message.message_id,
+            "model_response_present": False,
+        },
+    }
+    return ResponseReadyEvent(
+        source_agent="router",
+        correlation_id=message.message_id,
+        message_id=message.message_id,
+        peer_id=message.peer_id,
+        sender_id=message.sender_id,
+        text="",
+        source=message.source,
+        action="chat",
+        facts=facts,
+    )
+
+
+def _response_ready_failed(response: ResponseReadyEvent) -> bool:
+    facts = response.facts if isinstance(response.facts, dict) else {}
+    if str(facts.get("entity_type") or "") in {
+        "connector_response_wait",
+        "runtime_exception",
+    }:
+        return True
+    finalization = facts.get("finalization")
+    return (
+        isinstance(finalization, dict)
+        and finalization.get("model_response_present") is False
+        and not response.text.strip()
+    )
 
 
 def _approval_code_for_declared_command(text: str, commands: tuple[str, ...]) -> str | None:

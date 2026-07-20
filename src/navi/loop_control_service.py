@@ -32,6 +32,42 @@ from .state_graph import StateGraphRunResult
 class ScheduleConflict(ValueError):
     """Raised when a recurring schedule operation would create ambiguity."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str,
+        cron_schedule: str,
+        conflict_goal: Goal,
+        allow_duplicate_schedule: bool,
+    ) -> None:
+        super().__init__(message)
+        self.operation = operation
+        self.cron_schedule = cron_schedule
+        self.conflict_goal = conflict_goal
+        self.allow_duplicate_schedule = allow_duplicate_schedule
+
+    def to_facts(self) -> dict[str, Any]:
+        return {
+            "entity_type": "goal_schedule_conflict",
+            "entity_id": self.conflict_goal.id,
+            "state_transition": "conflict",
+            "turn_scope": "current",
+            "operation": self.operation,
+            "reason": "active_actor_cron_schedule_conflict",
+            "cron_schedule": self.cron_schedule,
+            "conflict_goal_id": self.conflict_goal.id,
+            "conflict_goal": {
+                "id": self.conflict_goal.id,
+                "objective": self.conflict_goal.objective,
+                "phase": self.conflict_goal.phase,
+                "task_status": self.conflict_goal.task_status,
+                "cron_schedule": self.conflict_goal.cron_schedule,
+                "next_run_at": self.conflict_goal.next_run_at,
+            },
+            "allow_duplicate_schedule": self.allow_duplicate_schedule,
+        }
+
 
 @dataclass(frozen=True)
 class OpenGoalRequest:
@@ -177,8 +213,11 @@ class LoopControlService:
                 if conflict is not None:
                     raise ScheduleConflict(
                         "active scheduled goal already exists for this actor and "
-                        "cron_schedule; use goal.update for an existing schedule "
-                        "or explicitly allow duplicate schedules."
+                        "cron_schedule.",
+                        operation="goal.open",
+                        cron_schedule=cron_schedule,
+                        conflict_goal=conflict,
+                        allow_duplicate_schedule=request.allow_duplicate_schedule,
                     )
         workspace = _resolve_workspace(request.workspace)
         run = self.runs.create(
@@ -307,8 +346,11 @@ class LoopControlService:
             if conflict is not None:
                 raise ScheduleConflict(
                     "another active scheduled goal already exists for this actor "
-                    "and cron_schedule; choose that goal_id or explicitly allow "
-                    "duplicate schedules."
+                    "and cron_schedule.",
+                    operation="goal.update",
+                    cron_schedule=cron_schedule,
+                    conflict_goal=conflict,
+                    allow_duplicate_schedule=request.allow_duplicate_schedule,
                 )
         next_run_at = (
             next_cron_time(cron_schedule, now=time.time())

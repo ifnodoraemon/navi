@@ -100,8 +100,9 @@ python -m build
 
 ## 权威文档
 
+文档只保留下面这组长期契约。当前 CLI/API 行为以代码和 `--help`
+为准；已完成计划、事故记录和专题 checklist 应折入这些文件或删除。
+
 - [产品需求](docs/requirements.md)
 - [不可违反原则](docs/principles.md)
 - [当前架构](docs/architecture.md)
-- [Prompt 架构](docs/prompt-architecture.md)
-- [MCP 与网页搜索](docs/mcp-and-search.md)
