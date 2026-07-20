@@ -577,7 +577,11 @@ def _scoped_goal_state(
     view: str,
 ) -> dict[str, Any]:
     scoped_goals = _goals_for_view(service, context=context, view=view, limit=limit)
-    goal_rows = [asdict(goal) for goal in scoped_goals]
+    goal_rows = []
+    for goal in scoped_goals:
+        d = asdict(goal)
+        d.pop("evidence_json", None)
+        goal_rows.append(d)
     pending_approval_goals = [
         goal
         for goal in goal_rows
@@ -590,13 +594,14 @@ def _scoped_goal_state(
         for goal in goal_rows
         if goal.get("phase") != Phase.ENDED and not str(goal.get("cron_schedule") or "")
     ]
-    active_loop_runs = [
-        loop_run.to_dict()
-        for loop_run in service.loop_runs.list_current_for_goals(
-            [goal.id for goal in scoped_goals],
-            limit=limit,
-        )
-    ]
+    active_loop_runs = []
+    for loop_run in service.loop_runs.list_current_for_goals(
+        [goal.id for goal in scoped_goals],
+        limit=limit,
+    ):
+        d = loop_run.to_dict()
+        d.pop("evidence_json", None)
+        active_loop_runs.append(d)
     facts = {
         "entity_type": "goal",
         "entity_id": "",

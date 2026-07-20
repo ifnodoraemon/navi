@@ -689,6 +689,44 @@ async def test_goal_state_default_and_explicit_reads_are_caller_scoped(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_goal_state_scoped_view_omits_raw_evidence_json(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "visible current task with evidence",
+            "workspace": str(tmp_path),
+            "auto_start": False,
+        },
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+
+    explicit = await registry.invoke(
+        "goal.state",
+        {"goal_id": opened.facts["goal_id"]},
+        permission="read",
+        context=_context(tmp_path),
+    )
+    scoped = await registry.invoke(
+        "goal.state",
+        {},
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert explicit.ok is True
+    assert "evidence_json" in explicit.facts["goal"]
+    assert "evidence" in explicit.facts["loop_runs"][0]
+    assert scoped.ok is True
+    assert scoped.facts["current_goals"]
+    assert scoped.facts["active_loop_runs"]
+    assert "evidence_json" not in scoped.facts["goals"][0]
+    assert "evidence_json" not in scoped.facts["current_goals"][0]
+    assert "evidence_json" not in scoped.facts["active_loop_runs"][0]
+
+
+@pytest.mark.asyncio
 async def test_goal_state_scheduled_view_is_actor_scoped_and_authoritative(
     tmp_path: Path,
 ) -> None:
