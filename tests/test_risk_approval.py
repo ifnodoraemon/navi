@@ -64,6 +64,45 @@ class _DeleteGoalProvider:
         return {}
 
 
+class _TwoGateShellProvider:
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        self.calls: list[str] = []
+
+    async def complete_for(
+        self, role: str, messages: list[ChatMessage], **kwargs
+    ) -> str:
+        self.calls.append(role)
+        assert role == "planner"
+        command = (
+            ["definitely-missing-navi-test-command"]
+            if len(self.calls) == 1
+            else ["another-missing-navi-test-command"]
+        )
+        return json.dumps(
+            {
+                "syscalls": [
+                    {
+                        "tool": "shell.run",
+                        "permission": "write",
+                        "args": {
+                            "command": command,
+                            "cwd": str(self.workspace),
+                            "timeout_seconds": 1,
+                        },
+                        "reason": "run the requested diagnostic command",
+                    }
+                ]
+            }
+        )
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "executor", "responder"]
+
+    def usage_for(self, role: str) -> dict:
+        return {}
+
+
 def _verification_command(target: Path) -> str:
     script = f"from pathlib import Path; assert not Path({str(target)!r}).exists()"
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
@@ -380,6 +419,55 @@ async def test_approval_resolve_resumes_original_shell_checkpoint(tmp_path: Path
     assert conflicting.ok is False
     assert conflicting.facts is not None
     assert conflicting.facts["reason"] == "approval_already_approved"
+
+
+@pytest.mark.asyncio
+async def test_approval_resolve_separates_decision_from_distinct_next_gate(
+    tmp_path: Path,
+) -> None:
+    provider = _TwoGateShellProvider(tmp_path)
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        runtime=runtime,
+    )
+    context = _context(tmp_path)
+
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "run a diagnostic that may need a revised command",
+            "workspace": str(tmp_path),
+            "allowed_capabilities": ["shell.run"],
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    assert opened.facts is not None
+    assert opened.facts["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL
+    first = RunStore(tmp_path).pending_approval_for_run(opened.run_id)
+    assert first is not None
+
+    resolved = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": first.code},
+        permission="prepare",
+        context=context,
+    )
+
+    assert resolved.ok is True
+    assert resolved.facts is not None
+    assert resolved.facts["decision_applied"] is True
+    assert resolved.facts["approval_control_completion_evidence"] is True
+    assert resolved.facts["completion_evidence"] is False
+    assert resolved.facts["continuation_status"] == LoopTerminalState.WAITING_APPROVAL
+    assert resolved.facts["continuation_requires_approval"] is True
+    assert resolved.facts["continuation_pending_approval_is_distinct"] is True
+    assert resolved.facts["pending_approval"]["id"] != first.id
+    assert resolved.facts["pending_approval"]["requested_tool"] == "shell.run"
+    assert provider.calls == ["planner", "planner"]
 
 
 @pytest.mark.asyncio

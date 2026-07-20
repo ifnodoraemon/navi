@@ -162,6 +162,18 @@ class TurnController(TurnLifecycleMixin):
         turn_error_reason = getattr(invoked, "error_reason", "")
         if invoked.ok and not has_surface_result:
             turn_error_reason = "empty_response"
+        if not turn_ok and not surface_text:
+            finalization_facts = (
+                dict(invoked_facts.get("finalization"))
+                if isinstance(invoked_facts.get("finalization"), dict)
+                else {}
+            )
+            invoked_facts["finalization"] = {
+                **finalization_facts,
+                "reason": turn_error_reason or "missing_surface_text",
+                "trace_id": trace_id,
+                "model_response_present": False,
+            }
         result = AgentTurnResult(
             text=surface_text,
             run_id=invoked.run_id,
@@ -172,7 +184,7 @@ class TurnController(TurnLifecycleMixin):
                     "tool": "goal.open",
                     "ok": invoked.ok,
                     "action": invoked.action,
-                    "facts": invoked.facts or {},
+                    "facts": invoked_facts,
                     "error_reason": getattr(invoked, "error_reason", ""),
                 },
             ),
@@ -180,7 +192,7 @@ class TurnController(TurnLifecycleMixin):
             terminal=invoked.terminal,
             ok=turn_ok,
             trace_id=trace_id,
-            facts=invoked.facts or {},
+            facts=invoked_facts,
             error_reason=turn_error_reason,
             yields_control=getattr(invoked, "yields_control", False),
         )

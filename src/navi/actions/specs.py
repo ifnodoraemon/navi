@@ -74,6 +74,62 @@ ACTION_SPECS = [
         source="action",
     ),
     ToolSpec(
+        name="account.usage",
+        capability_class="account",
+        execution_contexts=("turn", API_CONTEXT),
+        description=(
+            "Read account quota, usage, credit, or rate-limit windows for a configured "
+            "inference provider through provider account APIs and local auth state. "
+            "Use this for user questions about remaining quota or usage instead of "
+            "guessing provider CLI commands through shell.run. Returns typed facts "
+            "when live usage is available and typed unavailable_reason/auth facts when "
+            "the provider or network cannot supply account usage."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Provider slug, such as openai-codex or codex.",
+                },
+                "timeout_seconds": {
+                    "type": "number",
+                    "description": "Network timeout in seconds, clamped by the capability.",
+                },
+            },
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "state_transition": {"type": "string"},
+                "turn_scope": {"type": "string"},
+                "provider": {"type": "string"},
+                "source": {"type": "string"},
+                "fetched_at": {"type": "string"},
+                "available": {"type": "boolean"},
+                "plan": {"type": "string"},
+                "auth_status": {"type": "string"},
+                "windows": {"type": "array", "items": {"type": "object"}},
+                "details": {"type": "array", "items": {"type": "string"}},
+                "unavailable_reason": {"type": "string"},
+            },
+            "required": [
+                "entity_type",
+                "entity_id",
+                "state_transition",
+                "turn_scope",
+                "provider",
+                "available",
+            ],
+        },
+        facts_only=True,
+        mutates=False,
+        permission="read",
+        source="action",
+    ),
+    ToolSpec(
         name="agent.control",
         capability_class="agent",
         execution_contexts=("turn", API_CONTEXT),
@@ -503,7 +559,15 @@ ACTION_SPECS = [
         name="approval.resolve",
         capability_class="approval",
         execution_contexts=("turn", API_CONTEXT),
-        description="""Resolve one durable approval by code or run id, resume only the approval gate bound to that record, and return original-task completion facts.""",
+        description=(
+            "Resolve one durable approval by code or run id, resume only the approval gate "
+            "bound to that record, and return separate facts for the approval control action "
+            "and the original task continuation. approval_control_completion_evidence means "
+            "the requested approve/reject decision was applied; completion_evidence describes "
+            "whether the resumed original task reached its own objective. If continuation "
+            "requires a distinct new approval, pending_approval identifies that next gate; do "
+            "not resolve the same already-approved record again."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -527,12 +591,16 @@ ACTION_SPECS = [
                 "action": {"type": "string"},
                 "status": {"type": "string"},
                 "state_transition": {"type": "string"},
+                "decision_applied": {"type": "boolean"},
+                "approval_control_completion_evidence": {"type": "boolean"},
                 "run_phase": {"type": "string"},
                 "run_governance": {"type": "string"},
                 "run_acceptance": {"type": "string"},
                 "run_resolution": {"type": "string"},
                 "continuation_status": {"type": "string"},
                 "completion_evidence": {"type": "boolean"},
+                "continuation_requires_approval": {"type": "boolean"},
+                "continuation_pending_approval_is_distinct": {"type": "boolean"},
                 "goal_id": {"type": "string"},
                 "loop_run_id": {"type": "string"},
                 "loop_terminal_state": {"type": "string"},

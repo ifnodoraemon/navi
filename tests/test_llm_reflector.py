@@ -216,6 +216,14 @@ async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
         checker_input["task_context"]["progress"]["authoritative_prior_items"]
         == trigger_facts["prior_occurrences"]
     )
+    prior_result_facts = checker_input["task_context"]["progress"]["prior_result_facts"]
+    assert prior_result_facts["item_count"] == 1
+    assert prior_result_facts["items"][0]["canonical_sha256_16"]
+    comparison = checker_input["task_context"]["progress"]["current_result_comparison"]
+    assert comparison["current_result"]["present"] is True
+    assert comparison["exact_duplicate_prior_count"] == 0
+    assert comparison["latest_prior_exact_duplicate"] is False
+    assert comparison["max_similarity"] < 1.0
     assert checker_input["current_time"]["unix"] > 0
     assert checker_input["current_time"]["iso"]
     assert "utc_offset" in checker_input["current_time"]
@@ -225,6 +233,90 @@ async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
     assert "secret-token" not in supporting[0]["args_json"]
     assert "[REDACTED]" in supporting[0]["args_json"]
     assert "reason" not in supporting[0]
+
+
+@pytest.mark.asyncio
+async def test_semantic_checker_receives_exact_duplicate_prior_result_facts(
+    tmp_path: Path,
+) -> None:
+    repeated_text = "Lesson 1: foundations"
+    prior_occurrences = [
+        {
+            "goal_id": "occurrence-1",
+            "run_id": "run-1",
+            "accepted_result_text": repeated_text,
+            "accepted_result": {
+                "body": repeated_text,
+                "body_provenance": "state_graph.evidence.responded_message",
+            },
+        }
+    ]
+    task_context = {
+        "lineage": {
+            "id": "daily-topic-lineage",
+            "kind": "recurring_goal",
+        },
+        "progress": {
+            "scope": "lineage",
+            "sequence_number": 2,
+            "authority": "same_lineage_authoritative_prior_items",
+            "authoritative_prior_items": prior_occurrences,
+            "ambient_history_authoritative": False,
+        },
+    }
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="teach a progressive daily topic with fresh content",
+            scope=(f"repo:{tmp_path}",),
+            acceptance_criteria=("respond for the current occurrence without duplicating prior output",),
+            metadata={"task_context": task_context},
+        ),
+        goal_id="current-occurrence",
+        allowed_capabilities=("respond",),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                evidence_key="semantic_checker_result",
+            ),
+        ),
+    )
+    provider = _ScriptedProvider(
+        planner_syscalls=[],
+        checker_decisions=[
+            {
+                "passed": False,
+                "evidence_summary": "candidate repeats the prior accepted result",
+            }
+        ],
+    )
+
+    decision = await LLMSemanticCheckerPort(
+        runtime=AgentRuntime(home=tmp_path, provider=provider)
+    ).assess(
+        spec,
+        LoopRunState(
+            run_id="run-2",
+            goal_id=spec.goal_id,
+            loop_spec_id=spec.id,
+        ),
+        executed=ExecutedCapabilityStep(
+            ok=True,
+            action="respond",
+            facts={},
+            message=repeated_text,
+        ),
+        evidence={},
+    )
+
+    assert decision.passed is False
+    checker_input = json.loads(provider.messages["checker"][-1].content)
+    comparison = checker_input["task_context"]["progress"]["current_result_comparison"]
+    assert comparison["current_result"]["source"] == "capability.message"
+    assert comparison["exact_duplicate_prior_count"] == 1
+    assert comparison["latest_prior_exact_duplicate"] is True
+    assert comparison["max_similarity"] == 1.0
+    assert comparison["prior_comparisons"][0]["run_id"] == "run-1"
 
 
 async def _run_goal_with_approvals(

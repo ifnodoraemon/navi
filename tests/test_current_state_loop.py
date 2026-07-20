@@ -58,7 +58,8 @@ class _CapturingPlannerProvider:
 
 
 class _FactResponderProvider:
-    def __init__(self) -> None:
+    def __init__(self, response: str = "模型根据失败事实生成的说明。") -> None:
+        self.response = response
         self.calls: list[tuple[str, list[ChatMessage]]] = []
 
     async def complete_for(
@@ -69,7 +70,7 @@ class _FactResponderProvider:
     ) -> str:
         self.calls.append((role, messages))
         assert role == "responder"
-        return "模型根据失败事实生成的说明。"
+        return self.response
 
     def list_roles(self) -> list[str]:
         return ["planner", "responder"]
@@ -134,6 +135,46 @@ async def test_turn_controller_never_surfaces_capability_observation_as_user_cop
     assert result.text != "machine-only failure observation"
     assert [role for role, _ in provider.calls] == ["responder"]
     assert "machine-only failure observation" in provider.calls[0][1][-1].content
+
+
+@pytest.mark.asyncio
+async def test_turn_controller_does_not_author_system_error_when_fact_response_is_empty(
+    tmp_path,
+    monkeypatch,
+):
+    provider = _FactResponderProvider(response="")
+    controller = TurnController(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+    )
+
+    async def invoke(*args, **kwargs):
+        return CapabilityResult(
+            ok=False,
+            action="error",
+            message="machine-only failure observation",
+            error_reason="internal_error",
+            facts={"error_type": "RuntimeError"},
+            run_id="run-1",
+        )
+
+    monkeypatch.setattr(controller.capabilities, "invoke", invoke)
+
+    result = await controller.handle(
+        "完成这个请求",
+        peer_id="cli",
+        sender_id="tester",
+        source="cli",
+    )
+
+    assert result.text == ""
+    assert "System Error" not in result.surfaced_text()
+    assert result.ok is False
+    assert result.error_reason == "internal_error"
+    assert result.facts["finalization"]["reason"] == "internal_error"
+    assert result.facts["finalization"]["trace_id"] == result.trace_id
+    assert result.facts["finalization"]["model_response_present"] is False
 
 
 @pytest.mark.asyncio

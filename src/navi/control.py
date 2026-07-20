@@ -306,12 +306,18 @@ class ApprovalService:
                     **resolved.facts,
                     "continuation_status": "waiting_approval",
                     "completion_evidence": False,
+                    "continuation_requires_approval": current_approval is not None,
+                    "continuation_pending_approval_is_distinct": (
+                        current_approval is not None
+                        and current_approval.id != str(resolved.facts.get("approval_id") or "")
+                    ),
                     "loop_run_id": loop_run.run_id,
                     "loop_terminal_state": str(loop_run.terminal_state),
                     "reason": "approval_gate_superseded",
                 }
                 if current_approval is not None:
                     facts["current_approval"] = _approval_prompt_facts(current_approval)
+                    facts["pending_approval"] = _approval_prompt_facts(current_approval)
                 return ApprovalResolution(
                     ok=True,
                     facts=facts,
@@ -330,6 +336,7 @@ class ApprovalService:
                 **resolved.facts,
                 "continuation_status": "completed",
                 "completion_evidence": completion_evidence,
+                "continuation_requires_approval": False,
                 "loop_run_id": loop_run.run_id,
                 "loop_terminal_state": str(loop_run.terminal_state),
                 "result_summary": current_run.result_summary,
@@ -402,6 +409,12 @@ class ApprovalService:
         )
         if pending_approval is not None:
             facts["pending_approval"] = _approval_prompt_facts(pending_approval)
+            facts["continuation_requires_approval"] = True
+            facts["continuation_pending_approval_is_distinct"] = (
+                pending_approval.id != str(resolved.facts.get("approval_id") or "")
+            )
+        else:
+            facts["continuation_requires_approval"] = False
         from .connector_delivery import connector_delivery_from_loop_result
 
         delivery = connector_delivery_from_loop_result(continued)
@@ -503,6 +516,9 @@ class ApprovalService:
             "action": resolved.action,
             "status": status,
             "state_transition": state_transition,
+            "decision_applied": state_transition in {"resolved", f"already_{status}"},
+            "approval_control_completion_evidence": state_transition
+            in {"resolved", f"already_{status}"},
             "run_phase": str(phase),
             "run_governance": str(governance),
             "run_acceptance": str(acceptance),

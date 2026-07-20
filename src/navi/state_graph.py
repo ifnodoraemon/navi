@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shlex
+from difflib import SequenceMatcher
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -55,6 +56,7 @@ SEMANTIC_CHECKER_ATTEMPT_LIMIT = 4
 SEMANTIC_CHECKER_ARGS_MAX_CHARS = 3_000
 SEMANTIC_CHECKER_FACTS_MAX_CHARS = 6_000
 SEMANTIC_CHECKER_MESSAGE_MAX_CHARS = 3_000
+TASK_RESULT_PREVIEW_CHARS = 240
 
 
 @dataclass(frozen=True)
@@ -374,7 +376,7 @@ class LLMSemanticCheckerPort:
     ) -> SemanticCheckDecision:
         from .control import current_time_facts
 
-        task_context = _goal_task_context(spec)
+        task_context = _goal_task_context_with_result_comparison(spec, executed)
         response = await self.runtime.provider.complete_for(
             "checker",
             assemble_semantic_checker_messages(
@@ -440,11 +442,152 @@ def _goal_task_context(spec: LoopSpec) -> dict[str, Any]:
             "authority": str(progress.get("authority") or "current_goal"),
             "authoritative_prior_items": prior_items,
             "authoritative_prior_item_count": len(prior_items),
+            "prior_result_facts": _prior_result_facts(prior_items),
             "ambient_history_authoritative": bool(
                 progress.get("ambient_history_authoritative", False)
             ),
         },
     }
+
+
+def _goal_task_context_with_result_comparison(
+    spec: LoopSpec,
+    executed: ExecutedCapabilityStep,
+) -> dict[str, Any]:
+    context = _goal_task_context(spec)
+    progress = dict(context.get("progress") if isinstance(context.get("progress"), dict) else {})
+    prior_items = [
+        dict(item)
+        for item in progress.get("authoritative_prior_items") or []
+        if isinstance(item, dict)
+    ]
+    progress["current_result_comparison"] = _result_comparison_facts(
+        current=_executed_result_text(executed),
+        prior_items=prior_items,
+    )
+    return {**context, "progress": progress}
+
+
+def _prior_result_facts(prior_items: list[dict[str, Any]]) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for index, item in enumerate(prior_items, start=1):
+        prior = _prior_result_text(item)
+        if not prior["text"]:
+            continue
+        text = prior["text"]
+        canonical = _canonical_result_text(text)
+        items.append(
+            {
+                "prior_index": index,
+                "goal_id": str(item.get("goal_id") or ""),
+                "run_id": str(item.get("run_id") or ""),
+                "source": prior["source"],
+                "canonical_sha256_16": _text_fingerprint(canonical),
+                "char_count": len(text),
+                "preview": _result_preview(text),
+            }
+        )
+    return {
+        "item_count": len(items),
+        "items": items,
+        "canonical_whitespace_policy": "collapse_all_whitespace",
+    }
+
+
+def _result_comparison_facts(
+    *,
+    current: dict[str, str],
+    prior_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    current_text = current["text"]
+    current_canonical = _canonical_result_text(current_text)
+    current_facts: dict[str, Any] = {
+        "present": bool(current_text),
+        "source": current["source"],
+        "canonical_sha256_16": _text_fingerprint(current_canonical) if current_text else "",
+        "char_count": len(current_text),
+        "preview": _result_preview(current_text),
+    }
+    comparisons: list[dict[str, Any]] = []
+    for index, item in enumerate(prior_items, start=1):
+        prior = _prior_result_text(item)
+        prior_text = prior["text"]
+        if not current_text or not prior_text:
+            continue
+        prior_canonical = _canonical_result_text(prior_text)
+        exact_duplicate = bool(current_canonical and current_canonical == prior_canonical)
+        similarity = (
+            1.0
+            if exact_duplicate
+            else SequenceMatcher(None, current_canonical, prior_canonical).ratio()
+        )
+        comparisons.append(
+            {
+                "prior_index": index,
+                "goal_id": str(item.get("goal_id") or ""),
+                "run_id": str(item.get("run_id") or ""),
+                "prior_source": prior["source"],
+                "prior_canonical_sha256_16": _text_fingerprint(prior_canonical),
+                "exact_duplicate": exact_duplicate,
+                "similarity": round(float(similarity), 4),
+                "length_delta": len(current_text) - len(prior_text),
+            }
+        )
+    max_similarity = max((item["similarity"] for item in comparisons), default=0.0)
+    exact_count = sum(1 for item in comparisons if item["exact_duplicate"])
+    latest = comparisons[-1] if comparisons else {}
+    most_similar = max(comparisons, key=lambda item: item["similarity"], default={})
+    return {
+        "current_result": current_facts,
+        "prior_comparisons": comparisons,
+        "prior_comparison_count": len(comparisons),
+        "exact_duplicate_prior_count": exact_count,
+        "latest_prior_exact_duplicate": bool(latest.get("exact_duplicate", False)),
+        "max_similarity": round(float(max_similarity), 4),
+        "most_similar_prior_index": most_similar.get("prior_index", 0),
+        "canonical_whitespace_policy": "collapse_all_whitespace",
+    }
+
+
+def _executed_result_text(executed: ExecutedCapabilityStep) -> dict[str, str]:
+    facts = executed.facts if isinstance(executed.facts, dict) else {}
+    for key in ("responded_message", "message", "body", "text", "result_summary"):
+        value = str(facts.get(key) or "").strip()
+        if value:
+            return {"text": value, "source": f"capability.facts.{key}"}
+    message = str(executed.message or "").strip()
+    if message:
+        return {"text": message, "source": "capability.message"}
+    return {"text": "", "source": ""}
+
+
+def _prior_result_text(item: dict[str, Any]) -> dict[str, str]:
+    for key in ("accepted_result_text", "result_summary", "body", "message", "text"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return {"text": value, "source": f"prior_item.{key}"}
+    accepted_result = item.get("accepted_result")
+    if isinstance(accepted_result, dict):
+        for key in ("body", "responded_message", "message", "text", "result_summary"):
+            value = str(accepted_result.get(key) or "").strip()
+            if value:
+                return {"text": value, "source": f"prior_item.accepted_result.{key}"}
+    return {"text": "", "source": ""}
+
+
+def _canonical_result_text(text: str) -> str:
+    return " ".join(str(text or "").split()).strip()
+
+
+def _text_fingerprint(text: str) -> str:
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _result_preview(text: str) -> str:
+    clean = _canonical_result_text(text)
+    return truncate_middle(clean, TASK_RESULT_PREVIEW_CHARS)
 
 
 def _int_or_default(value: Any, default: int) -> int:
