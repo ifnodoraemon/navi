@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,9 +12,6 @@ from .prompt_os import (
 )
 from .provider import ChatMessage
 from .safeguards import redact_secrets, redact_secrets_deep
-
-logger = logging.getLogger("navi.finalization")
-
 
 @dataclass(frozen=True)
 class NotificationDecision:
@@ -31,23 +27,19 @@ async def synthesize_user_reply_from_facts(
     facts: dict[str, Any],
 ) -> str:
     """Create user-facing text from verified runtime facts only."""
-    try:
-        return await runtime.complete(
-            [
-                ChatMessage("system", assemble_fact_response_system_prompt().render()),
-                ChatMessage(
-                    "user",
-                    assemble_fact_response_turn_input(
-                        user_text=user_text,
-                        facts=facts,
-                    ).render(),
-                ),
-            ],
-            role="responder",
-        )
-    except Exception:
-        logger.exception("failed to synthesize user-facing response from facts")
-        return ""
+    return await runtime.complete(
+        [
+            ChatMessage("system", assemble_fact_response_system_prompt().render()),
+            ChatMessage(
+                "user",
+                assemble_fact_response_turn_input(
+                    user_text=user_text,
+                    facts=facts,
+                ).render(),
+            ),
+        ],
+        role="responder",
+    )
 
 
 async def synthesize_background_notification(

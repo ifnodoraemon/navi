@@ -1017,7 +1017,7 @@ class ModelCapabilityPlannerPort:
                 sender_id=spec.goal.owner or "state_graph",
             ),
             permission_ceiling=spec.goal.permission_ceiling,
-            workspace=_scope_workspace_for_spec(spec, fallback=workspace),
+            workspace=_scope_workspace_for_spec(spec, default_workspace=workspace),
         )
         tools = [
             item
@@ -1153,7 +1153,7 @@ class CapabilityExecutorPort:
         )
         context = replace(
             self.context,
-            workspace=_scope_workspace_for_spec(spec, fallback=workspace),
+            workspace=_scope_workspace_for_spec(spec, default_workspace=workspace),
             permission_ceiling=spec.goal.permission_ceiling,
             source=self.context.source or "state_graph",
             effect_idempotency_key=_effect_idempotency_key(state, step),
@@ -2100,10 +2100,10 @@ class DurableStateGraphRunner:
             request
             or ResourceRequest(
                 kind=kind,
-                estimated_tokens=_fallback_phase_tokens(self.gateway.limits)
+                estimated_tokens=_default_phase_tokens(self.gateway.limits)
                 if self._account_phase_gates
                 else 0,
-                estimated_cost=_fallback_phase_cost(self.gateway.limits)
+                estimated_cost=_default_phase_cost(self.gateway.limits)
                 if self._account_phase_gates
                 else 0.0,
                 units=1,
@@ -2398,14 +2398,14 @@ def _resource_limits_for_spec(spec: LoopSpec) -> ResourceLimits:
     )
 
 
-def _fallback_phase_tokens(limits: ResourceLimits) -> int:
+def _default_phase_tokens(limits: ResourceLimits) -> int:
     if limits.token_budget <= 0:
         return 0
     divisor = limits.call_budget if limits.call_budget > 0 else 1
     return max(1, limits.token_budget // divisor)
 
 
-def _fallback_phase_cost(limits: ResourceLimits) -> float:
+def _default_phase_cost(limits: ResourceLimits) -> float:
     if limits.cost_budget <= 0:
         return 0.0
     divisor = limits.call_budget if limits.call_budget > 0 else 1
@@ -2612,9 +2612,9 @@ def _workspace_lock_resource(workspace: Path) -> str:
     return f"workspace:{workspace.expanduser().resolve()}"
 
 
-def _scope_workspace_for_spec(spec: LoopSpec, *, fallback: Path) -> str:
+def _scope_workspace_for_spec(spec: LoopSpec, *, default_workspace: Path) -> str:
     workspace = str(spec.goal.metadata.get("workspace") or "").strip()
-    return workspace or str(fallback)
+    return workspace or str(default_workspace)
 
 
 def _checker_reason_code(checker_report: CheckerReport) -> str:

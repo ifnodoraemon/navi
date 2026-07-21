@@ -153,7 +153,7 @@ def test_llm_learning_adds_proposed_memory_even_with_high_confidence(tmp_path) -
         source="llm_learning",
         provenance="unit-test",
         ledger_run_id="run-1",
-        add_reason_fallback="memory_learning_added",
+        default_add_reason="memory_learning_added",
     )
 
     assert len(affected) == 1
@@ -190,7 +190,7 @@ def test_replayed_learning_does_not_duplicate_an_existing_proposal(tmp_path) -> 
         source="conversation",
         provenance="job:retry",
         ledger_run_id="run-retry",
-        add_reason_fallback="retry",
+        default_add_reason="retry",
         scope="actor:one",
     )
 

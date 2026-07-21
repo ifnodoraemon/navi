@@ -26,7 +26,7 @@ def _context(home: Path, *, sender_id: str, session_id: str) -> CapabilityContex
     )
 
 
-def test_memory_recall_uses_embedding_fallback_when_fts_has_no_seed(tmp_path: Path) -> None:
+def test_memory_recall_uses_embedding_candidates_when_fts_has_no_seed(tmp_path: Path) -> None:
     class Embeddings:
         def embed(self, text: str) -> list[float]:
             return [1.0, 0.0] if text in {"short answers", "keep it brief"} else [0.0, 1.0]
@@ -388,7 +388,7 @@ def test_consolidation_cannot_revoke_memory_outside_visible_scope(tmp_path: Path
         source="consolidation",
         provenance="scope-test",
         ledger_run_id="scope-test",
-        add_reason_fallback="test",
+        default_add_reason="test",
         scope="actor:b",
     )
 

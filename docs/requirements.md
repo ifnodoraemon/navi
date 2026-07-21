@@ -49,6 +49,11 @@ The runtime owns deterministic enforcement:
 - checkpoint, merge, compensation, and audit requirements;
 - durable lifecycle transitions.
 
+Each model role resolves to one declared provider. The runtime invokes that
+provider once per model call and propagates provider, transport, empty-response,
+and structured-output failures without retrying or switching providers. A later
+planning turn may choose another attempt only from the surfaced failure facts.
+
 An LLM may produce risk facts or explanations. It must never be the authority
 that converts a sensitive operation from approval-required to allowed.
 

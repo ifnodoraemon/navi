@@ -176,14 +176,7 @@ class ConnectorRouter:
                 facts=result.facts,
             )
         if self.runtime is None:
-            return ResponseReadyEvent(
-                source_agent="router",
-                text="",
-                source=message.source,
-                peer_id=message.peer_id,
-                sender_id=message.sender_id,
-                facts=result.facts,
-            )
+            raise RuntimeError("connector approval response requires an agent runtime")
         text = await synthesize_user_reply_from_facts(
             self.runtime,
             user_text=message.text,

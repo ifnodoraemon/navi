@@ -852,6 +852,26 @@ async def test_connector_timeout_surfaces_structured_fact(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_connector_approval_without_runtime_fails_directly(tmp_path):
+    router = ConnectorRouter(tmp_path, EventBus())
+
+    with pytest.raises(
+        RuntimeError,
+        match="connector approval response requires an agent runtime",
+    ):
+        await router.route(
+            ConnectorMessage(
+                message_id="msg-approval-no-runtime",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                text="批准 123456",
+                source="weixin",
+                session_alias_prefix="connector:weixin",
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_connector_runtime_exception_surfaces_structured_fact(tmp_path):
     class NoModelCalls:
         def list_roles(self) -> list[str]:

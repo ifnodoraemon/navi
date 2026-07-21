@@ -722,12 +722,12 @@ class MemoryStore:
             ranked_candidates.append((item_id, 0.0, reasons))
             seen_candidate_ids.add(item_id)
 
-        fallback_candidates: list[tuple[str, float, list[str]]] = []
-        fallback_items = self.provider.get_items(
+        embedding_candidates: list[tuple[str, float, list[str]]] = []
+        embedding_items = self.provider.get_items(
             allowed_scopes=allowed_scopes,
             limit=max(200, limit * 20),
         )
-        for item in fallback_items:
+        for item in embedding_items:
             if item.id in seen_candidate_ids or item.status not in ACTIVE_STATUSES:
                 continue
             similarity = self._hybrid_similarity(
@@ -737,7 +737,7 @@ class MemoryStore:
             )
             if similarity < 0.16:
                 continue
-            fallback_candidates.append(
+            embedding_candidates.append(
                 (
                     item.id,
                     1.0 - similarity,
@@ -745,8 +745,8 @@ class MemoryStore:
                 )
             )
             seen_candidate_ids.add(item.id)
-        fallback_candidates.sort(key=lambda item: item[1])
-        ranked_candidates.extend(fallback_candidates)
+        embedding_candidates.sort(key=lambda item: item[1])
+        ranked_candidates.extend(embedding_candidates)
 
         selected = []
         for item_id, score, reasons in ranked_candidates:
@@ -1292,7 +1292,7 @@ class MemoryStore:
                 source=job.source or "conversation",
                 provenance=f"memory-job:{job.id}:run:{job.run_id}",
                 ledger_run_id=job.run_id,
-                add_reason_fallback="conversation consolidation",
+                default_add_reason="conversation consolidation",
                 scope=active_scope,
             )
         except Exception as exc:
@@ -1344,7 +1344,7 @@ class MemoryStore:
         source: str,
         provenance: str,
         ledger_run_id: str,
-        add_reason_fallback: str,
+        default_add_reason: str,
         scope: str = "global",
     ) -> list:
         """Apply extracted add/revoke learnings with full provenance + ledger.
@@ -1379,7 +1379,7 @@ class MemoryStore:
                     seen_memory_keys,
                     source=source,
                     provenance=provenance,
-                    add_reason_fallback=add_reason_fallback,
+                    default_add_reason=default_add_reason,
                     scope=scope,
                 )
                 if item is None:
@@ -1423,7 +1423,7 @@ class MemoryStore:
         *,
         source: str,
         provenance: str,
-        add_reason_fallback: str,
+        default_add_reason: str,
         scope: str = "global",
     ):
         m_type = str(learning.get("type", "")).strip().lower()
@@ -1452,7 +1452,7 @@ class MemoryStore:
             status=promoted_status,
             confidence=conf_val,
             metadata={"contradicts": contradicts} if contradicts else {},
-            reason=str(learning.get("reason") or add_reason_fallback),
+            reason=str(learning.get("reason") or default_add_reason),
             provenance=provenance,
         )
         seen_memory_keys.add(memory_key)

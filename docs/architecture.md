@@ -149,8 +149,8 @@ remain proposed. Workers reclaim expired leases with bounded backoff and move
 exhausted jobs to a visible dead-letter state. Retention reconstructs a missing
 job from the run transcript before it can remove detail. Hybrid text/embedding
 recall can discover candidates without FTS, and graph neighbors are ranked before
-fallback candidates so graph recall cannot be starved. Retention removes expired
-transient detail only after consolidation while preserving terminal summaries.
+embedding-only candidates so graph recall cannot be starved. Retention removes
+expired transient detail only after consolidation while preserving terminal summaries.
 
 `EvolutionTargetAdapterRegistry` is the authority for evolvable target types.
 Prompt layers, skills, memory items, eval cases, and graph nodes have real readers
