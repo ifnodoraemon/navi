@@ -712,6 +712,17 @@ class MemoryStore:
             seen_candidate_ids.add(item_id)
 
         semantic_query_vector = self._embedding(fts_query)
+        graph_neighbors = self._semantic_graph_neighbors(
+            tuple(item_id for item_id, _rank in fts_results),
+            limit=limit * 3,
+        )
+        for item_id, reasons in graph_neighbors.items():
+            if item_id in seen_candidate_ids:
+                continue
+            ranked_candidates.append((item_id, 0.0, reasons))
+            seen_candidate_ids.add(item_id)
+
+        fallback_candidates: list[tuple[str, float, list[str]]] = []
         fallback_items = self.provider.get_items(
             allowed_scopes=allowed_scopes,
             limit=max(200, limit * 20),
@@ -726,7 +737,7 @@ class MemoryStore:
             )
             if similarity < 0.16:
                 continue
-            ranked_candidates.append(
+            fallback_candidates.append(
                 (
                     item.id,
                     1.0 - similarity,
@@ -734,18 +745,8 @@ class MemoryStore:
                 )
             )
             seen_candidate_ids.add(item.id)
-
-        ranked_candidates.sort(key=lambda item: item[1])
-
-        graph_neighbors = self._semantic_graph_neighbors(
-            tuple(item_id for item_id, _rank in fts_results),
-            limit=limit * 3,
-        )
-        for item_id, reasons in graph_neighbors.items():
-            if item_id in seen_candidate_ids:
-                continue
-            ranked_candidates.append((item_id, 0.0, reasons))
-            seen_candidate_ids.add(item_id)
+        fallback_candidates.sort(key=lambda item: item[1])
+        ranked_candidates.extend(fallback_candidates)
 
         selected = []
         for item_id, score, reasons in ranked_candidates:
@@ -1069,6 +1070,14 @@ class MemoryStore:
     def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]:
         return self.provider.get_messages(session_id, limit)
 
+    def get_messages_for_run(
+        self,
+        session_id: str,
+        run_id: str,
+        limit: int = 50,
+    ) -> list[StoredMessage]:
+        return self.provider.get_messages_for_run(session_id, run_id, limit)
+
     def search_messages(
         self,
         query: str,
@@ -1132,20 +1141,40 @@ class MemoryStore:
         owner: str,
         limit: int = 10,
         lease_seconds: float = 300.0,
+        now: float | None = None,
     ) -> list[MemoryConsolidationJob]:
-        now = time.time()
+        current_time = time.time() if now is None else now
         with connect(db_paths(self.home).memory) as conn:
             conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                UPDATE memory_consolidation_jobs
+                SET status = 'dead_letter', owner = '', lease_expires_at = 0,
+                    updated_at = ?
+                WHERE status = 'failed' AND attempts >= 5
+                """,
+                (current_time,),
+            )
             ids = [
                 str(row[0])
                 for row in conn.execute(
                     """
                     SELECT id FROM memory_consolidation_jobs
-                    WHERE status IN ('pending', 'failed')
-                      AND (owner = '' OR lease_expires_at <= ?)
+                    WHERE status = 'pending'
+                       OR (status = 'active' AND lease_expires_at <= ?)
+                       OR (
+                           status = 'failed' AND attempts < 5
+                           AND updated_at + CASE
+                               WHEN attempts <= 1 THEN 60
+                               WHEN attempts = 2 THEN 120
+                               WHEN attempts = 3 THEN 240
+                               WHEN attempts = 4 THEN 480
+                               ELSE 3600
+                           END <= ?
+                       )
                     ORDER BY updated_at ASC LIMIT ?
                     """,
-                    (now, max(1, limit)),
+                    (current_time, current_time, max(1, limit)),
                 ).fetchall()
             ]
             for job_id in ids:
@@ -1156,7 +1185,12 @@ class MemoryStore:
                         attempts = attempts + 1, error = '', updated_at = ?
                     WHERE id = ?
                     """,
-                    (owner, now + lease_seconds, now, job_id),
+                    (
+                        owner,
+                        current_time + lease_seconds,
+                        current_time,
+                        job_id,
+                    ),
                 )
             if not ids:
                 return []
@@ -1177,7 +1211,7 @@ class MemoryStore:
         from ..prompting import PromptLayerStore
         from .scopes import default_memory_scope
 
-        messages = self.get_messages(job.session_id, limit=50)
+        messages = self.get_messages_for_run(job.session_id, job.run_id, limit=50)
         if not messages:
             self._finish_consolidation_job(job, status="completed")
             return []
@@ -1326,6 +1360,15 @@ class MemoryStore:
         seen_memory_keys = {
             (item.type, item.content.strip().lower()) for item in active_items
         }
+        for existing in self.list_items(limit=1000):
+            if existing.scope == scope and existing.status not in {
+                "archived",
+                "revoked",
+                "stale",
+            }:
+                seen_memory_keys.add(
+                    (existing.type, existing.content.strip().lower())
+                )
         for learning in learnings:
             if not isinstance(learning, dict):
                 continue

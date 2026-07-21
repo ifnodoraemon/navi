@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import connect
 from .paths import db_paths
@@ -58,8 +60,17 @@ class _CalendarAdapter:
         )
         _required_text(normalized, "title", existing=existing)
         _required_text(normalized, "starts_at", existing=existing)
-        _validate_datetime(normalized, "starts_at")
-        _validate_datetime(normalized, "ends_at")
+        starts_at = _validate_datetime(normalized, "starts_at")
+        ends_at = _validate_datetime(normalized, "ends_at")
+        _validate_timezone(normalized)
+        if starts_at is not None and ends_at is not None:
+            try:
+                if ends_at <= starts_at:
+                    raise ValueError("calendar_event ends_at must be after starts_at")
+            except TypeError as exc:
+                raise ValueError(
+                    "calendar_event starts_at and ends_at must use compatible timezones"
+                ) from exc
         _string_list(normalized, "attendees")
         return normalized
 
@@ -80,6 +91,8 @@ class _ReminderAdapter:
         )
         _required_text(normalized, "title", existing=existing)
         _validate_datetime(normalized, "due_at")
+        _validate_timezone(normalized)
+        _bounded_int(normalized, "priority", minimum=0, maximum=5)
         if "completed" in normalized and not isinstance(normalized["completed"], bool):
             raise ValueError("reminder completed must be boolean")
         return normalized
@@ -101,6 +114,7 @@ class _ContactAdapter:
         _required_text(normalized, "display_name", existing=existing)
         for key in ("emails", "phones", "tags"):
             _string_list(normalized, key)
+        _email_list(normalized, "emails")
         return normalized
 
 
@@ -111,6 +125,7 @@ class _MailDraftAdapter:
         normalized = _allowed(data, "to", "cc", "bcc", "subject", "body", "reply_to")
         for key in ("to", "cc", "bcc"):
             _string_list(normalized, key)
+            _email_list(normalized, key)
         if not existing and not normalized.get("to"):
             raise ValueError("mail_draft to requires at least one recipient")
         _required_text(normalized, "subject", existing=existing)
@@ -136,6 +151,12 @@ class _AttentionPolicyAdapter:
         if "enabled" in normalized and not isinstance(normalized["enabled"], bool):
             raise ValueError("attention_policy enabled must be boolean")
         _string_list(normalized, "categories")
+        _validate_timezone(normalized)
+        _time_of_day(normalized, "quiet_hours_start")
+        _time_of_day(normalized, "quiet_hours_end")
+        if ("quiet_hours_start" in normalized) != ("quiet_hours_end" in normalized):
+            raise ValueError("attention_policy quiet hours require both start and end")
+        _bounded_int(normalized, "minimum_priority", minimum=0, maximum=5)
         return normalized
 
 
@@ -291,7 +312,10 @@ class PersonalResourceStore:
                 f"personal resource version changed: expected {expected_version}, current {current.version}"
             )
         normalized_patch = self.adapters.get(current.kind).normalize(dict(patch), existing=True)
-        data = {**current.data, **normalized_patch}
+        data = self.adapters.get(current.kind).normalize(
+            {**current.data, **normalized_patch},
+            existing=False,
+        )
         target_status = status or current.status
         if target_status not in {"active", "completed", "deleted"}:
             raise ValueError("personal resource status is invalid")
@@ -357,13 +381,66 @@ def _string_list(data: dict[str, Any], key: str) -> None:
     data[key] = [item.strip() for item in value if item.strip()]
 
 
-def _validate_datetime(data: dict[str, Any], key: str) -> None:
+def _validate_datetime(data: dict[str, Any], key: str) -> datetime | None:
     if key not in data or data[key] == "":
-        return
+        return None
     value = data[key]
     if not isinstance(value, str):
         raise ValueError(f"personal resource {key} must be an ISO-8601 string")
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError(f"personal resource {key} must be an ISO-8601 string") from exc
+
+
+def _validate_timezone(data: dict[str, Any]) -> None:
+    if "timezone" not in data or data["timezone"] == "":
+        return
+    timezone = data["timezone"]
+    if not isinstance(timezone, str):
+        raise ValueError("personal resource timezone must be an IANA timezone")
+    try:
+        ZoneInfo(timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError("personal resource timezone must be an IANA timezone") from exc
+
+
+def _time_of_day(data: dict[str, Any], key: str) -> None:
+    if key not in data:
+        return
+    value = data[key]
+    if not isinstance(value, str):
+        raise ValueError(f"personal resource {key} must use HH:MM")
+    try:
+        parsed = datetime.strptime(value, "%H:%M")
+    except ValueError as exc:
+        raise ValueError(f"personal resource {key} must use HH:MM") from exc
+    data[key] = parsed.strftime("%H:%M")
+
+
+def _bounded_int(
+    data: dict[str, Any],
+    key: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> None:
+    if key not in data:
+        return
+    value = data[key]
+    if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
+        raise ValueError(
+            f"personal resource {key} must be an integer from {minimum} to {maximum}"
+        )
+
+
+def _email_list(data: dict[str, Any], key: str) -> None:
+    if key not in data:
+        return
+    invalid = [
+        item
+        for item in data[key]
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", item)
+    ]
+    if invalid:
+        raise ValueError(f"personal resource {key} contains an invalid email address")

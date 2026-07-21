@@ -34,7 +34,7 @@ from .paths import db_paths
 from .schema import Column, Table
 
 
-TRACE_STORE_SCHEMA_VERSION = 2
+TRACE_STORE_SCHEMA_VERSION = 3
 LOOP_DECISION_PHASE = LoopPhase.DECISION
 
 
@@ -134,7 +134,26 @@ class TraceStore:
             conn.execute(TRACE_EVALUATIONS_TABLE.ddl)
             _ensure_schema_current(conn, TRACE_EVALUATIONS_TABLE)
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_trace_evaluations_trace ON trace_evaluations(trace_id)"
+                """
+                DELETE FROM trace_evaluations
+                WHERE rowid NOT IN (
+                    SELECT rowid FROM (
+                        SELECT rowid,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY trace_id
+                                   ORDER BY created_at DESC, rowid DESC
+                               ) AS position
+                        FROM trace_evaluations
+                    ) WHERE position = 1
+                )
+                """
+            )
+            # Version 2 used this name for a non-unique lookup index. Replace
+            # it explicitly so existing databases gain the UPSERT constraint.
+            conn.execute("DROP INDEX IF EXISTS idx_trace_evaluations_trace")
+            conn.execute(
+                "CREATE UNIQUE INDEX idx_trace_evaluations_trace "
+                "ON trace_evaluations(trace_id)"
             )
             conn.execute(TRACE_BLOBS_TABLE.ddl)
             _ensure_schema_current(conn, TRACE_BLOBS_TABLE)
@@ -652,6 +671,11 @@ class TraceStore:
                     id, trace_id, outcome, failure_domain, evidence_json, created_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trace_id) DO UPDATE SET
+                    outcome = excluded.outcome,
+                    failure_domain = excluded.failure_domain,
+                    evidence_json = excluded.evidence_json,
+                    created_at = excluded.created_at
                 """,
                 (
                     evaluation.id,
@@ -662,26 +686,22 @@ class TraceStore:
                     evaluation.created_at,
                 ),
             )
-        return evaluation
+            row = conn.execute(
+                """
+                SELECT id, trace_id, outcome, failure_domain, evidence_json, created_at
+                FROM trace_evaluations WHERE trace_id = ?
+                """,
+                (trace_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("trace evaluation was not persisted")
+        return TraceEvaluation(*row)
 
 
 def _redact(value: Any) -> Any:
-    from .safeguards import redact_personal_data, _REDACT_FIELD_NAMES
+    from .safeguards import redact_personal_data_deep
 
-    if isinstance(value, dict):
-        redacted = {}
-        for key, item in value.items():
-            key_text = str(key).lower()
-            if key_text in _REDACT_FIELD_NAMES:
-                redacted[key] = "[redacted]"
-            else:
-                redacted[key] = _redact(item)
-        return redacted
-    if isinstance(value, list):
-        return [_redact(item) for item in value]
-    if isinstance(value, str):
-        return redact_personal_data(value)
-    return value
+    return redact_personal_data_deep(value)
 
 
 def _redact_json_text(text: str) -> str:

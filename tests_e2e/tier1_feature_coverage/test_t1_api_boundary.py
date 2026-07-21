@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
+from navi.evolution_targets import EvolutionTargetAdapterRegistry
+from navi.prompting import PromptLayerStore
 from navi.runs import RunStore
 
 if TYPE_CHECKING:
@@ -13,6 +16,44 @@ if TYPE_CHECKING:
 
 def _logged_tools(home: Path) -> set[str]:
     return {log.tool for log in RunStore(home).list_tool_call_logs(limit=100)}
+
+
+def _prompt_proposal(home: Path, *, marker: str, eval_case_id: str) -> dict:
+    before = PromptLayerStore(home).read("planner")
+    EvolutionTargetAdapterRegistry(home).get("eval_case").apply(
+        eval_case_id,
+        json.dumps(
+            {
+                "id": eval_case_id,
+                "target_types": ["prompt_layer"],
+                "assertions": [{"type": "contains", "value": marker}],
+            },
+            sort_keys=True,
+        ),
+    )
+    return {
+        "target_type": "prompt_layer",
+        "target_id": "planner",
+        "reason": f"E2E governed evolution: {marker}",
+        "expected_benefit": "verify the governed API lifecycle",
+        "risk": "behavior change",
+        "before": before,
+        "after": before + f"\n{marker}\n",
+        "rollback_plan": "restore the exact prompt snapshot",
+        "eval_cases": [eval_case_id],
+    }
+
+
+def _approve_required_response(api_client: TestClient, response) -> str:
+    assert response.status_code == 409
+    approval = response.json()["error"]["detail"]["approval"]
+    approved = api_client.post(
+        "/v1/active/approve",
+        json={"code": approval["code"]},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["data"]["facts"]["decision"] == "approve"
+    return str(approval["id"])
 
 
 def test_t1_api_create_session_routes_capability(
@@ -105,25 +146,19 @@ def test_t1_api_evolution_propose_routes_capability(
     api_client: TestClient, navi_home: Path
 ) -> None:
     """Execute a POST /v1/evolution_proposals request via api_client and verify it proposes an evolution."""
-    proposal_data = {
-        "target_type": "memory_schema",
-        "target_id": "api_boundary_policy",
-        "reason": "E2E evolution proposal test",
-        "expected_benefit": "improved validation",
-        "risk": "low",
-        "before": "old schema",
-        "after": "new schema",
-        "rollback_plan": "revert changes",
-        "eval_cases": ["verify_api_endpoint"],
-    }
+    proposal_data = _prompt_proposal(
+        navi_home,
+        marker="api boundary proposal marker",
+        eval_case_id="verify-api-endpoint",
+    )
     response = api_client.post("/v1/evolution-proposals", json=proposal_data)
     assert response.status_code == 200
 
     data = response.json()["data"]
     assert "id" in data
-    assert data["target_type"] == "memory_schema"
-    assert data["target_id"] == "api_boundary_policy"
-    assert data["reason"] == "E2E evolution proposal test"
+    assert data["target_type"] == "prompt_layer"
+    assert data["target_id"] == "planner"
+    assert data["reason"] == proposal_data["reason"]
     assert data["status"] == "proposed"
 
     # Verify mutation via GET /v1/evolution-proposals
@@ -140,41 +175,45 @@ def test_t1_api_evolution_apply_routes_capability(
 ) -> None:
     """Execute a POST /v1/evolution_proposal_apply request via api_client and verify it applies the proposal."""
     # 1. Propose an evolution
-    proposal_data = {
-        "target_type": "memory_schema",
-        "target_id": "apply_policy",
-        "reason": "E2E evolution apply test",
-        "expected_benefit": "apply test benefit",
-        "risk": "low",
-        "before": "before apply",
-        "after": "after apply",
-        "rollback_plan": "rollback apply",
-        "eval_cases": ["apply_case"],
-    }
+    proposal_data = _prompt_proposal(
+        navi_home,
+        marker="api apply marker",
+        eval_case_id="api-apply-case",
+    )
     response = api_client.post("/v1/evolution-proposals", json=proposal_data)
     assert response.status_code == 200
     proposal_id = response.json()["data"]["id"]
 
-    # 2. Record proposal evaluation as approved
+    # 2. Persist candidate experiment evidence.
+    experiment = api_client.post(f"/v1/evolution-proposals/{proposal_id}/experiment")
+    assert experiment.status_code == 200
+    assert experiment.json()["data"]["status"] == "passed"
+
+    # 3. Request and resolve an exact apply approval.
+    first_apply = api_client.post(f"/v1/evolution-proposals/{proposal_id}/apply")
+    approval_id = _approve_required_response(api_client, first_apply)
+
+    # 4. Bind the approved evaluation to that durable approval.
     eval_response = api_client.post(
         f"/v1/evolution-proposals/{proposal_id}/evaluation",
         json={
             "evaluation_result": "approved",
             "evaluation_evidence": "E2E apply checks passed",
+            "approval_id": approval_id,
         },
     )
     assert eval_response.status_code == 200
     assert eval_response.json()["data"]["evaluation_result"] == "approved"
 
-    # 3. Apply the proposal
+    # 5. Apply the proposal after both experiment and approval are durable.
     apply_response = api_client.post(f"/v1/evolution-proposals/{proposal_id}/apply")
     assert apply_response.status_code == 200
 
     apply_data = apply_response.json()["data"]
     assert "id" in apply_data
-    assert apply_data["target_type"] == "memory_schema"
-    assert apply_data["target_id"] == "apply_policy"
-    assert apply_data["reason"] == "E2E evolution apply test"
+    assert apply_data["target_type"] == "prompt_layer"
+    assert apply_data["target_id"] == "planner"
+    assert apply_data["reason"] == proposal_data["reason"]
     logged = _logged_tools(navi_home)
     assert {"evolution.propose", "evolution.record_evaluation", "evolution.apply"} <= logged
 
@@ -184,37 +223,40 @@ def test_t1_api_evolution_rollback_routes_capability(
 ) -> None:
     """Execute a POST /v1/evolution_rollback request via api_client and verify it rolls back the evolution event."""
     # 1. Propose an evolution
-    proposal_data = {
-        "target_type": "memory_schema",
-        "target_id": "rollback_policy",
-        "reason": "E2E evolution rollback test",
-        "expected_benefit": "rollback test benefit",
-        "risk": "low",
-        "before": "before rollback",
-        "after": "after rollback",
-        "rollback_plan": "rollback rollback",
-        "eval_cases": ["rollback_case"],
-    }
+    proposal_data = _prompt_proposal(
+        navi_home,
+        marker="api rollback marker",
+        eval_case_id="api-rollback-case",
+    )
     response = api_client.post("/v1/evolution-proposals", json=proposal_data)
     assert response.status_code == 200
     proposal_id = response.json()["data"]["id"]
 
-    # 2. Approve proposal
+    # 2. Run the declared experiment and request exact apply approval.
+    experiment = api_client.post(f"/v1/evolution-proposals/{proposal_id}/experiment")
+    assert experiment.status_code == 200
+    first_apply = api_client.post(f"/v1/evolution-proposals/{proposal_id}/apply")
+    approval_id = _approve_required_response(api_client, first_apply)
+
+    # 3. Bind the proposal evaluation to the approved apply request.
     eval_response = api_client.post(
         f"/v1/evolution-proposals/{proposal_id}/evaluation",
         json={
             "evaluation_result": "approved",
             "evaluation_evidence": "E2E rollback checks passed",
+            "approval_id": approval_id,
         },
     )
     assert eval_response.status_code == 200
 
-    # 3. Apply proposal (generates an evolution event)
+    # 4. Apply proposal (generates an evolution event).
     apply_response = api_client.post(f"/v1/evolution-proposals/{proposal_id}/apply")
     assert apply_response.status_code == 200
     event_id = apply_response.json()["data"]["id"]
 
-    # 4. Rollback the event
+    # 5. Rollback has its own exact approval gate.
+    first_rollback = api_client.post(f"/v1/evolution-events/{event_id}/rollback")
+    _approve_required_response(api_client, first_rollback)
     rollback_response = api_client.post(f"/v1/evolution-events/{event_id}/rollback")
     assert rollback_response.status_code == 200
 

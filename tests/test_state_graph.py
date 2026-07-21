@@ -217,6 +217,8 @@ async def test_executor_keeps_scope_workspace_durable_while_using_shadow_project
         workspace=shadow,
     )
 
+    assert executed.objective_evidence is False
+
     assert executed.ok is True
     assert captured["context_workspace"] == str(repo)
     assert captured["project_dir"] == str(shadow)

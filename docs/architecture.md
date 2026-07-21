@@ -144,10 +144,13 @@ background loop or vanish without evidence.
 Durable memory items carry global, person, actor, session, or workspace scope. The
 planner and responder receive only scopes derived from the current execution
 identity. Person scope is created only through an explicit hashed identity link.
-Conversation turns enqueue leased consolidation jobs; extracted items remain
-proposed. Hybrid text/embedding recall can discover candidates without FTS, and
-retention removes expired transient detail only after consolidation while
-preserving terminal summaries.
+Conversation turns enqueue run-bound leased consolidation jobs; extracted items
+remain proposed. Workers reclaim expired leases with bounded backoff and move
+exhausted jobs to a visible dead-letter state. Retention reconstructs a missing
+job from the run transcript before it can remove detail. Hybrid text/embedding
+recall can discover candidates without FTS, and graph neighbors are ranked before
+fallback candidates so graph recall cannot be starved. Retention removes expired
+transient detail only after consolidation while preserving terminal summaries.
 
 `EvolutionTargetAdapterRegistry` is the authority for evolvable target types.
 Prompt layers, skills, memory items, eval cases, and graph nodes have real readers
@@ -156,9 +159,12 @@ and writers. Run lifecycle records and inert spec files are not evolution target
 activation windows. Only successful apply events are reversible; rollback restores
 the exact pre-apply snapshot through the same adapter.
 
-`MetricsProjector` reads existing stores rather than maintaining a second source
-of truth. Its snapshots feed `system.metrics`, `/v1/metrics`, `navi metrics`,
-doctor SLO checks, and daemon activation observations.
+`MetricsProjector` derives values from durable stores rather than maintaining a
+second source of truth; construction may initialize or migrate those store
+schemas. Its snapshots feed `system.metrics`, `/v1/metrics`, `navi metrics`, and
+doctor SLO checks. Empty invariant samples remain insufficient data. Evolution
+observations enter only through proposal-attributed evidence; the daemon performs
+rollback recovery but does not reinterpret unrelated task outcomes as canaries.
 
 ## Connector Boundary
 

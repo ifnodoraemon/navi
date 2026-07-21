@@ -60,7 +60,11 @@ class SystemMetricsSnapshot:
 
 
 class MetricsProjector:
-    """Read-only projection of durable runtime facts into metrics and SLOs."""
+    """Stateless projection of durable runtime facts into metrics and SLOs.
+
+    Store construction only ensures current schemas; metric values themselves
+    are never persisted as a second source of truth.
+    """
 
     def __init__(self, home: Path):
         self.home = home
@@ -147,6 +151,7 @@ class MetricsProjector:
             _zero_slo(
                 "lifecycle_projection_integrity",
                 integrity["orphan_count"] + integrity["pending_sagas"],
+                samples=integrity["records"],
                 evidence={
                     "orphan_count": integrity["orphan_count"],
                     "pending_sagas": integrity["pending_sagas"],
@@ -155,21 +160,25 @@ class MetricsProjector:
             _zero_slo(
                 "mutating_effect_certainty",
                 integrity["uncertain_effects"],
+                samples=integrity["effects"],
                 evidence={"uncertain_effects": integrity["uncertain_effects"]},
             ),
             _zero_slo(
                 "execution_lease_health",
                 integrity["expired_leases"],
+                samples=integrity["active_loops"],
                 evidence={"expired_leases": integrity["expired_leases"]},
             ),
             _zero_slo(
                 "resource_release_integrity",
                 integrity["stale_resource_grants"],
+                samples=integrity["resource_grants"],
                 evidence={"stale_resource_grants": integrity["stale_resource_grants"]},
             ),
             _zero_slo(
                 "memory_pipeline_health",
                 pipeline["memory_failures"],
+                samples=pipeline["memory_jobs"],
                 evidence={
                     "failed_or_stale_jobs": pipeline["memory_failures"],
                     "pending_jobs": pipeline["memory_pending"],
@@ -177,10 +186,12 @@ class MetricsProjector:
             ),
             _zero_slo(
                 "evolution_activation_safety",
-                pipeline["regressed_activations"],
+                pipeline["regressed_activations"] + pipeline["uncertain_evolution_applies"],
+                samples=pipeline["evolution_apply_attempts"],
                 evidence={
                     "regressed": pipeline["regressed_activations"],
                     "observing": pipeline["observing_activations"],
+                    "uncertain_applies": pipeline["uncertain_evolution_applies"],
                 },
             ),
             _ratio_slo(
@@ -220,33 +231,18 @@ class MetricsProjector:
         )
 
     def observe_evolution_activations(self, *, now: float | None = None) -> list[dict[str, Any]]:
-        current_time = time.time() if now is None else now
+        del now
         store = EvolutionExperimentStore(self.home)
         observations: list[dict[str, Any]] = []
-        for activation in store.list_activations(status="observing", limit=100):
-            with connect(self.paths.runs) as conn:
-                row = conn.execute(
-                    """
-                    SELECT
-                        SUM(CASE WHEN resolution = 'success' THEN 1 ELSE 0 END),
-                        SUM(CASE WHEN resolution IN ('failed', 'blocked') THEN 1 ELSE 0 END)
-                    FROM runs
-                    WHERE phase = 'ended' AND updated_at > ? AND updated_at <= ?
-                    """,
-                    (activation.updated_at, current_time),
-                ).fetchone()
-            successes = int(row[0] or 0) if row else 0
-            errors = int(row[1] or 0) if row else 0
-            if successes + errors == 0:
-                continue
+        # Outcome evidence must be explicitly attributed to this activation by
+        # evolution.observe. System-wide run outcomes are not a valid canary.
+        for activation in store.list_activations(status="regressed", limit=100):
             observed = store.observe(
                 activation.event_id,
-                successes=successes,
-                errors=errors,
+                successes=0,
+                errors=0,
                 evidence={
-                    "source": "system_canary_window",
-                    "window_start": activation.updated_at,
-                    "window_end": current_time,
+                    "source": "regression_rollback_recovery",
                 },
             )
             observations.append(observed.to_dict())
@@ -273,8 +269,15 @@ class MetricsProjector:
         with connect(self.paths.traces) as conn:
             row = conn.execute(
                 """
+                WITH latest AS (
+                    SELECT trace_id, outcome, created_at,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY trace_id ORDER BY created_at DESC, rowid DESC
+                           ) AS position
+                    FROM trace_evaluations
+                )
                 SELECT COUNT(*), SUM(CASE WHEN outcome = 'failure' THEN 1 ELSE 0 END)
-                FROM trace_evaluations WHERE created_at >= ?
+                FROM latest WHERE position = 1 AND created_at >= ?
                 """,
                 (cutoff,),
             ).fetchone()
@@ -288,11 +291,18 @@ class MetricsProjector:
 
     def _integrity_metrics(self, now: float) -> dict[str, Any]:
         with connect(self.paths.runs) as conn:
-            run_ids = {str(row[0]) for row in conn.execute("SELECT id FROM runs")}
+            run_rows = conn.execute("SELECT id, kind FROM runs").fetchall()
+        run_ids = {str(row[0]) for row in run_rows}
         with connect(self.paths.goals) as conn:
             goal_rows = conn.execute("SELECT id, run_id FROM goals").fetchall()
         goal_ids = {str(row[0]) for row in goal_rows}
+        goal_run_ids = {str(row[1]) for row in goal_rows}
         missing_runs = [str(row[0]) for row in goal_rows if str(row[1]) not in run_ids]
+        missing_goal_runs = [
+            str(row[0])
+            for row in run_rows
+            if str(row[1]).startswith("loop:") and str(row[0]) not in goal_run_ids
+        ]
         with connect(self.paths.loop_runs) as conn:
             loop_rows = conn.execute("SELECT id, goal_id FROM loop_runs").fetchall()
             expired_leases = int(
@@ -310,7 +320,14 @@ class MetricsProjector:
                 ).fetchone()[0]
             )
             uncertain_effects = int(
-                conn.execute("SELECT COUNT(*) FROM loop_effects WHERE status = 'uncertain'").fetchone()[0]
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM loop_effects
+                    WHERE status = 'uncertain'
+                       OR (status = 'active' AND lease_expires_at <= ?)
+                    """,
+                    (now,),
+                ).fetchone()[0]
             )
             effects = int(conn.execute("SELECT COUNT(*) FROM loop_effects").fetchone()[0])
             pending_sagas = int(
@@ -333,9 +350,10 @@ class MetricsProjector:
             resource_grants = int(conn.execute("SELECT COUNT(*) FROM resource_grants").fetchone()[0])
         return {
             "records": len(run_ids) + len(goal_rows) + len(loop_rows),
-            "orphan_count": len(missing_runs) + len(missing_goals),
+            "orphan_count": len(missing_runs) + len(missing_goals) + len(missing_goal_runs),
             "orphan_goal_ids": missing_runs[:20],
             "orphan_loop_run_ids": missing_goals[:20],
+            "orphan_run_ids": missing_goal_runs[:20],
             "active_loops": active_loops,
             "expired_leases": expired_leases,
             "uncertain_effects": uncertain_effects,
@@ -359,7 +377,8 @@ class MetricsProjector:
                 conn.execute(
                     """
                     SELECT COUNT(*) FROM memory_consolidation_jobs
-                    WHERE (status = 'failed' AND attempts >= 3)
+                    WHERE status = 'dead_letter'
+                       OR (status = 'failed' AND attempts >= 3)
                        OR (status = 'active' AND lease_expires_at <= ?)
                        OR (status = 'pending' AND updated_at <= ?)
                     """,
@@ -378,6 +397,25 @@ class MetricsProjector:
                     "SELECT COUNT(*) FROM evolution_activations WHERE status = 'observing'"
                 ).fetchone()[0]
             )
+            evolution_activations = int(
+                conn.execute("SELECT COUNT(*) FROM evolution_activations").fetchone()[0]
+            )
+            uncertain_evolution_applies = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM evolution_proposals
+                    WHERE status IN ('applying', 'apply_uncertain')
+                    """
+                ).fetchone()[0]
+            )
+            evolution_apply_attempts = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM evolution_proposals
+                    WHERE status IN ('applying', 'apply_uncertain', 'applied', 'rolled_back')
+                    """
+                ).fetchone()[0]
+            )
         with connect(self.paths.personal_resources) as conn:
             personal_resources = int(
                 conn.execute(
@@ -391,17 +429,30 @@ class MetricsProjector:
             "identity_aliases": identity_aliases,
             "regressed_activations": regressed,
             "observing_activations": observing,
+            "evolution_activations": evolution_activations,
+            "uncertain_evolution_applies": uncertain_evolution_applies,
+            "evolution_apply_attempts": evolution_apply_attempts,
             "personal_resources": personal_resources,
         }
 
 
-def _zero_slo(name: str, actual: int, *, evidence: dict[str, Any]) -> SLOFact:
+def _zero_slo(
+    name: str,
+    actual: int,
+    *,
+    samples: int,
+    evidence: dict[str, Any],
+) -> SLOFact:
     return SLOFact(
         name=name,
-        status="met" if actual == 0 else "breached",
+        status=(
+            "insufficient_data"
+            if samples == 0
+            else ("met" if actual == 0 else "breached")
+        ),
         target="= 0",
         actual=float(actual),
-        samples=max(1, actual),
+        samples=samples,
         evidence=evidence,
     )
 

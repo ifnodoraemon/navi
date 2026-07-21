@@ -172,8 +172,6 @@ class LoopControlService:
         self.goals = GoalStore(home)
         self.loop_runs = LoopRunStore(home)
         self.lifecycle_sagas = LifecycleSagaStore(home)
-        self.lifecycle_sagas.recover_pending()
-        self.lifecycle_sagas.recover_open_orphans()
 
     def open_goal(self, request: OpenGoalRequest) -> LoopControlServiceResult:
         objective = request.objective.strip()

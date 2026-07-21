@@ -48,7 +48,9 @@ def test_t1_capability_registry_matches_current_control_surface(navi_home: Path)
     assert {"delegate.spawn", "watch.create", "workflow.run"}.isdisjoint(names)
 
 
-def test_t1_api_only_capabilities_are_isolated_from_turn_planner(navi_home: Path) -> None:
+def test_t1_governed_evolution_proposal_is_visible_but_apply_stays_api_only(
+    navi_home: Path,
+) -> None:
     turn_registry = build_capability_registry(navi_home, project_dir=Path.cwd())
     api_registry = build_capability_registry(
         navi_home,
@@ -60,7 +62,6 @@ def test_t1_api_only_capabilities_are_isolated_from_turn_planner(navi_home: Path
     api_only = {
         "session.create",
         "trace.evaluate",
-        "evolution.propose",
         "evolution.record_evaluation",
         "evolution.apply",
         "evolution.rollback",
@@ -68,6 +69,8 @@ def test_t1_api_only_capabilities_are_isolated_from_turn_planner(navi_home: Path
 
     assert api_only <= api_names
     assert api_only.isdisjoint(turn_names)
+    assert "evolution.propose" in api_names
+    assert "evolution.propose" in turn_names
 
 
 @pytest.mark.asyncio
@@ -82,7 +85,7 @@ async def test_t1_conversation_actions_dispatch(navi_home: Path) -> None:
         context=context,
     )
     question = await registry.invoke(
-        "respond",
+        "ask.user",
         {"message": "Please select", "options": ["optionA", "optionB"]},
         permission="read",
         context=context,

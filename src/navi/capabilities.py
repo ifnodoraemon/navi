@@ -165,6 +165,7 @@ class CapabilityRegistry:
                     context_policy=spec.context_policy,
                     runtime_policy=spec.runtime_policy,
                     delegation_allowed=spec.delegation_allowed,
+                    objective_evidence=spec.objective_evidence,
                 )
             )
         return sorted(nodes, key=lambda node: node.name)
@@ -458,7 +459,7 @@ class CapabilityRegistry:
         )
         if not risk.confirmation_required and risk.risk_class != "high":
             return None, ""
-        args_json = _canonical_args_json(call_args)
+        args_json = _canonical_args_json(call_args, home=self.home)
         runs = RunStore(self.home)
         if self.governed_run_id:
             approved = runs.approved_approval_for_run(
@@ -489,7 +490,7 @@ class CapabilityRegistry:
         context: CapabilityContext,
     ) -> CapabilityResult:
         runs = RunStore(self.home)
-        args_json = _canonical_args_json(call_args)
+        args_json = _canonical_args_json(call_args, home=self.home)
         run, approval, transition = self._active_turn_capability_approval(
             runs,
             name=name,
@@ -641,7 +642,7 @@ class CapabilityRegistry:
         source = context.source or (run.source if run else "")
         peer_id = context.peer_id or (run.peer_id if run else "")
         sender_id = context.sender_id or (run.sender_id if run else "")
-        args_json = _canonical_args_json(call_args)
+        args_json = _canonical_args_json(call_args, home=self.home)
         approval = runs.pending_approval_for_run(
             self.governed_run_id or "",
             source=source,
@@ -787,15 +788,10 @@ def _capability_result_from_dict(value: dict[str, Any]) -> CapabilityResult:
     )
 
 
-def _canonical_args_json(value: dict[str, Any]) -> str:
-    from .safeguards import redact_secrets_deep
+def _canonical_args_json(value: dict[str, Any], *, home: Path) -> str:
+    from .safeguards import canonical_approval_args_json
 
-    if isinstance(value, dict):
-        filtered = {k: v for k, v in value.items() if k not in {"_thought", "thought", "reasoning", "rationale"}}
-    else:
-        filtered = value or {}
-
-    return json.dumps(redact_secrets_deep(filtered), ensure_ascii=False, sort_keys=True)
+    return canonical_approval_args_json(value, home=home)
 
 
 def build_capability_registry(

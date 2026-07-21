@@ -11,6 +11,7 @@ from pathlib import Path
 from navi.capabilities import CapabilityContext, build_capability_registry
 from navi.runs import RunStore
 from navi.safeguards import (
+    canonical_approval_args_json,
     redact_personal_data,
     redact_personal_data_deep,
     redact_secrets,
@@ -91,6 +92,49 @@ def test_personal_data_redaction_masks_separated_phone_and_nested_fields():
     assert "138" not in redacted["contact"]
     assert redacted["profile"]["phone"] == "[REDACTED_PERSONAL_DATA]"
     assert "a@example.com" not in redacted["profile"]["note"]
+
+
+def test_verification_code_is_redacted_from_nested_audit_facts():
+    redacted = redact_personal_data_deep({"verification_code": "123456"})
+
+    assert redacted["verification_code"] == "[REDACTED]"
+
+
+def test_approval_args_use_stable_hmac_for_personal_and_secret_values(tmp_path: Path):
+    first = canonical_approval_args_json(
+        {
+            "other_peer_id": "private-peer",
+            "email": "a@example.com",
+            "api_key": "secret-one",
+            "operation": "link",
+        },
+        home=tmp_path,
+    )
+    repeated = canonical_approval_args_json(
+        {
+            "other_peer_id": "private-peer",
+            "email": "a@example.com",
+            "api_key": "secret-one",
+            "operation": "link",
+        },
+        home=tmp_path,
+    )
+    changed = canonical_approval_args_json(
+        {
+            "other_peer_id": "different-peer",
+            "email": "b@example.com",
+            "api_key": "secret-two",
+            "operation": "link",
+        },
+        home=tmp_path,
+    )
+
+    assert first == repeated
+    assert first != changed
+    assert "private-peer" not in first
+    assert "a@example.com" not in first
+    assert "secret-one" not in first
+    assert "$approval_hmac" in first
 
 
 

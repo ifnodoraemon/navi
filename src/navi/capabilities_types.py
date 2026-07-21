@@ -129,6 +129,7 @@ class CapabilityNode:
     context_policy: str = "none"
     runtime_policy: str = "none"
     delegation_allowed: bool = True
+    objective_evidence: bool = False
 
 
 class BaseCapability:

@@ -163,6 +163,41 @@ def test_llm_learning_adds_proposed_memory_even_with_high_confidence(tmp_path) -
     assert item.status == "proposed"
 
 
+def test_replayed_learning_does_not_duplicate_an_existing_proposal(tmp_path) -> None:
+    store = MemoryStore(tmp_path)
+    existing = store.add_item(
+        "preference",
+        "prefer concise architecture reports",
+        source="conversation",
+        status="proposed",
+        scope="actor:one",
+        confidence=0.9,
+        reason="first extraction",
+        provenance="job:first",
+    )
+
+    affected = store._apply_learnings(
+        [
+            {
+                "action": "add",
+                "type": "preference",
+                "content": "prefer concise architecture reports",
+                "confidence": 0.9,
+                "reason": "retry extraction",
+            }
+        ],
+        [],
+        source="conversation",
+        provenance="job:retry",
+        ledger_run_id="run-retry",
+        add_reason_fallback="retry",
+        scope="actor:one",
+    )
+
+    assert affected == []
+    assert store.get_item(existing.id) is not None
+
+
 def test_memory_activation_prevents_recently_used_item_decay(tmp_path) -> None:
     store = MemoryStore(tmp_path)
     now = time.time()

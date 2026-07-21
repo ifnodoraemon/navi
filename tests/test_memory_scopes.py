@@ -7,8 +7,10 @@ import pytest
 
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
+from navi.db import connect
 from navi.memory import MemoryStore
 from navi.memory.scopes import memory_scopes_for_context
+from navi.paths import db_paths
 from navi.tools import API_CONTEXT
 
 
@@ -53,6 +55,7 @@ async def test_conversation_memory_consolidation_is_durable_and_actor_scoped(
         async def complete_for(self, role, messages, *, output_schema=None):
             assert role == "consolidator"
             assert output_schema is not None
+            assert "unrelated second run" not in messages[-1].content
             return (
                 '{"learnings":[{"action":"add","type":"preference",'
                 '"content":"Use concise status updates","confidence":0.9,'
@@ -68,6 +71,15 @@ async def test_conversation_memory_consolidation_is_durable_and_actor_scoped(
         peer_id="peer-1",
         sender_id="user-a",
         run_id="run-a",
+    )
+    store.add_message(
+        "session-a",
+        "user",
+        "unrelated second run",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="user-a",
+        run_id="run-b",
     )
     job_id = store.enqueue_consolidation(
         session_id="session-a",
@@ -89,6 +101,47 @@ async def test_conversation_memory_consolidation_is_durable_and_actor_scoped(
     assert affected[0].scope.startswith("actor:")
     assert affected[0].provenance == f"memory-job:{job_id}:run:run-a"
     assert store.claim_consolidation_jobs(owner="worker-b") == []
+
+
+def test_expired_consolidation_lease_is_reclaimed_and_failures_dead_letter(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore(tmp_path)
+    job_id = store.enqueue_consolidation(
+        session_id="session-a",
+        run_id="run-a",
+        source="cli",
+        peer_id="cli",
+        sender_id="cli",
+    )
+    claimed = store.claim_consolidation_jobs(
+        owner="worker-a",
+        lease_seconds=10,
+        now=100.0,
+    )
+
+    assert [job.id for job in claimed] == [job_id]
+    assert store.claim_consolidation_jobs(owner="worker-b", now=105.0) == []
+    reclaimed = store.claim_consolidation_jobs(owner="worker-b", now=111.0)
+    assert [job.id for job in reclaimed] == [job_id]
+    assert reclaimed[0].attempts == 2
+
+    with connect(db_paths(tmp_path).memory) as conn:
+        conn.execute(
+            """
+            UPDATE memory_consolidation_jobs
+            SET status = 'failed', owner = '', attempts = 5, updated_at = 0
+            WHERE id = ?
+            """,
+            (job_id,),
+        )
+    assert store.claim_consolidation_jobs(owner="worker-c", now=1000.0) == []
+    with connect(db_paths(tmp_path).memory) as conn:
+        status = conn.execute(
+            "SELECT status FROM memory_consolidation_jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()[0]
+    assert status == "dead_letter"
 
 
 @pytest.mark.asyncio

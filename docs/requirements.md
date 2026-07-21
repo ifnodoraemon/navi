@@ -190,15 +190,18 @@ surface person scope requires an explicit approved identity link; aliases are
 stored as fingerprints and conflicting identities are not implicitly merged.
 Conversation consolidation uses a durable leased job queue, produces proposed
 memory rather than self-approved facts, and hybrid recall must not depend on an
-FTS seed. Expired transient turns are compacted only after consolidation, while
-terminal lifecycle summaries remain available for metrics. User-facing
+FTS seed. Consolidation is bound to one run transcript, reclaims expired leases,
+uses bounded retry backoff, and dead-letters exhausted work. Missing jobs are
+reconstructed before retention. Expired transient turns are compacted only after
+consolidation, while terminal lifecycle summaries remain available for metrics. User-facing
 actors cannot write global memory. Assistant conversation text and run result
 summaries are non-authoritative candidates, not durable facts. Preferences
 learned from prior approvals may inform explanations but must not expand
 permissions.
 
 Trace is audit evidence, not the authoritative runtime state. Secrets and
-sensitive payloads must be redacted before persistence.
+sensitive payloads must be redacted before persistence. One latest evaluation is
+stored per trace so rerunning evaluation cannot inflate SLO samples.
 
 Calendar events, reminders, contacts, mail drafts, and attention policies share
 a scoped personal-resource adapter contract with schema validation, optimistic
@@ -210,8 +213,11 @@ Evolution proposals are allowed only for targets with a runtime Target Adapter.
 Candidate evaluation cases, fingerprints, checks, approval evidence, applied
 events, activation observations, and rollback facts are durable. Every proposal
 declares evaluation cases and cannot apply unless its latest candidate experiment
-passed. Human approval is bound to the exact apply arguments. Activation
-regression beyond its approved threshold triggers rollback.
+passed. Human approval is bound to the exact apply arguments using keyed digests
+for private values, so matching does not require their plaintext persistence.
+Activation evidence must be explicitly attributed to its proposal; unrelated
+system outcomes are not canary evidence. Regression beyond the approved threshold
+triggers rollback, and uncertain application state is an SLO breach.
 
 Metrics and SLOs are projections of durable facts, not model judgments. At
 minimum they cover lifecycle orphans/sagas, execution leases, uncertain effects,

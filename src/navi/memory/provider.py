@@ -98,6 +98,9 @@ class MemoryProvider(Protocol):
         run_id: str = "",
     ) -> None: ...
     def get_messages(self, session_id: str, limit: int = 50) -> list[StoredMessage]: ...
+    def get_messages_for_run(
+        self, session_id: str, run_id: str, limit: int = 50
+    ) -> list[StoredMessage]: ...
     def search_messages_fts(
         self,
         query: str,
@@ -576,6 +579,26 @@ class SQLiteMemoryProvider:
                 LIMIT ?
                 """,
                 (session_id, limit),
+            ).fetchall()
+        return [self._message_from_row(row) for row in reversed(rows)]
+
+    def get_messages_for_run(
+        self,
+        session_id: str,
+        run_id: str,
+        limit: int = 50,
+    ) -> list[StoredMessage]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT session_id, role, content, created_at, message_id,
+                       source, peer_id, sender_id, trace_id, run_id
+                FROM messages
+                WHERE session_id = ? AND run_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (session_id, run_id, limit),
             ).fetchall()
         return [self._message_from_row(row) for row in reversed(rows)]
 

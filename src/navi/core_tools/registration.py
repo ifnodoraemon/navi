@@ -546,6 +546,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             facts_only=True,
             mutates=True,
             permission="write",
+            objective_evidence=True,
         ),
         lambda args: _workspace_shadow_merge(args, home=home),
     )

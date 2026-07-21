@@ -77,23 +77,23 @@ def test_trace_store_redacts_sensitive_fields_and_lists_events(tmp_path):
     assert store.list_trace_ids() == [trace_id]
     assert events[0].phase == "planner.syscall"
     assert json.loads(events[0].input_json) == {
-        "api_key": "[redacted]",
-        "items": [{"token": "[redacted]"}, {"safe": "value"}],
-        "nested": {"password": "[redacted]"},
+        "api_key": "[REDACTED]",
+        "items": [{"token": "[REDACTED]"}, {"safe": "value"}],
+        "nested": {"password": "[REDACTED]"},
         "resume_text": "phone [REDACTED_PHONE] email [REDACTED_EMAIL]",
     }
-    assert json.loads(events[0].output_json)["approval_code"] == "123456"
+    assert json.loads(events[0].output_json)["approval_code"] == "[REDACTED]"
     assert "[REDACTED_PHONE]" in json.loads(events[0].output_json)["contact"]
     assert "[REDACTED_EMAIL]" in json.loads(events[0].output_json)["contact"]
     assert events[0].message == "planned for [REDACTED_EMAIL] [REDACTED_PHONE]"
     assert len(decisions) == 1
-    assert json.loads(decisions[0].output_json)["evidence"]["api_key"] == "[redacted]"
+    assert json.loads(decisions[0].output_json)["evidence"]["api_key"] == "[REDACTED]"
     assert runs[0].id == trace_id
     assert runs[0].run_type == "chain"
     assert runs[0].thread_id == "session-redaction"
     assert runs[0].metadata["event_count"] == 2
     assert runs[1].run_type == "llm"
-    assert runs[1].inputs["api_key"] == "[redacted]"
+    assert runs[1].inputs["api_key"] == "[REDACTED]"
     assert runs[2].name == "Decision: finalize"
     assert runs[2].parent_run_id == trace_id
     assert runs[2].feedback == {}
@@ -234,6 +234,42 @@ def test_trace_store_redacts_legacy_rows_on_schema_migration(tmp_path):
             "SELECT content FROM trace_blobs WHERE hash = ?", ("legacy-hash",)
         ).fetchone()[0]
     assert blob_content == "简历 电话：[REDACTED_PHONE] 邮箱：[REDACTED_EMAIL]"
+
+
+def test_trace_store_replaces_legacy_evaluation_index_and_deduplicates(tmp_path):
+    TraceStore(tmp_path)
+    with connect(tmp_path / "traces.db") as conn:
+        conn.execute("DROP INDEX idx_trace_evaluations_trace")
+        conn.execute(
+            "CREATE INDEX idx_trace_evaluations_trace ON trace_evaluations(trace_id)"
+        )
+        conn.executemany(
+            """
+            INSERT INTO trace_evaluations(
+                id, trace_id, outcome, failure_domain, evidence_json, created_at
+            ) VALUES (?, 'trace-legacy', ?, 'none', '{}', ?)
+            """,
+            (("old", "success", 1.0), ("latest", "failure", 2.0)),
+        )
+        conn.execute(
+            "UPDATE schema_versions SET version = 2 WHERE component = 'traces'"
+        )
+
+    store = TraceStore(tmp_path)
+
+    evaluations = store.list_evaluations("trace-legacy")
+    assert [item.id for item in evaluations] == ["latest"]
+    replacement = store.record_evaluation(
+        trace_id="trace-legacy",
+        outcome="success",
+        failure_domain="none",
+    )
+    assert replacement.id == "latest"
+    with connect(tmp_path / "traces.db") as conn:
+        index = conn.execute(
+            "PRAGMA index_list(trace_evaluations)"
+        ).fetchall()
+    assert any(row[1] == "idx_trace_evaluations_trace" and row[2] == 1 for row in index)
 
 
 def test_trace_store_locked_write_does_not_fail_runtime(tmp_path, monkeypatch):

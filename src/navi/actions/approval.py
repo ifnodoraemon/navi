@@ -50,7 +50,10 @@ class ApprovalRequestCapability(BaseCapability):
         action = _arg_text(args, "action") or APPROVAL_ACTION_RUN_EXECUTION
         requested_tool = _arg_text(args, "requested_tool")
         requested_permission = _arg_text(args, "requested_permission")
-        args_json = _canonical_args_json(args.get("args_json") or args.get("args"))
+        args_json = _canonical_args_json(
+            args.get("args_json") or args.get("args"),
+            home=self.home,
+        )
         reason = _arg_text(args, "reason")
         source = context.source or run.source
         peer_id = context.peer_id or run.peer_id
@@ -174,20 +177,26 @@ class ApprovalResolveCapability(BaseCapability):
         )
 
 
-def _canonical_args_json(value: Any) -> str:
+def _canonical_args_json(value: Any, *, home: Path) -> str:
     if not isinstance(value, dict):
         if value is None:
             return "{}"
         try:
             value = json.loads(value)
             if not isinstance(value, dict):
-                return json.dumps(value, sort_keys=True)
+                from ..safeguards import canonical_approval_args_json
+
+                return canonical_approval_args_json(value, home=home)
         except Exception:
-            return str(value)
-            
-    filtered = {k: v for k, v in value.items() if k not in {"_thought", "thought", "reasoning", "rationale"}}
-    from ..safeguards import redact_secrets_deep
-    return json.dumps(redact_secrets_deep(filtered), ensure_ascii=False, sort_keys=True)
+            from ..safeguards import canonical_approval_args_json
+
+            return canonical_approval_args_json(
+                {"content": str(value)},
+                home=home,
+            )
+    from ..safeguards import canonical_approval_args_json
+
+    return canonical_approval_args_json(value, home=home)
 
 
 def _approval_facts(approval) -> dict[str, Any]:

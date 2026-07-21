@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from contextlib import contextmanager
 
 import pytest
 
@@ -10,13 +11,47 @@ from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.memory import MemoryStore
 from navi.paths import db_paths
 from navi.retention import DataRetentionManager
+import navi.retention as retention_module
 from navi.runs import RunStore
 from navi.trace import TraceStore
+
+
+def test_missing_memory_job_is_reconstructed_from_run_transcript(tmp_path: Path) -> None:
+    memory = MemoryStore(tmp_path)
+    memory.add_message(
+        "session-a",
+        "user",
+        "remember this",
+        run_id="run-a",
+        source="weixin",
+        peer_id="peer-a",
+        sender_id="sender-a",
+    )
+
+    manager = DataRetentionManager(tmp_path)
+
+    assert manager._memory_ready("run-a") is False
+    with connect(db_paths(tmp_path).memory) as conn:
+        job = conn.execute(
+            """
+            SELECT session_id, source, peer_id, sender_id, status
+            FROM memory_consolidation_jobs WHERE run_id = ?
+            """,
+            ("run-a",),
+        ).fetchone()
+    assert tuple(job) == (
+        "session-a",
+        "weixin",
+        "peer-a",
+        "sender-a",
+        "pending",
+    )
 
 
 @pytest.mark.asyncio
 async def test_expired_transient_turn_keeps_summary_and_purges_detail(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Provider:
         async def complete_for(self, role, messages, *, output_schema=None):
@@ -74,6 +109,24 @@ async def test_expired_transient_turn_keeps_summary_and_purges_detail(
             (opened.loop_run.run_id,),
         )
 
+    original_connect = retention_module.connect
+    failed = False
+
+    @contextmanager
+    def fail_trace_once(path):
+        nonlocal failed
+        if path == db_paths(tmp_path).traces and not failed:
+            failed = True
+            raise RuntimeError("injected trace compaction failure")
+        with original_connect(path) as conn:
+            yield conn
+
+    monkeypatch.setattr(retention_module, "connect", fail_trace_once)
+    with pytest.raises(RuntimeError, match="injected trace"):
+        DataRetentionManager(tmp_path).compact_expired(now=100000)
+    assert service.loop_runs.get_spec_json(opened.loop_spec.id)
+
+    monkeypatch.setattr(retention_module, "connect", original_connect)
     facts = DataRetentionManager(tmp_path).compact_expired(now=100000)
 
     assert facts.compacted == 1

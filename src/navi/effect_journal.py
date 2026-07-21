@@ -68,7 +68,7 @@ class EffectJournal:
                 (effect_key,),
             ).fetchone()
             if row is not None:
-                status, current_owner, expires_at, result_json = (
+                status, _current_owner, expires_at, result_json = (
                     str(row[0]),
                     str(row[1]),
                     float(row[2]),

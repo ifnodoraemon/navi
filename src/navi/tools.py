@@ -173,6 +173,7 @@ class ToolSpec:
     # infinite approval loop. Declared per-spec so the exemption is data-driven,
     # not a hardcoded name set (principle 1.1/6).
     governance_exempt: bool = False
+    objective_evidence: bool = False
 
     def __post_init__(self) -> None:
         if not self.capability_class.strip():

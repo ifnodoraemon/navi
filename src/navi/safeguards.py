@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import ipaddress
+import hashlib
+import hmac
+import json
+import os
 import re
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -488,6 +493,7 @@ _REDACT_FIELD_NAMES = frozenset(
     {
         "api_key",
         "apikey",
+        "approval_code",
         "authorization",
         "bearer",
         "client_secret",
@@ -496,18 +502,41 @@ _REDACT_FIELD_NAMES = frozenset(
         "secret",
         "session_token",
         "token",
+        "verification_code",
     }
 )
 
 _PERSONAL_FIELD_NAMES = frozenset(
     {
         "address",
+        "attendees",
+        "bcc",
+        "body",
+        "cc",
+        "display_name",
         "email",
         "email_address",
+        "emails",
+        "location",
+        "notes",
+        "other_peer_id",
+        "other_sender_id",
+        "peer_id",
         "phone",
         "phone_number",
+        "phones",
+        "recipients",
+        "reply_to",
+        "sender_id",
+        "subject",
         "telephone",
+        "title",
+        "to",
     }
+)
+
+_APPROVAL_PRIVATE_FIELD_NAMES = frozenset(
+    {"content", "message", "objective", "prompt", "query"}
 )
 
 
@@ -555,3 +584,72 @@ def redact_personal_data_deep(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(redact_personal_data_deep(item) for item in value)
     return value
+
+
+def canonical_approval_args_json(value: Any, *, home: Path) -> str:
+    """Canonicalize exact approval arguments without persisting sensitive values."""
+    filtered = (
+        {
+            key: item
+            for key, item in value.items()
+            if key not in {"_thought", "thought", "reasoning", "rationale"}
+        }
+        if isinstance(value, dict)
+        else (value or {})
+    )
+    key = _approval_hmac_key(home)
+    protected = _protect_approval_value(filtered, key=key)
+    return json.dumps(protected, ensure_ascii=False, sort_keys=True)
+
+
+def _protect_approval_value(value: Any, *, key: bytes, field_name: str = "") -> Any:
+    normalized = field_name.strip().lower()
+    if normalized in (
+        _REDACT_FIELD_NAMES
+        | _PERSONAL_FIELD_NAMES
+        | _APPROVAL_PRIVATE_FIELD_NAMES
+    ):
+        return {"$approval_hmac": _approval_hmac(value, key=key)}
+    if isinstance(value, dict):
+        return {
+            str(item_key): _protect_approval_value(
+                item,
+                key=key,
+                field_name=str(item_key),
+            )
+            for item_key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_protect_approval_value(item, key=key) for item in value]
+    if isinstance(value, str):
+        if redact_personal_data(value) != value:
+            return {"$approval_hmac": _approval_hmac(value, key=key)}
+        return value
+    return value
+
+
+def _approval_hmac(value: Any, *, key: bytes) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
+def _approval_hmac_key(home: Path) -> bytes:
+    home.mkdir(parents=True, exist_ok=True)
+    path = home / "approval_hmac.key"
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass
+    else:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(secrets.token_bytes(32))
+    key = path.read_bytes()
+    if len(key) < 32:
+        raise RuntimeError("approval HMAC key is invalid")
+    return key

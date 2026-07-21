@@ -31,6 +31,15 @@ class SystemDaemon:
         self.runs = RunStore(home)
         self.event_bus = EventBus()
         self.graph = GraphStore(home)
+        from .lifecycle_saga import LifecycleSagaStore
+        from .loop_runs import LoopRunStore
+
+        # Orphan recovery reads loop_runs directly, so initialize that schema
+        # before recovery on a fresh installation.
+        LoopRunStore(home)
+        lifecycle_sagas = LifecycleSagaStore(home)
+        lifecycle_sagas.recover_pending()
+        lifecycle_sagas.recover_open_orphans()
 
         self._setup_subscriptions()
 

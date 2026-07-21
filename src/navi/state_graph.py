@@ -132,6 +132,7 @@ class ExecutedCapabilityStep:
     error_reason: str = ""
     terminal: bool = False
     yields_control: bool = False
+    objective_evidence: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -142,6 +143,7 @@ class ExecutedCapabilityStep:
             "error_reason": self.error_reason,
             "terminal": self.terminal,
             "yields_control": self.yields_control,
+            "objective_evidence": self.objective_evidence,
         }
 
 
@@ -1162,6 +1164,7 @@ class CapabilityExecutorPort:
             permission=step.permission,
             context=context,
         )
+        tool_spec = registry.get(step.tool)
         return ExecutedCapabilityStep(
             ok=result.ok,
             action=result.action,
@@ -1170,6 +1173,7 @@ class CapabilityExecutorPort:
             error_reason=result.error_reason,
             terminal=result.terminal,
             yields_control=result.yields_control,
+            objective_evidence=bool(tool_spec and tool_spec.objective_evidence),
         )
 
 
@@ -2040,6 +2044,7 @@ class DurableStateGraphRunner:
             message=str(cap_result.get("message") or ""),
             error_reason=str(cap_result.get("error_reason") or ""),
             terminal=bool(cap_result.get("terminal", False)),
+            objective_evidence=bool(cap_result.get("objective_evidence", False)),
         )
         execution_profile = spec.goal.metadata.get("execution_profile")
         checker_tier = (
@@ -2053,7 +2058,12 @@ class DurableStateGraphRunner:
             key = step.evidence_key or step.name
 
             completion_evidence = executed_step.facts.get("completion_evidence") is True
-            if checker_tier == "objective_evidence" and executed_step.ok and completion_evidence:
+            if (
+                checker_tier == "objective_evidence"
+                and executed_step.ok
+                and completion_evidence
+                and executed_step.objective_evidence
+            ):
                 facts = {
                     "passed": True,
                     "ok": True,

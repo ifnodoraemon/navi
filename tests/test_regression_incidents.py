@@ -11,7 +11,7 @@ from navi.connector_runtime import ConnectorMessage, ConnectorIngressRuntime
 from navi.evolution import EvolutionLedger
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
-from navi.lifecycle import Acceptance, Governance, Phase, Resolution
+from navi.lifecycle import Governance, Phase, Resolution
 from navi.provider import ChatMessage, _extract_anthropic_content, _extract_openai_content
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore

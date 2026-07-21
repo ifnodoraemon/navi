@@ -110,11 +110,28 @@ class DataRetentionManager:
             ).fetchone()
             if row is not None:
                 return str(row[0]) in {"completed", "purged"}
-            messages = conn.execute(
-                "SELECT COUNT(*) FROM messages WHERE run_id = ?",
+            message = conn.execute(
+                """
+                SELECT session_id, source, peer_id, sender_id
+                FROM messages WHERE run_id = ? ORDER BY id DESC LIMIT 1
+                """,
                 (run_id,),
             ).fetchone()
-        return not messages or int(messages[0]) == 0
+        if message is None:
+            return True
+
+        # A crash may persist the transcript before enqueueing consolidation.
+        # Reconstruct the idempotent job instead of deferring retention forever.
+        from .memory import MemoryStore
+
+        MemoryStore(self.home).enqueue_consolidation(
+            session_id=str(message[0]),
+            run_id=run_id,
+            source=str(message[1]),
+            peer_id=str(message[2]),
+            sender_id=str(message[3]),
+        )
+        return False
 
     def _lifecycle_run_id(self, goal_id: str) -> str:
         with connect(self.paths.goals) as conn:
@@ -170,19 +187,6 @@ class DataRetentionManager:
                 """,
                 (summary, goal_id),
             )
-        with connect(self.paths.loop_runs) as conn:
-            conn.execute("DELETE FROM loop_checkpoints WHERE run_id = ?", (loop_run_id,))
-            conn.execute("DELETE FROM loop_events WHERE run_id = ?", (loop_run_id,))
-            conn.execute("DELETE FROM loop_effects WHERE loop_run_id = ?", (loop_run_id,))
-            conn.execute("DELETE FROM loop_specs WHERE id = ?", (spec_id,))
-            conn.execute(
-                """
-                UPDATE loop_runs SET checkpoint_id = '', child_run_ids_json = '[]',
-                    locked_resources_json = '[]', evidence_json = ?, version = version + 1
-                WHERE id = ?
-                """,
-                (summary, loop_run_id),
-            )
         with connect(self.paths.traces) as conn:
             trace_ids = [
                 str(row[0])
@@ -198,6 +202,21 @@ class DataRetentionManager:
                     (trace_id,),
                 )
             self._gc_trace_blobs(conn)
+        # Delete the discovery anchor last. If an earlier store operation fails,
+        # the retained loop spec keeps this candidate visible for a safe retry.
+        with connect(self.paths.loop_runs) as conn:
+            conn.execute("DELETE FROM loop_checkpoints WHERE run_id = ?", (loop_run_id,))
+            conn.execute("DELETE FROM loop_events WHERE run_id = ?", (loop_run_id,))
+            conn.execute("DELETE FROM loop_effects WHERE loop_run_id = ?", (loop_run_id,))
+            conn.execute(
+                """
+                UPDATE loop_runs SET checkpoint_id = '', child_run_ids_json = '[]',
+                    locked_resources_json = '[]', evidence_json = ?, version = version + 1
+                WHERE id = ?
+                """,
+                (summary, loop_run_id),
+            )
+            conn.execute("DELETE FROM loop_specs WHERE id = ?", (spec_id,))
 
     @staticmethod
     def _gc_trace_blobs(conn: Any) -> None:
