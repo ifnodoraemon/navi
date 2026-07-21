@@ -499,7 +499,7 @@ ACTION_SPECS = [
         confirmation_required=False,
         risk_reason_code="capability_safeguard_goal_state",
         execution_contexts=("turn", API_CONTEXT),
-        description="""Read authoritative durable Goal and LoopRun state without mutating execution. An ID selects that exact goal or loop run. Without an ID, view names declare the returned authority: current foreground goals, scheduled recurring goals, goals waiting for approval, or task history.""",
+        description="""Read authoritative durable Goal and LoopRun state without mutating execution. An ID selects that exact goal or loop run. Without an ID, inbox returns one task-oriented view; narrower views select current foreground goals, scheduled recurring goals, goals waiting for approval, or task history.""",
         input_schema={
             "type": "object",
             "properties": {
@@ -507,7 +507,7 @@ ACTION_SPECS = [
                 "loop_run_id": {"type": "string"},
                 "view": {
                     "type": "string",
-                    "description": "current, scheduled, pending_approval, or history; defaults to current. all is not accepted.",
+                    "description": "inbox, current, scheduled, pending_approval, or history; defaults to current.",
                 },
                 "limit": {"type": "integer"},
             },
@@ -683,6 +683,93 @@ ACTION_SPECS = [
         governance_exempt=True,
     ),
     ToolSpec(
+        name="identity.state",
+        capability_class="identity",
+        execution_contexts=("turn", API_CONTEXT),
+        description=(
+            "Read the current actor's explicit cross-surface identity links. "
+            "Returns opaque identities and alias fingerprints, never raw channel IDs."
+        ),
+        input_schema={"type": "object", "properties": {}},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "state_transition": {"type": "string"},
+                "turn_scope": {"type": "string"},
+                "linked": {"type": "boolean"},
+                "identity_id": {"type": "string"},
+                "aliases": {"type": "array", "items": {"type": "object"}},
+            },
+        },
+        facts_only=True,
+        mutates=False,
+        permission="read",
+        source="action",
+    ),
+    ToolSpec(
+        name="identity.link",
+        capability_class="identity",
+        execution_contexts=("turn", API_CONTEXT),
+        description=(
+            "Request or confirm a two-channel identity link, or unlink the current "
+            "channel. The target channel must present the one-time verification code."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["request", "confirm", "unlink"],
+                },
+                "other_source": {"type": "string"},
+                "other_peer_id": {"type": "string"},
+                "other_sender_id": {"type": "string"},
+                "verification_code": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["operation", "reason"],
+            "allOf": [
+                {
+                    "if": {"properties": {"operation": {"const": "request"}}},
+                    "then": {
+                        "required": [
+                            "other_source",
+                            "other_peer_id",
+                            "other_sender_id",
+                        ]
+                    },
+                },
+                {
+                    "if": {"properties": {"operation": {"const": "confirm"}}},
+                    "then": {"required": ["verification_code"]},
+                },
+            ],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "state_transition": {"type": "string"},
+                "turn_scope": {"type": "string"},
+                "identity_id": {"type": "string"},
+                "aliases": {"type": "array", "items": {"type": "object"}},
+                "migrated_memory_count": {"type": "integer"},
+                "request_id": {"type": "string"},
+                "verification_code": {"type": "string"},
+                "expires_at": {"type": "number"},
+                "unlinked": {"type": "boolean"},
+                "reason": {"type": "string"},
+            },
+        },
+        facts_only=True,
+        mutates=True,
+        permission="write",
+        source="action",
+    ),
+    ToolSpec(
         name="memory.add",
         capability_class="memory",
         execution_contexts=("turn", API_CONTEXT),
@@ -732,6 +819,112 @@ ACTION_SPECS = [
         governance_exempt=True,
     ),
     ToolSpec(
+        name="personal.query",
+        capability_class="personal_resource",
+        execution_contexts=("turn", API_CONTEXT),
+        description=(
+            "Query the current person's calendar events, reminders, contacts, mail "
+            "drafts, and attention policies. Mail records are drafts only; this "
+            "capability never claims external delivery."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "resource_id": {"type": "string"},
+                "kinds": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "calendar_event",
+                            "reminder",
+                            "contact",
+                            "mail_draft",
+                            "attention_policy",
+                        ],
+                    },
+                },
+                "query": {"type": "string"},
+                "include_deleted": {"type": "boolean"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+            },
+        },
+        output_schema={"type": "object"},
+        facts_only=True,
+        mutates=False,
+        permission="read",
+        source="action",
+    ),
+    ToolSpec(
+        name="personal.update",
+        capability_class="personal_resource",
+        execution_contexts=("turn", API_CONTEXT),
+        description=(
+            "Create, update, complete, or soft-delete one local personal resource. "
+            "Updates require an expected_version and return authoritative read-back "
+            "facts. mail_draft never sends mail."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["create", "update", "complete", "delete"],
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "calendar_event",
+                        "reminder",
+                        "contact",
+                        "mail_draft",
+                        "attention_policy",
+                    ],
+                },
+                "resource_id": {"type": "string"},
+                "expected_version": {"type": "integer", "minimum": 1},
+                "data": {"type": "object"},
+            },
+            "required": ["operation"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "state_transition": {"type": "string"},
+                "turn_scope": {"type": "string"},
+                "resource": {"type": "object"},
+                "verified_after": {"type": "object"},
+                "mail_delivery_supported": {"type": "boolean"},
+            },
+        },
+        facts_only=True,
+        mutates=True,
+        permission="write",
+        source="action",
+        risk_class="medium",
+        sensitive_contexts=("personal_data", "local_state"),
+        confirmation_required=True,
+        risk_reason_code="personal_resource_mutation_requires_approval",
+    ),
+    ToolSpec(
+        name="system.metrics",
+        capability_class="observability",
+        execution_contexts=("turn", API_CONTEXT),
+        description=(
+            "Read event-derived runtime metrics, SLO status, and structured backlog "
+            "diagnostics without exposing conversation content."
+        ),
+        input_schema={"type": "object", "properties": {}},
+        output_schema={"type": "object"},
+        facts_only=True,
+        mutates=False,
+        permission="read",
+        source="action",
+        governance_exempt=True,
+    ),
+    ToolSpec(
         name="trace.evaluate",
         capability_class="trace",
         execution_contexts=("api",),
@@ -760,7 +953,7 @@ ACTION_SPECS = [
     ToolSpec(
         name="evolution.propose",
         capability_class="evolution",
-        execution_contexts=("api",),
+        execution_contexts=("turn", API_CONTEXT),
         description="""Create a reviewable evolution proposal through the capability boundary.""",
         input_schema={
             "type": "object",
@@ -793,6 +986,73 @@ ACTION_SPECS = [
         facts_only=True,
         mutates=True,
         permission="prepare",
+        source="action",
+        governance_exempt=True,
+    ),
+    ToolSpec(
+        name="evolution.experiment",
+        capability_class="evolution",
+        execution_contexts=("turn", API_CONTEXT),
+        description=(
+            "Run and persist declared evaluation cases against one proposal without "
+            "applying its side effect. A failed experiment cannot authorize apply."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"proposal_id": {"type": "string"}},
+            "required": ["proposal_id"],
+        },
+        output_schema={"type": "object"},
+        facts_only=True,
+        mutates=True,
+        permission="prepare",
+        source="action",
+        governance_exempt=True,
+    ),
+    ToolSpec(
+        name="evolution.state",
+        capability_class="evolution",
+        execution_contexts=("turn", API_CONTEXT),
+        description=(
+            "Read a proposal, its latest persisted experiment, and activation "
+            "observation state."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "proposal_id": {"type": "string"},
+                "event_id": {"type": "string"},
+            },
+        },
+        output_schema={"type": "object"},
+        facts_only=True,
+        mutates=False,
+        permission="read",
+        source="action",
+        governance_exempt=True,
+    ),
+    ToolSpec(
+        name="evolution.observe",
+        capability_class="evolution",
+        execution_contexts=(API_CONTEXT,),
+        description=(
+            "Record post-activation canary outcomes. Regressions beyond the "
+            "approved threshold trigger the proposal's persisted rollback."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "successes": {"type": "integer", "minimum": 0},
+                "errors": {"type": "integer", "minimum": 0},
+                "evidence": {"type": "object"},
+            },
+            "required": ["event_id"],
+        },
+        output_schema={"type": "object"},
+        facts_only=True,
+        mutates=True,
+        permission="write",
         source="action",
         governance_exempt=True,
     ),

@@ -36,6 +36,7 @@ from .hooks import HookRegistry
 from .json_utils import json_object
 from .loop import LoopPhase, loop_decision_summary
 from .memory import MemoryStore
+from .metrics import MetricsProjector
 from .paths import ensure_home
 from .prompt_os import assemble_planner_system_prompt
 from .prompting import build_system_prompt_assembly
@@ -218,7 +219,8 @@ def status() -> None:
     config = load_config(home)
     tools = build_capability_registry(home, project_dir=Path.cwd()).list_specs()
     sessions = MemoryStore(home).list_sessions()
-    goals = GoalStore(home).list()
+    goal_store = GoalStore(home)
+    goals = goal_store.count_scoped()
     connectors = load_connector_adapters()
     typer.echo("Navi status")
     typer.echo(f"home={home}")
@@ -228,10 +230,25 @@ def status() -> None:
     typer.echo(
         f"execution={config.execution.provider} timeout={config.execution.timeout_seconds:g}s"
     )
-    typer.echo(f"tools={len(tools)} sessions={len(sessions)} goals={len(goals)}")
+    typer.echo(f"tools={len(tools)} sessions={len(sessions)} goals={goals}")
     for adapter in connectors:
         marker = "enabled" if adapter.enabled(home) else "disabled"
         typer.echo(f"connector.{adapter.name}={marker}")
+
+
+@app.command()
+def metrics(json_output: bool = False) -> None:
+    """Show event-derived runtime metrics and SLO status."""
+    snapshot = MetricsProjector(ensure_home()).snapshot().to_dict()
+    if json_output:
+        typer.echo(json.dumps(snapshot, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"Navi metrics overall={snapshot['overall_status']}")
+    for slo in snapshot["slos"]:
+        typer.echo(
+            f"{slo['name']}: {slo['status']} actual={slo['actual']:.4g} "
+            f"target={slo['target']} samples={slo['samples']}"
+        )
 
 
 @app.command()

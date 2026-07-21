@@ -67,6 +67,7 @@ API_PATHS_SPEC: Any = {
     "active_reject": "/v1/active/reject",
     "auth_status": "/v1/auth/status",
     "diagnostics": "/v1/diagnostics",
+    "metrics": "/v1/metrics",
     "tools": "/v1/tools",
     "tool_call": "/v1/tools/{tool_name}/call",
     "graph": "/v1/graph",

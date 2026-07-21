@@ -10,6 +10,7 @@ from ..capabilities_types import (
     capability,
 )
 from ..evolution import EvolutionEngine, EvolutionLedger
+from ..evolution_experiments import EvolutionExperimentStore
 from .helpers import arg_text as _arg_text
 from .helpers import failure_result as _failure_result
 from .helpers import fact_result as _fact_result
@@ -89,6 +90,102 @@ class EvolutionRecordEvaluationCapability(BaseCapability):
             "proposal": proposal_facts,
         }
         return _fact_result("evolution", facts, run_id=proposal.id)
+
+
+@capability("evolution_experiment")
+class EvolutionExperimentCapability(BaseCapability):
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        proposal_id = _arg_text(args, "proposal_id")
+        if not proposal_id:
+            return _evolution_error(
+                "evolution.experiment requires proposal_id.", reason="schema_mismatch"
+            )
+        try:
+            experiment = EvolutionExperimentStore(self.home).run(proposal_id)
+        except KeyError as exc:
+            return _evolution_error(str(exc), reason="not_found", proposal_id=proposal_id)
+        except ValueError as exc:
+            return _evolution_error(
+                str(exc), reason="schema_mismatch", proposal_id=proposal_id
+            )
+        facts = {
+            **_transition_facts("evolution_experiment", experiment.id, experiment.status),
+            "proposal_id": proposal_id,
+            "experiment": experiment.to_dict(),
+        }
+        return _fact_result("evolution", facts, run_id=experiment.id)
+
+
+@capability("evolution_observe")
+class EvolutionObserveCapability(BaseCapability):
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        event_id = _arg_text(args, "event_id")
+        if not event_id:
+            return _evolution_error(
+                "evolution.observe requires event_id.", reason="schema_mismatch"
+            )
+        try:
+            activation = EvolutionExperimentStore(self.home).observe(
+                event_id,
+                successes=_nonnegative_int(args.get("successes")),
+                errors=_nonnegative_int(args.get("errors")),
+                evidence=args.get("evidence") if isinstance(args.get("evidence"), dict) else {},
+            )
+        except KeyError as exc:
+            return _evolution_error(str(exc), reason="not_found", event_id=event_id)
+        facts = {
+            **_transition_facts("evolution_activation", activation.id, activation.status),
+            "event_id": event_id,
+            "activation": activation.to_dict(),
+        }
+        return _fact_result("evolution", facts, run_id=activation.id)
+
+
+@capability("evolution_state")
+class EvolutionStateCapability(BaseCapability):
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        proposal_id = _arg_text(args, "proposal_id")
+        event_id = _arg_text(args, "event_id")
+        ledger = EvolutionLedger(self.home)
+        experiments = EvolutionExperimentStore(self.home)
+        proposal = ledger.get_proposal(proposal_id) if proposal_id else None
+        experiment = experiments.latest_experiment(proposal_id) if proposal_id else None
+        activation = experiments.activation_for_event(event_id) if event_id else None
+        if proposal_id and proposal is None:
+            return _evolution_error(
+                "proposal not found", reason="not_found", proposal_id=proposal_id
+            )
+        if event_id and activation is None:
+            return _evolution_error("activation not found", reason="not_found", event_id=event_id)
+        facts = {
+            **_transition_facts("evolution_state", proposal_id or event_id or "latest", "observed"),
+            "proposal": asdict(proposal) if proposal else {},
+            "experiment": experiment.to_dict() if experiment else {},
+            "activation": activation.to_dict() if activation else {},
+            "active_observations": [
+                item.to_dict()
+                for item in experiments.list_activations(status="observing", limit=100)
+            ],
+        }
+        return _fact_result("evolution", facts)
 
 
 @capability("evolution_apply")
@@ -177,3 +274,10 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value]
+
+
+def _nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0

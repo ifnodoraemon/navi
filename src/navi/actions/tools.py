@@ -66,6 +66,7 @@ class ToolCapability:
                     sender_id=context.sender_id,
                     session_id=context.session_id or "",
                     workspace=context.workspace,
+                    home=context.home,
                 )
             )
             call_args["_context"] = {

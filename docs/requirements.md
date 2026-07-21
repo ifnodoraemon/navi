@@ -69,6 +69,12 @@ cost or persistence profile. A conversational answer, a state query, and a
 long-running goal may share planning and policy contracts while using different
 checkpoint, verification, and storage requirements.
 
+Each LoopSpec declares an execution profile. `turn` uses transient audit with a
+bounded retention window, `control` and `scheduled` use objective evidence when
+the called capability returns authoritative completion facts, and durable goals
+retain semantic checking. The runtime must not call an LLM checker when the
+declared objective-evidence contract is already deterministically satisfied.
+
 The loop must:
 
 - plan only from the capabilities in its policy envelope;
@@ -170,9 +176,22 @@ Run, Goal, and LoopRun creation and lifecycle changes must be atomic or use an
 explicit, recoverable saga. Partial failure must not leave an apparently active
 or approved orphan entity.
 
+Only one execution driver may own an active LoopRun. Claims and transitions use
+durable leases, versions, and compare-and-swap checks. Mutating capability calls
+use a durable Effect Journal: completed calls replay their recorded result,
+concurrent calls wait/fail closed, and uncertain outcomes require reconciliation
+instead of blind retry. Model and capability budgets are accounted in a
+process-safe ledger and reconciled with observed provider usage.
+
 Memory must be typed, scoped, provenance-bearing, revocable, and conflict
 visible. Recall, revocation, conflict reads, and activation records must stay
-inside global, actor, session, and workspace visibility scopes. User-facing
+inside global, person, actor, session, and workspace visibility scopes. Cross-
+surface person scope requires an explicit approved identity link; aliases are
+stored as fingerprints and conflicting identities are not implicitly merged.
+Conversation consolidation uses a durable leased job queue, produces proposed
+memory rather than self-approved facts, and hybrid recall must not depend on an
+FTS seed. Expired transient turns are compacted only after consolidation, while
+terminal lifecycle summaries remain available for metrics. User-facing
 actors cannot write global memory. Assistant conversation text and run result
 summaries are non-authoritative candidates, not durable facts. Preferences
 learned from prior approvals may inform explanations but must not expand
@@ -180,6 +199,24 @@ permissions.
 
 Trace is audit evidence, not the authoritative runtime state. Secrets and
 sensitive payloads must be redacted before persistence.
+
+Calendar events, reminders, contacts, mail drafts, and attention policies share
+a scoped personal-resource adapter contract with schema validation, optimistic
+version checks, soft deletion, and mutation read-back. Mail drafts are local
+records; no capability may claim delivery without an authoritative external
+connector receipt.
+
+Evolution proposals are allowed only for targets with a runtime Target Adapter.
+Candidate evaluation cases, fingerprints, checks, approval evidence, applied
+events, activation observations, and rollback facts are durable. A proposal
+with declared eval cases cannot apply unless its latest candidate experiment
+passed. Activation regression beyond its approved threshold triggers rollback.
+
+Metrics and SLOs are projections of durable facts, not model judgments. At
+minimum they cover lifecycle orphans/sagas, execution leases, uncertain effects,
+resource release, memory jobs, task outcomes, trace outcomes, and evolution
+activation safety. Empty samples are reported as insufficient data, never as
+healthy.
 
 Recurring Goal templates must persist a durable real workspace, never a
 turn-scoped shadow workspace. Registration resolves managed paths from workspace
@@ -192,8 +229,8 @@ disappearing silently.
 
 The supported product surfaces are:
 
-- `navi` CLI for chat, diagnostics, capabilities, goals, approvals, traces,
-  memory, connectors, and service operation;
+- `navi` CLI for chat, diagnostics, metrics/SLOs, capabilities, goals,
+  approvals, traces, memory, connectors, and service operation;
 - authenticated local FastAPI endpoints under `/v1`;
 - connector adapters discovered through the connector registry;
 - the trace web UI as an inspection surface, not an execution authority.

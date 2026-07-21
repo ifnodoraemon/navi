@@ -19,6 +19,8 @@ policy, persistence, and audit evidence.
 - CLI and authenticated local FastAPI surfaces.
 - Weixin/iLink and Telegram adapters discovered through the connector registry.
 - Prompt manifests and an evolution ledger for inspectable, reviewable changes.
+- Scoped calendar, reminder, contact, mail-draft, and attention resources.
+- Event-derived metrics/SLOs plus experiment and activation rollback evidence.
 
 The current architecture and known boundary deviations are documented in
 [Architecture](docs/architecture.md). Do not infer shipped behavior from old
@@ -50,6 +52,7 @@ from `NAVI_HOME/api_key` (`.navi/api_key` by default).
 # Runtime and diagnostics
 navi chat
 navi status
+navi metrics --json-output
 navi doctor
 navi doctor --connectivity
 navi model

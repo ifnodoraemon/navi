@@ -4,6 +4,8 @@ import json
 import os
 import re
 import inspect
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from collections.abc import AsyncGenerator, Callable
 from typing import Any, Protocol
@@ -18,7 +20,12 @@ from .provider_specs import (
     get_provider_spec,
     list_provider_specs as _list_provider_specs,
 )
-from .resource_gateway import GlobalResourceGateway, ResourceLimits, ResourceRequest
+from .resource_gateway import (
+    GlobalResourceGateway,
+    ResourceLimitError,
+    ResourceLimits,
+    ResourceRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -358,13 +365,13 @@ class FallbackProvider:
 
 
 def _provider_error(provider: ChatProvider, exc: Exception) -> str:
-    from .safeguards import redact_secrets
+    from .safeguards import redact_personal_data
 
     detail = str(exc).strip()
     exc_name = exc.__class__.__name__
     if detail:
-        return redact_secrets(f"{provider.__class__.__name__}: {exc_name}: {detail}")
-    return redact_secrets(f"{provider.__class__.__name__}: {exc_name}")
+        return redact_personal_data(f"{provider.__class__.__name__}: {exc_name}: {detail}")
+    return redact_personal_data(f"{provider.__class__.__name__}: {exc_name}")
 
 
 class ModelPool:
@@ -380,7 +387,21 @@ class ModelPool:
         self.routes = routes or {}
         self.config = config
         self.resource_gateway = resource_gateway or GlobalResourceGateway(ResourceLimits())
+        self._resource_gateway_context: ContextVar[GlobalResourceGateway | None] = ContextVar(
+            f"navi_model_pool_gateway_{id(self)}", default=None
+        )
         self._usage_by_role: dict[str, dict[str, Any]] = {}
+
+    def current_resource_gateway(self) -> GlobalResourceGateway:
+        return self._resource_gateway_context.get() or self.resource_gateway
+
+    @contextmanager
+    def bind_resource_gateway(self, gateway: GlobalResourceGateway):
+        token = self._resource_gateway_context.set(gateway)
+        try:
+            yield
+        finally:
+            self._resource_gateway_context.reset(token)
 
     async def complete_for(
         self,
@@ -393,30 +414,50 @@ class ModelPool:
         params = self.config.get_role_params(role) if self.config else {}
         temperature = params.get("temperature")
         max_tokens = params.get("max_tokens")
-        grant = self.resource_gateway.request(
+        gateway = self.current_resource_gateway()
+        prompt_tokens = _estimate_prompt_tokens(messages)
+        output_token_limit = max(0, int(max_tokens if max_tokens is not None else 32768))
+        estimated_tokens = prompt_tokens + output_token_limit
+        grant = gateway.request(
             ResourceRequest(
                 kind=f"llm:{role}",
-                estimated_tokens=_estimate_prompt_tokens(messages),
+                estimated_tokens=estimated_tokens,
+                estimated_cost=_model_request_cost(
+                    params,
+                    input_tokens=prompt_tokens,
+                    output_tokens=output_token_limit,
+                ),
                 units=1,
             )
         )
         if not grant.allowed:
-            raise RuntimeError(f"resource gateway {grant.decision}: {grant.reason}")
+            raise ResourceLimitError(grant)
         try:
             result = await _complete_with_optional_schema(
                 provider, messages, output_schema=output_schema,
                 temperature=temperature, max_tokens=max_tokens
             )
-        finally:
-            self.resource_gateway.release()
+        except Exception:
+            gateway.release(grant_id=grant.grant_id)
+            raise
         usage = provider.last_usage
         if usage is not None:
             facts = usage.to_facts(role=role)
             facts["messages"] = [{"role": m.role, "content": m.content} for m in messages]
             facts["response"] = result
             self._usage_by_role[role] = facts
+            gateway.release(
+                grant_id=grant.grant_id,
+                actual_tokens=usage.total_tokens or usage.input_tokens + usage.output_tokens,
+                actual_cost=_model_request_cost(
+                    params,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                ),
+            )
         else:
             self._usage_by_role.pop(role, None)
+            gateway.release(grant_id=grant.grant_id)
         return result
 
     async def stream_for(
@@ -429,20 +470,46 @@ class ModelPool:
         params = self.config.get_role_params(role) if self.config else {}
         temperature = params.get("temperature")
         max_tokens = params.get("max_tokens")
-        grant = self.resource_gateway.request(
+        gateway = self.current_resource_gateway()
+        prompt_tokens = _estimate_prompt_tokens(messages)
+        output_token_limit = max(0, int(max_tokens if max_tokens is not None else 32768))
+        estimated_tokens = prompt_tokens + output_token_limit
+        grant = gateway.request(
             ResourceRequest(
                 kind=f"llm:{role}",
-                estimated_tokens=_estimate_prompt_tokens(messages),
+                estimated_tokens=estimated_tokens,
+                estimated_cost=_model_request_cost(
+                    params,
+                    input_tokens=prompt_tokens,
+                    output_tokens=output_token_limit,
+                ),
                 units=1,
             )
         )
         if not grant.allowed:
-            raise RuntimeError(f"resource gateway {grant.decision}: {grant.reason}")
+            raise ResourceLimitError(grant)
         try:
             async for token in provider.stream(messages, temperature=temperature, max_tokens=max_tokens):
                 yield token
         finally:
-            self.resource_gateway.release()
+            usage = provider.last_usage
+            gateway.release(
+                grant_id=grant.grant_id,
+                actual_tokens=(
+                    usage.total_tokens or usage.input_tokens + usage.output_tokens
+                    if usage is not None
+                    else None
+                ),
+                actual_cost=(
+                    _model_request_cost(
+                        params,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                    )
+                    if usage is not None
+                    else None
+                ),
+            )
 
     def list_roles(self) -> list[str]:
         # "default" is this pool's own routing fallback key; the agent role names
@@ -548,6 +615,23 @@ def _estimate_prompt_tokens(messages: list[ChatMessage]) -> int:
     # Cheap deterministic guardrail estimate; provider usage remains the source
     # of truth after the call.
     return max(1, sum(max(1, len(message.content) // 4) for message in messages))
+
+
+def _model_request_cost(
+    params: dict[str, Any],
+    *,
+    input_tokens: int,
+    output_tokens: int,
+) -> float:
+    """Calculate cost only from explicit configuration; zero means unknown."""
+    try:
+        input_rate = float(params.get("input_cost_per_million") or 0.0)
+        output_rate = float(params.get("output_cost_per_million") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0, input_tokens) * input_rate / 1_000_000 + max(
+        0, output_tokens
+    ) * output_rate / 1_000_000
 
 
 async def _complete_with_optional_schema(

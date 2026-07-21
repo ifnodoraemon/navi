@@ -101,6 +101,13 @@ class TurnLifecycleMixin:
             trace_id=trace_id,
             run_id=result.run_id,
         )
+        self.runtime.memory.enqueue_consolidation(
+            session_id=session_id,
+            run_id=result.run_id or trace_id or result.session_id,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+        )
         return replace(
             result,
             session_id=session_id,

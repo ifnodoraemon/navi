@@ -65,6 +65,7 @@ class AgentRuntime:
                     sender_id=operating_context.sender_id,
                     session_id=session_id,
                     workspace=operating_context.workspace,
+                    home=self.home,
                 )
             ),
         )

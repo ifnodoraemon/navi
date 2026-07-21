@@ -460,7 +460,7 @@ _PERSONAL_DATA_PATTERNS: list[tuple[str, str]] = [
         r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
         "[REDACTED_EMAIL]",
     ),
-    (r"(?<!\d)1[3-9]\d{9}(?!\d)", "[REDACTED_PHONE]"),
+    (r"(?<!\d)1[3-9](?:[\s-]?\d){9}(?!\d)", "[REDACTED_PHONE]"),
 ]
 
 
@@ -499,6 +499,17 @@ _REDACT_FIELD_NAMES = frozenset(
     }
 )
 
+_PERSONAL_FIELD_NAMES = frozenset(
+    {
+        "address",
+        "email",
+        "email_address",
+        "phone",
+        "phone_number",
+        "telephone",
+    }
+)
+
 
 def redact_secrets_deep(value: Any) -> Any:
     """Recursively redact secrets inside nested dicts/lists/strings.
@@ -521,4 +532,26 @@ def redact_secrets_deep(value: Any) -> Any:
         return redacted
     if isinstance(value, list):
         return [redact_secrets_deep(item) for item in value]
+    return value
+
+
+def redact_personal_data_deep(value: Any) -> Any:
+    """Recursively redact secrets and contact identifiers before audit persistence."""
+    if isinstance(value, str):
+        return redact_personal_data(value)
+    if isinstance(value, dict):
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            normalized = str(key).strip().lower()
+            if normalized in _REDACT_FIELD_NAMES:
+                redacted[key] = "[REDACTED]"
+            elif normalized in _PERSONAL_FIELD_NAMES and item:
+                redacted[key] = "[REDACTED_PERSONAL_DATA]"
+            else:
+                redacted[key] = redact_personal_data_deep(item)
+        return redacted
+    if isinstance(value, list):
+        return [redact_personal_data_deep(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_personal_data_deep(item) for item in value)
     return value

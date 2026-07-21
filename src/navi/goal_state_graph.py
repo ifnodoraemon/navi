@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,11 @@ from .capabilities_types import CapabilityContext
 from .lifecycle import Acceptance, Governance, Phase, Resolution
 from .loop_control_service import LoopControlService, LoopControlServiceResult
 from .runtime import AgentRuntime
+from .resource_gateway import (
+    GlobalResourceGateway,
+    ResourceLimits,
+    SQLiteResourceLedger,
+)
 from .state_graph import (
     CapabilityExecutorPort,
     DurableStateGraphRunner,
@@ -32,6 +38,7 @@ async def run_goal_loop_state_graph(
     evidence: dict[str, Any] | None = None,
     result_evidence: dict[str, Any] | None = None,
     state_transition: str = "opened",
+    execution_owner: str = "",
 ) -> LoopControlServiceResult:
     """Execute a prepared Goal/LoopRun through the durable LLM-backed StateGraph."""
     execution_context = replace(
@@ -73,23 +80,47 @@ async def run_goal_loop_state_graph(
             execution_context,
         )
 
+    budget = base.loop_spec.budget_policy
+    resource_gateway = GlobalResourceGateway(
+        ResourceLimits(
+            token_budget=budget.token_budget,
+            call_budget=budget.call_budget,
+            cost_budget=budget.cost_budget,
+            qps_limit=budget.qps_limit,
+            max_concurrent=budget.max_concurrent,
+        ),
+        ledger=SQLiteResourceLedger(home),
+        scope_id=base.loop_run.run_id,
+    )
+    bind_gateway = getattr(runtime.provider, "bind_resource_gateway", None)
     runner = DurableStateGraphRunner(
         home=home,
+        gateway=resource_gateway,
         planner_port=planner_port,
         executor_port=executor_port,
         semantic_checker_port=checker_port,
         trace_store=TraceStore(home) if context.trace_id else None,
         trace_context=execution_context,
+        execution_owner=execution_owner,
+        account_phase_gates=not callable(bind_gateway),
     )
     try:
-        graph_result = await runner.run_async(
-            base.loop_spec,
-            workspace=Path(base.goal.workspace),
-            run_id=base.loop_run.run_id,
-            evidence=graph_evidence,
+        gateway_context = (
+            bind_gateway(resource_gateway) if callable(bind_gateway) else nullcontext()
         )
+        with gateway_context:
+            graph_result = await runner.run_async(
+                base.loop_spec,
+                workspace=Path(base.goal.workspace),
+                run_id=base.loop_run.run_id,
+                evidence=graph_evidence,
+            )
     except Exception as exc:
-        service.fail_state_graph_execution(base, error=exc)
+        service.fail_state_graph_execution(
+            base,
+            error=exc,
+            execution_owner=runner.execution_owner,
+        )
         raise
     return service.apply_state_graph_result(
         base,
@@ -136,6 +167,7 @@ async def resume_goal_loop_run(
     resume_reason: str = "approval_approved",
     state_transition: str = "approval_resumed",
     resource_retry: bool = False,
+    execution_owner: str = "",
 ) -> LoopControlServiceResult:
     """Resume one durable loop from its persisted checkpoint.
 
@@ -240,4 +272,5 @@ async def resume_goal_loop_run(
             "resume_reason": resume_reason,
         },
         state_transition=state_transition,
+        execution_owner=execution_owner,
     )

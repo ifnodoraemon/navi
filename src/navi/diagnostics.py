@@ -63,6 +63,22 @@ def run_diagnostics(
     checks.append(
         DiagnosticCheck("capabilities", "ok" if tools else "error", f"{len(tools)} registered")
     )
+    from .metrics import MetricsProjector
+
+    snapshot = MetricsProjector(home).snapshot()
+    for slo in snapshot.slos:
+        status = {
+            "met": "ok",
+            "breached": "error",
+            "insufficient_data": "warn",
+        }[slo.status]
+        checks.append(
+            DiagnosticCheck(
+                f"slo.{slo.name}",
+                status,
+                f"actual={slo.actual:.4g} target={slo.target} samples={slo.samples}",
+            )
+        )
     for item in AuthInspector().status():
         status = "ok" if item.installed and item.authenticated else "warn"
         if not item.installed:

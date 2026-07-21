@@ -416,6 +416,12 @@ def create_app(
             ]
         }
 
+    @app.get(api_path("metrics"))
+    def metrics() -> dict:
+        from .metrics import MetricsProjector
+
+        return MetricsProjector(home).snapshot().to_dict()
+
     @app.get(api_path("tools"))
     def list_tools() -> dict:
         return {

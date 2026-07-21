@@ -140,6 +140,30 @@ class SQLiteMemoryProvider:
             conn.execute(MEMORY_ITEMS_TABLE.ddl)
             assert_schema_exact(conn, MEMORY_ITEMS_TABLE)
             conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_consolidation_jobs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    peer_id TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    lease_expires_at REAL NOT NULL,
+                    attempts INTEGER NOT NULL,
+                    error TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(session_id, run_id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_jobs_pending "
+                "ON memory_consolidation_jobs(status, lease_expires_at, updated_at)"
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)"
             )
             conn.execute(

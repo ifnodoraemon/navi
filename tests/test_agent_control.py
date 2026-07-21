@@ -360,14 +360,15 @@ async def test_background_child_retries_transient_resource_pauses_at_original_no
     parent_context = _context(tmp_path, goal_id=parent.goal.id)
     spawned = await registry.invoke(
         "agent.control",
-        {**_spawn_args(parent.goal.id), "qps_limit": 1},
+        {**_spawn_args(parent.goal.id), "qps_limit": 1, "cost_budget": 0},
         permission="prepare",
         context=parent_context,
     )
     loop_run_id = spawned.facts["loop_run_id"]
     provider = _ChildReportProvider()
     monkeypatch.setattr("navi.provider.build_provider", lambda _config: provider)
-    monkeypatch.setattr("navi.resource_gateway.time.time", lambda: 1000.0)
+    resource_clock = [1000.0]
+    monkeypatch.setattr("navi.resource_gateway.time.time", lambda: resource_clock[0])
 
     first = await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
     first_state = LoopRunStore(tmp_path).get_run(loop_run_id)
@@ -380,6 +381,7 @@ async def test_background_child_retries_transient_resource_pauses_at_original_no
         == loop_run_id
     )
 
+    resource_clock[0] += 2.0
     runtime = AgentRuntime(home=tmp_path, provider=provider)
     second = await resume_goal_loop_run(
         home=tmp_path,
@@ -393,6 +395,7 @@ async def test_background_child_retries_transient_resource_pauses_at_original_no
     assert second.loop_run.terminal_state == LoopTerminalState.PAUSED
     assert second.loop_run.evidence["resource_resume_node"] == "evaluate"
 
+    resource_clock[0] += 2.0
     completed = await resume_goal_loop_run(
         home=tmp_path,
         loop_run_id=loop_run_id,

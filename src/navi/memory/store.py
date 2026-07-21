@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 import sqlite3
 import time
 import uuid
 from contextlib import closing
 from dataclasses import replace
+from difflib import SequenceMatcher
 from pathlib import Path
 
+from ..db import connect
 from ..paths import db_paths
 from ..hooks import HookDecision, HookEvent, HookRegistry
 from ..text_utils import truncate_middle
@@ -21,6 +25,7 @@ from .models import (
     MEMORY_STATUSES,
     MEMORY_TYPES,
     MemoryConflict,
+    MemoryConsolidationJob,
     MemoryItem,
     MemoryRecall,
 )
@@ -698,8 +703,6 @@ class MemoryStore:
             limit=limit * 3,
             allowed_scopes=allowed_scopes,
         )
-        if not fts_results:
-            return []
 
         ranked_candidates: list[tuple[str, float, list[str]]] = []
         seen_candidate_ids: set[str] = set()
@@ -708,6 +711,32 @@ class MemoryStore:
                 continue
             ranked_candidates.append((item_id, abs(rank), [f"fts_rank={rank:.4f}"]))
             seen_candidate_ids.add(item_id)
+
+        semantic_query_vector = self._embedding(fts_query)
+        fallback_items = self.provider.get_items(
+            allowed_scopes=allowed_scopes,
+            limit=max(200, limit * 20),
+        )
+        for item in fallback_items:
+            if item.id in seen_candidate_ids or item.status not in ACTIVE_STATUSES:
+                continue
+            similarity = self._hybrid_similarity(
+                fts_query,
+                item.content,
+                query_vector=semantic_query_vector,
+            )
+            if similarity < 0.16:
+                continue
+            ranked_candidates.append(
+                (
+                    item.id,
+                    1.0 - similarity,
+                    [f"hybrid_similarity={similarity:.4f}"],
+                )
+            )
+            seen_candidate_ids.add(item.id)
+
+        ranked_candidates.sort(key=lambda item: item[1])
 
         graph_neighbors = self._semantic_graph_neighbors(
             tuple(item_id for item_id, _rank in fts_results),
@@ -721,16 +750,18 @@ class MemoryStore:
 
         selected = []
         for item_id, score, reasons in ranked_candidates:
-            item = self.get_item(item_id)
-            if not item:
+            recalled_item = self.get_item(item_id)
+            if not recalled_item:
                 continue
-            if allowed_scopes is not None and item.scope not in allowed_scopes:
+            if allowed_scopes is not None and recalled_item.scope not in allowed_scopes:
                 continue
-            if item.status not in ACTIVE_STATUSES or (item.expires_at and item.expires_at <= now):
+            if recalled_item.status not in ACTIVE_STATUSES or (
+                recalled_item.expires_at and recalled_item.expires_at <= now
+            ):
                 continue
             selected.append(
                 MemoryRecall(
-                    item=item,
+                    item=recalled_item,
                     score=score,
                     reasons=reasons,
                 )
@@ -745,6 +776,44 @@ class MemoryStore:
             allowed_scopes=allowed_scopes,
         )
         return [self._with_conflict_reasons(recall, conflicts) for recall in selected]
+
+    def _embedding(self, text: str) -> list[float] | None:
+        embed = getattr(self._embedding_service, "embed", None)
+        if not callable(embed):
+            return None
+        try:
+            vector = embed(text)
+        except Exception:
+            logging.getLogger(__name__).warning("memory embedding failed", exc_info=True)
+            return None
+        if not isinstance(vector, (list, tuple)):
+            return None
+        try:
+            return [float(value) for value in vector]
+        except (TypeError, ValueError):
+            return None
+
+    def _hybrid_similarity(
+        self,
+        query: str,
+        content: str,
+        *,
+        query_vector: list[float] | None,
+    ) -> float:
+        content_vector = self._embedding(content) if query_vector is not None else None
+        vector_score = _cosine_similarity(query_vector, content_vector)
+        query_features = _text_features(query)
+        content_features = _text_features(content)
+        union = query_features | content_features
+        lexical_score = (
+            len(query_features & content_features) / len(union)
+            if union
+            else 0.0
+        )
+        sequence_score = SequenceMatcher(None, query.lower(), content.lower()).ratio()
+        if vector_score is not None:
+            return max(0.0, min(1.0, 0.65 * vector_score + 0.25 * lexical_score + 0.1 * sequence_score))
+        return max(lexical_score, 0.6 * lexical_score + 0.4 * sequence_score)
 
     def _semantic_graph_neighbors(
         self,
@@ -1030,6 +1099,196 @@ class MemoryStore:
         """
         return self.provider.clear_messages(session_id)
 
+    def enqueue_consolidation(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+    ) -> str:
+        job_id = uuid.uuid4().hex
+        now = time.time()
+        with connect(db_paths(self.home).memory) as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_consolidation_jobs(
+                    id, session_id, run_id, source, peer_id, sender_id, status,
+                    owner, lease_expires_at, attempts, error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', '', 0, 0, '', ?, ?)
+                ON CONFLICT(session_id, run_id) DO NOTHING
+                """,
+                (job_id, session_id, run_id, source, peer_id, sender_id, now, now),
+            )
+            row = conn.execute(
+                "SELECT id FROM memory_consolidation_jobs WHERE session_id = ? AND run_id = ?",
+                (session_id, run_id),
+            ).fetchone()
+        return str(row[0]) if row else job_id
+
+    def claim_consolidation_jobs(
+        self,
+        *,
+        owner: str,
+        limit: int = 10,
+        lease_seconds: float = 300.0,
+    ) -> list[MemoryConsolidationJob]:
+        now = time.time()
+        with connect(db_paths(self.home).memory) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            ids = [
+                str(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT id FROM memory_consolidation_jobs
+                    WHERE status IN ('pending', 'failed')
+                      AND (owner = '' OR lease_expires_at <= ?)
+                    ORDER BY updated_at ASC LIMIT ?
+                    """,
+                    (now, max(1, limit)),
+                ).fetchall()
+            ]
+            for job_id in ids:
+                conn.execute(
+                    """
+                    UPDATE memory_consolidation_jobs
+                    SET status = 'active', owner = ?, lease_expires_at = ?,
+                        attempts = attempts + 1, error = '', updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (owner, now + lease_seconds, now, job_id),
+                )
+            if not ids:
+                return []
+            placeholders = ", ".join("?" for _ in ids)
+            rows = conn.execute(
+                f"""
+                SELECT id, session_id, run_id, source, peer_id, sender_id, status,
+                       owner, lease_expires_at, attempts, error, created_at, updated_at
+                FROM memory_consolidation_jobs WHERE id IN ({placeholders})
+                ORDER BY updated_at ASC
+                """,
+                ids,
+            ).fetchall()
+        return [MemoryConsolidationJob(*row) for row in rows]
+
+    async def consolidate_job(self, job: MemoryConsolidationJob, runtime: Any) -> list[MemoryItem]:
+        from ..provider import ChatMessage
+        from ..prompting import PromptLayerStore
+        from .scopes import default_memory_scope
+
+        messages = self.get_messages(job.session_id, limit=50)
+        if not messages:
+            self._finish_consolidation_job(job, status="completed")
+            return []
+        transcript = [
+            {"role": message.role, "content": message.content}
+            for message in messages
+        ]
+        active_scope = default_memory_scope(
+            source=job.source,
+            peer_id=job.peer_id,
+            sender_id=job.sender_id,
+            session_id=job.session_id,
+            workspace="",
+            home=self.home,
+        )
+        active_items = [
+            item
+            for item in self._list_active_learnable_items()
+            if item.scope == active_scope
+        ]
+        output_schema = {
+            "name": "memory_consolidation",
+            "strict": False,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "learnings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "action": {"type": "string", "enum": ["add", "revoke"]},
+                                "id": {"type": "string"},
+                                "type": {"type": "string"},
+                                "content": {"type": "string"},
+                                "confidence": {"type": "number"},
+                                "reason": {"type": "string"},
+                            },
+                            "required": ["action"],
+                        },
+                    }
+                },
+                "required": ["learnings"],
+                "additionalProperties": False,
+            },
+        }
+        try:
+            response = await runtime.provider.complete_for(
+                "consolidator",
+                [
+                    ChatMessage(
+                        "system",
+                        PromptLayerStore(self.home).read("task_memory_consolidator"),
+                    ),
+                    ChatMessage(
+                        "user",
+                        json.dumps(
+                            {
+                                "transcript": transcript,
+                                "active_memory": [item.__dict__ for item in active_items],
+                                "boundary": (
+                                    "Only explicit durable user preferences, constraints, "
+                                    "relationships, or stable facts are candidates."
+                                ),
+                            },
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                    ),
+                ],
+                output_schema=output_schema,
+            )
+            data = json.loads(response)
+            learnings = data.get("learnings") if isinstance(data, dict) else []
+            affected = self._apply_learnings(
+                learnings if isinstance(learnings, list) else [],
+                active_items,
+                source=job.source or "conversation",
+                provenance=f"memory-job:{job.id}:run:{job.run_id}",
+                ledger_run_id=job.run_id,
+                add_reason_fallback="conversation consolidation",
+                scope=active_scope,
+            )
+        except Exception as exc:
+            self._finish_consolidation_job(
+                job,
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+        self._finish_consolidation_job(job, status="completed")
+        return affected
+
+    def _finish_consolidation_job(
+        self,
+        job: MemoryConsolidationJob,
+        *,
+        status: str,
+        error: str = "",
+    ) -> None:
+        with connect(db_paths(self.home).memory) as conn:
+            conn.execute(
+                """
+                UPDATE memory_consolidation_jobs
+                SET status = ?, owner = '', lease_expires_at = 0, error = ?, updated_at = ?
+                WHERE id = ? AND owner = ?
+                """,
+                (status, error, time.time(), job.id, job.owner),
+            )
+
     def _list_active_learnable_items(self) -> list[MemoryItem]:
         active_items: list[MemoryItem] = []
         for item_type in LEARNABLE_MEMORY_TYPES:
@@ -1053,6 +1312,7 @@ class MemoryStore:
         provenance: str,
         ledger_run_id: str,
         add_reason_fallback: str,
+        scope: str = "global",
     ) -> list:
         """Apply extracted add/revoke learnings with full provenance + ledger.
 
@@ -1063,6 +1323,7 @@ class MemoryStore:
 
         ledger = EvolutionLedger(self.home)
         affected_items: list = []
+        visible_item_ids = {item.id for item in active_items}
         seen_memory_keys = {
             (item.type, item.content.strip().lower()) for item in active_items
         }
@@ -1077,6 +1338,7 @@ class MemoryStore:
                     source=source,
                     provenance=provenance,
                     add_reason_fallback=add_reason_fallback,
+                    scope=scope,
                 )
                 if item is None:
                     continue
@@ -1091,10 +1353,14 @@ class MemoryStore:
                 )
             elif action == "revoke":
                 item_id = str(learning.get("id", "")).strip()
-                if not item_id:
+                if not item_id or item_id not in visible_item_ids:
                     continue
                 old_item = self.get_item(item_id)
-                if old_item and old_item.status in ["active", "accepted"]:
+                if (
+                    old_item
+                    and old_item.scope == scope
+                    and old_item.status in ["active", "accepted"]
+                ):
                     updated_item = self.set_status(item_id, "revoked")
                     if updated_item:
                         affected_items.append(updated_item)
@@ -1116,6 +1382,7 @@ class MemoryStore:
         source: str,
         provenance: str,
         add_reason_fallback: str,
+        scope: str = "global",
     ):
         m_type = str(learning.get("type", "")).strip().lower()
         content = str(learning.get("content", "")).strip()
@@ -1139,7 +1406,7 @@ class MemoryStore:
             memory_type=m_type,
             content=content,
             source=source,
-            scope="global",
+            scope=scope,
             status=promoted_status,
             confidence=conf_val,
             metadata={"contradicts": contradicts} if contradicts else {},
@@ -1205,6 +1472,31 @@ def _metadata_int(metadata: dict, key: str) -> int:
         return max(0, int(metadata.get(key) or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _text_features(text: str) -> set[str]:
+    normalized = text.strip().lower()
+    words = set(re.findall(r"[a-z0-9_]+", normalized))
+    compact = "".join(char for char in normalized if not char.isspace())
+    grams = {
+        compact[index : index + size]
+        for size in (2, 3)
+        for index in range(max(0, len(compact) - size + 1))
+    }
+    return words | grams
+
+
+def _cosine_similarity(
+    left: list[float] | None,
+    right: list[float] | None,
+) -> float | None:
+    if left is None or right is None or len(left) != len(right) or not left:
+        return None
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if left_norm == 0 or right_norm == 0:
+        return None
+    return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
 
 
 def _memory_graph_item_data(item: MemoryItem) -> dict[str, Any]:

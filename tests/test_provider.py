@@ -13,6 +13,7 @@ from navi.provider import (
     _validate_structured_output,
 )
 from navi.resource_gateway import ResourceRequest
+from navi.resource_gateway import GlobalResourceGateway, ResourceLimits
 
 
 def test_model_config_role_params_use_global_defaults_and_overrides():
@@ -174,3 +175,18 @@ async def test_model_pool_releases_resource_gateway_after_completion():
 
     assert first == "ok"
     assert second == "ok"
+
+
+@pytest.mark.asyncio
+async def test_model_pool_reserves_declared_output_tokens_before_calling_provider():
+    provider = _UsageProvider()
+    pool = ModelPool(
+        default=provider,
+        config=ModelConfig(role_params={"planner": {"max_tokens": 90}}),
+        resource_gateway=GlobalResourceGateway(
+            ResourceLimits(token_budget=100, max_concurrent=1)
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="token_budget_exhausted"):
+        await pool.complete_for("planner", [ChatMessage("user", "x" * 80)])

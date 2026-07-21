@@ -395,9 +395,9 @@ class GoalStateCapability(BaseCapability):
         goal_id = _arg_text(args, "goal_id")
         loop_run_id = _arg_text(args, "loop_run_id")
         view = (_arg_text(args, "view") or "current").lower()
-        if view not in {"current", "scheduled", "pending_approval", "history"}:
+        if view not in {"inbox", "current", "scheduled", "pending_approval", "history"}:
             raise SchemaMismatch(
-                "goal.state view must be current, scheduled, pending_approval, or history."
+                "goal.state view must be inbox, current, scheduled, pending_approval, or history."
             )
         limit = _positive_int(args.get("limit"), default=20, maximum=200)
         service = LoopControlService(self.home)
@@ -616,7 +616,7 @@ def _scoped_goal_state(
         "entity_type": "goal",
         "entity_id": "",
         "state_transition": "state_read",
-        "turn_scope": "actor" if view in {"scheduled", "history"} else "current",
+        "turn_scope": "actor" if view in {"scheduled", "history", "inbox"} else "current",
         "query_scope": _goal_view_query_scope(view),
         "view": view,
         "authoritative_for": _goal_view_authority(view),
@@ -647,6 +647,16 @@ def _goals_for_view(
             workspace=context.workspace,
             phases=(Phase.PENDING, Phase.RUNNING, Phase.PAUSED),
             cron=True,
+            limit=limit,
+        )
+    if view == "inbox":
+        return service.goals.list_scoped(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            phases=(Phase.PENDING, Phase.RUNNING, Phase.PAUSED),
+            child=False,
             limit=limit,
         )
     if view == "pending_approval":
@@ -685,6 +695,7 @@ def _goals_for_view(
 def _goal_view_authority(view: str) -> str:
     return {
         "current": "current_actor_foreground_goals",
+        "inbox": "current_actor_task_inbox",
         "scheduled": "actor_scheduled_goals",
         "pending_approval": "current_actor_pending_approval_goals",
         "history": "actor_goal_history",
@@ -692,7 +703,11 @@ def _goal_view_authority(view: str) -> str:
 
 
 def _goal_view_query_scope(view: str) -> str:
-    return "actor_workspace" if view in {"current", "pending_approval", "history"} else "actor"
+    return (
+        "actor_workspace"
+        if view in {"inbox", "current", "pending_approval", "history"}
+        else "actor"
+    )
 
 
 def _goal_counts(

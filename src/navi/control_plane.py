@@ -163,10 +163,9 @@ class TurnController(TurnLifecycleMixin):
         if invoked.ok and not has_surface_result:
             turn_error_reason = "empty_response"
         if not turn_ok and not surface_text:
+            raw_finalization = invoked_facts.get("finalization")
             finalization_facts = (
-                dict(invoked_facts.get("finalization"))
-                if isinstance(invoked_facts.get("finalization"), dict)
-                else {}
+                dict(raw_finalization) if isinstance(raw_finalization, dict) else {}
             )
             invoked_facts["finalization"] = {
                 **finalization_facts,

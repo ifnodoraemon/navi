@@ -10,7 +10,12 @@ from pathlib import Path
 
 from navi.capabilities import CapabilityContext, build_capability_registry
 from navi.runs import RunStore
-from navi.safeguards import redact_personal_data, redact_secrets, redact_secrets_deep
+from navi.safeguards import (
+    redact_personal_data,
+    redact_personal_data_deep,
+    redact_secrets,
+    redact_secrets_deep,
+)
 from navi.tools import API_CONTEXT
 
 
@@ -73,6 +78,19 @@ def test_personal_data_redaction_masks_contact_identifiers():
     assert "ifnodoraemon@example.com" not in redacted
     assert "[REDACTED_PHONE]" in redacted
     assert "[REDACTED_EMAIL]" in redacted
+
+
+def test_personal_data_redaction_masks_separated_phone_and_nested_fields():
+    payload = {
+        "contact": "call 138-0013-8000 or 138 0013 8000",
+        "profile": {"phone": "13800138000", "note": "mail a@example.com"},
+    }
+
+    redacted = redact_personal_data_deep(payload)
+
+    assert "138" not in redacted["contact"]
+    assert redacted["profile"]["phone"] == "[REDACTED_PERSONAL_DATA]"
+    assert "a@example.com" not in redacted["profile"]["note"]
 
 
 

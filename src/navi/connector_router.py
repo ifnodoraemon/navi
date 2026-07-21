@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
+from typing import Any
 
 from .connector_runtime import ConnectorMessage
 from .event_bus import (
@@ -84,7 +85,7 @@ class ConnectorRouter:
                 response = _timeout_response(message)
 
             response_failed = _response_ready_failed(response)
-            output_data = {
+            output_data: dict[str, Any] = {
                 "response": response.text,
                 "action": response.action,
             }

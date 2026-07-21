@@ -9,6 +9,7 @@ from typing import Any
 from .cron import next_cron_time, validate_cron
 from .goals import Goal, GoalStore
 from .lifecycle import Acceptance, Governance, Phase, Resolution
+from .lifecycle_saga import LifecycleSagaStore
 from .loop_contracts import (
     BudgetPolicy,
     CheckpointPolicy,
@@ -170,6 +171,9 @@ class LoopControlService:
         self.runs = RunStore(home)
         self.goals = GoalStore(home)
         self.loop_runs = LoopRunStore(home)
+        self.lifecycle_sagas = LifecycleSagaStore(home)
+        self.lifecycle_sagas.recover_pending()
+        self.lifecycle_sagas.recover_open_orphans()
 
     def open_goal(self, request: OpenGoalRequest) -> LoopControlServiceResult:
         objective = request.objective.strip()
@@ -588,7 +592,6 @@ class LoopControlService:
         state_transition: str | None = None,
         evidence: dict[str, Any] | None = None,
     ) -> LoopControlServiceResult:
-        updated_run = self._update_run_for_loop(base.run.id, graph_result)
         merged_evidence = {
             "loop_run_id": graph_result.run_state.run_id,
             "loop_terminal_state": graph_result.terminal_state,
@@ -597,11 +600,17 @@ class LoopControlService:
             else {},
             **(evidence or {}),
         }
-        updated_goal = self.goals.update_for_run(
-            updated_run,
-            evidence=merged_evidence,
+        saga = self.lifecycle_sagas.prepare(
+            operation_key=(
+                f"loop-result:{graph_result.run_state.run_id}:"
+                f"{graph_result.run_state.version}:{graph_result.terminal_state}"
+            ),
+            run_id=base.run.id,
+            goal_id=base.goal.id,
+            run_updates=self._run_updates_for_loop(base.run.id, graph_result),
+            goal_evidence=merged_evidence,
         )
-        goal = updated_goal or base.goal
+        updated_run, goal = self.lifecycle_sagas.apply(saga)
         if (
             graph_result.terminal_state == str(LoopTerminalState.CONVERGED)
             and str(graph_result.run_state.evidence.get("execution_mode") or "") == "background"
@@ -628,30 +637,35 @@ class LoopControlService:
         base: LoopControlServiceResult,
         *,
         error: Exception,
+        execution_owner: str,
     ) -> None:
         failure = f"state_graph_exception:{type(error).__name__}"
-        self.loop_runs.fail_active_run(
+        failed_loop = self.loop_runs.fail_active_run(
             base.loop_run.run_id,
+            lease_owner=execution_owner,
             evidence={"reason": failure, "error": str(error)},
         )
-        failed_run = self.runs.update_run(
-            base.run.id,
-            phase=Phase.ENDED,
-            governance=Governance.NONE,
-            acceptance=Acceptance.REJECTED,
-            resolution=Resolution.FAILED,
-            result_summary="",
-            error=failure,
+        saga = self.lifecycle_sagas.prepare(
+            operation_key=(
+                f"loop-exception:{failed_loop.run_id}:{failed_loop.version}"
+            ),
+            run_id=base.run.id,
+            goal_id=base.goal.id,
+            run_updates={
+                "phase": Phase.ENDED,
+                "governance": Governance.NONE,
+                "acceptance": Acceptance.REJECTED,
+                "resolution": Resolution.FAILED,
+                "result_summary": "",
+                "error": failure,
+            },
+            goal_evidence={
+                "state_transition": "state_graph_execution_failed",
+                "loop_run_id": base.loop_run.run_id,
+                "error": failure,
+            },
         )
-        if failed_run is not None:
-            self.goals.update_for_run(
-                failed_run,
-                evidence={
-                    "state_transition": "state_graph_execution_failed",
-                    "loop_run_id": base.loop_run.run_id,
-                    "error": failure,
-                },
-            )
+        self.lifecycle_sagas.apply(saga)
 
     def resume_goal(self, *, goal_id: str, workspace: str = "") -> LoopControlServiceResult:
         goal = self.goals.get(goal_id)
@@ -905,6 +919,7 @@ class LoopControlService:
                 "workspace": goal.workspace,
                 "trigger_facts": dict(request.trigger_facts),
                 "task_context": _task_context_for_request(goal, request),
+                "execution_profile": _execution_profile(loop_kind=_loop_kind(request.loop_kind)),
             },
         )
         spec = LoopSpec.from_goal(
@@ -926,115 +941,105 @@ class LoopControlService:
         spec.validate()
         return spec
 
-    def _update_run_for_loop(self, run_id: str, result: StateGraphRunResult) -> Run:
+    def _run_updates_for_loop(
+        self,
+        run_id: str,
+        result: StateGraphRunResult,
+    ) -> dict[str, Any]:
         terminal = result.terminal_state
         current = self.runs.get(run_id)
         existing_summary = current.result_summary if current is not None else ""
         surface_message = _surface_message_from_result(result)
         if terminal == str(LoopTerminalState.CONVERGED):
-            updated = self.runs.update_run(
-                run_id,
-                phase=Phase.ENDED,
-                governance=Governance.NONE,
-                acceptance=Acceptance.ACCEPTED,
-                resolution=Resolution.SUCCESS,
-                result_summary=surface_message,
-                error="",
-            )
+            return {
+                "phase": Phase.ENDED,
+                "governance": Governance.NONE,
+                "acceptance": Acceptance.ACCEPTED,
+                "resolution": Resolution.SUCCESS,
+                "result_summary": surface_message,
+                "error": "",
+            }
         elif terminal == str(LoopTerminalState.PAUSED):
-            updated = self.runs.update_run(
-                run_id,
-                phase=Phase.PAUSED,
-                acceptance=Acceptance.UNVERIFIED,
-                resolution=Resolution.BLOCKED,
-                result_summary=existing_summary or surface_message,
-                error="",
-            )
+            return {
+                "phase": Phase.PAUSED,
+                "acceptance": Acceptance.UNVERIFIED,
+                "resolution": Resolution.BLOCKED,
+                "result_summary": existing_summary or surface_message,
+                "error": "",
+            }
         elif terminal == str(LoopTerminalState.WAITING_APPROVAL):
-            updated = self.runs.update_run(
-                run_id,
-                phase=Phase.PAUSED,
-                governance=Governance.AWAITING_APPROVAL,
-                acceptance=Acceptance.UNVERIFIED,
-                resolution=Resolution.BLOCKED,
-                result_summary=existing_summary or surface_message,
-                error="",
-            )
+            return {
+                "phase": Phase.PAUSED,
+                "governance": Governance.AWAITING_APPROVAL,
+                "acceptance": Acceptance.UNVERIFIED,
+                "resolution": Resolution.BLOCKED,
+                "result_summary": existing_summary or surface_message,
+                "error": "",
+            }
         elif terminal == str(LoopTerminalState.CONFLICTED):
-            updated = self.runs.update_run(
-                run_id,
-                phase=Phase.PAUSED,
-                governance=Governance.AWAITING_APPROVAL,
-                acceptance=Acceptance.UNVERIFIED,
-                resolution=Resolution.BLOCKED,
-                result_summary=surface_message,
-                error="loop_conflicted",
-            )
+            return {
+                "phase": Phase.PAUSED,
+                "governance": Governance.AWAITING_APPROVAL,
+                "acceptance": Acceptance.UNVERIFIED,
+                "resolution": Resolution.BLOCKED,
+                "result_summary": surface_message,
+                "error": "loop_conflicted",
+            }
         elif terminal == str(LoopTerminalState.BLOCKED):
-            updated = self.runs.update_run(
-                run_id,
-                phase=Phase.ENDED,
-                governance=Governance.NONE,
-                acceptance=Acceptance.REJECTED,
-                resolution=Resolution.BLOCKED,
-                result_summary=surface_message,
-                error="loop_blocked",
-            )
+            return {
+                "phase": Phase.ENDED,
+                "governance": Governance.NONE,
+                "acceptance": Acceptance.REJECTED,
+                "resolution": Resolution.BLOCKED,
+                "result_summary": surface_message,
+                "error": "loop_blocked",
+            }
         elif terminal == str(LoopTerminalState.TIMED_OUT):
-            updated = self.runs.update_run(
-                run_id,
-                phase=Phase.ENDED,
-                governance=Governance.NONE,
-                acceptance=Acceptance.REJECTED,
-                resolution=Resolution.FAILED,
-                result_summary=surface_message,
-                error="loop_timed_out",
-            )
+            return {
+                "phase": Phase.ENDED,
+                "governance": Governance.NONE,
+                "acceptance": Acceptance.REJECTED,
+                "resolution": Resolution.FAILED,
+                "result_summary": surface_message,
+                "error": "loop_timed_out",
+            }
         elif terminal in {
             str(LoopTerminalState.CANCELLED),
             str(LoopTerminalState.SUPERSEDED),
         }:
-            updated = self.runs.update_run(
-                run_id,
-                phase=Phase.ENDED,
-                governance=Governance.NONE,
-                acceptance=Acceptance.REJECTED,
-                resolution=Resolution.CANCELED,
-                result_summary=surface_message,
-                error=f"loop_{terminal}",
-            )
+            return {
+                "phase": Phase.ENDED,
+                "governance": Governance.NONE,
+                "acceptance": Acceptance.REJECTED,
+                "resolution": Resolution.CANCELED,
+                "result_summary": surface_message,
+                "error": f"loop_{terminal}",
+            }
         elif terminal == str(LoopTerminalState.FAILED):
-            updated = self.runs.update_run(
-                run_id,
-                phase=Phase.ENDED,
-                governance=Governance.NONE,
-                acceptance=Acceptance.REJECTED,
-                resolution=Resolution.FAILED,
-                result_summary=surface_message,
-                error="loop_failed",
-            )
+            return {
+                "phase": Phase.ENDED,
+                "governance": Governance.NONE,
+                "acceptance": Acceptance.REJECTED,
+                "resolution": Resolution.FAILED,
+                "result_summary": surface_message,
+                "error": "loop_failed",
+            }
         elif terminal:
-            updated = self.runs.update_run(
-                run_id,
-                phase=Phase.ENDED,
-                governance=Governance.NONE,
-                acceptance=Acceptance.REJECTED,
-                resolution=Resolution.FAILED,
-                result_summary=surface_message,
-                error=f"loop_{terminal}",
-            )
-        else:
-            updated = self.runs.update_run(
-                run_id,
-                phase=Phase.RUNNING,
-                acceptance=Acceptance.UNVERIFIED,
-                resolution=Resolution.BLOCKED,
-                result_summary=surface_message,
-                error="",
-            )
-        if updated is None:
-            raise KeyError(f"run not found: {run_id}")
-        return updated
+            return {
+                "phase": Phase.ENDED,
+                "governance": Governance.NONE,
+                "acceptance": Acceptance.REJECTED,
+                "resolution": Resolution.FAILED,
+                "result_summary": surface_message,
+                "error": f"loop_{terminal}",
+            }
+        return {
+            "phase": Phase.RUNNING,
+            "acceptance": Acceptance.UNVERIFIED,
+            "resolution": Resolution.BLOCKED,
+            "result_summary": surface_message,
+            "error": "",
+        }
 
     def _active_loop_for_goal(self, goal_id: str) -> LoopRunState | None:
         matches = self.loop_runs.list_by_goal_filtered(
@@ -1057,6 +1062,36 @@ def _resolve_workspace(workspace: str) -> str:
     if not path.exists() or not path.is_dir():
         raise ValueError("workspace must be an existing directory")
     return str(path)
+
+
+def _execution_profile(*, loop_kind: str) -> dict[str, Any]:
+    if loop_kind == "turn":
+        return {
+            "name": "interactive_turn",
+            "persistence": "transient_audit",
+            "checker_tier": "semantic",
+            "retention_seconds": 86_400,
+        }
+    if loop_kind == "control":
+        return {
+            "name": "control_operation",
+            "persistence": "durable",
+            "checker_tier": "objective_evidence",
+            "retention_seconds": 604_800,
+        }
+    if loop_kind == "scheduled":
+        return {
+            "name": "scheduled_goal",
+            "persistence": "durable",
+            "checker_tier": "objective_evidence",
+            "retention_seconds": 0,
+        }
+    return {
+        "name": "durable_goal",
+        "persistence": "durable",
+        "checker_tier": "semantic",
+        "retention_seconds": 0,
+    }
 
 
 def _lineage_task_context(

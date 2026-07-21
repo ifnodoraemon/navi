@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shlex
+import uuid
 from difflib import SequenceMatcher
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -40,7 +41,13 @@ from .memory import ACTIVE_MEMORY_CONTEXT_LIMIT
 from .prompt_os import assemble_semantic_checker_messages
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
-from .resource_gateway import GlobalResourceGateway, ResourceGrant, ResourceLimits, ResourceRequest
+from .resource_gateway import (
+    GlobalResourceGateway,
+    ResourceGrant,
+    ResourceLimitError,
+    ResourceLimits,
+    ResourceRequest,
+)
 from .text_utils import truncate_middle
 from .trace import TraceStore
 from .workspaces import LockAcquireResult
@@ -455,7 +462,8 @@ def _goal_task_context_with_result_comparison(
     executed: ExecutedCapabilityStep,
 ) -> dict[str, Any]:
     context = _goal_task_context(spec)
-    progress = dict(context.get("progress") if isinstance(context.get("progress"), dict) else {})
+    raw_progress = context.get("progress")
+    progress = dict(raw_progress) if isinstance(raw_progress, dict) else {}
     prior_items = [
         dict(item)
         for item in progress.get("authoritative_prior_items") or []
@@ -858,7 +866,7 @@ def _planner_conversation_context(
 
 def _planner_memory_context(*, memory: Any, spec: LoopSpec) -> PlannerMemoryContext:
     query = spec.goal.objective
-    allowed_scopes = _memory_scopes_for_spec(spec)
+    allowed_scopes = _memory_scopes_for_spec(spec, home=memory.home)
     recalls = memory.recall(
         query,
         limit=ACTIVE_MEMORY_CONTEXT_LIMIT,
@@ -1134,12 +1142,19 @@ class CapabilityExecutorPort:
             governed_run_id=self.governed_run_id or state.run_id,
             sensitive_approval_mode=self.sensitive_approval_mode,
             runtime=self.runtime,
+            resource_gateway=(
+                self.runtime.provider.current_resource_gateway()
+                if self.runtime is not None
+                and hasattr(self.runtime.provider, "current_resource_gateway")
+                else None
+            ),
         )
         context = replace(
             self.context,
             workspace=_scope_workspace_for_spec(spec, fallback=workspace),
             permission_ceiling=spec.goal.permission_ceiling,
             source=self.context.source or "state_graph",
+            effect_idempotency_key=_effect_idempotency_key(state, step),
         )
         result = await registry.invoke(
             step.tool,
@@ -1177,10 +1192,15 @@ class DurableStateGraphRunner:
         side_effect_saga_port: SideEffectSagaPort | None = None,
         trace_store: TraceStore | None = None,
         trace_context: CapabilityContext | None = None,
+        execution_owner: str = "",
+        account_phase_gates: bool | None = None,
     ):
         self.home = home
         self.store = LoopRunStore(home)
         self.gateway = gateway
+        self._account_phase_gates = (
+            gateway is None if account_phase_gates is None else account_phase_gates
+        )
         self.harness = harness or Harness(home=home)
         self.checker = checker or DeterministicChecker()
         self.planner_port = planner_port
@@ -1194,6 +1214,8 @@ class DurableStateGraphRunner:
         self.side_effect_saga_port = side_effect_saga_port or SideEffectSagaPort(home=home)
         self.trace_store = trace_store
         self.trace_context = trace_context
+        self.execution_owner = execution_owner or f"state-graph:{uuid.uuid4().hex}"
+        self._lease_claimed = False
 
     def run(
         self,
@@ -1228,6 +1250,19 @@ class DurableStateGraphRunner:
             state = self.store.create_run(spec)
         if state.is_terminal():
             return StateGraphRunResult(run_state=state, evidence=evidence or {})
+        if not self._lease_claimed:
+            claimed = self.store.claim_for_execution(
+                state.run_id,
+                owner=self.execution_owner,
+                lease_seconds=max(
+                    900.0,
+                    max(step.timeout.seconds for step in spec.verification_ladder) + 60.0,
+                ),
+            )
+            if claimed is None:
+                raise RuntimeError("loop run is already claimed by another execution driver")
+            state = claimed
+            self._lease_claimed = True
 
         collected_evidence: dict[str, Any] = dict(evidence or {})
         attempt_history: list[dict[str, Any]] = list(
@@ -1269,12 +1304,25 @@ class DurableStateGraphRunner:
                     inputs={"planner_node": "start"},
                     state=state.to_dict(),
                 )
-                planned_step = await self.planner_port.plan(
-                    spec,
-                    state,
-                    workspace=execution_workspace,
-                    evidence=collected_evidence,
-                )
+                try:
+                    planned_step = await self.planner_port.plan(
+                        spec,
+                        state,
+                        workspace=execution_workspace,
+                        evidence=collected_evidence,
+                    )
+                except ResourceLimitError as exc:
+                    grants.append(exc.grant)
+                    self._record_gate_decision(
+                        state=state,
+                        kind="llm:planner",
+                        grant=exc.grant,
+                    )
+                    return StateGraphRunResult(
+                        run_state=self._stop_for_resource_grant(state, exc.grant),
+                        resource_grants=tuple(grants),
+                        evidence=collected_evidence,
+                    )
 
                 collected_evidence["planned_capability"] = planned_step.to_dict()
                 if planned_step.tool == "system.planner_error":
@@ -1309,7 +1357,7 @@ class DurableStateGraphRunner:
                             condition="new_route_available",
                             evidence=decision.to_dict(),
                         )
-                        self.gateway.release()
+                        self.gateway.release(grant_id=grant.grant_id)
                         return await self.run_async(
                             spec,
                             workspace=workspace,
@@ -1326,7 +1374,7 @@ class DurableStateGraphRunner:
                             "reflection": decision.to_dict(),
                         },
                     )
-                    self.gateway.release()
+                    self.gateway.release(grant_id=grant.grant_id)
                     return StateGraphRunResult(
                         run_state=state,
                         resource_grants=tuple(grants),
@@ -1338,7 +1386,7 @@ class DurableStateGraphRunner:
                 condition="plan_ready",
                 evidence={"planned_capability": planned_step.to_dict()},
             )
-            self.gateway.release()
+            self.gateway.release(grant_id=grant.grant_id)
 
         if state.node == LoopNode.EXECUTE:
             state, stopped, grant = self._gate_or_stop(state, kind="state_graph.execute")
@@ -1364,7 +1412,7 @@ class DurableStateGraphRunner:
                     terminal_state=LoopTerminalState.FAILED,
                     evidence={"reason": "state_graph_resume_missing_plan"},
                 )
-                self.gateway.release()
+                self.gateway.release(grant_id=grant.grant_id)
                 return StateGraphRunResult(
                     run_state=state,
                     resource_grants=tuple(grants),
@@ -1444,7 +1492,7 @@ class DurableStateGraphRunner:
                             "tool": planned_step.tool,
                         },
                     )
-                    self.gateway.release()
+                    self.gateway.release(grant_id=grant.grant_id)
                     return StateGraphRunResult(
                         run_state=state,
                         resource_grants=tuple(grants),
@@ -1479,7 +1527,7 @@ class DurableStateGraphRunner:
                         terminal_state=LoopTerminalState.WAITING_APPROVAL,
                         evidence=execution_evidence,
                     )
-                self.gateway.release()
+                self.gateway.release(grant_id=grant.grant_id)
                 return StateGraphRunResult(
                     run_state=state,
                     resource_grants=tuple(grants),
@@ -1502,7 +1550,7 @@ class DurableStateGraphRunner:
                         condition="new_route_available",
                         evidence=decision.to_dict(),
                     )
-                    self.gateway.release()
+                    self.gateway.release(grant_id=grant.grant_id)
                     return await self.run_async(
                         spec,
                         workspace=workspace,
@@ -1517,7 +1565,7 @@ class DurableStateGraphRunner:
                         terminal_state=LoopTerminalState.BLOCKED,
                         evidence=decision.to_dict(),
                     )
-                    self.gateway.release()
+                    self.gateway.release(grant_id=grant.grant_id)
                     return StateGraphRunResult(
                         run_state=state,
                         resource_grants=tuple(grants),
@@ -1532,20 +1580,34 @@ class DurableStateGraphRunner:
                     "progress_signature": progress_signature,
                 },
             )
-            self.gateway.release()
+            self.gateway.release(grant_id=grant.grant_id)
 
         if state.node == LoopNode.EVALUATE:
-            result = await self._evaluate_state(
-                spec,
-                state,
-                workspace=workspace,
-                execution_workspace=execution_workspace,
-                shadow_workspace=shadow_workspace,
-                collected_evidence=collected_evidence,
-                grants=grants,
-                harness_results=harness_results,
-                checker_report=checker_report,
-            )
+            try:
+                result = await self._evaluate_state(
+                    spec,
+                    state,
+                    workspace=workspace,
+                    execution_workspace=execution_workspace,
+                    shadow_workspace=shadow_workspace,
+                    collected_evidence=collected_evidence,
+                    grants=grants,
+                    harness_results=harness_results,
+                    checker_report=checker_report,
+                )
+            except ResourceLimitError as exc:
+                grants.append(exc.grant)
+                self._record_gate_decision(
+                    state=state,
+                    kind="llm:semantic_checker",
+                    grant=exc.grant,
+                )
+                return StateGraphRunResult(
+                    run_state=self._stop_for_resource_grant(state, exc.grant),
+                    resource_grants=tuple(grants),
+                    harness_results=tuple(harness_results),
+                    evidence=collected_evidence,
+                )
             if result.run_state.node == LoopNode.PLAN and not result.run_state.is_terminal():
                 return await self.run_async(
                     spec,
@@ -1633,7 +1695,7 @@ class DurableStateGraphRunner:
                 resource_grants=tuple(grants),
                 evidence=collected_evidence,
             )
-        gateway.release()
+        gateway.release(grant_id=grant.grant_id)
         for step in spec.verification_ladder:
             if not _step_runs_command(step):
                 continue
@@ -1666,7 +1728,7 @@ class DurableStateGraphRunner:
                 collected_evidence["workspace_lock"] = lock_result.to_dict()
                 if not lock_result.acquired:
                     state = self._pause_for_lock_conflict(state, lock_result)
-                    gateway.release()
+                    gateway.release(grant_id=command_grant.grant_id)
                     return StateGraphRunResult(
                         run_state=state,
                         resource_grants=tuple(grants),
@@ -1687,7 +1749,7 @@ class DurableStateGraphRunner:
                         owner_run_id=state.run_id,
                         resource=lock_resource,
                     )
-                gateway.release()
+                gateway.release(grant_id=command_grant.grant_id)
             harness_results.append(result)
             collected_evidence[step.evidence_key or step.name] = result.to_facts()
 
@@ -1979,10 +2041,30 @@ class DurableStateGraphRunner:
             error_reason=str(cap_result.get("error_reason") or ""),
             terminal=bool(cap_result.get("terminal", False)),
         )
+        execution_profile = spec.goal.metadata.get("execution_profile")
+        checker_tier = (
+            str(execution_profile.get("checker_tier") or "")
+            if isinstance(execution_profile, dict)
+            else ""
+        )
         for step in spec.verification_ladder:
             if step.kind != VerificationKind.LLM_CHECKER:
                 continue
             key = step.evidence_key or step.name
+
+            completion_evidence = executed_step.facts.get("completion_evidence") is True
+            if checker_tier == "objective_evidence" and executed_step.ok and completion_evidence:
+                facts = {
+                    "passed": True,
+                    "ok": True,
+                    "evidence_summary": "capability returned objective completion evidence",
+                    "evaluator_role": "deterministic_evidence",
+                    "isolated_context": True,
+                    "attempt": state.attempt,
+                }
+                collected_evidence[key] = facts
+                collected_evidence["semantic_checker_result"] = facts
+                continue
 
             decision = await self.semantic_checker_port.assess(
                 spec,
@@ -2004,7 +2086,20 @@ class DurableStateGraphRunner:
     ) -> tuple[LoopRunState, bool, ResourceGrant]:
         if self.gateway is None:
             raise RuntimeError("StateGraph resource gateway is not initialized")
-        grant = self.gateway.request(request or ResourceRequest(kind=kind, units=1))
+        grant = self.gateway.request(
+            request
+            or ResourceRequest(
+                kind=kind,
+                estimated_tokens=_fallback_phase_tokens(self.gateway.limits)
+                if self._account_phase_gates
+                else 0,
+                estimated_cost=_fallback_phase_cost(self.gateway.limits)
+                if self._account_phase_gates
+                else 0.0,
+                units=1,
+                reserve=self._account_phase_gates,
+            )
+        )
         self._record_gate_decision(state=state, kind=kind, grant=grant)
         if grant.allowed:
             return state, False, grant
@@ -2116,6 +2211,7 @@ class DurableStateGraphRunner:
             terminal_state=terminal_state,
             condition=condition,
             evidence=evidence,
+            lease_owner=self.execution_owner,
         )
         self._record_transition_decision(
             from_state=state,
@@ -2290,6 +2386,20 @@ def _resource_limits_for_spec(spec: LoopSpec) -> ResourceLimits:
         qps_limit=policy.qps_limit,
         max_concurrent=policy.max_concurrent,
     )
+
+
+def _fallback_phase_tokens(limits: ResourceLimits) -> int:
+    if limits.token_budget <= 0:
+        return 0
+    divisor = limits.call_budget if limits.call_budget > 0 else 1
+    return max(1, limits.token_budget // divisor)
+
+
+def _fallback_phase_cost(limits: ResourceLimits) -> float:
+    if limits.cost_budget <= 0:
+        return 0.0
+    divisor = limits.call_budget if limits.call_budget > 0 else 1
+    return limits.cost_budget / divisor
 
 
 def _transition_decision_kind(
@@ -2537,14 +2647,14 @@ def _goal_constraints(spec: LoopSpec) -> str:
 def _durable_constraints(runtime: AgentRuntime, spec: LoopSpec) -> str:
     parts = [_goal_constraints(spec)]
     rendered = runtime.memory.render_durable_constraints(
-        allowed_scopes=_memory_scopes_for_spec(spec),
+        allowed_scopes=_memory_scopes_for_spec(spec, home=runtime.home),
     ).strip()
     if rendered:
         parts.extend(["Durable state constraints:", rendered])
     return "\n".join(parts)
 
 
-def _memory_scopes_for_spec(spec: LoopSpec) -> set[str]:
+def _memory_scopes_for_spec(spec: LoopSpec, *, home: Path | None = None) -> set[str]:
     from .memory.scopes import memory_scopes_for_context
 
     metadata = spec.goal.metadata
@@ -2555,6 +2665,7 @@ def _memory_scopes_for_spec(spec: LoopSpec) -> set[str]:
             sender_id=str(metadata.get("sender_id") or ""),
             session_id=str(metadata.get("session_id") or ""),
             workspace=str(metadata.get("workspace") or ""),
+            home=home,
         )
     )
 
@@ -3017,6 +3128,24 @@ def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[st
             }
         )
     return compact
+
+
+def _effect_idempotency_key(
+    state: LoopRunState,
+    planned: PlannedCapabilityStep,
+) -> str:
+    payload = json.dumps(
+        {
+            "loop_run_id": state.run_id,
+            "attempt": state.attempt,
+            "tool": planned.tool,
+            "args": planned.args,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _progress_signature(

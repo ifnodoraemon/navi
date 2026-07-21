@@ -45,6 +45,7 @@ class MemoryAddCapability(BaseCapability):
                 session_id=context.session_id or "",
                 workspace=context.workspace,
                 allow_global=local_admin,
+                home=self.home,
             )
         )
         if operation == "revoke":
@@ -88,6 +89,7 @@ class MemoryAddCapability(BaseCapability):
                 sender_id=context.sender_id,
                 session_id=context.session_id or "",
                 workspace=context.workspace,
+                home=self.home,
             )
             if requested_scope
             else default_memory_scope(
@@ -96,6 +98,7 @@ class MemoryAddCapability(BaseCapability):
                 sender_id=context.sender_id,
                 session_id=context.session_id or "",
                 workspace=context.workspace,
+                home=self.home,
             )
         )
         if scope not in allowed_scopes:

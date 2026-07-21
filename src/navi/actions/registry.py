@@ -30,8 +30,11 @@ def get_action_handlers(
         conversation,
         evolution,
         goal,
+        identity,
         memory,
+        personal,
         session,
+        system,
         trace,
     )
 

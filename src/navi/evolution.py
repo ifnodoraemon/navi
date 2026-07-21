@@ -12,6 +12,7 @@ from typing import Any, List
 from .approval_contract import APPROVAL_DECISION_APPROVE, APPROVAL_STATUS_APPROVED
 from .db import connect
 from .graph import GraphStore
+from .evolution_targets import EvolutionTargetAdapterRegistry
 from .paths import db_paths
 from .runs import RunStore
 
@@ -81,29 +82,10 @@ EVOLUTION_TARGETS: tuple[EvolutionTarget, ...] = (
         "memory_item", "Typed durable memory item content and lifecycle state.", "memory"
     ),
     EvolutionTarget(
-        "memory_schema",
-        "Memory types, priority, expiry, contradiction, and recall policy.",
-        "memory",
+        "eval_case",
+        "Evaluation case consumed by the evolution experiment runner.",
+        "evals",
     ),
-    EvolutionTarget(
-        "tool_spec",
-        "Capability/tool manifest schema, permissions, and descriptions.",
-        "tools",
-        True,
-    ),
-    EvolutionTarget(
-        "connector_spec",
-        "Connector affordances, surface commands, and status facts.",
-        "connectors",
-        True,
-    ),
-    EvolutionTarget(
-        "workflow_policy",
-        "Daemon, execution, approval, and lifecycle decision policy.",
-        "runtime",
-        True,
-    ),
-    EvolutionTarget("eval_case", "Evaluation dataset case and expected behavior.", "evals"),
     EvolutionTarget(
         "graph_node", "Personal graph project, person, and task relationship facts.", "graph"
     ),
@@ -134,17 +116,6 @@ GOVERNANCE_EVENT_TYPES: frozenset[str] = frozenset(
 def known_ledger_target_type(target_type: str) -> bool:
     """Whether ``target_type`` is a declared evolution target or governance event."""
     return known_evolution_target(target_type) or target_type in GOVERNANCE_EVENT_TYPES
-
-
-# Data-driven map of which spec-file targets persist to (subdir, suffix) on apply.
-# prompt_layer is handled separately because it writes through PromptLayerStore.
-_SPEC_FILE_TARGETS: dict[str, tuple[str, str]] = {
-    "tool_spec": ("specs", ".yaml"),
-    "connector_spec": ("specs", ".yaml"),
-    "workflow_policy": ("specs", ".yaml"),
-    "memory_schema": ("specs", ".yaml"),
-    "eval_case": ("evals", ".json"),
-}
 
 
 class EvolutionLedger:
@@ -574,6 +545,7 @@ class EvolutionEngine:
         self.ledger = EvolutionLedger(home)
         self.graph = GraphStore(home)
         self.runs = RunStore(home)
+        self.targets = EvolutionTargetAdapterRegistry(home)
 
         from .memory import MemoryStore
 
@@ -588,6 +560,13 @@ class EvolutionEngine:
         # Reuse the ledger's single authority so engine-side effects and the DB
         # transition share one gate (no drift between the two apply paths).
         self.ledger.assert_proposal_applicable(proposal)
+        if json.loads(proposal.eval_cases or "[]"):
+            from .evolution_experiments import EvolutionExperimentStore
+
+            EvolutionExperimentStore(self.home).assert_passed(
+                proposal.id,
+                candidate=proposal.after,
+            )
 
         # Record the ledger event before performing the side effect, so the
         # change is always auditable and rollbackable, even if the file write
@@ -611,106 +590,62 @@ class EvolutionEngine:
             )
             raise
         self.ledger.mark_applied(proposal_id, event.id)
+        from .evolution_experiments import EvolutionExperimentStore
+
+        EvolutionExperimentStore(self.home).start_activation(
+            proposal_id=proposal.id,
+            event_id=event.id,
+        )
         return event
 
     def _write_proposal_side_effect(self, proposal: EvolutionProposal) -> None:
-        if proposal.target_type == "prompt_layer":
-            from .prompting import PromptLayerStore
-
-            PromptLayerStore(self.home).write_override(proposal.target_id, proposal.after)
-            return
-        spec_target = _SPEC_FILE_TARGETS.get(proposal.target_type)
-        if spec_target is None:
-            # Declared evolution targets that have no apply side effect must
-            # fail loudly rather than recording a no-op event (principle 1.2).
+        adapter = self.targets.get(proposal.target_type)
+        current = adapter.read(proposal.target_id)
+        if current != proposal.before:
             raise ValueError(
-                f"proposal apply has no side-effect handler for target_type={proposal.target_type}"
+                "evolution proposal baseline is stale; create a new proposal from current state"
             )
-        subdir, suffix = spec_target
-        spec_path = self.home / subdir / f"{proposal.target_id}{suffix}"
-        spec_path.parent.mkdir(parents=True, exist_ok=True)
-        spec_path.write_text(proposal.after, encoding="utf-8")
+        adapter.validate(proposal.target_id, proposal.after)
+        adapter.apply(proposal.target_id, proposal.after)
 
     def rollback(self, event_id: str) -> EvolutionEvent | None:
         event = self.ledger.get(event_id)
-        if event is None or event.rolled_back_at:
+        if event is None:
             return event
-        if event.target_type == "memory":
-            (self.home / "memory" / "MEMORY.md").write_text(event.before, encoding="utf-8")
-        elif event.target_type == "skill":
-            path = Path(event.target_id)
-            skills_dir = (self.home / "skills").resolve().absolute()
-            try:
-                resolved_path = path.resolve().absolute()
-                is_safe = skills_dir == resolved_path or skills_dir in resolved_path.parents
-            except Exception:
-                is_safe = False
-            if not is_safe:
-                raise ValueError("Skill path must be within the home skills directory")
-
-            if event.before:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(event.before, encoding="utf-8")
-            elif path.exists():
-                path.unlink()
-        elif event.target_type == "graph_node":
-            if event.before and event.before != "{}":
-                self.graph.replace_data(event.target_id, json.loads(event.before))
+        if not event.rolled_back_at:
+            if event.target_type == "memory":
+                (self.home / "memory" / "MEMORY.md").write_text(event.before, encoding="utf-8")
             else:
-                self.graph.delete(event.target_id)
+                self.targets.get(event.target_type).rollback(event.target_id, event.before)
+            event = self.ledger.mark_rolled_back(event_id)
+        from .evolution_experiments import EvolutionExperimentStore
 
-        elif event.target_type == "memory_item":
-            if not event.before:
-                self.memory.delete_item(event.target_id)
-            else:
-                self.memory.restore_item(json.loads(event.before))
-                # FP-5: a rolled-back evolution reduces confidence in the
-                # affected memory item, since the change it represented was
-                # rejected and should not retain its original trust level.
-                self.memory.reduce_confidence(event.target_id, delta=0.2)
-        elif event.target_type == "run_execution":
-            if event.before:
-                task_dict = json.loads(event.before)
-                missing = [
-                    key
-                    for key in ("phase", "governance", "acceptance", "resolution")
-                    if not task_dict.get(key)
-                ]
-                if missing:
-                    raise ValueError(
-                        "run_execution rollback event missing lifecycle fields: "
-                        + ", ".join(missing)
-                    )
-                self.runs.update_run(
-                    event.target_id,
-                    phase=task_dict["phase"],
-                    governance=task_dict["governance"],
-                    acceptance=task_dict["acceptance"],
-                    resolution=task_dict["resolution"],
-                    result_summary=task_dict.get("result_summary", ""),
-                    error=task_dict.get("error", ""),
-                )
-        elif event.target_type == "prompt_layer":
-            from .prompting import PromptLayerStore
+        EvolutionExperimentStore(self.home).mark_rolled_back(
+            event_id,
+            rollback_event_id=event_id,
+        )
+        return event
 
-            store = PromptLayerStore(self.home)
-            if event.before:
-                store.write_override(event.target_id, event.before)
-            else:
-                store.delete_override(event.target_id)
-        elif event.target_type in (
-            "tool_spec",
-            "connector_spec",
-            "workflow_policy",
-            "memory_schema",
-            "eval_case",
-        ):
-            ext = "json" if event.target_type == "eval_case" else "yaml"
-            folder = "evals" if event.target_type == "eval_case" else "specs"
-            spec_path = self.home / folder / f"{event.target_id}.{ext}"
-            if event.before:
-                spec_path.parent.mkdir(parents=True, exist_ok=True)
-                spec_path.write_text(event.before, encoding="utf-8")
-            elif spec_path.exists():
-                spec_path.unlink()
-        return self.ledger.mark_rolled_back(event_id)
+
+def _safe_evolution_target_path(
+    home: Path,
+    *,
+    subdir: str,
+    target_id: str,
+    suffix: str,
+) -> Path:
+    name = target_id.strip()
+    if (
+        not name
+        or name in {".", ".."}
+        or ".." in name
+        or "/" in name
+        or "\\" in name
+        or Path(name).is_absolute()
+    ):
+        raise ValueError("evolution target_id must be a single safe name")
+    root = (home / subdir).resolve()
+    target = (root / f"{name}{suffix}").resolve()
+    if target.parent != root:
+        raise ValueError("evolution target path escapes its managed directory")
+    return target

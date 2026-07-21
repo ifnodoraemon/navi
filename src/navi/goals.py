@@ -780,6 +780,12 @@ class GoalStore:
             task_status = "pending"
         else:
             task_status = "in_progress"
+        try:
+            goal_evidence = json.loads(goal.evidence_json or "{}")
+        except json.JSONDecodeError:
+            goal_evidence = {}
+        if phase == Phase.ENDED and goal_evidence.get("loop_kind") == "turn":
+            task_status = "archived"
         reason = ""
         if resolution == Resolution.BLOCKED:
             if run.phase == Phase.ENDED and run.resolution == Resolution.SUCCESS and not run.error:

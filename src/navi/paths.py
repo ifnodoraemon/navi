@@ -42,6 +42,8 @@ class DbPaths:
     workspace_locks: Path
     workspaces: Path
     vault: Path
+    resource_ledger: Path
+    personal_resources: Path
 
 
 def db_paths(home: Path) -> DbPaths:
@@ -57,4 +59,6 @@ def db_paths(home: Path) -> DbPaths:
         workspace_locks=home / "workspace_locks.db",
         workspaces=home / "workspaces.db",
         vault=home / "vault.db",
+        resource_ledger=home / "resource_ledger.db",
+        personal_resources=home / "personal_resources.db",
     )

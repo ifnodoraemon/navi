@@ -74,6 +74,23 @@ class MemoryRecall:
     conflicts: tuple[MemoryConflict, ...] = ()
 
 
+@dataclass(frozen=True)
+class MemoryConsolidationJob:
+    id: str
+    session_id: str
+    run_id: str
+    source: str
+    peer_id: str
+    sender_id: str
+    status: str
+    owner: str
+    lease_expires_at: float
+    attempts: int
+    error: str
+    created_at: float
+    updated_at: float
+
+
 def memory_policy_facts() -> dict:
     return {
         "types": sorted(MEMORY_TYPES),

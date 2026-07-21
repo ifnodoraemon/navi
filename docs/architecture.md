@@ -26,7 +26,10 @@ DurableStateGraphRunner
 CapabilityRegistry -> tools, actions, hooks, resource and workspace gates
         |
         v
-SQLite stores + TraceStore + connector delivery receipts
+SQLite stores + sagas/effect journal + metrics/SLO projection
+        |
+        v
+personal resource adapters + connector delivery receipts
 ```
 
 The unified loop is a protocol boundary. `loop_kind` distinguishes a turn,
@@ -55,7 +58,10 @@ or explicitly independent duplicate schedules.
 | Loop kernel | `state_graph.py`, `loop.py`, `loop_contracts.py` | Plan, execute, check, pause, recover, and converge. |
 | Capabilities | `capabilities.py`, `capabilities_types.py`, `actions/`, `core_tools/` | Declare, filter, validate, invoke, and audit callable operations. |
 | Isolation | `harness.py`, `workspaces.py`, `resource_gateway.py` | Bound commands, workspaces, locks, resources, and merge behavior. |
-| State | `runs/`, `goals.py`, `loop_runs.py`, `memory/`, `trace.py`, `evolution.py` | Persist lifecycle, memory, checkpoints, and audit evidence. |
+| State | `runs/`, `goals.py`, `loop_runs.py`, `memory/`, `trace.py`, `evolution.py` | Persist lifecycle, memory, checkpoints, experiments, and audit evidence. |
+| Recovery | `lifecycle_saga.py`, `effect_journal.py`, `retention.py` | Recover cross-store projections, deduplicate effects, and compact expired transient detail. |
+| Personal resources | `personal_resources.py`, `identity.py` | Provide scoped calendar, reminder, contact, draft-mail, attention, and explicit identity adapters. |
+| Observability | `metrics.py`, `diagnostics.py` | Project durable events into SLOs, backlogs, and activation canary facts. |
 | Adapters | `weixin/`, `telegram/`, `connector_registry.py` | Implement channel-specific transport outside the core loop. |
 
 ## Execution Policy Envelope
@@ -83,7 +89,10 @@ gates. Staged external effects are committed only after acceptance or
 compensated on rejection.
 
 The semantic checker evaluates objective evidence independently from planner
-reasoning and returns only a verdict plus evidence summary. The runtime enforces
+reasoning and returns only a verdict plus evidence summary. A LoopSpec may use
+the deterministic objective-evidence tier when the capability contract itself
+returns authoritative completion facts; durable semantic work uses the isolated
+LLM checker. The runtime enforces
 attempt budgets, timeouts, safety stops, and no-progress bounds; while another
 planning turn is allowed, the planner owns the semantic choice to gather facts,
 change capability or arguments, clarify, or explain a blocker. A checker verdict
@@ -104,12 +113,23 @@ transport receipt may converge the LoopRun and accept the Run and Goal.
 ## Persistence
 
 SQLite is the local storage mechanism. Runs and approvals share `runs.db`;
-goals, loop checkpoints, traces, memory, graph data, and connector state use
-specialized stores.
+goals, loop checkpoints, traces, memory, graph data, personal resources,
+resource usage, evolution experiments, and connector state use specialized
+stores.
 
 Cross-store operations require a Unit of Work or an explicit saga. Creating a
 Run, Goal, LoopSpec, and LoopRun is one logical operation even when the records
-live in separate databases.
+live in separate databases. Synchronous open failures compensate immediately;
+startup recovery deterministically terminates stale partial opens after a grace
+period. Terminal StateGraph projections use a persisted lifecycle saga and are
+replayed until both Run and Goal match.
+
+LoopRun execution uses a versioned lease and compare-and-swap transitions, so a
+foreground driver and daemon cannot both advance one loop. Mutating capability
+effects are reserved in `loop_effects` before invocation and replay only from a
+completed result. Resource budgets live in `resource_ledger.db`; standard model
+providers reconcile reserved cost/tokens with actual usage, while custom
+providers use conservative declared phase estimates.
 
 Trace events are append-oriented audit evidence. Materialized Run, Goal, and
 LoopRun records own active lifecycle state.
@@ -121,10 +141,23 @@ the recurring template, records a Goal event and a failed capability trace, and
 publishes structured notification facts, so one bad occurrence cannot spin the
 background loop or vanish without evidence.
 
-Durable memory items carry global, actor, session, or workspace scope. The
+Durable memory items carry global, person, actor, session, or workspace scope. The
 planner and responder receive only scopes derived from the current execution
-identity. Older assistant conversation messages are omitted during compaction,
-and retained assistant messages are labeled as non-authoritative candidates.
+identity. Person scope is created only through an explicit hashed identity link.
+Conversation turns enqueue leased consolidation jobs; extracted items remain
+proposed. Hybrid text/embedding recall can discover candidates without FTS, and
+retention removes expired transient detail only after consolidation while
+preserving terminal summaries.
+
+`EvolutionTargetAdapterRegistry` is the authority for evolvable target types.
+Prompt layers, skills, memory items, eval cases, graph nodes, and run lifecycle
+records have real readers and writers. Inert spec-file targets are not declared.
+`EvolutionExperimentStore` persists candidate checks and activation windows;
+regression observations invoke the recorded rollback through the same adapter.
+
+`MetricsProjector` reads existing stores rather than maintaining a second source
+of truth. Its snapshots feed `system.metrics`, `/v1/metrics`, `navi metrics`,
+doctor SLO checks, and daemon activation observations.
 
 ## Connector Boundary
 
@@ -152,11 +185,7 @@ redaction apply to both.
 
 ## Known Current Deviations
 
-These are present code/contract discrepancies, not a future feature roadmap:
-
-- Run, Goal, and LoopRun remain separate SQLite stores. Open failures now use
-  an explicit compensation path, but cross-store updates are not one database
-  transaction.
-
-Until these deviations are repaired, tests that exercise only individual
-registries or graph nodes do not prove the end-to-end control boundary.
+No known discrepancy currently changes the contracts documented above. This is
+not a claim of zero defects: end-to-end tests, live traces, SLO snapshots, and
+runtime read-back remain required because isolated store tests do not prove the
+complete control boundary.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,73 @@ def _context(home: Path, *, sender_id: str, session_id: str) -> CapabilityContex
         workspace=str(home),
         permission_ceiling="write",
     )
+
+
+def test_memory_recall_uses_embedding_fallback_when_fts_has_no_seed(tmp_path: Path) -> None:
+    class Embeddings:
+        def embed(self, text: str) -> list[float]:
+            return [1.0, 0.0] if text in {"short answers", "keep it brief"} else [0.0, 1.0]
+
+    store = MemoryStore(tmp_path, embedding_service=Embeddings())
+    item = store.add_item(
+        "preference",
+        "keep it brief",
+        source="user",
+        status="active",
+        reason="explicit preference",
+        provenance="test",
+    )
+
+    recalled = store.recall("short answers")
+
+    assert [entry.item.id for entry in recalled] == [item.id]
+    assert any("hybrid_similarity" in reason for reason in recalled[0].reasons)
+
+
+@pytest.mark.asyncio
+async def test_conversation_memory_consolidation_is_durable_and_actor_scoped(
+    tmp_path: Path,
+) -> None:
+    class Provider:
+        async def complete_for(self, role, messages, *, output_schema=None):
+            assert role == "consolidator"
+            assert output_schema is not None
+            return (
+                '{"learnings":[{"action":"add","type":"preference",'
+                '"content":"Use concise status updates","confidence":0.9,'
+                '"reason":"explicit user preference"}]}'
+            )
+
+    store = MemoryStore(tmp_path)
+    store.add_message(
+        "session-a",
+        "user",
+        "Please use concise status updates from now on.",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="user-a",
+        run_id="run-a",
+    )
+    job_id = store.enqueue_consolidation(
+        session_id="session-a",
+        run_id="run-a",
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="user-a",
+    )
+
+    claimed = store.claim_consolidation_jobs(owner="worker-a")
+    assert [job.id for job in claimed] == [job_id]
+    affected = await store.consolidate_job(
+        claimed[0],
+        SimpleNamespace(provider=Provider()),
+    )
+
+    assert len(affected) == 1
+    assert affected[0].status == "proposed"
+    assert affected[0].scope.startswith("actor:")
+    assert affected[0].provenance == f"memory-job:{job_id}:run:run-a"
+    assert store.claim_consolidation_jobs(owner="worker-b") == []
 
 
 @pytest.mark.asyncio
@@ -89,6 +157,190 @@ async def test_memory_add_recall_and_revoke_stay_inside_actor_scope(tmp_path: Pa
     )
     assert revoked.ok is True
     assert revoked.facts["item"]["status"] == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_explicit_identity_link_migrates_memory_across_surfaces(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    registry.sensitive_approval_mode = "skip"
+    weixin = _context(tmp_path, sender_id="user-a", session_id="wx-session")
+    cli = CapabilityContext(
+        home=tmp_path,
+        source="cli",
+        peer_id="terminal-a",
+        sender_id="local-a",
+        session_id="cli-session",
+        workspace=str(tmp_path),
+        permission_ceiling="write",
+    )
+    added = await registry.invoke(
+        "memory.add",
+        {
+            "type": "preference",
+            "content": "zqxj cross-surface preference",
+            "status": "active",
+            "reason": "explicit preference",
+            "provenance": "trace-before-link",
+        },
+        permission="write",
+        context=weixin,
+    )
+
+    requested = await registry.invoke(
+        "identity.link",
+        {
+            "operation": "request",
+            "other_source": cli.source,
+            "other_peer_id": cli.peer_id,
+            "other_sender_id": cli.sender_id,
+            "reason": "user requested cross-surface continuity",
+        },
+        permission="write",
+        context=weixin,
+    )
+    linked = await registry.invoke(
+        "identity.link",
+        {
+            "operation": "confirm",
+            "verification_code": requested.facts["verification_code"],
+            "reason": "target channel confirmed possession",
+        },
+        permission="write",
+        context=cli,
+    )
+    visible = await registry.invoke(
+        "memory.recall",
+        {"query": "zqxj cross-surface"},
+        permission="read",
+        context=cli,
+    )
+    state = await registry.invoke(
+        "identity.state",
+        {},
+        permission="read",
+        context=cli,
+    )
+
+    assert added.ok is True
+    assert requested.ok is True
+    assert linked.ok is True
+    assert linked.facts["migrated_memory_count"] == 1
+    assert added.facts["memory_id"] in visible.facts["activation_candidate_ids"]
+    assert state.facts["linked"] is True
+    assert len(state.facts["aliases"]) == 2
+    assert all("peer_id" not in alias for alias in state.facts["aliases"])
+
+
+@pytest.mark.asyncio
+async def test_identity_link_cannot_be_confirmed_from_an_unrelated_channel(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    registry.sensitive_approval_mode = "skip"
+    initiator = _context(tmp_path, sender_id="user-a", session_id="session-a")
+    target = CapabilityContext(
+        home=tmp_path,
+        source="cli",
+        peer_id="terminal-a",
+        sender_id="local-a",
+        session_id="target-session",
+        workspace=str(tmp_path),
+        permission_ceiling="write",
+    )
+    attacker = CapabilityContext(
+        home=tmp_path,
+        source="cli",
+        peer_id="terminal-b",
+        sender_id="local-b",
+        session_id="attacker-session",
+        workspace=str(tmp_path),
+        permission_ceiling="write",
+    )
+    added = await registry.invoke(
+        "memory.add",
+        {
+            "operation": "add",
+            "type": "preference",
+            "content": "zqxj private preference",
+            "status": "active",
+            "reason": "private",
+            "provenance": "identity-attack-test",
+        },
+        permission="write",
+        context=initiator,
+    )
+    requested = await registry.invoke(
+        "identity.link",
+        {
+            "operation": "request",
+            "other_source": target.source,
+            "other_peer_id": target.peer_id,
+            "other_sender_id": target.sender_id,
+            "reason": "link target",
+        },
+        permission="write",
+        context=initiator,
+    )
+
+    rejected = await registry.invoke(
+        "identity.link",
+        {
+            "operation": "confirm",
+            "verification_code": requested.facts["verification_code"],
+            "reason": "attacker tries code",
+        },
+        permission="write",
+        context=attacker,
+    )
+    attacker_view = await registry.invoke(
+        "memory.recall",
+        {"query": "zqxj private"},
+        permission="read",
+        context=attacker,
+    )
+
+    assert added.ok is True
+    assert requested.ok is True
+    assert rejected.ok is False
+    assert rejected.error_reason == "schema_mismatch"
+    assert added.facts["memory_id"] not in attacker_view.facts["activation_candidate_ids"]
+
+
+def test_consolidation_cannot_revoke_memory_outside_visible_scope(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    private = store.add_item(
+        "preference",
+        "private-a",
+        source="user",
+        status="active",
+        reason="test",
+        provenance="scope-a",
+        scope="actor:a",
+    )
+    visible = store.add_item(
+        "preference",
+        "visible-b",
+        source="user",
+        status="active",
+        reason="test",
+        provenance="scope-b",
+        scope="actor:b",
+    )
+
+    affected = store._apply_learnings(
+        [{"action": "revoke", "id": private.id, "reason": "malicious output"}],
+        [visible],
+        source="consolidation",
+        provenance="scope-test",
+        ledger_run_id="scope-test",
+        add_reason_fallback="test",
+        scope="actor:b",
+    )
+
+    assert affected == []
+    assert store.get_item(private.id).status == "active"
 
 
 @pytest.mark.asyncio

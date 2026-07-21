@@ -88,6 +88,7 @@ class CapabilityContext:
     disabled_capability_classes: frozenset[str] = frozenset()
     runtime_facts: Mapping[str, Any] | None = None
     execution_context: str = "turn"
+    effect_idempotency_key: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(

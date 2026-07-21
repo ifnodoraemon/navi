@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -26,6 +27,7 @@ from .approval_contract import (
     APPROVAL_STATUS_PENDING,
 )
 from .hooks import HookDecision, HookEvent, HookRegistry
+from .effect_journal import EffectJournal
 from .json_utils import json_schema_errors
 from .lifecycle import Governance, Phase, Resolution
 from .operating_context import permission_allows
@@ -84,6 +86,7 @@ class CapabilityRegistry:
         governed_run_id: str | None = None,
         sensitive_approval_mode: str = "enforce",
         runtime: Any | None = None,
+        resource_gateway: GlobalResourceGateway | None = None,
     ) -> None:
         self.home = home
         self.allow_sources = allow_sources
@@ -103,7 +106,7 @@ class CapabilityRegistry:
             home,
             project_dir=project_dir,
         )
-        self.resource_gateway = GlobalResourceGateway(ResourceLimits())
+        self.resource_gateway = resource_gateway or GlobalResourceGateway(ResourceLimits())
         self.providers: tuple[CapabilityProvider, ...] = (
             ActionCapabilityProvider(
                 home=self.home,
@@ -324,10 +327,38 @@ class CapabilityRegistry:
                 observation_facts={"tool": name, "hook": blocked.hook},
                 facts=facts,
             )
+        effect_journal: EffectJournal | None = None
+        effect_owner = ""
+        effect_key = context.effect_idempotency_key
+        if handler.spec.mutates and context.loop_run_id and effect_key:
+            effect_journal = EffectJournal(self.home)
+            effect_owner = f"capability:{uuid.uuid4().hex}"
+            reservation = effect_journal.reserve(
+                effect_key=effect_key,
+                loop_run_id=context.loop_run_id,
+                tool=name,
+                owner=effect_owner,
+            )
+            if reservation.status == "replay" and reservation.result is not None:
+                return _capability_result_from_dict(reservation.result)
+            if reservation.status in {"busy", "uncertain"}:
+                return _capability_error(
+                    action=f"execute:{name}",
+                    error_reason=f"effect_{reservation.status}",
+                    message=f"mutating capability effect is {reservation.status}",
+                    observation_facts={
+                        "tool": name,
+                        "effect_key": effect_key,
+                        "effect_status": reservation.status,
+                    },
+                    terminal=False,
+                )
         resource_grant = self.resource_gateway.request(
             ResourceRequest(kind=f"capability:{name}", units=1)
         )
         if not resource_grant.allowed:
+            if effect_journal is not None:
+                effect_journal.abandon(effect_key, owner=effect_owner)
             return _capability_error(
                 action=f"execute:{name}",
                 error_reason=f"resource_{resource_grant.decision}",
@@ -346,6 +377,12 @@ class CapabilityRegistry:
                 context=context,
             )
         except Exception as exc:
+            if effect_journal is not None:
+                effect_journal.fail(
+                    effect_key,
+                    owner=effect_owner,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
             logger.exception(f"Unhandled exception in capability {name}: {exc}")
             return _capability_error(
                 action=f"execute:{name}",
@@ -355,7 +392,7 @@ class CapabilityRegistry:
                 terminal=False,
             )
         finally:
-            self.resource_gateway.release()
+            self.resource_gateway.release(grant_id=resource_grant.grant_id)
         if result.ok:
             output_schema_errors = json_schema_errors(result.facts or {}, handler.spec.output_schema)
             if output_schema_errors:
@@ -370,6 +407,12 @@ class CapabilityRegistry:
                     },
                     terminal=False,
                 )
+        if effect_journal is not None:
+            effect_journal.complete(
+                effect_key,
+                owner=effect_owner,
+                result=asdict(result),
+            )
         self.hooks.run(
             HookEvent(
                 event="after_capability",
@@ -695,16 +738,22 @@ class CapabilityRegistry:
             "terminal": result.terminal,
         }
         try:
-            from .safeguards import redact_secrets, redact_secrets_deep
+            from .safeguards import redact_personal_data, redact_personal_data_deep
 
             RunStore(self.home).add_tool_call_log(
                 tool=spec.name,
-                args_json=json.dumps(redact_secrets_deep(args), ensure_ascii=False, sort_keys=True),
+                args_json=json.dumps(
+                    redact_personal_data_deep(args), ensure_ascii=False, sort_keys=True
+                ),
                 ok=result.ok,
                 facts_json=json.dumps(
-                    redact_secrets_deep(facts), ensure_ascii=False, sort_keys=True
+                    redact_personal_data_deep(facts), ensure_ascii=False, sort_keys=True
                 ),
-                error="" if result.ok else redact_secrets(result.message or result.error_reason),
+                error=(
+                    ""
+                    if result.ok
+                    else redact_personal_data(result.message or result.error_reason)
+                ),
                 started_at=started_at,
                 ended_at=time.time(),
                 run_id=self.governed_run_id or "",
@@ -717,6 +766,20 @@ class CapabilityRegistry:
 
 def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
     return next((decision for decision in decisions if decision.decision == "block"), None)
+
+
+def _capability_result_from_dict(value: dict[str, Any]) -> CapabilityResult:
+    return CapabilityResult(
+        ok=bool(value.get("ok", False)),
+        action=str(value.get("action") or "error"),
+        message=str(value.get("message") or ""),
+        run_id=str(value.get("run_id") or ""),
+        terminal=bool(value.get("terminal", False)),
+        facts=dict(value.get("facts") or {}),
+        provenance=str(value.get("provenance") or ""),
+        error_reason=str(value.get("error_reason") or ""),
+        yields_control=bool(value.get("yields_control", False)),
+    )
 
 
 def _canonical_args_json(value: dict[str, Any]) -> str:
@@ -741,6 +804,7 @@ def build_capability_registry(
     execution_context: str = TURN_CONTEXT,
     governed_run_id: str | None = None,
     runtime: Any | None = None,
+    resource_gateway: GlobalResourceGateway | None = None,
 ) -> CapabilityRegistry:
     return CapabilityRegistry(
         home=home,
@@ -752,4 +816,5 @@ def build_capability_registry(
         execution_context=execution_context,
         governed_run_id=governed_run_id,
         runtime=runtime,
+        resource_gateway=resource_gateway,
     )

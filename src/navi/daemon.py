@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -88,8 +90,23 @@ class SystemDaemon:
         # Active is a lifecycle fact, not permission for the daemon to execute.
         # Foreground turns and manually prepared goals have their own explicit
         # owner; only loops created for background execution belong here.
-        active_states = loop_runs.list_active_for_execution_mode("background", limit=10)
-        retryable_states = loop_runs.list_retryable_background_pauses(limit=10)
+        execution_owner = f"daemon:{os.getpid()}:{uuid.uuid4().hex}"
+        active_states = loop_runs.claim_active_for_execution_mode(
+            "background", owner=execution_owner, limit=10
+        )
+        retryable_candidates = loop_runs.list_retryable_background_pauses(limit=10)
+        retryable_states = [
+            claimed
+            for item in retryable_candidates
+            if (
+                claimed := loop_runs.claim_for_execution(
+                    item.run_id,
+                    owner=execution_owner,
+                    allow_paused=True,
+                )
+            )
+            is not None
+        ]
         states = [
             *active_states,
             *(state for state in retryable_states if state.run_id not in {item.run_id for item in active_states}),
@@ -119,6 +136,7 @@ class SystemDaemon:
                     resume_reason="background_execution",
                     state_transition="background_resumed",
                     resource_retry=state.run_id in retryable_ids,
+                    execution_owner=execution_owner,
                 )
                 affected_runs.append(result.run)
             except Exception as e:
@@ -276,10 +294,79 @@ class SystemDaemon:
 
     async def process_memory_maintenance_once(self) -> dict[str, Any]:
         try:
-            return await asyncio.to_thread(self._process_memory_maintenance)
+            facts = await asyncio.to_thread(self._process_memory_maintenance)
+            from .config import load_config
+            from .memory import MemoryStore
+            from .provider import build_provider
+            from .runtime import AgentRuntime
+
+            memory = MemoryStore(self.home)
+            owner = f"memory-daemon:{os.getpid()}:{uuid.uuid4().hex}"
+            jobs = await asyncio.to_thread(
+                memory.claim_consolidation_jobs,
+                owner=owner,
+                limit=10,
+            )
+            if not jobs:
+                facts["consolidation"] = {"claimed": 0, "completed": 0, "failed": 0}
+                from .retention import DataRetentionManager
+
+                facts["retention"] = await asyncio.to_thread(
+                    lambda: DataRetentionManager(self.home).compact_expired().to_dict()
+                )
+                return await self._add_observability_maintenance(facts)
+
+            config = load_config(self.home)
+            runtime = AgentRuntime(home=self.home, provider=build_provider(config.model))
+            completed = 0
+            failures: list[dict[str, str]] = []
+            for job in jobs:
+                try:
+                    await memory.consolidate_job(job, runtime)
+                    completed += 1
+                except Exception as exc:
+                    failures.append(
+                        {
+                            "job_id": job.id,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:500],
+                        }
+                    )
+                    logger.warning(
+                        "Memory consolidation job %s failed: %s",
+                        job.id,
+                        exc,
+                        exc_info=True,
+                    )
+            facts["consolidation"] = {
+                "claimed": len(jobs),
+                "completed": completed,
+                "failed": len(failures),
+                "failures": failures,
+            }
+            from .retention import DataRetentionManager
+
+            facts["retention"] = await asyncio.to_thread(
+                lambda: DataRetentionManager(self.home).compact_expired().to_dict()
+            )
+            return await self._add_observability_maintenance(facts)
         except Exception as exc:
             logger.error("Background memory maintenance failed: %s", exc, exc_info=True)
             return {"ok": False, "error": str(exc)}
+
+    async def _add_observability_maintenance(self, facts: dict[str, Any]) -> dict[str, Any]:
+        from .metrics import MetricsProjector
+
+        projector = MetricsProjector(self.home)
+        facts["evolution_observations"] = await asyncio.to_thread(
+            projector.observe_evolution_activations
+        )
+        snapshot = await asyncio.to_thread(projector.snapshot)
+        facts["slo"] = {
+            "overall_status": snapshot.overall_status,
+            "breached": [item.name for item in snapshot.slos if item.status == "breached"],
+        }
+        return facts
 
     def _process_memory_maintenance(self) -> dict[str, Any]:
         from .memory import MemoryStore

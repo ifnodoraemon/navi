@@ -545,6 +545,9 @@ class LoopRunState:
     locked_resources: tuple[str, ...] = ()
     evidence: dict[str, Any] = field(default_factory=dict)
     updated_at: float = field(default_factory=time.time)
+    version: int = 0
+    lease_owner: str = ""
+    lease_expires_at: float = 0.0
 
     def is_terminal(self) -> bool:
         return bool(str(self.terminal_state).strip())
@@ -598,6 +601,9 @@ class LoopRunState:
             "locked_resources": list(self.locked_resources),
             "evidence": dict(self.evidence),
             "updated_at": self.updated_at,
+            "version": self.version,
+            "lease_owner": self.lease_owner,
+            "lease_expires_at": self.lease_expires_at,
         }
 
 

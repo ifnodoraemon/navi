@@ -96,6 +96,74 @@ def test_loop_run_store_filters_active_runs_by_execution_mode(tmp_path):
     assert store.list_active_for_execution_mode("manual") == [manual]
 
 
+def test_loop_run_execution_claim_is_atomic_and_recoverable_after_expiry(tmp_path):
+    store = LoopRunStore(tmp_path)
+    run = store.create_run(_spec(), evidence={"execution_mode": "background"})
+
+    claimed = store.claim_for_execution(run.run_id, owner="worker-a", now=100.0)
+    assert claimed is not None
+    assert claimed.lease_owner == "worker-a"
+    assert store.claim_for_execution(run.run_id, owner="worker-b", now=101.0) is None
+
+    recovered = store.claim_for_execution(run.run_id, owner="worker-b", now=400.0)
+    assert recovered is not None
+    assert recovered.lease_owner == "worker-b"
+    assert recovered.version > claimed.version
+
+
+def test_expired_worker_cannot_fail_a_loop_after_lease_recovery(tmp_path):
+    store = LoopRunStore(tmp_path)
+    run = store.create_run(_spec())
+    first = store.claim_for_execution(
+        run.run_id,
+        owner="worker-a",
+        lease_seconds=10,
+        now=100.0,
+    )
+    recovered = store.claim_for_execution(run.run_id, owner="worker-b", now=111.0)
+
+    assert first is not None
+    assert recovered is not None
+    with pytest.raises(RuntimeError, match="lease is not owned"):
+        store.fail_active_run(
+            run.run_id,
+            lease_owner="worker-a",
+            now=112.0,
+        )
+    assert store.get_run(run.run_id).lease_owner == "worker-b"
+
+
+def test_loop_run_transition_rejects_non_owner_and_preserves_active_lease(tmp_path):
+    store = LoopRunStore(tmp_path)
+    run = store.create_run(_spec())
+    claimed = store.claim_for_execution(run.run_id, owner="worker-a")
+    assert claimed is not None
+    checkpoint = store.write_checkpoint(
+        run.run_id,
+        node=LoopNode.PLAN,
+        inputs={"planner": "execute"},
+        state=claimed.to_dict(),
+    )
+
+    with pytest.raises(RuntimeError, match="lease is not owned"):
+        store.transition(
+            run.run_id,
+            node=LoopNode.EXECUTE,
+            checkpoint_id=checkpoint.id,
+            condition="plan_ready",
+            lease_owner="worker-b",
+        )
+
+    executing = store.transition(
+        run.run_id,
+        node=LoopNode.EXECUTE,
+        checkpoint_id=checkpoint.id,
+        condition="plan_ready",
+        lease_owner="worker-a",
+    )
+    assert executing.lease_owner == "worker-a"
+
+
 def test_loop_run_store_terminal_runs_are_not_active_and_do_not_transition(tmp_path):
     store = LoopRunStore(tmp_path)
     run = store.create_run(_spec())

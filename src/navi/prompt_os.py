@@ -289,7 +289,7 @@ def assemble_semantic_checker_messages(
     attempt: int,
     max_attempts: int,
     last_capability: dict[str, Any],
-    observed_capability_evidence: dict[str, Any],
+    observed_capability_evidence: list[dict[str, Any]],
 ) -> list[ChatMessage]:
     return [
         ChatMessage(
