@@ -9,6 +9,7 @@ from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.db import connect
 from navi.memory import MemoryStore
+from navi.memory import provider as memory_provider_module
 from navi.memory.scopes import memory_scopes_for_context
 from navi.paths import db_paths
 from navi.tools import API_CONTEXT
@@ -45,6 +46,41 @@ def test_memory_recall_uses_embedding_candidates_when_fts_has_no_seed(tmp_path: 
 
     assert [entry.item.id for entry in recalled] == [item.id]
     assert any("hybrid_similarity" in reason for reason in recalled[0].reasons)
+
+
+def test_memory_recall_propagates_fts_failure(tmp_path: Path, monkeypatch) -> None:
+    store = MemoryStore(tmp_path)
+
+    def fail_connect(path):
+        del path
+        raise RuntimeError("memory database unavailable")
+
+    monkeypatch.setattr(memory_provider_module, "connect", fail_connect)
+
+    with pytest.raises(RuntimeError, match="memory database unavailable"):
+        store.recall("known preference")
+
+
+def test_memory_recall_propagates_embedding_failure(tmp_path: Path) -> None:
+    class BrokenEmbeddings:
+        def embed(self, text: str) -> list[float]:
+            del text
+            raise RuntimeError("embedding unavailable")
+
+    store = MemoryStore(tmp_path, embedding_service=BrokenEmbeddings())
+
+    with pytest.raises(RuntimeError, match="embedding unavailable"):
+        store.recall("known preference")
+
+
+def test_working_memory_propagates_goal_store_failure(tmp_path: Path) -> None:
+    class BrokenGoalStore:
+        def list(self, *, limit: int):
+            del limit
+            raise RuntimeError("goal state unavailable")
+
+    with pytest.raises(RuntimeError, match="goal state unavailable"):
+        MemoryStore(tmp_path).render_working_memory(goal_store=BrokenGoalStore())
 
 
 @pytest.mark.asyncio

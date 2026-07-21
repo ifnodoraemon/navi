@@ -669,19 +669,6 @@ class MemoryStore:
         if blocked is not None:
             raise ValueError(blocked.reason_code or f"hook_blocked:{blocked.hook}")
 
-    def _parse_json_learnings(self, response_raw: str) -> list[dict]:
-        try:
-            data = json.loads(response_raw)
-        except (TypeError, json.JSONDecodeError):
-            return []
-        if not isinstance(data, dict):
-            return []
-
-        learnings = data.get("learnings")
-        if not isinstance(learnings, list):
-            return []
-        return learnings
-
     # ------------------------------------------------------------------ recall
 
     def recall(
@@ -781,17 +768,12 @@ class MemoryStore:
         embed = getattr(self._embedding_service, "embed", None)
         if not callable(embed):
             return None
-        try:
-            vector = embed(text)
-        except Exception:
-            logging.getLogger(__name__).warning("memory embedding failed", exc_info=True)
-            return None
+        vector = embed(text)
         if not isinstance(vector, (list, tuple)):
-            return None
-        try:
-            return [float(value) for value in vector]
-        except (TypeError, ValueError):
-            return None
+            raise TypeError("memory embedding provider must return a vector")
+        if not vector:
+            raise ValueError("memory embedding provider returned an empty vector")
+        return [float(value) for value in vector]
 
     def _hybrid_similarity(
         self,
@@ -881,8 +863,8 @@ class MemoryStore:
                         if reason not in reasons:
                             reasons.append(reason)
         except Exception:
-            logger.debug("semantic graph neighbor recall failed", exc_info=True)
-            return {}
+            logger.exception("semantic graph neighbor recall failed")
+            raise
         return neighbors
 
     def render_context(
@@ -990,10 +972,7 @@ class MemoryStore:
             return ""
         from ..lifecycle import Phase as _GoalPhase  # local import to avoid cycle
 
-        try:
-            goals = goal_store.list(limit=limit)
-        except Exception:
-            return ""
+        goals = goal_store.list(limit=limit)
         active = [g for g in goals if g.phase == str(_GoalPhase.RUNNING)]
         if not active:
             return ""

@@ -22,6 +22,7 @@ from navi.weixin.client import ITEM_FILE, MEDIA_FILE, WeixinClient
 from navi.weixin.config import WeixinConfig
 from navi.weixin.models import WeixinAccount, WeixinUpdate
 from navi.weixin.service import WeixinService
+from navi.weixin.store import WeixinStore
 
 
 class NoModelCalls:
@@ -30,6 +31,14 @@ class NoModelCalls:
 
     def list_roles(self) -> list[str]:
         return []
+
+
+def test_weixin_store_rejects_corrupt_sync_cursor(tmp_path: Path):
+    store = WeixinStore(tmp_path)
+    store.sync_path("acct").write_text("not-json", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        store.load_sync_buf("acct")
 
 
 class WatchNotificationProvider:
@@ -300,7 +309,7 @@ async def test_service_executes_structured_delivery_from_original_path(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_service_skips_empty_runtime_response_without_delivery_error(tmp_path: Path):
+async def test_service_records_empty_runtime_response_as_failure(tmp_path: Path):
     client = CaptureWeixinClient()
     service = WeixinService(
         home=tmp_path,
@@ -330,7 +339,7 @@ async def test_service_skips_empty_runtime_response_without_delivery_error(tmp_p
     assert client.messages == []
     assert client.files == []
     events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8")
-    assert '"event": "reply.skipped"' in events
+    assert '"event": "reply.failed"' in events
     assert '"reason": "empty_response"' in events
     assert '"event": "reply.error"' not in events
     egress_events = [
@@ -339,10 +348,39 @@ async def test_service_skips_empty_runtime_response_without_delivery_error(tmp_p
         if event.phase == "channel.egress"
     ]
     assert len(egress_events) == 1
-    assert egress_events[0].ok is True
-    assert egress_events[0].message == "Skipped empty channel response"
+    assert egress_events[0].ok is False
+    assert egress_events[0].message == "Channel response failed because it was empty"
     egress_output = json.loads(egress_events[0].output_json)
     assert egress_output["delivery_attempted"] is False
+
+
+@pytest.mark.asyncio
+async def test_service_propagates_ingress_failure(tmp_path: Path):
+    class FailingIngress:
+        async def handle(self, message: Any):
+            del message
+            raise RuntimeError("agent ingress failed")
+
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=CaptureWeixinClient(),
+    )
+    service.ingress = FailingIngress()
+
+    with pytest.raises(RuntimeError, match="agent ingress failed"):
+        await service.handle_update(
+            WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
+            WeixinUpdate(
+                message_id="msg-ingress-failure",
+                peer_id="wx-user",
+                sender_id="wx-user",
+                text="你好",
+                context_token="ctx",
+            ),
+        )
 
 
 @pytest.mark.asyncio

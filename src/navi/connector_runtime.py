@@ -101,8 +101,8 @@ class ConnectorIngressDeduplicator:
                         key=duplicate_key,
                     )
                 return ConnectorDedupResult(False)
-        except OSError:
-            return ConnectorDedupResult(False)
+        except OSError as exc:
+            raise RuntimeError("connector ingress dedup state is unavailable") from exc
 
     @staticmethod
     def _keys(message: ConnectorMessage) -> list[str]:
@@ -122,19 +122,10 @@ class ConnectorIngressDeduplicator:
     def _load_seen(self) -> dict[str, float]:
         if not self.path.exists():
             return {}
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
-            return {}
-        seen: dict[str, float] = {}
-        for key, value in raw.items():
-            try:
-                seen[str(key)] = float(value)
-            except (TypeError, ValueError):
-                continue
-        return seen
+            raise ValueError("connector ingress dedup state must be a JSON object")
+        return {str(key): float(value) for key, value in raw.items()}
 
 
 def _atomic_json_write(path: Path, payload: dict[str, float]) -> None:

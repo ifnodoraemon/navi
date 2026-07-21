@@ -67,10 +67,7 @@ class WeixinStore:
         path = self.sync_path(account_id)
         if not path.exists():
             return ""
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return ""
+        data = json.loads(path.read_text(encoding="utf-8"))
         return str(data.get("get_updates_buf") or "")
 
     def save_sync_buf(self, account_id: str, sync_buf: str) -> None:

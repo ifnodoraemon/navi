@@ -272,7 +272,7 @@ class WeixinService:
         response_delivery = connector_delivery_from_facts(response.facts)
         if response_delivery is None and not response.text.strip():
             self.record_event(
-                "reply.skipped",
+                "reply.failed",
                 peer_id=update.peer_id,
                 reason="empty_response",
                 action=response.action,
@@ -293,7 +293,8 @@ class WeixinService:
                         "delivery_attempted": False,
                         "media_count": 0,
                     },
-                    message="Skipped empty channel response",
+                    message="Channel response failed because it was empty",
+                    ok=False,
                 )
                 TraceStore(self.home).evaluate_trace(update.message_id)
             except Exception:
@@ -437,7 +438,7 @@ class WeixinService:
                 )
             except Exception:
                 pass
-            return None
+            raise
         finally:
             stop_typing.set()
             if typing_task:

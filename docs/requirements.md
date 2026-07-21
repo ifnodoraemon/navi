@@ -54,6 +54,11 @@ provider once per model call and propagates provider, transport, empty-response,
 and structured-output failures without retrying or switching providers. A later
 planning turn may choose another attempt only from the surfaced failure facts.
 
+Active-path state and retrieval failures must also propagate. A corrupt durable
+cursor, dedup ledger, FTS index, embedding result, or semantic graph must not be
+silently replaced with empty state or a weaker retrieval strategy. Missing
+optional state remains a valid observed absence.
+
 An LLM may produce risk facts or explanations. It must never be the authority
 that converts a sensitive operation from approval-required to allowed.
 

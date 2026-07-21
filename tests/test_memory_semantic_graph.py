@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from navi.graph import GraphStore
+from navi.memory import store as memory_store_module
 from navi.memory.store import MemoryStore
 
 
@@ -114,3 +117,19 @@ def test_memory_recall_does_not_create_graph_index_when_missing(tmp_path):
 
     assert recalls
     assert not (tmp_path / "graph.db").exists()
+
+
+def test_memory_recall_propagates_semantic_graph_failure(tmp_path, monkeypatch):
+    store = MemoryStore(tmp_path)
+    graph = GraphStore(tmp_path)
+    seed = _add_memory(store, "semantic zqxj seed")
+    store.sync_semantic_graph(graph_store=graph)
+
+    def fail_connect(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("semantic graph unavailable")
+
+    monkeypatch.setattr(memory_store_module.sqlite3, "connect", fail_connect)
+
+    with pytest.raises(RuntimeError, match="semantic graph unavailable"):
+        store._semantic_graph_neighbors((seed.id,), limit=5)

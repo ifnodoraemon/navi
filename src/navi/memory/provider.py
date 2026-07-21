@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Protocol
 
 from ..db import connect, check_schema_version, write_schema_version
 from ..schema import Column, Table, assert_schema_exact
 from .models import MemoryItem, SessionAlias, StoredMessage
-
-logger = logging.getLogger("navi.memory.provider")
 
 MEMORY_SCHEMA_VERSION = 2
 
@@ -501,32 +498,28 @@ class SQLiteMemoryProvider:
         # Escape double quotes to avoid FTS syntax errors if query has them
         safe_query = query.replace('"', '""')
         match_expr = f'"{safe_query}"'
-        try:
-            with connect(self.db_path) as conn:
-                if allowed_scopes is None:
-                    rows = conn.execute(
-                        "SELECT id, rank FROM memory_fts "
-                        "WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
-                        (match_expr, limit),
-                    ).fetchall()
-                else:
-                    scopes = sorted(allowed_scopes)
-                    if not scopes:
-                        return []
-                    placeholders = ",".join("?" for _ in scopes)
-                    rows = conn.execute(
-                        "SELECT memory_fts.id, memory_fts.rank "
-                        "FROM memory_fts JOIN memory_items "
-                        "ON memory_items.id = memory_fts.id "
-                        "WHERE memory_fts MATCH ? "
-                        f"AND memory_items.scope IN ({placeholders}) "
-                        "ORDER BY memory_fts.rank LIMIT ?",
-                        (match_expr, *scopes, limit),
-                    ).fetchall()
-                return [(row[0], float(row[1])) for row in rows]
-        except Exception:
-            logger.debug("search_fts failed for query %r", query, exc_info=True)
-            return []
+        with connect(self.db_path) as conn:
+            if allowed_scopes is None:
+                rows = conn.execute(
+                    "SELECT id, rank FROM memory_fts "
+                    "WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
+                    (match_expr, limit),
+                ).fetchall()
+            else:
+                scopes = sorted(allowed_scopes)
+                if not scopes:
+                    return []
+                placeholders = ",".join("?" for _ in scopes)
+                rows = conn.execute(
+                    "SELECT memory_fts.id, memory_fts.rank "
+                    "FROM memory_fts JOIN memory_items "
+                    "ON memory_items.id = memory_fts.id "
+                    "WHERE memory_fts MATCH ? "
+                    f"AND memory_items.scope IN ({placeholders}) "
+                    "ORDER BY memory_fts.rank LIMIT ?",
+                    (match_expr, *scopes, limit),
+                ).fetchall()
+            return [(row[0], float(row[1])) for row in rows]
 
 
 
@@ -625,26 +618,21 @@ class SQLiteMemoryProvider:
             return []
         safe_query = query.replace('"', '""')
         match_expr = f'"{safe_query}"'
-        rows: list[tuple] = []
-        try:
-            with connect(self.db_path) as conn:
-                rows = conn.execute(
-                    f"""
-                    SELECT messages.session_id, messages.role, messages.content,
-                           messages.created_at, messages.message_id, messages.source,
-                           messages.peer_id, messages.sender_id, messages.trace_id,
-                           messages.run_id, messages_fts.rank
-                    FROM messages_fts JOIN messages
-                    ON messages.message_id = messages_fts.message_id
-                    WHERE messages_fts MATCH ? AND ({where_sql})
-                    ORDER BY messages_fts.rank, messages.created_at DESC
-                    LIMIT ?
-                    """,
-                    (match_expr, *where_values, limit),
-                ).fetchall()
-        except Exception:
-            logger.debug("search_messages_fts failed for query %r", query, exc_info=True)
-            rows = []
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT messages.session_id, messages.role, messages.content,
+                       messages.created_at, messages.message_id, messages.source,
+                       messages.peer_id, messages.sender_id, messages.trace_id,
+                       messages.run_id, messages_fts.rank
+                FROM messages_fts JOIN messages
+                ON messages.message_id = messages_fts.message_id
+                WHERE messages_fts MATCH ? AND ({where_sql})
+                ORDER BY messages_fts.rank, messages.created_at DESC
+                LIMIT ?
+                """,
+                (match_expr, *where_values, limit),
+            ).fetchall()
         if rows:
             return [
                 (

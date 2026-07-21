@@ -92,6 +92,15 @@ def test_connector_ingress_deduplicates_content_across_message_ids(tmp_path):
     assert duplicate.reason == "content"
 
 
+def test_connector_ingress_rejects_corrupt_dedup_state(tmp_path):
+    path = tmp_path / "connectors" / "ingress-dedup.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("not-json", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        ConnectorIngressDeduplicator(tmp_path).check(_message("msg-corrupt"))
+
+
 @pytest.mark.asyncio
 async def test_telegram_service_uses_shared_persistent_ingress_dedup(tmp_path):
     update = TelegramUpdate(
