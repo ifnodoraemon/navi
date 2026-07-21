@@ -10,6 +10,7 @@ from navi.db import connect
 from navi.effect_journal import EffectJournal
 from navi.evolution import EvolutionLedger
 from navi.loop_control_service import LoopControlService, OpenGoalRequest
+from navi.lifecycle import Phase, Resolution
 from navi.memory import MemoryStore
 from navi.metrics import MetricsProjector
 from navi.paths import db_paths
@@ -74,6 +75,28 @@ def test_metrics_treat_empty_invariant_samples_as_insufficient(tmp_path: Path) -
     assert invariant_slos
     assert all(item.status == "insufficient_data" for item in invariant_slos.values())
     assert all(item.samples == 0 for item in invariant_slos.values())
+
+
+def test_task_success_rate_reports_cancellation_without_counting_it_as_failure(
+    tmp_path: Path,
+) -> None:
+    runs = RunStore(tmp_path)
+    for title, resolution in (
+        ("success", Resolution.SUCCESS),
+        ("failure", Resolution.FAILED),
+        ("canceled", Resolution.CANCELED),
+    ):
+        run = runs.create(title, workspace=str(tmp_path))
+        runs.update_run(run.id, phase=Phase.ENDED, resolution=resolution)
+
+    snapshot = MetricsProjector(tmp_path).snapshot()
+    metric = {item.name: item for item in snapshot.metrics}["task_success_rate"]
+
+    assert metric.value == 0.5
+    assert metric.samples == 2
+    assert snapshot.diagnostics["terminal_runs"] == 3
+    assert snapshot.diagnostics["evaluated_runs"] == 2
+    assert snapshot.diagnostics["canceled_runs"] == 1
 
 
 def test_metrics_find_loop_runs_without_goals_and_expired_effects(tmp_path: Path) -> None:

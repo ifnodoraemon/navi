@@ -223,7 +223,8 @@ Metrics and SLOs are projections of durable facts, not model judgments. At
 minimum they cover lifecycle orphans/sagas, execution leases, uncertain effects,
 resource release, memory jobs, task outcomes, trace outcomes, and evolution
 activation safety. Empty samples are reported as insufficient data, never as
-healthy.
+healthy. User-requested cancellation is reported separately and is not classified
+as task execution failure in the success-rate denominator.
 
 Recurring Goal templates must persist a durable real workspace, never a
 turn-scoped shadow workspace. Registration resolves managed paths from workspace

@@ -94,7 +94,7 @@ class MetricsProjector:
                 "task_success_rate",
                 runs["success_rate"],
                 "ratio",
-                runs["terminal"],
+                runs["evaluated"],
                 window_seconds,
                 "runs.db",
             ),
@@ -197,7 +197,7 @@ class MetricsProjector:
             _ratio_slo(
                 "task_success_rate",
                 runs["success_rate"],
-                samples=runs["terminal"],
+                samples=runs["evaluated"],
                 minimum_samples=5,
                 target=0.8,
                 higher_is_better=True,
@@ -218,6 +218,8 @@ class MetricsProjector:
             **integrity,
             **pipeline,
             "terminal_runs": runs["terminal"],
+            "evaluated_runs": runs["evaluated"],
+            "canceled_runs": runs["canceled"],
             "successful_runs": runs["successful"],
             "evaluated_traces": traces["evaluated"],
             "failed_traces": traces["failed"],
@@ -252,17 +254,23 @@ class MetricsProjector:
         with connect(self.paths.runs) as conn:
             row = conn.execute(
                 """
-                SELECT COUNT(*), SUM(CASE WHEN resolution = 'success' THEN 1 ELSE 0 END)
+                SELECT COUNT(*),
+                       SUM(CASE WHEN resolution = 'success' THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN resolution = 'canceled' THEN 1 ELSE 0 END)
                 FROM runs WHERE phase = 'ended' AND updated_at >= ?
                 """,
                 (cutoff,),
             ).fetchone()
         terminal = int(row[0] or 0) if row else 0
         successful = int(row[1] or 0) if row else 0
+        canceled = int(row[2] or 0) if row else 0
+        evaluated = terminal - canceled
         return {
             "terminal": terminal,
+            "evaluated": evaluated,
+            "canceled": canceled,
             "successful": successful,
-            "success_rate": successful / terminal if terminal else 0.0,
+            "success_rate": successful / evaluated if evaluated else 0.0,
         }
 
     def _trace_metrics(self, cutoff: float) -> dict[str, Any]:
