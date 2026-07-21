@@ -18,7 +18,9 @@ def test_build_systemd_user_unit_uses_project_and_home(tmp_path):
     assert f"Environment=NAVI_HOME={navi_home}" in unit
     assert "ExecStart=" in unit
     assert "-m navi.cli run" in unit
-    assert "Restart=always" in unit
+    assert "EnvironmentFile=" not in unit
+    assert "Restart=no" in unit
+    assert "RestartSec=" not in unit
 
 
 def test_service_diagnostic_does_not_retry_with_another_systemctl_command(monkeypatch):

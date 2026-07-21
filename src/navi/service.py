@@ -33,8 +33,7 @@ def build_systemd_user_unit(*, project_dir: Path, navi_home: Path | None = None)
         f"WorkingDirectory={project_dir}\n"
         f"{env_block}\n"
         f"ExecStart={python} -m navi.cli run\n"
-        "Restart=always\n"
-        "RestartSec=5\n\n"
+        "Restart=no\n\n"
         "[Install]\n"
         "WantedBy=default.target\n"
     )

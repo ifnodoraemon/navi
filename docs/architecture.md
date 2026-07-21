@@ -119,7 +119,8 @@ returned without an automatic repeat, provider switch, argument rewrite, or
 degraded substitute. A later planner turn is a new model-owned decision, not a
 runtime retry. Lease recovery after a crashed owner and database transaction
 conflict handling remain deterministic control-plane coordination, not semantic
-recovery choices.
+recovery choices. The systemd unit uses `Restart=no`; a failed assistant process
+stays failed until an explicit operator or governed model action starts it again.
 
 Prompt assembly is an inspectable interface, not scattered inline runtime text.
 Stable prompt specifications live in `src/navi/specs_data.py`; assembly,
