@@ -25,7 +25,7 @@ def test_model_config_role_params_use_global_defaults_and_overrides():
 
 def test_model_config_rejects_provider_fallbacks():
     with pytest.raises(ValueError, match="model.fallbacks is unsupported"):
-        _model_config({"fallbacks": []}, env={}, allow_env_override=False)
+        _model_config({"fallbacks": []})
 
 
 @patch("navi.provider.resolve_model_config")

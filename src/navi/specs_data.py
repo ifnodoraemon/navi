@@ -156,6 +156,17 @@ DEFAULTS_SPEC: Any = {
     "local_surface": "local",
     "api_host": "127.0.0.1",
     "api_port": 8765,
+    "search_provider": "exa_mcp",
+    "search_mcp_server": "exa",
+    "exa_mcp_url": "https://mcp.exa.ai/mcp",
+    "telegram_enabled": False,
+    "telegram_api_base_url": "https://api.telegram.org",
+    "telegram_dm_policy": "allowlist",
+    "weixin_enabled": False,
+    "weixin_base_url": "https://ilinkai.weixin.qq.com",
+    "weixin_cdn_base_url": "https://novac2c.cdn.weixin.qq.com/c2c",
+    "weixin_dm_policy": "open",
+    "weixin_group_policy": "disabled",
 }
 
 HOOKS_SPEC: Any = [
@@ -248,7 +259,6 @@ MODEL_PROVIDERS_SPEC: Any = [
         "default_model": "gpt-4o-mini",
         "default_base_url": "https://api.openai.com/v1",
         "structured_output": "json_schema",
-        "api_key_env": ["NAVI_MODEL_API_KEY", "OPENAI_API_KEY"],
     },
     {
         "name": "deepseek",
@@ -256,7 +266,6 @@ MODEL_PROVIDERS_SPEC: Any = [
         "default_model": "deepseek-v4-pro",
         "default_base_url": "https://api.deepseek.com",
         "structured_output": "json_object",
-        "api_key_env": ["DEEPSEEK_API_KEY", "NAVI_MODEL_API_KEY"],
     },
     {
         "name": "anthropic",
@@ -264,7 +273,6 @@ MODEL_PROVIDERS_SPEC: Any = [
         "default_model": "claude-sonnet-4-20250514",
         "default_base_url": "https://api.anthropic.com/v1",
         "structured_output": "tool_schema",
-        "api_key_env": ["ANTHROPIC_API_KEY", "NAVI_MODEL_API_KEY"],
     },
 ]
 

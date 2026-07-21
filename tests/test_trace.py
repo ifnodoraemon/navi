@@ -11,6 +11,7 @@ from navi.api import create_app
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY
+from navi.config import load_config
 from navi.db import connect
 from navi.loop import LoopCheckName, LoopDecisionKind, LoopReason, TraceFailureDomain
 from navi.loop_contracts import GoalSpec, LoopNode, LoopSpec, VerificationKind, VerificationStep
@@ -348,7 +349,7 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
         ),
     )
     app = create_app(tmp_path)
-    api_key = (tmp_path / "api_key").read_text(encoding="utf-8").strip()
+    api_key = load_config(tmp_path).api.api_key
     client = TestClient(app)
 
     response = client.get(
@@ -413,7 +414,7 @@ def test_trace_api_includes_durable_loop_run_details_for_web_tree(tmp_path):
     )
 
     app = create_app(tmp_path)
-    api_key = (tmp_path / "api_key").read_text(encoding="utf-8").strip()
+    api_key = load_config(tmp_path).api.api_key
     client = TestClient(app)
 
     list_response = client.get("/v1/traces", headers={"X-API-Key": api_key})
@@ -442,7 +443,7 @@ def test_trace_delete_api_endpoints(tmp_path):
     store.add_event(trace_id="trace-to-delete-2", phase="turn.start")
     
     app = create_app(tmp_path)
-    api_key = (tmp_path / "api_key").read_text(encoding="utf-8").strip()
+    api_key = load_config(tmp_path).api.api_key
     client = TestClient(app)
 
     # Verify initial traces exist

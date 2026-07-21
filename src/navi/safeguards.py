@@ -506,6 +506,14 @@ _REDACT_FIELD_NAMES = frozenset(
     }
 )
 
+
+def _is_secret_field_name(value: str) -> bool:
+    normalized = value.strip().lower()
+    return normalized in _REDACT_FIELD_NAMES or normalized.endswith(
+        ("_api_key", "-api-key", "_secret", "_token")
+    )
+
+
 _PERSONAL_FIELD_NAMES = frozenset(
     {
         "address",
@@ -554,7 +562,7 @@ def redact_secrets_deep(value: Any) -> Any:
         redacted: dict[str, Any] = {}
         for key, nested in value.items():
             key_lower = str(key).lower()
-            if key_lower in _REDACT_FIELD_NAMES:
+            if _is_secret_field_name(key_lower):
                 redacted[str(key)] = "[REDACTED]"
             else:
                 redacted[str(key)] = redact_secrets_deep(nested)
@@ -572,7 +580,7 @@ def redact_personal_data_deep(value: Any) -> Any:
         redacted: dict[Any, Any] = {}
         for key, item in value.items():
             normalized = str(key).strip().lower()
-            if normalized in _REDACT_FIELD_NAMES:
+            if _is_secret_field_name(normalized):
                 redacted[key] = "[REDACTED]"
             elif normalized in _PERSONAL_FIELD_NAMES and item:
                 redacted[key] = "[REDACTED_PERSONAL_DATA]"
@@ -604,10 +612,10 @@ def canonical_approval_args_json(value: Any, *, home: Path) -> str:
 
 def _protect_approval_value(value: Any, *, key: bytes, field_name: str = "") -> Any:
     normalized = field_name.strip().lower()
-    if normalized in (
-        _REDACT_FIELD_NAMES
-        | _PERSONAL_FIELD_NAMES
-        | _APPROVAL_PRIVATE_FIELD_NAMES
+    if (
+        _is_secret_field_name(normalized)
+        or normalized in _PERSONAL_FIELD_NAMES
+        or normalized in _APPROVAL_PRIVATE_FIELD_NAMES
     ):
         return {"$approval_hmac": _approval_hmac(value, key=key)}
     if isinstance(value, dict):

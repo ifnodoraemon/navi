@@ -17,8 +17,6 @@ from mcp.client.streamable_http import streamable_http_client
 
 from .permission_contract import normalize_permission
 
-DEFAULT_EXA_MCP_URL = "https://mcp.exa.ai/mcp"
-
 
 @dataclass(frozen=True)
 class MCPServerConfig:

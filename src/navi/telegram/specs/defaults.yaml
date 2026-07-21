@@ -1,3 +1,0 @@
-enabled: false
-api_base_url: https://api.telegram.org
-dm_policy: allowlist

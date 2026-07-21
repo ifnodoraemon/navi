@@ -1,9 +1,9 @@
 """Web search provider handlers."""
+
 from __future__ import annotations
 
 import html
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -11,13 +11,9 @@ from urllib.parse import urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY, CAPABILITY_RETRYABLE_KEY
-from navi.config import load_runtime_env
-from navi.mcp_client import (
-    DEFAULT_EXA_MCP_URL,
-    MCPClient,
-    MCPServerConfig,
-    describe_mcp_exception,
-)
+from navi.config import NaviConfig, load_config
+from navi.mcp_client import MCPClient, MCPServerConfig, describe_mcp_exception
+from navi.mcp_tools import parse_mcp_config
 
 from ..tools import ToolResult
 from .utils import _positive_int
@@ -29,7 +25,12 @@ _WEB_SEARCH_PROVIDER_SEARXNG = "searxng"
 _WEB_SEARCH_PROVIDER_EXA_MCP = "exa_mcp"
 
 
-async def _web_search(args: dict[str, Any], *, home: Path | None = None) -> ToolResult:
+async def _web_search(
+    args: dict[str, Any],
+    *,
+    home: Path | None = None,
+    config: NaviConfig | None = None,
+) -> ToolResult:
     query = str(args.get("query") or "").strip()
     if not query:
         return ToolResult(
@@ -44,16 +45,16 @@ async def _web_search(args: dict[str, Any], *, home: Path | None = None) -> Tool
         )
 
     limit = _positive_int(args.get("limit"), default=5, maximum=10)
-    env = load_runtime_env(home) if home is not None else dict(os.environ)
-    provider = str(env.get("NAVI_WEB_SEARCH_PROVIDER") or "exa_mcp").strip().lower()
+    config = config or (load_config(home) if home is not None else NaviConfig())
+    provider = config.search.provider
 
-    if provider in {_WEB_SEARCH_PROVIDER_SEARXNG, "searxng_json"}:
-        endpoint = _searxng_endpoint(env)
+    if provider == _WEB_SEARCH_PROVIDER_SEARXNG:
+        endpoint = config.search.searxng_url
         if not endpoint:
             return ToolResult(
                 tool="web.search",
                 ok=False,
-                error="NAVI_WEB_SEARCH_SEARXNG_URL is required",
+                error="search.searxng_url is required",
                 facts={
                     CAPABILITY_ERROR_REASON_KEY: "search_provider_config_error",
                     CAPABILITY_RETRYABLE_KEY: False,
@@ -65,18 +66,12 @@ async def _web_search(args: dict[str, Any], *, home: Path | None = None) -> Tool
             query,
             limit=limit,
             endpoint=endpoint,
-            categories=str(
-                args.get("categories") or env.get("NAVI_WEB_SEARCH_CATEGORIES") or ""
-            ).strip(),
-            language=str(
-                args.get("language") or env.get("NAVI_WEB_SEARCH_LANGUAGE") or ""
-            ).strip(),
-            time_range=str(
-                args.get("time_range") or env.get("NAVI_WEB_SEARCH_TIME_RANGE") or ""
-            ).strip(),
+            categories=str(args.get("categories") or config.search.categories).strip(),
+            language=str(args.get("language") or config.search.language).strip(),
+            time_range=str(args.get("time_range") or config.search.time_range).strip(),
         )
 
-    if provider not in {"exa", "exa_mcp", "mcp"}:
+    if provider != _WEB_SEARCH_PROVIDER_EXA_MCP:
         return ToolResult(
             tool="web.search",
             ok=False,
@@ -89,12 +84,41 @@ async def _web_search(args: dict[str, Any], *, home: Path | None = None) -> Tool
             },
         )
 
-    return await _exa_mcp_search(query, limit=limit, env=env)
+    report = parse_mcp_config(
+        config,
+        path=(home / "config.yaml") if home is not None else Path("config.yaml"),
+    )
+    if report.errors:
+        return _search_config_error(query, "; ".join(report.errors))
+    server = next(
+        (item for item in report.servers if item.name == config.search.mcp_server),
+        None,
+    )
+    if server is None:
+        return _search_config_error(
+            query,
+            f"search.mcp_server '{config.search.mcp_server}' is not an enabled MCP server",
+        )
+    if server.allowed_tools and "web_search_exa" not in server.allowed_tools:
+        return _search_config_error(
+            query,
+            f"mcp.servers.{config.search.mcp_server}.allowed_tools must include web_search_exa",
+        )
+    return await _exa_mcp_search(query, limit=limit, server=server)
 
 
-def _searxng_endpoint(env: dict[str, str] | None = None) -> str:
-    env = env or dict(os.environ)
-    return str(env.get("NAVI_WEB_SEARCH_SEARXNG_URL") or "").strip().rstrip("/")
+def _search_config_error(query: str, error: str) -> ToolResult:
+    return ToolResult(
+        tool="web.search",
+        ok=False,
+        error=error,
+        facts={
+            CAPABILITY_ERROR_REASON_KEY: "search_provider_config_error",
+            CAPABILITY_RETRYABLE_KEY: False,
+            "query": query,
+            "provider": _WEB_SEARCH_PROVIDER_EXA_MCP,
+        },
+    )
 
 
 def _searxng_search(
@@ -256,23 +280,8 @@ async def _exa_mcp_search(
     query: str,
     *,
     limit: int,
-    env: dict[str, str] | None = None,
+    server: MCPServerConfig,
 ) -> ToolResult:
-    env = env or dict(os.environ)
-    endpoint = str(
-        env.get("NAVI_WEB_SEARCH_EXA_MCP_URL") or DEFAULT_EXA_MCP_URL
-    ).strip()
-    api_key = str(env.get("NAVI_EXA_API_KEY") or env.get("EXA_API_KEY") or "")
-    headers = {"x-api-key": api_key} if api_key else {}
-    server = MCPServerConfig(
-        name="exa",
-        transport="streamable_http",
-        url=endpoint,
-        headers=headers,
-        timeout_seconds=30,
-        permission="network",
-        allowed_tools=("web_search_exa",),
-    )
     try:
         result = await MCPClient(server).call_tool(
             "web_search_exa",
@@ -285,7 +294,9 @@ async def _exa_mcp_search(
             ok=False,
             error=error,
             facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_timeout" if timed_out else "search_provider_error",
+                CAPABILITY_ERROR_REASON_KEY: "search_timeout"
+                if timed_out
+                else "search_provider_error",
                 CAPABILITY_RETRYABLE_KEY: timed_out,
                 "query": query,
                 "provider": _WEB_SEARCH_PROVIDER_EXA_MCP,

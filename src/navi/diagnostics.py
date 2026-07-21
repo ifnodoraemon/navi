@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +11,7 @@ import httpx
 
 from .auth import AuthInspector
 from .capabilities import build_capability_registry
-from .config import load_config, load_runtime_env, validate_config
+from .config import NaviConfig, load_config, validate_config
 from .connector_registry import ConnectorAdapter, load_connector_adapters
 from .provider import resolve_model_config
 from .provider_specs import get_provider_spec
@@ -51,7 +51,7 @@ def run_diagnostics(
     checks.extend(_connector_status_file_checks(home, connector_adapters))
     checks.extend(_connector_config_checks(home, connector_adapters))
     checks.extend(_api_config_checks(config))
-    checks.extend(_search_config_checks(home))
+    checks.extend(_search_config_checks(config))
     checks.extend(_mcp_config_checks(home))
     if include_connectivity:
         checks.extend(_api_connectivity_checks(config))
@@ -200,32 +200,24 @@ def _api_config_checks(config) -> list[DiagnosticCheck]:
     return checks
 
 
-def _search_config_checks(home: Path) -> list[DiagnosticCheck]:
-    from .core_tools.web_search import _searxng_endpoint
-    from .mcp_client import DEFAULT_EXA_MCP_URL
-
-    env = load_runtime_env(home)
-    provider = str(env.get("NAVI_WEB_SEARCH_PROVIDER") or "exa_mcp").strip().lower()
-    if provider in {"searxng", "searxng_json"} and not _searxng_endpoint(env):
+def _search_config_checks(config: NaviConfig) -> list[DiagnosticCheck]:
+    provider = config.search.provider
+    if provider == "searxng" and not config.search.searxng_url:
         return [
             DiagnosticCheck(
                 "search.config",
                 "error",
-                "SearXNG selected but NAVI_WEB_SEARCH_SEARXNG_URL is missing",
+                "SearXNG selected but search.searxng_url is missing",
             )
         ]
-    if provider not in {"searxng", "searxng_json", "exa", "exa_mcp", "mcp"}:
-        return [
-            DiagnosticCheck("search.config", "error", f"unsupported provider {provider}")
-        ]
-    if provider in {"searxng", "searxng_json"}:
-        detail = f"provider=searxng endpoint={_searxng_endpoint(env)}"
+    if provider not in {"searxng", "exa_mcp"}:
+        return [DiagnosticCheck("search.config", "error", f"unsupported provider {provider}")]
+    if provider == "searxng":
+        detail = f"provider=searxng endpoint={config.search.searxng_url}"
     else:
-        exa_url = str(env.get("NAVI_WEB_SEARCH_EXA_MCP_URL") or DEFAULT_EXA_MCP_URL)
-        detail = (
-            f"provider=exa_mcp endpoint={exa_url.split('?', 1)[0]} "
-            f"api_key_present={bool(env.get('NAVI_EXA_API_KEY') or env.get('EXA_API_KEY'))}"
-        )
+        server = config.mcp_servers.get(config.search.mcp_server) or {}
+        endpoint = str(server.get("url") or "").split("?", 1)[0]
+        detail = f"provider=exa_mcp server={config.search.mcp_server} endpoint={endpoint}"
     return [DiagnosticCheck("search.config", "ok", detail)]
 
 
@@ -235,14 +227,6 @@ def _mcp_config_checks(home: Path) -> list[DiagnosticCheck]:
     report = load_mcp_config(home)
     if report.errors:
         return [DiagnosticCheck("mcp.config", "error", "; ".join(report.errors))]
-    if not report.path.exists():
-        return [
-            DiagnosticCheck(
-                "mcp.config",
-                "ok",
-                f"built-in servers={len(report.servers)}; optional {report.path} not found",
-            )
-        ]
     return [
         DiagnosticCheck(
             "mcp.config",

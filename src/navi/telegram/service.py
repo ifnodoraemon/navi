@@ -43,7 +43,9 @@ class TelegramService:
 
     def _build_client(self):
         if not self.config.bot_token:
-            raise RuntimeError("Telegram is not configured. Set TELEGRAM_BOT_TOKEN first.")
+            raise RuntimeError(
+                "Telegram is not configured: connectors.telegram.bot_token is required"
+            )
         return TelegramClient(
             api_base_url=self.config.api_base_url, bot_token=self.config.bot_token
         )

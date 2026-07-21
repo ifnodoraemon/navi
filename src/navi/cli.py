@@ -17,7 +17,6 @@ from .capabilities import CapabilityContext, build_capability_registry
 from .config import load_config, write_default_config
 from .connector_registry import get_connector_adapter, load_connector_adapters
 from .diagnostics import run_diagnostics
-from .defaults import DEFAULT_API_HOST, DEFAULT_API_PORT
 from .daemon import SystemDaemon
 from .evals import (
     claw_results_to_json,
@@ -41,8 +40,10 @@ from .prompt_os import assemble_planner_system_prompt
 from .prompting import build_system_prompt_assembly
 from .provider import build_provider
 from .service import build_systemd_user_unit, install_systemd_user_unit
+from .safeguards import redact_secrets_deep
 from .trace import TraceStore
 from .tools import API_CONTEXT
+
 
 def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CONTEXT) -> dict:
     """Invoke a capability through the unified registry (same path the API
@@ -188,8 +189,8 @@ async def _run_chat_turn(
 
 @app.command()
 def api(
-    host: str = DEFAULT_API_HOST,
-    port: int = DEFAULT_API_PORT,
+    host: str | None = typer.Option(None, "--host"),
+    port: int | None = typer.Option(None, "--port"),
     with_background: bool = typer.Option(
         False,
         "--with-background",
@@ -204,6 +205,9 @@ def api(
     """Run the headless local API."""
     home = ensure_home()
     write_default_config(home)
+    config = load_config(home)
+    host = config.api.host if host is None else host
+    port = config.api.port if port is None else port
     typer.echo(f"Navi API: http://{host}:{port}")
     uvicorn.run(
         create_app(
@@ -214,6 +218,20 @@ def api(
         host=host,
         port=port,
     )
+
+
+@app.command("config")
+def config_show() -> None:
+    """Show the effective global configuration with secrets redacted."""
+    home = ensure_home()
+    write_default_config(home)
+    config = load_config(home)
+    payload = {
+        "path": str(home / "config.yaml"),
+        "bootstrap_environment": ["NAVI_HOME"],
+        "config": redact_secrets_deep(asdict(config)),
+    }
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 @app.command()

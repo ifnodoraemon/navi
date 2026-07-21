@@ -1,27 +1,29 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
+from navi.config import load_config
+from navi.defaults import (
+    DEFAULT_WEIXIN_BASE_URL,
+    DEFAULT_WEIXIN_CDN_BASE_URL,
+    DEFAULT_WEIXIN_DM_POLICY,
+    DEFAULT_WEIXIN_ENABLED,
+    DEFAULT_WEIXIN_GROUP_POLICY,
+)
 
-
-def _read_yaml(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Config root must be a mapping: {path}")
-    return data
-
-
-_DEFAULTS = _read_yaml(Path(__file__).with_name("specs") / "defaults.yaml")
-DEFAULT_WEIXIN_BASE_URL = str(_DEFAULTS["base_url"])
-DEFAULT_WEIXIN_CDN_BASE_URL = str(_DEFAULTS["cdn_base_url"])
-DEFAULT_WEIXIN_ENABLED = bool(_DEFAULTS["enabled"])
-DEFAULT_WEIXIN_DM_POLICY = str(_DEFAULTS["dm_policy"])
-DEFAULT_WEIXIN_GROUP_POLICY = str(_DEFAULTS["group_policy"])
+_FIELDS = {
+    "enabled",
+    "account_id",
+    "token",
+    "base_url",
+    "cdn_base_url",
+    "dm_policy",
+    "allowed_users",
+    "group_policy",
+    "group_allowed_users",
+    "home_channel",
+}
 
 
 @dataclass
@@ -39,48 +41,34 @@ class WeixinConfig:
 
 
 def load_weixin_config(home: Path) -> WeixinConfig:
-    raw = _read_yaml(home / "config.yaml").get("weixin") or {}
-    env_file = _load_env_file(home / "env")
-    env = {**env_file, **os.environ}
+    raw = load_config(home).connectors["weixin"]
+    unknown = sorted(set(raw) - _FIELDS)
+    if unknown:
+        raise ValueError(f"connectors.weixin has unsupported fields: {', '.join(unknown)}")
     return WeixinConfig(
-        enabled=str(
-            env.get("NAVI_WEIXIN_ENABLED", raw.get("enabled", DEFAULT_WEIXIN_ENABLED))
-        ).lower()
-        in {"1", "true", "yes", "on"},
-        account_id=str(env.get("WEIXIN_ACCOUNT_ID", raw.get("account_id", ""))),
-        token=str(env.get("WEIXIN_TOKEN", raw.get("token", ""))),
-        base_url=str(
-            env.get("WEIXIN_BASE_URL", raw.get("base_url", DEFAULT_WEIXIN_BASE_URL))
-        ).rstrip("/"),
-        cdn_base_url=str(
-            env.get("WEIXIN_CDN_BASE_URL", raw.get("cdn_base_url", DEFAULT_WEIXIN_CDN_BASE_URL))
-        ).rstrip("/"),
-        dm_policy=str(env.get("WEIXIN_DM_POLICY", raw.get("dm_policy", DEFAULT_WEIXIN_DM_POLICY))),
-        allowed_users=_split_csv(env.get("WEIXIN_ALLOWED_USERS"))
-        or list(raw.get("allowed_users", []) or []),
-        group_policy=str(
-            env.get("WEIXIN_GROUP_POLICY", raw.get("group_policy", DEFAULT_WEIXIN_GROUP_POLICY))
+        enabled=_bool(raw.get("enabled"), "connectors.weixin.enabled"),
+        account_id=str(raw.get("account_id") or ""),
+        token=str(raw.get("token") or ""),
+        base_url=str(raw.get("base_url") or "").rstrip("/"),
+        cdn_base_url=str(raw.get("cdn_base_url") or "").rstrip("/"),
+        dm_policy=str(raw.get("dm_policy") or ""),
+        allowed_users=_string_list(raw.get("allowed_users"), "connectors.weixin.allowed_users"),
+        group_policy=str(raw.get("group_policy") or ""),
+        group_allowed_users=_string_list(
+            raw.get("group_allowed_users"),
+            "connectors.weixin.group_allowed_users",
         ),
-        group_allowed_users=_split_csv(env.get("WEIXIN_GROUP_ALLOWED_USERS"))
-        or list(raw.get("group_allowed_users", []) or []),
-        home_channel=str(env.get("WEIXIN_HOME_CHANNEL", raw.get("home_channel", ""))),
+        home_channel=str(raw.get("home_channel") or ""),
     )
 
 
-def _split_csv(value: str | None) -> list[str]:
-    if not value:
-        return []
-    return [part.strip() for part in value.split(",") if part.strip()]
+def _bool(value: object, path: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{path} must be a boolean")
+    return value
 
 
-def _load_env_file(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        values[key.strip()] = value.strip().strip("\"'")
-    return values
+def _string_list(value: object, path: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{path} must be a list of strings")
+    return list(value)

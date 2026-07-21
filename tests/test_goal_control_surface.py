@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 import navi.api as api_module
 import navi.cli as cli_module
 from navi.api_paths import api_path
+from navi.config import load_config
 from navi.lifecycle import Resolution
 from navi.loop_contracts import LoopTerminalState
 from navi.provider import ChatMessage
@@ -67,7 +68,7 @@ class _PlanningProvider:
 
 def test_goal_api_exposes_open_state_and_cancel_controls(tmp_path):
     app = api_module.create_app(tmp_path)
-    api_key = (tmp_path / "api_key").read_text(encoding="utf-8").strip()
+    api_key = load_config(tmp_path).api.api_key
     headers = {"X-API-Key": api_key}
     client = TestClient(app)
 
@@ -154,7 +155,7 @@ def test_goal_api_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch):
         lambda home: AgentRuntime(home=home, provider=provider),
     )
     app = api_module.create_app(tmp_path)
-    api_key = (tmp_path / "api_key").read_text(encoding="utf-8").strip()
+    api_key = load_config(tmp_path).api.api_key
     headers = {"X-API-Key": api_key}
     client = TestClient(app)
 
@@ -203,7 +204,7 @@ def test_goal_api_resume_uses_runtime_state_graph(tmp_path, monkeypatch):
         lambda home: AgentRuntime(home=home, provider=provider),
     )
     app = api_module.create_app(tmp_path)
-    api_key = (tmp_path / "api_key").read_text(encoding="utf-8").strip()
+    api_key = load_config(tmp_path).api.api_key
     headers = {"X-API-Key": api_key}
     client = TestClient(app)
 

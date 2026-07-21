@@ -12,7 +12,6 @@ class ProviderSpec:
     kind: str
     default_model: str
     default_base_url: str
-    api_key_env: tuple[str, ...] = ()
     structured_output: str = "none"
 
 
@@ -22,7 +21,6 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = tuple(
         kind=str(item["kind"]),
         default_model=str(item["default_model"]),
         default_base_url=str(item["default_base_url"]),
-        api_key_env=tuple(item.get("api_key_env") or ()),
         structured_output=str(item.get("structured_output") or "none"),
     )
     for item in MODEL_PROVIDERS_SPEC
@@ -43,7 +41,6 @@ def list_provider_specs() -> list[dict[str, Any]]:
             "kind": spec.kind,
             "default_model": spec.default_model,
             "default_base_url": spec.default_base_url,
-            "api_key_env": list(spec.api_key_env),
             "structured_output": spec.structured_output,
         }
         for spec in PROVIDER_SPECS

@@ -118,7 +118,7 @@ class WeixinService:
                 self.store.save_account(account)
                 return (
                     f"Weixin connected: account_id={account.account_id}\n"
-                    f"Add WEIXIN_ACCOUNT_ID={account.account_id} to .navi/env or environment."
+                    f"Set connectors.weixin.account_id={account.account_id} in config.yaml."
                 )
             if asyncio.get_running_loop().time() >= deadline:
                 return f"Weixin setup timed out: qr_url={qr.qrcode_url}"

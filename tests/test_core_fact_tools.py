@@ -6,18 +6,22 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from navi.config import NaviConfig, SearchConfig
 from navi.core_tools import web_search as web_search_utils
 from navi.loop_contracts import LockMode
 from navi.memory import MemoryStore
 from navi.tools import build_tool_gateway
 from navi.workspaces import WorkspaceLockStore
 
+
 @pytest.mark.asyncio
 async def test_codebase_search_uses_runtime_rag_and_navi_home_cache(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "sample.py").write_text("def target_workflow():\n    return 'ok'\n", encoding="utf-8")
+    (workspace / "sample.py").write_text(
+        "def target_workflow():\n    return 'ok'\n", encoding="utf-8"
+    )
 
     gateway = build_tool_gateway(home, project_dir=workspace)
     result = await gateway.call("codebase.search", {"query": "target_workflow", "limit": 1})
@@ -222,8 +226,7 @@ async def test_python_ast_replace_symbol_replaces_one_function(tmp_path: Path) -
     workspace.mkdir()
     target = workspace / "app.py"
     target.write_text(
-        "def keep():\n    return 'keep'\n\n"
-        "def build():\n    return 'old'\n",
+        "def keep():\n    return 'keep'\n\ndef build():\n    return 'old'\n",
         encoding="utf-8",
     )
     gateway = build_tool_gateway(home, project_dir=workspace)
@@ -242,8 +245,7 @@ async def test_python_ast_replace_symbol_replaces_one_function(tmp_path: Path) -
     assert result.facts["state_transition"] == "ast_replaced"
     assert result.facts["symbol_name"] == "build"
     assert target.read_text(encoding="utf-8") == (
-        "def keep():\n    return 'keep'\n\n"
-        "def build():\n    return 'new'\n"
+        "def keep():\n    return 'keep'\n\ndef build():\n    return 'new'\n"
     )
 
 
@@ -315,9 +317,6 @@ async def test_python_ast_replace_symbol_can_patch_shadow_then_merge(
 @pytest.mark.asyncio
 async def test_web_search_uses_exa_mcp_default(monkeypatch) -> None:
     captured: dict[str, object] = {}
-    monkeypatch.delenv("NAVI_WEB_SEARCH_PROVIDER", raising=False)
-    monkeypatch.delenv("NAVI_WEB_SEARCH_SEARXNG_URL", raising=False)
-    monkeypatch.delenv("NAVI_WEB_SEARCH_SEARXNG_URLS", raising=False)
 
     async def fake_call(self, name, arguments):
         captured["endpoint"] = self.server.safe_endpoint
@@ -377,7 +376,6 @@ async def test_web_search_uses_exa_mcp_default(monkeypatch) -> None:
 async def test_web_search_bounds_exa_snippets_without_raw_response_duplication(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "exa")
     long_snippet = "fact " * 1000
 
     async def fake_call(self, name, arguments):
@@ -410,8 +408,9 @@ async def test_web_search_bounds_exa_snippets_without_raw_response_duplication(
 @pytest.mark.asyncio
 async def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> None:
     captured: dict[str, object] = {}
-    monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "searxng")
-    monkeypatch.setenv("NAVI_WEB_SEARCH_SEARXNG_URL", "https://search.example")
+    config = NaviConfig(
+        search=SearchConfig(provider="searxng", searxng_url="https://search.example")
+    )
 
     class FakeResponse:
         status = 200
@@ -450,7 +449,8 @@ async def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> 
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
 
     result = await web_search_utils._web_search(
-        {"query": "navi smoke", "limit": 3, "categories": "general", "language": "en"}
+        {"query": "navi smoke", "limit": 3, "categories": "general", "language": "en"},
+        config=config,
     )
 
     assert result.ok is True
@@ -485,8 +485,7 @@ async def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> 
 
 @pytest.mark.asyncio
 async def test_web_search_rejects_auto_provider_without_calling_any_backend(monkeypatch) -> None:
-    monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "auto")
-    monkeypatch.setenv("NAVI_WEB_SEARCH_SEARXNG_URL", "https://search.example")
+    config = NaviConfig(search=SearchConfig(provider="auto"))
 
     def fake_urlopen(request, timeout):
         del request, timeout
@@ -499,7 +498,7 @@ async def test_web_search_rejects_auto_provider_without_calling_any_backend(monk
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
     monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
 
-    result = await web_search_utils._web_search({"query": "navi smoke"})
+    result = await web_search_utils._web_search({"query": "navi smoke"}, config=config)
 
     assert result.ok is False
     assert result.error == "unsupported web search provider: auto"
@@ -509,8 +508,9 @@ async def test_web_search_rejects_auto_provider_without_calling_any_backend(monk
 
 @pytest.mark.asyncio
 async def test_web_search_explicit_searxng_failure_does_not_use_exa(monkeypatch) -> None:
-    monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "searxng")
-    monkeypatch.setenv("NAVI_WEB_SEARCH_SEARXNG_URL", "https://search.example")
+    config = NaviConfig(
+        search=SearchConfig(provider="searxng", searxng_url="https://search.example")
+    )
 
     def fake_urlopen(request, timeout):
         del request, timeout
@@ -523,7 +523,7 @@ async def test_web_search_explicit_searxng_failure_does_not_use_exa(monkeypatch)
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
     monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fail_call)
 
-    result = await web_search_utils._web_search({"query": "navi smoke"})
+    result = await web_search_utils._web_search({"query": "navi smoke"}, config=config)
 
     assert result.ok is False
     assert result.facts["provider"] == "searxng"
@@ -535,23 +535,19 @@ async def test_web_search_explicit_searxng_failure_does_not_use_exa(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_web_search_explicit_searxng_without_endpoint_is_config_error(monkeypatch) -> None:
-    monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "searxng")
-    monkeypatch.delenv("NAVI_WEB_SEARCH_SEARXNG_URL", raising=False)
-    monkeypatch.delenv("NAVI_WEB_SEARCH_SEARXNG_URLS", raising=False)
+    config = NaviConfig(search=SearchConfig(provider="searxng"))
 
-    result = await web_search_utils._web_search({"query": "navi smoke"})
+    result = await web_search_utils._web_search({"query": "navi smoke"}, config=config)
 
     assert result.ok is False
     assert result.facts["provider"] == "searxng"
     assert result.facts["error_reason"] == "search_provider_config_error"
     assert result.facts["retryable"] is False
-    assert "NAVI_WEB_SEARCH_SEARXNG_URL" in result.error
+    assert "search.searxng_url" in result.error
 
 
 @pytest.mark.asyncio
 async def test_web_search_exa_tool_error_is_not_retryable(monkeypatch) -> None:
-    monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "exa")
-
     async def fake_call(self, name, arguments):
         del self, name, arguments
         return {

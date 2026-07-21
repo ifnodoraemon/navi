@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from navi.mcp_tools import load_mcp_config
 from navi.mcp_client import MCPClient, MCPServerConfig
@@ -13,43 +13,59 @@ from navi.tools import build_tool_gateway
 
 def _write_mcp_config(home: Path, servers: dict) -> None:
     home.mkdir(parents=True, exist_ok=True)
-    (home / "mcp.json").write_text(
-        json.dumps({"mcpServers": servers}),
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"mcp": {"servers": servers}}, sort_keys=False),
         encoding="utf-8",
     )
 
 
-def test_mcp_config_supports_remote_and_stdio_without_embedded_credentials(
+def test_mcp_config_supports_remote_and_stdio_from_global_config(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
     _write_mcp_config(
         home,
         {
-            "exa-search": {
+            "exa_search": {
                 "url": "https://mcp.example.test/mcp?tools=search",
-                "headers": {"authorization": "${TEST_MCP_TOKEN}"},
+                "headers": {"authorization": "secret-value"},
                 "permission": "network",
                 "allowed_tools": ["search"],
             },
-            "local-files": {
+            "local_files": {
                 "command": "example-mcp-server",
                 "args": ["--stdio"],
             },
             "bad": {"url": "https://user:password@example.test/mcp"},
         },
     )
-    (home / "env").write_text("TEST_MCP_TOKEN=secret-value\n", encoding="utf-8")
+    report = load_mcp_config(home)
+
+    assert [server.name for server in report.servers] == ["exa_search", "local_files"]
+    assert report.servers[0].headers == {"authorization": "secret-value"}
+    assert report.servers[0].safe_endpoint == "https://mcp.example.test/mcp"
+    assert report.servers[0].permission == "network"
+    assert report.servers[1].transport == "stdio"
+    assert report.servers[1].permission == "write"
+    assert report.errors == ("mcp.servers.bad: MCP url must not contain credentials",)
+
+
+def test_mcp_config_rejects_environment_references(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_mcp_config(
+        home,
+        {
+            "remote": {
+                "url": "https://mcp.example.test/mcp",
+                "headers": {"authorization": "${TEST_MCP_TOKEN}"},
+            }
+        },
+    )
 
     report = load_mcp_config(home)
 
-    assert [server.name for server in report.servers] == ["exa", "exa_search", "local_files"]
-    assert report.servers[1].headers == {"authorization": "secret-value"}
-    assert report.servers[1].safe_endpoint == "https://mcp.example.test/mcp"
-    assert report.servers[1].permission == "network"
-    assert report.servers[2].transport == "stdio"
-    assert report.servers[2].permission == "write"
-    assert report.errors == ("mcpServers.bad: MCP url must not contain credentials",)
+    assert report.servers == ()
+    assert "environment references are unsupported" in report.errors[0]
 
 
 @pytest.mark.asyncio

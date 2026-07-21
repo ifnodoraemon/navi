@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import inspect
 from contextlib import contextmanager
@@ -100,8 +99,7 @@ class OpenAICompatibleProvider:
         temperature: float | None = None, max_tokens: int | None = None
     ) -> str:
         if not self.config.api_key:
-            env_hint = " or ".join(self.spec.api_key_env) or "NAVI_MODEL_API_KEY"
-            raise RuntimeError(f"{env_hint} is required for {self.config.provider} provider")
+            raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
@@ -136,8 +134,7 @@ class OpenAICompatibleProvider:
         import httpx_sse
 
         if not self.config.api_key:
-            env_hint = " or ".join(self.spec.api_key_env) or "NAVI_MODEL_API_KEY"
-            raise RuntimeError(f"{env_hint} is required for {self.config.provider} provider")
+            raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
         payload = {
             "model": self.config.model,
             "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
@@ -190,8 +187,7 @@ class AnthropicCompatibleProvider:
         temperature: float | None = None, max_tokens: int | None = None
     ) -> str:
         if not self.config.api_key:
-            env_hint = " or ".join(self.spec.api_key_env) or "ANTHROPIC_API_KEY"
-            raise RuntimeError(f"{env_hint} is required for {self.config.provider} provider")
+            raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
         payload = _anthropic_payload(self.config.model, messages, temperature=temperature, max_tokens=max_tokens)
         structured_tool = _anthropic_structured_tool(self.spec, output_schema)
         if structured_tool:
@@ -223,8 +219,7 @@ class AnthropicCompatibleProvider:
     ) -> AsyncGenerator[str, None]:
         """Yield content-delta tokens via Anthropic streaming."""
         if not self.config.api_key:
-            env_hint = " or ".join(self.spec.api_key_env) or "ANTHROPIC_API_KEY"
-            raise RuntimeError(f"{env_hint} is required for {self.config.provider} provider")
+            raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
         payload = _anthropic_payload(self.config.model, messages, temperature=temperature, max_tokens=max_tokens)
         payload["stream"] = True
         headers = {
@@ -453,12 +448,11 @@ def resolve_model_config(config: ModelConfig) -> ModelConfig:
     spec = _provider_spec(config)
     model = config.model or spec.default_model
     api_base_url = (config.api_base_url or spec.default_base_url).rstrip("/")
-    api_key = config.api_key or _first_env(spec.api_key_env)
     return ModelConfig(
         provider=spec.name,
         model=model,
         api_base_url=api_base_url,
-        api_key=api_key,
+        api_key=config.api_key,
         kind=spec.kind,
         timeout_seconds=config.timeout_seconds,
     )
@@ -475,17 +469,8 @@ def _provider_spec(config: ModelConfig) -> ProviderSpec:
             kind=config.kind,
             default_model=config.model,
             default_base_url=config.api_base_url,
-            api_key_env=("NAVI_MODEL_API_KEY",),
             structured_output=_default_structured_output(config.kind),
         )
-
-
-def _first_env(names: tuple[str, ...]) -> str:
-    for name in names:
-        value = os.environ.get(name)
-        if value:
-            return value
-    return ""
 
 
 def _estimate_prompt_tokens(messages: list[ChatMessage]) -> int:

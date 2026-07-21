@@ -1,25 +1,23 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
+from navi.config import load_config
+from navi.defaults import (
+    DEFAULT_TELEGRAM_API_BASE_URL,
+    DEFAULT_TELEGRAM_DM_POLICY,
+    DEFAULT_TELEGRAM_ENABLED,
+)
 
-
-def _read_yaml(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Config root must be a mapping: {path}")
-    return data
-
-
-_DEFAULTS = _read_yaml(Path(__file__).with_name("specs") / "defaults.yaml")
-DEFAULT_TELEGRAM_ENABLED = bool(_DEFAULTS["enabled"])
-DEFAULT_TELEGRAM_API_BASE_URL = str(_DEFAULTS["api_base_url"])
-DEFAULT_TELEGRAM_DM_POLICY = str(_DEFAULTS["dm_policy"])
+_FIELDS = {
+    "enabled",
+    "bot_token",
+    "api_base_url",
+    "dm_policy",
+    "allowed_users",
+    "home_chat_id",
+}
 
 
 @dataclass
@@ -33,41 +31,27 @@ class TelegramConfig:
 
 
 def load_telegram_config(home: Path) -> TelegramConfig:
-    raw = _read_yaml(home / "config.yaml").get("telegram") or {}
-    env_file = _load_env_file(home / "env")
-    env = {**env_file, **os.environ}
+    raw = load_config(home).connectors["telegram"]
+    unknown = sorted(set(raw) - _FIELDS)
+    if unknown:
+        raise ValueError(f"connectors.telegram has unsupported fields: {', '.join(unknown)}")
     return TelegramConfig(
-        enabled=str(
-            env.get("NAVI_TELEGRAM_ENABLED", raw.get("enabled", DEFAULT_TELEGRAM_ENABLED))
-        ).lower()
-        in {"1", "true", "yes", "on"},
-        bot_token=str(env.get("TELEGRAM_BOT_TOKEN", raw.get("bot_token", ""))),
-        api_base_url=str(
-            env.get("TELEGRAM_API_BASE_URL", raw.get("api_base_url", DEFAULT_TELEGRAM_API_BASE_URL))
-        ).rstrip("/"),
-        dm_policy=str(
-            env.get("TELEGRAM_DM_POLICY", raw.get("dm_policy", DEFAULT_TELEGRAM_DM_POLICY))
-        ),
-        allowed_users=_split_csv(env.get("TELEGRAM_ALLOWED_USERS"))
-        or list(raw.get("allowed_users", []) or []),
-        home_chat_id=str(env.get("TELEGRAM_HOME_CHAT_ID", raw.get("home_chat_id", ""))),
+        enabled=_bool(raw.get("enabled"), "connectors.telegram.enabled"),
+        bot_token=str(raw.get("bot_token") or ""),
+        api_base_url=str(raw.get("api_base_url") or "").rstrip("/"),
+        dm_policy=str(raw.get("dm_policy") or ""),
+        allowed_users=_string_list(raw.get("allowed_users"), "connectors.telegram.allowed_users"),
+        home_chat_id=str(raw.get("home_chat_id") or ""),
     )
 
 
-def _split_csv(value: str | None) -> list[str]:
-    if not value:
-        return []
-    return [part.strip() for part in value.split(",") if part.strip()]
+def _bool(value: object, path: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{path} must be a boolean")
+    return value
 
 
-def _load_env_file(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        values[key.strip()] = value.strip().strip("\"'")
-    return values
+def _string_list(value: object, path: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{path} must be a list of strings")
+    return list(value)

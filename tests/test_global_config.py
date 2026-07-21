@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import json
+import stat
+from pathlib import Path
+
+import pytest
+import yaml
+from typer.testing import CliRunner
+
+from navi.cli import app
+from navi.config import load_config, validate_config, write_default_config
+from navi.telegram.config import load_telegram_config
+
+
+def _write_config(home: Path, payload: dict) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def test_default_config_contains_every_global_section_and_is_private(tmp_path: Path) -> None:
+    path = write_default_config(tmp_path)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    assert list(raw) == [
+        "model",
+        "runtime",
+        "execution",
+        "api",
+        "search",
+        "connectors",
+        "mcp",
+    ]
+    assert raw["api"]["api_key"]
+    assert raw["mcp"]["servers"]["exa"]["url"] == "https://mcp.exa.ai/mcp"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_process_environment_does_not_override_global_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_config(
+        tmp_path,
+        {
+            "model": {
+                "provider": "openai-compatible",
+                "model": "configured-model",
+                "api_key": "configured-model-key",
+            },
+            "api": {"api_key": "configured-api-key"},
+            "connectors": {"telegram": {"enabled": True, "bot_token": "configured-bot-token"}},
+        },
+    )
+    monkeypatch.setenv("NAVI_MODEL_API_KEY", "environment-model-key")
+    monkeypatch.setenv("NAVI_API_KEY", "environment-api-key")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "environment-bot-token")
+
+    config = load_config(tmp_path)
+    telegram = load_telegram_config(tmp_path)
+
+    assert config.model.api_key == "configured-model-key"
+    assert config.api.api_key == "configured-api-key"
+    assert telegram.bot_token == "configured-bot-token"
+
+
+@pytest.mark.parametrize("legacy_name", ["env", "mcp.json", "api_key"])
+def test_legacy_config_files_are_rejected(tmp_path: Path, legacy_name: str) -> None:
+    write_default_config(tmp_path)
+    (tmp_path / legacy_name).write_text("legacy", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="legacy configuration files are unsupported"):
+        load_config(tmp_path)
+
+
+def test_invalid_search_reference_fails_validation(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        {
+            "model": {"api_key": "model-key"},
+            "api": {"api_key": "api-key"},
+            "search": {"provider": "exa_mcp", "mcp_server": "missing"},
+            "mcp": {"servers": {}},
+        },
+    )
+    config = load_config(tmp_path)
+
+    assert "search.mcp_server 'missing' is not defined in mcp.servers" in validate_config(
+        config, tmp_path
+    )
+
+
+def test_config_command_redacts_all_secrets(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        {
+            "model": {"api_key": "model-secret"},
+            "api": {"api_key": "api-secret"},
+            "connectors": {"telegram": {"bot_token": "telegram-secret"}},
+            "mcp": {
+                "servers": {
+                    "exa": {
+                        "url": "https://mcp.exa.ai/mcp",
+                        "headers": {"authorization": "mcp-secret"},
+                        "permission": "network",
+                        "allowed_tools": ["web_search_exa"],
+                    }
+                }
+            },
+        },
+    )
+
+    result = CliRunner().invoke(app, ["config"], env={"NAVI_HOME": str(tmp_path)})
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["path"] == str(tmp_path / "config.yaml")
+    assert payload["bootstrap_environment"] == ["NAVI_HOME"]
+    assert "model-secret" not in result.output
+    assert "api-secret" not in result.output
+    assert "telegram-secret" not in result.output
+    assert "mcp-secret" not in result.output
+    assert result.output.count("[REDACTED]") >= 4

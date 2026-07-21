@@ -3,7 +3,6 @@ import asyncio
 from contextlib import asynccontextmanager
 
 import json
-import os
 import secrets
 from dataclasses import asdict
 from pathlib import Path
@@ -135,6 +134,10 @@ def create_app(
     home = home or ensure_home()
     project_dir = Path.cwd().resolve()
     write_default_config(home)
+    config = load_config(home)
+    api_key = config.api.api_key
+    if not api_key:
+        raise ValueError("api.api_key is required")
     runtime = build_runtime(home)
     task_store = RunStore(home)
     goal_store = GoalStore(home)
@@ -198,16 +201,6 @@ def create_app(
             task.cancel()
 
     app = FastAPI(title="Navi", version=__version__, lifespan=lifespan)
-
-    api_key = os.environ.get("NAVI_API_KEY")
-    if not api_key:
-        api_key_path = home / "api_key"
-        if api_key_path.exists():
-            api_key = api_key_path.read_text(encoding="utf-8").strip()
-        else:
-            api_key = secrets.token_hex(32)
-            api_key_path.write_text(api_key, encoding="utf-8")
-            api_key_path.chmod(0o600)
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
