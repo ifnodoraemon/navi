@@ -30,7 +30,6 @@ class ModelConfig:
     api_key: str = ""
     kind: str = ""
     timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
-    fallbacks: list["ModelConfig"] = field(default_factory=list)
     routes: dict[str, "ModelConfig"] = field(default_factory=dict)
     role_params: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -196,6 +195,10 @@ def _provider_spec(provider: str, model_raw: dict, env: dict[str, str]) -> Provi
 
 
 def _model_config(model_raw: dict, *, env: dict[str, str], allow_env_override: bool) -> ModelConfig:
+    if "fallbacks" in model_raw:
+        raise ValueError(
+            "model.fallbacks is unsupported; configure exactly one provider per model route"
+        )
     provider = str(
         env.get("NAVI_MODEL_PROVIDER", model_raw.get("provider", DEFAULT_MODEL_PROVIDER))
         if allow_env_override
@@ -228,11 +231,6 @@ def _model_config(model_raw: dict, *, env: dict[str, str], allow_env_override: b
         else model_raw.get("timeout_seconds", DEFAULT_MODEL_TIMEOUT_SECONDS),
         default=DEFAULT_MODEL_TIMEOUT_SECONDS,
     )
-    fallbacks = [
-        _model_config(item, env=env, allow_env_override=False)
-        for item in model_raw.get("fallbacks") or []
-        if isinstance(item, dict)
-    ]
     routes = {
         str(name): _model_config(item, env=env, allow_env_override=False)
         for name, item in (model_raw.get("routes") or {}).items()
@@ -246,7 +244,6 @@ def _model_config(model_raw: dict, *, env: dict[str, str], allow_env_override: b
         api_key=str(model_raw.get("api_key") or _first_env(env, provider_spec.api_key_env)),
         kind=kind,
         timeout_seconds=timeout_seconds,
-        fallbacks=fallbacks,
         routes=routes,
         role_params=role_params,
     )
@@ -280,8 +277,6 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
             )
 
     validate_model(config.model, "model")
-    for idx, fb in enumerate(config.model.fallbacks):
-        validate_model(fb, f"model.fallbacks[{idx}]")
     for role, route in config.model.routes.items():
         validate_model(route, f"model.routes.{role}")
 

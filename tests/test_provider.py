@@ -2,13 +2,13 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from navi.config import ModelConfig
+from navi.config import ModelConfig, _model_config
 from navi.provider import (
     ChatMessage,
-    FallbackProvider,
     ModelPool,
     OpenAICompatibleProvider,
     ProviderUsage,
+    _complete_with_optional_schema,
     _messages_for_response_format,
     _validate_structured_output,
 )
@@ -21,6 +21,11 @@ def test_model_config_role_params_use_global_defaults_and_overrides():
 
     assert config.get_role_params("planner") == {"temperature": 0.0, "max_tokens": 1234}
     assert config.get_role_params("unknown") == {"temperature": 0.3, "max_tokens": 8192}
+
+
+def test_model_config_rejects_provider_fallbacks():
+    with pytest.raises(ValueError, match="model.fallbacks is unsupported"):
+        _model_config({"fallbacks": []}, env={}, allow_env_override=False)
 
 
 @patch("navi.provider.resolve_model_config")
@@ -109,29 +114,53 @@ class _UsageProvider:
         return "ok"
 
 
-class _EmptyFailureProvider:
+class _FailureProvider:
     last_usage: ProviderUsage | None = None
+
+    def __init__(self) -> None:
+        self.calls = 0
 
     async def complete(self, messages: list[ChatMessage], **kwargs) -> str:
         del messages, kwargs
-        raise RuntimeError()
+        self.calls += 1
+        raise RuntimeError("provider unavailable")
+
+
+class _SchemaFailureProvider:
+    last_usage: ProviderUsage | None = None
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, messages: list[ChatMessage], **kwargs) -> str:
+        del messages, kwargs
+        self.calls += 1
+        raise TypeError("output_schema is unsupported")
 
 
 @pytest.mark.asyncio
-async def test_fallback_provider_preserves_empty_exception_type(monkeypatch):
-    import asyncio
+async def test_model_pool_propagates_provider_failure_without_retry():
+    provider = _FailureProvider()
+    pool = ModelPool(default=provider)
 
-    async def no_sleep(delay: float) -> None:
-        del delay
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await pool.complete_for("planner", [ChatMessage("user", "hi")])
 
-    monkeypatch.setattr(asyncio, "sleep", no_sleep)
-    provider = FallbackProvider([_EmptyFailureProvider()])
+    assert provider.calls == 1
 
-    with pytest.raises(
-        RuntimeError,
-        match=r"all model providers failed: _EmptyFailureProvider: RuntimeError",
-    ):
-        await provider.complete([ChatMessage("user", "hi")])
+
+@pytest.mark.asyncio
+async def test_structured_call_propagates_schema_failure_without_retry():
+    provider = _SchemaFailureProvider()
+
+    with pytest.raises(TypeError, match="output_schema is unsupported"):
+        await _complete_with_optional_schema(
+            provider,
+            [ChatMessage("user", "hi")],
+            output_schema={"type": "object"},
+        )
+
+    assert provider.calls == 1
 
 
 @pytest.mark.asyncio

@@ -18,16 +18,6 @@ def _provider_config(home: Path) -> ToolResult:
                 "model": config.model.model,
                 "api_base_url": config.model.api_base_url,
                 "has_api_key": bool(config.model.api_key),
-                "fallbacks": [
-                    {
-                        "provider": item.provider,
-                        "kind": item.kind,
-                        "model": item.model,
-                        "api_base_url": item.api_base_url,
-                        "has_api_key": bool(item.api_key),
-                    }
-                    for item in config.model.fallbacks
-                ],
                 "routes": {
                     role: {
                         "provider": item.provider,
@@ -35,7 +25,6 @@ def _provider_config(home: Path) -> ToolResult:
                         "model": item.model,
                         "api_base_url": item.api_base_url,
                         "has_api_key": bool(item.api_key),
-                        "fallback_count": len(item.fallbacks),
                     }
                     for role, item in config.model.routes.items()
                 },
@@ -53,10 +42,8 @@ def _provider_config(home: Path) -> ToolResult:
                 "model": "",
                 "api_base_url": "",
                 "has_api_key": False,
-                "fallbacks": [],
                 "routes": {},
                 "validation_errors": [f"Failed to load config: {e}"],
             },
         )
-
 

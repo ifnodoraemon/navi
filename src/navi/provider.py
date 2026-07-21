@@ -11,8 +11,6 @@ from collections.abc import AsyncGenerator, Callable
 from typing import Any, Protocol
 
 import httpx
-import logging
-
 from .config import ModelConfig
 from .json_utils import json_schema_errors
 from .provider_specs import (
@@ -26,9 +24,6 @@ from .resource_gateway import (
     ResourceLimits,
     ResourceRequest,
 )
-
-logger = logging.getLogger(__name__)
-
 
 @dataclass(frozen=True)
 class ChatMessage:
@@ -72,10 +67,7 @@ class ChatProvider(Protocol):
 
     async def stream(
         self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
-    ) -> AsyncGenerator[str, None]:
-        """Yield content tokens.  Default: fall back to complete() and yield once."""
-        result = await self.complete(messages, temperature=temperature, max_tokens=max_tokens)
-        yield result
+    ) -> AsyncGenerator[str, None]: ...
 
 
 ProviderFactory = Callable[[ModelConfig, ProviderSpec], ChatProvider]
@@ -275,105 +267,6 @@ class AnthropicCompatibleProvider:
                             yield token
 
 
-class FallbackProvider:
-    def __init__(self, providers: list[ChatProvider]):
-        self.providers = providers
-        self.last_usage: ProviderUsage | None = None
-
-    async def complete(
-        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
-        temperature: float | None = None, max_tokens: int | None = None
-    ) -> str:
-        import asyncio
-        import httpx
-
-        errors: list[str] = []
-        max_retries = 3
-
-        for provider in self.providers:
-            for attempt in range(max_retries):
-                try:
-                    result = await _complete_with_optional_schema(
-                        provider, messages, output_schema=output_schema,
-                        temperature=temperature, max_tokens=max_tokens
-                    )
-                    self.last_usage = provider.last_usage
-                    return result
-                except Exception as exc:
-                    if isinstance(exc, httpx.HTTPStatusError):
-                        status = exc.response.status_code
-                        if status not in (429, 500, 502, 503, 504):
-                            errors.append(_provider_error(provider, exc))
-                            break  # don't retry on 400, 401, 403 etc.
-
-                    if attempt == max_retries - 1:
-                        errors.append(_provider_error(provider, exc))
-                    else:
-                        logger.warning(
-                            "Provider failed (attempt %s/%s): %s. Retrying...",
-                            attempt + 1,
-                            max_retries,
-                            _provider_error(provider, exc),
-                        )
-                        await asyncio.sleep(2**attempt)  # 1s, 2s
-
-        raise RuntimeError("all model providers failed: " + "; ".join(errors))
-
-    async def stream(
-        self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
-    ) -> AsyncGenerator[str, None]:
-        """Try each provider's stream(); commit after the first yielded token."""
-        import asyncio
-        import httpx
-
-        errors: list[str] = []
-        max_retries = 3
-
-        for provider in self.providers:
-            for attempt in range(max_retries):
-                try:
-                    first = True
-                    async for token in provider.stream(messages, temperature=temperature, max_tokens=max_tokens):
-                        first = False
-                        yield token
-                    # Successfully exhausted the generator — we're done.
-                    return
-                except Exception as exc:
-                    if not first:
-                        # Already started yielding to the caller — cannot
-                        # transparently switch providers, so propagate.
-                        raise
-
-                    if isinstance(exc, httpx.HTTPStatusError):
-                        status = exc.response.status_code
-                        if status not in (429, 500, 502, 503, 504):
-                            errors.append(_provider_error(provider, exc))
-                            break
-
-                    if attempt == max_retries - 1:
-                        errors.append(_provider_error(provider, exc))
-                    else:
-                        logger.warning(
-                            "Provider stream failed (attempt %s/%s): %s. Retrying...",
-                            attempt + 1,
-                            max_retries,
-                            _provider_error(provider, exc),
-                        )
-                        await asyncio.sleep(2**attempt)
-
-        raise RuntimeError("all model providers failed (stream): " + "; ".join(errors))
-
-
-def _provider_error(provider: ChatProvider, exc: Exception) -> str:
-    from .safeguards import redact_personal_data
-
-    detail = str(exc).strip()
-    exc_name = exc.__class__.__name__
-    if detail:
-        return redact_personal_data(f"{provider.__class__.__name__}: {exc_name}: {detail}")
-    return redact_personal_data(f"{provider.__class__.__name__}: {exc_name}")
-
-
 class ModelPool:
     def __init__(
         self,
@@ -512,7 +405,7 @@ class ModelPool:
             )
 
     def list_roles(self) -> list[str]:
-        # "default" is this pool's own routing fallback key; the agent role names
+        # "default" is this pool's declared default route; the agent role names
         # come from the declared AGENT_ROLES_SPEC rather than a hardcoded list.
         from .agent_roles import list_agent_role_names
 
@@ -533,30 +426,14 @@ PROVIDER_ADAPTERS: tuple[ProviderAdapter, ...] = (
 
 
 def build_provider(config: ModelConfig) -> ModelPool:
-    default = _build_fallback_chain(config)
     return ModelPool(
-        default=default,
+        default=_build_single_provider(config),
         routes={
-            role: _build_fallback_chain(route_config)
+            role: _build_single_provider(route_config)
             for role, route_config in config.routes.items()
         },
         config=config,
     )
-
-
-def _build_fallback_chain(config: ModelConfig) -> ChatProvider:
-    providers = [
-        _build_single_provider(config),
-        *[_build_single_provider(item) for item in config.fallbacks],
-    ]
-    # Always wrap in FallbackProvider, even for a single provider. The
-    # FallbackProvider retries on transport-layer failures
-    # (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError,
-    # httpx.ReadTimeout) up to 3x with exponential backoff. Without this
-    # wrapper, a single-provider config has no retry — a transient
-    # ``peer closed connection without sending complete message body``
-    # becomes a terminal planner failure.
-    return FallbackProvider(providers)
 
 
 def _build_single_provider(config: ModelConfig) -> ChatProvider:
@@ -652,15 +529,7 @@ async def _complete_with_optional_schema(
     accepted_kwargs = _accepted_complete_kwargs(provider, requested_kwargs)
     if output_schema is None:
         return await provider.complete(messages, **accepted_kwargs)
-    try:
-        result = await provider.complete(messages, **accepted_kwargs)
-    except TypeError as exc:
-        if "output_schema" not in str(exc) and "unexpected keyword" not in str(exc):
-            raise
-        fallback_kwargs = {
-            key: value for key, value in accepted_kwargs.items() if key != "output_schema"
-        }
-        result = await provider.complete(messages, **fallback_kwargs)
+    result = await provider.complete(messages, **accepted_kwargs)
     # Post-hoc schema validation (principle 14/16). For json_object-only
     # providers the schema is prompt-only, so the runtime validates the
     # returned JSON against the declared schema and rejects malformed output

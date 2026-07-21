@@ -52,7 +52,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "model": {"type": "string"},
                     "api_base_url": {"type": "string"},
                     "has_api_key": {"type": "boolean"},
-                    "fallbacks": _array_of_objects(),
                     "routes": {"type": "object"},
                     "validation_errors": {"type": "array", "items": {"type": "string"}},
                 }
