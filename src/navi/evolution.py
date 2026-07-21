@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Callable, List
 
 from .approval_contract import APPROVAL_DECISION_APPROVE, APPROVAL_STATUS_APPROVED
 from .db import connect
@@ -34,6 +34,9 @@ class EvolutionEvent:
     diff: str
     created_at: float
     rolled_back_at: float
+    event_kind: str
+    rollback_state: str
+    proposal_id: str
 
 
 @dataclass(frozen=True)
@@ -78,9 +81,7 @@ EVOLUTION_TARGETS: tuple[EvolutionTarget, ...] = (
     EvolutionTarget(
         "skill", "Promptable skill content, metadata, provenance, and verification state.", "skills"
     ),
-    EvolutionTarget(
-        "memory_item", "Typed durable memory item content and lifecycle state.", "memory"
-    ),
+    EvolutionTarget("memory_item", "Typed durable memory item content.", "memory"),
     EvolutionTarget(
         "eval_case",
         "Evaluation case consumed by the evolution experiment runner.",
@@ -89,7 +90,6 @@ EVOLUTION_TARGETS: tuple[EvolutionTarget, ...] = (
     EvolutionTarget(
         "graph_node", "Personal graph project, person, and task relationship facts.", "graph"
     ),
-    EvolutionTarget("run_execution", "Recorded run execution outcome state.", "execution"),
 )
 
 
@@ -139,9 +139,35 @@ class EvolutionLedger:
                     after TEXT NOT NULL,
                     diff TEXT NOT NULL,
                     created_at REAL NOT NULL,
-                    rolled_back_at REAL NOT NULL
+                    rolled_back_at REAL NOT NULL,
+                    event_kind TEXT NOT NULL DEFAULT 'audit',
+                    rollback_state TEXT NOT NULL DEFAULT '',
+                    proposal_id TEXT NOT NULL DEFAULT ''
                 )
                 """
+            )
+            event_columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(evolution_events)").fetchall()
+            }
+            if "event_kind" not in event_columns:
+                conn.execute(
+                    "ALTER TABLE evolution_events ADD COLUMN "
+                    "event_kind TEXT NOT NULL DEFAULT 'audit'"
+                )
+            if "rollback_state" not in event_columns:
+                conn.execute(
+                    "ALTER TABLE evolution_events ADD COLUMN "
+                    "rollback_state TEXT NOT NULL DEFAULT ''"
+                )
+            if "proposal_id" not in event_columns:
+                conn.execute(
+                    "ALTER TABLE evolution_events ADD COLUMN "
+                    "proposal_id TEXT NOT NULL DEFAULT ''"
+                )
+            conn.execute(
+                "UPDATE evolution_events SET rollback_state = before "
+                "WHERE rollback_state = ''"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_evolution_task ON evolution_events(run_id)"
@@ -183,6 +209,28 @@ class EvolutionLedger:
                     "ALTER TABLE evolution_proposals ADD COLUMN approval_id TEXT NOT NULL DEFAULT ''"
                 )
             conn.execute(
+                """
+                UPDATE evolution_events SET event_kind = 'apply'
+                WHERE id IN (
+                    SELECT applied_event_id FROM evolution_proposals
+                    WHERE applied_event_id != '' AND status IN ('applied', 'rolled_back')
+                )
+                """
+            )
+            conn.execute(
+                """
+                UPDATE evolution_events
+                SET proposal_id = (
+                    SELECT id FROM evolution_proposals
+                    WHERE evolution_proposals.applied_event_id = evolution_events.id
+                )
+                WHERE proposal_id = '' AND id IN (
+                    SELECT applied_event_id FROM evolution_proposals
+                    WHERE applied_event_id != ''
+                )
+                """
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_evolution_proposal_status ON evolution_proposals(status)"
             )
 
@@ -195,9 +243,14 @@ class EvolutionLedger:
         reason: str,
         before: str,
         after: str,
+        event_kind: str = "audit",
+        rollback_state: str | None = None,
+        proposal_id: str = "",
     ) -> EvolutionEvent:
         if not known_ledger_target_type(target_type):
             raise ValueError(f"unknown ledger target type: {target_type}")
+        if event_kind not in {"audit", "apply"}:
+            raise ValueError(f"unknown evolution event kind: {event_kind}")
         event = EvolutionEvent(
             id=uuid.uuid4().hex,
             run_id=run_id,
@@ -209,15 +262,19 @@ class EvolutionLedger:
             diff=self._diff(before, after),
             created_at=time.time(),
             rolled_back_at=0.0,
+            event_kind=event_kind,
+            rollback_state=before if rollback_state is None else rollback_state,
+            proposal_id=proposal_id,
         )
         with connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO evolution_events(
                     id, run_id, target_type, target_id, reason, before, after,
-                    diff, created_at, rolled_back_at
+                    diff, created_at, rolled_back_at, event_kind, rollback_state,
+                    proposal_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
@@ -230,6 +287,9 @@ class EvolutionLedger:
                     event.diff,
                     event.created_at,
                     event.rolled_back_at,
+                    event.event_kind,
+                    event.rollback_state,
+                    event.proposal_id,
                 ),
             )
         return event
@@ -239,7 +299,8 @@ class EvolutionLedger:
             rows = conn.execute(
                 """
                 SELECT id, run_id, target_type, target_id, reason, before, after,
-                       diff, created_at, rolled_back_at
+                       diff, created_at, rolled_back_at, event_kind, rollback_state,
+                       proposal_id
                 FROM evolution_events ORDER BY created_at DESC LIMIT ?
                 """,
                 (limit,),
@@ -251,7 +312,8 @@ class EvolutionLedger:
             rows = conn.execute(
                 """
                 SELECT id, run_id, target_type, target_id, reason, before, after,
-                       diff, created_at, rolled_back_at
+                       diff, created_at, rolled_back_at, event_kind, rollback_state,
+                       proposal_id
                 FROM evolution_events WHERE run_id = ? ORDER BY created_at ASC
                 """,
                 (run_id,),
@@ -263,20 +325,77 @@ class EvolutionLedger:
             row = conn.execute(
                 """
                 SELECT id, run_id, target_type, target_id, reason, before, after,
-                       diff, created_at, rolled_back_at
+                       diff, created_at, rolled_back_at, event_kind, rollback_state,
+                       proposal_id
                 FROM evolution_events WHERE id = ?
                 """,
                 (event_id,),
             ).fetchone()
         return EvolutionEvent(*row) if row else None
 
-    def mark_rolled_back(self, event_id: str) -> EvolutionEvent | None:
+    def rollback_applied_event(
+        self,
+        event_id: str,
+        rollback: Callable[[EvolutionEvent], None],
+    ) -> EvolutionEvent | None:
+        """Run one rollback while holding the evolution ledger write lock."""
         with connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE evolution_events SET rolled_back_at = ? WHERE id = ?",
-                (time.time(), event_id),
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT id, run_id, target_type, target_id, reason, before, after,
+                       diff, created_at, rolled_back_at, event_kind, rollback_state,
+                       proposal_id
+                FROM evolution_events WHERE id = ?
+                """,
+                (event_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            event = EvolutionEvent(*row)
+            if event.event_kind != "apply":
+                raise ValueError("only successful evolution apply events can be rolled back")
+            proposal = conn.execute(
+                """
+                SELECT id, status FROM evolution_proposals
+                WHERE applied_event_id = ? AND status IN ('applied', 'rolled_back')
+                """,
+                (event_id,),
+            ).fetchone()
+            if proposal is None:
+                raise ValueError("evolution event is not bound to a successful apply")
+            if event.rolled_back_at:
+                return event
+            rollback(event)
+            rolled_back_at = time.time()
+            cursor = conn.execute(
+                """
+                UPDATE evolution_events SET rolled_back_at = ?
+                WHERE id = ? AND rolled_back_at = 0
+                """,
+                (rolled_back_at, event_id),
             )
-        return self.get(event_id)
+            if cursor.rowcount != 1:
+                raise RuntimeError("evolution event changed concurrently during rollback")
+            conn.execute(
+                "UPDATE evolution_proposals SET status = 'rolled_back' WHERE id = ?",
+                (str(proposal[0]),),
+            )
+            return EvolutionEvent(
+                event.id,
+                event.run_id,
+                event.target_type,
+                event.target_id,
+                event.reason,
+                event.before,
+                event.after,
+                event.diff,
+                event.created_at,
+                rolled_back_at,
+                event.event_kind,
+                event.rollback_state,
+                event.proposal_id,
+            )
 
     def propose(
         self,
@@ -296,6 +415,11 @@ class EvolutionLedger:
     ) -> EvolutionProposal:
         if not known_evolution_target(target_type):
             raise ValueError(f"unknown evolution target type: {target_type}")
+        declared_eval_cases = [
+            str(item).strip() for item in (eval_cases or []) if str(item).strip()
+        ]
+        if not declared_eval_cases:
+            raise ValueError("proposal requires at least one declared eval case")
         for field_name, field_value in (
             ("target_id", target_id),
             ("reason", reason),
@@ -322,7 +446,7 @@ class EvolutionLedger:
             created_at=time.time(),
             applied_at=0.0,
             applied_event_id="",
-            eval_cases=json.dumps(eval_cases or [], sort_keys=True),
+            eval_cases=json.dumps(declared_eval_cases, sort_keys=True),
             evaluation_result="",
             evaluation_evidence="",
         )
@@ -457,6 +581,7 @@ class EvolutionLedger:
                 },
                 sort_keys=True,
             ),
+            proposal_id=proposal.id,
         )
         return self.get_proposal(proposal_id)
 
@@ -480,7 +605,12 @@ class EvolutionLedger:
             raise ValueError("approved evaluation approval must record resolved_by")
         return approval
 
-    def record_apply_event(self, proposal: EvolutionProposal) -> EvolutionEvent:
+    def record_apply_event(
+        self,
+        proposal: EvolutionProposal,
+        *,
+        rollback_state: str,
+    ) -> EvolutionEvent:
         """Record the evolution ledger event capturing before/after/diff.
 
         Called before the side effect lands so the attempted change is always
@@ -492,17 +622,73 @@ class EvolutionLedger:
             reason=proposal.reason,
             before=proposal.before,
             after=proposal.after,
+            event_kind="apply",
+            rollback_state=rollback_state,
+            proposal_id=proposal.id,
         )
+
+    def apply_event_for_proposal(self, proposal_id: str) -> EvolutionEvent | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT id, run_id, target_type, target_id, reason, before, after,
+                       diff, created_at, rolled_back_at, event_kind, rollback_state,
+                       proposal_id
+                FROM evolution_events
+                WHERE proposal_id = ? AND event_kind = 'apply'
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (proposal_id,),
+            ).fetchone()
+        return EvolutionEvent(*row) if row else None
+
+    def claim_for_apply(self, proposal_id: str) -> EvolutionProposal:
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                "UPDATE evolution_proposals SET status = 'applying' "
+                "WHERE id = ? AND status = 'proposed'",
+                (proposal_id,),
+            )
+            if cursor.rowcount != 1:
+                row = conn.execute(
+                    "SELECT status FROM evolution_proposals WHERE id = ?",
+                    (proposal_id,),
+                ).fetchone()
+                status = str(row[0]) if row else "missing"
+                raise ValueError(f"cannot claim proposal in status: {status}")
+        claimed = self.get_proposal(proposal_id)
+        if claimed is None:
+            raise RuntimeError("claimed evolution proposal disappeared")
+        return claimed
 
     def mark_applied(self, proposal_id: str, event_id: str) -> None:
         with connect(self.db_path) as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE evolution_proposals
                 SET status = ?, applied_at = ?, applied_event_id = ?
-                WHERE id = ?
+                WHERE id = ? AND status = 'applying'
                 """,
                 ("applied", time.time(), event_id, proposal_id),
+            )
+        if cursor.rowcount != 1:
+            raise RuntimeError("evolution proposal changed concurrently before commit")
+
+    def mark_apply_failed(self, proposal_id: str) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE evolution_proposals SET status = 'apply_failed' "
+                "WHERE id = ? AND status = 'applying'",
+                (proposal_id,),
+            )
+
+    def mark_apply_uncertain(self, proposal_id: str) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE evolution_proposals SET status = 'apply_uncertain' "
+                "WHERE id = ? AND status = 'applying'",
+                (proposal_id,),
             )
 
     @staticmethod
@@ -556,7 +742,17 @@ class EvolutionEngine:
         if proposal is None:
             return None
         if proposal.status == "applied" and proposal.applied_event_id:
-            return self.ledger.get(proposal.applied_event_id)
+            event = self.ledger.get(proposal.applied_event_id)
+            if event is not None:
+                from .evolution_experiments import EvolutionExperimentStore
+
+                EvolutionExperimentStore(self.home).start_activation(
+                    proposal_id=proposal.id,
+                    event_id=event.id,
+                )
+            return event
+        if proposal.status == "applying":
+            return self._reconcile_applying(proposal)
         # Reuse the ledger's single authority so engine-side effects and the DB
         # transition share one gate (no drift between the two apply paths).
         self.ledger.assert_proposal_applicable(proposal)
@@ -567,13 +763,28 @@ class EvolutionEngine:
                 proposal.id,
                 candidate=proposal.after,
             )
-
-        # Record the ledger event before performing the side effect, so the
-        # change is always auditable and rollbackable, even if the file write
-        # fails afterwards (principle 7/11).
-        event = self.ledger.record_apply_event(proposal)
+        adapter = self.targets.get(proposal.target_type)
+        current = adapter.read(proposal.target_id)
+        if current != proposal.before:
+            raise ValueError(
+                "evolution proposal baseline is stale; create a new proposal from current state"
+            )
+        adapter.validate(proposal.target_id, proposal.after)
+        proposal = self.ledger.claim_for_apply(proposal_id)
+        current = adapter.read(proposal.target_id)
+        if current != proposal.before:
+            self.ledger.mark_apply_failed(proposal_id)
+            raise ValueError(
+                "evolution proposal baseline changed while apply was being claimed"
+            )
+        snapshot = getattr(adapter, "snapshot", None)
+        rollback_state = snapshot(proposal.target_id) if callable(snapshot) else current
+        event = self.ledger.record_apply_event(
+            proposal,
+            rollback_state=rollback_state,
+        )
         try:
-            self._write_proposal_side_effect(proposal)
+            adapter.apply(proposal.target_id, proposal.after)
         except Exception as exc:
             # FP-5/L11: the side effect failed after the apply event was
             # recorded. Record a follow-up failure event so the ledger
@@ -587,7 +798,9 @@ class EvolutionEngine:
                 after=json.dumps(
                     {"error_type": type(exc).__name__, "error": str(exc)}, sort_keys=True
                 ),
+                proposal_id=proposal.id,
             )
+            self.ledger.mark_apply_failed(proposal_id)
             raise
         self.ledger.mark_applied(proposal_id, event.id)
         from .evolution_experiments import EvolutionExperimentStore
@@ -598,26 +811,41 @@ class EvolutionEngine:
         )
         return event
 
-    def _write_proposal_side_effect(self, proposal: EvolutionProposal) -> None:
+    def _reconcile_applying(self, proposal: EvolutionProposal) -> EvolutionEvent:
         adapter = self.targets.get(proposal.target_type)
         current = adapter.read(proposal.target_id)
-        if current != proposal.before:
-            raise ValueError(
-                "evolution proposal baseline is stale; create a new proposal from current state"
+        event = self.ledger.apply_event_for_proposal(proposal.id)
+        if current == proposal.after and event is not None:
+            self.ledger.mark_applied(proposal.id, event.id)
+            from .evolution_experiments import EvolutionExperimentStore
+
+            EvolutionExperimentStore(self.home).start_activation(
+                proposal_id=proposal.id,
+                event_id=event.id,
             )
-        adapter.validate(proposal.target_id, proposal.after)
-        adapter.apply(proposal.target_id, proposal.after)
+            return event
+        if current == proposal.before:
+            self.ledger.mark_apply_failed(proposal.id)
+            raise ValueError(
+                "interrupted evolution apply did not land; create a new proposal"
+            )
+        self.ledger.mark_apply_uncertain(proposal.id)
+        raise ValueError(
+            "interrupted evolution apply has an uncertain target state; manual review required"
+        )
 
     def rollback(self, event_id: str) -> EvolutionEvent | None:
-        event = self.ledger.get(event_id)
-        if event is None:
-            return event
-        if not event.rolled_back_at:
-            if event.target_type == "memory":
-                (self.home / "memory" / "MEMORY.md").write_text(event.before, encoding="utf-8")
+        def _restore(event: EvolutionEvent) -> None:
+            adapter = self.targets.get(event.target_type)
+            rollback_snapshot = getattr(adapter, "rollback_snapshot", None)
+            if callable(rollback_snapshot):
+                rollback_snapshot(event.target_id, event.rollback_state)
             else:
-                self.targets.get(event.target_type).rollback(event.target_id, event.before)
-            event = self.ledger.mark_rolled_back(event_id)
+                adapter.rollback(event.target_id, event.rollback_state)
+
+        event = self.ledger.rollback_applied_event(event_id, _restore)
+        if event is None:
+            return None
         from .evolution_experiments import EvolutionExperimentStore
 
         EvolutionExperimentStore(self.home).mark_rolled_back(

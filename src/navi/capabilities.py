@@ -257,7 +257,7 @@ class CapabilityRegistry:
                     "call_dependent_permission": True,
                 },
             )
-        approval_risk, approval_granted = self._approval_state_for_call(
+        approval_risk, approved_approval_id = self._approval_state_for_call(
             handler.spec,
             name,
             effective_required_permission,
@@ -268,7 +268,7 @@ class CapabilityRegistry:
             effective_required_permission,
             permission,
         )
-        if permission_underdeclared and approval_risk is None and not approval_granted:
+        if permission_underdeclared and approval_risk is None and not approved_approval_id:
             return _capability_error(
                 action=f"execute:{name}",
                 error_reason="permission_escalation",
@@ -300,6 +300,11 @@ class CapabilityRegistry:
                 call_args,
                 risk=approval_risk,
                 context=context,
+            )
+        if approved_approval_id:
+            context = replace(
+                context,
+                approved_approval_id=approved_approval_id,
             )
         execution_permission = effective_required_permission
         before_decisions = self.hooks.run(
@@ -441,18 +446,18 @@ class CapabilityRegistry:
         call_args: dict[str, Any],
         *,
         context: CapabilityContext,
-    ) -> tuple[CapabilityRiskAssessment | None, bool]:
+    ) -> tuple[CapabilityRiskAssessment | None, str]:
         if self.sensitive_approval_mode == "skip":
-            return None, False
+            return None, ""
         if spec.governance_exempt:
-            return None, False
+            return None, ""
         risk = assess_capability_call(
             spec,
             call_args,
             workspace=context.workspace or str(self.gateway.project_dir),
         )
         if not risk.confirmation_required and risk.risk_class != "high":
-            return None, False
+            return None, ""
         args_json = _canonical_args_json(call_args)
         runs = RunStore(self.home)
         if self.governed_run_id:
@@ -471,7 +476,7 @@ class CapabilityRegistry:
                 args_json=args_json,
                 context=context,
             )
-        return (None, True) if approved is not None else (risk, False)
+        return (None, approved.id) if approved is not None else (risk, "")
 
     def _suspend_turn_for_sensitive_approval(
         self,

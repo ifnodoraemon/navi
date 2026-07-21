@@ -204,6 +204,28 @@ class EvolutionApplyCapability(BaseCapability):
                 "evolution.apply requires proposal_id.", reason="schema_mismatch"
             )
         try:
+            ledger = EvolutionLedger(self.home)
+            proposal = ledger.get_proposal(proposal_id)
+            if proposal is None:
+                return _evolution_error(
+                    "proposal not found", reason="not_found", proposal_id=proposal_id
+                )
+            if proposal.status == "proposed" and context.approved_approval_id:
+                experiment = EvolutionExperimentStore(self.home).latest_experiment(
+                    proposal_id
+                )
+                if experiment is None or experiment.status != "passed":
+                    raise ValueError(
+                        "proposal requires a passed persisted experiment before approval apply"
+                    )
+                ledger.record_proposal_evaluation(
+                    proposal_id,
+                    "approved",
+                    evaluation_evidence=(
+                        f"experiment_id={experiment.id} status={experiment.status}"
+                    ),
+                    approval_id=context.approved_approval_id,
+                )
             event = EvolutionEngine(self.home).apply_proposal(proposal_id)
         except ValueError as exc:
             return _evolution_error(str(exc), reason="schema_mismatch", proposal_id=proposal_id)

@@ -107,12 +107,13 @@ class EvolutionProposalRequest(BaseModel):
     required_approval_level: str = "L2"
     evidence: str = ""
     source_run_id: str = ""
-    eval_cases: list[str] = Field(default_factory=list)
+    eval_cases: list[str]
 
 
 class EvolutionEvaluationRequest(BaseModel):
     evaluation_result: str
     evaluation_evidence: str = ""
+    approval_id: str = ""
 
 
 def _is_public_request(request: Request) -> bool:
@@ -652,6 +653,17 @@ def create_app(
         _raise_capability_error(result, not_found_status=404)
         return (result.facts or {}).get("event", {})
 
+    @app.post(api_path("evolution_proposal_experiment"))
+    async def experiment_evolution_proposal(proposal_id: str) -> dict:
+        result = await api_capabilities.invoke(
+            "evolution.experiment",
+            {"proposal_id": proposal_id},
+            permission="prepare",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result, not_found_status=404)
+        return (result.facts or {}).get("experiment", {})
+
     @app.post(api_path("evolution_proposal_evaluation"))
     async def record_evolution_proposal_evaluation(
         proposal_id: str, request: EvolutionEvaluationRequest
@@ -662,6 +674,7 @@ def create_app(
                 "proposal_id": proposal_id,
                 "evaluation_result": request.evaluation_result,
                 "evaluation_evidence": request.evaluation_evidence,
+                "approval_id": request.approval_id,
             },
             permission="write",
             context=_local_capability_context(home, project_dir=project_dir),
@@ -738,6 +751,12 @@ def _raise_capability_error(result: CapabilityResult, *, not_found_status: int =
     safe_detail = result.message or "capability invocation failed"
     if result.error_reason == "not_found":
         raise HTTPException(status_code=not_found_status, detail=safe_detail)
+    approval = (result.facts or {}).get("approval")
+    if isinstance(approval, dict) and approval.get("id"):
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "approval required", "approval": approval},
+        )
     raise HTTPException(status_code=409, detail=safe_detail)
 
 

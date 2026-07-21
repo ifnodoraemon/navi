@@ -191,7 +191,18 @@ class EvolutionExperimentStore:
                     "error": str(exc),
                 }
             ]
-        return [_evaluate_assertion(case_id, assertion, candidate) for assertion in assertions]
+        return [
+            {
+                "check": "eval_case_fingerprint",
+                "case_id": case_id,
+                "fingerprint": _fingerprint(raw),
+                "passed": True,
+            },
+            *[
+                _evaluate_assertion(case_id, assertion, candidate)
+                for assertion in assertions
+            ],
+        ]
 
     def latest_experiment(self, proposal_id: str) -> EvolutionExperiment | None:
         with connect(self.db_path) as conn:
@@ -213,6 +224,19 @@ class EvolutionExperimentStore:
             raise ValueError("proposal requires a passed persisted experiment before apply")
         if experiment.candidate_fingerprint != _fingerprint(candidate):
             raise ValueError("proposal candidate changed after its experiment")
+        eval_cases = _json_list(experiment.eval_cases_json)
+        checks = _json_objects(experiment.checks_json)
+        fingerprints = {
+            str(check.get("case_id") or ""): str(check.get("fingerprint") or "")
+            for check in checks
+            if check.get("check") == "eval_case_fingerprint"
+        }
+        for case_id in eval_cases:
+            raw = self.targets.get("eval_case").read(case_id)
+            if not raw or fingerprints.get(case_id) != _fingerprint(raw):
+                raise ValueError(
+                    f"evaluation case changed after experiment: {case_id}"
+                )
 
     def start_activation(
         self,
@@ -256,27 +280,42 @@ class EvolutionExperimentStore:
         errors: int,
         evidence: dict[str, Any] | None = None,
     ) -> EvolutionActivation:
-        activation = self.activation_for_event(event_id)
-        if activation is None:
-            raise KeyError("evolution activation not found")
-        if activation.status in {"rolled_back", "superseded"}:
-            return activation
-        success_count = activation.success_count + max(0, int(successes))
-        error_count = activation.error_count + max(0, int(errors))
-        observations = activation.observation_count + 1
-        total = success_count + error_count
-        error_rate = error_count / total if total else 0.0
-        status = "observing"
-        rollback_event_id = ""
-        if observations >= activation.min_observations:
-            status = "regressed" if error_rate > activation.max_error_rate else "healthy"
-        now = time.time()
         with connect(self.db_path) as conn:
-            conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT id, proposal_id, event_id, status, success_count, error_count,
+                       observation_count, min_observations, max_error_rate,
+                       latest_evidence_json, rollback_event_id, created_at, updated_at
+                FROM evolution_activations WHERE event_id = ?
+                """,
+                (event_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("evolution activation not found")
+            activation = EvolutionActivation(*row)
+            if activation.status != "observing":
+                needs_rollback = activation.status == "regressed"
+            else:
+                success_count = activation.success_count + max(0, int(successes))
+                error_count = activation.error_count + max(0, int(errors))
+                observations = activation.observation_count + 1
+                total = success_count + error_count
+                error_rate = error_count / total if total else 0.0
+                status = "observing"
+                if observations >= activation.min_observations:
+                    status = (
+                        "regressed"
+                        if error_rate > activation.max_error_rate
+                        else "healthy"
+                    )
+                now = time.time()
+                cursor = conn.execute(
                 """
                 UPDATE evolution_activations
                 SET status = ?, success_count = ?, error_count = ?, observation_count = ?,
-                    latest_evidence_json = ?, updated_at = ? WHERE id = ?
+                    latest_evidence_json = ?, updated_at = ?
+                WHERE id = ? AND status = 'observing'
                 """,
                 (
                     status,
@@ -292,7 +331,10 @@ class EvolutionExperimentStore:
                     activation.id,
                 ),
             )
-        if status == "regressed":
+                if cursor.rowcount != 1:
+                    raise RuntimeError("evolution activation changed concurrently")
+                needs_rollback = status == "regressed"
+        if needs_rollback:
             from .evolution import EvolutionEngine
 
             rolled_back = EvolutionEngine(self.home).rollback(event_id)
@@ -302,7 +344,7 @@ class EvolutionExperimentStore:
                     """
                     UPDATE evolution_activations
                     SET status = 'rolled_back', rollback_event_id = ?, updated_at = ?
-                    WHERE id = ?
+                    WHERE id = ? AND status = 'regressed'
                     """,
                     (rollback_event_id, time.time(), activation.id),
                 )
@@ -406,6 +448,16 @@ def _json_list(value: str) -> list[str]:
     except json.JSONDecodeError:
         return []
     return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+
+def _json_objects(value: str) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
 
 
 def _fingerprint(value: str) -> str:

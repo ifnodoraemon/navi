@@ -29,7 +29,7 @@ from .evals import (
     run_connector_journey_eval_dataset,
     run_daily_journey_eval_dataset,
 )
-from .evolution import EvolutionEngine, EvolutionLedger, list_evolution_targets
+from .evolution import EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
 from .graph import GraphStore
 from .hooks import HookRegistry
@@ -77,6 +77,12 @@ def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CO
         )
     )
     if not result.ok:
+        approval = (result.facts or {}).get("approval")
+        if isinstance(approval, dict) and approval.get("id"):
+            raise typer.BadParameter(
+                "approval required: "
+                f"approval_id={approval['id']} code={approval.get('code', '')}"
+            )
         raise typer.BadParameter(result.message or "capability failed")
     return result.facts or {}
 
@@ -1001,14 +1007,16 @@ def evolution_propose(
 
 @evolution_app.command("apply-proposal")
 def evolution_apply_proposal(proposal_id: str) -> None:
-    """Apply a proposal by recording it in the evolution ledger."""
-    try:
-        event = EvolutionEngine(ensure_home()).apply_proposal(proposal_id)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    if event is None:
-        raise typer.BadParameter("proposal not found")
-    typer.echo(event.id)
+    """Apply an evaluated proposal through the governed capability boundary."""
+    facts = _invoke_capability("evolution.apply", {"proposal_id": proposal_id})
+    typer.echo(str(facts.get("event_id") or ""))
+
+
+@evolution_app.command("experiment")
+def evolution_experiment(proposal_id: str) -> None:
+    """Run and persist the proposal's declared evaluation cases."""
+    facts = _invoke_capability("evolution.experiment", {"proposal_id": proposal_id})
+    typer.echo(json.dumps(facts.get("experiment") or {}, ensure_ascii=False, sort_keys=True))
 
 
 @evolution_app.command("record-evaluation")
@@ -1019,15 +1027,16 @@ def evolution_record_evaluation(
     approval_id: str = "",
 ) -> None:
     """Attach post-apply evaluation evidence to an evolution proposal."""
-    proposal = EvolutionLedger(ensure_home()).record_proposal_evaluation(
-        proposal_id,
-        evaluation_result,
-        evaluation_evidence=evaluation_evidence,
-        approval_id=approval_id,
+    facts = _invoke_capability(
+        "evolution.record_evaluation",
+        {
+            "proposal_id": proposal_id,
+            "evaluation_result": evaluation_result,
+            "evaluation_evidence": evaluation_evidence,
+            "approval_id": approval_id,
+        },
     )
-    if proposal is None:
-        raise typer.BadParameter("proposal not found")
-    typer.echo(proposal.id)
+    typer.echo(str(facts.get("proposal_id") or ""))
 
 
 @evolution_app.command("show")
@@ -1042,10 +1051,9 @@ def evolution_show(event_id: str) -> None:
 @evolution_app.command("rollback")
 def evolution_rollback(event_id: str) -> None:
     """Rollback a reversible evolution event."""
-    event = EvolutionEngine(ensure_home()).rollback(event_id)
-    if event is None:
-        raise typer.BadParameter("event not found")
-    typer.echo(f"rolled_back_at={event.rolled_back_at}")
+    facts = _invoke_capability("evolution.rollback", {"event_id": event_id})
+    event = facts.get("event") or {}
+    typer.echo(f"rolled_back_at={event.get('rolled_back_at', 0)}")
 
 
 @service_app.command("unit")

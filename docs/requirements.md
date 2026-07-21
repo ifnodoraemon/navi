@@ -208,9 +208,10 @@ connector receipt.
 
 Evolution proposals are allowed only for targets with a runtime Target Adapter.
 Candidate evaluation cases, fingerprints, checks, approval evidence, applied
-events, activation observations, and rollback facts are durable. A proposal
-with declared eval cases cannot apply unless its latest candidate experiment
-passed. Activation regression beyond its approved threshold triggers rollback.
+events, activation observations, and rollback facts are durable. Every proposal
+declares evaluation cases and cannot apply unless its latest candidate experiment
+passed. Human approval is bound to the exact apply arguments. Activation
+regression beyond its approved threshold triggers rollback.
 
 Metrics and SLOs are projections of durable facts, not model judgments. At
 minimum they cover lifecycle orphans/sagas, execution leases, uncertain effects,

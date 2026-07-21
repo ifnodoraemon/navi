@@ -89,6 +89,7 @@ class CapabilityContext:
     runtime_facts: Mapping[str, Any] | None = None
     execution_context: str = "turn"
     effect_idempotency_key: str = ""
+    approved_approval_id: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(

@@ -8,7 +8,7 @@ import pytest
 
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.connector_runtime import ConnectorMessage, ConnectorIngressRuntime
-from navi.evolution import EvolutionEngine, EvolutionLedger
+from navi.evolution import EvolutionLedger
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
@@ -29,68 +29,19 @@ def test_evolution_ledger_uses_latest_run_id_schema(tmp_path):
     assert "task_id" not in columns
 
 
-def test_run_execution_rollback_restores_lifecycle_state(tmp_path):
-    runs = RunStore(tmp_path)
-    run = runs.create(
-        "rollback lifecycle test",
-        workspace=str(tmp_path),
-        phase=Phase.RUNNING,
-        governance=Governance.NONE,
-        acceptance=Acceptance.NONE,
-        resolution=Resolution.NONE,
-    )
-    before = {
-        "phase": Phase.PAUSED,
-        "governance": Governance.AWAITING_APPROVAL,
-        "acceptance": Acceptance.NONE,
-        "resolution": Resolution.BLOCKED,
-        "result_summary": "approval_requested",
-        "error": "",
-    }
-    event = EvolutionLedger(tmp_path).record(
-        run_id=run.id,
-        target_type="run_execution",
-        target_id=run.id,
-        reason="test rollback",
-        before=json.dumps(before, sort_keys=True),
-        after=json.dumps({"phase": Phase.ENDED, "resolution": Resolution.SUCCESS}),
-    )
-
-    updated = runs.update_run(
-        run.id,
-        phase=Phase.ENDED,
-        governance=Governance.NONE,
-        acceptance=Acceptance.ACCEPTED,
-        resolution=Resolution.SUCCESS,
-        result_summary="done",
-    )
-    assert updated is not None
-
-    EvolutionEngine(tmp_path).rollback(event.id)
-
-    restored = runs.get(run.id)
-    assert restored is not None
-    assert restored.phase == Phase.PAUSED
-    assert restored.governance == Governance.AWAITING_APPROVAL
-    assert restored.acceptance == Acceptance.NONE
-    assert restored.resolution == Resolution.BLOCKED
-    assert restored.result_summary == "approval_requested"
-
-
-def test_run_execution_rollback_rejects_legacy_status_shape(tmp_path):
-    runs = RunStore(tmp_path)
-    run = runs.create("legacy rollback shape", workspace=str(tmp_path))
-    event = EvolutionLedger(tmp_path).record(
-        run_id=run.id,
-        target_type="run_execution",
-        target_id=run.id,
-        reason="legacy rollback",
-        before=json.dumps({"status": "paused"}, sort_keys=True),
-        after=json.dumps({"phase": Phase.ENDED, "resolution": Resolution.SUCCESS}),
-    )
-
-    with pytest.raises(ValueError, match="missing lifecycle fields"):
-        EvolutionEngine(tmp_path).rollback(event.id)
+def test_run_execution_is_not_an_evolution_target(tmp_path):
+    with pytest.raises(ValueError, match="unknown evolution target type"):
+        EvolutionLedger(tmp_path).propose(
+            target_type="run_execution",
+            target_id="run-1",
+            reason="rewrite execution result",
+            expected_benefit="none",
+            risk="authority expansion",
+            before="{}",
+            after="{}",
+            rollback_plan="not applicable",
+            eval_cases=["authority-eval"],
+        )
 
 
 def test_provider_rejects_structured_json_hidden_in_reasoning_content():

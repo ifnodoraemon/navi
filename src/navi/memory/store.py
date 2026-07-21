@@ -617,10 +617,9 @@ class MemoryStore:
     def reduce_confidence(self, item_id: str, *, delta: float = 0.1) -> None:
         """Reduce the confidence of a memory item by ``delta``.
 
-        Used by :class:`EvolutionEngine.rollback` to lower the trust level of
-        a memory item whose originating evolution was rejected.  The write is
-        routed through the ``before_memory_write`` hook so policy can observe
-        or block it (principle 9/10)."""
+        The write is routed through the ``before_memory_write`` hook so policy
+        can observe or block it (principle 9/10). Evolution rollback does not
+        call this method because rollback must restore the exact prior record."""
         current = self.get_item(item_id)
         if current is None:
             return

@@ -8,7 +8,6 @@ from typing import Any, Protocol
 from .graph import GraphStore
 from .memory import MemoryStore
 from .prompting import PromptLayerStore
-from .runs import RunStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +38,6 @@ class EvolutionTargetAdapterRegistry:
             _MemoryItemAdapter(home),
             _EvalCaseAdapter(home),
             _GraphNodeAdapter(home),
-            _RunExecutionAdapter(home),
         )
         self._adapters = {
             adapter.descriptor.target_type: adapter for adapter in adapters
@@ -79,6 +77,32 @@ class _PromptLayerAdapter:
     def apply(self, target_id: str, candidate: str) -> None:
         self.validate(target_id, candidate)
         self.store.write_override(target_id, candidate)
+
+    def snapshot(self, target_id: str) -> str:
+        path = self.store.override_path(target_id)
+        return json.dumps(
+            {
+                "format": "prompt_layer_snapshot_v1",
+                "override_exists": path.exists(),
+                "override_content": path.read_text(encoding="utf-8")
+                if path.exists()
+                else "",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def rollback_snapshot(self, target_id: str, snapshot: str) -> None:
+        data = _json_object(snapshot, "prompt_layer snapshot")
+        if data.get("format") != "prompt_layer_snapshot_v1":
+            raise ValueError("prompt_layer rollback snapshot has an unknown format")
+        if bool(data.get("override_exists")):
+            self.store.write_override(
+                target_id,
+                str(data.get("override_content") or ""),
+            )
+        else:
+            self.store.delete_override(target_id)
 
     def rollback(self, target_id: str, before: str) -> None:
         if before:
@@ -142,12 +166,31 @@ class _MemoryItemAdapter:
 
     def validate(self, target_id: str, candidate: str) -> dict[str, Any]:
         data = _json_object(candidate, "memory_item")
+        current = self.store.get_item(target_id)
+        if current is None:
+            raise ValueError("memory_item target must already exist")
         if str(data.get("id") or "") != target_id:
             raise ValueError("memory_item candidate id must match target_id")
         required = {"type", "status", "scope", "content", "source"}
         missing = sorted(key for key in required if not data.get(key))
         if missing:
             raise ValueError(f"memory_item candidate missing fields: {', '.join(missing)}")
+        immutable = (
+            "id",
+            "type",
+            "status",
+            "scope",
+            "source",
+            "created_at",
+            "provenance",
+        )
+        current_data = current.__dict__
+        changed = [key for key in immutable if data.get(key) != current_data.get(key)]
+        if changed:
+            raise ValueError(
+                "memory_item evolution cannot change authority or lifecycle fields: "
+                + ", ".join(changed)
+            )
         return {"loaded_by": "MemoryStore", "memory_type": str(data["type"])}
 
     def apply(self, target_id: str, candidate: str) -> None:
@@ -157,7 +200,6 @@ class _MemoryItemAdapter:
     def rollback(self, target_id: str, before: str) -> None:
         if before:
             self.store.restore_item(_json_object(before, "memory_item"))
-            self.store.reduce_confidence(target_id, delta=0.2)
         else:
             self.store.delete_item(target_id)
 
@@ -232,63 +274,6 @@ class _GraphNodeAdapter:
             self.store.replace_data(target_id, _json_object(before, "graph_node"))
         else:
             self.store.delete(target_id)
-
-
-class _RunExecutionAdapter:
-    descriptor = EvolutionTargetDescriptor(
-        "run_execution",
-        "Existing run lifecycle fields consumed by the control plane.",
-        "execution",
-    )
-
-    def __init__(self, home: Path):
-        self.store = RunStore(home)
-
-    def read(self, target_id: str) -> str:
-        run = self.store.get(target_id)
-        if run is None:
-            return ""
-        data = {
-            key: getattr(run, key)
-            for key in (
-                "phase",
-                "governance",
-                "acceptance",
-                "resolution",
-                "result_summary",
-                "error",
-            )
-        }
-        return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
-    def validate(self, target_id: str, candidate: str) -> dict[str, Any]:
-        if self.store.get(target_id) is None:
-            raise ValueError("run_execution target must already exist")
-        data = _json_object(candidate, "run_execution")
-        required = ("phase", "governance", "acceptance", "resolution")
-        missing = [key for key in required if not data.get(key)]
-        if missing:
-            raise ValueError(
-                "run_execution candidate missing lifecycle fields: " + ", ".join(missing)
-            )
-        return {"loaded_by": "RunStore", "lifecycle_fields": list(required)}
-
-    def apply(self, target_id: str, candidate: str) -> None:
-        self.validate(target_id, candidate)
-        data = _json_object(candidate, "run_execution")
-        self.store.update_run(
-            target_id,
-            phase=data["phase"],
-            governance=data["governance"],
-            acceptance=data["acceptance"],
-            resolution=data["resolution"],
-            result_summary=str(data.get("result_summary") or ""),
-            error=str(data.get("error") or ""),
-        )
-
-    def rollback(self, target_id: str, before: str) -> None:
-        if before:
-            self.apply(target_id, before)
 
 
 def _safe_name(value: str) -> str:

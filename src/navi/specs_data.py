@@ -87,6 +87,7 @@ API_PATHS_SPEC: Any = {
     "evolution_targets": "/v1/evolution-targets",
     "evolution_proposals": "/v1/evolution-proposals",
     "evolution_proposal_apply": "/v1/evolution-proposals/{proposal_id}/apply",
+    "evolution_proposal_experiment": "/v1/evolution-proposals/{proposal_id}/experiment",
     "evolution_proposal_evaluation": "/v1/evolution-proposals/{proposal_id}/evaluation",
     "connector_status": "/v1/connectors/{connector_name}/status",
 }

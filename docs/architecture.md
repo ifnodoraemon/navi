@@ -150,10 +150,11 @@ retention removes expired transient detail only after consolidation while
 preserving terminal summaries.
 
 `EvolutionTargetAdapterRegistry` is the authority for evolvable target types.
-Prompt layers, skills, memory items, eval cases, graph nodes, and run lifecycle
-records have real readers and writers. Inert spec-file targets are not declared.
-`EvolutionExperimentStore` persists candidate checks and activation windows;
-regression observations invoke the recorded rollback through the same adapter.
+Prompt layers, skills, memory items, eval cases, and graph nodes have real readers
+and writers. Run lifecycle records and inert spec files are not evolution targets.
+`EvolutionExperimentStore` persists candidate checks, eval-case fingerprints, and
+activation windows. Only successful apply events are reversible; rollback restores
+the exact pre-apply snapshot through the same adapter.
 
 `MetricsProjector` reads existing stores rather than maintaining a second source
 of truth. Its snapshots feed `system.metrics`, `/v1/metrics`, `navi metrics`,

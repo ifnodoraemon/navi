@@ -46,6 +46,7 @@ def test_h4_l0_proposal_still_requires_evaluation(tmp_path):
         rollback_plan="revert file",
         required_approval_level="L0",
         source_run_id="run-1",
+        eval_cases=["routing-safety"],
     )
     # Without an approved evaluation, apply must be refused.
     with pytest.raises(ValueError, match="evaluation_result='approved'"):

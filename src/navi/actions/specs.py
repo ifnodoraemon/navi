@@ -969,9 +969,13 @@ ACTION_SPECS = [
                 "required_approval_level": {"type": "string"},
                 "evidence": {"type": "string"},
                 "source_run_id": {"type": "string"},
-                "eval_cases": {"type": "array", "items": {"type": "string"}},
+                "eval_cases": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
             },
-            "required": ["target_type", "target_id", "reason"],
+            "required": ["target_type", "target_id", "reason", "eval_cases"],
         },
         output_schema={
             "type": "object",
@@ -1114,7 +1118,6 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        governance_exempt=True,
     ),
     ToolSpec(
         name="evolution.rollback",
@@ -1140,6 +1143,5 @@ ACTION_SPECS = [
         mutates=True,
         permission="write",
         source="action",
-        governance_exempt=True,
     ),
 ]
