@@ -659,9 +659,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             confirmation_required=False,
             risk_reason_code="capability_safeguard_web_search",
             description=(
-                "Search the web and return structured result facts. Uses configured "
-                "SearXNG JSON endpoints first and the official Exa MCP search service "
-                "as the default reliable fallback."
+                "Search the web through the explicitly configured provider and return "
+                "structured result facts. The default provider is Exa MCP."
             ),
             input_schema={
                 "type": "object",
@@ -698,7 +697,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "corrections": {"type": "array", "items": {"type": "string"}},
                     "suggestions": {"type": "array", "items": {"type": "string"}},
                     "infoboxes": _array_of_objects(),
-                    "provider_errors": _array_of_objects(),
                     "response": {"type": "object"},
                 }
             ),

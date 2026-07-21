@@ -201,29 +201,29 @@ def _api_config_checks(config) -> list[DiagnosticCheck]:
 
 
 def _search_config_checks(home: Path) -> list[DiagnosticCheck]:
-    from .core_tools.web_search import _searxng_endpoints
+    from .core_tools.web_search import _searxng_endpoint
     from .mcp_client import DEFAULT_EXA_MCP_URL
 
     env = load_runtime_env(home)
-    provider = str(env.get("NAVI_WEB_SEARCH_PROVIDER") or "auto").strip().lower()
-    if provider in {"searxng", "searxng_json"} and not _searxng_endpoints(env):
+    provider = str(env.get("NAVI_WEB_SEARCH_PROVIDER") or "exa_mcp").strip().lower()
+    if provider in {"searxng", "searxng_json"} and not _searxng_endpoint(env):
         return [
             DiagnosticCheck(
                 "search.config",
                 "error",
-                "SearXNG selected but NAVI_WEB_SEARCH_SEARXNG_URL(S) is missing",
+                "SearXNG selected but NAVI_WEB_SEARCH_SEARXNG_URL is missing",
             )
         ]
-    if provider not in {"auto", "searxng", "searxng_json", "exa", "exa_mcp", "mcp"}:
+    if provider not in {"searxng", "searxng_json", "exa", "exa_mcp", "mcp"}:
         return [
             DiagnosticCheck("search.config", "error", f"unsupported provider {provider}")
         ]
     if provider in {"searxng", "searxng_json"}:
-        detail = f"provider=searxng endpoints={len(_searxng_endpoints(env))}"
+        detail = f"provider=searxng endpoint={_searxng_endpoint(env)}"
     else:
         exa_url = str(env.get("NAVI_WEB_SEARCH_EXA_MCP_URL") or DEFAULT_EXA_MCP_URL)
         detail = (
-            f"provider={provider} fallback=exa_mcp endpoint={exa_url.split('?', 1)[0]} "
+            f"provider=exa_mcp endpoint={exa_url.split('?', 1)[0]} "
             f"api_key_present={bool(env.get('NAVI_EXA_API_KEY') or env.get('EXA_API_KEY'))}"
         )
     return [DiagnosticCheck("search.config", "ok", detail)]
@@ -351,23 +351,6 @@ def _service_facts(name: str) -> dict[str, object]:
         key, _, value = line.partition("=")
         if key:
             properties[key] = value
-    if result.returncode != 0:
-        fb = subprocess.run(
-            ["systemctl", "--user", "is-active", name],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-        active_state = fb.stdout.strip()
-        if fb.returncode == 0 and active_state:
-            properties["ActiveState"] = active_state
-            properties.setdefault("SubState", active_state)
-            return {
-                "properties": properties,
-                "exit_code": 0,
-                "stderr": result.stderr.strip(),
-            }
     return {
         "properties": properties,
         "exit_code": result.returncode,
@@ -386,27 +369,9 @@ def _service_runtime_check(name: str) -> DiagnosticCheck:
     substate = properties.get("SubState") or "unknown"
     if facts["exit_code"] == 0 and active == "active":
         return DiagnosticCheck("service.runtime", "ok", f"{name} {active}/{substate}")
-    fallback = _systemd_is_active(name)
-    if fallback:
-        return DiagnosticCheck("service.runtime", "ok", f"{name} {fallback}/running")
     return DiagnosticCheck(
         "service.runtime", "warn", f"{name} {active}/{substate} exit_code={facts['exit_code']}"
     )
-
-
-def _systemd_is_active(name: str) -> str:
-    try:
-        result = subprocess.run(
-            ["systemctl", "--user", "is-active", name],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-    except Exception:
-        return ""
-    state = result.stdout.strip()
-    return state if result.returncode == 0 and state == "active" else ""
 
 
 def _check_path(name: str, path: Path, *, required: bool) -> DiagnosticCheck:

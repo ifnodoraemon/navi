@@ -20,7 +20,7 @@ from navi.mcp_client import (
 )
 
 from ..tools import ToolResult
-from .utils import _positive_int, _truncate_output
+from .utils import _positive_int
 
 _SEARCH_USER_AGENT = "Navi/1.0"
 _SEARCH_TITLE_MAX_CHARS = 300
@@ -45,16 +45,15 @@ async def _web_search(args: dict[str, Any], *, home: Path | None = None) -> Tool
 
     limit = _positive_int(args.get("limit"), default=5, maximum=10)
     env = load_runtime_env(home) if home is not None else dict(os.environ)
-    provider = str(env.get("NAVI_WEB_SEARCH_PROVIDER") or "auto").strip().lower()
-    provider_errors: list[dict[str, Any]] = []
+    provider = str(env.get("NAVI_WEB_SEARCH_PROVIDER") or "exa_mcp").strip().lower()
 
-    if provider in {"auto", _WEB_SEARCH_PROVIDER_SEARXNG, "searxng_json"}:
-        searxng_endpoints = _searxng_endpoints(env)
-        if not searxng_endpoints and provider in {_WEB_SEARCH_PROVIDER_SEARXNG, "searxng_json"}:
+    if provider in {_WEB_SEARCH_PROVIDER_SEARXNG, "searxng_json"}:
+        endpoint = _searxng_endpoint(env)
+        if not endpoint:
             return ToolResult(
                 tool="web.search",
                 ok=False,
-                error="NAVI_WEB_SEARCH_SEARXNG_URL or NAVI_WEB_SEARCH_SEARXNG_URLS is required",
+                error="NAVI_WEB_SEARCH_SEARXNG_URL is required",
                 facts={
                     CAPABILITY_ERROR_REASON_KEY: "search_provider_config_error",
                     CAPABILITY_RETRYABLE_KEY: False,
@@ -62,32 +61,22 @@ async def _web_search(args: dict[str, Any], *, home: Path | None = None) -> Tool
                     "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
                 },
             )
-        for endpoint in searxng_endpoints:
-            searxng_result = _searxng_search(
-                query,
-                limit=limit,
-                endpoint=endpoint,
-                categories=str(
-                    args.get("categories") or env.get("NAVI_WEB_SEARCH_CATEGORIES") or ""
-                ).strip(),
-                language=str(
-                    args.get("language") or env.get("NAVI_WEB_SEARCH_LANGUAGE") or ""
-                ).strip(),
-                time_range=str(
-                    args.get("time_range") or env.get("NAVI_WEB_SEARCH_TIME_RANGE") or ""
-                ).strip(),
-            )
-            if searxng_result.ok:
-                return searxng_result
-            provider_errors.append(_search_error_fact(searxng_result))
-        if provider in {_WEB_SEARCH_PROVIDER_SEARXNG, "searxng_json"}:
-            return _combined_search_failure(
-                query=query,
-                provider=_WEB_SEARCH_PROVIDER_SEARXNG,
-                provider_errors=provider_errors,
-            )
+        return _searxng_search(
+            query,
+            limit=limit,
+            endpoint=endpoint,
+            categories=str(
+                args.get("categories") or env.get("NAVI_WEB_SEARCH_CATEGORIES") or ""
+            ).strip(),
+            language=str(
+                args.get("language") or env.get("NAVI_WEB_SEARCH_LANGUAGE") or ""
+            ).strip(),
+            time_range=str(
+                args.get("time_range") or env.get("NAVI_WEB_SEARCH_TIME_RANGE") or ""
+            ).strip(),
+        )
 
-    if provider not in {"auto", "exa", "exa_mcp", "mcp"}:
+    if provider not in {"exa", "exa_mcp", "mcp"}:
         return ToolResult(
             tool="web.search",
             ok=False,
@@ -100,31 +89,12 @@ async def _web_search(args: dict[str, Any], *, home: Path | None = None) -> Tool
             },
         )
 
-    exa_result = await _exa_mcp_search(query, limit=limit, env=env)
-    if provider_errors:
-        exa_result.facts["provider_errors"] = provider_errors
-    return exa_result
+    return await _exa_mcp_search(query, limit=limit, env=env)
 
 
-def _searxng_endpoints(env: dict[str, str] | None = None) -> tuple[str, ...]:
+def _searxng_endpoint(env: dict[str, str] | None = None) -> str:
     env = env or dict(os.environ)
-    raw = ",".join(
-        value
-        for value in (
-            env.get("NAVI_WEB_SEARCH_SEARXNG_URLS", ""),
-            env.get("NAVI_WEB_SEARCH_SEARXNG_URL", ""),
-        )
-        if value
-    )
-    endpoints: list[str] = []
-    seen: set[str] = set()
-    for item in raw.split(","):
-        endpoint = item.strip().rstrip("/")
-        if not endpoint or endpoint in seen:
-            continue
-        seen.add(endpoint)
-        endpoints.append(endpoint)
-    return tuple(endpoints)
+    return str(env.get("NAVI_WEB_SEARCH_SEARXNG_URL") or "").strip().rstrip("/")
 
 
 def _searxng_search(
@@ -150,6 +120,7 @@ def _searxng_search(
             error=error,
             facts={
                 CAPABILITY_ERROR_REASON_KEY: "search_provider_config_error",
+                CAPABILITY_RETRYABLE_KEY: False,
                 "query": query,
                 "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
                 "endpoint": endpoint,
@@ -168,6 +139,7 @@ def _searxng_search(
                 error=f"SearXNG returned HTTP {status}",
                 facts={
                     CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
+                    CAPABILITY_RETRYABLE_KEY: status in {429, 500, 502, 503, 504},
                     "query": query,
                     "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
                     "endpoint": endpoint,
@@ -182,6 +154,7 @@ def _searxng_search(
             error="SearXNG search request timed out",
             facts={
                 CAPABILITY_ERROR_REASON_KEY: "search_timeout",
+                CAPABILITY_RETRYABLE_KEY: True,
                 "query": query,
                 "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
                 "endpoint": endpoint,
@@ -194,6 +167,7 @@ def _searxng_search(
             error=str(exc),
             facts={
                 CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
+                CAPABILITY_RETRYABLE_KEY: False,
                 "query": query,
                 "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
                 "endpoint": endpoint,
@@ -422,46 +396,3 @@ def _as_string_list(value: Any) -> list[str]:
         if text:
             items.append(text)
     return items
-
-
-def _search_error_fact(result: ToolResult) -> dict[str, Any]:
-    return {
-        "provider": str(result.facts.get("provider") or result.tool),
-        "error_reason": str(
-            result.facts.get(CAPABILITY_ERROR_REASON_KEY) or "search_provider_error"
-        ),
-        "error": _truncate_output(result.error, limit=1000),
-        **{
-            key: value
-            for key, value in result.facts.items()
-            if key
-            in {
-                "endpoint",
-                "status_code",
-                "curl_exit_code",
-                "error_type",
-                "block_reason",
-                "source_url",
-            }
-        },
-    }
-
-
-def _combined_search_failure(
-    *,
-    query: str,
-    provider: str,
-    provider_errors: list[dict[str, Any]],
-) -> ToolResult:
-    return ToolResult(
-        tool="web.search",
-        ok=False,
-        error="all configured web search providers failed",
-        facts={
-            CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
-            CAPABILITY_RETRYABLE_KEY: False,
-            "query": query,
-            "provider": provider,
-            "provider_errors": provider_errors,
-        },
-    )

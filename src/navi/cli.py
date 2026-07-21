@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
@@ -267,14 +266,6 @@ def doctor(connectivity: bool = False) -> None:
     typer.echo("Navi doctor")
     typer.echo(f"model: {config.model.provider}/{config.model.model}")
     for check in checks:
-        if (
-            check.name == "service.runtime"
-            and check.status != "ok"
-            and _cli_service_active(config.runtime.service_name)
-        ):
-            check = type(check)(
-                "service.runtime", "ok", f"{config.runtime.service_name} active/running"
-            )
         detail = f" {check.detail}" if check.detail else ""
         typer.echo(f"{check.name}: {check.status}{detail}")
     if any(check.status == "error" for check in checks):
@@ -1172,32 +1163,6 @@ def _tail_connector_events(home: Path, name: str, *, limit: int) -> list[dict]:
         if isinstance(event, dict):
             events.append(event)
     return events
-
-
-def _cli_service_active(name: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["systemctl", "--user", "is-active", name],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if result.returncode == 0 and result.stdout.strip() == "active":
-        return True
-    try:
-        status = subprocess.run(
-            ["systemctl", "--user", "status", name, "--no-pager"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return "Active: active (running)" in status.stdout
 
 
 if __name__ == "__main__":

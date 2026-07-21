@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from navi import diagnostics
 from navi.service import build_systemd_user_unit
 
 
@@ -16,3 +19,23 @@ def test_build_systemd_user_unit_uses_project_and_home(tmp_path):
     assert "ExecStart=" in unit
     assert "-m navi.cli run" in unit
     assert "Restart=always" in unit
+
+
+def test_service_diagnostic_does_not_retry_with_another_systemctl_command(monkeypatch):
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def fake_run(command, **kwargs):
+        del kwargs
+        calls.append(command)
+        return SimpleNamespace(returncode=1, stdout="", stderr="unit unavailable")
+
+    monkeypatch.setattr(diagnostics.subprocess, "run", fake_run)
+
+    check = diagnostics._service_runtime_check("navi.service")
+
+    assert check.status == "warn"
+    assert check.detail == "navi.service unknown/unknown exit_code=1"
+    assert len(calls) == 1
+    assert calls[0][0:3] == ["systemctl", "--user", "show"]

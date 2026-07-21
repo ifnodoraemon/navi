@@ -484,45 +484,27 @@ async def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_web_search_auto_falls_back_to_exa_with_provider_error_facts(monkeypatch) -> None:
+async def test_web_search_rejects_auto_provider_without_calling_any_backend(monkeypatch) -> None:
     monkeypatch.setenv("NAVI_WEB_SEARCH_PROVIDER", "auto")
     monkeypatch.setenv("NAVI_WEB_SEARCH_SEARXNG_URL", "https://search.example")
 
     def fake_urlopen(request, timeout):
         del request, timeout
-        raise OSError("temporary search outage")
+        raise AssertionError("unsupported auto mode must not call SearXNG")
 
     async def fake_call(self, name, arguments):
         del self, name, arguments
-        return {
-            "ok": True,
-            "is_error": False,
-            "content": [],
-            "structured_content": {},
-            "text": (
-                "Title: Fallback\nURL: https://fallback.example\n"
-                "Published: N/A\nAuthor: N/A\nHighlights:\nFallback result"
-            ),
-            "truncated": False,
-        }
+        raise AssertionError("unsupported auto mode must not call Exa")
 
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
     monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
 
     result = await web_search_utils._web_search({"query": "navi smoke"})
 
-    assert result.ok is True
-    assert result.facts["provider"] == "exa_mcp"
-    assert result.facts["results"][0]["url"] == "https://fallback.example"
-    assert result.facts["provider_errors"] == [
-        {
-            "provider": "searxng",
-            "error_reason": "search_provider_error",
-            "error": "temporary search outage",
-            "endpoint": "https://search.example",
-            "error_type": "OSError",
-        }
-    ]
+    assert result.ok is False
+    assert result.error == "unsupported web search provider: auto"
+    assert result.facts["provider"] == "auto"
+    assert result.facts["retryable"] is False
 
 
 @pytest.mark.asyncio
@@ -536,7 +518,7 @@ async def test_web_search_explicit_searxng_failure_does_not_use_exa(monkeypatch)
 
     async def fail_call(self, name, arguments):
         del self, name, arguments
-        raise AssertionError("explicit SearXNG mode must not call Exa fallback")
+        raise AssertionError("explicit SearXNG mode must not call Exa")
 
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
     monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fail_call)
@@ -545,16 +527,10 @@ async def test_web_search_explicit_searxng_failure_does_not_use_exa(monkeypatch)
 
     assert result.ok is False
     assert result.facts["provider"] == "searxng"
-    assert result.facts["error_reason"] == "search_provider_error"
-    assert result.facts["retryable"] is False
-    assert result.facts["provider_errors"] == [
-        {
-            "provider": "searxng",
-            "error_reason": "search_timeout",
-            "error": "SearXNG search request timed out",
-            "endpoint": "https://search.example",
-        }
-    ]
+    assert result.facts["error_reason"] == "search_timeout"
+    assert result.facts["retryable"] is True
+    assert result.error == "SearXNG search request timed out"
+    assert "provider_errors" not in result.facts
 
 
 @pytest.mark.asyncio

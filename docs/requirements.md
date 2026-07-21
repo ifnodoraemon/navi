@@ -257,9 +257,11 @@ Web search must use supported structured providers, surface provider and
 configuration facts, and label whether the same failed provider call is
 retryable. The loop may still let the model choose a different capability,
 arguments, clarification, or blocker response within its remaining budget.
-Supported modes are `auto`, `searxng`, and `exa`; configuration belongs in
-`.navi/env` or the process environment, with `navi doctor` and
-`navi doctor --connectivity` as the inspection and live probe surfaces.
+Supported providers are `searxng` and `exa_mcp`. Each request uses exactly one
+configured provider and one endpoint; the runtime must not retry a failed call
+or switch providers. Configuration belongs in `.navi/env` or the process
+environment, with `navi doctor` and `navi doctor --connectivity` as the
+inspection and live probe surfaces.
 
 ## Verification Contract
 
