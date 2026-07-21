@@ -539,22 +539,16 @@ class _CheckpointStore:
         sidecar = cwd / ".navi-checkpoints.json"
         existing: list[dict] = []
         if sidecar.exists():
-            try:
-                existing = json.loads(sidecar.read_text(encoding="utf-8"))
-                if not isinstance(existing, list):
-                    existing = []
-            except (OSError, json.JSONDecodeError):
-                existing = []
+            existing = json.loads(sidecar.read_text(encoding="utf-8"))
+            if not isinstance(existing, list):
+                raise ValueError(f"checkpoint metadata must be a list: {sidecar}")
         existing.append(meta)
         # Keep at most 50 checkpoints to avoid unbounded growth.
         existing = existing[-50:]
-        try:
-            sidecar.write_text(
-                json.dumps(existing, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
+        sidecar.write_text(
+            json.dumps(existing, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         return checkpoint_id
 
     def restore(self, checkpoint_id: str) -> bool:
@@ -566,10 +560,9 @@ class _CheckpointStore:
         sidecar = self._project_dir / ".navi-checkpoints.json"
         if not sidecar.exists():
             return False
-        try:
-            entries = json.loads(sidecar.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return False
+        entries = json.loads(sidecar.read_text(encoding="utf-8"))
+        if not isinstance(entries, list):
+            raise ValueError(f"checkpoint metadata must be a list: {sidecar}")
         meta = next(
             (e for e in entries if e.get("checkpoint_id") == checkpoint_id),
             None,

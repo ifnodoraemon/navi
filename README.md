@@ -43,8 +43,39 @@ Run the authenticated local API:
 navi api
 ```
 
-API requests require `X-API-Key`. Set `NAVI_API_KEY` or read the generated key
-from `NAVI_HOME/api_key` (`.navi/api_key` by default).
+API requests require `X-API-Key`. The key is `api.api_key` in
+`NAVI_HOME/config.yaml` (`.navi/config.yaml` by default).
+
+## Configuration
+
+`.navi/config.yaml` is the only Navi runtime configuration file. `NAVI_HOME` is
+the only bootstrap environment variable; it selects the directory and does not
+override values in the file. Inspect the effective configuration without
+revealing secrets:
+
+```bash
+navi config
+```
+
+The global parameter groups are:
+
+- `model`: `provider`, `model`, `api_base_url`, `api_key`, `kind`,
+  `timeout_seconds`, `routes`, and per-role `role_params`;
+- `runtime`: `service_name`, `local_surface`;
+- `execution`: `provider`, `timeout_seconds`;
+- `api`: `host`, `port`, `api_key`;
+- `search`: `provider`, `mcp_server`, `searxng_url`, `categories`, `language`,
+  `time_range`;
+- `connectors.telegram`: `enabled`, `bot_token`, `api_base_url`, `dm_policy`,
+  `allowed_users`, `home_chat_id`;
+- `connectors.weixin`: `enabled`, `account_id`, `token`, `base_url`,
+  `cdn_base_url`, `dm_policy`, `allowed_users`, `group_policy`,
+  `group_allowed_users`, `home_channel`;
+- `mcp.servers.<name>`: `transport`, `url`, `command`, `args`, `env`, `headers`,
+  `cwd`, `timeout_seconds`, `permission`, `allowed_tools`, `enabled`.
+
+The file is created with owner-only permissions. Legacy `.navi/env`,
+`.navi/mcp.json`, and `.navi/api_key` files are rejected rather than merged.
 
 ## CLI
 
@@ -55,6 +86,7 @@ navi status
 navi metrics --json-output
 navi doctor
 navi doctor --connectivity
+navi config
 navi model
 
 # Capabilities and prompts

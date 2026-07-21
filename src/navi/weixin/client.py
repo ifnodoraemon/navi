@@ -41,10 +41,6 @@ MEDIA_VOICE = 4
 
 MSG_TYPE_BOT = 2
 MSG_STATE_FINISH = 2
-SESSION_EXPIRED_ERRCODE = -14
-RATE_LIMIT_ERRCODE = -2
-SEND_CHUNK_RETRIES = 3
-SEND_CHUNK_RETRY_DELAY_SECONDS = 1.0
 TYPING_START = 1
 TYPING_STOP = 2
 CONFIG_TIMEOUT_SECONDS = 10.0
@@ -218,42 +214,19 @@ class WeixinClient:
         if not text.strip():
             raise ValueError("Weixin text must not be empty")
         client_id = f"navi-weixin-{uuid.uuid4().hex}"
-        last_error: Exception | None = None
-        retried_without_context = False
-        for attempt in range(SEND_CHUNK_RETRIES + 1):
-            try:
-                message = self._message_payload(
-                    peer_id=peer_id,
-                    text=text,
-                    context_token=context_token,
-                    client_id=client_id,
-                )
-                response = await self._post("/ilink/bot/sendmessage", {"msg": message}, timeout=15)
-                ret = response.get("ret")
-                errcode = response.get("errcode")
-                if ret in (None, 0) and errcode in (None, 0):
-                    return
-                if (
-                    _is_session_expired(ret, errcode, response.get("errmsg"))
-                    and context_token
-                    and not retried_without_context
-                ):
-                    context_token = ""
-                    retried_without_context = True
-                    continue
-                if _is_rate_limited(ret, errcode) and attempt < SEND_CHUNK_RETRIES:
-                    await self._sleep(SEND_CHUNK_RETRY_DELAY_SECONDS * 3)
-                    continue
-                raise RuntimeError(
-                    f"iLink sendmessage error ret={ret} errcode={errcode}: {response}"
-                )
-            except Exception as exc:
-                last_error = exc
-                if attempt >= SEND_CHUNK_RETRIES:
-                    break
-                await self._sleep(SEND_CHUNK_RETRY_DELAY_SECONDS * (attempt + 1))
-        if last_error:
-            raise last_error
+        message = self._message_payload(
+            peer_id=peer_id,
+            text=text,
+            context_token=context_token,
+            client_id=client_id,
+        )
+        response = await self._post("/ilink/bot/sendmessage", {"msg": message}, timeout=15)
+        ret = response.get("ret")
+        errcode = response.get("errcode")
+        if ret not in (None, 0) or errcode not in (None, 0):
+            raise RuntimeError(
+                f"iLink sendmessage error ret={ret} errcode={errcode}: {response}"
+            )
 
     @staticmethod
     def _message_payload(
@@ -560,15 +533,3 @@ def _raise_ilink_error(response: dict[str, Any], operation: str) -> None:
     if ret in (None, 0) and errcode in (None, 0):
         return
     raise RuntimeError(f"iLink {operation} error ret={ret} errcode={errcode}: {response}")
-
-
-def _is_rate_limited(ret: Any, errcode: Any) -> bool:
-    return ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE
-
-
-def _is_session_expired(ret: Any, errcode: Any, errmsg: Any) -> bool:
-    if ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE:
-        return True
-    if not _is_rate_limited(ret, errcode):
-        return False
-    return str(errmsg or "").lower() == "unknown error"

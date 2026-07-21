@@ -968,23 +968,16 @@ class GoalStore:
         outbox_id: str,
         *,
         error: str,
-        max_attempts: int = 3,
     ) -> None:
         now = time.time()
         with connect(self.db_path) as conn:
-            row = conn.execute(
-                "SELECT attempts FROM goal_delivery_outbox WHERE id = ?",
-                (outbox_id,),
-            ).fetchone()
-            attempts = int(row[0]) if row else max_attempts
-            status = "failed" if attempts >= max_attempts else "pending"
             conn.execute(
                 """
                 UPDATE goal_delivery_outbox
-                SET status = ?, error = ?, updated_at = ?
+                SET status = 'failed', error = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (status, error[:1000], now, outbox_id),
+                (error[:1000], now, outbox_id),
             )
 
     def _delivery_outbox_by_run(self, run_id: str) -> GoalDeliveryOutboxItem | None:

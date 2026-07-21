@@ -35,8 +35,19 @@ navi chat
 navi api
 ```
 
-API 请求需要 `X-API-Key`。可以设置 `NAVI_API_KEY`，或读取
-`NAVI_HOME/api_key` 中生成的 Key，默认路径为 `.navi/api_key`。
+API 请求需要 `X-API-Key`，对应 `NAVI_HOME/config.yaml` 中的
+`api.api_key`，默认配置文件为 `.navi/config.yaml`。
+
+## 全局配置
+
+`.navi/config.yaml` 是唯一的 Navi 运行时配置文件。`NAVI_HOME` 是唯一
+启动环境变量，只用于选择配置目录，不覆盖文件中的值。使用 `navi config`
+可以查看自动脱敏后的生效配置。
+
+全局配置分为 `model`、`runtime`、`execution`、`api`、`search`、
+`connectors` 和 `mcp` 七个域。模型路由、API 密钥、搜索 provider、连接器
+凭据和 MCP server 均在该文件中配置。旧 `.navi/env`、`.navi/mcp.json`
+和 `.navi/api_key` 会被明确拒绝，不再合并或兼容。
 
 ## CLI
 

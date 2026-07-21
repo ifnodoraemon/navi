@@ -1130,7 +1130,7 @@ class MemoryStore:
                 UPDATE memory_consolidation_jobs
                 SET status = 'dead_letter', owner = '', lease_expires_at = 0,
                     updated_at = ?
-                WHERE status = 'failed' AND attempts >= 5
+                WHERE status = 'failed'
                 """,
                 (current_time,),
             )
@@ -1141,19 +1141,9 @@ class MemoryStore:
                     SELECT id FROM memory_consolidation_jobs
                     WHERE status = 'pending'
                        OR (status = 'active' AND lease_expires_at <= ?)
-                       OR (
-                           status = 'failed' AND attempts < 5
-                           AND updated_at + CASE
-                               WHEN attempts <= 1 THEN 60
-                               WHEN attempts = 2 THEN 120
-                               WHEN attempts = 3 THEN 240
-                               WHEN attempts = 4 THEN 480
-                               ELSE 3600
-                           END <= ?
-                       )
                     ORDER BY updated_at ASC LIMIT ?
                     """,
-                    (current_time, current_time, max(1, limit)),
+                    (current_time, max(1, limit)),
                 ).fetchall()
             ]
             for job_id in ids:
@@ -1277,7 +1267,7 @@ class MemoryStore:
         except Exception as exc:
             self._finish_consolidation_job(
                 job,
-                status="failed",
+                status="dead_letter",
                 error=f"{type(exc).__name__}: {exc}",
             )
             raise

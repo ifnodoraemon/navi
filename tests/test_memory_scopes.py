@@ -139,7 +139,7 @@ async def test_conversation_memory_consolidation_is_durable_and_actor_scoped(
     assert store.claim_consolidation_jobs(owner="worker-b") == []
 
 
-def test_expired_consolidation_lease_is_reclaimed_and_failures_dead_letter(
+def test_expired_consolidation_lease_is_reclaimed_and_failures_dead_letter_without_retry(
     tmp_path: Path,
 ) -> None:
     store = MemoryStore(tmp_path)
@@ -166,7 +166,7 @@ def test_expired_consolidation_lease_is_reclaimed_and_failures_dead_letter(
         conn.execute(
             """
             UPDATE memory_consolidation_jobs
-            SET status = 'failed', owner = '', attempts = 5, updated_at = 0
+            SET status = 'failed', owner = '', attempts = 1, updated_at = 0
             WHERE id = ?
             """,
             (job_id,),

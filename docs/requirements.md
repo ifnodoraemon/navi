@@ -201,7 +201,7 @@ stored as fingerprints and conflicting identities are not implicitly merged.
 Conversation consolidation uses a durable leased job queue, produces proposed
 memory rather than self-approved facts, and hybrid recall must not depend on an
 FTS seed. Consolidation is bound to one run transcript, reclaims expired leases,
-uses bounded retry backoff, and dead-letters exhausted work. Missing jobs are
+and dead-letters a recorded processing failure without retrying it. Missing jobs are
 reconstructed before retention. Expired transient turns are compacted only after
 consolidation, while terminal lifecycle summaries remain available for metrics. User-facing
 actors cannot write global memory. Assistant conversation text and run result
@@ -258,10 +258,10 @@ specific connector.
 
 MCP tool calls must pass through the same capability registry, approval, audit,
 and redaction boundaries as core and connector tools. Server annotations must
-not grant or lower permissions. Additional MCP servers are configured in
-`.navi/mcp.json` using the common `mcpServers` shape; enabled servers expose
-governed discovery and call capabilities only. MCP prompts, resources, sampling,
-elicitation, and server-driven permission changes are not enabled.
+not grant or lower permissions. MCP servers are configured only under
+`mcp.servers` in `.navi/config.yaml`; enabled servers expose governed discovery
+and call capabilities only. MCP prompts, resources, sampling, elicitation, and
+server-driven permission changes are not enabled.
 
 Web search must use supported structured providers, surface provider and
 configuration facts, and label whether the same failed provider call is
@@ -269,9 +269,11 @@ retryable. The loop may still let the model choose a different capability,
 arguments, clarification, or blocker response within its remaining budget.
 Supported providers are `searxng` and `exa_mcp`. Each request uses exactly one
 configured provider and one endpoint; the runtime must not retry a failed call
-or switch providers. Configuration belongs in `.navi/env` or the process
-environment, with `navi doctor` and `navi doctor --connectivity` as the
-inspection and live probe surfaces.
+or switch providers. All Navi runtime configuration belongs in
+`.navi/config.yaml`; `NAVI_HOME` is the only bootstrap environment variable and
+only selects the directory containing that file. Process environment variables
+must not override configuration values. `navi config`, `navi doctor`, and
+`navi doctor --connectivity` are the inspection and live probe surfaces.
 
 ## Verification Contract
 

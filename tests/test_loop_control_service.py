@@ -107,6 +107,17 @@ def test_background_converged_result_creates_delivery_outbox(tmp_path):
     assert accepted["body_provenance"] == "state_graph.evidence.responded_message"
     assert accepted["delivery_status"] == "pending"
 
+    claimed = service.goals.claim_pending_delivery_outbox(channel="weixin")
+    assert len(claimed) == 1
+    service.goals.mark_delivery_outbox_failed(claimed[0].id, error="provider unavailable")
+    assert service.goals.claim_pending_delivery_outbox(channel="weixin") == []
+    with connect(service.goals.db_path) as conn:
+        status = conn.execute(
+            "SELECT status FROM goal_delivery_outbox WHERE id = ?",
+            (claimed[0].id,),
+        ).fetchone()[0]
+    assert status == "failed"
+
 
 def test_loop_control_service_rejects_unknown_loop_kind(tmp_path):
     with pytest.raises(ValueError, match="unsupported loop_kind"):

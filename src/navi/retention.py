@@ -203,7 +203,7 @@ class DataRetentionManager:
                 )
             self._gc_trace_blobs(conn)
         # Delete the discovery anchor last. If an earlier store operation fails,
-        # the retained loop spec keeps this candidate visible for a safe retry.
+        # the retained loop spec keeps this candidate visible for later reconciliation.
         with connect(self.paths.loop_runs) as conn:
             conn.execute("DELETE FROM loop_checkpoints WHERE run_id = ?", (loop_run_id,))
             conn.execute("DELETE FROM loop_events WHERE run_id = ?", (loop_run_id,))

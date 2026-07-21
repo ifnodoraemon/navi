@@ -65,22 +65,17 @@ class TelegramService:
         status_dir = self.home / "telegram"
         status_dir.mkdir(parents=True, exist_ok=True)
         status_file = status_dir / "status.json"
-        try:
-            status_file.write_text(
-                json.dumps(
-                    {
-                        "status": status,
-                        "error": error,
-                        "last_update": time.time(),
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-        except Exception as e:
-            import logging
-
-            logging.getLogger("navi.telegram").warning("Failed to update status: %s", e)
+        status_file.write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "error": error,
+                    "last_update": time.time(),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
 
     async def run(self, *, once: bool = False) -> None:
         import time
@@ -89,7 +84,6 @@ class TelegramService:
         runs = RunStore(self.home)
         offset: int | None = None
         sleep_time = 1.0
-        retry_count = 0
         self.update_status("healthy")
         last_tasks_check = 0.0
         has_active_runs = False
@@ -113,21 +107,12 @@ class TelegramService:
                 else:
                     sleep_time = min(1.0, sleep_time + 0.1)
 
-                retry_count = 0
                 self.update_status("healthy")
 
             except Exception as e:
-                retry_count += 1
                 error_msg = str(e)
-                if retry_count <= 5:
-                    status = "retrying"
-                    err_sleep = min(16.0, 1.5**retry_count)
-                    self.update_status(status, error_msg)
-                    sleep_time = err_sleep
-                else:
-                    status = "fatal"
-                    self.update_status(status, error_msg)
-                    raise e
+                self.update_status("fatal", error_msg)
+                raise
 
             if once:
                 return

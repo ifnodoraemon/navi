@@ -160,6 +160,33 @@ async def test_get_updates_keeps_file_only_messages_as_attachment(monkeypatch: p
 
 
 @pytest.mark.asyncio
+async def test_send_message_propagates_first_provider_failure_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = WeixinClient(base_url="https://ilink.example", token="token")
+    calls = 0
+
+    async def fake_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        nonlocal calls
+        del payload, timeout
+        assert path == "/ilink/bot/sendmessage"
+        calls += 1
+        return {"ret": -2, "errcode": -2, "errmsg": "rate limited"}
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    with pytest.raises(RuntimeError, match="rate limited"):
+        await client.send_message(
+            account_id="acct",
+            peer_id="wx-user",
+            text="hello",
+            context_token="ctx",
+        )
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_send_file_uploads_cdn_media_item(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     target = tmp_path / "report.pdf"
     target.write_bytes(b"%PDF-1.4 test")
@@ -324,18 +351,18 @@ async def test_service_records_empty_runtime_response_as_failure(tmp_path: Path)
         facts={"error_reason": "internal_error"},
     )
 
-    handled = await service.handle_update(
-        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
-        WeixinUpdate(
-            message_id="msg-empty-runtime-response",
-            peer_id="wx-user",
-            sender_id="wx-user",
-            text="你好",
-            context_token="ctx",
-        ),
-    )
+    with pytest.raises(RuntimeError, match="channel response text is empty"):
+        await service.handle_update(
+            WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
+            WeixinUpdate(
+                message_id="msg-empty-runtime-response",
+                peer_id="wx-user",
+                sender_id="wx-user",
+                text="你好",
+                context_token="ctx",
+            ),
+        )
 
-    assert handled is True
     assert client.messages == []
     assert client.files == []
     events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8")
@@ -381,6 +408,10 @@ async def test_service_propagates_ingress_failure(tmp_path: Path):
                 context_token="ctx",
             ),
         )
+
+    status = json.loads((tmp_path / "weixin" / "status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "fatal"
+    assert status["error"] == "message handler failed: RuntimeError: agent ingress failed"
 
 
 @pytest.mark.asyncio
@@ -977,3 +1008,42 @@ async def test_background_watch_respects_model_decision_not_to_notify(tmp_path: 
 
     assert client.messages == []
     assert provider.calls[0][0] == "notification"
+
+
+@pytest.mark.asyncio
+async def test_background_notification_model_failure_propagates_without_fallback(
+    tmp_path: Path,
+) -> None:
+    class FailingNotificationProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete_for(self, role: str, messages: list[Any], **kwargs: Any) -> str:
+            del role, messages, kwargs
+            self.calls += 1
+            raise RuntimeError("notification model unavailable")
+
+        def list_roles(self) -> list[str]:
+            return ["notification"]
+
+    client = CaptureWeixinClient()
+    provider = FailingNotificationProvider()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(home_channel="wx-home"),
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.daemon = StaticDaemon(
+        tasks=[],
+        watch_results=[{"facts": {"kind": "port_went_offline", "port": 8000}}],
+    )
+
+    with pytest.raises(RuntimeError, match="notification model unavailable"):
+        await service.process_background(
+            WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+        )
+
+    assert provider.calls == 1
+    assert client.messages == []

@@ -36,6 +36,21 @@ The unified loop is a protocol boundary. `loop_kind` distinguishes a turn,
 control action, durable goal, or scheduled run without creating an unrelated
 execution engine.
 
+## Configuration Ownership
+
+`.navi/config.yaml` is the single source of Navi runtime configuration. Its
+top-level domains are `model`, `runtime`, `execution`, `api`, `search`,
+`connectors`, and `mcp`. The loader applies declared defaults, validates typed
+values and references, rejects unknown top-level domains, and rejects the old
+`env`, `mcp.json`, and `api_key` files. `NAVI_HOME` is the sole bootstrap
+environment variable because it selects the directory before the configuration
+file can be loaded; it does not override values inside the file.
+
+Secrets are stored in the same owner-readable file so there is one inspectable
+authority. `navi config` renders the effective structure with secret-bearing
+fields redacted. Model routes, search providers, connector credentials, API
+authentication, and MCP servers do not read process-environment overrides.
+
 Child agents reuse this exact loop. `agent.control(operation=...)` is the single
 parent lifecycle surface; `agent.report` is separate because it is a child-only
 terminal protocol with different authority. Child policy is the intersection of
@@ -98,6 +113,13 @@ planning turn is allowed, the planner owns the semantic choice to gather facts,
 change capability or arguments, clarify, or explain a blocker. A checker verdict
 is evidence, not a runtime-selected next action. Trace proxies record model calls
 and capability spans without changing their decisions.
+
+A failed model, capability, connector, or external-provider call is recorded and
+returned without an automatic repeat, provider switch, argument rewrite, or
+degraded substitute. A later planner turn is a new model-owned decision, not a
+runtime retry. Lease recovery after a crashed owner and database transaction
+conflict handling remain deterministic control-plane coordination, not semantic
+recovery choices.
 
 Prompt assembly is an inspectable interface, not scattered inline runtime text.
 Stable prompt specifications live in `src/navi/specs_data.py`; assembly,
