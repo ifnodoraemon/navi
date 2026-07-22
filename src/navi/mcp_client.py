@@ -29,9 +29,19 @@ class MCPServerConfig:
     headers: dict[str, str] = field(default_factory=dict)
     cwd: str = ""
     timeout_seconds: float = 30.0
-    permission: str = "write"
-    allowed_tools: tuple[str, ...] = ()
+    tool_permissions: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
+
+    @property
+    def transport_permission(self) -> str:
+        return "network" if self.transport == "streamable_http" else "write"
+
+    @property
+    def allowed_tools(self) -> tuple[str, ...]:
+        return tuple(sorted(self.tool_permissions))
+
+    def permission_for(self, tool: str) -> str:
+        return normalize_permission(self.tool_permissions[tool])
 
     @property
     def safe_endpoint(self) -> str:
@@ -55,12 +65,25 @@ class MCPServerConfig:
                 errors.append("stdio transport requires command")
         else:
             errors.append(f"unsupported transport: {self.transport}")
-        try:
-            normalize_permission(self.permission)
-        except ValueError as exc:
-            errors.append(str(exc))
-        if self.permission != "write" and not self.allowed_tools:
-            errors.append("read/network permission requires allowed_tools")
+        if not self.tool_permissions:
+            errors.append("tool_permissions must explicitly allow at least one tool")
+        for tool, raw_permission in self.tool_permissions.items():
+            if not str(tool).strip():
+                errors.append("tool_permissions contains an empty tool name")
+                continue
+            try:
+                permission = normalize_permission(raw_permission)
+            except ValueError as exc:
+                errors.append(f"tool_permissions.{tool}: {exc}")
+                continue
+            if self.transport == "streamable_http" and permission == "read":
+                errors.append(
+                    f"tool_permissions.{tool} cannot be read over a network transport"
+                )
+            if self.transport == "stdio" and permission != "write":
+                errors.append(
+                    f"tool_permissions.{tool} must be write for a local stdio process"
+                )
         if self.timeout_seconds <= 0:
             errors.append("timeout_seconds must be positive")
         return tuple(errors)
@@ -101,7 +124,7 @@ class MCPClient:
         parameters = StdioServerParameters(
             command=self.server.command,
             args=list(self.server.args),
-            env={**os.environ, **self.server.env},
+            env=_stdio_environment(self.server.env),
             cwd=Path(self.server.cwd).expanduser() if self.server.cwd else None,
         )
         async with stdio_client(parameters) as (read_stream, write_stream):
@@ -147,6 +170,22 @@ class MCPClient:
             "text": text[:100_000],
             "truncated": len(text) > 100_000,
         }
+
+
+def _stdio_environment(configured: dict[str, str]) -> dict[str, str]:
+    """Build a minimal stdio-server environment without host credentials."""
+
+    inherited = {
+        key: os.environ[key]
+        for key in ("PATH", "LANG", "LC_ALL", "TERM", "SYSTEMROOT")
+        if os.environ.get(key)
+    }
+    return {
+        "HOME": "/tmp/navi-mcp-home",
+        "TMPDIR": "/tmp",
+        **inherited,
+        **configured,
+    }
 
 
 def describe_mcp_exception(exc: BaseException) -> tuple[str, bool]:

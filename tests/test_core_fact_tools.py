@@ -8,7 +8,8 @@ import pytest
 
 from navi.config import NaviConfig, SearchConfig
 from navi.core_tools import web_search as web_search_utils
-from navi.loop_contracts import LockMode
+from navi.harness import Harness
+from navi.loop_contracts import LockMode, MergeStatus
 from navi.memory import MemoryStore
 from navi.tools import build_tool_gateway
 from navi.workspaces import WorkspaceLockStore
@@ -28,6 +29,8 @@ async def test_codebase_search_uses_runtime_rag_and_navi_home_cache(tmp_path: Pa
 
     assert result.ok is True
     assert result.facts["results"]
+    assert result.facts["cache"]["kind"] == "derived_cache"
+    assert result.facts["cache"]["refreshed"] is True
     assert (home / "codebase_rag.db").exists()
     assert not (workspace / ".navi" / "codebase_rag.db").exists()
 
@@ -55,7 +58,10 @@ async def test_shell_run_rejects_shell_strings_instead_of_guessing_argv(tmp_path
     result = await gateway.call("shell.run", {"command": "ls -1 | head"})
 
     assert result.ok is False
-    assert result.facts == {}
+    assert result.facts == {
+        "error_reason": "invalid_arguments",
+        "retryable": False,
+    }
     assert "array" in result.error
 
 
@@ -150,7 +156,7 @@ async def test_file_write_can_target_shadow_workspace_and_merge_back(tmp_path: P
     target.write_text("base\n", encoding="utf-8")
     gateway = build_tool_gateway(home, project_dir=workspace)
 
-    shadow = await gateway.call("workspace.shadow.create", {"run_id": "run-shadow"})
+    Harness(home=home).create_shadow_workspace(run_id="run-shadow", workspace=workspace)
     write = await gateway.call(
         "file.write",
         {
@@ -160,17 +166,14 @@ async def test_file_write_can_target_shadow_workspace_and_merge_back(tmp_path: P
         },
     )
 
-    assert shadow.ok is True
     assert write.ok is True
     assert write.facts["state_transition"] == "shadow_written"
     assert target.read_text(encoding="utf-8") == "base\n"
     assert Path(write.facts["shadow_path"]).read_text(encoding="utf-8") == "agent\n"
 
-    merged = await gateway.call("workspace.shadow.merge", {"run_id": "run-shadow"})
+    merged = Harness(home=home).merge_shadow_run("run-shadow")
 
-    assert merged.ok is True
-    assert merged.facts["merge_status"] == "clean"
-    assert merged.facts["completion_evidence"] is True
+    assert merged.status == MergeStatus.CLEAN
     assert target.read_text(encoding="utf-8") == "agent\n"
 
 
@@ -183,7 +186,7 @@ async def test_shadow_merge_conflict_preserves_real_workspace(tmp_path: Path) ->
     target.write_text("base\n", encoding="utf-8")
     gateway = build_tool_gateway(home, project_dir=workspace)
 
-    await gateway.call("workspace.shadow.create", {"run_id": "run-conflict"})
+    Harness(home=home).create_shadow_workspace(run_id="run-conflict", workspace=workspace)
     write = await gateway.call(
         "file.write",
         {
@@ -193,16 +196,13 @@ async def test_shadow_merge_conflict_preserves_real_workspace(tmp_path: Path) ->
         },
     )
     target.write_text("human\n", encoding="utf-8")
-    merged = await gateway.call("workspace.shadow.merge", {"run_id": "run-conflict"})
+    merged = Harness(home=home).merge_shadow_run("run-conflict")
 
     assert write.ok is True
-    assert merged.ok is True
-    assert merged.facts["state_transition"] == "conflicted"
-    assert merged.facts["merge_status"] == "conflicted"
-    assert merged.facts["completion_evidence"] is False
-    assert merged.facts["conflicts"] == ["app.py"]
+    assert merged.status == MergeStatus.CONFLICTED
+    assert list(merged.conflicts) == ["app.py"]
     assert target.read_text(encoding="utf-8") == "human\n"
-    artifact = Path(merged.facts["artifact_path"]) / "app.py"
+    artifact = Path(merged.artifact_path) / "app.py"
     assert "<<<<<<< CURRENT" in artifact.read_text(encoding="utf-8")
 
 
@@ -215,7 +215,9 @@ async def test_shadow_discard_removes_shadow_without_real_change(tmp_path: Path)
     target.write_text("base\n", encoding="utf-8")
     gateway = build_tool_gateway(home, project_dir=workspace)
 
-    shadow = await gateway.call("workspace.shadow.create", {"run_id": "run-discard"})
+    shadow = Harness(home=home).create_shadow_workspace(
+        run_id="run-discard", workspace=workspace
+    )
     await gateway.call(
         "file.write",
         {
@@ -224,11 +226,11 @@ async def test_shadow_discard_removes_shadow_without_real_change(tmp_path: Path)
             "shadow_run_id": "run-discard",
         },
     )
-    discarded = await gateway.call("workspace.shadow.discard", {"run_id": "run-discard"})
+    discarded = Harness(home=home).discard_shadow_run("run-discard")
 
-    assert discarded.ok is True
+    assert discarded is True
     assert target.read_text(encoding="utf-8") == "base\n"
-    assert not Path(shadow.facts["shadow_workspace"]).exists()
+    assert not Path(shadow.shadow_workspace).exists()
 
 
 @pytest.mark.asyncio
@@ -299,7 +301,7 @@ async def test_python_ast_replace_symbol_can_patch_shadow_then_merge(
     target.write_text("class Service:\n    value = 'old'\n", encoding="utf-8")
     gateway = build_tool_gateway(home, project_dir=workspace)
 
-    shadow = await gateway.call("workspace.shadow.create", {"run_id": "run-ast"})
+    Harness(home=home).create_shadow_workspace(run_id="run-ast", workspace=workspace)
     patched = await gateway.call(
         "python.ast.replace_symbol",
         {
@@ -311,7 +313,6 @@ async def test_python_ast_replace_symbol_can_patch_shadow_then_merge(
         },
     )
 
-    assert shadow.ok is True
     assert patched.ok is True
     assert patched.facts["state_transition"] == "shadow_ast_replaced"
     assert target.read_text(encoding="utf-8") == "class Service:\n    value = 'old'\n"
@@ -319,10 +320,9 @@ async def test_python_ast_replace_symbol_can_patch_shadow_then_merge(
         "class Service:\n    value = 'new'\n"
     )
 
-    merged = await gateway.call("workspace.shadow.merge", {"run_id": "run-ast"})
+    merged = Harness(home=home).merge_shadow_run("run-ast")
 
-    assert merged.ok is True
-    assert merged.facts["completion_evidence"] is True
+    assert merged.status == MergeStatus.CLEAN
     assert target.read_text(encoding="utf-8") == "class Service:\n    value = 'new'\n"
 
 

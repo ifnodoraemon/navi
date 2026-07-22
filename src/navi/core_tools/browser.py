@@ -40,7 +40,12 @@ def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResul
     output.parent.mkdir(parents=True, exist_ok=True)
     timeout = _positive_int(args.get("timeout_seconds"), default=30, maximum=120)
     result = _run_command(
-        [playwright, "screenshot", url, str(output)], cwd=project_dir, timeout=timeout
+        [playwright, "screenshot", url, str(output)],
+        cwd=project_dir,
+        timeout=timeout,
+        sandbox_workspace=project_dir,
+        workspace_writable=True,
+        network_allowed=True,
     )
     ok = result["exit_code"] == 0 and output.exists()
     return ToolResult(
@@ -59,4 +64,3 @@ def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResul
             "size": output.stat().st_size if output.exists() else 0,
         },
     )
-

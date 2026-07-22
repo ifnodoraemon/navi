@@ -15,6 +15,7 @@ from ..daemon_types import (
     ProjectEventContext,
     ProactiveEvent,
 )
+from ..process_sandbox import bubblewrap_command, sandbox_environment
 from ..text_utils import truncate_middle
 
 logger = logging.getLogger("navi.daemon")
@@ -41,11 +42,21 @@ class GitMutationDetector:
             return events, {}
 
         try:
+            command, sandbox_error = bubblewrap_command(
+                ["git", "status", "--porcelain"],
+                cwd=Path(project_path),
+                workspace=Path(project_path),
+                writable=False,
+                network_allowed=False,
+                path=sandbox_environment()["PATH"],
+            )
+            if sandbox_error:
+                logger.warning("Skipping git proactive detector: %s", sandbox_error)
+                return events, {}
             proc = await asyncio.create_subprocess_exec(
-                "git",
-                "status",
-                "--porcelain",
+                *command,
                 cwd=project_path,
+                env=sandbox_environment(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

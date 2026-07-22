@@ -64,6 +64,19 @@ def test_loop_control_service_opens_goal_without_executing_state_graph(tmp_path)
     assert LoopRunStore(tmp_path).get_run(result.loop_run.run_id) is not None
 
 
+def test_loop_control_service_does_not_invent_a_checker_acceptance_criterion(tmp_path):
+    result = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="report the current account usage",
+            workspace=str(tmp_path),
+            allowed_capabilities=("account.usage", "respond"),
+            auto_start=False,
+        )
+    )
+
+    assert result.loop_spec.goal.acceptance_criteria == ()
+
+
 def test_background_converged_result_creates_delivery_outbox(tmp_path):
     service = LoopControlService(tmp_path)
     token = "OUTBOX_PRIVATE_TOKEN"
@@ -109,6 +122,7 @@ def test_background_converged_result_creates_delivery_outbox(tmp_path):
 
     claimed = service.goals.claim_pending_delivery_outbox(channel="weixin")
     assert len(claimed) == 1
+    assert claimed[0].trace_id == opened.run.id
     service.goals.mark_delivery_outbox_failed(claimed[0].id, error="provider unavailable")
     assert service.goals.claim_pending_delivery_outbox(channel="weixin") == []
     with connect(service.goals.db_path) as conn:

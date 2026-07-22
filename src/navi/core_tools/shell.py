@@ -6,6 +6,7 @@ from ..tools import ToolResult
 from .codebase import _command_list, _project_path
 from .run_command import _normalize_argv, _run_command
 from .utils import _positive_int
+from ..safeguards import shell_call_policy
 
 
 def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
@@ -23,7 +24,16 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
     timeout = _positive_int(args.get("timeout_seconds"), default=20, maximum=600)
     allocate_pty = bool(args.get("allocate_pty"))
     command = _normalize_argv(command)
-    result = _run_command(command, cwd=cwd, timeout=timeout, allocate_pty=allocate_pty)
+    shell_policy = shell_call_policy({"command": command, "allocate_pty": allocate_pty})
+    result = _run_command(
+        command,
+        cwd=cwd,
+        timeout=timeout,
+        allocate_pty=allocate_pty,
+        sandbox_workspace=project_dir,
+        workspace_writable=shell_policy["required_permission"] == "write",
+        network_allowed=shell_policy["required_permission"] == "network",
+    )
     return ToolResult(
         tool="shell.run",
         ok=result["exit_code"] == 0,
@@ -36,6 +46,8 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
             "command": command,
             "cwd": str(cwd),
             "timeout_seconds": timeout,
+            "required_permission": shell_policy["required_permission"],
         },
         error=result["stderr"],
+        error_reason=str(result.get("error_reason") or "") if result["exit_code"] != 0 else "",
     )

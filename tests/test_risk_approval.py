@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+import navi.safeguards as safeguard_module
+
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.lifecycle import Phase
@@ -47,8 +49,8 @@ class _DeleteGoalProvider:
                         "tool": "shell.run",
                         "permission": "write",
                         "args": {
-                            "command": ["rm", str(self.target)],
-                            "cwd": str(self.target.parent),
+                            "command": ["rm", self.target.name],
+                            "cwd": ".",
                             "timeout_seconds": 10,
                         },
                         "reason": "delete the exact requested file",
@@ -87,7 +89,7 @@ class _TwoGateShellProvider:
                         "permission": "write",
                         "args": {
                             "command": command,
-                            "cwd": str(self.workspace),
+                            "cwd": ".",
                             "timeout_seconds": 1,
                         },
                         "reason": "run the requested diagnostic command",
@@ -104,7 +106,10 @@ class _TwoGateShellProvider:
 
 
 def _verification_command(target: Path) -> str:
-    script = f"from pathlib import Path; assert not Path({str(target)!r}).exists()"
+    # Loop execution and verification share the same shadow-workspace envelope.
+    # Keep the checker workspace-relative so it observes the staged mutation
+    # before the shadow is merged back into the real workspace.
+    script = f"from pathlib import Path; assert not Path({target.name!r}).exists()"
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
 
 
@@ -346,6 +351,43 @@ def test_call_policy_is_declared_by_contract_not_capability_name(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_file_read_rejects_paths_outside_current_workspace(tmp_path: Path) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    result = await registry.invoke(
+        "file.read",
+        {"path": "../outside.txt"},
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert result.ok is False
+    assert result.error_reason == "resource_scope_violation"
+    assert result.facts["workspace_boundary"]["allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_shell_sandbox_does_not_inherit_host_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NAVI_TEST_SECRET", "must-not-reach-shell")
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    result = await registry.invoke(
+        "shell.run",
+        {"command": ["printenv", "NAVI_TEST_SECRET"]},
+        permission="read",
+        context=_context(tmp_path),
+    )
+
+    assert result.ok is False
+    assert "must-not-reach-shell" not in str(result.facts)
+    assert result.facts["sandboxed"] is True
+    assert result.facts["sandbox_backend"] == "bubblewrap"
+
+
+@pytest.mark.asyncio
 async def test_approval_resolve_resumes_original_shell_checkpoint(tmp_path: Path) -> None:
     target = tmp_path / "performance-report.md"
     target.write_text("important report\n", encoding="utf-8")
@@ -541,6 +583,73 @@ async def test_private_http_target_requires_approval_without_hard_rejection(tmp_
         "private_network_access_requires_approval"
     )
     assert "public" not in (suspended.message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_public_hostname_resolving_to_loopback_requires_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        safeguard_module.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (safeguard_module.socket.AF_INET, safeguard_module.socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))
+        ],
+    )
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    suspended = await registry.invoke(
+        "http.fetch",
+        {"url": "https://public-name.example/health"},
+        permission="network",
+        context=_context(tmp_path),
+    )
+
+    assert suspended.ok is False
+    assert suspended.yields_control is True
+    assert suspended.facts["risk"]["reason_code"] == "private_network_access_requires_approval"
+    assert suspended.facts["risk"]["evidence"]["private_resolved_addresses"] == [
+        "127.0.0.1"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_http_approval_is_bound_to_the_resolved_address_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    address = {"value": "127.0.0.1"}
+
+    def resolve(*args, **kwargs):
+        return [
+            (safeguard_module.socket.AF_INET, safeguard_module.socket.SOCK_STREAM, 6, "", (address["value"], 443))
+        ]
+
+    monkeypatch.setattr(safeguard_module.socket, "getaddrinfo", resolve)
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = _context(tmp_path)
+    args = {"url": "https://changing.example/health"}
+
+    first = await registry.invoke("http.fetch", args, permission="network", context=context)
+    first_approval = RunStore(tmp_path).pending_approval_for_run(first.run_id)
+    assert first_approval is not None
+    approved = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": first_approval.code},
+        permission="prepare",
+        context=context,
+    )
+    assert approved.ok is True
+
+    address["value"] = "10.0.0.8"
+    second = await registry.invoke("http.fetch", args, permission="network", context=context)
+    second_approval = RunStore(tmp_path).pending_approval_for_run(second.run_id)
+
+    assert second.ok is False
+    assert second.yields_control is True
+    assert second_approval is not None
+    assert second_approval.id != first_approval.id
 
 
 def test_public_read_only_http_call_is_not_high_risk(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ on ordinary URLs and ``user@host`` addresses.
 import asyncio
 from pathlib import Path
 
-from navi.capabilities import CapabilityContext, build_capability_registry
+from navi.capabilities import CapabilityContext, CapabilityRegistry
 from navi.runs import RunStore
 from navi.safeguards import (
     canonical_approval_args_json,
@@ -141,10 +141,11 @@ def test_approval_args_use_stable_hmac_for_personal_and_secret_values(tmp_path: 
 
 def test_action_capability_audit_log_redacts_args(tmp_path: Path):
     async def run() -> str:
-        registry = build_capability_registry(
-            tmp_path,
+        registry = CapabilityRegistry(
+            home=tmp_path,
             project_dir=tmp_path,
             execution_context=API_CONTEXT,
+            sensitive_approval_mode="skip",
         )
         context = CapabilityContext(
             home=tmp_path,

@@ -26,8 +26,7 @@ _MCP_SERVER_FIELDS = {
     "headers",
     "cwd",
     "timeout_seconds",
-    "permission",
-    "allowed_tools",
+    "tool_permissions",
     "enabled",
 }
 
@@ -84,9 +83,8 @@ def parse_mcp_config(config: NaviConfig, *, path: Path) -> MCPConfigReport:
                 timeout_seconds=_positive_float(
                     item.get("timeout_seconds", 30.0), f"{item_path}.timeout_seconds"
                 ),
-                permission=str(item.get("permission") or "write").strip().lower(),
-                allowed_tools=_string_tuple(
-                    item.get("allowed_tools"), f"{item_path}.allowed_tools"
+                tool_permissions=_permission_mapping(
+                    item.get("tool_permissions"), f"{item_path}.tool_permissions"
                 ),
                 enabled=_boolean(item.get("enabled", True), f"{item_path}.enabled"),
             )
@@ -131,11 +129,15 @@ def _register_server_tools(registry: ToolRegistry, server: MCPServerConfig) -> N
                 "properties": {
                     "server": {"type": "string"},
                     "transport": {"type": "string"},
+                    "endpoint": {"type": "string"},
                     "tools": {"type": "array", "items": {"type": "object"}},
                     "count": {"type": "integer"},
+                    "allowed_tools": {"type": "array", "items": {"type": "string"}},
+                    "tool_permissions": {"type": "object"},
+                    "annotations_trusted_for_permission": {"type": "boolean"},
                 },
             },
-            permission="network",
+            permission=server.transport_permission,
             source=source,
         ),
         list_server_tools,
@@ -152,7 +154,7 @@ def _register_server_tools(registry: ToolRegistry, server: MCPServerConfig) -> N
             input_schema={
                 "type": "object",
                 "properties": {
-                    "tool": {"type": "string"},
+                    "tool": {"type": "string", "enum": list(server.allowed_tools)},
                     "arguments": {"type": "object", "default": {}},
                 },
                 "required": ["tool"],
@@ -161,13 +163,22 @@ def _register_server_tools(registry: ToolRegistry, server: MCPServerConfig) -> N
                 "type": "object",
                 "properties": {
                     "server": {"type": "string"},
-                    "tool": {"type": "string"},
+                    "transport": {"type": "string"},
+                    "endpoint": {"type": "string"},
+                    "mcp_tool": {"type": "string"},
                     "content": {"type": "array", "items": {"type": "object"}},
                     "structured_content": {"type": "object"},
                     "response": {"type": "object"},
                 },
             },
-            permission=server.permission,
+            permission=server.transport_permission,
+            permission_policy="argument_map",
+            argument_permission_field="tool",
+            argument_permissions=tuple(sorted(server.tool_permissions.items())),
+            risk_policy="argument_permission",
+            mutates=any(
+                permission == "write" for permission in server.tool_permissions.values()
+            ),
             source=source,
         ),
         call_server_tool,
@@ -191,6 +202,7 @@ async def _list_server_tools(server: MCPServerConfig) -> ToolResult:
             "tools": tools,
             "count": len(tools),
             "allowed_tools": list(server.allowed_tools),
+            "tool_permissions": dict(sorted(server.tool_permissions.items())),
             "annotations_trusted_for_permission": False,
         },
     )
@@ -301,6 +313,13 @@ def _string_mapping(value: Any, path: str) -> dict[str, str]:
         if text:
             result[str(key)] = text
     return result
+
+
+def _permission_mapping(value: Any, path: str) -> dict[str, str]:
+    return {
+        tool: permission.strip().lower()
+        for tool, permission in _string_mapping(value, path).items()
+    }
 
 
 def _positive_float(value: Any, path: str) -> float:

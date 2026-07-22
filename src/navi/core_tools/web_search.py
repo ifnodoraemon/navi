@@ -102,7 +102,7 @@ async def _web_search(
     if server.allowed_tools and "web_search_exa" not in server.allowed_tools:
         return _search_config_error(
             query,
-            f"mcp.servers.{config.search.mcp_server}.allowed_tools must include web_search_exa",
+            f"mcp.servers.{config.search.mcp_server}.tool_permissions must include web_search_exa",
         )
     return await _exa_mcp_search(query, limit=limit, server=server)
 

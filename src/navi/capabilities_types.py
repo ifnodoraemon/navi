@@ -78,6 +78,7 @@ class CapabilityContext:
     sender_id: str = ""
     source: str = "local"
     permission_ceiling: str = "write"
+    skill_permission_ceiling: str = "read"
     workspace: str = ""
     session_id: str | None = None
     trace_id: str = ""
@@ -96,6 +97,11 @@ class CapabilityContext:
             self,
             "permission_ceiling",
             normalize_permission(self.permission_ceiling, default="write"),
+        )
+        object.__setattr__(
+            self,
+            "skill_permission_ceiling",
+            normalize_permission(self.skill_permission_ceiling, default="read"),
         )
 
 
@@ -125,11 +131,17 @@ class CapabilityNode:
     description: str = ""
     side_effect_policy: dict[str, Any] | None = None
     permission_policy: str = "static"
+    argument_permission_field: str = ""
+    argument_permissions: tuple[tuple[str, str], ...] = ()
     risk_policy: str = "declared"
     context_policy: str = "none"
     runtime_policy: str = "none"
     delegation_allowed: bool = True
-    objective_evidence: bool = False
+    deterministic_completion_authority: bool = False
+    approval_policy: str = "risk"
+    workspace_policy: str = "none"
+    workspace_fields: tuple[str, ...] = ()
+    workspace_scope: str = "execution"
 
 
 class BaseCapability:
@@ -143,6 +155,16 @@ class BaseCapability:
     def __init__(self, spec: ToolSpec, *, home: Path):
         self.spec = spec
         self.home = home
+
+    async def preflight(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult | None:
+        """Run read-only authorization checks before risk/approval handling."""
+        return None
 
     async def invoke(
         self,

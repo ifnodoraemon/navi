@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from .connector_registry import load_connector_adapters
+from .capability_contract import CAPABILITY_ERROR_REASON_KEY, CAPABILITY_RETRYABLE_KEY
+from .json_utils import json_schema_errors, normalize_json_schema
 from .permission_contract import normalize_permission
 from .runs import RunStore
 from .safeguards import redact_secrets, redact_secrets_deep
@@ -60,91 +62,9 @@ class SideEffectPolicy:
 
 
 def validate_schema(data: Any, schema: dict[str, Any], path: str = "") -> list[str]:
-    """Validates data against a simplified JSON Schema. Returns list of error messages."""
-    errors: list[str] = []
-    if not isinstance(schema, dict):
-        return errors
-    expected_type = schema.get("type")
-    if not isinstance(expected_type, str):
-        return errors
-    validator = _TYPE_VALIDATORS.get(expected_type)
-    if validator is None:
-        return errors
-    return validator(data, schema, path, errors)
-
-
-def _validate_object(
-    data: Any, schema: dict[str, Any], path: str, errors: list[str]
-) -> list[str]:
-    if not isinstance(data, dict):
-        errors.append(f"'{path or 'input'}' must be an object, got {type(data).__name__}")
-        return errors
-    required = schema.get("required", [])
-    for req_field in required:
-        if req_field not in data:
-            errors.append(f"'{path or 'input'}' is missing required property: {req_field}")
-    properties = schema.get("properties", {})
-    for key, val in data.items():
-        if key in properties:
-            errors.extend(
-                validate_schema(val, properties[key], f"{path}.{key}" if path else key)
-            )
-    return errors
-
-
-def _validate_array(
-    data: Any, schema: dict[str, Any], path: str, errors: list[str]
-) -> list[str]:
-    if not isinstance(data, (list, tuple)):
-        errors.append(f"'{path or 'input'}' must be an array, got {type(data).__name__}")
-        return errors
-    items = schema.get("items")
-    if items:
-        for idx, item in enumerate(data):
-            errors.extend(validate_schema(item, items, f"{path}[{idx}]"))
-    return errors
-
-
-def _validate_string(
-    data: Any, schema: dict[str, Any], path: str, errors: list[str]
-) -> list[str]:
-    if not isinstance(data, str):
-        errors.append(f"'{path or 'input'}' must be a string, got {type(data).__name__}")
-    return errors
-
-
-def _validate_integer(
-    data: Any, schema: dict[str, Any], path: str, errors: list[str]
-) -> list[str]:
-    if not isinstance(data, int) or isinstance(data, bool):
-        errors.append(f"'{path or 'input'}' must be an integer, got {type(data).__name__}")
-    return errors
-
-
-def _validate_number(
-    data: Any, schema: dict[str, Any], path: str, errors: list[str]
-) -> list[str]:
-    if not isinstance(data, (int, float)) or isinstance(data, bool):
-        errors.append(f"'{path or 'input'}' must be a number, got {type(data).__name__}")
-    return errors
-
-
-def _validate_boolean(
-    data: Any, schema: dict[str, Any], path: str, errors: list[str]
-) -> list[str]:
-    if not isinstance(data, bool):
-        errors.append(f"'{path or 'input'}' must be a boolean, got {type(data).__name__}")
-    return errors
-
-
-_TYPE_VALIDATORS: dict[str, Callable[..., list[str]]] = {
-    "object": _validate_object,
-    "array": _validate_array,
-    "string": _validate_string,
-    "integer": _validate_integer,
-    "number": _validate_number,
-    "boolean": _validate_boolean,
-}
+    """Compatibility wrapper around the one runtime JSON Schema validator."""
+    json_path = "$" if not path else f"$.{path}"
+    return json_schema_errors(data, schema, path=json_path)
 
 
 @dataclass(frozen=True)
@@ -161,6 +81,8 @@ class ToolSpec:
     source: str = "core"
     side_effect_policy: SideEffectPolicy = field(default_factory=SideEffectPolicy)
     permission_policy: str = "static"
+    argument_permission_field: str = ""
+    argument_permissions: tuple[tuple[str, str], ...] = ()
     risk_policy: str = "declared"
     context_policy: str = "none"
     runtime_policy: str = "none"
@@ -169,12 +91,17 @@ class ToolSpec:
     sensitive_contexts: tuple[str, ...] = ()
     confirmation_required: bool | None = None
     risk_reason_code: str = ""
-    # Governance primitives carry their own first-level guard and must not be
-    # suspended by the approval mechanism they implement — that creates an
-    # infinite approval loop. Declared per-spec so the exemption is data-driven,
-    # not a hardcoded name set (principle 1.1/6).
-    governance_exempt: bool = False
-    objective_evidence: bool = False
+    # Only capabilities that create or resolve the approval state itself may
+    # use ``control_plane``; every other capability is governed by call risk.
+    approval_policy: str = "risk"
+    # True only when this capability's own completion_evidence fact can
+    # deterministically satisfy an objective-evidence checker tier. This is a
+    # runtime short-circuit authority, not a judgment about whether every fact
+    # returned by the capability is semantically useful or authoritative.
+    deterministic_completion_authority: bool = False
+    workspace_policy: str = "none"
+    workspace_fields: tuple[str, ...] = ()
+    workspace_scope: str = "execution"
 
     def __post_init__(self) -> None:
         if not self.capability_class.strip():
@@ -185,26 +112,63 @@ class ToolSpec:
             raise ValueError(f"tool {self.name!r} must declare execution_contexts")
         object.__setattr__(self, "execution_contexts", contexts)
         object.__setattr__(self, "permission", normalize_permission(self.permission))
+        object.__setattr__(
+            self,
+            "input_schema",
+            normalize_json_schema(self.input_schema, output=False),
+        )
+        object.__setattr__(
+            self,
+            "output_schema",
+            normalize_json_schema(self.output_schema, output=True),
+        )
         permission_policy = str(self.permission_policy or "static").strip()
-        if permission_policy not in {"static", "shell_argv", "agent_operation"}:
+        if permission_policy not in {
+            "static",
+            "shell_argv",
+            "agent_operation",
+            "argument_map",
+        }:
             raise ValueError(
                 f"tool {self.name!r} declares unsupported permission_policy "
                 f"{permission_policy!r}"
             )
         object.__setattr__(self, "permission_policy", permission_policy)
+        argument_permission_field = str(self.argument_permission_field or "").strip()
+        argument_permissions = tuple(
+            (str(key).strip(), normalize_permission(value))
+            for key, value in self.argument_permissions
+            if str(key).strip()
+        )
+        if permission_policy == "argument_map" and (
+            not argument_permission_field or not argument_permissions
+        ):
+            raise ValueError(
+                f"tool {self.name!r} argument_map permission policy requires a field and mapping"
+            )
+        if permission_policy != "argument_map" and (
+            argument_permission_field or argument_permissions
+        ):
+            raise ValueError(
+                f"tool {self.name!r} declares argument permissions without argument_map policy"
+            )
+        object.__setattr__(self, "argument_permission_field", argument_permission_field)
+        object.__setattr__(self, "argument_permissions", argument_permissions)
         risk_policy = str(self.risk_policy or "declared").strip()
         if risk_policy not in {
             "declared",
             "workspace_file_write",
             "shell_argv",
             "http_request",
+            "agent_operation",
+            "argument_permission",
         }:
             raise ValueError(
                 f"tool {self.name!r} declares unsupported risk_policy {risk_policy!r}"
             )
         object.__setattr__(self, "risk_policy", risk_policy)
         context_policy = str(self.context_policy or "none").strip()
-        if context_policy not in {"none", "actor_memory"}:
+        if context_policy not in {"none", "actor_memory", "skill_catalog"}:
             raise ValueError(
                 f"tool {self.name!r} declares unsupported context_policy "
                 f"{context_policy!r}"
@@ -230,6 +194,40 @@ class ToolSpec:
         )
         object.__setattr__(self, "sensitive_contexts", sensitive_contexts)
         object.__setattr__(self, "risk_reason_code", str(self.risk_reason_code or "").strip())
+        approval_policy = str(self.approval_policy or "risk").strip()
+        if approval_policy not in {"risk", "control_plane", "explicit_control"}:
+            raise ValueError(
+                f"tool {self.name!r} declares unsupported approval_policy {approval_policy!r}"
+            )
+        if approval_policy == "control_plane" and (
+            self.confirmation_required is True or risk_class == "high"
+        ):
+            raise ValueError(
+                f"tool {self.name!r} cannot both implement and require capability approval"
+            )
+        object.__setattr__(self, "approval_policy", approval_policy)
+        workspace_policy = str(self.workspace_policy or "none").strip()
+        if workspace_policy not in {"none", "paths", "sandbox"}:
+            raise ValueError(
+                f"tool {self.name!r} declares unsupported workspace_policy {workspace_policy!r}"
+            )
+        workspace_fields = tuple(
+            dict.fromkeys(str(item).strip() for item in self.workspace_fields if str(item).strip())
+        )
+        if workspace_policy == "paths" and not workspace_fields:
+            raise ValueError(f"tool {self.name!r} workspace path policy requires fields")
+        object.__setattr__(self, "workspace_policy", workspace_policy)
+        object.__setattr__(self, "workspace_fields", workspace_fields)
+        workspace_scope = str(self.workspace_scope or "execution").strip()
+        if workspace_scope not in {"execution", "context"}:
+            raise ValueError(
+                f"tool {self.name!r} declares unsupported workspace_scope {workspace_scope!r}"
+            )
+        if workspace_scope == "context" and workspace_policy == "none":
+            raise ValueError(
+                f"tool {self.name!r} context workspace scope requires a workspace policy"
+            )
+        object.__setattr__(self, "workspace_scope", workspace_scope)
         if (
             risk_class or sensitive_contexts or self.confirmation_required is not None
         ) and not self.risk_reason_code:
@@ -261,6 +259,24 @@ class ToolResult:
     terminal: bool = False
     yields_control: bool = False
     message: str = ""
+    error_reason: str = ""
+    retryable: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.ok:
+            return
+        facts = dict(self.facts or {})
+        reason = str(
+            self.error_reason or facts.get(CAPABILITY_ERROR_REASON_KEY) or "tool_error"
+        ).strip()
+        raw_retryable = facts.get(CAPABILITY_RETRYABLE_KEY)
+        retryable = self.retryable if self.retryable is not None else raw_retryable
+        retryable = bool(retryable) if retryable is not None else False
+        facts[CAPABILITY_ERROR_REASON_KEY] = reason
+        facts[CAPABILITY_RETRYABLE_KEY] = retryable
+        object.__setattr__(self, "facts", facts)
+        object.__setattr__(self, "error_reason", reason)
+        object.__setattr__(self, "retryable", retryable)
 
     @property
     def duration_ms(self) -> int:
@@ -278,6 +294,8 @@ class ToolResult:
             "ended_at": self.ended_at,
             "duration_ms": self.duration_ms,
             "yields_control": self.yields_control,
+            "error_reason": self.error_reason,
+            "retryable": self.retryable,
         }
 
 
@@ -331,12 +349,16 @@ class ToolRegistry:
                 error=f"tool not found: {name}",
                 started_at=started_at,
                 ended_at=time.time(),
+                error_reason="not_found",
             )
             self._audit_call(args or {}, result)
             return result
         schema = tool.spec.input_schema
         if schema:
-            errors = validate_schema(args or {}, schema)
+            public_args = {
+                key: value for key, value in (args or {}).items() if not str(key).startswith("_")
+            }
+            errors = json_schema_errors(public_args, schema)
             if errors:
                 result = ToolResult(
                     tool=name,
@@ -344,9 +366,35 @@ class ToolRegistry:
                     error=f"Invalid arguments: {'; '.join(errors)}",
                     started_at=started_at,
                     ended_at=time.time(),
+                    error_reason="invalid_arguments",
                 )
                 self._audit_call(args or {}, result)
                 return result
+        audit_log_id = ""
+        if tool.spec.mutates:
+            try:
+                audit_log_id = self._reserve_mutating_audit(
+                    tool.spec,
+                    args or {},
+                    started_at=started_at,
+                )
+            except Exception as exc:
+                logger.error(
+                    "mutating tool audit reservation failed for %s: %s",
+                    name,
+                    exc,
+                    exc_info=True,
+                )
+                return ToolResult(
+                    tool=name,
+                    ok=False,
+                    error="mutating tool was not executed because audit persistence is unavailable",
+                    facts={"audit_phase": "reservation", "error_type": type(exc).__name__},
+                    error_reason="audit_unavailable",
+                    retryable=True,
+                    started_at=started_at,
+                    ended_at=time.time(),
+                )
         try:
             handler_result = tool.handler(args or {})
             if inspect.isawaitable(handler_result):
@@ -359,26 +407,87 @@ class ToolRegistry:
                 error=str(exc),
                 started_at=started_at,
                 ended_at=time.time(),
+                error_reason="internal_error",
             )
+        if not (result.started_at and result.ended_at):
+            result = ToolResult(
+                tool=result.tool,
+                ok=result.ok,
+                facts=result.facts,
+                error=result.error,
+                action=result.action,
+                terminal=result.terminal,
+                yields_control=result.yields_control,
+                message=result.message,
+                error_reason=result.error_reason,
+                retryable=result.retryable,
+                started_at=started_at,
+                ended_at=time.time(),
+            )
+        if audit_log_id:
+            try:
+                self._complete_mutating_audit(audit_log_id, result)
+            except Exception as exc:
+                logger.error(
+                    "mutating tool audit completion failed for %s: %s",
+                    name,
+                    exc,
+                    exc_info=True,
+                )
+                return ToolResult(
+                    tool=name,
+                    ok=False,
+                    error="tool effect completed but its audit outcome could not be persisted",
+                    facts={
+                        "audit_phase": "completion",
+                        "audit_reservation_id": audit_log_id,
+                        "effect_result_ok": result.ok,
+                        "error_type": type(exc).__name__,
+                    },
+                    error_reason="audit_completion_failed",
+                    retryable=False,
+                    started_at=started_at,
+                    ended_at=time.time(),
+                )
+        else:
             self._audit_call(args or {}, result)
-            return result
-        if result.started_at and result.ended_at:
-            self._audit_call(args or {}, result)
-            return result
-        result = ToolResult(
-            tool=result.tool,
-            ok=result.ok,
-            facts=result.facts,
-            error=result.error,
-            action=result.action,
-            terminal=result.terminal,
-            yields_control=result.yields_control,
-            message=result.message,
-            started_at=started_at,
-            ended_at=time.time(),
-        )
-        self._audit_call(args or {}, result)
         return result
+
+    def _reserve_mutating_audit(
+        self,
+        spec: ToolSpec,
+        args: dict[str, Any],
+        *,
+        started_at: float,
+    ) -> str:
+        safe_args = redact_secrets_deep(args)
+        log = RunStore(self.home).add_tool_call_log(
+            tool=spec.name,
+            args_json=json.dumps(safe_args, ensure_ascii=False, sort_keys=True),
+            ok=False,
+            facts_json=json.dumps(
+                {"audit_phase": "reserved", "mutates": True},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            error="execution outcome pending",
+            started_at=started_at,
+            ended_at=started_at,
+        )
+        return log.id
+
+    def _complete_mutating_audit(self, log_id: str, result: ToolResult) -> None:
+        RunStore(self.home).complete_tool_call_log(
+            log_id,
+            ok=result.ok,
+            facts_json=json.dumps(
+                {"audit_phase": "completed", **redact_secrets_deep(result.facts)},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            error=redact_secrets(result.error),
+            ended_at=result.ended_at,
+        )
 
     def _audit_call(self, args: dict[str, Any], result: ToolResult) -> None:
         try:

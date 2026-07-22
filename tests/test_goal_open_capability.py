@@ -38,6 +38,29 @@ def _context(home: Path, *, trace_id: str = "") -> CapabilityContext:
     )
 
 
+async def _approve_capability_call(
+    registry,
+    home: Path,
+    name: str,
+    args: dict,
+    *,
+    context: CapabilityContext,
+):
+    suspended = await registry.invoke(name, args, permission="prepare", context=context)
+    assert suspended.ok is False
+    assert suspended.yields_control is True
+    approval = RunStore(home).pending_approval_for_run(suspended.run_id)
+    assert approval is not None
+    resolved = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": approval.code},
+        permission="prepare",
+        context=context,
+    )
+    assert resolved.ok is True
+    return await registry.invoke(name, args, permission="prepare", context=context)
+
+
 def test_goal_open_description_is_factual_capability_metadata() -> None:
     spec = next(spec for spec in ACTION_SPECS if spec.name == "goal.open")
 
@@ -200,6 +223,37 @@ async def test_goal_open_scheduled_persists_real_workspace_from_turn_shadow(
 
 
 @pytest.mark.asyncio
+async def test_goal_open_cannot_expand_the_caller_workspace(tmp_path: Path) -> None:
+    caller_workspace = tmp_path / "caller"
+    outside_workspace = tmp_path / "outside"
+    caller_workspace.mkdir()
+    outside_workspace.mkdir()
+    registry = build_capability_registry(tmp_path / ".navi", project_dir=caller_workspace)
+
+    result = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "escape the caller workspace",
+            "workspace": str(outside_workspace),
+            "auto_start": False,
+        },
+        permission="prepare",
+        context=CapabilityContext(
+            home=tmp_path / ".navi",
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            permission_ceiling="write",
+            workspace=str(caller_workspace),
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_reason == "permission_denied"
+    assert GoalStore(tmp_path / ".navi").list(limit=10) == []
+
+
+@pytest.mark.asyncio
 async def test_goal_cancel_scope_accepts_shadow_for_same_durable_workspace(
     tmp_path: Path,
 ) -> None:
@@ -230,11 +284,11 @@ async def test_goal_cancel_scope_accepts_shadow_for_same_durable_workspace(
         workspace=repo,
     )
 
-    cancelled = await registry.invoke(
-        "goal.cancel",
-        {"goal_id": opened.facts["goal_id"], "reason": "user requested rebuild"},
-        permission="prepare",
-        context=CapabilityContext(
+    cancel_args = {
+        "goal_id": opened.facts["goal_id"],
+        "reason": "user requested rebuild",
+    }
+    cancel_context = CapabilityContext(
             home=home,
             goal_id=opened.facts["goal_id"],
             source="weixin",
@@ -242,7 +296,13 @@ async def test_goal_cancel_scope_accepts_shadow_for_same_durable_workspace(
             sender_id="user-1",
             permission_ceiling="write",
             workspace=shadow.shadow_workspace,
-        ),
+        )
+    cancelled = await _approve_capability_call(
+        registry,
+        home,
+        "goal.cancel",
+        cancel_args,
+        context=cancel_context,
     )
 
     assert cancelled.ok is True
@@ -501,10 +561,11 @@ async def test_goal_open_capability_auto_start_uses_runtime_state_graph(tmp_path
         decision="approve",
         resolved_by="tester",
     )
-    resumed = await registry.invoke(
+    resumed = await _approve_capability_call(
+        registry,
+        tmp_path,
         "goal.resume",
         {"goal_id": result.facts["goal_id"], "workspace": str(tmp_path)},
-        permission="prepare",
         context=_context(tmp_path, trace_id="trace-goal-open"),
     )
     assert provider.calls == ["planner"]
@@ -622,10 +683,11 @@ async def test_goal_resume_capability_runs_checkpointed_goal(tmp_path: Path) -> 
         context=_context(tmp_path),
     )
 
-    resumed = await registry.invoke(
+    resumed = await _approve_capability_call(
+        registry,
+        tmp_path,
         "goal.resume",
         {"goal_id": opened.facts["goal_id"], "workspace": str(tmp_path)},
-        permission="prepare",
         context=_context(tmp_path),
     )
 
@@ -668,10 +730,11 @@ async def test_goal_cancel_capability_marks_loop_terminal(tmp_path: Path) -> Non
         context=_context(tmp_path),
     )
 
-    cancelled = await registry.invoke(
+    cancelled = await _approve_capability_call(
+        registry,
+        tmp_path,
         "goal.cancel",
         {"goal_id": opened.facts["goal_id"], "reason": "user stop"},
-        permission="prepare",
         context=_context(tmp_path),
     )
 
@@ -950,10 +1013,11 @@ async def test_goal_cancel_explicit_pending_approval_ids_cancel_and_verify(
     )
     pending_ids = [goal["id"] for goal in state.facts["pending_approval_goals"]]
 
-    cancelled = await registry.invoke(
+    cancelled = await _approve_capability_call(
+        registry,
+        tmp_path,
         "goal.cancel",
         {"goal_ids": pending_ids, "reason": "user requested cleanup"},
-        permission="prepare",
         context=_context(tmp_path),
     )
 

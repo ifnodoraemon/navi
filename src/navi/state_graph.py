@@ -133,7 +133,7 @@ class ExecutedCapabilityStep:
     error_reason: str = ""
     terminal: bool = False
     yields_control: bool = False
-    objective_evidence: bool = False
+    deterministic_completion_authority: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -144,7 +144,7 @@ class ExecutedCapabilityStep:
             "error_reason": self.error_reason,
             "terminal": self.terminal,
             "yields_control": self.yields_control,
-            "objective_evidence": self.objective_evidence,
+            "deterministic_completion_authority": self.deterministic_completion_authority,
         }
 
 
@@ -1152,18 +1152,31 @@ class CapabilityExecutorPort:
         )
         context = replace(
             self.context,
-            workspace=_scope_workspace_for_spec(spec, default_workspace=workspace),
+            workspace=_scope_workspace_for_spec(
+                spec,
+                default_workspace=(
+                    Path(self.context.workspace)
+                    if self.context.workspace
+                    else workspace
+                ),
+            ),
             permission_ceiling=spec.goal.permission_ceiling,
             source=self.context.source or "state_graph",
             effect_idempotency_key=_effect_idempotency_key(state, step),
         )
+        tool_spec = registry.get(step.tool)
+        execution_args = _execution_args_for_workspace(
+            tool_spec,
+            step.args,
+            logical_workspace=context.workspace,
+            execution_workspace=workspace,
+        )
         result = await registry.invoke(
             step.tool,
-            step.args,
+            execution_args,
             permission=step.permission,
             context=context,
         )
-        tool_spec = registry.get(step.tool)
         return ExecutedCapabilityStep(
             ok=result.ok,
             action=result.action,
@@ -1172,7 +1185,9 @@ class CapabilityExecutorPort:
             error_reason=result.error_reason,
             terminal=result.terminal,
             yields_control=result.yields_control,
-            objective_evidence=bool(tool_spec and tool_spec.objective_evidence),
+            deterministic_completion_authority=bool(
+                tool_spec and tool_spec.deterministic_completion_authority
+            ),
         )
 
 
@@ -1739,9 +1754,17 @@ class DurableStateGraphRunner:
                         evidence=collected_evidence,
                     )
             try:
+                execution_command = _execution_command_for_workspace(
+                    step.command,
+                    logical_workspace=_scope_workspace_for_spec(
+                        spec,
+                        default_workspace=workspace,
+                    ),
+                    execution_workspace=execution_workspace,
+                )
                 result = self.harness.run_command(
                     HarnessCommand(
-                        command=tuple(shlex.split(step.command)),
+                        command=tuple(shlex.split(execution_command)),
                         cwd=execution_workspace,
                         timeout=step.timeout,
                     )
@@ -1849,7 +1872,17 @@ class DurableStateGraphRunner:
                 node=LoopNode.EVALUATE,
                 condition="checker_passed",
                 terminal_state=LoopTerminalState.CONVERGED,
-                evidence=checker_report.to_dict(),
+                evidence={
+                    **checker_report.to_dict(),
+                    # Recovery remains available in attempt history and trace
+                    # events. It is no longer the current state once a later
+                    # attempt converges.
+                    "reason_code": "",
+                    "reason": "",
+                    "repeat_count": 0,
+                    "replan_allowed": False,
+                    "facts": {},
+                },
             )
         elif checker_report.timed_out:
             self._compensate_side_effects(state, collected_evidence)
@@ -2043,7 +2076,9 @@ class DurableStateGraphRunner:
             message=str(cap_result.get("message") or ""),
             error_reason=str(cap_result.get("error_reason") or ""),
             terminal=bool(cap_result.get("terminal", False)),
-            objective_evidence=bool(cap_result.get("objective_evidence", False)),
+            deterministic_completion_authority=bool(
+                cap_result.get("deterministic_completion_authority", False)
+            ),
         )
         execution_profile = spec.goal.metadata.get("execution_profile")
         checker_tier = (
@@ -2061,7 +2096,7 @@ class DurableStateGraphRunner:
                 checker_tier == "objective_evidence"
                 and executed_step.ok
                 and completion_evidence
-                and executed_step.objective_evidence
+                and executed_step.deterministic_completion_authority
             ):
                 facts = {
                     "passed": True,
@@ -2616,6 +2651,85 @@ def _scope_workspace_for_spec(spec: LoopSpec, *, default_workspace: Path) -> str
     return workspace or str(default_workspace)
 
 
+def _execution_args_for_workspace(
+    tool_spec: Any,
+    args: dict[str, Any],
+    *,
+    logical_workspace: str,
+    execution_workspace: Path,
+) -> dict[str, Any]:
+    """Map declared real-workspace paths into the active shadow workspace."""
+
+    translated = dict(args)
+    if tool_spec is None or tool_spec.workspace_scope == "context" or not logical_workspace:
+        return translated
+    logical_root = Path(logical_workspace).expanduser().resolve()
+    execution_root = execution_workspace.expanduser().resolve()
+    if logical_root == execution_root:
+        return translated
+
+    def translate(value: Any) -> Any:
+        text = str(value or "").strip()
+        if not text:
+            return value
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            return value
+        resolved = candidate.resolve()
+        if resolved == logical_root:
+            return str(execution_root)
+        if logical_root in resolved.parents:
+            return str(execution_root / resolved.relative_to(logical_root))
+        return value
+
+    for path_field in tool_spec.workspace_fields:
+        if path_field in translated:
+            translated[path_field] = translate(translated[path_field])
+    if tool_spec.workspace_policy == "sandbox" and isinstance(
+        translated.get("command"), list
+    ):
+        translated["command"] = [translate(item) for item in translated["command"]]
+    return translated
+
+
+def _execution_command_for_workspace(
+    command: str,
+    *,
+    logical_workspace: str,
+    execution_workspace: Path,
+) -> str:
+    """Translate logical workspace paths embedded in verifier arguments."""
+
+    if not logical_workspace:
+        return command
+    logical_root = Path(logical_workspace).expanduser().resolve()
+    execution_root = execution_workspace.expanduser().resolve()
+    if logical_root == execution_root:
+        return command
+
+    logical_text = str(logical_root)
+    execution_text = str(execution_root)
+    translated: list[str] = []
+    for argument in shlex.split(command):
+        start = 0
+        pieces: list[str] = []
+        while True:
+            index = argument.find(logical_text, start)
+            if index < 0:
+                pieces.append(argument[start:])
+                break
+            boundary = index + len(logical_text)
+            if boundary < len(argument) and argument[boundary] != "/":
+                pieces.append(argument[start:boundary])
+                start = boundary
+                continue
+            pieces.append(argument[start:index])
+            pieces.append(execution_text)
+            start = boundary
+        translated.append("".join(pieces))
+    return shlex.join(translated)
+
+
 def _checker_reason_code(checker_report: CheckerReport) -> str:
     if checker_report.timed_out:
         return "checker_timed_out"
@@ -3082,7 +3196,12 @@ def _semantic_checker_capability_result(
 ) -> dict[str, Any]:
     from .safeguards import redact_secrets_deep
 
-    redacted = redact_secrets_deep(executed.to_dict())
+    # The deterministic completion-authority flag is an internal runtime gate.
+    # It does not grade the provenance of ordinary capability facts and must
+    # not bias the semantic checker into discarding them.
+    checker_result = executed.to_dict()
+    checker_result.pop("deterministic_completion_authority", None)
+    redacted = redact_secrets_deep(checker_result)
     return redacted if isinstance(redacted, dict) else {}
 
 

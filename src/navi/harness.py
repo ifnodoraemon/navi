@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .loop_contracts import LockMode, MergeResult, TimeoutEvidence, TimeoutPolicy, VaultHandle
+from .process_sandbox import bubblewrap_command, sandbox_environment
 from .safeguards import redact_secrets
 from .workspaces import (
     LockAcquireResult,
@@ -69,6 +70,8 @@ class HarnessResult:
     timed_out: bool
     duration_seconds: float
     timeout: TimeoutPolicy
+    sandboxed: bool = True
+    sandbox_backend: str = "bubblewrap"
     checker_fact: dict[str, Any] = field(default_factory=dict)
 
     def to_facts(self) -> dict[str, Any]:
@@ -85,6 +88,8 @@ class HarnessResult:
             "timed_out": self.timed_out,
             "duration_seconds": self.duration_seconds,
             "timeout": self.timeout.to_dict(),
+            "sandboxed": self.sandboxed,
+            "sandbox_backend": self.sandbox_backend,
             "checker_fact": dict(self.checker_fact),
         }
 
@@ -113,16 +118,41 @@ class Harness:
             raise ValueError("HarnessCommand.cwd must be an existing directory")
 
         injected_env, secret_values = self.vault.resolve_env(command.vault_handles)
-        env = os.environ.copy()
+        env = sandbox_environment()
         env.update(command.env)
         env.update(injected_env)
         started = time.time()
+        sandbox_command, sandbox_error = bubblewrap_command(
+            list(command.command),
+            cwd=command.cwd,
+            workspace=command.cwd,
+            writable=True,
+            network_allowed=False,
+            path=env["PATH"],
+        )
+        if sandbox_error:
+            return HarnessResult(
+                ok=False,
+                command=command.command,
+                cwd=str(command.cwd),
+                exit_code=126,
+                stdout="",
+                stderr=sandbox_error,
+                timed_out=False,
+                duration_seconds=time.time() - started,
+                timeout=command.timeout,
+                sandboxed=False,
+                checker_fact={
+                    "error_type": "SandboxUnavailable",
+                    "message": sandbox_error,
+                },
+            )
         process: subprocess.Popen[str] | None = None
         stdout_text = ""
         stderr_text = ""
         try:
             process = subprocess.Popen(
-                list(command.command),
+                sandbox_command,
                 cwd=command.cwd,
                 env=env,
                 stdin=subprocess.DEVNULL,

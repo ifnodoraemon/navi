@@ -2,16 +2,13 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Any
-from ..tools import ALL_EXECUTION_CONTEXTS, ToolRegistry, ToolSpec
+from ..tools import ALL_EXECUTION_CONTEXTS, SideEffectPolicy, ToolRegistry, ToolSpec
 from .browser import _browser_screenshot
 from .codebase import _codebase_search
 from .files import (
     _file_read,
     _file_write,
     _python_ast_replace_symbol,
-    _workspace_shadow_create,
-    _workspace_shadow_discard,
-    _workspace_shadow_merge,
 )
 from .hooks import _hooks_list
 from .context import _context_search
@@ -63,6 +60,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="skills.list",
             capability_class="skills",
+            context_policy="skill_catalog",
             description="Return installed procedural skill facts.",
             input_schema={"type": "object", "properties": {}},
             output_schema=_output_schema(
@@ -76,12 +74,13 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 }
             ),
         ),
-        lambda args: _skills_list(home, workspace=registry.project_dir),
+        lambda args: _skills_list(home, args, workspace=registry.project_dir),
     )
     registry.register(
         _core_tool_spec(
             name="skills.view",
             capability_class="skills",
+            context_policy="skill_catalog",
             description="Return one installed skill's full instructions or a safe supporting file by skill name.",
             input_schema={
                 "type": "object",
@@ -97,7 +96,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "name": {"type": "string"},
                     "description": {"type": "string"},
                     "permission": {"type": "string"},
-                    "injectable_with_read_ceiling": {"type": "boolean"},
+                    "injectable_with_current_ceiling": {"type": "boolean"},
                     "path": {"type": "string"},
                     "relative_path": {"type": "string"},
                     "size": {"type": "integer"},
@@ -337,10 +336,16 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             },
             output_schema=_output_schema(
                 {
+                    "entity_type": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "state_transition": {"type": "string"},
+                    "turn_scope": {"type": "string"},
                     "stdout": {"type": "string"},
                     "stderr": {"type": "string"},
                     "exit_code": {"type": "integer"},
                     "timed_out": {"type": "boolean"},
+                    "sandboxed": {"type": "boolean"},
+                    "sandbox_backend": {"type": "string"},
                     "url": {"type": "string"},
                     "path": {"type": "string"},
                     "exists": {"type": "boolean"},
@@ -350,6 +355,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             facts_only=True,
             mutates=True,
             permission="write",
+            workspace_policy="paths",
+            workspace_fields=("path",),
         ),
         lambda args: _browser_screenshot(args, project_dir=registry.project_dir),
     )
@@ -379,6 +386,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "content": {"type": "string"},
                 }
             ),
+            workspace_policy="paths",
+            workspace_fields=("path",),
         ),
         lambda args: _file_read(args, project_dir=registry.project_dir),
     )
@@ -418,6 +427,10 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             },
             output_schema=_output_schema(
                 {
+                    "entity_type": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "state_transition": {"type": "string"},
+                    "turn_scope": {"type": "string"},
                     "path": {"type": "string"},
                     "shadow_path": {"type": "string"},
                     "shadow_run_id": {"type": "string"},
@@ -433,6 +446,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             mutates=True,
             permission="write",
             risk_policy="workspace_file_write",
+            workspace_policy="paths",
+            workspace_fields=("path",),
         ),
         lambda args: _file_write(args, project_dir=registry.project_dir, home=home),
     )
@@ -487,93 +502,10 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             facts_only=True,
             mutates=True,
             permission="write",
+            workspace_policy="paths",
+            workspace_fields=("path",),
         ),
         lambda args: _python_ast_replace_symbol(args, project_dir=registry.project_dir, home=home),
-    )
-    registry.register(
-        _core_tool_spec(
-            name="workspace.shadow.create",
-            capability_class="workspace",
-            description="Create or return a persistent shadow workspace for a run.",
-            input_schema={
-                "type": "object",
-                "properties": {"run_id": {"type": "string"}},
-                "required": ["run_id"],
-            },
-            output_schema=_output_schema(
-                {
-                    "entity_type": {"type": "string"},
-                    "entity_id": {"type": "string"},
-                    "state_transition": {"type": "string"},
-                    "turn_scope": {"type": "string"},
-                    "run_id": {"type": "string"},
-                    "real_workspace": {"type": "string"},
-                    "baseline_workspace": {"type": "string"},
-                    "shadow_workspace": {"type": "string"},
-                    "baseline_fingerprint": {"type": "string"},
-                }
-            ),
-            facts_only=True,
-            mutates=True,
-            permission="prepare",
-        ),
-        lambda args: _workspace_shadow_create(args, project_dir=registry.project_dir, home=home),
-    )
-    registry.register(
-        _core_tool_spec(
-            name="workspace.shadow.merge",
-            capability_class="workspace",
-            description="Merge a run's shadow workspace back to the real workspace with conflict artifacts.",
-            input_schema={
-                "type": "object",
-                "properties": {"run_id": {"type": "string"}},
-                "required": ["run_id"],
-            },
-            output_schema=_output_schema(
-                {
-                    "entity_type": {"type": "string"},
-                    "entity_id": {"type": "string"},
-                    "state_transition": {"type": "string"},
-                    "turn_scope": {"type": "string"},
-                    "run_id": {"type": "string"},
-                    "merge_status": {"type": "string"},
-                    "conflicts": {"type": "array", "items": {"type": "string"}},
-                    "artifact_path": {"type": "string"},
-                    "completion_evidence": {"type": "boolean"},
-                }
-            ),
-            facts_only=True,
-            mutates=True,
-            permission="write",
-            objective_evidence=True,
-        ),
-        lambda args: _workspace_shadow_merge(args, home=home),
-    )
-    registry.register(
-        _core_tool_spec(
-            name="workspace.shadow.discard",
-            capability_class="workspace",
-            description="Discard a run's shadow workspace without changing the real workspace.",
-            input_schema={
-                "type": "object",
-                "properties": {"run_id": {"type": "string"}},
-                "required": ["run_id"],
-            },
-            output_schema=_output_schema(
-                {
-                    "entity_type": {"type": "string"},
-                    "entity_id": {"type": "string"},
-                    "state_transition": {"type": "string"},
-                    "turn_scope": {"type": "string"},
-                    "run_id": {"type": "string"},
-                    "discarded": {"type": "boolean"},
-                }
-            ),
-            facts_only=True,
-            mutates=True,
-            permission="write",
-        ),
-        lambda args: _workspace_shadow_discard(args, home=home),
     )
     registry.register(
         _core_tool_spec(
@@ -595,7 +527,17 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 },
                 "required": ["query"],
             },
-            output_schema=_output_schema({"results": _array_of_objects()}),
+            output_schema=_output_schema(
+                {"results": _array_of_objects(), "cache": {"type": "object"}}
+            ),
+            side_effect_policy=SideEffectPolicy(
+                scope="derived_cache",
+                mode="replaceable",
+                description=(
+                    "Search may refresh a replaceable FTS index under NAVI_HOME; "
+                    "the cache is not authoritative workspace state."
+                ),
+            ),
         ),
         lambda args: _codebase_search(args, project_dir=registry.project_dir, home=home),
     )
@@ -642,6 +584,10 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             },
             output_schema=_output_schema(
                 {
+                    "entity_type": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "state_transition": {"type": "string"},
+                    "turn_scope": {"type": "string"},
                     "stdout": {"type": "string"},
                     "stderr": {"type": "string"},
                     "exit_code": {"type": "integer"},
@@ -649,6 +595,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "command": {"type": "array", "items": {"type": "string"}},
                     "cwd": {"type": "string"},
                     "timeout_seconds": {"type": "integer"},
+                    "required_permission": {"type": "string"},
+                    "sandboxed": {"type": "boolean"},
+                    "sandbox_backend": {"type": "string"},
                 }
             ),
             facts_only=True,
@@ -656,6 +605,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             permission="read",
             permission_policy="shell_argv",
             risk_policy="shell_argv",
+            workspace_policy="sandbox",
+            workspace_fields=("cwd",),
         ),
         lambda args: _shell_run(args, project_dir=registry.project_dir),
     )
@@ -741,6 +692,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "headers": {"type": "object"},
                     "body": {"type": "string"},
                     "truncated": {"type": "boolean"},
+                    "resolved_address": {"type": "string"},
                 }
             ),
             permission="network",

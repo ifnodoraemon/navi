@@ -129,8 +129,10 @@ def _default_mcp_servers() -> dict[str, dict[str, Any]]:
             "transport": "streamable_http",
             "url": DEFAULT_EXA_MCP_URL,
             "headers": {},
-            "permission": "network",
-            "allowed_tools": ["web_search_exa", "web_fetch_exa"],
+            "tool_permissions": {
+                "web_search_exa": "network",
+                "web_fetch_exa": "network",
+            },
             "enabled": True,
         }
     }
@@ -302,6 +304,8 @@ def _reject_unknown(raw: dict[str, Any], allowed: set[str], path: str) -> None:
 
 
 def _positive_float(value: object, path: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"{path} must be a number")
     try:
         parsed = float(value)
     except (TypeError, ValueError):
@@ -312,6 +316,8 @@ def _positive_float(value: object, path: str) -> float:
 
 
 def _port(value: object, path: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError(f"{path} must be an integer")
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -423,8 +429,10 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
             errors.append(f"search.mcp_server '{server_name}' is not defined in mcp.servers")
         elif not bool(server.get("enabled", True)):
             errors.append(f"search.mcp_server '{server_name}' is disabled")
-        elif "web_search_exa" not in (server.get("allowed_tools") or []):
-            errors.append(f"mcp.servers.{server_name}.allowed_tools must include web_search_exa")
+        elif "web_search_exa" not in (server.get("tool_permissions") or {}):
+            errors.append(
+                f"mcp.servers.{server_name}.tool_permissions must include web_search_exa"
+            )
 
     # Validate Connector Specs and configuration
     from .connector_registry import load_connector_adapters

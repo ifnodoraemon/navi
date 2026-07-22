@@ -105,8 +105,7 @@ def test_config_command_redacts_all_secrets(tmp_path: Path) -> None:
                     "exa": {
                         "url": "https://mcp.exa.ai/mcp",
                         "headers": {"authorization": "mcp-secret"},
-                        "permission": "network",
-                        "allowed_tools": ["web_search_exa"],
+                        "tool_permissions": {"web_search_exa": "network"},
                     }
                 }
             },

@@ -319,10 +319,13 @@ def test_network_tools_are_not_plain_read_capabilities(tmp_path):
 
     assert "web.search" not in read_names
     assert "http.fetch" not in read_names
+    assert "account.usage" not in read_names
     assert "web.search" in network_names
     assert "http.fetch" in network_names
+    assert "account.usage" in network_names
     assert registry.get("web.search").permission == "network"
     assert registry.get("http.fetch").permission == "network"
+    assert registry.get("account.usage").permission == "network"
 
 
 @pytest.mark.asyncio

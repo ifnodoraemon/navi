@@ -619,7 +619,7 @@ class LoopControlService:
                 body=_surface_message_from_result(graph_result),
                 body_provenance="state_graph.evidence.responded_message",
                 channel=goal.source,
-                trace_id=graph_result.run_state.run_id,
+                trace_id=goal.trace_id or updated_run.id,
             )
         return LoopControlServiceResult(
             goal=goal,
@@ -896,8 +896,7 @@ class LoopControlService:
             objective=goal.objective,
             scope=request.scope or (f"repo:{workspace}",),
             constraints=request.constraints,
-            acceptance_criteria=request.acceptance_criteria
-            or ("verification ladder accepts objective evidence",),
+            acceptance_criteria=request.acceptance_criteria,
             permission_ceiling=request.permission_ceiling or "write",
             owner=request.sender_id or request.peer_id,
             metadata={

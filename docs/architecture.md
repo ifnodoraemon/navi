@@ -72,7 +72,7 @@ or explicitly independent duplicate schedules.
 | Loop control | `loop_control_service.py`, `goal_state_graph.py` | Create or resume durable loop entities and bridge into the graph. |
 | Loop kernel | `state_graph.py`, `loop.py`, `loop_contracts.py` | Plan, execute, check, pause, recover, and converge. |
 | Capabilities | `capabilities.py`, `capabilities_types.py`, `actions/`, `core_tools/` | Declare, filter, validate, invoke, and audit callable operations. |
-| Isolation | `harness.py`, `workspaces.py`, `resource_gateway.py` | Bound commands, workspaces, locks, resources, and merge behavior. |
+| Isolation | `process_sandbox.py`, `harness.py`, `workspaces.py`, `resource_gateway.py` | Bound commands, workspaces, locks, resources, and merge behavior. |
 | State | `runs/`, `goals.py`, `loop_runs.py`, `memory/`, `trace.py`, `evolution.py`, `evolution_engine.py` | Persist lifecycle and audit evidence; apply evolution through a separate orchestration boundary. |
 | Recovery | `lifecycle_saga.py`, `effect_journal.py`, `retention.py` | Recover cross-store projections, deduplicate effects, and compact expired transient detail. |
 | Personal resources | `personal_resources.py`, `identity.py` | Provide scoped calendar, reminder, contact, draft-mail, attention, and explicit identity adapters. |
@@ -100,19 +100,29 @@ chooses a capability but cannot bypass its schema or policy envelope.
 
 The executor invokes the selected capability through the same policy envelope.
 Mutating capabilities are subject to approval, workspace, hook, and side-effect
-gates. Staged external effects are committed only after acceptance or
-compensated on rejection.
+gates. Their audit row is reserved before the effect; an unavailable audit
+boundary blocks execution and an unrecordable completion becomes an uncertain
+outcome. Staged external effects are committed only after acceptance or
+compensated on rejection. Capability inputs and outputs pass through one closed
+JSON Schema validator, and failures expose typed reason and retryability facts.
 
 The semantic checker evaluates objective evidence independently from planner
 reasoning and returns only a verdict plus evidence summary. A LoopSpec may use
 the deterministic objective-evidence tier when the capability contract itself
 returns authoritative completion facts; durable semantic work uses the isolated
-LLM checker. The runtime enforces
+LLM checker. The capability's `deterministic_completion_authority` declaration
+controls only that deterministic short circuit; it is removed from semantic
+checker input so ordinary capability facts retain their actual provenance
+instead of receiving a false pass/fail label. When no extra acceptance criteria
+were declared, the checker judges the objective itself rather than a synthetic
+criterion about its own verdict. The runtime enforces
 attempt budgets, timeouts, safety stops, and no-progress bounds; while another
 planning turn is allowed, the planner owns the semantic choice to gather facts,
 change capability or arguments, clarify, or explain a blocker. A checker verdict
 is evidence, not a runtime-selected next action. Trace proxies record model calls
-and capability spans without changing their decisions.
+and capability spans without changing their decisions. If a later attempt
+converges, the LoopRun clears active recovery fields while the earlier rejection
+remains available through attempt history and trace events.
 
 A failed model, capability, connector, or external-provider call is recorded and
 returned without an automatic repeat, provider switch, argument rewrite, or
@@ -157,10 +167,25 @@ completed result. Resource budgets live in `resource_ledger.db`; standard model
 providers reconcile reserved cost/tokens with actual usage, while custom
 providers use conservative declared phase estimates.
 
+`process_sandbox.py` is the shared local-process isolation boundary used by
+`shell.run`, browser artifacts, command verification, and proactive Git reads.
+It uses fail-closed Bubblewrap, a sanitized environment, only the governed
+workspace plus required runtime paths, and a separate network namespace unless
+the declared operation has network authority. Durable Goals retain their logical
+workspace for authorization and audit while effects and command verifiers are
+translated into the active shadow workspace before merge. Shadow creation,
+merge, and discard remain loop-kernel operations rather than planner-callable
+tools addressed by arbitrary run identifiers.
+
 Trace events are append-oriented audit evidence. Materialized Run, Goal, and
 LoopRun records own active lifecycle state. Trace deletion is an API-only
 capability with an explicit single/all scope and post-delete read-back facts;
 the API does not mutate the trace store around the capability boundary.
+The Goal-to-StateGraph boundary derives a missing trace id from the persisted
+Goal or governed Run, so planner, capability, checker, notification, and
+delivery spans share one root. Trace views also correlate older partial traces
+through Run to Goal and LoopRun and project the durable terminal state over an
+otherwise successful individual model-call span.
 
 Scheduled Goal templates persist the real workspace rather than the ephemeral
 shadow used by their registration turn. The registration capability resolves
@@ -205,6 +230,10 @@ turn contract used by local surfaces. `ConnectorMessage` lives in the transport-
 neutral `connector_contract.py`; adapters consume `ResponseReadyEvent` and never
 reinterpret it as a string. An empty model response is recorded as a failed
 delivery fact rather than replaced with connector-authored prose.
+For a blocked or failed background task, the notification role receives a
+bounded projection of persisted Goal and LoopRun diagnostics, including reason
+codes, checker verdicts, and the last capability facts. The connector still
+does not decide whether the event is noteworthy or author its own fallback text.
 
 Outbound files use the connector-neutral `ConnectorDelivery` contract. The
 kernel validates the original file and emits one structured synchronous
@@ -221,8 +250,17 @@ still determine who may enter the loop.
 
 Configured MCP servers join the same registry through governed discovery and
 call broker capabilities. Streamable HTTP and stdio are transport choices, not
-separate permission models; configured permission, durable approval, audit, and
-redaction apply to both.
+separate permission models. The local `tool_permissions` map is both allowlist
+and per-tool permission authority; server annotations cannot change it. HTTP
+calls require network authority, while stdio calls require write authority and
+receive a minimal environment plus explicit configuration instead of inheriting
+the Navi process environment. Durable approval, audit, and redaction apply to
+both transports.
+
+Direct HTTP capabilities resolve and classify every address before the call,
+bind that address set into approval arguments, and connect to a pinned address
+while preserving the original Host and TLS identity. This keeps DNS rebinding
+from changing the destination after policy evaluation.
 
 ## Known Current Deviations
 

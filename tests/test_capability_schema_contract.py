@@ -7,7 +7,7 @@ import pytest
 
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext, CapabilityResult
-from navi.tools import SideEffectPolicy, ToolSpec
+from navi.tools import API_CONTEXT, SideEffectPolicy, ToolSpec
 
 
 class _SchemaTestCapability:
@@ -102,6 +102,50 @@ def test_respond_is_user_facing_effect_not_facts_only(tmp_path: Path) -> None:
     assert spec.capability_class == "conversation"
     assert spec.facts_only is False
     assert spec.mutates is False
+
+
+@pytest.mark.parametrize("execution_context", ["turn", API_CONTEXT])
+def test_every_public_capability_has_closed_root_schemas(
+    tmp_path: Path,
+    execution_context: str,
+) -> None:
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        execution_context=execution_context,
+    )
+
+    for spec in registry.list_specs():
+        for label, schema in (
+            ("input", spec.input_schema),
+            ("output", spec.output_schema),
+        ):
+            assert schema.get("type") == "object", f"{spec.name} {label} is not an object"
+            assert isinstance(schema.get("properties"), dict), (
+                f"{spec.name} {label} has no declared properties"
+            )
+            assert schema.get("additionalProperties") is False, (
+                f"{spec.name} {label} accepts undeclared root fields"
+            )
+
+
+def test_only_approval_control_plane_capabilities_bypass_their_own_gate(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    control_plane = {
+        spec.name
+        for spec in registry.list_specs()
+        if spec.approval_policy == "control_plane"
+    }
+
+    assert control_plane == {
+        "approval.request",
+        "approval.resolve",
+        "session.request_elevation",
+    }
+    assert registry.get("goal.resume").confirmation_required is True
+    assert registry.get("goal.cancel").confirmation_required is True
 
 
 @pytest.mark.asyncio

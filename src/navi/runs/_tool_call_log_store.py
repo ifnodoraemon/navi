@@ -96,6 +96,38 @@ class ToolCallLogStoreMixin:
             ).fetchall()
         return [self._tool_call_log_from_row(row) for row in rows]
 
+    def complete_tool_call_log(
+        self,
+        log_id: str,
+        *,
+        ok: bool,
+        facts_json: str,
+        error: str,
+        ended_at: float,
+    ) -> ToolCallLog:
+        with connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE tool_call_logs
+                SET ok = ?, facts_json = ?, error = ?, ended_at = ?
+                WHERE id = ?
+                """,
+                (int(ok), facts_json, error, ended_at, log_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"tool call audit reservation not found: {log_id}")
+            row = conn.execute(
+                """
+                SELECT id, tool, args_json, ok, facts_json, error, started_at, ended_at,
+                       run_id, trace_id
+                FROM tool_call_logs WHERE id = ?
+                """,
+                (log_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"tool call audit reservation not found: {log_id}")
+        return self._tool_call_log_from_row(row)
+
     def list_tool_call_logs_for_run(self, run_id: str, *, limit: int = 200) -> list[ToolCallLog]:
         with connect(self.db_path) as conn:
             rows = conn.execute(

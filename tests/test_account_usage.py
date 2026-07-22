@@ -86,7 +86,7 @@ def test_fetch_openai_codex_usage_from_credential_pool(
 
 
 @pytest.mark.asyncio
-async def test_account_usage_capability_is_read_scoped(
+async def test_account_usage_capability_is_network_scoped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -97,14 +97,17 @@ async def test_account_usage_capability_is_read_scoped(
     monkeypatch.setattr("navi.account_usage.httpx.Client", _FakeClient)
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
 
-    assert "account.usage" in {
+    assert "account.usage" not in {
         spec.name for spec in registry.planner_specs(permission_ceiling="read")
+    }
+    assert "account.usage" in {
+        spec.name for spec in registry.planner_specs(permission_ceiling="network")
     }
     result = await registry.invoke(
         "account.usage",
         {"provider": "openai-codex"},
-        permission="read",
-        context=CapabilityContext(home=tmp_path, permission_ceiling="read"),
+        permission="network",
+        context=CapabilityContext(home=tmp_path, permission_ceiling="network"),
     )
 
     assert result.ok is True

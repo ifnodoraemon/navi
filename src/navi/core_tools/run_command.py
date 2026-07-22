@@ -4,6 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Any
+from ..process_sandbox import bubblewrap_command, sandbox_environment
 from .codebase import _resolve_binary_error
 from .utils import _truncate_output
 
@@ -17,7 +18,14 @@ def _timeout_output_text(value: str | bytes | None) -> str:
 
 
 def _run_command(
-    command: list[str], *, cwd: Path, timeout: int, allocate_pty: bool = False
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+    allocate_pty: bool = False,
+    sandbox_workspace: Path | None = None,
+    workspace_writable: bool = False,
+    network_allowed: bool = False,
 ) -> dict[str, Any]:
     command = _normalize_argv(command)
     env = os.environ.copy()
@@ -43,6 +51,28 @@ def _run_command(
             "error_reason": "binary_not_found",
             "binary": command[0],
         }
+
+    sandboxed = sandbox_workspace is not None
+    if sandbox_workspace is not None:
+        command, sandbox_error = bubblewrap_command(
+            command,
+            cwd=cwd,
+            workspace=sandbox_workspace,
+            writable=workspace_writable,
+            network_allowed=network_allowed,
+            path=env["PATH"],
+        )
+        if sandbox_error:
+            return {
+                "stdout": "",
+                "stderr": sandbox_error,
+                "exit_code": 126,
+                "timed_out": False,
+                "error_reason": "sandbox_unavailable",
+                "sandboxed": False,
+                "sandbox_backend": "bubblewrap",
+            }
+        env = sandbox_environment()
 
     if allocate_pty:
         import pty
@@ -108,6 +138,8 @@ def _run_command(
                     "stderr": _truncate_output(f"command timed out after {timeout} seconds"),
                     "exit_code": 124,
                     "timed_out": True,
+                    "sandboxed": sandboxed,
+                    "sandbox_backend": "bubblewrap" if sandboxed else "none",
                 }
 
             return {
@@ -115,13 +147,22 @@ def _run_command(
                 "stderr": "",
                 "exit_code": proc.returncode,
                 "timed_out": False,
+                "sandboxed": sandboxed,
+                "sandbox_backend": "bubblewrap" if sandboxed else "none",
             }
         except OSError as exc:
             try:
                 os.close(master_fd)
             except OSError:
                 pass
-            return {"stdout": "", "stderr": str(exc), "exit_code": 127, "timed_out": False}
+            return {
+                "stdout": "",
+                "stderr": str(exc),
+                "exit_code": 127,
+                "timed_out": False,
+                "sandboxed": sandboxed,
+                "sandbox_backend": "bubblewrap" if sandboxed else "none",
+            }
         except Exception:
             try:
                 os.close(master_fd)
@@ -148,14 +189,25 @@ def _run_command(
             ),
             "exit_code": 124,
             "timed_out": True,
+            "sandboxed": sandboxed,
+            "sandbox_backend": "bubblewrap" if sandboxed else "none",
         }
     except OSError as exc:
-        return {"stdout": "", "stderr": str(exc), "exit_code": 127, "timed_out": False}
+        return {
+            "stdout": "",
+            "stderr": str(exc),
+            "exit_code": 127,
+            "timed_out": False,
+            "sandboxed": sandboxed,
+            "sandbox_backend": "bubblewrap" if sandboxed else "none",
+        }
     return {
         "stdout": _truncate_output(result.stdout),
         "stderr": _truncate_output(result.stderr),
         "exit_code": result.returncode,
         "timed_out": False,
+        "sandboxed": sandboxed,
+        "sandbox_backend": "bubblewrap" if sandboxed else "none",
     }
 
 
@@ -168,19 +220,10 @@ def _normalize_argv(command: list[str]) -> list[str]:
 
 
 def _run_git(path: Path, *args: str) -> dict[str, Any]:
-    try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=path,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-    except OSError as exc:
-        return {"stdout": "", "stderr": str(exc), "exit_code": 127}
-    return {
-        "stdout": result.stdout,
-        "stderr": result.stderr.strip(),
-        "exit_code": result.returncode,
-    }
+    return _run_command(
+        ["git", *args],
+        cwd=path,
+        timeout=8,
+        sandbox_workspace=path,
+        workspace_writable=True,
+    )

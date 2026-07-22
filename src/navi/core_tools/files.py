@@ -5,7 +5,7 @@ from pathlib import Path
 import textwrap
 from typing import Any
 from ..harness import Harness
-from ..loop_contracts import LockMode, MergeStatus
+from ..loop_contracts import LockMode
 from ..tools import ToolResult
 from .codebase import _project_path
 from .utils import _positive_int
@@ -422,77 +422,6 @@ def _ast_error_facts(path: Path, shadow_path: str, exc: SyntaxError) -> dict[str
         "offset": exc.offset or 0,
         "message": exc.msg,
     }
-
-
-def _workspace_shadow_create(args: dict[str, Any], *, project_dir: Path, home: Path) -> ToolResult:
-    run_id = str(args.get("run_id") or "").strip()
-    if not run_id:
-        return ToolResult(tool="workspace.shadow.create", ok=False, error="run_id is required")
-    try:
-        shadow = Harness(home=home).create_shadow_workspace(run_id=run_id, workspace=project_dir)
-    except (OSError, ValueError) as exc:
-        return ToolResult(tool="workspace.shadow.create", ok=False, error=str(exc))
-    return ToolResult(
-        tool="workspace.shadow.create",
-        ok=True,
-        facts={
-            "entity_type": "shadow_workspace",
-            "entity_id": run_id,
-            "state_transition": "created",
-            "turn_scope": "current",
-            "run_id": run_id,
-            "real_workspace": shadow.real_workspace,
-            "baseline_workspace": shadow.baseline_workspace,
-            "shadow_workspace": shadow.shadow_workspace,
-            "baseline_fingerprint": shadow.baseline_fingerprint.digest,
-        },
-    )
-
-
-def _workspace_shadow_merge(args: dict[str, Any], *, home: Path) -> ToolResult:
-    run_id = str(args.get("run_id") or "").strip()
-    if not run_id:
-        return ToolResult(tool="workspace.shadow.merge", ok=False, error="run_id is required")
-    try:
-        result = Harness(home=home).merge_shadow_run(run_id)
-    except (KeyError, OSError, ValueError) as exc:
-        return ToolResult(tool="workspace.shadow.merge", ok=False, error=str(exc))
-    status = str(result.status)
-    return ToolResult(
-        tool="workspace.shadow.merge",
-        ok=True,
-        facts={
-            "entity_type": "shadow_workspace",
-            "entity_id": run_id,
-            "state_transition": "conflicted" if status == str(MergeStatus.CONFLICTED) else "merged",
-            "turn_scope": "current",
-            "run_id": run_id,
-            "merge_status": status,
-            "conflicts": list(result.conflicts),
-            "artifact_path": result.artifact_path,
-            "completion_evidence": status in {str(MergeStatus.CLEAN), str(MergeStatus.NO_OP)},
-        },
-    )
-
-
-def _workspace_shadow_discard(args: dict[str, Any], *, home: Path) -> ToolResult:
-    run_id = str(args.get("run_id") or "").strip()
-    if not run_id:
-        return ToolResult(tool="workspace.shadow.discard", ok=False, error="run_id is required")
-    discarded = Harness(home=home).discard_shadow_run(run_id)
-    return ToolResult(
-        tool="workspace.shadow.discard",
-        ok=discarded,
-        error="" if discarded else "shadow workspace not found",
-        facts={
-            "entity_type": "shadow_workspace",
-            "entity_id": run_id,
-            "state_transition": "discarded" if discarded else "not_found",
-            "turn_scope": "current",
-            "run_id": run_id,
-            "discarded": discarded,
-        },
-    )
 
 
 class _CheckpointStore:

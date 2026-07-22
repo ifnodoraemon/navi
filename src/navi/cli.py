@@ -33,6 +33,7 @@ from .graph import GraphStore
 from .hooks import HookRegistry
 from .json_utils import json_object
 from .loop import LoopPhase, loop_decision_summary
+from .loop_runs import LoopRunStore
 from .memory import MemoryStore
 from .metrics import MetricsProjector
 from .paths import ensure_home
@@ -68,12 +69,19 @@ def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CO
             execution_context=execution_context,
             runtime=runtime,
         )
+    workspace = _capability_workspace(home, args)
     result = asyncio.run(
         capabilities.invoke(
             name,
             args,
             permission=spec.permission,
-            context=CapabilityContext(home=home, peer_id="cli", sender_id="cli", source="cli"),
+            context=CapabilityContext(
+                home=home,
+                peer_id="cli",
+                sender_id="cli",
+                source="cli",
+                workspace=workspace,
+            ),
         )
     )
     if not result.ok:
@@ -85,6 +93,22 @@ def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CO
             )
         raise typer.BadParameter(result.message or "capability failed")
     return result.facts or {}
+
+
+def _capability_workspace(home: Path, args: dict) -> str:
+    explicit = str(args.get("workspace") or "").strip()
+    if explicit:
+        return str(Path(explicit).expanduser().resolve())
+    goal_id = str(args.get("goal_id") or "").strip()
+    loop_run_id = str(args.get("loop_run_id") or "").strip()
+    if loop_run_id and not goal_id:
+        loop_run = LoopRunStore(home).get_run(loop_run_id)
+        goal_id = loop_run.goal_id if loop_run is not None else ""
+    if goal_id:
+        goal = GoalStore(home).get(goal_id)
+        if goal is not None and goal.workspace:
+            return goal.workspace
+    return str(Path.cwd().resolve())
 
 
 app = typer.Typer(help="Navi local-first personal agent OS")

@@ -48,6 +48,8 @@ API 请求需要 `X-API-Key`，对应 `NAVI_HOME/config.yaml` 中的
 `connectors` 和 `mcp` 七个域。模型路由、API 密钥、搜索 provider、连接器
 凭据和 MCP server 均在该文件中配置。旧 `.navi/env`、`.navi/mcp.json`
 和 `.navi/api_key` 会被明确拒绝，不再合并或兼容。
+每个 `mcp.servers.<name>.tool_permissions` 同时声明本地工具 allowlist 和
+逐工具权限；服务端 annotation 不能扩大或降低该权限。
 
 ## CLI
 

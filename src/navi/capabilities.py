@@ -36,9 +36,11 @@ from .runs import RunStore
 from .safeguards import (
     CapabilityRiskAssessment,
     assess_capability_call,
+    prepare_capability_call,
     required_permission_for_call,
+    workspace_boundary_facts,
 )
-from .tools import TURN_CONTEXT, ToolSpec, build_tool_gateway
+from .tools import API_CONTEXT, TURN_CONTEXT, ToolSpec, build_tool_gateway
 from .actions.registry import ActionCapabilityProvider  # noqa: F401
 from .actions.tools import ToolGatewayCapabilityProvider, ToolCapability, ToolsListCapability
 
@@ -161,11 +163,19 @@ class CapabilityRegistry:
                     description=spec.description,
                     side_effect_policy=spec.side_effect_policy.to_dict(),
                     permission_policy=spec.permission_policy,
+                    argument_permission_field=spec.argument_permission_field,
+                    argument_permissions=spec.argument_permissions,
                     risk_policy=spec.risk_policy,
                     context_policy=spec.context_policy,
                     runtime_policy=spec.runtime_policy,
                     delegation_allowed=spec.delegation_allowed,
-                    objective_evidence=spec.objective_evidence,
+                    deterministic_completion_authority=(
+                        spec.deterministic_completion_authority
+                    ),
+                    approval_policy=spec.approval_policy,
+                    workspace_policy=spec.workspace_policy,
+                    workspace_fields=spec.workspace_fields,
+                    workspace_scope=spec.workspace_scope,
                 )
             )
         return sorted(nodes, key=lambda node: node.name)
@@ -238,6 +248,48 @@ class CapabilityRegistry:
                     "schema_errors": input_schema_errors,
                 },
             )
+        workspace_facts = workspace_boundary_facts(
+            handler.spec,
+            call_args,
+            workspace=(
+                context.workspace
+                if handler.spec.workspace_scope == "context"
+                else str(self.gateway.project_dir)
+            ),
+        )
+        if not workspace_facts["allowed"]:
+            return _capability_error(
+                action=f"execute:{name}",
+                error_reason="resource_scope_violation",
+                message=f"capability {name} requested a path outside its workspace",
+                observation_facts={"tool": name, "workspace_boundary": workspace_facts},
+            )
+        call_args, preparation_error = prepare_capability_call(handler.spec, call_args)
+        if preparation_error is not None:
+            return _capability_error(
+                action=f"execute:{name}",
+                error_reason=str(preparation_error["error_reason"]),
+                message=f"capability {name} could not prepare its external target",
+                observation_facts={"tool": name, "target": preparation_error},
+                terminal=False,
+            )
+        try:
+            preflight = getattr(handler, "preflight", None)
+            preflight_result = (
+                await preflight(call_args, permission=permission, context=context)
+                if callable(preflight)
+                else None
+            )
+        except Exception as exc:
+            logger.exception("Capability preflight failed for %s", name)
+            return _capability_error(
+                action=f"execute:{name}",
+                error_reason="preflight_failed",
+                message=f"capability {name} preflight failed: {exc}",
+                observation_facts={"tool": name, "error_type": type(exc).__name__},
+            )
+        if preflight_result is not None and not preflight_result.ok:
+            return preflight_result
         effective_required_permission = required_permission_for_call(
             handler.spec,
             call_args,
@@ -376,6 +428,39 @@ class CapabilityRegistry:
                 terminal=False,
             )
         started_at = time.time()
+        audit_log_id = ""
+        if handler.spec.mutates and not isinstance(handler, ToolCapability):
+            try:
+                audit_log_id = self._reserve_action_audit(
+                    handler.spec,
+                    call_args,
+                    context=context,
+                    started_at=started_at,
+                )
+            except Exception as exc:
+                self.resource_gateway.release(grant_id=resource_grant.grant_id)
+                if effect_journal is not None:
+                    effect_journal.abandon(effect_key, owner=effect_owner)
+                logger.error(
+                    "mutating action audit reservation failed for %s: %s",
+                    name,
+                    exc,
+                    exc_info=True,
+                )
+                return _capability_error(
+                    action=f"execute:{name}",
+                    error_reason="audit_unavailable",
+                    message=(
+                        f"capability {name} was not executed because audit persistence "
+                        "is unavailable"
+                    ),
+                    observation_facts={
+                        "tool": name,
+                        "audit_phase": "reservation",
+                        "error_type": type(exc).__name__,
+                    },
+                    terminal=False,
+                )
         try:
             result = await handler.invoke(
                 call_args,
@@ -390,7 +475,7 @@ class CapabilityRegistry:
                     error=f"{type(exc).__name__}: {exc}",
                 )
             logger.exception(f"Unhandled exception in capability {name}: {exc}")
-            return _capability_error(
+            result = _capability_error(
                 action=f"execute:{name}",
                 error_reason="internal_error",
                 message=f"capability {name} crashed: {exc}",
@@ -410,6 +495,38 @@ class CapabilityRegistry:
                         "tool": name,
                         "schema_errors": output_schema_errors,
                         "result_action": result.action,
+                    },
+                    terminal=False,
+                )
+        if audit_log_id:
+            try:
+                self._complete_action_audit(audit_log_id, result)
+            except Exception as exc:
+                if effect_journal is not None:
+                    effect_journal.fail(
+                        effect_key,
+                        owner=effect_owner,
+                        error=f"audit completion failed: {type(exc).__name__}: {exc}",
+                    )
+                logger.error(
+                    "mutating action audit completion failed for %s: %s",
+                    name,
+                    exc,
+                    exc_info=True,
+                )
+                return _capability_error(
+                    action=f"execute:{name}",
+                    error_reason="audit_completion_failed",
+                    message=(
+                        f"capability {name} completed its effect but the audit outcome "
+                        "could not be persisted"
+                    ),
+                    observation_facts={
+                        "tool": name,
+                        "audit_phase": "completion",
+                        "audit_reservation_id": audit_log_id,
+                        "effect_result_ok": result.ok,
+                        "error_type": type(exc).__name__,
                     },
                     terminal=False,
                 )
@@ -435,7 +552,7 @@ class CapabilityRegistry:
                 },
             )
         )
-        if handler.spec.mutates and not isinstance(handler, ToolCapability):
+        if not handler.spec.mutates and not isinstance(handler, ToolCapability):
             self._audit_action_capability(handler.spec, call_args, result, started_at=started_at)
         return result
 
@@ -450,12 +567,21 @@ class CapabilityRegistry:
     ) -> tuple[CapabilityRiskAssessment | None, str]:
         if self.sensitive_approval_mode == "skip":
             return None, ""
-        if spec.governance_exempt:
+        if spec.approval_policy == "control_plane":
+            return None, ""
+        if (
+            spec.approval_policy == "explicit_control"
+            and self.execution_context == API_CONTEXT
+        ):
             return None, ""
         risk = assess_capability_call(
             spec,
             call_args,
-            workspace=context.workspace or str(self.gateway.project_dir),
+            workspace=(
+                context.workspace
+                if spec.workspace_scope == "context"
+                else str(self.gateway.project_dir)
+            ),
         )
         if not risk.confirmation_required and risk.risk_class != "high":
             return None, ""
@@ -729,6 +855,63 @@ class CapabilityRegistry:
         if tools_list is not None:
             filtered["tools.list"] = ToolsListCapability(tools_list.spec, registry=self)
         return filtered
+
+    def _reserve_action_audit(
+        self,
+        spec: ToolSpec,
+        args: dict[str, Any],
+        *,
+        context: CapabilityContext,
+        started_at: float,
+    ) -> str:
+        from .safeguards import redact_personal_data_deep
+
+        log = RunStore(self.home).add_tool_call_log(
+            tool=spec.name,
+            args_json=json.dumps(
+                redact_personal_data_deep(args), ensure_ascii=False, sort_keys=True
+            ),
+            ok=False,
+            facts_json=json.dumps(
+                {"audit_phase": "reserved", "mutates": True},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            error="execution outcome pending",
+            started_at=started_at,
+            ended_at=started_at,
+            run_id=self.governed_run_id or context.loop_run_id,
+            trace_id=context.trace_id,
+        )
+        return log.id
+
+    def _complete_action_audit(
+        self,
+        log_id: str,
+        result: CapabilityResult,
+    ) -> None:
+        from .safeguards import redact_personal_data, redact_personal_data_deep
+
+        facts = result.facts or {
+            "action": result.action,
+            "run_id": result.run_id,
+            "terminal": result.terminal,
+        }
+        RunStore(self.home).complete_tool_call_log(
+            log_id,
+            ok=result.ok,
+            facts_json=json.dumps(
+                {"audit_phase": "completed", **redact_personal_data_deep(facts)},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            error=(
+                ""
+                if result.ok
+                else redact_personal_data(result.message or result.error_reason)
+            ),
+            ended_at=time.time(),
+        )
 
     def _audit_action_capability(
         self,

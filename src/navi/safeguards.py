@@ -7,10 +7,13 @@ import json
 import os
 import re
 import secrets
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
+
+from .permission_contract import PERMISSION_ORDER
 
 if TYPE_CHECKING:
     from .tools import ToolSpec
@@ -187,7 +190,92 @@ def required_permission_for_call(spec: ToolSpec, args: dict[str, Any] | None) ->
     if spec.permission_policy == "agent_operation":
         operation = str((args or {}).get("operation") or "").strip().lower()
         return "prepare" if operation in {"spawn", "message", "cancel"} else "read"
+    if spec.permission_policy == "argument_map":
+        selected = str((args or {}).get(spec.argument_permission_field) or "").strip()
+        mapped = dict(spec.argument_permissions).get(selected, "write")
+        return max((spec.permission, mapped), key=PERMISSION_ORDER.__getitem__)
     return spec.permission
+
+
+def prepare_capability_call(
+    spec: ToolSpec,
+    args: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Resolve external resources once before risk assessment and approval binding."""
+
+    prepared = dict(args or {})
+    if spec.risk_policy != "http_request":
+        return prepared, None
+    url = str(prepared.get("url") or "").strip()
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").strip().lower()
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not host:
+        return prepared, {
+            "error_reason": "invalid_network_target",
+            "target_host": host,
+            "retryable": False,
+        }
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        return prepared, {
+            "error_reason": "target_resolution_failed",
+            "target_host": host,
+            "error_type": type(exc).__name__,
+            "retryable": True,
+        }
+    addresses = sorted({str(item[4][0]) for item in infos if item and item[4]})
+    if not addresses:
+        return prepared, {
+            "error_reason": "target_resolution_failed",
+            "target_host": host,
+            "retryable": True,
+        }
+    prepared["_resolved_addresses"] = addresses
+    prepared["_resolved_port"] = port
+    return prepared, None
+
+
+def workspace_boundary_facts(
+    spec: ToolSpec,
+    args: dict[str, Any] | None,
+    *,
+    workspace: str,
+) -> dict[str, Any]:
+    """Evaluate declared path scope before approval or execution."""
+
+    if spec.workspace_policy == "none":
+        return {"allowed": True, "policy": "none"}
+    root = Path(workspace).expanduser().resolve()
+    call_args = args or {}
+    fields = spec.workspace_fields
+    if spec.workspace_policy == "sandbox":
+        fields = fields or ("cwd",)
+    checked: list[dict[str, str]] = []
+    for field in fields:
+        raw = str(call_args.get(field) or "").strip()
+        if not raw:
+            continue
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        resolved = candidate.resolve()
+        checked.append({"field": field, "path": str(resolved)})
+        if resolved != root and root not in resolved.parents:
+            return {
+                "allowed": False,
+                "policy": spec.workspace_policy,
+                "workspace": str(root),
+                "field": field,
+                "path": str(resolved),
+            }
+    return {
+        "allowed": True,
+        "policy": spec.workspace_policy,
+        "workspace": str(root),
+        "checked": checked,
+    }
 
 
 def _first_positional(args: list[str]) -> str:
@@ -325,6 +413,54 @@ def assess_capability_call(
             confirmation_required = True
             reason_code = "opaque_shell_effect_requires_approval"
             contexts.append("opaque_process_effect")
+    elif spec.risk_policy == "agent_operation":
+        operation = str(call_args.get("operation") or "").strip().lower()
+        evidence["operation"] = operation
+        if operation in {"list", "state", "collect"}:
+            risk_class = "low"
+            confirmation_required = False
+            reason_code = "agent_read_operation"
+            contexts = ["task_control"]
+        elif operation in {"spawn", "message"}:
+            risk_class = "medium"
+            confirmation_required = False
+            reason_code = "agent_child_operation"
+            contexts = ["task_control"]
+        else:
+            risk_class = "high"
+            confirmation_required = True
+            reason_code = "agent_cancel_requires_approval"
+            contexts = ["task_control", "destructive_control"]
+    elif spec.risk_policy == "argument_permission":
+        selected = str(call_args.get(spec.argument_permission_field) or "").strip()
+        required_permission = required_permission_for_call(spec, call_args)
+        evidence.update(
+            {
+                "argument_field": spec.argument_permission_field,
+                "argument_value": selected,
+                "required_permission": required_permission,
+            }
+        )
+        if required_permission == "write":
+            risk_class = "high"
+            confirmation_required = True
+            reason_code = "argument_selected_write_requires_approval"
+            contexts = ["external_side_effect"]
+        elif required_permission == "prepare":
+            risk_class = "medium"
+            confirmation_required = False
+            reason_code = "argument_selected_prepare"
+            contexts = ["task_control"]
+        elif required_permission == "network":
+            risk_class = "medium"
+            confirmation_required = False
+            reason_code = "argument_selected_network_read"
+            contexts = ["network"]
+        else:
+            risk_class = "low"
+            confirmation_required = False
+            reason_code = "argument_selected_read"
+            contexts = []
     elif spec.risk_policy == "http_request":
         network_facts = _http_fetch_risk_facts(call_args)
         evidence.update(network_facts)
@@ -409,11 +545,33 @@ def _http_fetch_risk_facts(args: dict[str, Any]) -> dict[str, Any]:
             or address.is_reserved
             or address.is_unspecified
         )
+    resolved_addresses = [
+        str(item) for item in args.get("_resolved_addresses", []) if str(item).strip()
+    ]
+    resolved_private = []
+    for item in resolved_addresses:
+        try:
+            resolved = ipaddress.ip_address(item)
+        except ValueError:
+            resolved_private.append(item)
+            continue
+        if (
+            resolved.is_private
+            or resolved.is_loopback
+            or resolved.is_link_local
+            or resolved.is_multicast
+            or resolved.is_reserved
+            or resolved.is_unspecified
+        ):
+            resolved_private.append(item)
+    private_or_local = private_or_local or bool(resolved_private)
     return {
         "url_scheme": parsed.scheme,
         "target_host": host,
         "method": method,
         "private_or_local_target": private_or_local,
+        "resolved_addresses": resolved_addresses,
+        "private_resolved_addresses": resolved_private,
         "writes_remote_state": method not in {"GET", "HEAD", "OPTIONS"},
         "credentialed_request": credentialed,
         "has_body": bool(args.get("body")),

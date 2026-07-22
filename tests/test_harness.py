@@ -76,6 +76,32 @@ def test_harness_hard_timeout_returns_checker_fact(tmp_path):
     assert result.checker_fact["exit_status"] == "timed_out"
 
 
+def test_harness_sandboxes_verifier_and_does_not_inherit_host_secrets(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("NAVI_HOST_ONLY_SECRET", "must-not-leak")
+    outside = tmp_path.parent / "outside-secret.txt"
+    outside.write_text("host data", encoding="utf-8")
+    script = (
+        "import os, pathlib; "
+        "print(os.environ.get('NAVI_HOST_ONLY_SECRET', 'absent')); "
+        f"print(pathlib.Path({str(outside)!r}).exists())"
+    )
+
+    result = Harness().run_command(
+        HarnessCommand(
+            command=(sys.executable, "-c", script),
+            cwd=tmp_path,
+            timeout=TimeoutPolicy(seconds=5),
+        )
+    )
+
+    assert result.ok is True
+    assert result.stdout.splitlines() == ["absent", "False"]
+    assert result.to_facts()["sandboxed"] is True
+    assert result.to_facts()["sandbox_backend"] == "bubblewrap"
+
+
 def test_harness_timeout_kills_child_process_group(tmp_path):
     harness = Harness()
 

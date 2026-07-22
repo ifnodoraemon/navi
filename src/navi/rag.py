@@ -22,6 +22,11 @@ class CodebaseRAG:
     def __init__(self, workspace: Path, db_path: Path | None = None):
         self.workspace = workspace
         self.db_path = db_path or workspace / ".navi" / "codebase_rag.db"
+        self.last_index_facts: dict[str, object] = {
+            "kind": "derived_cache",
+            "refreshed": False,
+            "indexed_count": 0,
+        }
         self._init_db()
 
     def _init_db(self) -> None:
@@ -84,6 +89,11 @@ class CodebaseRAG:
 
     def index(self) -> None:
         if not self._should_index():
+            self.last_index_facts = {
+                "kind": "derived_cache",
+                "refreshed": False,
+                "indexed_count": 0,
+            }
             return
 
         logger.info(f"Indexing workspace: {self.workspace}")
@@ -108,6 +118,13 @@ class CodebaseRAG:
                 "INSERT OR REPLACE INTO codebase_meta (id, last_indexed) VALUES (1, ?)",
                 (time.time(),),
             )
+
+        self.last_index_facts = {
+            "kind": "derived_cache",
+            "refreshed": True,
+            "indexed_count": count,
+            "duration_ms": int((time.time() - start) * 1000),
+        }
 
         logger.info(f"Indexed {count} files in {time.time() - start:.2f}s")
 

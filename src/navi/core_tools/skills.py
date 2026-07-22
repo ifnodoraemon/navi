@@ -7,8 +7,12 @@ from ..skills import SkillStore
 from ..tools import ToolResult
 from .utils import _positive_int
 
-def _skills_list(home: Path, *, workspace: Path) -> ToolResult:
-    skills = SkillStore(home).list_skills(permission_ceiling="write", workspace=workspace)
+def _skills_list(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolResult:
+    permission_ceiling = str(args.get("_skill_permission_ceiling") or "read")
+    skills = SkillStore(home).list_skills(
+        permission_ceiling=permission_ceiling,
+        workspace=workspace,
+    )
     return ToolResult(
         tool="skills.list",
         ok=True,
@@ -16,7 +20,7 @@ def _skills_list(home: Path, *, workspace: Path) -> ToolResult:
             "category": "skills",
             "definition": "procedural guidance packages loaded into Navi's prompt context",
             "not_tools": True,
-            "prompt_permission_ceiling": "read",
+            "prompt_permission_ceiling": permission_ceiling,
             "skills": [
                 {
                     "name": skill.name,
@@ -24,7 +28,9 @@ def _skills_list(home: Path, *, workspace: Path) -> ToolResult:
                     "source": skill.source,
                     "scope": skill.scope,
                     "permission": skill.permission,
-                    "injectable_with_read_ceiling": permission_allows(skill.permission, "read"),
+                    "injectable_with_current_ceiling": permission_allows(
+                        skill.permission, permission_ceiling
+                    ),
                     "verified": skill.verified,
                     "tags": list(skill.tags),
                 }
@@ -38,11 +44,17 @@ def _skills_list(home: Path, *, workspace: Path) -> ToolResult:
 def _skills_view(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolResult:
     name = str(args.get("name") or "").strip().lower()
     if not name:
-        return ToolResult(tool="skills.view", ok=False, error="name is required")
+        return ToolResult(
+            tool="skills.view",
+            ok=False,
+            error="name is required",
+            error_reason="missing_required_argument",
+        )
     relative = str(args.get("relative_path") or "SKILL.md").strip() or "SKILL.md"
     limit = _positive_int(args.get("max_bytes"), default=50000, maximum=200000)
     store = SkillStore(home)
-    skills = store.list_skills(permission_ceiling="write", workspace=workspace)
+    permission_ceiling = str(args.get("_skill_permission_ceiling") or "read")
+    skills = store.list_skills(permission_ceiling=permission_ceiling, workspace=workspace)
     skill = next(
         (
             item
@@ -53,17 +65,28 @@ def _skills_view(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolRe
     )
     if skill is None:
         return ToolResult(
-            tool="skills.view", ok=False, error="skill not found", facts={"name": name}
+            tool="skills.view",
+            ok=False,
+            error="skill not found",
+            facts={"name": name},
+            error_reason="not_found",
         )
     base_dir = skill.path.parent.resolve()
     target = (base_dir / relative).resolve()
     if base_dir != target and base_dir not in target.parents:
         return ToolResult(
-            tool="skills.view", ok=False, error="relative_path must stay inside the skill directory"
+            tool="skills.view",
+            ok=False,
+            error="relative_path must stay inside the skill directory",
+            error_reason="resource_scope_violation",
         )
     if not target.exists() or not target.is_file():
         return ToolResult(
-            tool="skills.view", ok=False, error="skill file not found", facts={"path": str(target)}
+            tool="skills.view",
+            ok=False,
+            error="skill file not found",
+            facts={"path": str(target)},
+            error_reason="not_found",
         )
     data = target.read_bytes()
     truncated = len(data) > limit
@@ -75,7 +98,9 @@ def _skills_view(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolRe
             "name": skill.name,
             "description": skill.description,
             "permission": skill.permission,
-            "injectable_with_read_ceiling": permission_allows(skill.permission, "read"),
+            "injectable_with_current_ceiling": permission_allows(
+                skill.permission, permission_ceiling
+            ),
             "path": str(target),
             "relative_path": str(target.relative_to(base_dir)),
             "size": len(data),
@@ -83,5 +108,3 @@ def _skills_view(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolRe
             "content": content,
         },
     )
-
-

@@ -217,7 +217,7 @@ async def test_executor_keeps_scope_workspace_durable_while_using_shadow_project
         workspace=shadow,
     )
 
-    assert executed.objective_evidence is False
+    assert executed.deterministic_completion_authority is False
 
     assert executed.ok is True
     assert captured["context_workspace"] == str(repo)
@@ -1044,6 +1044,11 @@ async def test_durable_state_graph_reflects_checker_failure_and_replans(tmp_path
     assert result.terminal_state == LoopTerminalState.CONVERGED
     assert provider.calls == 2
     assert result.run_state.attempt == 2
+    assert result.run_state.evidence["reason_code"] == ""
+    assert result.run_state.evidence["reason"] == ""
+    assert result.run_state.evidence["repeat_count"] == 0
+    assert result.run_state.evidence["replan_allowed"] is False
+    assert result.run_state.evidence["facts"] == {}
     assert result.evidence["reflection"]["replan_allowed"] is True
     assert "recovery_fact" in result.evidence["reflection"]["facts"]
     recovery = result.evidence["reflection"]["facts"]["recovery"]

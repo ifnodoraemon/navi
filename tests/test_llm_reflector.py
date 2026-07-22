@@ -28,6 +28,7 @@ from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 from navi.state_graph import ExecutedCapabilityStep, LLMSemanticCheckerPort
+from navi.trace import TraceStore
 
 
 class _ScriptedProvider:
@@ -332,8 +333,28 @@ async def _run_goal_with_approvals(
         permission="prepare",
         context=context,
     )
-    while result.facts["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL:
+    goal_id = result.facts["goal_id"]
+    while True:
         runs = RunStore(home)
+        if "loop_terminal_state" not in result.facts:
+            approval = runs.pending_approval_for_run(result.run_id)
+            assert approval is not None
+            resolved = await registry.invoke(
+                "approval.resolve",
+                {"decision": "approve", "code": approval.code},
+                permission="prepare",
+                context=context,
+            )
+            assert resolved.ok is True
+            result = await registry.invoke(
+                "goal.resume",
+                {"goal_id": goal_id, "workspace": str(home)},
+                permission="prepare",
+                context=context,
+            )
+            continue
+        if result.facts["loop_terminal_state"] != LoopTerminalState.WAITING_APPROVAL:
+            break
         approval = runs.pending_approval_for_run(result.run_id)
         assert approval is not None
         runs.resolve_approval(
@@ -343,7 +364,7 @@ async def _run_goal_with_approvals(
         )
         result = await registry.invoke(
             "goal.resume",
-            {"goal_id": result.facts["goal_id"], "workspace": str(home)},
+            {"goal_id": goal_id, "workspace": str(home)},
             permission="prepare",
             context=context,
         )
@@ -385,6 +406,68 @@ async def test_semantic_checker_converges_when_goal_achieved(tmp_path: Path) -> 
     assert result.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
     assert (tmp_path / "done.txt").read_text(encoding="utf-8") == "ok"
     assert "checker" in provider.calls
+    trace_events = TraceStore(tmp_path).list_events(result.run_id)
+    assert {event.model_role for event in trace_events} >= {"planner", "checker"}
+    assert all(event.trace_id == result.run_id for event in trace_events)
+
+
+@pytest.mark.asyncio
+async def test_semantic_checker_sees_capability_facts_without_internal_completion_gate(
+    tmp_path: Path,
+) -> None:
+    provider = _ScriptedProvider(
+        planner_syscalls=[],
+        checker_decisions=[
+            {
+                "passed": True,
+                "evidence_summary": "current account usage is present",
+            }
+        ],
+    )
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="report the current account usage",
+            scope=(f"repo:{tmp_path}",),
+        ),
+        goal_id="usage-goal",
+        allowed_capabilities=("account.usage", "respond"),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                evidence_key="semantic_checker_result",
+            ),
+        ),
+    )
+
+    decision = await LLMSemanticCheckerPort(
+        runtime=AgentRuntime(home=tmp_path, provider=provider)
+    ).assess(
+        spec,
+        LoopRunState(
+            run_id="usage-loop",
+            goal_id=spec.goal_id,
+            loop_spec_id=spec.id,
+        ),
+        executed=ExecutedCapabilityStep(
+            ok=True,
+            action="account.usage",
+            facts={
+                "available": True,
+                "plan": "Plus",
+                "quota_remaining_percent": 78.0,
+                "source": "usage_api",
+            },
+            deterministic_completion_authority=False,
+        ),
+        evidence={},
+    )
+
+    assert decision.passed is True
+    checker_input = json.loads(provider.messages["checker"][-1].content)
+    assert checker_input["acceptance_criteria"] == []
+    assert checker_input["last_capability"]["facts"]["quota_remaining_percent"] == 78.0
+    assert "deterministic_completion_authority" not in checker_input["last_capability"]
 
 
 @pytest.mark.asyncio

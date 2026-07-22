@@ -47,19 +47,32 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
     # credentialed or mutating requests before execution.  Once approved we
     # still pin one resolved address so the reviewed target cannot be swapped
     # by a second DNS lookup.
-    try:
-        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except OSError as exc:
-        return ToolResult(
-            tool="http.fetch", ok=False, error=f"failed to resolve {host}: {exc}", facts={"url": url}
-        )
-    pinned_ip = str(infos[0][4][0]) if infos else ""
+    prepared_addresses = [
+        str(item) for item in args.get("_resolved_addresses", []) if str(item).strip()
+    ]
+    if prepared_addresses:
+        pinned_ip = prepared_addresses[0]
+    else:
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            return ToolResult(
+                tool="http.fetch",
+                ok=False,
+                error=f"failed to resolve {host}: {exc}",
+                facts={"url": url},
+                error_reason="target_resolution_failed",
+                retryable=True,
+            )
+        pinned_ip = str(infos[0][4][0]) if infos else ""
     if not pinned_ip:
         return ToolResult(
             tool="http.fetch",
             ok=False,
             error=f"host {host} did not resolve to a usable address",
             facts={"url": url},
+            error_reason="target_resolution_failed",
+            retryable=True,
         )
 
     method = str(args.get("method") or "GET").upper()
@@ -113,9 +126,15 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
                 "headers": resp_headers,
                 "body": content,
                 "truncated": len(content) >= max_bytes,
+                "resolved_address": pinned_ip,
             },
         )
     except Exception as exc:
         return ToolResult(
-            tool="http.fetch", ok=False, error=str(exc), facts={"url": url, "method": method}
+            tool="http.fetch",
+            ok=False,
+            error=str(exc),
+            facts={"url": url, "method": method, "resolved_address": pinned_ip},
+            error_reason="network_request_failed",
+            retryable=False,
         )

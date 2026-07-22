@@ -11,10 +11,14 @@ def _project_path(value: Any, *, project_dir: Path) -> tuple[Path | None, str]:
     raw = str(value or "").strip()
     if not raw:
         return None, "path is required"
+    root = project_dir.expanduser().resolve()
     path = Path(raw).expanduser()
     if not path.is_absolute():
-        path = project_dir / path
-    return path.resolve().absolute(), ""
+        path = root / path
+    resolved = path.resolve().absolute()
+    if resolved != root and root not in resolved.parents:
+        return None, "path must stay inside the current project workspace"
+    return resolved, ""
 
 
 def _command_list(value: Any) -> list[str]:
@@ -39,7 +43,11 @@ def _codebase_search(args: dict[str, Any], *, project_dir: Path, home: Path) -> 
             tool="codebase.search",
             ok=True,
             facts={
-                "results": [{"path": r.path, "snippet": r.content, "rank": r.rank} for r in results]
+                "results": [
+                    {"path": r.path, "snippet": r.content, "rank": r.rank}
+                    for r in results
+                ],
+                "cache": dict(rag.last_index_facts),
             },
         )
     except Exception as exc:

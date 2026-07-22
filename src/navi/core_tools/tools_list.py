@@ -1,6 +1,6 @@
 """Core tool handlers."""
 from __future__ import annotations
-from ..safeguards import capability_safeguard_facts
+from ..tool_manifest import tool_manifest_facts
 from ..tools import ToolRegistry, ToolResult
 
 def _tools_list(registry: ToolRegistry) -> ToolResult:
@@ -12,26 +12,7 @@ def _tools_list(registry: ToolRegistry) -> ToolResult:
             "category": "tools",
             "definition": "callable gateway tools registered in this gateway context",
             "not_skills": True,
-            "tools": [
-                {
-                    "name": spec.name,
-                    "description": spec.description,
-                    "permission": spec.permission,
-                    "facts_only": spec.facts_only,
-                    "mutates": spec.mutates,
-                    "source": spec.source,
-                    "side_effect_policy": spec.side_effect_policy.to_dict(),
-                    "permission_policy": spec.permission_policy,
-                    "risk_policy": spec.risk_policy,
-                    "context_policy": spec.context_policy,
-                    "runtime_policy": spec.runtime_policy,
-                    "delegation_allowed": spec.delegation_allowed,
-                    "input_properties": sorted((spec.input_schema.get("properties") or {}).keys()),
-                    "required": list(spec.input_schema.get("required") or []),
-                    "safeguards": capability_safeguard_facts(spec),
-                }
-                for spec in specs
-            ],
+            "tools": [tool_manifest_facts(spec) for spec in specs],
             "count": len(specs),
         },
     )

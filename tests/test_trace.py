@@ -15,7 +15,10 @@ from navi.config import load_config
 from navi.db import connect
 from navi.loop import LoopCheckName, LoopDecisionKind, LoopReason, TraceFailureDomain
 from navi.loop_contracts import GoalSpec, LoopNode, LoopSpec, VerificationKind, VerificationStep
+from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.loop_runs import LoopRunStore
+from navi.lifecycle import Acceptance, Phase, Resolution
+from navi.runs import RunStore
 from navi.trace import LoopCheckResult, TraceStore
 from navi.loop import LoopDecision
 
@@ -435,6 +438,55 @@ def test_trace_api_includes_durable_loop_run_details_for_web_tree(tmp_path):
     assert "Loop Transition: execute" in run_names
     engine_runs = [item for item in payload["runs"] if item["run_type"] == "engine"]
     assert engine_runs
+
+
+def test_trace_root_uses_correlated_durable_loop_failure_as_authoritative_status(tmp_path):
+    opened = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="report current account usage",
+            workspace=str(tmp_path),
+            source="weixin",
+            peer_id="wx-user",
+            sender_id="wx-user",
+            allowed_capabilities=("account.usage", "respond"),
+            auto_start=False,
+            execution_mode="background",
+        )
+    )
+    owner = "trace-test-worker"
+    loop_store = LoopRunStore(tmp_path)
+    assert loop_store.claim_for_execution(opened.loop_run.run_id, owner=owner) is not None
+    loop_store.fail_active_run(
+        opened.loop_run.run_id,
+        lease_owner=owner,
+        evidence={"reason_code": "semantic_check_failed"},
+    )
+    RunStore(tmp_path).update_run(
+        opened.run.id,
+        phase=Phase.ENDED,
+        acceptance=Acceptance.REJECTED,
+        resolution=Resolution.BLOCKED,
+        error="loop_blocked",
+    )
+    trace_store = TraceStore(tmp_path)
+    trace_store.add_event(
+        trace_id=opened.run.id,
+        run_id=opened.run.id,
+        phase="agent.role_result",
+        model_role="notification",
+        ok=True,
+        input_data={"facts": {"error": "loop_blocked"}},
+        output_data={"notify": False, "message": ""},
+    )
+
+    views = trace_store.list_run_views(opened.run.id)
+    details = trace_store.list_loop_run_details(opened.run.id)
+
+    assert views[0].id == opened.run.id
+    assert views[0].status == "error"
+    assert views[0].metadata["authoritative_status_source"] == "durable_loop_run"
+    assert any(item.id == f"looprun_{opened.loop_run.run_id}" for item in views)
+    assert details[0]["run_state"]["run_id"] == opened.loop_run.run_id
 
 
 def test_trace_delete_api_endpoints(tmp_path):

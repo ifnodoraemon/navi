@@ -14,7 +14,7 @@ from ..loop_control_service import (
     UpdateGoalRequest,
 )
 from ..loop_contracts import LoopTerminalState
-from ..result import Conflict, NotFound, PermissionDenied, SchemaMismatch, guarded
+from ..result import Conflict, NaviError, NotFound, PermissionDenied, SchemaMismatch, guarded
 from ..tools import ToolSpec
 from ..workspaces import workspaces_match
 from .helpers import (
@@ -52,6 +52,8 @@ class GoalOpenCapability(BaseCapability):
             raise SchemaMismatch("goal.open requires objective.")
         loop_kind = _arg_text(args, "loop_kind") or "durable_goal"
         workspace = _arg_text(args, "workspace") or context.workspace or str(self.project_dir)
+        if context.workspace and not workspaces_match(self.home, workspace, context.workspace):
+            raise PermissionDenied("goal workspace does not match caller.")
         if loop_kind == "scheduled":
             from ..workspaces import ShadowWorkspaceManager
 
@@ -259,6 +261,16 @@ class GoalResumeCapability(BaseCapability):
         self.project_dir = project_dir
         self.runtime = runtime
 
+    async def preflight(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult | None:
+        del permission
+        return _goal_control_preflight(self.home, args, context=context, operation="resume")
+
     @guarded
     async def invoke(
         self,
@@ -324,6 +336,16 @@ class GoalCancelCapability(BaseCapability):
     def __init__(self, spec: ToolSpec, *, home: Path, project_dir: Path):
         super().__init__(spec, home=home)
         self.project_dir = project_dir
+
+    async def preflight(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult | None:
+        del permission
+        return _goal_control_preflight(self.home, args, context=context, operation="cancel")
 
     @guarded
     async def invoke(
@@ -570,13 +592,64 @@ def _require_goal_scope(
 
     if not run_matches_context(goal, context):
         raise PermissionDenied("goal identity does not match caller.")
-    if (
-        context.goal_id
-        and context.workspace
-        and goal.workspace
-        and not workspaces_match(service.home, goal.workspace, context.workspace)
+    if context.workspace and goal.workspace and not workspaces_match(
+        service.home,
+        goal.workspace,
+        context.workspace,
     ):
         raise PermissionDenied("goal workspace does not match caller.")
+
+
+def _goal_control_preflight(
+    home: Path,
+    args: dict[str, Any],
+    *,
+    context: CapabilityContext,
+    operation: str,
+) -> CapabilityResult | None:
+    """Authorize goal control selectors before creating an approval request.
+
+    The same checks run again inside the mutating handler to protect against
+    state changes between approval and execution.
+    """
+
+    service = LoopControlService(home)
+    goal_id = _arg_text(args, "goal_id")
+    loop_run_id = _arg_text(args, "loop_run_id")
+    goal_ids = _string_tuple(args.get("goal_ids")) if operation == "cancel" else ()
+    try:
+        if not goal_id and not loop_run_id and not goal_ids:
+            raise SchemaMismatch(
+                f"goal.{operation} requires goal_id"
+                + (", loop_run_id, or explicit goal_ids." if operation == "cancel" else " or loop_run_id.")
+            )
+        if goal_ids:
+            if goal_id or loop_run_id:
+                raise SchemaMismatch(
+                    "goal.cancel batch selectors cannot be combined with goal_id or loop_run_id."
+                )
+            for selected_goal_id in goal_ids:
+                _require_goal_scope(
+                    service,
+                    goal_id=selected_goal_id,
+                    loop_run_id="",
+                    context=context,
+                )
+        else:
+            _require_goal_scope(
+                service,
+                goal_id=goal_id,
+                loop_run_id=loop_run_id,
+                context=context,
+            )
+    except NaviError as exc:
+        return _failure_result(
+            "goal",
+            str(exc),
+            error_reason=exc.reason,
+            terminal=exc.terminal,
+        )
+    return None
 
 
 def _scoped_goal_state(

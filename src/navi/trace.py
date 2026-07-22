@@ -385,7 +385,7 @@ class TraceStore:
 
     def list_loop_run_details(self, trace_id: str, *, limit: int = 5000) -> list[dict[str, Any]]:
         events = self.list_events(trace_id, limit=limit)
-        return _loop_run_details_for_trace(self.home, events)
+        return _loop_run_details_for_trace(self.home, trace_id, events)
 
     def list_events_for_run_or_session(
         self,
@@ -1010,19 +1010,60 @@ def _merge_run_views(
     merged: dict[str, TraceRunView] = {item.id: item for item in base}
     for item in extra:
         merged.setdefault(item.id, item)
+    roots = [item for item in base if not item.parent_run_id]
+    if roots:
+        root = roots[0]
+        authoritative_loops = [
+            item
+            for item in extra
+            if item.parent_run_id == root.id and item.run_type == "engine"
+        ]
+        non_success_loops = [
+            item for item in authoritative_loops if item.status not in {"success", "running"}
+        ]
+        if non_success_loops:
+            merged[root.id] = replace(
+                root,
+                status=non_success_loops[0].status,
+                metadata={
+                    **root.metadata,
+                    "authoritative_status_source": "durable_loop_run",
+                    "authoritative_terminal_states": [
+                        str(item.metadata.get("terminal_state") or "")
+                        for item in non_success_loops
+                    ],
+                },
+            )
     return sorted(
         merged.values(),
         key=lambda item: (0 if not item.parent_run_id else 1, item.start_time, item.id),
     )
 
 
-def _loop_run_details_for_trace(home: Path, events: list[TraceEvent]) -> list[dict[str, Any]]:
+def _loop_run_details_for_trace(
+    home: Path,
+    trace_id: str,
+    events: list[TraceEvent],
+) -> list[dict[str, Any]]:
     loop_run_ids = _loop_run_ids_from_trace_events(events)
+    # Trace is audit evidence; Run/Goal/LoopRun remain the lifecycle authority.
+    # Recover their relation even when an older or partial trace omitted the
+    # loop_run_id from event payloads.
+    from .goals import GoalStore
     if not loop_run_ids:
-        return []
+        loop_run_ids = set()
     from .loop_runs import LoopRunStore
 
     store = LoopRunStore(home)
+    goals = GoalStore(home)
+    governed_run_ids = {trace_id, *(event.run_id for event in events if event.run_id)}
+    for governed_run_id in governed_run_ids:
+        goal = goals.get_by_run(governed_run_id)
+        if goal is None:
+            continue
+        loop_run_ids.update(item.run_id for item in store.list_by_goal(goal.id, limit=50))
+    if not loop_run_ids:
+        return []
     details: list[dict[str, Any]] = []
     for loop_run_id in sorted(loop_run_ids):
         state = store.get_run(loop_run_id)
@@ -1067,7 +1108,7 @@ def _loop_run_views_for_trace(
     trace_id: str,
     events: list[TraceEvent],
 ) -> list[TraceRunView]:
-    details = _loop_run_details_for_trace(home, events)
+    details = _loop_run_details_for_trace(home, trace_id, events)
     views: list[TraceRunView] = []
     for detail in details:
         state = detail["run_state"]

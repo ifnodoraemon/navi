@@ -4,32 +4,8 @@ from typing import Any, Mapping
 
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY
 from navi.capabilities_types import Capability, CapabilityContext, CapabilityResult
-from navi.safeguards import capability_safeguard_facts
+from navi.tool_manifest import tool_manifest_facts
 from navi.tools import ToolSpec
-
-
-def _tool_error_reason(error: str, facts: dict[str, Any]) -> str:
-    existing = facts.get(CAPABILITY_ERROR_REASON_KEY)
-    if isinstance(existing, str) and existing.strip():
-        return existing.strip()
-    lowered = error.lower()
-    if "invalid arguments" in lowered or "must be" in lowered:
-        return "invalid_arguments"
-    if "required" in lowered or "is required" in lowered:
-        return "missing_required_argument"
-    if "not found" in lowered:
-        return "not_found"
-    if "not a file" in lowered:
-        return "not_a_file"
-    if "not a directory" in lowered:
-        return "not_a_directory"
-    if "permission" in lowered:
-        return "permission_error"
-    if "timed out" in lowered or "timeout" in lowered:
-        return "timeout"
-    if "blocked" in lowered or "denied" in lowered:
-        return "blocked"
-    return "tool_error"
 
 
 class ToolGatewayCapabilityProvider:
@@ -78,6 +54,10 @@ class ToolCapability:
                 "trace_id": context.trace_id,
                 "input_text": context.input_text,
             }
+        elif self.spec.context_policy == "skill_catalog":
+            call_args["_skill_permission_ceiling"] = context.skill_permission_ceiling
+        if self.spec.workspace_scope == "context":
+            call_args["_workspace_root"] = context.workspace
         result = await self.gateway.call(self.spec.name, call_args)
         facts = dict(result.facts or {})
         if result.action == "connector_outbound":
@@ -89,7 +69,7 @@ class ToolCapability:
             )
         error_reason = ""
         if not result.ok:
-            error_reason = _tool_error_reason(result.error, facts)
+            error_reason = str(result.error_reason or facts.get(CAPABILITY_ERROR_REASON_KEY) or "tool_error")
             facts.setdefault(CAPABILITY_ERROR_REASON_KEY, error_reason)
         payload = {
             "capability": self.spec.name,
@@ -128,26 +108,7 @@ class ToolsListCapability:
             "category": "tools",
             "definition": "callable capabilities available in the current permission context",
             "not_skills": True,
-            "tools": [
-                {
-                    "name": spec.name,
-                    "description": spec.description,
-                    "permission": spec.permission,
-                    "facts_only": spec.facts_only,
-                    "mutates": spec.mutates,
-                    "source": spec.source,
-                    "side_effect_policy": spec.side_effect_policy.to_dict(),
-                    "permission_policy": spec.permission_policy,
-                    "risk_policy": spec.risk_policy,
-                    "context_policy": spec.context_policy,
-                    "runtime_policy": spec.runtime_policy,
-                    "delegation_allowed": spec.delegation_allowed,
-                    "input_properties": sorted((spec.input_schema.get("properties") or {}).keys()),
-                    "required": list(spec.input_schema.get("required") or []),
-                    "safeguards": capability_safeguard_facts(spec),
-                }
-                for spec in specs
-            ],
+            "tools": [tool_manifest_facts(spec) for spec in specs],
             "count": len(specs),
         }
         return CapabilityResult(

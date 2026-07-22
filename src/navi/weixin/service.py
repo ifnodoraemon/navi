@@ -7,7 +7,7 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 from collections.abc import Callable
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from navi.connector_runtime import (
     ConnectorIngressDeduplicator,
@@ -18,6 +18,7 @@ from navi.connector_delivery import connector_delivery_from_facts
 from navi.event_bus import ResponseReadyEvent
 from navi.finalization import synthesize_background_notification
 from navi.goals import GoalDeliveryOutboxItem, GoalStore
+from navi.loop_runs import LoopRunStore
 from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.trace import TracePhase, TraceStore
@@ -693,7 +694,7 @@ class WeixinService:
         store.mark_delivery_outbox_sent(item.id, delivery_id=item.id)
 
     def _background_task_facts(self, task: Run) -> dict[str, object]:
-        return {
+        facts: dict[str, object] = {
             "kind": "background_task_result",
             "run_id": task.id,
             "title": task.title,
@@ -707,6 +708,21 @@ class WeixinService:
             "workspace": task.workspace,
             "error": str(task.error or ""),
         }
+        goal = GoalStore(self.home).get_by_run(task.id)
+        if goal is None:
+            return facts
+        facts["goal_id"] = goal.id
+        facts["goal_state"] = {
+            "phase": goal.phase,
+            "acceptance": goal.acceptance,
+            "resolution": goal.resolution,
+            "task_status": goal.task_status,
+            "blocked_reason": goal.blocked_reason,
+        }
+        loop_runs = LoopRunStore(self.home).list_by_goal(goal.id, limit=1)
+        if loop_runs:
+            facts["loop_diagnostics"] = _background_loop_diagnostics(loop_runs[0])
+        return facts
 
     async def _compose_event_notification(self, facts: dict) -> str:
         if facts.get("event") not in {"background_event", "background_task_result"}:
@@ -834,6 +850,60 @@ class WeixinService:
         if policy in {"allowlist", "pairing"}:
             return identity in allowed
         return policy == "open"
+
+
+def _background_loop_diagnostics(state: Any) -> dict[str, object]:
+    """Project bounded persisted failure facts for the notification model."""
+    evidence = state.evidence if isinstance(state.evidence, dict) else {}
+    recovery: dict[str, Any] = {}
+    facts = evidence.get("facts")
+    if isinstance(facts, dict) and isinstance(facts.get("recovery"), dict):
+        recovery = facts["recovery"]
+
+    diagnostics: dict[str, object] = {
+        "loop_run_id": state.run_id,
+        "node": str(state.node),
+        "terminal_state": str(state.terminal_state),
+        "attempt": state.attempt,
+        "reason_code": str(
+            evidence.get("reason_code") or recovery.get("reason_code") or ""
+        ),
+        "failure_domain": str(recovery.get("failure_domain") or ""),
+        "reason": str(evidence.get("reason") or ""),
+        "repeat_count": int(evidence.get("repeat_count") or 0),
+    }
+
+    raw_checker_results = evidence.get("checker_results")
+    if isinstance(raw_checker_results, list):
+        checker_results: list[dict[str, object]] = []
+        for raw in raw_checker_results[-3:]:
+            if not isinstance(raw, dict):
+                continue
+            checker_evidence = raw.get("evidence")
+            checker_facts = checker_evidence if isinstance(checker_evidence, dict) else {}
+            checker_results.append(
+                {
+                    "name": str(raw.get("name") or ""),
+                    "passed": bool(raw.get("passed", False)),
+                    "reason": str(raw.get("reason") or ""),
+                    "evaluator_role": str(checker_facts.get("evaluator_role") or ""),
+                    "evidence_summary": str(
+                        checker_facts.get("evidence_summary") or ""
+                    )[:2000],
+                }
+            )
+        diagnostics["checker_results"] = checker_results
+
+    executor = evidence.get("executor")
+    if isinstance(executor, dict):
+        diagnostics["last_capability"] = {
+            "action": str(executor.get("action") or ""),
+            "ok": bool(executor.get("ok", False)),
+            "error_reason": str(executor.get("error_reason") or ""),
+            "terminal": bool(executor.get("terminal", False)),
+            "facts": executor.get("facts") if isinstance(executor.get("facts"), dict) else {},
+        }
+    return diagnostics
 
 
 def _redact_event_facts(facts: dict) -> dict:

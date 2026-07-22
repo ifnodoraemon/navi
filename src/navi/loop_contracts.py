@@ -97,8 +97,6 @@ class GoalSpec:
             raise ValueError("GoalSpec.objective is required")
         if not self.scope:
             raise ValueError("GoalSpec.scope is required")
-        if not self.acceptance_criteria:
-            raise ValueError("GoalSpec.acceptance_criteria is required")
         normalize_permission(self.permission_ceiling)
 
     def to_dict(self) -> dict[str, Any]:

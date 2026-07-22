@@ -64,7 +64,7 @@ class ChatProvider(Protocol):
         temperature: float | None = None, max_tokens: int | None = None
     ) -> str: ...
 
-    async def stream(
+    def stream(
         self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
     ) -> AsyncGenerator[str, None]: ...
 

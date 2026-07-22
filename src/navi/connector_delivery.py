@@ -189,21 +189,33 @@ def register_connector_delivery_tool(registry: Any, *, home: Path) -> None:
                     "there is no staged artifact or deferred commit."
                 ),
             ),
+            workspace_policy="paths",
+            workspace_fields=("path",),
+            workspace_scope="context",
         ),
-        _send_file_handler,
+        lambda args: _send_file_handler(args, default_workspace=registry.project_dir),
     )
 
 
-def _send_file_handler(args: dict[str, Any]):
+def _send_file_handler(args: dict[str, Any], *, default_workspace: Path):
     from .tools import ToolResult
 
     raw_path = str(args.get("path") or "").strip()
     if not raw_path:
         return ToolResult(tool="channel.send_file", ok=False, error="path is required")
     try:
-        source = Path(raw_path).expanduser().resolve()
+        root = Path(args.get("_workspace_root") or default_workspace).expanduser().resolve()
+        requested = Path(raw_path).expanduser()
+        source = (requested if requested.is_absolute() else root / requested).resolve()
     except OSError as exc:
         return ToolResult(tool="channel.send_file", ok=False, error=str(exc))
+    if source != root and root not in source.parents:
+        return ToolResult(
+            tool="channel.send_file",
+            ok=False,
+            error="path must stay inside the current interaction workspace",
+            error_reason="resource_scope_violation",
+        )
     if not source.exists():
         return ToolResult(
             tool="channel.send_file",

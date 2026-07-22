@@ -15,6 +15,7 @@ from navi.event_bus import ResponseReadyEvent
 from navi.goals import GoalStore
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
 from navi.loop_contracts import LoopTerminalState
+from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.loop_runs import LoopRunStore
 from navi.runtime import AgentRuntime
 from navi.runs import Run, RunStore
@@ -582,6 +583,83 @@ async def test_background_failure_task_respects_notification_decision_not_to_not
 
     assert client.messages == []
     assert provider.calls[0][0] == "notification"
+
+
+def test_background_failure_facts_include_persisted_loop_diagnostics(tmp_path: Path):
+    opened = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="report current account usage",
+            workspace=str(tmp_path),
+            source="weixin",
+            peer_id="wx-user",
+            sender_id="wx-user",
+            allowed_capabilities=("account.usage", "respond"),
+            auto_start=False,
+            execution_mode="background",
+        )
+    )
+    loop_store = LoopRunStore(tmp_path)
+    owner = "test-worker"
+    assert loop_store.claim_for_execution(opened.loop_run.run_id, owner=owner) is not None
+    loop_store.fail_active_run(
+        opened.loop_run.run_id,
+        lease_owner=owner,
+        evidence={
+            "reason_code": "semantic_check_failed",
+            "reason": "repeated_progress_signature",
+            "repeat_count": 4,
+            "checker_results": [
+                {
+                    "name": "objective_check",
+                    "passed": False,
+                    "reason": "semantic_check_failed",
+                    "evidence": {
+                        "evaluator_role": "checker",
+                        "evidence_summary": "current result did not satisfy the objective",
+                    },
+                }
+            ],
+            "executor": {
+                "ok": True,
+                "action": "account.usage",
+                "facts": {"available": True, "quota_remaining_percent": 43.0},
+            },
+            "facts": {
+                "recovery": {
+                    "failure_domain": "verification_failed",
+                    "reason_code": "semantic_check_failed",
+                }
+            },
+        },
+    )
+    task = RunStore(tmp_path).update_run(
+        opened.run.id,
+        phase=Phase.ENDED,
+        acceptance=Acceptance.REJECTED,
+        resolution=Resolution.BLOCKED,
+        error="loop_blocked",
+    )
+    assert task is not None
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=CaptureWeixinClient(),
+    )
+
+    facts = service._background_task_facts(task)
+
+    diagnostics = facts["loop_diagnostics"]
+    assert isinstance(diagnostics, dict)
+    assert diagnostics["loop_run_id"] == opened.loop_run.run_id
+    assert diagnostics["terminal_state"] == LoopTerminalState.FAILED
+    assert diagnostics["reason_code"] == "semantic_check_failed"
+    assert diagnostics["failure_domain"] == "verification_failed"
+    assert diagnostics["checker_results"][0]["evidence_summary"] == (
+        "current result did not satisfy the objective"
+    )
+    assert diagnostics["last_capability"]["facts"]["quota_remaining_percent"] == 43.0
 
 
 @pytest.mark.asyncio

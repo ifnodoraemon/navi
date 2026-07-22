@@ -84,6 +84,12 @@ bounded retention window, `control` and `scheduled` use objective evidence when
 the called capability returns authoritative completion facts, and durable goals
 retain semantic checking. The runtime must not call an LLM checker when the
 declared objective-evidence contract is already deterministically satisfied.
+That capability declaration is only deterministic completion authority; it is
+not a quality label for the capability's other returned facts and must not be
+shown to the semantic checker as one. Extra acceptance criteria may be empty,
+in which case the objective remains the semantic contract. The runtime must not
+invent a self-referential criterion such as requiring the verifier to accept
+the verification ladder.
 
 The loop must:
 
@@ -97,6 +103,10 @@ The loop must:
 - return checker rejection and capability-failure facts to the model while a
   bounded replanning opportunity remains; the runtime must not choose the
   semantic recovery route.
+
+When a later attempt converges, prior rejection and recovery facts remain in
+attempt history and trace evidence but must not remain as the current LoopRun
+reason code or active recovery state.
 
 ## Delegation Contract
 
@@ -139,6 +149,12 @@ Capabilities are stable external contracts. Each capability declares:
 - call-dependent permission, risk, actor-context, runtime, and delegation policies;
 - side-effect scope and stage/commit/compensate behavior when applicable.
 
+Public input and output object schemas must explicitly declare their fields and
+reject unknown root fields. One canonical validator owns conditional and
+composite JSON Schema semantics; property declaration order must never create an
+implicit required-field policy. Capability failures expose typed reason and
+retryability facts rather than requiring callers to parse prose.
+
 Governance code executes those declared policies generically. It must not infer
 permission, risk, context injection, runtime binding, or delegation eligibility
 from capability names.
@@ -157,6 +173,13 @@ concrete argv and fail unknown effects closed. If that derived permission is
 higher than the model-declared permission, a sensitive call may proceed only
 after an exact durable approval for the derived permission and arguments; it
 must never execute directly or bypass the immutable permission ceiling.
+Local commands execute in a fail-closed OS sandbox with a sanitized environment:
+only the governed workspace and explicitly required runtime paths are mounted,
+and host credentials are not inherited. Logical paths used by a durable Goal
+are translated into its active shadow workspace for both effects and command
+verification, without changing the Goal's durable authorization scope.
+Shadow create, merge, and discard are loop-kernel operations, not planner-callable
+capabilities selected by arbitrary run identifiers.
 
 Tools execute or observe and return facts. Skills provide procedures and may
 package scripts, templates, or assets, but execution still passes through
@@ -184,6 +207,12 @@ write the backing store directly or append surface-specific audit side effects.
 
 Approval is durable state. A chat message that expresses approval is not itself
 an execution grant.
+Approval behavior is declared capability policy. An explicit typed CLI or API
+control command may avoid a redundant prompt only when the capability declares
+that control-plane policy; model-planned and connector calls remain subject to
+the normal durable approval gate. Authorization preflight runs before approval
+creation and is repeated before the effect to prevent approval of an operation
+the caller cannot perform.
 
 Run, Goal, and LoopRun creation and lifecycle changes must be atomic or use an
 explicit, recoverable saga. Partial failure must not leave an apparently active
@@ -195,6 +224,9 @@ use a durable Effect Journal: completed calls replay their recorded result,
 concurrent calls wait/fail closed, and uncertain outcomes require reconciliation
 instead of blind retry. Model and capability budgets are accounted in a
 process-safe ledger and reconciled with observed provider usage.
+Before a mutating capability effect begins, the audit store must reserve its
+tool-call record. Reservation failure blocks the effect; completion failure
+surfaces an uncertain audit outcome instead of reporting clean success.
 
 Memory must be typed, scoped, provenance-bearing, revocable, and conflict
 visible. Recall, revocation, conflict reads, and activation records must stay
@@ -215,6 +247,10 @@ permissions.
 Trace is audit evidence, not the authoritative runtime state. Secrets and
 sensitive payloads must be redacted before persistence. One latest evaluation is
 stored per trace so rerunning evaluation cannot inflate SLO samples.
+Goal execution inherits the governed Run trace identity when an ingress caller
+does not provide a separate trace id. Trace projections correlate that identity
+back to durable Goal and LoopRun records, and a successful model call must not
+make a blocked or failed durable task appear successful.
 
 Calendar events, reminders, contacts, mail drafts, and attention policies share
 a scoped personal-resource adapter contract with schema validation, optimistic
@@ -265,6 +301,11 @@ not grant or lower permissions. MCP servers are configured only under
 `mcp.servers` in `.navi/config.yaml`; enabled servers expose governed discovery
 and call capabilities only. MCP prompts, resources, sampling, elicitation, and
 server-driven permission changes are not enabled.
+Each server's `tool_permissions` map is both the local allowlist and the
+permission authority for individual tools. HTTP tools require at least network
+permission; stdio tools require write permission and start with a minimal
+environment plus only explicitly configured variables, never the full Navi
+process environment.
 
 Web search must use supported structured providers, surface provider and
 configuration facts, and label whether the same failed provider call is
@@ -277,6 +318,10 @@ or switch providers. All Navi runtime configuration belongs in
 only selects the directory containing that file. Process environment variables
 must not override configuration values. `navi config`, `navi doctor`, and
 `navi doctor --connectivity` are the inspection and live probe surfaces.
+Direct HTTP capabilities resolve every target before approval and invocation,
+classify all resolved addresses, bind the approved address set into the call,
+and connect to a pinned address while preserving the original Host and TLS
+identity. A later DNS answer cannot redirect an already approved call.
 
 ## Verification Contract
 

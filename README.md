@@ -72,7 +72,8 @@ The global parameter groups are:
   `cdn_base_url`, `dm_policy`, `allowed_users`, `group_policy`,
   `group_allowed_users`, `home_channel`;
 - `mcp.servers.<name>`: `transport`, `url`, `command`, `args`, `env`, `headers`,
-  `cwd`, `timeout_seconds`, `permission`, `allowed_tools`, `enabled`.
+  `cwd`, `timeout_seconds`, `tool_permissions`, `enabled`. `tool_permissions`
+  is the local allowlist and permission map for each exposed MCP tool.
 
 The file is created with owner-only permissions. Legacy `.navi/env`,
 `.navi/mcp.json`, and `.navi/api_key` files are rejected rather than merged.

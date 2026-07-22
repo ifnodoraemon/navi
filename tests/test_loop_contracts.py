@@ -78,6 +78,17 @@ def test_loop_spec_from_goal_encodes_navi_2_contract():
     assert spec.to_dict()["budget_policy"]["call_budget"] == 0
 
 
+def test_goal_spec_uses_objective_when_no_extra_acceptance_criteria_are_declared():
+    goal = GoalSpec(
+        objective="report the current account usage",
+        scope=("repo:/tmp/project",),
+    )
+
+    goal.validate()
+
+    assert goal.acceptance_criteria == ()
+
+
 def test_loop_spec_rejects_unsafe_execution_contracts():
     with pytest.raises(ValueError, match="side effects require a checkpoint"):
         LoopSpec(

@@ -41,10 +41,12 @@ async def run_goal_loop_state_graph(
     execution_owner: str = "",
 ) -> LoopControlServiceResult:
     """Execute a prepared Goal/LoopRun through the durable LLM-backed StateGraph."""
+    trace_id = context.trace_id or base.goal.trace_id or base.run.id
     execution_context = replace(
         context,
         goal_id=base.goal.id,
         loop_run_id=base.loop_run.run_id,
+        trace_id=trace_id,
     )
     graph_evidence = {
         "goal_id": base.goal.id,
@@ -65,7 +67,7 @@ async def run_goal_loop_state_graph(
     )
     checker_port: SemanticCheckerPort = LLMSemanticCheckerPort(runtime=runtime)
 
-    if context.trace_id:
+    if execution_context.trace_id:
         from .trace_proxies import (
             TracingPlannerPortProxy,
             TracingExecutorPortProxy,
@@ -99,7 +101,7 @@ async def run_goal_loop_state_graph(
         planner_port=planner_port,
         executor_port=executor_port,
         semantic_checker_port=checker_port,
-        trace_store=TraceStore(home) if context.trace_id else None,
+        trace_store=TraceStore(home) if execution_context.trace_id else None,
         trace_context=execution_context,
         execution_owner=execution_owner,
         account_phase_gates=not callable(bind_gateway),
