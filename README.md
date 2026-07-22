@@ -28,7 +28,12 @@ plans or release narratives.
 
 ## Quick Start
 
-Navi requires Python 3.13 or newer.
+Navi requires Python 3.13 or newer. On Linux, command execution and verifier
+capabilities also require Bubblewrap (`bwrap`) so the OS sandbox can fail closed:
+
+```bash
+sudo apt-get install bubblewrap
+```
 
 ```bash
 python -m venv .venv
