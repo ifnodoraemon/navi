@@ -37,7 +37,9 @@ jobs:
       - name: Install OS sandbox
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes bubblewrap
+          sudo apt-get install --no-install-recommends --yes apparmor-profiles bubblewrap
+          sudo apparmor_parser --replace /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          bwrap --unshare-net --ro-bind /usr /usr --proc /proc --dev /dev -- /usr/bin/true
 
       - name: Install
         run: |

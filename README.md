@@ -35,6 +35,14 @@ capabilities also require Bubblewrap (`bwrap`) so the OS sandbox can fail closed
 sudo apt-get install bubblewrap
 ```
 
+Ubuntu 24.04 and newer restrict unprivileged user namespaces through AppArmor.
+Install and load Ubuntu's Bubblewrap profile when that restriction is enabled:
+
+```bash
+sudo apt-get install apparmor-profiles
+sudo apparmor_parser --replace /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+```
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
