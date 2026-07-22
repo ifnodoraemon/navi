@@ -1,4 +1,5 @@
 """Core tool handlers."""
+
 from __future__ import annotations
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
         _core_tool_spec(
             name="tools.list",
             capability_class="tools",
+            context_policy="capability_catalog",
             description="Return callable capability facts.",
             input_schema={"type": "object", "properties": {}},
             output_schema=_output_schema(

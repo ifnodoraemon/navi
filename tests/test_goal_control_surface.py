@@ -66,7 +66,7 @@ class _PlanningProvider:
         return {}
 
 
-def test_goal_api_exposes_open_state_and_cancel_controls(tmp_path):
+def test_goal_api_exposes_open_state_and_cancel_controls(tmp_path, valid_runtime_config):
     app = api_module.create_app(tmp_path)
     api_key = load_config(tmp_path).api.api_key
     headers = {"X-API-Key": api_key}
@@ -147,7 +147,7 @@ def test_goal_cli_exposes_open_state_and_cancel_controls(tmp_path):
     assert cancelled["resolution"] == Resolution.CANCELED
 
 
-def test_goal_api_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch):
+def test_goal_api_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch, valid_runtime_config):
     provider = _PlanningProvider()
     monkeypatch.setattr(
         api_module,
@@ -196,7 +196,7 @@ def test_goal_api_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch):
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
 
 
-def test_goal_api_resume_uses_runtime_state_graph(tmp_path, monkeypatch):
+def test_goal_api_resume_uses_runtime_state_graph(tmp_path, monkeypatch, valid_runtime_config):
     provider = _PlanningProvider()
     monkeypatch.setattr(
         api_module,

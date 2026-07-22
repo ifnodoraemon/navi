@@ -8,6 +8,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from navi.app_factory import build_runtime
 from navi.cli import app
 from navi.config import load_config, validate_config, write_default_config
 from navi.telegram.config import load_telegram_config
@@ -37,6 +38,16 @@ def test_default_config_contains_every_global_section_and_is_private(tmp_path: P
     assert raw["api"]["api_key"]
     assert raw["mcp"]["servers"]["exa"]["url"] == "https://mcp.exa.ai/mcp"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_runtime_construction_fails_closed_on_invalid_config(tmp_path: Path) -> None:
+    write_default_config(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match=r"invalid Navi configuration: .*model\.api_key is required",
+    ):
+        build_runtime(tmp_path)
 
 
 def test_process_environment_does_not_override_global_config(

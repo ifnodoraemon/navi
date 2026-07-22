@@ -42,6 +42,7 @@ from .prompting import build_system_prompt_assembly
 from .provider import build_provider
 from .service import build_systemd_user_unit, install_systemd_user_unit
 from .safeguards import redact_secrets_deep
+from .skills import SkillStore
 from .trace import TraceStore
 from .tools import API_CONTEXT
 
@@ -88,8 +89,7 @@ def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CO
         approval = (result.facts or {}).get("approval")
         if isinstance(approval, dict) and approval.get("id"):
             raise typer.BadParameter(
-                "approval required: "
-                f"approval_id={approval['id']} code={approval.get('code', '')}"
+                f"approval required: approval_id={approval['id']} code={approval.get('code', '')}"
             )
         raise typer.BadParameter(result.message or "capability failed")
     return result.facts or {}
@@ -335,8 +335,7 @@ def model() -> None:
 @app.command()
 def skills() -> None:
     """List installed skills."""
-    runtime = build_runtime(ensure_home())
-    found = runtime.skills.list_skills()
+    found = SkillStore(ensure_home()).list_skills(workspace=Path.cwd())
     if not found:
         typer.echo("(no skills)")
         return

@@ -24,6 +24,7 @@ from .resource_gateway import (
     ResourceRequest,
 )
 
+
 @dataclass(frozen=True)
 class ChatMessage:
     role: str
@@ -60,12 +61,20 @@ class ChatProvider(Protocol):
     last_usage: ProviderUsage | None
 
     async def complete(
-        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
-        temperature: float | None = None, max_tokens: int | None = None
+        self,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict[str, Any] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str: ...
 
     def stream(
-        self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncGenerator[str, None]: ...
 
 
@@ -76,9 +85,6 @@ ProviderFactory = Callable[[ModelConfig, ProviderSpec], ChatProvider]
 class ProviderAdapter:
     kind: str
     build: ProviderFactory
-
-
-
 
 
 class OpenAICompatibleProvider:
@@ -95,8 +101,12 @@ class OpenAICompatibleProvider:
         self.last_usage: ProviderUsage | None = None
 
     async def complete(
-        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
-        temperature: float | None = None, max_tokens: int | None = None
+        self,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict[str, Any] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         if not self.config.api_key:
             raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
@@ -128,7 +138,11 @@ class OpenAICompatibleProvider:
         return _extract_openai_content(data)
 
     async def stream(
-        self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yield content-delta tokens via SSE (OpenAI-compatible streaming)."""
         import httpx_sse
@@ -143,9 +157,7 @@ class OpenAICompatibleProvider:
             "stream": True,
         }
         headers = {"Authorization": f"Bearer {self.config.api_key}"}
-        async with httpx.AsyncClient(
-            timeout=None, transport=self.transport
-        ) as client:
+        async with httpx.AsyncClient(timeout=None, transport=self.transport) as client:
             async with httpx_sse.aconnect_sse(
                 client,
                 "POST",
@@ -183,12 +195,18 @@ class AnthropicCompatibleProvider:
         self.last_usage: ProviderUsage | None = None
 
     async def complete(
-        self, messages: list[ChatMessage], *, output_schema: dict[str, Any] | None = None,
-        temperature: float | None = None, max_tokens: int | None = None
+        self,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict[str, Any] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         if not self.config.api_key:
             raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
-        payload = _anthropic_payload(self.config.model, messages, temperature=temperature, max_tokens=max_tokens)
+        payload = _anthropic_payload(
+            self.config.model, messages, temperature=temperature, max_tokens=max_tokens
+        )
         structured_tool = _anthropic_structured_tool(self.spec, output_schema)
         if structured_tool:
             payload["tools"] = [structured_tool]
@@ -215,21 +233,25 @@ class AnthropicCompatibleProvider:
         )
 
     async def stream(
-        self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yield content-delta tokens via Anthropic streaming."""
         if not self.config.api_key:
             raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
-        payload = _anthropic_payload(self.config.model, messages, temperature=temperature, max_tokens=max_tokens)
+        payload = _anthropic_payload(
+            self.config.model, messages, temperature=temperature, max_tokens=max_tokens
+        )
         payload["stream"] = True
         headers = {
             "x-api-key": self.config.api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
-        async with httpx.AsyncClient(
-            timeout=None, transport=self.transport
-        ) as client:
+        async with httpx.AsyncClient(timeout=None, transport=self.transport) as client:
             async with client.stream(
                 "POST",
                 f"{self.config.api_base_url}/messages",
@@ -244,14 +266,14 @@ class AnthropicCompatibleProvider:
                         event_type = ""
                         continue
                     if line.startswith("event:"):
-                        event_type = line[len("event:"):].strip()
+                        event_type = line[len("event:") :].strip()
                         if event_type == "message_stop":
                             return
                         continue
                     if line.startswith("data:"):
                         if event_type != "content_block_delta":
                             continue
-                        raw = line[len("data:"):].strip()
+                        raw = line[len("data:") :].strip()
                         try:
                             chunk = json.loads(raw)
                         except json.JSONDecodeError:
@@ -322,8 +344,11 @@ class ModelPool:
             raise ResourceLimitError(grant)
         try:
             result = await _complete_with_optional_schema(
-                provider, messages, output_schema=output_schema,
-                temperature=temperature, max_tokens=max_tokens
+                provider,
+                messages,
+                output_schema=output_schema,
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
         except Exception:
             gateway.release(grant_id=grant.grant_id)
@@ -377,7 +402,9 @@ class ModelPool:
         if not grant.allowed:
             raise ResourceLimitError(grant)
         try:
-            async for token in provider.stream(messages, temperature=temperature, max_tokens=max_tokens):
+            async for token in provider.stream(
+                messages, temperature=temperature, max_tokens=max_tokens
+            ):
                 yield token
         finally:
             usage = provider.last_usage
@@ -491,9 +518,10 @@ def _model_request_cost(
         output_rate = float(params.get("output_cost_per_million") or 0.0)
     except (TypeError, ValueError):
         return 0.0
-    return max(0, input_tokens) * input_rate / 1_000_000 + max(
-        0, output_tokens
-    ) * output_rate / 1_000_000
+    return (
+        max(0, input_tokens) * input_rate / 1_000_000
+        + max(0, output_tokens) * output_rate / 1_000_000
+    )
 
 
 async def _complete_with_optional_schema(
@@ -559,15 +587,6 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
     choice = choices[0]
     message = choice.get("message") or {}
     content = message.get("content")
-
-    # Some OpenAI-compatible wrappers (like Gemini) might return structured output as a tool call
-    if not content or not str(content).strip():
-        tool_calls = message.get("tool_calls")
-        if tool_calls and isinstance(tool_calls, list) and len(tool_calls) > 0:
-            function = tool_calls[0].get("function") or {}
-            arguments = function.get("arguments")
-            if arguments:
-                return str(arguments)
 
     if content is None:
         raise RuntimeError(f"Provider response did not include message content: {data}")
@@ -698,7 +717,11 @@ def _messages_for_response_format(
 
 
 def _anthropic_payload(
-    model: str, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None
+    model: str,
+    messages: list[ChatMessage],
+    *,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     system_parts: list[str] = []
     conversation: list[dict[str, str]] = []

@@ -9,6 +9,7 @@ import pytest
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.goals import GoalStore
+from navi.runs import RunStore
 from navi.tools import API_CONTEXT
 
 
@@ -36,16 +37,21 @@ def test_t1_capability_registry_matches_current_control_surface(navi_home: Path)
         "goal.resume",
         "goal.cancel",
         "goal.state",
+        "goal.update",
         "memory.recall",
         "tools.list",
-        "workspace.shadow.create",
-        "workspace.shadow.merge",
-        "workspace.shadow.discard",
     }
 
     assert expected <= names
     assert expected <= planner_names
-    assert {"delegate.spawn", "watch.create", "workflow.run"}.isdisjoint(names)
+    assert {
+        "delegate.spawn",
+        "watch.create",
+        "workflow.run",
+        "workspace.shadow.create",
+        "workspace.shadow.merge",
+        "workspace.shadow.discard",
+    }.isdisjoint(names)
 
 
 def test_t1_governed_evolution_proposal_is_visible_but_apply_stays_api_only(
@@ -119,9 +125,25 @@ async def test_t1_scheduled_goal_lifecycle_uses_goal_control(navi_home: Path) ->
         permission="read",
         context=context,
     )
+    cancel_args = {"goal_id": opened.facts["goal_id"], "reason": "E2E cleanup"}
+    suspended = await registry.invoke(
+        "goal.cancel",
+        cancel_args,
+        permission="prepare",
+        context=context,
+    )
+    approval = RunStore(navi_home).pending_approval_for_run(suspended.run_id)
+    assert approval is not None
+    resolved = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": approval.code},
+        permission="write",
+        context=context,
+    )
+    assert resolved.ok is True
     cancelled = await registry.invoke(
         "goal.cancel",
-        {"goal_id": opened.facts["goal_id"], "reason": "E2E cleanup"},
+        cancel_args,
         permission="prepare",
         context=context,
     )

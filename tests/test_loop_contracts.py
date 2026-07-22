@@ -53,7 +53,7 @@ def test_loop_spec_from_goal_encodes_navi_2_contract():
     spec = LoopSpec.from_goal(
         _goal_spec(),
         goal_id="goal-1",
-        allowed_capabilities=("filesystem.write", "shell.run"),
+        allowed_capabilities=("file.write", "shell.run"),
         verification_ladder=_verification(),
     )
 
@@ -96,11 +96,10 @@ def test_loop_spec_rejects_unsafe_execution_contracts():
             goal_id="goal-1",
             goal=_goal_spec(),
             state_graph=default_state_graph(),
-            allowed_capabilities=("filesystem.write",),
+            allowed_capabilities=("file.write",),
             verification_ladder=_verification(),
             checkpoint_policy=CheckpointPolicy(before_side_effect=False),
         ).validate()
-
 
     with pytest.raises(ValueError, match="call_budget"):
         LoopSpec(
@@ -108,11 +107,10 @@ def test_loop_spec_rejects_unsafe_execution_contracts():
             goal_id="goal-1",
             goal=_goal_spec(),
             state_graph=default_state_graph(),
-            allowed_capabilities=("filesystem.write",),
+            allowed_capabilities=("file.write",),
             verification_ladder=_verification(),
             budget_policy=BudgetPolicy(call_budget=-1),
         ).validate()
-
 
     with pytest.raises(ValueError, match="verification requires a command"):
         VerificationStep(
@@ -131,11 +129,11 @@ def test_loop_run_state_requires_checkpoint_and_terminal_states_are_final():
     executed = state.transition(
         node=LoopNode.EXECUTE,
         checkpoint_id="ckpt-1",
-        evidence={"planned_side_effect": "filesystem.write"},
+        evidence={"planned_side_effect": "file.write"},
     )
     assert executed.node == LoopNode.EXECUTE
     assert executed.checkpoint_id == "ckpt-1"
-    assert executed.evidence["planned_side_effect"] == "filesystem.write"
+    assert executed.evidence["planned_side_effect"] == "file.write"
 
     done = executed.transition(
         node=LoopNode.EVALUATE,

@@ -156,6 +156,7 @@ def create_app(
     connector_status_handlers = {
         adapter.name: (lambda item=adapter: item.status(home)) for adapter in connector_adapters
     }
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         setup_tasks = []
@@ -172,7 +173,10 @@ def create_app(
                 await adapter_to_run.run(home, project_dir, False)
             except Exception as e:
                 import logging
-                logging.getLogger(__name__).exception(f"ERROR STARTING ADAPTER {adapter_to_run.name}: {e}")
+
+                logging.getLogger(__name__).exception(
+                    f"ERROR STARTING ADAPTER {adapter_to_run.name}: {e}"
+                )
 
         async def _run_background() -> None:
             while True:
@@ -450,8 +454,14 @@ def create_app(
         return {"nodes": [node.__dict__ for node in GraphStore(home).list()]}
 
     @app.get(api_path("traces"))
-    def traces(limit: int = 50, offset: int = 0, has_error: bool | None = None, query: str = "") -> dict:
-        return {"traces": TraceStore(home).list_trace_meta(limit=limit, offset=offset, has_error=has_error, query=query)}
+    def traces(
+        limit: int = 50, offset: int = 0, has_error: bool | None = None, query: str = ""
+    ) -> dict:
+        return {
+            "traces": TraceStore(home).list_trace_meta(
+                limit=limit, offset=offset, has_error=has_error, query=query
+            )
+        }
 
     @app.delete(api_path("traces"))
     async def delete_all_traces() -> dict:
@@ -526,10 +536,10 @@ def create_app(
         }
 
     @app.post(api_path("trace_evaluate"))
-    async def trace_evaluate(trace_id: str, session_id: str = "") -> dict:
+    async def trace_evaluate(trace_id: str) -> dict:
         result = await api_capabilities.invoke(
             "trace.evaluate",
-            {"trace_id": trace_id, "session_id": session_id},
+            {"trace_id": trace_id},
             permission="write",
             context=_local_capability_context(home, project_dir=project_dir),
         )
@@ -632,8 +642,11 @@ def create_app(
         proposals = EvolutionLedger(home).list_proposals(status=status)
         return {
             "proposals": [
-                p.__dict__ for p in proposals  # type: ignore[union-attr]
-            ] if proposals else []
+                p.__dict__
+                for p in proposals  # type: ignore[union-attr]
+            ]
+            if proposals
+            else []
         }
 
     @app.post(api_path("evolution_proposals"))

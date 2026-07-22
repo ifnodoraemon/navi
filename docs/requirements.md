@@ -318,6 +318,10 @@ or switch providers. All Navi runtime configuration belongs in
 only selects the directory containing that file. Process environment variables
 must not override configuration values. `navi config`, `navi doctor`, and
 `navi doctor --connectivity` are the inspection and live probe surfaces.
+Runtime, API, daemon, and connector startup must fail before accepting work if
+the active configuration has validation errors. Diagnostic surfaces must remain
+usable without constructing the model runtime and must expose those errors as
+facts.
 Direct HTTP capabilities resolve every target before approval and invocation,
 classify all resolved addresses, bind the approved address set into the call,
 and connect to a pinned address while preserving the original Host and TLS

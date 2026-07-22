@@ -23,7 +23,7 @@ class FakeConnectorAdapter:
         self.run_calls += 1
 
 
-def test_api_lifespan_is_headless_by_default(tmp_path, monkeypatch):
+def test_api_lifespan_is_headless_by_default(tmp_path, monkeypatch, valid_runtime_config):
     background_calls = []
     adapter = FakeConnectorAdapter()
 
@@ -52,7 +52,7 @@ def test_api_lifespan_is_headless_by_default(tmp_path, monkeypatch):
     assert adapter.run_calls == 0
 
 
-def test_trace_ui_is_served_from_packaged_assets(tmp_path):
+def test_trace_ui_is_served_from_packaged_assets(tmp_path, valid_runtime_config):
     app = api_module.create_app(tmp_path)
 
     with TestClient(app) as client:

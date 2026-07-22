@@ -29,5 +29,7 @@ async def test_e2e_cloud_agent_run(navi_home: Path) -> None:
     await controller.shutdown(timeout=5)
 
     assert response is not None
+    assert response.ok is True
     assert response.surfaced_text().strip()
-    assert response.action in {"chat", "tool"}
+    assert response.action == "goal"
+    assert response.facts["responded_action"] == "chat"

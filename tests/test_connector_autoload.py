@@ -33,6 +33,7 @@ def _context(home: Path, *, source: str, permission_ceiling: str = "write") -> C
 @pytest.mark.asyncio
 async def test_connector_manifest_matches_local_manifest(tmp_path: Path) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    assert registry.get("tools.list").context_policy == "capability_catalog"
 
     connector_result = await registry.invoke(
         "tools.list",
@@ -60,6 +61,28 @@ async def test_connector_manifest_matches_local_manifest(tmp_path: Path) -> None
         "system.info",
         "test.run",
     }.isdisjoint(connector_names)
+
+
+@pytest.mark.asyncio
+async def test_tools_list_uses_filtered_registry_catalog(tmp_path: Path) -> None:
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        allowed_tools={"respond", "tools.list"},
+    )
+
+    result = await registry.invoke(
+        "tools.list",
+        {},
+        permission="read",
+        context=_context(tmp_path, source="cli"),
+    )
+
+    assert result.ok is True
+    assert {tool["name"] for tool in result.facts["tools"]} == {
+        "respond",
+        "tools.list",
+    }
 
 
 @pytest.mark.asyncio

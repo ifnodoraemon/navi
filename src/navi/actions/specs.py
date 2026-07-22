@@ -1190,6 +1190,7 @@ ACTION_SPECS = [
                 "entity_id": {"type": "string"},
                 "state_transition": {"type": "string"},
                 "turn_scope": {"type": "string"},
+                "proposal_id": {"type": "string"},
                 "proposal": {"type": "object"},
             },
         },
@@ -1240,8 +1241,7 @@ ACTION_SPECS = [
         capability_class="evolution",
         execution_contexts=("turn", API_CONTEXT),
         description=(
-            "Read a proposal, its latest persisted experiment, and activation "
-            "observation state."
+            "Read a proposal, its latest persisted experiment, and activation observation state."
         ),
         input_schema={
             "type": "object",
@@ -1345,6 +1345,7 @@ ACTION_SPECS = [
                 "entity_id": {"type": "string"},
                 "state_transition": {"type": "string"},
                 "turn_scope": {"type": "string"},
+                "proposal_id": {"type": "string"},
                 "proposal": {"type": "object"},
             },
         },

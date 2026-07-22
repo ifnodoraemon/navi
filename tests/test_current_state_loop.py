@@ -89,7 +89,7 @@ def _loop_spec(goal_id: str, workspace: str) -> LoopSpec:
             permission_ceiling="write",
         ),
         goal_id=goal_id,
-        allowed_capabilities=("filesystem.write", "shell.run"),
+        allowed_capabilities=("file.write", "shell.run"),
         verification_ladder=(
             VerificationStep(
                 kind=VerificationKind.COMMAND_EXIT_CODE,

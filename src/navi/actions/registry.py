@@ -10,10 +10,6 @@ from ..capabilities_types import (
 from .specs import ACTION_SPECS
 
 
-# Spec names whose handler key differs from ``name.replace(".", "_")``.
-_KEY_OVERRIDES = {"respond": "respond"}
-
-
 def get_action_handlers(
     home: Path,
     project_dir: Path,
@@ -41,7 +37,7 @@ def get_action_handlers(
     specs = {spec.name: spec for spec in ACTION_SPECS}
     handlers: dict[str, Capability] = {}
     for name, spec in specs.items():
-        key = _KEY_OVERRIDES.get(name, name.replace(".", "_"))
+        key = name.replace(".", "_")
         cls = _REGISTRY.get(key)
         if cls is None:
             raise ValueError(f"unknown action capability handler: {name}")

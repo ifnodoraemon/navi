@@ -87,7 +87,7 @@ class MemoryProvider(Protocol):
         content: str,
         created_at: float,
         *,
-        message_id: str = "",
+        message_id: str,
         source: str = "",
         peer_id: str = "",
         sender_id: str = "",
@@ -521,8 +521,6 @@ class SQLiteMemoryProvider:
                 ).fetchall()
             return [(row[0], float(row[1])) for row in rows]
 
-
-
     def add_message(
         self,
         session_id: str,
@@ -530,13 +528,15 @@ class SQLiteMemoryProvider:
         content: str,
         created_at: float,
         *,
-        message_id: str = "",
+        message_id: str,
         source: str = "",
         peer_id: str = "",
         sender_id: str = "",
         trace_id: str = "",
         run_id: str = "",
     ) -> None:
+        if not message_id:
+            raise ValueError("message_id is required")
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -774,8 +774,6 @@ def _message_identity_filter(
         clauses.append("messages.session_id = ?")
         values.append(session_id)
     if source and peer_id and sender_id:
-        clauses.append(
-            "(messages.source = ? AND messages.peer_id = ? AND messages.sender_id = ?)"
-        )
+        clauses.append("(messages.source = ? AND messages.peer_id = ? AND messages.sender_id = ?)")
         values.extend([source, peer_id, sender_id])
     return " OR ".join(clauses), values

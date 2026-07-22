@@ -42,7 +42,7 @@ from .safeguards import (
 )
 from .tools import API_CONTEXT, TURN_CONTEXT, ToolSpec, build_tool_gateway
 from .actions.registry import ActionCapabilityProvider  # noqa: F401
-from .actions.tools import ToolGatewayCapabilityProvider, ToolCapability, ToolsListCapability
+from .actions.tools import ToolGatewayCapabilityProvider, ToolCapability
 
 logger = logging.getLogger("navi.capabilities")
 
@@ -116,7 +116,7 @@ class CapabilityRegistry:
                 runtime=self.runtime,
                 capability_registry=self,
             ),
-            ToolGatewayCapabilityProvider(self.gateway),
+            ToolGatewayCapabilityProvider(self.gateway, capability_registry=self),
         )
         self.hooks = HookRegistry(home)
         self.handlers = self._build_handlers()
@@ -169,9 +169,7 @@ class CapabilityRegistry:
                     context_policy=spec.context_policy,
                     runtime_policy=spec.runtime_policy,
                     delegation_allowed=spec.delegation_allowed,
-                    deterministic_completion_authority=(
-                        spec.deterministic_completion_authority
-                    ),
+                    deterministic_completion_authority=(spec.deterministic_completion_authority),
                     approval_policy=spec.approval_policy,
                     workspace_policy=spec.workspace_policy,
                     workspace_fields=spec.workspace_fields,
@@ -485,7 +483,9 @@ class CapabilityRegistry:
         finally:
             self.resource_gateway.release(grant_id=resource_grant.grant_id)
         if result.ok:
-            output_schema_errors = json_schema_errors(result.facts or {}, handler.spec.output_schema)
+            output_schema_errors = json_schema_errors(
+                result.facts or {}, handler.spec.output_schema
+            )
             if output_schema_errors:
                 result = _capability_error(
                     action=f"execute:{name}",
@@ -569,10 +569,7 @@ class CapabilityRegistry:
             return None, ""
         if spec.approval_policy == "control_plane":
             return None, ""
-        if (
-            spec.approval_policy == "explicit_control"
-            and self.execution_context == API_CONTEXT
-        ):
+        if spec.approval_policy == "explicit_control" and self.execution_context == API_CONTEXT:
             return None, ""
         risk = assess_capability_call(
             spec,
@@ -649,12 +646,15 @@ class CapabilityRegistry:
                 args_json=args_json,
                 reason=f"{risk.reason_code}: {name} ({risk.risk_class})",
             )
-            run = runs.update_run(
-                run.id,
-                plan_summary=f"capability_approval:{name}:{permission}:{args_json}",
-                result_summary="",
-                error="",
-            ) or run
+            run = (
+                runs.update_run(
+                    run.id,
+                    plan_summary=f"capability_approval:{name}:{permission}:{args_json}",
+                    result_summary="",
+                    error="",
+                )
+                or run
+            )
             transition = "created"
         facts = {
             CAPABILITY_REASON_KEY: CAPABILITY_REASON_SENSITIVE_APPROVAL,
@@ -851,9 +851,6 @@ class CapabilityRegistry:
             and (self.allow_sources is None or handler.spec.source in self.allow_sources)
             and handler.spec.available_in(self.execution_context)
         }
-        tools_list = filtered.get("tools.list")
-        if tools_list is not None:
-            filtered["tools.list"] = ToolsListCapability(tools_list.spec, registry=self)
         return filtered
 
     def _reserve_action_audit(
@@ -906,9 +903,7 @@ class CapabilityRegistry:
                 sort_keys=True,
             ),
             error=(
-                ""
-                if result.ok
-                else redact_personal_data(result.message or result.error_reason)
+                "" if result.ok else redact_personal_data(result.message or result.error_reason)
             ),
             ended_at=time.time(),
         )
@@ -939,9 +934,7 @@ class CapabilityRegistry:
                     redact_personal_data_deep(facts), ensure_ascii=False, sort_keys=True
                 ),
                 error=(
-                    ""
-                    if result.ok
-                    else redact_personal_data(result.message or result.error_reason)
+                    "" if result.ok else redact_personal_data(result.message or result.error_reason)
                 ),
                 started_at=started_at,
                 ended_at=time.time(),

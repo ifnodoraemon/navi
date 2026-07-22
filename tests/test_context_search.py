@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.memory import MemoryStore
+from navi.memory.provider import SQLiteMemoryProvider
 from navi.paths import db_paths
 from navi.syscalls import ModelSyscallPlanner
 
@@ -30,7 +32,7 @@ def test_legacy_message_schema_migrates_to_identity_fields(tmp_path: Path) -> No
     home = tmp_path / "home"
     home.mkdir()
     db_path = db_paths(home).memory
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             """
             CREATE TABLE messages (
@@ -61,6 +63,19 @@ def test_legacy_message_schema_migrates_to_identity_fields(tmp_path: Path) -> No
     assert messages[0].source == ""
     assert matches
     assert matches[0][0].message_id == "legacy:1"
+
+
+def test_memory_provider_rejects_new_messages_without_identity(tmp_path: Path) -> None:
+    provider = SQLiteMemoryProvider(tmp_path / "memory.db")
+
+    with pytest.raises(ValueError, match="message_id is required"):
+        provider.add_message(
+            "session-a",
+            "user",
+            "identity is required",
+            123.0,
+            message_id="",
+        )
 
 
 @pytest.mark.asyncio

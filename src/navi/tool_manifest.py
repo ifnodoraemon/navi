@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from .safeguards import capability_safeguard_facts
@@ -31,4 +32,15 @@ def tool_manifest_facts(spec: ToolSpec) -> dict[str, Any]:
         "input_properties": sorted((spec.input_schema.get("properties") or {}).keys()),
         "required": list(spec.input_schema.get("required") or []),
         "safeguards": capability_safeguard_facts(spec),
+    }
+
+
+def tool_catalog_facts(specs: Iterable[ToolSpec], *, definition: str) -> dict[str, Any]:
+    manifests = [tool_manifest_facts(spec) for spec in specs]
+    return {
+        "category": "tools",
+        "definition": definition,
+        "not_skills": True,
+        "tools": manifests,
+        "count": len(manifests),
     }

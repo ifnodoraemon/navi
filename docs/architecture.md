@@ -46,6 +46,12 @@ values and references, rejects unknown top-level domains, and rejects the old
 environment variable because it selects the directory before the configuration
 file can be loaded; it does not override values inside the file.
 
+Runtime construction is the validation boundary. Chat, API, daemon, and
+connector startup refuse to accept work when the active configuration has any
+validation error. `navi config` and `navi doctor` load diagnostics without
+constructing a model runtime, so operators can still inspect and repair an
+invalid configuration.
+
 Secrets are stored in the same owner-readable file so there is one inspectable
 authority. `navi config` renders the effective structure with secret-bearing
 fields redacted. Model routes, search providers, connector credentials, API

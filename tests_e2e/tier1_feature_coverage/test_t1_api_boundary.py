@@ -56,14 +56,23 @@ def _approve_required_response(api_client: TestClient, response) -> str:
     return str(approval["id"])
 
 
-def test_t1_api_create_session_routes_capability(
-    api_client: TestClient, navi_home: Path
-) -> None:
+def _post_with_approval(
+    api_client: TestClient,
+    url: str,
+    *,
+    json_body: dict | None = None,
+):
+    first = api_client.post(url, json=json_body)
+    _approve_required_response(api_client, first)
+    return api_client.post(url, json=json_body)
+
+
+def test_t1_api_create_session_routes_capability(api_client: TestClient, navi_home: Path) -> None:
     """Execute a POST /v1/sessions request via api_client and verify it creates the session."""
     alias = "e2e-session-alias"
     response = api_client.post("/v1/sessions", json={"alias": alias})
     assert response.status_code == 200
-    
+
     data = response.json()["data"]
     assert "session_id" in data
     assert data["alias"] == alias
@@ -79,9 +88,7 @@ def test_t1_api_create_session_routes_capability(
     assert "session.create" in _logged_tools(navi_home)
 
 
-def test_t1_api_add_memory_routes_capability(
-    api_client: TestClient, navi_home: Path
-) -> None:
+def test_t1_api_add_memory_routes_capability(api_client: TestClient, navi_home: Path) -> None:
     """Execute a POST /v1/memory request via api_client and verify it adds the memory item."""
     memory_data = {
         "type": "preference",
@@ -94,7 +101,7 @@ def test_t1_api_add_memory_routes_capability(
     }
     response = api_client.post("/v1/memory", json=memory_data)
     assert response.status_code == 200
-    
+
     data = response.json()["data"]
     assert "item" in data
     item = data["item"]
@@ -124,21 +131,20 @@ def test_t1_api_trace_evaluate_routes_capability(api_client: TestClient, navi_ho
     TraceStore(navi_home).add_event(
         trace_id=trace_id,
         phase="capability.result",
-        tool="delegate.spawn",
+        tool="shell.run",
         ok=False,
         message="boundary check failure",
     )
 
     # Trigger evaluation via API client
     response = api_client.post(f"/v1/traces/{trace_id}/evaluate")
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
 
     data = response.json()["data"]
     assert "id" in data
     assert data["trace_id"] == trace_id
     assert data["failure_domain"] == "capability_failure"
-    
-    pass
+
     assert "trace.evaluate" in _logged_tools(navi_home)
 
 
@@ -151,8 +157,12 @@ def test_t1_api_evolution_propose_routes_capability(
         marker="api boundary proposal marker",
         eval_case_id="verify-api-endpoint",
     )
-    response = api_client.post("/v1/evolution-proposals", json=proposal_data)
-    assert response.status_code == 200
+    response = _post_with_approval(
+        api_client,
+        "/v1/evolution-proposals",
+        json_body=proposal_data,
+    )
+    assert response.status_code == 200, response.text
 
     data = response.json()["data"]
     assert "id" in data
@@ -170,9 +180,7 @@ def test_t1_api_evolution_propose_routes_capability(
     assert "evolution.propose" in _logged_tools(navi_home)
 
 
-def test_t1_api_evolution_apply_routes_capability(
-    api_client: TestClient, navi_home: Path
-) -> None:
+def test_t1_api_evolution_apply_routes_capability(api_client: TestClient, navi_home: Path) -> None:
     """Execute a POST /v1/evolution_proposal_apply request via api_client and verify it applies the proposal."""
     # 1. Propose an evolution
     proposal_data = _prompt_proposal(
@@ -180,13 +188,20 @@ def test_t1_api_evolution_apply_routes_capability(
         marker="api apply marker",
         eval_case_id="api-apply-case",
     )
-    response = api_client.post("/v1/evolution-proposals", json=proposal_data)
-    assert response.status_code == 200
+    response = _post_with_approval(
+        api_client,
+        "/v1/evolution-proposals",
+        json_body=proposal_data,
+    )
+    assert response.status_code == 200, response.text
     proposal_id = response.json()["data"]["id"]
 
     # 2. Persist candidate experiment evidence.
-    experiment = api_client.post(f"/v1/evolution-proposals/{proposal_id}/experiment")
-    assert experiment.status_code == 200
+    experiment = _post_with_approval(
+        api_client,
+        f"/v1/evolution-proposals/{proposal_id}/experiment",
+    )
+    assert experiment.status_code == 200, experiment.text
     assert experiment.json()["data"]["status"] == "passed"
 
     # 3. Request and resolve an exact apply approval.
@@ -194,15 +209,16 @@ def test_t1_api_evolution_apply_routes_capability(
     approval_id = _approve_required_response(api_client, first_apply)
 
     # 4. Bind the approved evaluation to that durable approval.
-    eval_response = api_client.post(
+    eval_response = _post_with_approval(
+        api_client,
         f"/v1/evolution-proposals/{proposal_id}/evaluation",
-        json={
+        json_body={
             "evaluation_result": "approved",
             "evaluation_evidence": "E2E apply checks passed",
             "approval_id": approval_id,
         },
     )
-    assert eval_response.status_code == 200
+    assert eval_response.status_code == 200, eval_response.text
     assert eval_response.json()["data"]["evaluation_result"] == "approved"
 
     # 5. Apply the proposal after both experiment and approval are durable.
@@ -228,26 +244,34 @@ def test_t1_api_evolution_rollback_routes_capability(
         marker="api rollback marker",
         eval_case_id="api-rollback-case",
     )
-    response = api_client.post("/v1/evolution-proposals", json=proposal_data)
-    assert response.status_code == 200
+    response = _post_with_approval(
+        api_client,
+        "/v1/evolution-proposals",
+        json_body=proposal_data,
+    )
+    assert response.status_code == 200, response.text
     proposal_id = response.json()["data"]["id"]
 
     # 2. Run the declared experiment and request exact apply approval.
-    experiment = api_client.post(f"/v1/evolution-proposals/{proposal_id}/experiment")
-    assert experiment.status_code == 200
+    experiment = _post_with_approval(
+        api_client,
+        f"/v1/evolution-proposals/{proposal_id}/experiment",
+    )
+    assert experiment.status_code == 200, experiment.text
     first_apply = api_client.post(f"/v1/evolution-proposals/{proposal_id}/apply")
     approval_id = _approve_required_response(api_client, first_apply)
 
     # 3. Bind the proposal evaluation to the approved apply request.
-    eval_response = api_client.post(
+    eval_response = _post_with_approval(
+        api_client,
         f"/v1/evolution-proposals/{proposal_id}/evaluation",
-        json={
+        json_body={
             "evaluation_result": "approved",
             "evaluation_evidence": "E2E rollback checks passed",
             "approval_id": approval_id,
         },
     )
-    assert eval_response.status_code == 200
+    assert eval_response.status_code == 200, eval_response.text
 
     # 4. Apply proposal (generates an evolution event).
     apply_response = api_client.post(f"/v1/evolution-proposals/{proposal_id}/apply")

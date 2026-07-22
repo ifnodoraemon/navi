@@ -22,7 +22,7 @@ class StoredMessage:
     role: str
     content: str
     created_at: float
-    message_id: str = ""
+    message_id: str
     source: str = ""
     peer_id: str = ""
     sender_id: str = ""

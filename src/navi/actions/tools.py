@@ -4,25 +4,31 @@ from typing import Any, Mapping
 
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY
 from navi.capabilities_types import Capability, CapabilityContext, CapabilityResult
-from navi.tool_manifest import tool_manifest_facts
+from navi.tool_manifest import tool_catalog_facts
 from navi.tools import ToolSpec
 
 
 class ToolGatewayCapabilityProvider:
-    def __init__(self, gateway):
+    def __init__(self, gateway, *, capability_registry=None):
         self.gateway = gateway
+        self.capability_registry = capability_registry
 
     def capabilities(self) -> Mapping[str, Capability]:
         return {
-            spec.name: ToolCapability(spec, gateway=self.gateway)
+            spec.name: ToolCapability(
+                spec,
+                gateway=self.gateway,
+                capability_registry=self.capability_registry,
+            )
             for spec in self.gateway.list_specs()
         }
 
 
 class ToolCapability:
-    def __init__(self, spec: ToolSpec, *, gateway):
+    def __init__(self, spec: ToolSpec, *, gateway, capability_registry=None):
         self.spec = spec
         self.gateway = gateway
+        self.capability_registry = capability_registry
 
     async def invoke(
         self,
@@ -56,6 +62,27 @@ class ToolCapability:
             }
         elif self.spec.context_policy == "skill_catalog":
             call_args["_skill_permission_ceiling"] = context.skill_permission_ceiling
+        elif self.spec.context_policy == "capability_catalog":
+            if self.capability_registry is None:
+                return CapabilityResult(
+                    ok=False,
+                    action="tool",
+                    facts={CAPABILITY_ERROR_REASON_KEY: "runtime_context_unavailable"},
+                    error_reason="runtime_context_unavailable",
+                )
+            specs = self.capability_registry.planner_specs(
+                permission_ceiling=context.permission_ceiling,
+            )
+            return CapabilityResult(
+                ok=True,
+                action="tool",
+                facts=tool_catalog_facts(
+                    specs,
+                    definition=(
+                        "callable capabilities available in the current permission context"
+                    ),
+                ),
+            )
         if self.spec.workspace_scope == "context":
             call_args["_workspace_root"] = context.workspace
         result = await self.gateway.call(self.spec.name, call_args)
@@ -69,7 +96,9 @@ class ToolCapability:
             )
         error_reason = ""
         if not result.ok:
-            error_reason = str(result.error_reason or facts.get(CAPABILITY_ERROR_REASON_KEY) or "tool_error")
+            error_reason = str(
+                result.error_reason or facts.get(CAPABILITY_ERROR_REASON_KEY) or "tool_error"
+            )
             facts.setdefault(CAPABILITY_ERROR_REASON_KEY, error_reason)
         payload = {
             "capability": self.spec.name,
@@ -86,33 +115,4 @@ class ToolCapability:
             yields_control=result.yields_control,
             facts=facts,
             error_reason=error_reason,
-        )
-
-
-class ToolsListCapability:
-    def __init__(self, spec: ToolSpec, *, registry):
-        self.spec = spec
-        self.registry = registry
-
-    async def invoke(
-        self,
-        args: dict[str, Any],
-        *,
-        permission: str,
-        context: CapabilityContext,
-    ) -> CapabilityResult:
-        specs = self.registry.planner_specs(
-            permission_ceiling=context.permission_ceiling,
-        )
-        facts = {
-            "category": "tools",
-            "definition": "callable capabilities available in the current permission context",
-            "not_skills": True,
-            "tools": [tool_manifest_facts(spec) for spec in specs],
-            "count": len(specs),
-        }
-        return CapabilityResult(
-            ok=True,
-            action="tool",
-            facts=facts,
         )

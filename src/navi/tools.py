@@ -130,8 +130,7 @@ class ToolSpec:
             "argument_map",
         }:
             raise ValueError(
-                f"tool {self.name!r} declares unsupported permission_policy "
-                f"{permission_policy!r}"
+                f"tool {self.name!r} declares unsupported permission_policy {permission_policy!r}"
             )
         object.__setattr__(self, "permission_policy", permission_policy)
         argument_permission_field = str(self.argument_permission_field or "").strip()
@@ -163,29 +162,28 @@ class ToolSpec:
             "agent_operation",
             "argument_permission",
         }:
-            raise ValueError(
-                f"tool {self.name!r} declares unsupported risk_policy {risk_policy!r}"
-            )
+            raise ValueError(f"tool {self.name!r} declares unsupported risk_policy {risk_policy!r}")
         object.__setattr__(self, "risk_policy", risk_policy)
         context_policy = str(self.context_policy or "none").strip()
-        if context_policy not in {"none", "actor_memory", "skill_catalog"}:
+        if context_policy not in {
+            "none",
+            "actor_memory",
+            "skill_catalog",
+            "capability_catalog",
+        }:
             raise ValueError(
-                f"tool {self.name!r} declares unsupported context_policy "
-                f"{context_policy!r}"
+                f"tool {self.name!r} declares unsupported context_policy {context_policy!r}"
             )
         object.__setattr__(self, "context_policy", context_policy)
         runtime_policy = str(self.runtime_policy or "none").strip()
         if runtime_policy not in {"none", "required", "when_auto_start"}:
             raise ValueError(
-                f"tool {self.name!r} declares unsupported runtime_policy "
-                f"{runtime_policy!r}"
+                f"tool {self.name!r} declares unsupported runtime_policy {runtime_policy!r}"
             )
         object.__setattr__(self, "runtime_policy", runtime_policy)
         risk_class = str(self.risk_class or "").strip().lower()
         if risk_class and risk_class not in {"low", "medium", "high"}:
-            raise ValueError(
-                f"tool {self.name!r} declares unsupported risk_class {risk_class!r}"
-            )
+            raise ValueError(f"tool {self.name!r} declares unsupported risk_class {risk_class!r}")
         object.__setattr__(self, "risk_class", risk_class)
         sensitive_contexts = tuple(
             dict.fromkeys(

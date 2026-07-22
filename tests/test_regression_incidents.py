@@ -64,7 +64,23 @@ def test_provider_rejects_structured_json_hidden_in_reasoning_content():
         _extract_openai_content(data)
 
 
+def test_provider_rejects_structured_json_hidden_in_tool_call_arguments():
+    data = {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"arguments": '{"tool":"respond","args":{"message":"ok"}}'}}
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
 
+    with pytest.raises(RuntimeError, match="Provider response content is empty"):
+        _extract_openai_content(data)
 
 
 def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
@@ -199,6 +215,7 @@ async def test_connector_approval_command_returns_explicit_unresolved_fact(tmp_p
             assert role == "responder"
             self.prompt = messages[-1].content
             return "没有找到对应的待审批请求。"
+
         def list_roles(self) -> list[str]:
             return ["planner", "responder"]
 

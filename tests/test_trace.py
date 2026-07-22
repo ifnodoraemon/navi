@@ -132,10 +132,7 @@ def test_trace_blob_resolution_preserves_non_blob_loop_decision_payloads(tmp_pat
     assert len(decisions) == 1
     payload = json.loads(decisions[0].output_json)
     assert payload["tool"] == "state_graph.side_effect.commit"
-    assert (
-        payload["evidence"]["side_effect"]["state"]
-        == "released_for_connector_commit"
-    )
+    assert payload["evidence"]["side_effect"]["state"] == "released_for_connector_commit"
 
 
 def test_loop_decision_filter_is_applied_before_pagination(tmp_path):
@@ -244,9 +241,7 @@ def test_trace_store_replaces_legacy_evaluation_index_and_deduplicates(tmp_path)
     TraceStore(tmp_path)
     with connect(tmp_path / "traces.db") as conn:
         conn.execute("DROP INDEX idx_trace_evaluations_trace")
-        conn.execute(
-            "CREATE INDEX idx_trace_evaluations_trace ON trace_evaluations(trace_id)"
-        )
+        conn.execute("CREATE INDEX idx_trace_evaluations_trace ON trace_evaluations(trace_id)")
         conn.executemany(
             """
             INSERT INTO trace_evaluations(
@@ -255,9 +250,7 @@ def test_trace_store_replaces_legacy_evaluation_index_and_deduplicates(tmp_path)
             """,
             (("old", "success", 1.0), ("latest", "failure", 2.0)),
         )
-        conn.execute(
-            "UPDATE schema_versions SET version = 2 WHERE component = 'traces'"
-        )
+        conn.execute("UPDATE schema_versions SET version = 2 WHERE component = 'traces'")
 
     store = TraceStore(tmp_path)
 
@@ -270,9 +263,7 @@ def test_trace_store_replaces_legacy_evaluation_index_and_deduplicates(tmp_path)
     )
     assert replacement.id == "latest"
     with connect(tmp_path / "traces.db") as conn:
-        index = conn.execute(
-            "PRAGMA index_list(trace_evaluations)"
-        ).fetchall()
+        index = conn.execute("PRAGMA index_list(trace_evaluations)").fetchall()
     assert any(row[1] == "idx_trace_evaluations_trace" and row[2] == 1 for row in index)
 
 
@@ -334,7 +325,7 @@ def test_trace_store_reinitializes_schema_drift(tmp_path):
     assert "trace_runs" not in tables
 
 
-def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
+def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path, valid_runtime_config):
     store = TraceStore(tmp_path)
     store.add_loop_decision(
         trace_id="trace-api",
@@ -387,7 +378,7 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path):
     assert "thread_id" in runs_payload["data"]["runs"][0]
 
 
-def test_trace_api_includes_durable_loop_run_details_for_web_tree(tmp_path):
+def test_trace_api_includes_durable_loop_run_details_for_web_tree(tmp_path, valid_runtime_config):
     loop_store = LoopRunStore(tmp_path)
     loop_run = loop_store.create_run(_loop_spec_for_trace("goal-trace"))
     checkpoint = loop_store.write_checkpoint(
@@ -489,11 +480,11 @@ def test_trace_root_uses_correlated_durable_loop_failure_as_authoritative_status
     assert details[0]["run_state"]["run_id"] == opened.loop_run.run_id
 
 
-def test_trace_delete_api_endpoints(tmp_path):
+def test_trace_delete_api_endpoints(tmp_path, valid_runtime_config):
     store = TraceStore(tmp_path)
     store.add_event(trace_id="trace-to-delete-1", phase="turn.start")
     store.add_event(trace_id="trace-to-delete-2", phase="turn.start")
-    
+
     app = create_app(tmp_path)
     api_key = load_config(tmp_path).api.api_key
     client = TestClient(app)
@@ -539,7 +530,9 @@ def test_trace_delete_api_endpoints(tmp_path):
     assert len(res.json()["data"]["traces"]) == 0
 
 
-def test_trace_ui_read_endpoints_are_public_but_writes_require_api_key(tmp_path):
+def test_trace_ui_read_endpoints_are_public_but_writes_require_api_key(
+    tmp_path, valid_runtime_config
+):
     store = TraceStore(tmp_path)
     store.add_event(trace_id="trace-public", phase="turn.start")
     app = create_app(tmp_path)
@@ -612,7 +605,6 @@ async def test_trace_delete_capability_requires_explicit_scope_and_verifies_dele
     assert store.list_events("trace-delete") == []
 
 
-
 def test_trace_meta_uses_evaluation_outcome_not_final_event_status(tmp_path):
     store = TraceStore(tmp_path)
     store.add_event(
@@ -671,9 +663,7 @@ def test_trace_converged_without_failed_facts_is_success(tmp_path):
 
     assert evaluation.outcome == "success"
     assert evaluation.failure_domain == "none"
-    assert json.loads(evaluation.evidence_json)["evaluation_rule"] == (
-        "loop_decision_converged"
-    )
+    assert json.loads(evaluation.evidence_json)["evaluation_rule"] == ("loop_decision_converged")
 
 
 def test_trace_waiting_approval_is_successful_pause_not_failure(tmp_path):
@@ -855,9 +845,7 @@ def test_trace_duplicate_collection_entity_mutation_is_degraded(tmp_path):
     assert evaluation.outcome == "degraded"
     assert evaluation.failure_domain == "loop_no_progress"
     assert evidence["evaluation_rule"] == "duplicate_entity_mutation"
-    assert evidence["duplicate_mutation"]["refs"] == {
-        "cancelled_goals:goal-1:already_terminal": 2
-    }
+    assert evidence["duplicate_mutation"]["refs"] == {"cancelled_goals:goal-1:already_terminal": 2}
 
 
 def test_trace_final_text_keywords_do_not_drive_evaluation(tmp_path):

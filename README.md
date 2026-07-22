@@ -50,8 +50,10 @@ API requests require `X-API-Key`. The key is `api.api_key` in
 
 `.navi/config.yaml` is the only Navi runtime configuration file. `NAVI_HOME` is
 the only bootstrap environment variable; it selects the directory and does not
-override values in the file. Inspect the effective configuration without
-revealing secrets:
+override values in the file. Runtime, API, and connector startup fail closed
+when the active configuration is invalid; diagnostic commands remain available
+to report the exact validation facts. Inspect the effective configuration
+without revealing secrets:
 
 ```bash
 navi config

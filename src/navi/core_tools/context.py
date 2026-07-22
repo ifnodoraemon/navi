@@ -117,9 +117,8 @@ def _message_evidence(
     score: float,
     reasons: list[str],
 ) -> dict[str, Any]:
-    message_id = message.message_id or f"legacy:{message.session_id}:{message.created_at:.6f}"
     return {
-        "evidence_id": f"msg:{message_id}",
+        "evidence_id": f"msg:{message.message_id}",
         "kind": "conversation_message",
         "scope": "session",
         "session_id": message.session_id,

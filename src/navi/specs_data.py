@@ -44,9 +44,7 @@ AGENT_ROLES_SPEC: Any = {
             "connector-appropriate notification text.",
             "when_to_use": ["Connector-specific status updates."],
             "evidence_required": [
-                "Trace or execution evidence linking "
-                "notification text to task or execution "
-                "output."
+                "Trace or execution evidence linking notification text to task or execution output."
             ],
             "parallel_safe": True,
         },
@@ -141,7 +139,6 @@ DEFAULTS_SPEC: Any = {
     "service_name": "navi.service",
     "execution_provider": "control_plane",
     "execution_timeout_seconds": 120.0,
-
     "model_provider": "openai-compatible",
     "model_model": "gpt-4o",
     "model_timeout_seconds": 60.0,
@@ -287,18 +284,6 @@ PROMPT_LAYERS_SPEC: Any = {
         "minimum_permission": "read",
         "content": "Extract durable memory candidates from the completed task. "
         "Return structured add/revoke records only.\n",
-    },
-    "execution_prepare": {
-        "version": 1,
-        "minimum_permission": "read",
-        "content": "Produce concise preparation facts and approval-relevant "
-        "facts supported by the run context.\n",
-    },
-    "execution_watch": {
-        "version": 1,
-        "minimum_permission": "read",
-        "content": "Return the exact notification text to send to the user "
-        "based on the scheduled request and available facts.\n",
     },
 }
 

@@ -1,7 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
+
+import pytest
+import yaml
+
+from navi.config import write_default_config
+
+
+@pytest.fixture
+def valid_runtime_config(tmp_path: Path) -> Path:
+    path = write_default_config(tmp_path)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw.setdefault("model", {})["api_key"] = "test-model-key"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    path.chmod(0o600)
+    return path
 
 
 def pytest_configure(config: Any) -> None:

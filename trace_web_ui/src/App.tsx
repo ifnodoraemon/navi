@@ -816,11 +816,9 @@ function App() {
 
   const handleEval = async () => {
     if (!selectedTrace) return;
-    const currentTraceMeta = tracesMeta.find(t => t.trace_id === selectedTrace);
-    const sessionId = currentTraceMeta?.thread_id || '';
     if (!confirm("Trigger system evaluation for this trace?")) return;
     try {
-      await axios.post(`/v1/trace_evaluate?trace_id=${selectedTrace}&session_id=${sessionId}`);
+      await axios.post(`/v1/trace_evaluate?trace_id=${selectedTrace}`);
       alert("Evaluation task triggered.");
     } catch { alert("Eval failed"); }
   };
