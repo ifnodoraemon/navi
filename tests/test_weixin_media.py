@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from navi.loop_runs import LoopRunStore
 from navi.runtime import AgentRuntime
 from navi.runs import Run, RunStore
 from navi.trace import TraceStore
-from navi.weixin.client import ITEM_FILE, MEDIA_FILE, WeixinClient
+from navi.weixin.client import ITEM_FILE, MEDIA_FILE, TYPING_START, TYPING_STOP, WeixinClient
 from navi.weixin.config import WeixinConfig
 from navi.weixin.models import WeixinAccount, WeixinUpdate
 from navi.weixin.service import WeixinService
@@ -259,6 +260,11 @@ class FailingFileWeixinClient(CaptureWeixinClient):
         raise RuntimeError("upload failed")
 
 
+class FailingTypingWeixinClient(CaptureWeixinClient):
+    async def send_typing(self, **kwargs: Any) -> None:
+        raise RuntimeError(f"typing unavailable: {kwargs['status']}")
+
+
 class StaticIngress:
     def __init__(
         self,
@@ -278,6 +284,27 @@ class StaticIngress:
             action=self.action,
             facts=self.facts,
         )
+
+
+@pytest.mark.asyncio
+async def test_typing_failures_are_nonfatal_but_traceable(tmp_path: Path) -> None:
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=FailingTypingWeixinClient(),
+    )
+
+    await service._keep_typing("wx-user", "ticket", asyncio.Event())
+
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    typing_errors = [event for event in events if event["event"] == "typing.error"]
+    assert [event["status"] for event in typing_errors] == [TYPING_START, TYPING_STOP]
+    assert all("RuntimeError: typing unavailable" in event["error"] for event in typing_errors)
 
 
 class StaticDaemon:

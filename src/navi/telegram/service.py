@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from pathlib import Path
 
 from navi.connector_runtime import (
@@ -9,6 +11,8 @@ from navi.connector_runtime import (
     ConnectorMessage,
 )
 from navi.runtime import AgentRuntime
+from navi.runs import RunStore
+from navi.trace import TracePhase, TraceStore
 
 from .client import TelegramClient
 from .config import TelegramConfig
@@ -59,9 +63,6 @@ class TelegramService:
         }
 
     def update_status(self, status: str, error: str = "") -> None:
-        import time
-        import json
-
         status_dir = self.home / "telegram"
         status_dir.mkdir(parents=True, exist_ok=True)
         status_file = status_dir / "status.json"
@@ -78,9 +79,6 @@ class TelegramService:
         )
 
     async def run(self, *, once: bool = False) -> None:
-        import time
-        from navi.runs import RunStore
-
         runs = RunStore(self.home)
         offset: int | None = None
         sleep_time = 1.0
@@ -132,8 +130,51 @@ class TelegramService:
             return False
         if not self._allowed(update):
             return False
-        text = await self.ingress.handle(message)
-        await self.client.send_message(chat_id=update.chat_id, text=text)
+        response = await self.ingress.handle(message)
+        if response is None or not response.text.strip():
+            TraceStore(self.home).add_event(
+                trace_id=message_key,
+                phase=TracePhase.CHANNEL_EGRESS,
+                source=self.local_source,
+                peer_id=update.chat_id,
+                sender_id=update.sender_id,
+                output_data={
+                    "delivery_attempted": False,
+                    "reason": "empty_response",
+                },
+                message="Telegram response failed because it was empty",
+                ok=False,
+            )
+            TraceStore(self.home).evaluate_trace(message_key)
+            raise RuntimeError("channel response text is empty")
+        try:
+            await self.client.send_message(chat_id=update.chat_id, text=response.text)
+        except Exception as exc:
+            TraceStore(self.home).add_event(
+                trace_id=message_key,
+                phase=TracePhase.CHANNEL_EGRESS,
+                source=self.local_source,
+                peer_id=update.chat_id,
+                sender_id=update.sender_id,
+                output_data={
+                    "delivery_attempted": True,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                message="Telegram delivery failed",
+                ok=False,
+            )
+            TraceStore(self.home).evaluate_trace(message_key)
+            raise
+        TraceStore(self.home).add_event(
+            trace_id=message_key,
+            phase=TracePhase.CHANNEL_EGRESS,
+            source=self.local_source,
+            peer_id=update.chat_id,
+            sender_id=update.sender_id,
+            output_data={"response": response.text, "action": response.action},
+            message="Delivered response to Telegram",
+        )
+        TraceStore(self.home).evaluate_trace(message_key)
         return True
 
     def _allowed(self, update: TelegramUpdate) -> bool:

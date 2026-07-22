@@ -5,6 +5,7 @@ from pathlib import Path
 from navi.prompt_os import (
     assemble_fact_response_system_prompt,
     assemble_goal_event_compaction_messages,
+    assemble_memory_consolidation_messages,
     assemble_notification_system_prompt,
     assemble_semantic_checker_messages,
     assemble_summarizer_messages,
@@ -36,6 +37,12 @@ def test_runtime_prompt_assemblies_are_backed_by_global_specs() -> None:
     )
     compaction = assemble_goal_event_compaction_messages(["event-a", "event-b"])
     summarizer = assemble_summarizer_messages("user: hi")
+    memory_consolidation = assemble_memory_consolidation_messages(
+        task_prompt="Return structured memory changes.",
+        transcript=[{"role": "user", "content": "Remember that I prefer concise replies."}],
+        active_memory=[],
+        scope="source:test",
+    )
 
     assert fact_response.blocks[0].content == _spec_content(
         "fact_response_system", "FACT RESPONSE BOUNDARY"
@@ -55,6 +62,11 @@ def test_runtime_prompt_assemblies_are_backed_by_global_specs() -> None:
     assert summarizer[1].content == _spec_content(
         "conversation_summarizer_messages", "CONVERSATION SUMMARIZER USER"
     ).format(transcript="user: hi")
+    assert _spec_content(
+        "memory_consolidation_messages", "MEMORY CONSOLIDATION BOUNDARY"
+    ) in memory_consolidation[0].content
+    assert "UNTRUSTED INPUT BLOCK" in memory_consolidation[1].content
+    assert "source:test" in memory_consolidation[1].content
 
 
 def test_stable_prompt_text_is_not_scattered_across_runtime_modules() -> None:
@@ -71,6 +83,7 @@ def test_stable_prompt_text_is_not_scattered_across_runtime_modules() -> None:
         "Decide whether the verified background event",
         "Summarize the following goal events",
         "Do not invent information not present in the transcript.",
+        "Only explicit durable user preferences",
     )
     offenders: list[str] = []
     for path in sorted(src.rglob("*.py")):

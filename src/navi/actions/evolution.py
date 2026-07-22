@@ -9,7 +9,8 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
-from ..evolution import EvolutionEngine, EvolutionLedger
+from ..evolution import EvolutionLedger
+from ..evolution_engine import EvolutionEngine
 from ..evolution_experiments import EvolutionExperimentStore
 from .helpers import arg_text as _arg_text
 from .helpers import failure_result as _failure_result
@@ -142,6 +143,7 @@ class EvolutionObserveCapability(BaseCapability):
                 successes=_nonnegative_int(args.get("successes")),
                 errors=_nonnegative_int(args.get("errors")),
                 evidence=args.get("evidence") if isinstance(args.get("evidence"), dict) else {},
+                rollback=EvolutionEngine(self.home).rollback,
             )
         except KeyError as exc:
             return _evolution_error(str(exc), reason="not_found", event_id=event_id)

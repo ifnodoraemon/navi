@@ -6,9 +6,11 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from .db import connect
+from .evolution import EvolutionLedger
 from .evolution_targets import EvolutionTargetAdapterRegistry
 from .paths import db_paths
 
@@ -102,8 +104,6 @@ class EvolutionExperimentStore:
             )
 
     def run(self, proposal_id: str) -> EvolutionExperiment:
-        from .evolution import EvolutionLedger
-
         proposal = EvolutionLedger(self.home).get_proposal(proposal_id)
         if proposal is None:
             raise KeyError("evolution proposal not found")
@@ -279,6 +279,7 @@ class EvolutionExperimentStore:
         successes: int,
         errors: int,
         evidence: dict[str, Any] | None = None,
+        rollback: Callable[[str], Any] | None = None,
     ) -> EvolutionActivation:
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -335,9 +336,9 @@ class EvolutionExperimentStore:
                     raise RuntimeError("evolution activation changed concurrently")
                 needs_rollback = status == "regressed"
         if needs_rollback:
-            from .evolution import EvolutionEngine
-
-            rolled_back = EvolutionEngine(self.home).rollback(event_id)
+            if rollback is None:
+                raise RuntimeError("regressed evolution activation requires a rollback port")
+            rolled_back = rollback(event_id)
             rollback_event_id = rolled_back.id if rolled_back else ""
             with connect(self.db_path) as conn:
                 conn.execute(

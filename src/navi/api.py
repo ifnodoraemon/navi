@@ -454,14 +454,26 @@ def create_app(
         return {"traces": TraceStore(home).list_trace_meta(limit=limit, offset=offset, has_error=has_error, query=query)}
 
     @app.delete(api_path("traces"))
-    def delete_all_traces() -> dict:
-        TraceStore(home).delete_traces()
-        return {"status": "ok"}
+    async def delete_all_traces() -> dict:
+        result = await api_capabilities.invoke(
+            "trace.delete",
+            {"all": True},
+            permission="write",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result)
+        return result.facts or {}
 
     @app.delete(api_path("traces") + "/{trace_id}")
-    def delete_trace(trace_id: str) -> dict:
-        TraceStore(home).delete_traces(trace_id)
-        return {"status": "ok"}
+    async def delete_trace(trace_id: str) -> dict:
+        result = await api_capabilities.invoke(
+            "trace.delete",
+            {"trace_id": trace_id},
+            permission="write",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result)
+        return result.facts or {}
 
     @app.get(api_path("trace"))
     def trace(trace_id: str, limit: int = 5000, offset: int = 0) -> dict:

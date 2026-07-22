@@ -456,7 +456,11 @@ def test_trace_delete_api_endpoints(tmp_path):
     delete_res = client.delete("/v1/traces/trace-to-delete-1", headers={"X-API-Key": api_key})
     assert delete_res.status_code == 200
     assert delete_res.json()["ok"] is True
-    assert delete_res.json()["data"] == {"status": "ok"}
+    deletion = delete_res.json()["data"]
+    assert deletion["entity_type"] == "trace"
+    assert deletion["entity_id"] == "trace-to-delete-1"
+    assert deletion["existed"] is True
+    assert deletion["verified_after"] == {"event_count": 0, "evaluation_count": 0}
 
     # Verify only one trace remains
     res = client.get("/v1/traces", headers={"X-API-Key": api_key})
@@ -468,7 +472,14 @@ def test_trace_delete_api_endpoints(tmp_path):
     clear_res = client.delete("/v1/traces", headers={"X-API-Key": api_key})
     assert clear_res.status_code == 200
     assert clear_res.json()["ok"] is True
-    assert clear_res.json()["data"] == {"status": "ok"}
+    deletion = clear_res.json()["data"]
+    assert deletion["entity_type"] == "trace_collection"
+    assert deletion["trace_count"] == 1
+    assert deletion["verified_after"] == {
+        "trace_count": 0,
+        "event_count": 0,
+        "evaluation_count": 0,
+    }
 
     # Verify no traces remain
     res = client.get("/v1/traces", headers={"X-API-Key": api_key})
@@ -520,6 +531,33 @@ async def test_trace_evaluate_capability_returns_structured_evidence(tmp_path):
     assert "diagnostic" not in evaluation
     assert "evidence_json" not in evaluation
     assert evaluation["evidence"]["evaluation_rule"] == "no_failed_or_degraded_rule"
+
+
+@pytest.mark.asyncio
+async def test_trace_delete_capability_requires_explicit_scope_and_verifies_deletion(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_event(trace_id="trace-delete", phase="turn.start")
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path, execution_context="api")
+
+    invalid = await registry.invoke(
+        "trace.delete",
+        {},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, workspace=str(tmp_path)),
+    )
+    result = await registry.invoke(
+        "trace.delete",
+        {"trace_id": "trace-delete"},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, workspace=str(tmp_path)),
+    )
+
+    assert invalid.ok is False
+    assert invalid.error_reason == "schema_mismatch"
+    assert result.ok is True
+    assert result.facts is not None
+    assert result.facts["verified_after"] == {"event_count": 0, "evaluation_count": 0}
+    assert store.list_events("trace-delete") == []
 
 
 

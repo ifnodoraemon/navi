@@ -67,13 +67,13 @@ or explicitly independent duplicate schedules.
 
 | Layer | Primary modules | Responsibility |
 |---|---|---|
-| Ingress | `cli.py`, `api.py`, `connector_runtime.py` | Normalize external input and identity. |
+| Ingress | `cli.py`, `api.py`, `connector_contract.py`, `connector_runtime.py` | Normalize external input and identity. |
 | Turn control | `control_plane.py`, `turn_lifecycle.py`, `control.py` | Build turn context, current-state facts, trace, and final result. |
 | Loop control | `loop_control_service.py`, `goal_state_graph.py` | Create or resume durable loop entities and bridge into the graph. |
 | Loop kernel | `state_graph.py`, `loop.py`, `loop_contracts.py` | Plan, execute, check, pause, recover, and converge. |
 | Capabilities | `capabilities.py`, `capabilities_types.py`, `actions/`, `core_tools/` | Declare, filter, validate, invoke, and audit callable operations. |
 | Isolation | `harness.py`, `workspaces.py`, `resource_gateway.py` | Bound commands, workspaces, locks, resources, and merge behavior. |
-| State | `runs/`, `goals.py`, `loop_runs.py`, `memory/`, `trace.py`, `evolution.py` | Persist lifecycle, memory, checkpoints, experiments, and audit evidence. |
+| State | `runs/`, `goals.py`, `loop_runs.py`, `memory/`, `trace.py`, `evolution.py`, `evolution_engine.py` | Persist lifecycle and audit evidence; apply evolution through a separate orchestration boundary. |
 | Recovery | `lifecycle_saga.py`, `effect_journal.py`, `retention.py` | Recover cross-store projections, deduplicate effects, and compact expired transient detail. |
 | Personal resources | `personal_resources.py`, `identity.py` | Provide scoped calendar, reminder, contact, draft-mail, attention, and explicit identity adapters. |
 | Observability | `metrics.py`, `diagnostics.py` | Project durable events into SLOs, backlogs, and activation canary facts. |
@@ -128,6 +128,9 @@ rendering, and manifest generation live in `src/navi/prompt_os.py`. Runtime
 modules pass bounded facts into prompt OS assemblers, and tests or traces should
 inspect prompt manifests and digests rather than parse rendered prose.
 `navi prompts inspect planner --json-output` is the current inspection surface.
+The semantic checker receives one evidence-authority contract rather than
+task-type branches. Memory consolidation combines its evolvable task layer with
+the same stable Prompt OS boundary and treats transcript data as untrusted input.
 
 Connector delivery is a two-boundary operation: the capability records
 `delivery_requested` and pauses the loop; only the connector's authoritative
@@ -155,7 +158,9 @@ providers reconcile reserved cost/tokens with actual usage, while custom
 providers use conservative declared phase estimates.
 
 Trace events are append-oriented audit evidence. Materialized Run, Goal, and
-LoopRun records own active lifecycle state.
+LoopRun records own active lifecycle state. Trace deletion is an API-only
+capability with an explicit single/all scope and post-delete read-back facts;
+the API does not mutate the trace store around the capability boundary.
 
 Scheduled Goal templates persist the real workspace rather than the ephemeral
 shadow used by their registration turn. The registration capability resolves
@@ -180,7 +185,10 @@ Prompt layers, skills, memory items, eval cases, and graph nodes have real reade
 and writers. Run lifecycle records and inert spec files are not evolution targets.
 `EvolutionExperimentStore` persists candidate checks, eval-case fingerprints, and
 activation windows. Only successful apply events are reversible; rollback restores
-the exact pre-apply snapshot through the same adapter.
+the exact pre-apply snapshot through the same adapter. `EvolutionEngine` is kept
+in `evolution_engine.py` so the ledger and experiment stores do not call each
+other through circular imports; regression rollback is supplied as an explicit
+orchestration port.
 
 `MetricsProjector` derives values from durable stores rather than maintaining a
 second source of truth; construction may initialize or migrate those store
@@ -193,7 +201,10 @@ rollback recovery but does not reinterpret unrelated task outcomes as canaries.
 
 Connector adapters own authentication, polling, message normalization, media
 transport, deduplication, and channel-local presentation. They publish the same
-turn contract used by local surfaces.
+turn contract used by local surfaces. `ConnectorMessage` lives in the transport-
+neutral `connector_contract.py`; adapters consume `ResponseReadyEvent` and never
+reinterpret it as a string. An empty model response is recorded as a failed
+delivery fact rather than replaced with connector-authored prose.
 
 Outbound files use the connector-neutral `ConnectorDelivery` contract. The
 kernel validates the original file and emits one structured synchronous

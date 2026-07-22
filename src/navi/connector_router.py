@@ -5,13 +5,16 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .connector_runtime import ConnectorMessage
+from .connector_contract import ConnectorMessage
+from .connector_delivery import connector_delivery_from_facts
+from .control import ApprovalService, SurfaceContext
 from .event_bus import (
     EventBus,
     MessageIngressEvent,
     ResponseReadyEvent,
 )
 from .finalization import synthesize_user_reply_from_facts
+from .goal_state_graph import resume_goal_loop_run
 
 # Idle window: how long we tolerate *silence* on the response channel before
 # declaring the upstream unresponsive. A turn that is still working sends
@@ -145,8 +148,6 @@ class ConnectorRouter:
         if command is None:
             return None
         decision, code = command
-        from .control import ApprovalService, SurfaceContext
-
         result = await ApprovalService(self.home).resolve_and_continue(
             decision=decision,
             selection="explicit_code",
@@ -161,9 +162,8 @@ class ConnectorRouter:
             runtime=self.runtime,
             trace_id=message.message_id,
             event_bus=self.event_bus,
+            resume_loop=resume_goal_loop_run,
         )
-        from .connector_delivery import connector_delivery_from_facts
-
         delivery = connector_delivery_from_facts(result.facts)
         if delivery is not None:
             return ResponseReadyEvent(

@@ -20,6 +20,7 @@ from navi.finalization import synthesize_background_notification
 from navi.goals import GoalDeliveryOutboxItem, GoalStore
 from navi.runtime import AgentRuntime
 from navi.runs import Run
+from navi.trace import TracePhase, TraceStore
 from navi.daemon import SystemDaemon
 
 from .client import TYPING_START, TYPING_STOP, WeixinClient
@@ -258,8 +259,6 @@ class WeixinService:
                 action=response.action,
             )
             try:
-                from navi.trace import TraceStore, TracePhase
-
                 TraceStore(self.home).add_event(
                     trace_id=update.message_id,
                     phase=TracePhase.CHANNEL_EGRESS,
@@ -277,8 +276,13 @@ class WeixinService:
                     ok=False,
                 )
                 TraceStore(self.home).evaluate_trace(update.message_id)
-            except Exception:
-                pass
+            except Exception as trace_exc:
+                self.record_event(
+                    "trace.error",
+                    trace_id=update.message_id,
+                    operation="record_empty_response",
+                    error=f"{type(trace_exc).__name__}: {trace_exc}",
+                )
             raise RuntimeError("channel response text is empty")
         try:
             delivery = await self._send_reply(
@@ -296,8 +300,6 @@ class WeixinService:
             failed_delivery = connector_delivery_from_facts(response.facts)
             if failed_delivery is not None and failed_delivery.run_id:
                 try:
-                    from navi.goals import GoalStore
-
                     GoalStore(self.home).record_delivery_failure(
                         run_id=failed_delivery.run_id,
                         channel=self.local_source,
@@ -305,11 +307,14 @@ class WeixinService:
                         trace_id=update.message_id,
                         delivery_id=failed_delivery.delivery_id,
                     )
-                except Exception:
-                    pass
+                except Exception as ledger_exc:
+                    self.record_event(
+                        "delivery_state.error",
+                        run_id=failed_delivery.run_id,
+                        operation="record_delivery_failure",
+                        error=f"{type(ledger_exc).__name__}: {ledger_exc}",
+                    )
             try:
-                from navi.trace import TraceStore, TracePhase
-
                 TraceStore(self.home).add_event(
                     trace_id=update.message_id,
                     phase=TracePhase.CHANNEL_EGRESS,
@@ -328,8 +333,13 @@ class WeixinService:
                     ok=False,
                 )
                 TraceStore(self.home).evaluate_trace(update.message_id)
-            except Exception:
-                pass
+            except Exception as trace_exc:
+                self.record_event(
+                    "trace.error",
+                    trace_id=update.message_id,
+                    operation="record_delivery_failure",
+                    error=f"{type(trace_exc).__name__}: {trace_exc}",
+                )
             raise
         self.record_event(
             "reply.sent",
@@ -340,8 +350,6 @@ class WeixinService:
         connector_delivery = connector_delivery_from_facts(response.facts)
         delivery_run_id = connector_delivery.run_id if connector_delivery is not None else ""
         if connector_delivery is not None and delivery_run_id:
-            from navi.goals import GoalStore
-
             GoalStore(self.home).record_delivery(
                 run_id=delivery_run_id,
                 channel=self.local_source,
@@ -351,8 +359,6 @@ class WeixinService:
                 trace_id=update.message_id,
                 delivery_id=connector_delivery.delivery_id,
             )
-        from navi.trace import TraceStore, TracePhase
-
         TraceStore(self.home).add_event(
             trace_id=update.message_id,
             phase=TracePhase.CHANNEL_EGRESS,
@@ -394,8 +400,6 @@ class WeixinService:
                 error=f"{type(exc).__name__}: {exc}",
             )
             try:
-                from navi.trace import TraceStore, TracePhase
-
                 TraceStore(self.home).add_event(
                     trace_id=update.message_id,
                     phase=TracePhase.RESPONSE_READY,
@@ -406,8 +410,13 @@ class WeixinService:
                     message="Failed to prepare channel response",
                     ok=False,
                 )
-            except Exception:
-                pass
+            except Exception as trace_exc:
+                self.record_event(
+                    "trace.error",
+                    trace_id=update.message_id,
+                    operation="record_handler_failure",
+                    error=f"{type(trace_exc).__name__}: {trace_exc}",
+                )
             raise
         finally:
             stop_typing.set()
@@ -433,13 +442,20 @@ class WeixinService:
     ) -> None:
         try:
             while not stop_event.is_set():
-                await self._send_typing(peer_id, typing_ticket, TYPING_START)
+                try:
+                    await self._send_typing(peer_id, typing_ticket, TYPING_START)
+                except Exception as exc:
+                    self._record_typing_error(peer_id, TYPING_START, exc)
+                    break
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=3.0)
                 except TimeoutError:
                     continue
         finally:
-            await self._send_typing(peer_id, typing_ticket, TYPING_STOP)
+            try:
+                await self._send_typing(peer_id, typing_ticket, TYPING_STOP)
+            except Exception as exc:
+                self._record_typing_error(peer_id, TYPING_STOP, exc)
 
     async def _send_typing(self, peer_id: str, typing_ticket: str, status: int) -> None:
         await asyncio.wait_for(
@@ -449,6 +465,14 @@ class WeixinService:
             timeout=1.5,
         )
         self.record_event("typing.sent", peer_id=peer_id, status=status)
+
+    def _record_typing_error(self, peer_id: str, status: int, exc: Exception) -> None:
+        self.record_event(
+            "typing.error",
+            peer_id=peer_id,
+            status=status,
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
     async def process_background(self, account: WeixinAccount) -> None:
         for result in await self.daemon.process_background_once():
@@ -509,8 +533,6 @@ class WeixinService:
             background_event="background_event",
             text_preview=text[:120],
         )
-        from navi.trace import TracePhase, TraceStore
-
         TraceStore(self.home).add_event(
             trace_id=trace_id,
             phase=TracePhase.CHANNEL_EGRESS,
@@ -586,8 +608,6 @@ class WeixinService:
             text_preview=delivery["text_preview"],
             media_count=delivery["media_count"],
         )
-        from navi.trace import TracePhase, TraceStore
-
         TraceStore(self.home).add_event(
             trace_id=task.id,
             phase=TracePhase.CHANNEL_EGRESS,
@@ -655,8 +675,6 @@ class WeixinService:
             media_count=delivery["media_count"],
             run_id=item.run_id,
         )
-        from navi.trace import TracePhase, TraceStore
-
         TraceStore(self.home).add_event(
             trace_id=item.trace_id,
             phase=TracePhase.CHANNEL_EGRESS,
@@ -720,8 +738,6 @@ class WeixinService:
         notify: bool,
         message: str,
     ) -> None:
-        from navi.trace import TracePhase, TraceStore
-
         TraceStore(self.home).add_event(
             trace_id=str(facts.get("trace_id") or "") or TraceStore.new_trace_id(),
             phase=TracePhase.AGENT_ROLE_RESULT,

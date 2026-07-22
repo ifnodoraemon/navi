@@ -176,6 +176,9 @@ scopes durable state, approvals, audit, and reply delivery; it does not implicit
 narrow or broaden capability visibility. Explicit caller restrictions and the
 permission ceiling must survive every Goal, StateGraph, resume, and background
 boundary, while sensitive effects always require a matching durable approval.
+Surface commands and endpoints that mutate a governed first-class entity must
+invoke its capability and return the capability's read-back facts; they must not
+write the backing store directly or append surface-specific audit side effects.
 
 ## State And Persistence
 

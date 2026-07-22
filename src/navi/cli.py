@@ -402,8 +402,6 @@ def memory_conflicts(limit: int = 50) -> None:
 @memory_app.command("revoke")
 def memory_revoke(item_id: str) -> None:
     """Mark a memory item revoked."""
-    store = MemoryStore(ensure_home())
-    before = store.get_item(item_id)
     result = _invoke_capability(
         "memory.add",
         {
@@ -414,22 +412,14 @@ def memory_revoke(item_id: str) -> None:
         },
     )
     item = result.get("item") or {}
-    EvolutionLedger(ensure_home()).record(
-        run_id=f"cli:memory:revoke:{item_id}",
-        target_type="memory_item",
-        target_id=item_id,
-        reason="CLI memory revoke",
-        before=json.dumps(before.__dict__, default=str) if before else "",
-        after=json.dumps(item, default=str),
-    )
     typer.echo(f"{item.get('id', item_id)} {item.get('status', 'revoked')}")
 
 
 @session_app.command("new")
 def session_new(alias: str | None = typer.Argument(None)) -> None:
     """Create a new conversation session, optionally bound to an alias."""
-    session_id = MemoryStore(ensure_home()).create_session(alias=alias)
-    typer.echo(session_id)
+    facts = _invoke_capability("session.create", {"alias": alias} if alias else {})
+    typer.echo(str(facts.get("session_id") or ""))
 
 
 @session_app.command("list")
@@ -794,7 +784,8 @@ def trace_runs(trace_id: str) -> None:
 @trace_app.command("evaluate")
 def trace_evaluate(trace_id: str) -> None:
     """Evaluate a trace to identify the likely optimization target."""
-    evaluation = TraceStore(ensure_home()).evaluate_trace(trace_id)
+    facts = _invoke_capability("trace.evaluate", {"trace_id": trace_id})
+    evaluation = facts.get("evaluation") or {}
     typer.echo(_trace_evaluation_line(evaluation))
 
 
@@ -806,10 +797,17 @@ def trace_evaluations(trace_id: str = typer.Argument(""), limit: int = 50) -> No
 
 
 def _trace_evaluation_line(evaluation) -> str:
-    evidence = json.loads(evaluation.evidence_json or "{}")
+    if isinstance(evaluation, dict):
+        evidence = evaluation.get("evidence") or {}
+        outcome = str(evaluation.get("outcome") or "")
+        failure_domain = str(evaluation.get("failure_domain") or "")
+    else:
+        evidence = json.loads(evaluation.evidence_json or "{}")
+        outcome = evaluation.outcome
+        failure_domain = evaluation.failure_domain
     rule = str(evidence.get("evaluation_rule") or "").strip()
     suffix = f" rule={rule}" if rule else ""
-    return f"{evaluation.outcome} {evaluation.failure_domain}{suffix}"
+    return f"{outcome} {failure_domain}{suffix}"
 
 
 @goal_app.command("list")
@@ -992,24 +990,24 @@ def evolution_propose(
     eval_cases: str = "",
 ) -> None:
     """Create a reviewable evolution proposal without mutating the target."""
-    try:
-        proposal = EvolutionLedger(ensure_home()).propose(
-            target_type=target_type,
-            target_id=target_id,
-            reason=reason,
-            expected_benefit=expected_benefit,
-            risk=risk,
-            before=before,
-            after=after,
-            rollback_plan=rollback_plan,
-            required_approval_level=required_approval_level,
-            evidence=evidence,
-            source_run_id=source_run_id,
-            eval_cases=[item.strip() for item in eval_cases.split(",") if item.strip()],
-        )
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    typer.echo(proposal.id)
+    facts = _invoke_capability(
+        "evolution.propose",
+        {
+            "target_type": target_type,
+            "target_id": target_id,
+            "reason": reason,
+            "expected_benefit": expected_benefit,
+            "risk": risk,
+            "before": before,
+            "after": after,
+            "rollback_plan": rollback_plan,
+            "required_approval_level": required_approval_level,
+            "evidence": evidence,
+            "source_run_id": source_run_id,
+            "eval_cases": [item.strip() for item in eval_cases.split(",") if item.strip()],
+        },
+    )
+    typer.echo(str(facts.get("proposal_id") or ""))
 
 
 @evolution_app.command("apply-proposal")

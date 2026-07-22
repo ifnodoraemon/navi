@@ -317,6 +317,50 @@ def assemble_semantic_checker_messages(
     ]
 
 
+def assemble_memory_consolidation_messages(
+    *,
+    task_prompt: str,
+    transcript: list[dict[str, Any]],
+    active_memory: list[dict[str, Any]],
+    scope: str,
+) -> list[ChatMessage]:
+    system = PromptAssembly(
+        "memory_consolidation_system",
+        (
+            PromptBlock(
+                "MEMORY CONSOLIDATOR TASK",
+                "evolvable",
+                "prompt_layer.task_memory_consolidator",
+                task_prompt,
+            ),
+            *_prompt_spec_blocks("memory_consolidation_messages"),
+        ),
+    )
+    user = PromptAssembly(
+        "memory_consolidation_input",
+        (
+            PromptBlock(
+                "MEMORY CONSOLIDATION EVIDENCE",
+                "turn_input",
+                "memory.consolidation_job",
+                json.dumps(
+                    {
+                        "transcript": transcript,
+                        "active_memory": active_memory,
+                        "scope": scope,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ),
+                trusted=False,
+                mutable=True,
+            ),
+        ),
+    )
+    return [ChatMessage("system", system.render()), ChatMessage("user", user.render())]
+
+
 def assemble_goal_event_compaction_messages(lines: Iterable[str]) -> list[ChatMessage]:
     template = _prompt_spec_content(
         "goal_event_compaction_messages", "GOAL EVENT COMPACTION USER"

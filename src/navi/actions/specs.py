@@ -956,6 +956,37 @@ ACTION_SPECS = [
         governance_exempt=True,
     ),
     ToolSpec(
+        name="trace.delete",
+        capability_class="trace",
+        execution_contexts=(API_CONTEXT,),
+        description=(
+            "Delete one trace or the complete trace collection and return verified read-back facts."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "trace_id": {"type": "string"},
+                "all": {"type": "boolean"},
+            },
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "state_transition": {"type": "string"},
+                "turn_scope": {"type": "string"},
+                "scope": {"type": "string"},
+                "verified_after": {"type": "object"},
+            },
+        },
+        facts_only=True,
+        mutates=True,
+        permission="write",
+        source="action",
+        governance_exempt=True,
+    ),
+    ToolSpec(
         name="evolution.propose",
         capability_class="evolution",
         execution_contexts=("turn", API_CONTEXT),

@@ -1176,7 +1176,7 @@ class MemoryStore:
         return [MemoryConsolidationJob(*row) for row in rows]
 
     async def consolidate_job(self, job: MemoryConsolidationJob, runtime: Any) -> list[MemoryItem]:
-        from ..provider import ChatMessage
+        from ..prompt_os import assemble_memory_consolidation_messages
         from ..prompting import PromptLayerStore
         from .scopes import default_memory_scope
 
@@ -1230,27 +1230,12 @@ class MemoryStore:
         try:
             response = await runtime.provider.complete_for(
                 "consolidator",
-                [
-                    ChatMessage(
-                        "system",
-                        PromptLayerStore(self.home).read("task_memory_consolidator"),
-                    ),
-                    ChatMessage(
-                        "user",
-                        json.dumps(
-                            {
-                                "transcript": transcript,
-                                "active_memory": [item.__dict__ for item in active_items],
-                                "boundary": (
-                                    "Only explicit durable user preferences, constraints, "
-                                    "relationships, or stable facts are candidates."
-                                ),
-                            },
-                            ensure_ascii=False,
-                            default=str,
-                        ),
-                    ),
-                ],
+                assemble_memory_consolidation_messages(
+                    task_prompt=PromptLayerStore(self.home).read("task_memory_consolidator"),
+                    transcript=transcript,
+                    active_memory=[item.__dict__ for item in active_items],
+                    scope=active_scope,
+                ),
                 output_schema=output_schema,
             )
             data = json.loads(response)

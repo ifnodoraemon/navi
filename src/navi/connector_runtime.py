@@ -1,61 +1,25 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
+from .connector_contract import ConnectorMessage
+from .connector_router import ConnectorRouter
 from .control_plane import TurnController
+from .event_bus import EventBus, NaviEvent, ResponseReadyEvent, UserIntentEvent
+from .intent_agent import IntentAgent
 from .turn_result import AgentTurnResult
 from .runtime import AgentRuntime
-
-if TYPE_CHECKING:
-    from .event_bus import EventBus, NaviEvent, ResponseReadyEvent
 
 
 # How often a still-running turn signals liveness on its response channel. Must
 # be comfortably below the router's IDLE_TIMEOUT_SECONDS so a live turn never
 # trips the idle timeout between two heartbeats.
 HEARTBEAT_INTERVAL_SECONDS = 20.0
-
-
-@dataclass(frozen=True)
-class ConnectorMessage:
-    message_id: str
-    peer_id: str
-    sender_id: str
-    text: str
-    source: str
-    session_alias_prefix: str
-    facts: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def session_alias(self) -> str:
-        peer_id = self.peer_id.strip() or "unknown"
-        sender_id = self.sender_id.strip() or "unknown"
-        return f"{self.session_alias_prefix}:{peer_id}:{sender_id}"
-
-    @property
-    def content_key(self) -> str:
-        payload = json.dumps(
-            {
-                "source": self.source,
-                "peer_id": self.peer_id,
-                "sender_id": self.sender_id,
-                "text": self.text,
-                "facts": self.facts,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        )
-        digest = hashlib.md5(payload.encode()).hexdigest()
-        return f"content:{self.source}:{self.peer_id}:{self.sender_id}:{digest}"
 
 
 @dataclass(frozen=True)
@@ -157,12 +121,9 @@ class ConnectorIngressRuntime:
         disabled_tools: set[str] | None = None,
         disabled_capability_classes: frozenset[str] = frozenset(),
         permission_ceiling: str = "write",
-        event_bus: "EventBus | None" = None,
+        event_bus: EventBus | None = None,
     ):
-        from .connector_router import ConnectorRouter
-        from .event_bus import EventBus as _EventBus
-
-        self.event_bus = event_bus or _EventBus()
+        self.event_bus = event_bus or EventBus()
         self.router = ConnectorRouter(home, self.event_bus, runtime=runtime)
         self.agent = TurnController(
             home=home,
@@ -178,12 +139,9 @@ class ConnectorIngressRuntime:
         self._setup_event_subscriptions()
 
     def _setup_event_subscriptions(self) -> None:
-        from .event_bus import ResponseReadyEvent, UserIntentEvent
-        from .intent_agent import IntentAgent
-
         self._intent = IntentAgent(self.agent.home, self.agent.runtime, self.event_bus)
 
-        async def on_user_intent(event: "NaviEvent") -> None:
+        async def on_user_intent(event: NaviEvent) -> None:
             assert isinstance(event, UserIntentEvent)
             result = await self._handle_with_heartbeat(event)
             if result:
@@ -276,6 +234,6 @@ class ConnectorIngressRuntime:
         finally:
             heartbeat_task.cancel()
 
-    async def handle(self, message: ConnectorMessage) -> "ResponseReadyEvent | None":
+    async def handle(self, message: ConnectorMessage) -> ResponseReadyEvent | None:
         response = await self.router.route(message)
         return response

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -243,6 +244,7 @@ class ApprovalService:
         run_id: str = "",
         trace_id: str = "",
         event_bus: Any | None = None,
+        resume_loop: Callable[..., Awaitable[Any]] | None = None,
     ) -> ApprovalResolution:
         """Resolve one approval and resume its exact durable loop checkpoint.
 
@@ -359,9 +361,9 @@ class ApprovalService:
             )
 
         try:
-            from .goal_state_graph import resume_goal_loop_run
-
-            continued = await resume_goal_loop_run(
+            if resume_loop is None:
+                raise RuntimeError("approval continuation requires a loop resumer port")
+            continued = await resume_loop(
                 home=self.home,
                 loop_run_id=loop_run.run_id,
                 runtime=runtime,

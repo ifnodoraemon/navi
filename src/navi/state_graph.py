@@ -13,6 +13,7 @@ from .capability_contract import CAPABILITY_RETRYABLE_KEY
 from .capabilities import CapabilityRegistry
 from .capabilities_types import CapabilityContext
 from .checker import CheckerReport, DeterministicChecker
+from .control import CurrentStateBuilder, SurfaceContext, current_state_facts, current_time_facts
 from .harness import Harness, HarnessCommand, HarnessResult
 from .loop import (
     LoopCheckName,
@@ -383,8 +384,6 @@ class LLMSemanticCheckerPort:
         executed: ExecutedCapabilityStep,
         evidence: dict[str, Any],
     ) -> SemanticCheckDecision:
-        from .control import current_time_facts
-
         task_context = _goal_task_context_with_result_comparison(spec, executed)
         response = await self.runtime.provider.complete_for(
             "checker",
@@ -2681,8 +2680,6 @@ def _memory_scopes_for_spec(spec: LoopSpec, *, home: Path | None = None) -> set[
 
 
 def _refreshed_ingress_facts(context: CapabilityContext) -> dict[str, Any]:
-    from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
-
     facts = dict(context.runtime_facts or {})
     intent_facts = facts.get("intent_facts")
     if isinstance(intent_facts, dict) and "current_state" in intent_facts:

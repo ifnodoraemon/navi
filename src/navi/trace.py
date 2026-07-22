@@ -517,16 +517,88 @@ class TraceStore:
 
         return metas
 
-    def delete_traces(self, trace_id: str | None = None) -> None:
+    def delete_traces(self, trace_id: str | None = None) -> dict[str, Any]:
         with connect(self.db_path) as conn:
             if trace_id:
+                event_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM trace_events WHERE trace_id = ?", (trace_id,)
+                    ).fetchone()[0]
+                )
+                evaluation_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM trace_evaluations WHERE trace_id = ?", (trace_id,)
+                    ).fetchone()[0]
+                )
                 conn.execute("DELETE FROM trace_events WHERE trace_id = ?", (trace_id,))
                 conn.execute("DELETE FROM trace_evaluations WHERE trace_id = ?", (trace_id,))
                 self._gc_blobs(conn)
-            else:
-                conn.execute("DELETE FROM trace_events")
-                conn.execute("DELETE FROM trace_evaluations")
-                conn.execute("DELETE FROM trace_blobs")
+                verified_event_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM trace_events WHERE trace_id = ?", (trace_id,)
+                    ).fetchone()[0]
+                )
+                verified_evaluation_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM trace_evaluations WHERE trace_id = ?", (trace_id,)
+                    ).fetchone()[0]
+                )
+                return {
+                    "trace_id": trace_id,
+                    "existed": bool(event_count or evaluation_count),
+                    "deleted_event_count": event_count,
+                    "deleted_evaluation_count": evaluation_count,
+                    "verified_after": {
+                        "event_count": verified_event_count,
+                        "evaluation_count": verified_evaluation_count,
+                    },
+                }
+
+            trace_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM (
+                        SELECT trace_id FROM trace_events
+                        UNION
+                        SELECT trace_id FROM trace_evaluations
+                    )
+                    """
+                ).fetchone()[0]
+            )
+            event_count = int(conn.execute("SELECT COUNT(*) FROM trace_events").fetchone()[0])
+            evaluation_count = int(
+                conn.execute("SELECT COUNT(*) FROM trace_evaluations").fetchone()[0]
+            )
+            conn.execute("DELETE FROM trace_events")
+            conn.execute("DELETE FROM trace_evaluations")
+            conn.execute("DELETE FROM trace_blobs")
+            verified_trace_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM (
+                        SELECT trace_id FROM trace_events
+                        UNION
+                        SELECT trace_id FROM trace_evaluations
+                    )
+                    """
+                ).fetchone()[0]
+            )
+            verified_event_count = int(
+                conn.execute("SELECT COUNT(*) FROM trace_events").fetchone()[0]
+            )
+            verified_evaluation_count = int(
+                conn.execute("SELECT COUNT(*) FROM trace_evaluations").fetchone()[0]
+            )
+            return {
+                "trace_count": trace_count,
+                "deleted_event_count": event_count,
+                "deleted_evaluation_count": evaluation_count,
+                "verified_after": {
+                    "trace_count": verified_trace_count,
+                    "event_count": verified_event_count,
+                    "evaluation_count": verified_evaluation_count,
+                },
+            }
 
     def list_trace_ids(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None) -> list[str]:
         return [m["trace_id"] for m in self.list_trace_meta(limit=limit, offset=offset, has_error=has_error)]

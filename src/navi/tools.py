@@ -12,6 +12,7 @@ from typing import Any
 from .connector_registry import load_connector_adapters
 from .permission_contract import normalize_permission
 from .runs import RunStore
+from .safeguards import redact_secrets, redact_secrets_deep
 
 
 logger = logging.getLogger(__name__)
@@ -381,8 +382,6 @@ class ToolRegistry:
 
     def _audit_call(self, args: dict[str, Any], result: ToolResult) -> None:
         try:
-            from .safeguards import redact_secrets, redact_secrets_deep
-
             # FP-4/L8: redact at the value level before serialization so secrets
             # nested inside args/facts (not just keyword-prefixed ones) are
             # caught, regardless of key naming or JSON sort order.

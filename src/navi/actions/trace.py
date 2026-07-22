@@ -37,3 +37,28 @@ class TraceEvaluateCapability(BaseCapability):
             "evaluation": evaluation.to_dict(),
         }
         return _fact_result("trace", facts, run_id=trace_id)
+
+
+@capability("trace_delete")
+class TraceDeleteCapability(BaseCapability):
+
+    @guarded
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        trace_id = _arg_text(args, "trace_id")
+        delete_all = args.get("all") is True
+        if bool(trace_id) == delete_all:
+            raise SchemaMismatch("trace.delete requires exactly one of trace_id or all=true.")
+        deletion = TraceStore(self.home).delete_traces(None if delete_all else trace_id)
+        entity_id = "all" if delete_all else trace_id
+        facts = {
+            **_transition_facts("trace_collection" if delete_all else "trace", entity_id, "deleted"),
+            "scope": "all" if delete_all else "single",
+            **deletion,
+        }
+        return _fact_result("trace", facts, run_id=trace_id)

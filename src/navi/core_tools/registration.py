@@ -616,7 +616,16 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "command": {"type": "array", "items": {"type": "string"}},
+                    "command": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "description": (
+                            "Executable and arguments as separate argv items. Do not pass a shell "
+                            "string, pipes, redirects, command substitution, or shell operators."
+                        ),
+                    },
                     "cwd": {"type": "string", "default": str(registry.project_dir)},
                     "timeout_seconds": {
                         "type": "integer",

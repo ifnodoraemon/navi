@@ -9,10 +9,11 @@ import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from .tools import ToolSpec
+if TYPE_CHECKING:
+    from .tools import ToolSpec
 
 
 @dataclass(frozen=True)

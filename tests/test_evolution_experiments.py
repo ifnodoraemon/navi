@@ -8,7 +8,8 @@ import pytest
 from navi.approval_contract import APPROVAL_ACTION_EVOLUTION, APPROVAL_DECISION_APPROVE
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
-from navi.evolution import EvolutionEngine, EvolutionLedger
+from navi.evolution import EvolutionLedger
+from navi.evolution_engine import EvolutionEngine
 from navi.evolution_experiments import EvolutionExperimentStore
 from navi.evolution_targets import EvolutionTargetAdapterRegistry
 from navi.memory import MemoryStore
@@ -86,13 +87,19 @@ def test_evolution_experiment_activation_and_regression_rollback(tmp_path: Path)
     activations = EvolutionExperimentStore(tmp_path)
     assert activations.activation_for_event(event.id).status == "observing"
 
-    activations.observe(event.id, successes=0, errors=1, evidence={"window": 1})
-    activations.observe(event.id, successes=0, errors=1, evidence={"window": 2})
+    rollback = EvolutionEngine(tmp_path).rollback
+    activations.observe(
+        event.id, successes=0, errors=1, evidence={"window": 1}, rollback=rollback
+    )
+    activations.observe(
+        event.id, successes=0, errors=1, evidence={"window": 2}, rollback=rollback
+    )
     rolled_back = activations.observe(
         event.id,
         successes=0,
         errors=1,
         evidence={"window": 3},
+        rollback=rollback,
     )
 
     assert rolled_back.status == "rolled_back"

@@ -8,7 +8,9 @@ from navi.connector_runtime import (
     ConnectorIngressDeduplicator,
     ConnectorMessage,
 )
+from navi.event_bus import ResponseReadyEvent
 from navi.runtime import AgentRuntime
+from navi.trace import TraceStore
 from navi.telegram.config import TelegramConfig
 from navi.telegram.models import TelegramUpdate
 from navi.telegram.service import TelegramService
@@ -26,8 +28,8 @@ class StaticIngress:
     def __init__(self, text: str) -> None:
         self.text = text
 
-    async def handle(self, message: Any) -> str:
-        return self.text
+    async def handle(self, message: Any) -> ResponseReadyEvent:
+        return ResponseReadyEvent(text=self.text, source="telegram")
 
 
 class CaptureTelegramClient:
@@ -36,6 +38,11 @@ class CaptureTelegramClient:
 
     async def send_message(self, *, chat_id: str, text: str) -> None:
         self.messages.append({"chat_id": chat_id, "text": text})
+
+
+class FailingTelegramClient(CaptureTelegramClient):
+    async def send_message(self, *, chat_id: str, text: str) -> None:
+        raise RuntimeError("telegram unavailable")
 
 
 def _message(message_id: str, *, text: str = "hello") -> ConnectorMessage:
@@ -135,3 +142,59 @@ async def test_telegram_service_uses_shared_persistent_ingress_dedup(tmp_path):
     assert await second.handle_update(update) is False
     assert first_client.messages == [{"chat_id": "chat-1", "text": "first response"}]
     assert second_client.messages == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_service_rejects_empty_model_response_without_fallback(tmp_path):
+    client = CaptureTelegramClient()
+    service = TelegramService(
+        home=tmp_path,
+        config=TelegramConfig(dm_policy="open"),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.ingress = StaticIngress("")
+
+    with pytest.raises(RuntimeError, match="channel response text is empty"):
+        await service.handle_update(
+            TelegramUpdate(
+                update_id=2,
+                message_id=11,
+                chat_id="chat-2",
+                sender_id="sender-2",
+                text="hello",
+            )
+        )
+
+    assert client.messages == []
+    evaluation = TraceStore(tmp_path).list_evaluations("telegram:chat-2:11", limit=1)[0]
+    assert evaluation.outcome == "failure"
+
+
+@pytest.mark.asyncio
+async def test_telegram_delivery_failure_is_traced_without_fallback(tmp_path):
+    service = TelegramService(
+        home=tmp_path,
+        config=TelegramConfig(dm_policy="open"),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=FailingTelegramClient(),
+    )
+    service.ingress = StaticIngress("model response")
+
+    with pytest.raises(RuntimeError, match="telegram unavailable"):
+        await service.handle_update(
+            TelegramUpdate(
+                update_id=3,
+                message_id=12,
+                chat_id="chat-3",
+                sender_id="sender-3",
+                text="hello",
+            )
+        )
+
+    events = TraceStore(tmp_path).list_events("telegram:chat-3:12")
+    assert events[-1].phase == "channel.egress"
+    assert events[-1].ok is False
+    assert "telegram unavailable" in events[-1].output_json

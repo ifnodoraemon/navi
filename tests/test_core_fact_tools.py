@@ -45,6 +45,18 @@ async def test_shell_list_returns_workspace_entries(tmp_path: Path) -> None:
     assert "visible.txt" in names
     assert ".hidden" not in names
     assert "response" not in result.facts
+    assert result.facts["command"] == ["ls", "-1"]
+
+
+@pytest.mark.asyncio
+async def test_shell_run_rejects_shell_strings_instead_of_guessing_argv(tmp_path: Path) -> None:
+    gateway = build_tool_gateway(tmp_path / "home", project_dir=tmp_path)
+
+    result = await gateway.call("shell.run", {"command": "ls -1 | head"})
+
+    assert result.ok is False
+    assert result.facts == {}
+    assert "array" in result.error
 
 
 @pytest.mark.asyncio

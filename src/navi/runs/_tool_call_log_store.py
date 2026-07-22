@@ -4,14 +4,10 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from ..db import connect
 from ..schema import Column, Table
 from .models import ToolCallLog
-
-if TYPE_CHECKING:
-    pass
 
 TOOL_CALL_LOGS_TABLE = Table(
     "tool_call_logs",

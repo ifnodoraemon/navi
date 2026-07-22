@@ -16,6 +16,8 @@ from ..capabilities_types import (
     capability,
 )
 from ..control import ApprovalService, SurfaceContext
+from ..connector_delivery import connector_delivery_from_facts
+from ..goal_state_graph import resume_goal_loop_run
 from ..lifecycle import Phase, Governance, Resolution
 from ..loop_contracts import LoopTerminalState
 from ..result import NotFound, SchemaMismatch, guarded
@@ -143,10 +145,9 @@ class ApprovalResolveCapability(BaseCapability):
             runtime=self.runtime,
             trace_id=context.trace_id,
             event_bus=context.event_bus,
+            resume_loop=resume_goal_loop_run,
         )
         facts = resolved.facts
-        from ..connector_delivery import connector_delivery_from_facts
-
         delivery = connector_delivery_from_facts(facts)
         if delivery is not None:
             return CapabilityResult(

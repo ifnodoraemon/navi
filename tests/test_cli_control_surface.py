@@ -3,7 +3,9 @@ from __future__ import annotations
 from typer.testing import CliRunner
 
 from navi.cli import app
+from navi.evolution import EvolutionLedger
 from navi.memory import MemoryStore
+from navi.trace import TraceStore
 
 
 def test_cli_memory_add_uses_control_surface_context(tmp_path):
@@ -38,6 +40,23 @@ def test_cli_memory_add_uses_control_surface_context(tmp_path):
 
     assert revoked.exit_code == 0, revoked.output
     assert MemoryStore(tmp_path).get_item(items[0].id).status == "revoked"
+    assert EvolutionLedger(tmp_path).list() == []
+
+
+def test_cli_session_and_trace_mutations_use_governed_surfaces(tmp_path):
+    runner = CliRunner()
+    env = {"NAVI_HOME": str(tmp_path)}
+
+    session = runner.invoke(app, ["session", "new", "cli-test"], env=env)
+    assert session.exit_code == 0, session.output
+    session_id = session.output.strip()
+    assert MemoryStore(tmp_path).current_session_id("cli-test") == session_id
+
+    TraceStore(tmp_path).add_event(trace_id="trace-cli", phase="turn.start")
+    evaluation = runner.invoke(app, ["trace", "evaluate", "trace-cli"], env=env)
+    assert evaluation.exit_code == 0, evaluation.output
+    assert "success none" in evaluation.output
+    assert len(TraceStore(tmp_path).list_evaluations("trace-cli")) == 1
 
 
 def test_cli_eval_connector_default_dataset_validates(tmp_path):
