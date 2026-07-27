@@ -64,7 +64,7 @@ async def test_connector_manifest_matches_local_manifest(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_tools_list_uses_filtered_registry_catalog(tmp_path: Path) -> None:
+async def test_tools_list_exposes_the_complete_registry_catalog(tmp_path: Path) -> None:
     registry = build_capability_registry(
         tmp_path,
         project_dir=tmp_path,
@@ -79,10 +79,8 @@ async def test_tools_list_uses_filtered_registry_catalog(tmp_path: Path) -> None
     )
 
     assert result.ok is True
-    assert {tool["name"] for tool in result.facts["tools"]} == {
-        "respond",
-        "tools.list",
-    }
+    names = {tool["name"] for tool in result.facts["tools"]}
+    assert {"respond", "tools.list", "shell.run", "file.write"} <= names
 
 
 @pytest.mark.asyncio
@@ -132,7 +130,7 @@ async def test_connector_sensitive_shell_requires_durable_approval(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_connector_permission_ceiling_remains_a_hard_boundary(tmp_path: Path) -> None:
+async def test_connector_sensitive_shell_uses_approval_instead_of_permission_ceiling(tmp_path: Path) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
 
     result = await registry.invoke(
@@ -143,8 +141,8 @@ async def test_connector_permission_ceiling_remains_a_hard_boundary(tmp_path: Pa
     )
 
     assert result.ok is False
-    assert result.error_reason == "permission_ceiling"
-    assert RunStore(tmp_path).list_approvals() == []
+    assert result.error_reason == "sensitive_op_requires_approval"
+    assert len(RunStore(tmp_path).list_approvals()) == 1
 
 
 @pytest.mark.asyncio

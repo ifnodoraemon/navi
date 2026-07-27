@@ -79,6 +79,35 @@ class _FactResponderProvider:
         return {}
 
 
+class _DrainFailingEventBus:
+    def __init__(self) -> None:
+        self.drain_calls = 0
+        self.shutdown_calls = 0
+
+    async def drain(self) -> None:
+        self.drain_calls += 1
+        raise TimeoutError("queue did not drain")
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_turn_controller_shutdown_stops_event_bus_after_drain_failure(tmp_path) -> None:
+    event_bus = _DrainFailingEventBus()
+    controller = TurnController(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=_CapturingPlannerProvider()),
+        project_dir=tmp_path,
+        event_bus=event_bus,
+    )
+
+    await controller.shutdown(timeout=0.01)
+
+    assert event_bus.drain_calls == 1
+    assert event_bus.shutdown_calls == 1
+
+
 def _loop_spec(goal_id: str, workspace: str) -> LoopSpec:
     return LoopSpec.from_goal(
         GoalSpec(
@@ -495,8 +524,15 @@ def test_current_state_includes_active_shadow_workspaces(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "app.py").write_text("base\n", encoding="utf-8")
+    spec = LoopSpec.from_goal(
+        GoalSpec(objective="active workspace", scope=(str(workspace),)),
+        goal_id="goal-active-workspace",
+        allowed_capabilities=("respond",),
+        verification_ladder=(VerificationStep(kind=VerificationKind.SCHEMA, name="schema"),),
+    )
+    loop_run = LoopRunStore(tmp_path).create_run(spec)
     shadow = ShadowWorkspaceManager(tmp_path).create_shadow(
-        run_id="loop-run-1",
+        run_id=loop_run.run_id,
         workspace=workspace,
     )
 
@@ -513,7 +549,7 @@ def test_current_state_includes_active_shadow_workspaces(tmp_path):
     )
 
     assert facts["workspace_state"]["shadow_workspace"] == shadow.shadow_workspace
-    assert facts["workspace_state"]["shadow_workspaces"][0]["run_id"] == "loop-run-1"
+    assert facts["workspace_state"]["shadow_workspaces"][0]["run_id"] == loop_run.run_id
 
 
 @pytest.mark.asyncio

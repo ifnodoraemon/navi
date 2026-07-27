@@ -955,6 +955,18 @@ def _active_shadow_workspaces(home: Path, context: SurfaceContext) -> tuple[Any,
             real_workspace=context.workspace,
             limit=100,
         )
+        from .loop_runs import LoopRunStore
+
+        loop_runs = LoopRunStore(home)
+        resumable_states = {"", "paused", "waiting_approval", "conflicted"}
+        shadows = tuple(
+            shadow
+            for shadow in shadows
+            if (
+                (loop_run := loop_runs.get_run(shadow.run_id)) is not None
+                and str(loop_run.terminal_state) in resumable_states
+            )
+        )
     except Exception:
         return ()
     return shadows

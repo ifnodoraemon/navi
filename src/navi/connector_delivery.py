@@ -7,16 +7,17 @@ from typing import Any
 
 
 DELIVERY_FACT_KEY = "connector_delivery"
-DELIVERY_CONTRACT_VERSION = "1"
+DELIVERY_CONTRACT_VERSION = "2"
 
 
 @dataclass(frozen=True)
 class ConnectorDelivery:
-    """Connector-neutral request for one synchronous outbound delivery.
+    """Connector-neutral request for one durable outbound delivery.
 
     The agent kernel produces this contract.  The active connector consumes it
-    immediately and is responsible for recording the real transport receipt.
-    No connector-specific queue or outbox is part of the contract.
+    through the shared outbox and records the real transport receipt.  The
+    request is one authorized effect; retried transport attempts retain its
+    exact payload and idempotency key.
     """
 
     path: str
@@ -26,7 +27,7 @@ class ConnectorDelivery:
     goal_id: str = ""
     channel: str = "current"
     kind: str = "file"
-    mode: str = "synchronous"
+    mode: str = "durable"
     version: str = DELIVERY_CONTRACT_VERSION
 
     def to_dict(self) -> dict[str, str]:
@@ -71,7 +72,7 @@ def connector_delivery_from_facts(facts: Any) -> ConnectorDelivery | None:
     if (
         not path
         or kind != "file"
-        or mode != "synchronous"
+        or mode != "durable"
         or channel != "current"
         or version != DELIVERY_CONTRACT_VERSION
     ):
@@ -146,8 +147,8 @@ def register_connector_delivery_tool(registry: Any, *, home: Path) -> None:
             execution_contexts=ALL_EXECUTION_CONTEXTS,
             description=(
                 "Deliver one existing local file, with optional text, through the current "
-                "interaction channel. The active connector executes this request synchronously "
-                "after any required approval and reports the real transport result."
+                "interaction channel. The active connector persists this authorized request "
+                "and reports the real transport receipt."
             ),
             input_schema={
                 "type": "object",
@@ -181,12 +182,12 @@ def register_connector_delivery_tool(registry: Any, *, home: Path) -> None:
             source="core.connector_delivery",
             side_effect_policy=SideEffectPolicy(
                 scope="external",
-                mode="synchronous",
+                mode="durable",
                 state_field="side_effect_state",
                 artifact_field="source_path",
                 description=(
-                    "The active connector must complete the delivery synchronously; "
-                    "there is no staged artifact or deferred commit."
+                    "The active connector persists the authorized delivery, and only an "
+                    "authoritative transport receipt commits the external effect."
                 ),
             ),
             workspace_policy="paths",

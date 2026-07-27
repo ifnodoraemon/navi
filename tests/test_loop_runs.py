@@ -111,6 +111,26 @@ def test_loop_run_execution_claim_is_atomic_and_recoverable_after_expiry(tmp_pat
     assert recovered.version > claimed.version
 
 
+def test_expired_execution_lease_is_released_without_ending_the_loop(tmp_path):
+    store = LoopRunStore(tmp_path)
+    run = store.create_run(_spec())
+    claimed = store.claim_for_execution(
+        run.run_id,
+        owner="worker-a",
+        lease_seconds=10,
+        now=100.0,
+    )
+    assert claimed is not None
+
+    assert store.release_expired_execution_leases(now=111.0) == [run.run_id]
+    recovered = store.get_run(run.run_id)
+    assert recovered is not None
+    assert recovered.terminal_state == ""
+    assert recovered.lease_owner == ""
+    assert recovered.lease_expires_at == 0.0
+    assert store.list_events(run.run_id)[-1].event_type == "loop.execution_lease_released"
+
+
 def test_expired_worker_cannot_fail_a_loop_after_lease_recovery(tmp_path):
     store = LoopRunStore(tmp_path)
     run = store.create_run(_spec())

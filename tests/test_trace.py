@@ -710,7 +710,7 @@ def test_trace_external_pause_is_successful_pause_not_approval(tmp_path):
             "action": "connector_outbound",
             "facts": {
                 "connector_delivery": {
-                    "mode": "synchronous",
+                    "mode": "durable",
                     "path": "/tmp/report.xlsx",
                 }
             },

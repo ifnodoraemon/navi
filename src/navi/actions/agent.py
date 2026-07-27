@@ -74,7 +74,6 @@ class AgentSpawnCapability(BaseCapability):
             raise SchemaMismatch(
                 "agent.control(operation=spawn) requires explicit allowed_capabilities."
             )
-
         store = GoalStore(self.home)
         parent = _parent_for_actor(store, args=args, context=context)
         active_child_count = store.count_children(

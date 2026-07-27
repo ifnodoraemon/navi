@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 
 from navi.db import connect
+from navi.delivery_outbox import DeliveryOutboxStore
 from navi.goals import GoalStore
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
 from navi.loop_contracts import LoopNode, LoopTerminalState, VerificationKind
@@ -98,7 +99,7 @@ def test_background_converged_result_creates_delivery_outbox(tmp_path):
         evidence={**opened.loop_run.evidence, "execution_mode": "background"},
     )
 
-    service.apply_state_graph_result(
+    projected = service.apply_state_graph_result(
         opened,
         StateGraphRunResult(
             run_state=terminal,
@@ -115,22 +116,67 @@ def test_background_converged_result_creates_delivery_outbox(tmp_path):
     )
 
     accepted = service.goals.accepted_result_for_run(opened.run.id)
+    assert projected.run.phase == Phase.PAUSED
+    assert projected.run.acceptance == Acceptance.UNVERIFIED
+    assert projected.run.resolution == Resolution.NONE
     assert accepted["body"] == "Accepted lesson body."
     assert token not in accepted["body"]
     assert accepted["body_provenance"] == "state_graph.evidence.responded_message"
     assert accepted["delivery_status"] == "pending"
+    assert opened.loop_spec.goal.metadata["task_context"]["delivery"] == {
+        "stage": "post_semantic_acceptance_outbox",
+        "transport_receipt_available": False,
+    }
 
     claimed = service.goals.claim_pending_delivery_outbox(channel="weixin")
     assert len(claimed) == 1
     assert claimed[0].trace_id == opened.run.id
     service.goals.mark_delivery_outbox_failed(claimed[0].id, error="provider unavailable")
     assert service.goals.claim_pending_delivery_outbox(channel="weixin") == []
-    with connect(service.goals.db_path) as conn:
-        status = conn.execute(
-            "SELECT status FROM goal_delivery_outbox WHERE id = ?",
-            (claimed[0].id,),
-        ).fetchone()[0]
-    assert status == "failed"
+    status = DeliveryOutboxStore(tmp_path).get(claimed[0].id)
+    assert status is not None
+    assert status.status == "failed"
+
+
+def test_stale_sending_delivery_is_requeued_with_the_same_idempotency_key(tmp_path):
+    service = LoopControlService(tmp_path)
+    opened = service.open_goal(
+        OpenGoalRequest(
+            objective="deliver once",
+            workspace=str(tmp_path),
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            auto_start=False,
+            execution_mode="background",
+        )
+    )
+    outbox = service.goals.record_result_delivery_outbox(
+        run=opened.run,
+        goal=opened.goal,
+        body="accepted body",
+        body_provenance="state_graph.evidence.responded_message",
+        channel="weixin",
+    )
+    assert outbox is not None
+    claimed = service.goals.claim_pending_delivery_outbox(channel="weixin")
+    assert len(claimed) == 1
+
+    recovered = service.goals.mark_stale_sending_delivery_outbox_unknown(
+        channel="weixin",
+        now=claimed[0].updated_at + 301,
+    )
+
+    assert len(recovered) == 1
+    assert recovered[0].status == "pending"
+    assert recovered[0].id == claimed[0].id
+    assert recovered[0].attempts == 1
+    reclaimed = DeliveryOutboxStore(tmp_path).claim_ready(
+        channel="weixin",
+        now=recovered[0].updated_at,
+    )
+    assert [item.id for item in reclaimed] == [claimed[0].id]
+    assert reclaimed[0].attempts == 2
 
 
 def test_loop_control_service_rejects_unknown_loop_kind(tmp_path):

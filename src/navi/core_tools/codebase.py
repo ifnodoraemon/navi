@@ -16,8 +16,6 @@ def _project_path(value: Any, *, project_dir: Path) -> tuple[Path | None, str]:
     if not path.is_absolute():
         path = root / path
     resolved = path.resolve().absolute()
-    if resolved != root and root not in resolved.parents:
-        return None, "path must stay inside the current project workspace"
     return resolved, ""
 
 

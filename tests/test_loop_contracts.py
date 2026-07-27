@@ -69,7 +69,7 @@ def test_loop_spec_from_goal_encodes_navi_2_contract():
         assert (node, LoopTerminalState.SUPERSEDED, "superseded") in graph_edges
 
     assert set(spec.terminal_states) == set(LoopTerminalState)
-    assert spec.workspace_policy.mode == WorkspaceMode.SHADOW
+    assert spec.workspace_policy.mode == WorkspaceMode.READ_ONLY
     assert spec.workspace_policy.require_three_way_merge is True
     assert spec.workspace_policy.require_locks is True
     assert spec.checkpoint_policy.before_side_effect is True

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import connect, check_schema_version, write_schema_version
+from .delivery_outbox import DeliveryEnvelope, DeliveryItem, DeliveryOutboxStore
 from .paths import db_paths
 from .persistence_scope import append_actor_scope
 from .prompt_os import assemble_goal_event_compaction_messages
@@ -99,9 +100,7 @@ class GoalDeliveryOutboxItem:
 
 
 GOAL_SELECT_LIST = ", ".join(field.name for field in fields(Goal))
-GOAL_DELIVERY_OUTBOX_SELECT_LIST = ", ".join(
-    field.name for field in fields(GoalDeliveryOutboxItem)
-)
+GOAL_DELIVERY_OUTBOX_SELECT_LIST = ", ".join(field.name for field in fields(GoalDeliveryOutboxItem))
 
 
 class GoalStore:
@@ -434,9 +433,25 @@ class GoalStore:
         *,
         limit: int = 50,
         newest: bool = False,
+        created_after: float = 0.0,
+        created_before: float = 0.0,
+        resolutions: tuple[str, ...] = (),
     ) -> typing.List[Goal]:
         """List child goals of *parent_goal_id* (Gap F task tree)."""
         order = "DESC" if newest else "ASC"
+        clauses = ["parent_goal_id = ?"]
+        params: list[Any] = [parent_goal_id]
+        if created_after > 0:
+            clauses.append("created_at >= ?")
+            params.append(float(created_after))
+        if created_before > 0:
+            clauses.append("created_at <= ?")
+            params.append(float(created_before))
+        if resolutions:
+            placeholders = ", ".join("?" for _ in resolutions)
+            clauses.append(f"resolution IN ({placeholders})")
+            params.extend(resolutions)
+        params.append(max(1, int(limit)))
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
@@ -445,9 +460,10 @@ class GoalStore:
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at,
                        parent_goal_id, task_status, cron_schedule, next_run_at
-                FROM goals WHERE parent_goal_id = ? ORDER BY created_at {order} LIMIT ?
+                FROM goals WHERE {" AND ".join(clauses)}
+                ORDER BY created_at {order} LIMIT ?
                 """,
-                (parent_goal_id, limit),
+                params,
             ).fetchall()
         goals = [Goal(*row) for row in rows]
         return list(reversed(goals)) if newest else goals
@@ -526,7 +542,9 @@ class GoalStore:
         for e in events:
             lines.append(f"[{e.created_at}] {e.event_type} {e.phase} {e.evidence_json}")
 
-        summary = await runtime.complete(assemble_goal_event_compaction_messages(lines), role="planner")
+        summary = await runtime.complete(
+            assemble_goal_event_compaction_messages(lines), role="planner"
+        )
 
         event = GoalEvent(
             id=uuid.uuid4().hex,
@@ -863,87 +881,39 @@ class GoalStore:
         body_provenance: str,
         channel: str = "",
         trace_id: str = "",
-    ) -> GoalDeliveryOutboxItem | None:
-        """Persist an accepted model result as a channel-deliverable artifact."""
+    ) -> DeliveryItem | None:
+        """Persist an accepted result through the connector-neutral outbox."""
         text = body.strip()
         surface = channel.strip() or goal.source or run.source
         peer_id = goal.peer_id or run.peer_id
         if not text or not surface or not peer_id:
             return None
-        existing = self._delivery_outbox_by_run(run.id)
+        outbox = DeliveryOutboxStore(self.home)
+        existing = outbox.latest_for_run(run.id)
         if existing is not None:
             return existing
-        now = time.time()
-        item = GoalDeliveryOutboxItem(
-            id=uuid.uuid4().hex,
-            goal_id=goal.id,
-            run_id=run.id,
-            channel=surface,
-            source=goal.source or run.source,
-            peer_id=peer_id,
-            sender_id=goal.sender_id or run.sender_id,
-            trace_id=trace_id or goal.trace_id or run.id,
-            body=text,
-            body_provenance=body_provenance,
-            status="pending",
-            attempts=0,
-            error="",
-            delivery_id="",
-            created_at=now,
-            updated_at=now,
-            sent_at=0.0,
-        )
-        with connect(self.db_path) as conn:
-            conn.execute(
-                f"""
-                INSERT INTO goal_delivery_outbox({GOAL_DELIVERY_OUTBOX_SELECT_LIST})
-                VALUES ({", ".join("?" for _ in fields(GoalDeliveryOutboxItem))})
-                """,
-                tuple(getattr(item, field.name) for field in fields(GoalDeliveryOutboxItem)),
+        items = outbox.enqueue(
+            DeliveryEnvelope(
+                batch_id=f"goal:{run.id}",
+                channel=surface,
+                peer_id=peer_id,
+                sender_id=goal.sender_id or run.sender_id,
+                trace_id=trace_id or goal.trace_id or run.id,
+                run_id=run.id,
+                goal_id=goal.id,
+                text=text,
+                body_provenance=body_provenance,
             )
-        return item
+        )
+        return items[0] if items else None
 
     def claim_pending_delivery_outbox(
         self,
         *,
         channel: str,
         limit: int = 10,
-    ) -> builtins.list[GoalDeliveryOutboxItem]:
-        now = time.time()
-        claimed: list[GoalDeliveryOutboxItem] = []
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                f"""
-                SELECT {GOAL_DELIVERY_OUTBOX_SELECT_LIST}
-                FROM goal_delivery_outbox
-                WHERE status = 'pending' AND channel = ?
-                ORDER BY created_at ASC
-                LIMIT ?
-                """,
-                (channel, max(1, limit)),
-            ).fetchall()
-            for row in rows:
-                item = _delivery_outbox_from_row(row)
-                cursor = conn.execute(
-                    """
-                    UPDATE goal_delivery_outbox
-                    SET status = 'sending', attempts = attempts + 1, updated_at = ?
-                    WHERE id = ? AND status = 'pending'
-                    """,
-                    (now, item.id),
-                )
-                if cursor.rowcount == 1:
-                    claimed.append(
-                        GoalDeliveryOutboxItem(
-                            **{
-                                **item.__dict__,
-                                "status": "sending",
-                                "attempts": item.attempts + 1,
-                                "updated_at": now,
-                            }
-                        )
-                    )
-        return claimed
+    ) -> builtins.list[DeliveryItem]:
+        return DeliveryOutboxStore(self.home).claim_ready(channel=channel, limit=limit)
 
     def mark_delivery_outbox_sent(
         self,
@@ -952,16 +922,14 @@ class GoalStore:
         delivery_id: str = "",
         sent_at: float | None = None,
     ) -> None:
-        now = time.time()
-        with connect(self.db_path) as conn:
-            conn.execute(
-                """
-                UPDATE goal_delivery_outbox
-                SET status = 'sent', delivery_id = ?, sent_at = ?, updated_at = ?, error = ''
-                WHERE id = ?
-                """,
-                (delivery_id, now if sent_at is None else float(sent_at), now, outbox_id),
-            )
+        from .delivery_outbox import DeliveryReceipt
+
+        DeliveryOutboxStore(self.home).mark_sent(
+            outbox_id,
+            receipt=DeliveryReceipt(transport="legacy_goal_projection"),
+            delivery_id=delivery_id,
+            sent_at=sent_at,
+        )
 
     def mark_delivery_outbox_failed(
         self,
@@ -969,28 +937,41 @@ class GoalStore:
         *,
         error: str,
     ) -> None:
-        now = time.time()
-        with connect(self.db_path) as conn:
-            conn.execute(
-                """
-                UPDATE goal_delivery_outbox
-                SET status = 'failed', error = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (error[:1000], now, outbox_id),
-            )
+        DeliveryOutboxStore(self.home).mark_failed(outbox_id, error=error)
 
-    def _delivery_outbox_by_run(self, run_id: str) -> GoalDeliveryOutboxItem | None:
-        with connect(self.db_path) as conn:
-            row = conn.execute(
-                f"""
-                SELECT {GOAL_DELIVERY_OUTBOX_SELECT_LIST}
-                FROM goal_delivery_outbox
-                WHERE run_id = ?
-                """,
-                (run_id,),
-            ).fetchone()
-        return _delivery_outbox_from_row(row) if row else None
+    def mark_stale_sending_delivery_outbox_unknown(
+        self,
+        *,
+        channel: str,
+        stale_after_seconds: float = 300.0,
+        now: float | None = None,
+        limit: int = 100,
+    ) -> builtins.list[DeliveryItem]:
+        """Recover an interrupted idempotent delivery with the same key."""
+        return DeliveryOutboxStore(self.home).recover_stale_sending(
+            channel=channel,
+            stale_after_seconds=stale_after_seconds,
+            now=now,
+            limit=limit,
+        )
+
+    def list_unprojected_sent_delivery_outbox(
+        self,
+        *,
+        channel: str,
+        limit: int = 100,
+    ) -> builtins.list[DeliveryItem]:
+        """Return complete batches whose Goal projection still needs repair."""
+        items: list[DeliveryItem] = []
+        for _batch_id, batch in DeliveryOutboxStore(self.home).complete_unprojected_batches(
+            channel=channel,
+            limit=limit,
+        ):
+            items.extend(batch)
+        return items
+
+    def _delivery_outbox_by_run(self, run_id: str) -> DeliveryItem | None:
+        return DeliveryOutboxStore(self.home).latest_for_run(run_id)
 
     def accepted_result_for_run(self, run_id: str) -> dict[str, Any]:
         item = self._delivery_outbox_by_run(run_id)
@@ -1003,6 +984,11 @@ class GoalStore:
             "channel": item.channel,
             "sent_at": item.sent_at,
             "outbox_id": item.id,
+            "delivery_id": item.delivery_id,
+            "delivery_attempts": item.attempts,
+            "delivery_error": item.error,
+            "delivery_error_reason": _delivery_error_reason(item.error),
+            "delivery_updated_at": item.updated_at,
         }
 
     def record_delivery(
@@ -1088,6 +1074,7 @@ class GoalStore:
         run_id: str,
         channel: str,
         error: str,
+        error_reason: str = "",
         trace_id: str = "",
         delivery_id: str = "",
     ) -> GoalEvent | None:
@@ -1100,6 +1087,7 @@ class GoalStore:
             "channel": channel,
             "recorded_at": time.time(),
             "error": error,
+            "error_reason": error_reason or _delivery_error_reason(error),
             "delivery_id": delivery_id,
             "goal_id": goal.id,
             "run_id": run_id,
@@ -1124,7 +1112,7 @@ class GoalStore:
         )
         if updated_run is not None:
             goal = self.update_for_run(updated_run, evidence=evidence) or goal
-        return self.record_event(
+        event = self.record_event(
             goal.id,
             "goal.delivery_failed",
             phase=Phase.ENDED,
@@ -1135,6 +1123,85 @@ class GoalStore:
             trace_id=trace_id or run_id,
             evidence=evidence,
         )
+        if goal.parent_goal_id:
+            parent = self.get(goal.parent_goal_id)
+            if parent is not None:
+                self.record_event(
+                    parent.id,
+                    "goal.occurrence_delivery_failed",
+                    phase=parent.phase,
+                    governance=parent.governance,
+                    acceptance=parent.acceptance,
+                    resolution=parent.resolution,
+                    run_id=run_id,
+                    trace_id=trace_id or run_id,
+                    evidence=evidence,
+                )
+        return event
+
+    def record_delivery_outcome_unknown(
+        self,
+        *,
+        run_id: str,
+        channel: str,
+        error: str,
+        trace_id: str = "",
+        delivery_id: str = "",
+    ) -> GoalEvent | None:
+        """Record an interrupted transport attempt without guessing its outcome."""
+        goal = self.get_by_run(run_id)
+        if goal is None:
+            return None
+        evidence = {
+            "state_transition": "delivery_outcome_unknown",
+            "channel": channel,
+            "recorded_at": time.time(),
+            "error": error,
+            "error_reason": "connector_delivery_outcome_unknown",
+            "delivery_id": delivery_id,
+            "goal_id": goal.id,
+            "run_id": run_id,
+        }
+        from .runs import RunStore
+
+        runs = RunStore(self.home)
+        updated_run = runs.update_run(
+            run_id,
+            phase=Phase.PAUSED,
+            governance=Governance.NONE,
+            acceptance=Acceptance.UNVERIFIED,
+            resolution=Resolution.BLOCKED,
+            result_summary="",
+            error=error,
+        )
+        if updated_run is not None:
+            goal = self.update_for_run(updated_run, evidence=evidence) or goal
+        event = self.record_event(
+            goal.id,
+            "goal.delivery_outcome_unknown",
+            phase=goal.phase,
+            governance=goal.governance,
+            acceptance=goal.acceptance,
+            resolution=goal.resolution,
+            run_id=run_id,
+            trace_id=trace_id or run_id,
+            evidence=evidence,
+        )
+        if goal.parent_goal_id:
+            parent = self.get(goal.parent_goal_id)
+            if parent is not None:
+                self.record_event(
+                    parent.id,
+                    "goal.occurrence_delivery_outcome_unknown",
+                    phase=parent.phase,
+                    governance=parent.governance,
+                    acceptance=parent.acceptance,
+                    resolution=parent.resolution,
+                    run_id=run_id,
+                    trace_id=trace_id or run_id,
+                    evidence=evidence,
+                )
+        return event
 
     def _complete_delivery_loops(
         self,
@@ -1507,6 +1574,14 @@ def _json_object(raw: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _delivery_error_reason(error: str) -> str:
+    text = str(error or "")
+    prefix = text.partition(":")[0].strip()
+    if prefix.startswith("connector_"):
+        return prefix
+    return "connector_delivery_failed" if error else ""
 
 
 def _delivery_outbox_from_row(row: tuple[Any, ...]) -> GoalDeliveryOutboxItem:

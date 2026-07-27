@@ -175,7 +175,7 @@ class _FollowupApprovalProvider:
                         "syscalls": [
                             {
                                 "tool": "shell.run",
-                                "permission": "write",
+                                "permission": "read",
                                 "args": {
                                     "command": [
                                         "find",
@@ -244,7 +244,7 @@ class _FollowupApprovalProvider:
         return {}
 
 
-class _UnderdeclaredShellApprovalProvider:
+class _DeclaredSensitiveShellApprovalProvider:
     def __init__(self, target: Path) -> None:
         self.target = target
 
@@ -256,7 +256,7 @@ class _UnderdeclaredShellApprovalProvider:
                     "syscalls": [
                         {
                             "tool": "shell.run",
-                            "permission": "read",
+                            "permission": "write",
                             "args": {"command": ["touch", str(self.target)]},
                             "reason": "request the exact operation",
                         }
@@ -319,13 +319,13 @@ def _missing_file_verification(target: Path) -> str:
 
 
 @pytest.mark.asyncio
-async def test_weixin_turn_surfaces_approval_for_underdeclared_shell_effect(
+async def test_weixin_turn_surfaces_approval_for_declared_sensitive_shell_effect(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "must-wait-for-approval.txt"
     runtime = AgentRuntime(
         home=tmp_path,
-        provider=_UnderdeclaredShellApprovalProvider(target),
+        provider=_DeclaredSensitiveShellApprovalProvider(target),
     )
     ingress = ConnectorIngressRuntime(
         home=tmp_path,
@@ -657,7 +657,7 @@ async def test_connector_bare_approval_resolves_the_delivery_gate(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_connector_approval_preserves_synchronous_file_delivery_contract(
+async def test_connector_approval_preserves_durable_file_delivery_contract(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "approved-report.xlsx"

@@ -5,22 +5,32 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from navi.approval_contract import APPROVAL_ACTION_CAPABILITY, APPROVAL_DECISION_APPROVE
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.connector_delivery import ConnectorDelivery, connector_delivery_client_id
+from navi.delivery_outbox import DeliveryOutboxStore
 from navi.event_bus import ResponseReadyEvent
 from navi.goals import GoalStore
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
+from navi.loop import TracePhase
 from navi.loop_contracts import LoopTerminalState
 from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.loop_runs import LoopRunStore
 from navi.runtime import AgentRuntime
 from navi.runs import Run, RunStore
 from navi.trace import TraceStore
-from navi.weixin.client import ITEM_FILE, MEDIA_FILE, TYPING_START, TYPING_STOP, WeixinClient
+from navi.weixin.client import (
+    ITEM_FILE,
+    MEDIA_FILE,
+    TYPING_START,
+    TYPING_STOP,
+    WeixinClient,
+    WeixinTransportError,
+)
 from navi.weixin.config import WeixinConfig
 from navi.weixin.models import WeixinAccount, WeixinUpdate
 from navi.weixin.service import WeixinService
@@ -177,7 +187,7 @@ async def test_send_message_propagates_first_provider_failure_without_retry(
 
     monkeypatch.setattr(client, "_post", fake_post)
 
-    with pytest.raises(RuntimeError, match="rate limited"):
+    with pytest.raises(WeixinTransportError, match="rate limited") as captured:
         await client.send_message(
             account_id="acct",
             peer_id="wx-user",
@@ -186,6 +196,35 @@ async def test_send_message_propagates_first_provider_failure_without_retry(
         )
 
     assert calls == 1
+    assert captured.value.reason == "connector_rejected"
+
+
+@pytest.mark.asyncio
+async def test_send_message_uses_a_stable_client_id_for_an_idempotent_outbox_item(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client = WeixinClient(base_url="https://ilink.example", token="token")
+    payloads: list[dict[str, Any]] = []
+
+    async def fake_post(path: str, payload: dict[str, Any], *, timeout: float):
+        assert path == "/ilink/bot/sendmessage"
+        assert timeout == 15
+        payloads.append(payload)
+        return {"ret": 0}
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    await client.send_message(
+        account_id="acct",
+        peer_id="wx-user",
+        text="hello",
+        idempotency_key="outbox-item-1",
+    )
+
+    assert payloads[0]["msg"]["client_id"] == connector_delivery_client_id(
+        "outbox-item-1:chunk:0",
+        prefix="navi-weixin",
+    )
 
 
 @pytest.mark.asyncio
@@ -261,6 +300,23 @@ class FailingFileWeixinClient(CaptureWeixinClient):
         raise RuntimeError("upload failed")
 
 
+class RejectedWeixinClient(CaptureWeixinClient):
+    async def send_message(self, **kwargs: Any) -> None:
+        self.messages.append(kwargs)
+        raise WeixinTransportError(
+            "sendmessage",
+            ret=-2,
+            errcode=-2,
+            errmsg="prepare failed",
+        )
+
+
+class TransientTextFailingWeixinClient(CaptureWeixinClient):
+    async def send_message(self, **kwargs: Any) -> None:
+        self.messages.append(kwargs)
+        raise httpx.ConnectError("temporary network interruption")
+
+
 class FailingTypingWeixinClient(CaptureWeixinClient):
     async def send_typing(self, **kwargs: Any) -> None:
         raise RuntimeError(f"typing unavailable: {kwargs['status']}")
@@ -322,6 +378,61 @@ class StaticDaemon:
 
 
 @pytest.mark.asyncio
+async def test_background_skips_transient_resource_pause_without_notification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RunStore(tmp_path)
+    run = store.create(
+        "scheduled lesson",
+        kind="loop:durable_goal",
+        source="weixin",
+        peer_id="wx-user",
+        sender_id="wx-user",
+        workspace=str(tmp_path),
+    )
+    paused = store.update_run(
+        run.id,
+        phase=Phase.PAUSED,
+        governance=Governance.NONE,
+        acceptance=Acceptance.UNVERIFIED,
+        resolution=Resolution.BLOCKED,
+        result_summary="",
+        error="",
+    )
+    assert paused is not None
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=CaptureWeixinClient(),
+    )
+    service.daemon = StaticDaemon([paused])
+    monkeypatch.setattr(
+        service,
+        "_background_task_facts",
+        lambda _task: {
+            "loop_diagnostics": {
+                "terminal_state": "paused",
+                "resource_grant": {
+                    "decision": "pause",
+                    "reason": "future_resource_pause_reason",
+                },
+            }
+        },
+    )
+
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    assert service.client.messages == []
+    events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8")
+    assert '"reason": "transient_resource_pause"' in events
+
+
+@pytest.mark.asyncio
 async def test_service_executes_structured_delivery_from_original_path(tmp_path: Path):
     report = tmp_path / "report.pdf"
     report.write_bytes(b"report")
@@ -358,9 +469,58 @@ async def test_service_executes_structured_delivery_from_original_path(tmp_path:
     assert handled is True
     assert client.files[0]["file_path"] == report.resolve()
     assert client.files[0]["context_token"] == "ctx"
-    assert client.files[0]["idempotency_key"] == "delivery-report"
+    assert client.files[0]["idempotency_key"] == "delivery-report:file"
+    assert client.messages[0]["idempotency_key"] == "delivery-report:text"
     assert client.messages[0]["text"] == "已生成报告。"
     assert not (tmp_path / "weixin" / "outbox").exists()
+
+
+@pytest.mark.asyncio
+async def test_transient_caption_failure_does_not_skip_durable_file_delivery(tmp_path: Path):
+    report = tmp_path / "trend.png"
+    report.write_bytes(b"chart")
+    client = TransientTextFailingWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    contract = ConnectorDelivery(
+        path=str(report.resolve()),
+        text="趋势图已生成。",
+        delivery_id="watermelon-chart",
+    )
+    service.ingress = StaticIngress(
+        contract.text,
+        action="connector_outbound",
+        facts={"connector_delivery": contract.to_dict()},
+    )
+
+    assert (
+        await service.handle_update(
+            WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
+            WeixinUpdate(
+                message_id="msg-watermelon-chart",
+                peer_id="wx-user",
+                sender_id="wx-user",
+                text="发图",
+                context_token="ctx",
+            ),
+        )
+        is True
+    )
+
+    assert len(client.messages) == 1
+    assert len(client.files) == 1
+    assert client.files[0]["idempotency_key"] == "watermelon-chart:file"
+    items = DeliveryOutboxStore(tmp_path).list_batch("watermelon-chart")
+    assert {item.id: item.status for item in items} == {
+        "watermelon-chart:text": "pending",
+        "watermelon-chart:file": "sent",
+    }
+    assert items[0].id != items[1].id
 
 
 @pytest.mark.asyncio
@@ -472,6 +632,9 @@ async def test_background_outbox_sends_accepted_result_verbatim(tmp_path: Path):
         channel="weixin",
         trace_id=run.id,
     )
+    context_tokens = tmp_path / "weixin" / "context-tokens.json"
+    context_tokens.parent.mkdir(parents=True, exist_ok=True)
+    context_tokens.write_text(json.dumps({"acct:wx-user": "stale-context-token"}), encoding="utf-8")
     client = CaptureWeixinClient()
     service = WeixinService(
         home=tmp_path,
@@ -489,6 +652,7 @@ async def test_background_outbox_sends_accepted_result_verbatim(tmp_path: Path):
     delivery = GoalStore(tmp_path).latest_delivery(goal.id)
     assert client.files == []
     assert client.messages[0]["text"] == body
+    assert client.messages[0]["context_token"] == ""
     assert delivery["state_transition"] == "delivered"
     assert delivery["text_length"] == len(body)
     events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8").splitlines()
@@ -547,6 +711,113 @@ async def test_background_send_records_delivery_fact_after_client_success(tmp_pa
     assert delivery["channel"] == "weixin"
     assert delivery["text_length"] == len(body)
     assert delivery["media_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_background_outbox_failure_records_typed_goal_and_trace_facts(
+    tmp_path: Path,
+) -> None:
+    run = RunStore(tmp_path).create(
+        "scheduled usage",
+        kind="loop:durable_goal",
+        source="weixin",
+        peer_id="wx-user",
+        sender_id="wx-user",
+        workspace=str(tmp_path),
+    )
+    goal_store = GoalStore(tmp_path)
+    goal = goal_store.create(
+        objective=run.prompt,
+        workspace=str(tmp_path),
+        source=run.source,
+        peer_id=run.peer_id,
+        sender_id=run.sender_id,
+        run_id=run.id,
+    )
+    outbox = goal_store.record_result_delivery_outbox(
+        run=run,
+        goal=goal,
+        body="usage: 95%",
+        body_provenance="state_graph.evidence.responded_message",
+        channel="weixin",
+        trace_id=run.id,
+    )
+    assert outbox is not None
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=RejectedWeixinClient(),
+    )
+    service.daemon = StaticDaemon([])
+
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    accepted = goal_store.accepted_result_for_run(run.id)
+    assert accepted["delivery_status"] == "failed"
+    assert accepted["delivery_error_reason"] == "connector_rejected"
+    failures = [
+        event
+        for event in TraceStore(tmp_path).list_events(run.id)
+        if event.phase == TracePhase.CHANNEL_EGRESS and not event.ok
+    ]
+    assert len(failures) == 1
+    assert json.loads(failures[0].output_json)["error_reason"] == "connector_rejected"
+
+
+@pytest.mark.asyncio
+async def test_sent_outbox_repairs_lifecycle_projection_without_resending(
+    tmp_path: Path,
+) -> None:
+    run = RunStore(tmp_path).create(
+        "scheduled usage",
+        kind="loop:durable_goal",
+        source="weixin",
+        peer_id="wx-user",
+        sender_id="wx-user",
+        workspace=str(tmp_path),
+    )
+    goal_store = GoalStore(tmp_path)
+    goal = goal_store.create(
+        objective=run.prompt,
+        workspace=str(tmp_path),
+        source=run.source,
+        peer_id=run.peer_id,
+        sender_id=run.sender_id,
+        run_id=run.id,
+    )
+    outbox = goal_store.record_result_delivery_outbox(
+        run=run,
+        goal=goal,
+        body="usage: 95%",
+        body_provenance="state_graph.evidence.responded_message",
+        channel="weixin",
+        trace_id=run.id,
+    )
+    assert outbox is not None
+    goal_store.mark_delivery_outbox_sent(outbox.id, delivery_id=outbox.id, sent_at=123.0)
+    client = CaptureWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.daemon = StaticDaemon([])
+
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    projected = RunStore(tmp_path).get(run.id)
+    assert projected is not None
+    assert projected.resolution == Resolution.SUCCESS
+    assert GoalStore(tmp_path).get(goal.id).resolution == Resolution.SUCCESS
+    assert client.messages == []
 
 
 @pytest.mark.asyncio
@@ -728,8 +999,8 @@ async def test_realtime_file_delivery_records_success_only_after_transport(
         for event in TraceStore(tmp_path).list_events(trace_id="msg-delivery-success")
         if event.phase == "channel.egress"
     ]
-    assert len(egress) == 1
-    assert egress[0].ok is True
+    assert len(egress) == 2
+    assert all(event.ok is True for event in egress)
 
 
 @pytest.mark.asyncio
@@ -860,7 +1131,7 @@ async def test_realtime_file_delivery_failure_does_not_record_success(
         facts={"connector_delivery": contract.to_dict()},
     )
 
-    with pytest.raises(RuntimeError, match="upload failed"):
+    assert (
         await service.handle_update(
             WeixinAccount(
                 account_id="acct",
@@ -875,6 +1146,8 @@ async def test_realtime_file_delivery_failure_does_not_record_success(
                 context_token="ctx",
             ),
         )
+        is True
+    )
 
     assert GoalStore(tmp_path).latest_delivery(goal.id) == {}
     failure_events = [
@@ -936,7 +1209,7 @@ async def test_service_deduplicates_message_id_across_instances(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_send_file_returns_connector_neutral_synchronous_delivery(tmp_path: Path):
+async def test_send_file_returns_connector_neutral_durable_delivery(tmp_path: Path):
     source = tmp_path / "resume.docx"
     source.write_bytes(b"resume")
     args = {"path": str(source)}
@@ -979,7 +1252,7 @@ async def test_send_file_returns_connector_neutral_synchronous_delivery(tmp_path
     assert result.facts["side_effect_artifact"] == str(source.resolve())
     delivery = result.facts["connector_delivery"]
     assert delivery["kind"] == "file"
-    assert delivery["mode"] == "synchronous"
+    assert delivery["mode"] == "durable"
     assert delivery["channel"] == "current"
     assert delivery["path"] == str(source.resolve())
     assert not (tmp_path / "weixin" / "outbox").exists()

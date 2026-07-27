@@ -67,7 +67,9 @@ drivers share one atomic reservation boundary.
 Recurring schedules are mutable templates, not implicit natural-language
 dedupe. A planner reads them through `goal.state`, updates an existing template
 through `goal.update(goal_id=...)`, and uses `goal.open` only for new schedules
-or explicitly independent duplicate schedules.
+or explicitly independent duplicate schedules. The scheduled view projects a
+bounded recent occurrence ledger, including the connector receipt or typed
+delivery rejection, so diagnosis does not depend on guessing a child Goal id.
 
 ## Layer Ownership
 
@@ -149,8 +151,14 @@ task-type branches. Memory consolidation combines its evolvable task layer with
 the same stable Prompt OS boundary and treats transcript data as untrusted input.
 
 Connector delivery is a two-boundary operation: the capability records
-`delivery_requested` and pauses the loop; only the connector's authoritative
-transport receipt may converge the LoopRun and accept the Run and Goal.
+`delivery_requested` and pauses the loop; the connector-neutral durable
+outbox persists independently receipted text and attachment units before an
+adapter submits them. Only the adapter's authoritative transport receipt may
+converge the LoopRun and accept the Run and Goal. A bounded re-submit is allowed
+only for the same durable item and idempotency key; it never replays model work,
+changes payload, or selects another channel. Connector adapters own their API
+mapping and failure classification, while the outbox owns queue state, recovery,
+receipt persistence, and retry scheduling.
 
 ## Persistence
 
@@ -242,11 +250,14 @@ codes, checker verdicts, and the last capability facts. The connector still
 does not decide whether the event is noteworthy or author its own fallback text.
 
 Outbound files use the connector-neutral `ConnectorDelivery` contract. The
-kernel validates the original file and emits one structured synchronous
-delivery request; the active adapter (Weixin today, email or Feishu adapters in
-the future) sends it directly and records the real transport receipt. Textual
-`MEDIA:` directives, connector outboxes, and deferred connector commits are not
-delivery evidence and are not part of the real-time reply path.
+kernel validates the original file and emits one structured durable delivery
+request; the active adapter (Weixin today, email or Feishu adapters in the
+future) maps each persistent item to its transport API and records the real
+receipt. Textual `MEDIA:` directives are not delivery evidence. For an accepted
+background result, the Run and Goal remain unverified and non-terminal while
+its outbox item is pending; only complete connector receipts or a terminal
+connector rejection finalizes them. An interrupted `sending` claim is returned
+to `pending` with the same idempotency key, not treated as a new semantic action.
 
 Connector ingress uses the same capability catalog and default permission
 ceiling as local CLI ingress. Sensitive operations do not execute merely because

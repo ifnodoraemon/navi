@@ -151,7 +151,9 @@ class LoopRunStore:
     ) -> LoopRunState | None:
         """Atomically claim one loop for a single execution driver."""
         current_time = time.time() if now is None else now
-        terminal_clause = "terminal_state IN ('', 'paused')" if allow_paused else "terminal_state = ''"
+        terminal_clause = (
+            "terminal_state IN ('', 'paused')" if allow_paused else "terminal_state = ''"
+        )
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
@@ -237,6 +239,73 @@ class LoopRunStore:
             )
         return cursor.rowcount == 1
 
+    def release_expired_execution_leases(
+        self,
+        *,
+        now: float | None = None,
+        limit: int = 100,
+    ) -> list[str]:
+        """Clear leases whose owner can no longer safely transition the loop.
+
+        Expiry is the durable ownership boundary: the loop state remains
+        resumable, while a later driver may claim it atomically.  Releasing
+        the old owner prevents stale foreground work from permanently
+        breaching lease-health SLOs.
+        """
+        current_time = time.time() if now is None else float(now)
+        released: list[str] = []
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                f"""
+                SELECT {LOOP_RUNS_TABLE.select_list}
+                FROM loop_runs
+                WHERE terminal_state = ''
+                  AND lease_owner <> ''
+                  AND lease_expires_at > 0
+                  AND lease_expires_at <= ?
+                ORDER BY lease_expires_at ASC LIMIT ?
+                """,
+                (current_time, max(1, int(limit))),
+            ).fetchall()
+            for row in rows:
+                current = _loop_run_from_row(row)
+                cursor = conn.execute(
+                    """
+                    UPDATE loop_runs
+                    SET lease_owner = '', lease_expires_at = 0,
+                        updated_at = ?, version = version + 1
+                    WHERE id = ? AND terminal_state = '' AND lease_owner = ?
+                      AND lease_expires_at > 0 AND lease_expires_at <= ?
+                    """,
+                    (
+                        current_time,
+                        current.run_id,
+                        current.lease_owner,
+                        current_time,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    continue
+                released.append(current.run_id)
+                _insert_event(
+                    conn,
+                    replace(
+                        current,
+                        updated_at=current_time,
+                        version=current.version + 1,
+                        lease_owner="",
+                        lease_expires_at=0.0,
+                    ),
+                    "loop.execution_lease_released",
+                    evidence={
+                        "reason": "execution_lease_expired",
+                        "previous_owner": current.lease_owner,
+                        "expired_at": current.lease_expires_at,
+                    },
+                )
+        return released
+
     def reopen_for_resume(self, run_id: str) -> LoopRunState:
         """Reopen a paused loop at EXECUTE after its external gate is resolved."""
         with connect(self.db_path) as conn:
@@ -296,11 +365,9 @@ class LoopRunStore:
             current = _loop_run_from_row(row)
             grant = current.evidence.get("resource_grant")
             reason = str(grant.get("reason") or "") if isinstance(grant, dict) else ""
-            if str(current.terminal_state) != str(LoopTerminalState.PAUSED) or reason not in {
-                "rate_limited",
-                "provider_rate_limited",
-                "concurrency_limit",
-            }:
+            if str(current.terminal_state) != str(
+                LoopTerminalState.PAUSED
+            ) or not is_retryable_resource_pause(grant):
                 raise ValueError("loop run is not at a transient resource pause")
             raw_node = str(current.evidence.get("resource_resume_node") or "")
             if raw_node not in {str(LoopNode.PLAN), str(LoopNode.EXECUTE), str(LoopNode.EVALUATE)}:
@@ -434,8 +501,7 @@ class LoopRunStore:
                 str(LoopTerminalState.WAITING_APPROVAL),
             }:
                 raise ValueError(
-                    "loop run is not waiting at an external boundary: "
-                    f"{current.terminal_state}"
+                    f"loop run is not waiting at an external boundary: {current.terminal_state}"
                 )
             now = time.time()
             next_state = replace(
@@ -560,10 +626,7 @@ class LoopRunStore:
             if current.is_terminal():
                 return current
             current_time = time.time() if now is None else now
-            if (
-                current.lease_owner != lease_owner
-                or current.lease_expires_at <= current_time
-            ):
+            if current.lease_owner != lease_owner or current.lease_expires_at <= current_time:
                 raise RuntimeError("loop execution lease is not owned by this worker")
             next_state = replace(
                 current,
@@ -694,11 +757,7 @@ class LoopRunStore:
         for row in rows:
             state = _loop_run_from_row(row)
             grant = state.evidence.get("resource_grant")
-            if not isinstance(grant, dict) or str(grant.get("reason") or "") not in {
-                "rate_limited",
-                "provider_rate_limited",
-                "concurrency_limit",
-            }:
+            if not is_retryable_resource_pause(grant):
                 continue
             try:
                 retry_after = max(0.0, float(grant.get("retry_after_seconds") or 0.0))
@@ -710,6 +769,25 @@ class LoopRunStore:
             if len(ready) >= limit:
                 break
         return ready
+
+    def list_releasable_resource_scope_ids(
+        self,
+        *,
+        now: float | None = None,
+    ) -> list[str]:
+        """Return loop-run scopes that are not owned by a live execution lease."""
+        current_time = time.time() if now is None else float(now)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id FROM loop_runs
+                WHERE terminal_state <> ''
+                   OR lease_owner = ''
+                   OR lease_expires_at <= ?
+                """,
+                (current_time,),
+            ).fetchall()
+        return [str(row[0]) for row in rows]
 
     def list_by_goal(self, goal_id: str, *, limit: int = 50) -> list[LoopRunState]:
         with connect(self.db_path) as conn:
@@ -751,7 +829,7 @@ class LoopRunStore:
                 f"""
                 SELECT {LOOP_RUNS_TABLE.select_list}
                 FROM loop_runs
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY updated_at DESC{limit_clause}
                 """,
                 params,
@@ -838,10 +916,10 @@ class LoopRunStore:
                 raise RuntimeError("loop execution lease is not owned by this driver")
             next_state = replace(
                 current.transition(
-                node=node,
-                checkpoint_id=checkpoint_id,
-                terminal_state=terminal_state,
-                evidence=evidence,
+                    node=node,
+                    checkpoint_id=checkpoint_id,
+                    terminal_state=terminal_state,
+                    evidence=evidence,
                 ),
                 version=current.version + 1,
                 lease_owner="" if str(terminal_state).strip() else current.lease_owner,
@@ -918,7 +996,7 @@ class LoopRunStore:
                 f"""
                 SELECT {LOOP_CHECKPOINTS_TABLE.select_list}
                 FROM loop_checkpoints
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
@@ -1138,3 +1216,8 @@ LOOP_EVENTS_TABLE = Table(
         Column("created_at", "REAL", nullable=False),
     ],
 )
+
+
+def is_retryable_resource_pause(grant: object) -> bool:
+    """The resource protocol, rather than a reason-name allowlist, owns retryability."""
+    return isinstance(grant, dict) and str(grant.get("decision") or "") == "pause"

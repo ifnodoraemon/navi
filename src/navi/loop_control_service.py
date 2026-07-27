@@ -214,8 +214,7 @@ class LoopControlService:
                 )
                 if conflict is not None:
                     raise ScheduleConflict(
-                        "active scheduled goal already exists for this actor and "
-                        "cron_schedule.",
+                        "active scheduled goal already exists for this actor and cron_schedule.",
                         operation="goal.open",
                         cron_schedule=cron_schedule,
                         conflict_goal=conflict,
@@ -457,7 +456,12 @@ class LoopControlService:
             state_transition="updated",
         )
 
-    def open_scheduled_occurrence(self, goal: Goal) -> LoopControlServiceResult:
+    def open_scheduled_occurrence(
+        self,
+        goal: Goal,
+        *,
+        scheduled_for: float = 0.0,
+    ) -> LoopControlServiceResult:
         if not goal.cron_schedule:
             raise ValueError("scheduled occurrence requires a cron goal")
         template_runs = self.loop_runs.list_by_goal(goal.id, limit=1)
@@ -493,6 +497,7 @@ class LoopControlService:
             "type": "scheduled_occurrence",
             "schedule_goal_id": goal.id,
             "cron_schedule": goal.cron_schedule,
+            "scheduled_for": float(scheduled_for),
             "triggered_at": time.time(),
             "occurrence_number": occurrence_number,
             "prior_occurrences": prior_occurrences,
@@ -598,6 +603,26 @@ class LoopControlService:
             else {},
             **(evidence or {}),
         }
+        background_delivery_pending = (
+            graph_result.terminal_state == str(LoopTerminalState.CONVERGED)
+            and str(graph_result.run_state.evidence.get("execution_mode") or "") == "background"
+            and bool(_surface_message_from_result(graph_result))
+            and bool(base.goal.source and base.goal.peer_id)
+        )
+        run_updates = self._run_updates_for_loop(base.run.id, graph_result)
+        if background_delivery_pending:
+            # Semantic completion is not transport completion. Keep the public
+            # Run/Goal projection non-terminal until the connector writes an
+            # authoritative receipt or rejection.
+            run_updates = {
+                "phase": Phase.PAUSED,
+                "governance": Governance.NONE,
+                "acceptance": Acceptance.UNVERIFIED,
+                "resolution": Resolution.NONE,
+                "result_summary": "",
+                "error": "",
+            }
+            merged_evidence["delivery_status"] = "pending"
         saga = self.lifecycle_sagas.prepare(
             operation_key=(
                 f"loop-result:{graph_result.run_state.run_id}:"
@@ -605,14 +630,11 @@ class LoopControlService:
             ),
             run_id=base.run.id,
             goal_id=base.goal.id,
-            run_updates=self._run_updates_for_loop(base.run.id, graph_result),
+            run_updates=run_updates,
             goal_evidence=merged_evidence,
         )
         updated_run, goal = self.lifecycle_sagas.apply(saga)
-        if (
-            graph_result.terminal_state == str(LoopTerminalState.CONVERGED)
-            and str(graph_result.run_state.evidence.get("execution_mode") or "") == "background"
-        ):
+        if background_delivery_pending:
             self.goals.record_result_delivery_outbox(
                 run=updated_run,
                 goal=goal,
@@ -643,10 +665,15 @@ class LoopControlService:
             lease_owner=execution_owner,
             evidence={"reason": failure, "error": str(error)},
         )
+        # A terminal LoopRun no longer owns in-flight concurrency claims.  This
+        # is a lifecycle invariant for every execution failure, independent of
+        # provider, connector, or task semantics.  Startup recovery covers a
+        # crash between these two durable operations.
+        from .resource_gateway import SQLiteResourceLedger
+
+        SQLiteResourceLedger(self.home).release_active_grants_for_scopes([failed_loop.run_id])
         saga = self.lifecycle_sagas.prepare(
-            operation_key=(
-                f"loop-exception:{failed_loop.run_id}:{failed_loop.version}"
-            ),
+            operation_key=(f"loop-exception:{failed_loop.run_id}:{failed_loop.version}"),
             run_id=base.run.id,
             goal_id=base.goal.id,
             run_updates={
@@ -818,6 +845,9 @@ class LoopControlService:
                 raise KeyError(f"loop run not found: {loop_run_id}")
             goal = self.goals.get(loop_run.goal_id)
             run = self.runs.get(goal.run_id) if goal and goal.run_id else None
+            accepted = (
+                self.goals.accepted_result_for_run(goal.run_id) if goal and goal.run_id else {}
+            )
             return {
                 "entity_type": "goal",
                 "entity_id": goal.id if goal else loop_run.goal_id,
@@ -826,6 +856,11 @@ class LoopControlService:
                 "goal": asdict(goal) if goal else {},
                 "run": asdict(run) if run else {},
                 "loop_run": loop_run.to_dict(),
+                "delivery": {
+                    key: value
+                    for key, value in accepted.items()
+                    if key not in {"body", "body_provenance"}
+                },
             }
         if goal_id:
             goal = self.goals.get(goal_id)
@@ -833,6 +868,26 @@ class LoopControlService:
                 raise KeyError(f"goal not found: {goal_id}")
             run = self.runs.get(goal.run_id) if goal.run_id else None
             loop_runs = self.loop_runs.list_by_goal(goal_id, limit=limit)
+            accepted = self.goals.accepted_result_for_run(goal.run_id) if goal.run_id else {}
+            recent_occurrences = (
+                [
+                    {
+                        "goal": asdict(child),
+                        "delivery": {
+                            key: value
+                            for key, value in self.goals.accepted_result_for_run(
+                                child.run_id
+                            ).items()
+                            if key not in {"body", "body_provenance"}
+                        },
+                    }
+                    for child in self.goals.list_children(
+                        goal.id, limit=min(limit, 20), newest=True
+                    )
+                ]
+                if goal.cron_schedule
+                else []
+            )
             return {
                 "entity_type": "goal",
                 "entity_id": goal.id,
@@ -841,6 +896,12 @@ class LoopControlService:
                 "goal": asdict(goal),
                 "run": asdict(run) if run else {},
                 "loop_runs": [item.to_dict() for item in loop_runs],
+                "delivery": {
+                    key: value
+                    for key, value in accepted.items()
+                    if key not in {"body", "body_provenance"}
+                },
+                "recent_occurrences": recent_occurrences,
             }
         active = self.loop_runs.list_active(limit=limit)
         active_goals = [self.goals.get(item.goal_id) for item in active]
@@ -1121,29 +1182,40 @@ def _task_context_for_request(
     goal: Goal,
     request: OpenGoalRequest,
 ) -> dict[str, Any]:
+    execution_mode = _execution_mode(request, loop_kind=_loop_kind(request.loop_kind))
+    delivery = {
+        "stage": (
+            "post_semantic_acceptance_outbox"
+            if execution_mode == "background" and goal.source and goal.peer_id
+            else "not_applicable"
+        ),
+        "transport_receipt_available": False,
+    }
     if request.task_context:
-        return _normalize_task_context(
+        context = _normalize_task_context(
             request.task_context,
             current_goal_id=goal.id,
             parent_goal_id=goal.parent_goal_id,
         )
-    return _normalize_task_context(
-        {
-            "lineage": {
-                "id": goal.parent_goal_id or goal.id,
-                "kind": "goal",
+    else:
+        context = _normalize_task_context(
+            {
+                "lineage": {
+                    "id": goal.parent_goal_id or goal.id,
+                    "kind": "goal",
+                },
+                "progress": {
+                    "scope": "goal",
+                    "sequence_number": 0,
+                    "authority": "current_goal",
+                    "authoritative_prior_items": [],
+                    "ambient_history_authoritative": False,
+                },
             },
-            "progress": {
-                "scope": "goal",
-                "sequence_number": 0,
-                "authority": "current_goal",
-                "authoritative_prior_items": [],
-                "ambient_history_authoritative": False,
-            },
-        },
-        current_goal_id=goal.id,
-        parent_goal_id=goal.parent_goal_id,
-    )
+            current_goal_id=goal.id,
+            parent_goal_id=goal.parent_goal_id,
+        )
+    return {**context, "delivery": delivery}
 
 
 def _normalize_task_context(

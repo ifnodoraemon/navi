@@ -53,7 +53,7 @@ async def test_telegram_poll_failure_is_not_retried(tmp_path: Path) -> None:
 
     status = json.loads((tmp_path / "telegram" / "status.json").read_text(encoding="utf-8"))
     assert client.calls == 1
-    assert status["status"] == "fatal"
+    assert status["status"] == "degraded"
     assert status["error"] == "telegram unavailable"
 
 
@@ -73,5 +73,5 @@ async def test_weixin_poll_failure_is_not_retried(tmp_path: Path) -> None:
 
     status = json.loads((tmp_path / "weixin" / "status.json").read_text(encoding="utf-8"))
     assert client.calls == 1
-    assert status["status"] == "fatal"
+    assert status["status"] == "degraded"
     assert status["error"] == "weixin unavailable"

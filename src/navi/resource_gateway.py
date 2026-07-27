@@ -4,6 +4,7 @@ import sqlite3
 import time
 import uuid
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -231,9 +232,7 @@ class SQLiteResourceLedger:
                 )
         except sqlite3.IntegrityError:
             usage = self.usage(scope_id)
-            return _grant_from_usage(
-                limits, ResourceDecision.ALLOW, "idempotent_replay", usage
-            )
+            return _grant_from_usage(limits, ResourceDecision.ALLOW, "idempotent_replay", usage)
 
     def release(
         self,
@@ -282,6 +281,46 @@ class SQLiteResourceLedger:
             )
             return self._usage_in_transaction(conn, scope_id)
 
+    def release_active_grants_for_scopes(self, scope_ids: Iterable[str]) -> list[str]:
+        """Release reservations left by loop executions that no longer hold a lease.
+
+        A reservation is only an in-flight concurrency claim.  Its token/cost
+        reservation remains accounted for, while releasing it restores the
+        concurrency slot so a crashed worker cannot permanently self-block a
+        durable loop on its next recovery attempt.
+        """
+        scopes = tuple(sorted({str(scope_id) for scope_id in scope_ids if scope_id}))
+        if not scopes:
+            return []
+        placeholders = ", ".join("?" for _ in scopes)
+        now = time.time()
+        released: list[str] = []
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                f"""
+                SELECT id, scope_id, units
+                FROM resource_grants
+                WHERE status = 'active' AND scope_id IN ({placeholders})
+                """,
+                scopes,
+            ).fetchall()
+            for grant_id, scope_id, units in rows:
+                conn.execute(
+                    """
+                    UPDATE resource_scopes
+                    SET active = MAX(0, active - ?), updated_at = ?
+                    WHERE scope_id = ?
+                    """,
+                    (int(units), now, scope_id),
+                )
+                conn.execute(
+                    "UPDATE resource_grants SET status = 'released', updated_at = ? WHERE id = ?",
+                    (now, grant_id),
+                )
+                released.append(str(grant_id))
+        return released
+
     @staticmethod
     def _usage_in_transaction(conn: sqlite3.Connection, scope_id: str) -> ResourceUsage:
         row = conn.execute(
@@ -307,7 +346,10 @@ class SQLiteResourceLedger:
             return ResourceDecision.PAUSE, "concurrency_limit", 0.0
         if limits.call_budget > 0 and usage.used_calls + request.units > limits.call_budget:
             return ResourceDecision.ESCALATE, "call_budget_exhausted", 0.0
-        if limits.token_budget > 0 and usage.used_tokens + request.estimated_tokens > limits.token_budget:
+        if (
+            limits.token_budget > 0
+            and usage.used_tokens + request.estimated_tokens > limits.token_budget
+        ):
             return ResourceDecision.ESCALATE, "token_budget_exhausted", 0.0
         if limits.cost_budget > 0 and request.estimated_cost <= 0:
             return ResourceDecision.BLOCK, "cost_estimate_required", 0.0
@@ -383,13 +425,25 @@ class GlobalResourceGateway:
             )
         if request.units < 1:
             return self._grant(ResourceDecision.BLOCK, "invalid_units")
-        if self.limits.max_concurrent > 0 and self._active + request.units > self.limits.max_concurrent:
+        if (
+            self.limits.max_concurrent > 0
+            and self._active + request.units > self.limits.max_concurrent
+        ):
             return self._grant(ResourceDecision.PAUSE, "concurrency_limit")
-        if self.limits.call_budget > 0 and self._used_calls + request.units > self.limits.call_budget:
+        if (
+            self.limits.call_budget > 0
+            and self._used_calls + request.units > self.limits.call_budget
+        ):
             return self._grant(ResourceDecision.ESCALATE, "call_budget_exhausted")
-        if self.limits.token_budget > 0 and self._used_tokens + request.estimated_tokens > self.limits.token_budget:
+        if (
+            self.limits.token_budget > 0
+            and self._used_tokens + request.estimated_tokens > self.limits.token_budget
+        ):
             return self._grant(ResourceDecision.ESCALATE, "token_budget_exhausted")
-        if self.limits.cost_budget > 0 and self._used_cost + request.estimated_cost > self.limits.cost_budget:
+        if (
+            self.limits.cost_budget > 0
+            and self._used_cost + request.estimated_cost > self.limits.cost_budget
+        ):
             return self._grant(ResourceDecision.ESCALATE, "cost_budget_exhausted")
 
         retry_after = self._qps_retry_after(current)

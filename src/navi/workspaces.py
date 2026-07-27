@@ -320,6 +320,63 @@ class ShadowWorkspaceManager:
             removed += 1
         return {"removed": removed, "already_missing": missing}
 
+    def reconcile_terminal_shadows(self) -> dict[str, Any]:
+        """Reconcile active shadow rows against authoritative LoopRun state.
+
+        Failed/cancelled work is discarded. A converged shadow is finalized
+        only when its shadow is byte-for-byte identical to its baseline; any
+        changed or incomplete artifact remains explicit for human/model review
+        and is never silently merged into the real workspace.
+        """
+        from .loop_runs import LoopRunStore
+
+        loop_runs = LoopRunStore(self.home)
+        discarded: list[str] = []
+        noop_merged: list[str] = []
+        unresolved: list[dict[str, str]] = []
+        preserved: list[str] = []
+        discard_states = {"failed", "cancelled", "blocked", "timed_out", "superseded"}
+        resumable_states = {"", "paused", "waiting_approval", "conflicted"}
+        for record in self.list_shadows(status="active", limit=100_000):
+            loop_run = loop_runs.get_run(record.run_id)
+            if loop_run is None:
+                unresolved.append({"run_id": record.run_id, "reason": "loop_run_missing"})
+                continue
+            terminal = str(loop_run.terminal_state)
+            if terminal in resumable_states:
+                preserved.append(record.run_id)
+                continue
+            if terminal in discard_states:
+                self.discard_run(record.run_id)
+                discarded.append(record.run_id)
+                continue
+            if terminal == "converged":
+                baseline = Path(record.baseline_workspace)
+                shadow = Path(record.shadow_workspace)
+                if not baseline.is_dir() or not shadow.is_dir():
+                    unresolved.append(
+                        {"run_id": record.run_id, "reason": "shadow_artifacts_missing"}
+                    )
+                    continue
+                if fingerprint_workspace(baseline).digest != fingerprint_workspace(shadow).digest:
+                    unresolved.append(
+                        {"run_id": record.run_id, "reason": "converged_shadow_has_changes"}
+                    )
+                    continue
+                self._set_status(record.run_id, "merged")
+                self._remove_shadow_artifacts(record)
+                noop_merged.append(record.run_id)
+                continue
+            unresolved.append(
+                {"run_id": record.run_id, "reason": f"unknown_terminal_state:{terminal}"}
+            )
+        return {
+            "discarded": discarded,
+            "noop_merged": noop_merged,
+            "preserved": preserved,
+            "unresolved": unresolved,
+        }
+
     @staticmethod
     def _remove_shadow_artifacts(record: ShadowWorkspaceRecord) -> None:
         root = Path(record.shadow_workspace).parent

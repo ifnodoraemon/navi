@@ -125,7 +125,7 @@ class GoalOpenCapability(BaseCapability):
             raise SchemaMismatch(str(exc)) from exc
         facts = result.to_facts()
         # Promote connector delivery contracts to the response boundary so the
-        # active adapter can execute them synchronously.
+        # active adapter can persist and deliver them through its durable transport.
         promoted = _promote_outbound_facts(result)
         if promoted:
             facts = {**facts, **promoted}
@@ -416,11 +416,34 @@ class GoalStateCapability(BaseCapability):
     ) -> CapabilityResult:
         goal_id = _arg_text(args, "goal_id")
         loop_run_id = _arg_text(args, "loop_run_id")
+        parent_goal_id = _arg_text(args, "parent_goal_id")
+        created_after = _nonnegative_float(
+            args.get("created_after"), maximum=1_000_000_000_000.0
+        )
+        created_before = _nonnegative_float(
+            args.get("created_before"), maximum=1_000_000_000_000.0
+        )
         view = (_arg_text(args, "view") or "current").lower()
-        if view not in {"inbox", "current", "scheduled", "pending_approval", "history"}:
+        if view not in {
+            "inbox",
+            "current",
+            "scheduled",
+            "occurrences",
+            "pending_approval",
+            "history",
+        }:
             raise SchemaMismatch(
-                "goal.state view must be inbox, current, scheduled, pending_approval, or history."
+                "goal.state view must be inbox, current, scheduled, occurrences, "
+                "pending_approval, or history."
             )
+        if parent_goal_id and view != "occurrences":
+            raise SchemaMismatch("goal.state parent_goal_id requires view=occurrences.")
+        if (created_after or created_before) and view != "occurrences":
+            raise SchemaMismatch(
+                "goal.state created_after/created_before require view=occurrences."
+            )
+        if created_after and created_before and created_after > created_before:
+            raise SchemaMismatch("goal.state occurrence time window is inverted.")
         limit = _positive_int(args.get("limit"), default=20, maximum=200)
         service = LoopControlService(self.home)
         try:
@@ -437,11 +460,21 @@ class GoalStateCapability(BaseCapability):
                     limit=limit,
                 )
             else:
+                if parent_goal_id:
+                    _require_goal_scope(
+                        service,
+                        goal_id=parent_goal_id,
+                        loop_run_id="",
+                        context=context,
+                    )
                 facts = _scoped_goal_state(
                     service,
                     context=context,
                     limit=limit,
                     view=view,
+                    parent_goal_id=parent_goal_id,
+                    created_after=created_after,
+                    created_before=created_before,
                 )
         except KeyError as exc:
             raise NotFound(str(exc)) from exc
@@ -658,12 +691,37 @@ def _scoped_goal_state(
     context: CapabilityContext,
     limit: int,
     view: str,
+    parent_goal_id: str = "",
+    created_after: float = 0.0,
+    created_before: float = 0.0,
 ) -> dict[str, Any]:
-    scoped_goals = _goals_for_view(service, context=context, view=view, limit=limit)
+    scoped_goals = _goals_for_view(
+        service,
+        context=context,
+        view=view,
+        limit=limit,
+        parent_goal_id=parent_goal_id,
+        created_after=created_after,
+        created_before=created_before,
+    )
     goal_rows = []
     for goal in scoped_goals:
         d = asdict(goal)
         d.pop("evidence_json", None)
+        if goal.cron_schedule:
+            d["recent_occurrences"] = [
+                _goal_occurrence_summary(service, child)
+                for child in service.goals.list_children(goal.id, limit=3, newest=True)
+            ]
+            d["recent_failed_occurrences"] = [
+                _goal_occurrence_summary(service, child)
+                for child in service.goals.list_children(
+                    goal.id,
+                    limit=3,
+                    newest=True,
+                    resolutions=(Resolution.FAILED,),
+                )
+            ]
         goal_rows.append(d)
     pending_approval_goals = [
         goal
@@ -677,6 +735,15 @@ def _scoped_goal_state(
         for goal in goal_rows
         if goal.get("phase") != Phase.ENDED and not str(goal.get("cron_schedule") or "")
     ]
+    occurrence_goals = (
+        [_goal_occurrence_summary(service, goal) for goal in scoped_goals]
+        if view == "occurrences"
+        else [
+            occurrence
+            for goal in goal_rows
+            for occurrence in goal.get("recent_occurrences", [])
+        ]
+    )
     active_loop_runs = []
     for loop_run in service.loop_runs.list_current_for_goals(
         [goal.id for goal in scoped_goals],
@@ -689,7 +756,11 @@ def _scoped_goal_state(
         "entity_type": "goal",
         "entity_id": "",
         "state_transition": "state_read",
-        "turn_scope": "actor" if view in {"scheduled", "history", "inbox"} else "current",
+        "turn_scope": (
+            "actor"
+            if view in {"scheduled", "occurrences", "history", "inbox"}
+            else "current"
+        ),
         "query_scope": _goal_view_query_scope(view),
         "view": view,
         "authoritative_for": _goal_view_authority(view),
@@ -698,6 +769,7 @@ def _scoped_goal_state(
         "goals": goal_rows,
         "current_goals": current_goals,
         "scheduled_goals": scheduled_goals,
+        "occurrence_goals": occurrence_goals,
         "pending_approval_goals": pending_approval_goals,
         "history_goals": goal_rows if view == "history" else [],
         "active_loop_runs": active_loop_runs,
@@ -711,6 +783,9 @@ def _goals_for_view(
     context: CapabilityContext,
     view: str,
     limit: int,
+    parent_goal_id: str = "",
+    created_after: float = 0.0,
+    created_before: float = 0.0,
 ) -> list[Any]:
     if view == "scheduled":
         return service.goals.list_scoped(
@@ -722,6 +797,34 @@ def _goals_for_view(
             cron=True,
             limit=limit,
         )
+    if view == "occurrences":
+        if parent_goal_id:
+            return [
+                goal
+                for goal in service.goals.list_children(
+                    parent_goal_id,
+                    limit=limit,
+                    newest=True,
+                    created_after=created_after,
+                    created_before=created_before,
+                )
+                if _goal_matches_context(goal, context)
+            ]
+        goals = service.goals.list_scoped(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            workspace=context.workspace,
+            child=True,
+            limit=200,
+        )
+        filtered = [
+            goal
+            for goal in goals
+            if (not created_after or goal.created_at >= created_after)
+            and (not created_before or goal.created_at <= created_before)
+        ]
+        return filtered[:limit]
     if view == "inbox":
         return service.goals.list_scoped(
             source=context.source,
@@ -770,9 +873,45 @@ def _goal_view_authority(view: str) -> str:
         "current": "current_actor_foreground_goals",
         "inbox": "current_actor_task_inbox",
         "scheduled": "actor_scheduled_goals",
+        "occurrences": "actor_scheduled_occurrences",
         "pending_approval": "current_actor_pending_approval_goals",
         "history": "actor_goal_history",
     }[view]
+
+
+def _goal_matches_context(goal: Any, context: CapabilityContext) -> bool:
+    return all(
+        not expected or str(actual) == str(expected)
+        for actual, expected in (
+            (goal.source, context.source),
+            (goal.peer_id, context.peer_id),
+            (goal.sender_id, context.sender_id),
+            (goal.workspace, context.workspace),
+        )
+    )
+
+
+def _goal_occurrence_summary(service: LoopControlService, goal: Any) -> dict[str, Any]:
+    accepted = service.goals.accepted_result_for_run(goal.run_id) if goal.run_id else {}
+    delivery = {
+        key: value
+        for key, value in accepted.items()
+        if key not in {"body", "body_provenance"}
+    }
+    return {
+        "goal_id": goal.id,
+        "parent_goal_id": goal.parent_goal_id,
+        "run_id": goal.run_id,
+        "trace_id": goal.trace_id,
+        "phase": goal.phase,
+        "acceptance": goal.acceptance,
+        "resolution": goal.resolution,
+        "task_status": goal.task_status,
+        "blocked_reason": goal.blocked_reason,
+        "created_at": goal.created_at,
+        "updated_at": goal.updated_at,
+        "delivery": delivery,
+    }
 
 
 def _goal_view_query_scope(view: str) -> str:
@@ -994,9 +1133,9 @@ def _promote_outbound_facts(result: Any) -> dict[str, Any]:
     """Lift a connector delivery contract to the connector response boundary.
 
     The planner ReAct loop executes capabilities and stores their results in
-    ``state_graph_result.evidence["capability_result"]``. When the last
-    The active connector consumes the structured contract synchronously.  The
-    contract is connector-neutral so Weixin, email, Feishu, or another adapter
+    ``state_graph_result.evidence["capability_result"]``. The active connector
+    persists the structured contract through the shared durable outbox. The
+    contract is connector-neutral, so Weixin, email, Feishu, or another adapter
     can implement the same boundary without a channel-specific staging area.
 
     Only an explicitly paused ask or a checker-accepted response is stored in

@@ -81,6 +81,45 @@ class ChatProvider(Protocol):
 ProviderFactory = Callable[[ModelConfig, ProviderSpec], ChatProvider]
 
 
+class ProviderHTTPError(RuntimeError):
+    """A bounded, credential-free projection of an upstream HTTP failure."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        error_type: str = "",
+        error_code: str = "",
+        error_param: str = "",
+        provider_message: str = "",
+        request_chars: int = 0,
+        max_output_tokens: int = 0,
+        retry_after_seconds: float = 0.0,
+    ) -> None:
+        self.status_code = int(status_code)
+        self.error_type = error_type
+        self.error_code = error_code
+        self.error_param = error_param
+        self.provider_message = provider_message
+        self.request_chars = max(0, int(request_chars))
+        self.max_output_tokens = max(0, int(max_output_tokens))
+        self.retry_after_seconds = max(0.0, float(retry_after_seconds))
+        fields = [f"provider HTTP {self.status_code}"]
+        if error_type:
+            fields.append(f"type={error_type}")
+        if error_code:
+            fields.append(f"code={error_code}")
+        if error_param:
+            fields.append(f"param={error_param}")
+        if provider_message:
+            fields.append(f"message={provider_message}")
+        if self.request_chars:
+            fields.append(f"request_chars={self.request_chars}")
+        if self.max_output_tokens:
+            fields.append(f"max_output_tokens={self.max_output_tokens}")
+        super().__init__(" ".join(fields))
+
+
 @dataclass(frozen=True)
 class ProviderAdapter:
     kind: str
@@ -132,7 +171,11 @@ class OpenAICompatibleProvider:
                 json=payload,
                 headers=headers,
             )
-            response.raise_for_status()
+            _raise_provider_http_error(
+                response,
+                request_chars=sum(len(msg.content) for msg in outbound_messages),
+                max_output_tokens=int(payload["max_tokens"]),
+            )
             data = response.json()
         self.last_usage = _openai_usage_facts(self.config, data)
         return _extract_openai_content(data)
@@ -165,6 +208,11 @@ class OpenAICompatibleProvider:
                 json=payload,
                 headers=headers,
             ) as event_source:
+                _raise_provider_http_error(
+                    event_source.response,
+                    request_chars=sum(len(msg.content) for msg in messages),
+                    max_output_tokens=int(payload["max_tokens"]),
+                )
                 async for sse in event_source.aiter_sse():
                     if sse.data == "[DONE]":
                         return
@@ -224,7 +272,11 @@ class AnthropicCompatibleProvider:
                 json=payload,
                 headers=headers,
             )
-            response.raise_for_status()
+            _raise_provider_http_error(
+                response,
+                request_chars=sum(len(msg.content) for msg in messages),
+                max_output_tokens=int(payload["max_tokens"]),
+            )
             data = response.json()
         self.last_usage = _anthropic_usage_facts(self.config, data)
         return _extract_anthropic_content(
@@ -258,7 +310,11 @@ class AnthropicCompatibleProvider:
                 json=payload,
                 headers=headers,
             ) as response:
-                response.raise_for_status()
+                _raise_provider_http_error(
+                    response,
+                    request_chars=sum(len(msg.content) for msg in messages),
+                    max_output_tokens=int(payload["max_tokens"]),
+                )
                 event_type = ""
                 async for line in response.aiter_lines():
                     line = line.strip()
@@ -282,6 +338,59 @@ class AnthropicCompatibleProvider:
                         token = delta.get("text")
                         if token:
                             yield token
+
+
+def _raise_provider_http_error(
+    response: httpx.Response,
+    *,
+    request_chars: int = 0,
+    max_output_tokens: int = 0,
+) -> None:
+    if not response.is_error:
+        return
+    error_type = ""
+    error_code = ""
+    error_param = ""
+    provider_message = ""
+    try:
+        payload = response.json()
+    except (ValueError, json.JSONDecodeError):
+        payload = {}
+    if isinstance(payload, dict):
+        raw_error = payload.get("error", payload)
+        if isinstance(raw_error, dict):
+            error_type = _bounded_error_text(raw_error.get("type"), limit=100)
+            error_code = _bounded_error_text(raw_error.get("code"), limit=100)
+            error_param = _bounded_error_text(raw_error.get("param"), limit=100)
+            provider_message = _bounded_error_text(
+                raw_error.get("message") or raw_error.get("detail") or raw_error.get("errmsg"),
+                limit=500,
+            )
+        elif isinstance(raw_error, str):
+            provider_message = _bounded_error_text(raw_error, limit=500)
+    raise ProviderHTTPError(
+        status_code=response.status_code,
+        error_type=error_type,
+        error_code=error_code,
+        error_param=error_param,
+        provider_message=provider_message,
+        request_chars=request_chars,
+        max_output_tokens=max_output_tokens,
+        retry_after_seconds=_retry_after_seconds(response),
+    )
+
+
+def _bounded_error_text(value: Any, *, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:limit]
+
+
+def _retry_after_seconds(response: httpx.Response) -> float:
+    raw_value = str(response.headers.get("retry-after") or "").strip()
+    try:
+        return max(0.0, float(raw_value))
+    except ValueError:
+        return 0.0
 
 
 class ModelPool:
@@ -350,6 +459,9 @@ class ModelPool:
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+        except (ProviderHTTPError, httpx.HTTPError):
+            gateway.release(grant_id=grant.grant_id)
+            raise
         except Exception:
             gateway.release(grant_id=grant.grant_id)
             raise

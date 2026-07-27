@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
+import httpx
 import pytest
 
 from navi.daemon import SystemDaemon
@@ -13,8 +15,22 @@ from navi.graph import GraphStore
 from navi.goals import GoalStore
 from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.loop_runs import LoopRunStore
+from navi.resource_gateway import (
+    GlobalResourceGateway,
+    ResourceLimits,
+    ResourceRequest,
+    SQLiteResourceLedger,
+)
 from navi.memory.store import MemoryStore
 from navi.trace import TraceStore
+
+
+class _TransportFailingProvider:
+    last_usage = None
+
+    async def complete_for(self, role: str, messages, **kwargs) -> str:
+        del role, messages, kwargs
+        raise httpx.ReadError("upstream connection reset")
 
 
 def test_read_log_diff_redacts_secrets_in_diff_and_error_lines(tmp_path: Path) -> None:
@@ -193,7 +209,8 @@ async def test_daemon_materializes_due_cron_goal_as_child_run(tmp_path: Path, mo
             allowed_capabilities=("respond",),
         )
     )
-    GoalStore(tmp_path).update_cron_run(registered.goal.id, 1.0)
+    scheduled_for = time.time() - 1.0
+    GoalStore(tmp_path).update_cron_run(registered.goal.id, scheduled_for)
     daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
 
     async def no_memory_maintenance():
@@ -219,7 +236,129 @@ async def test_daemon_materializes_due_cron_goal_as_child_run(tmp_path: Path, mo
     assert child_loop.evidence["execution_mode"] == "background"
     refreshed = GoalStore(tmp_path).get(registered.goal.id)
     assert refreshed is not None
-    assert refreshed.next_run_at > 1.0
+    assert refreshed.next_run_at > scheduled_for
+
+
+def test_daemon_releases_orphaned_loop_resource_reservations(tmp_path: Path) -> None:
+    service = LoopControlService(tmp_path)
+    opened = service.open_goal(
+        OpenGoalRequest(
+            objective="recover durable resource reservation",
+            workspace=str(tmp_path),
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            auto_start=False,
+            execution_mode="background",
+        )
+    )
+    ledger = SQLiteResourceLedger(tmp_path)
+    gateway = GlobalResourceGateway(
+        ResourceLimits(max_concurrent=1),
+        ledger=ledger,
+        scope_id=opened.loop_run.run_id,
+    )
+    grant = gateway.request(ResourceRequest(kind="llm:planner"))
+    assert grant.allowed
+    assert ledger.usage(opened.loop_run.run_id).active == 1
+
+    SystemDaemon(tmp_path, project_dir=tmp_path)
+
+    assert ledger.usage(opened.loop_run.run_id).active == 0
+
+
+@pytest.mark.asyncio
+async def test_daemon_reconciles_resource_reservations_after_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
+    opened = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="recover reservation created after daemon startup",
+            workspace=str(tmp_path),
+            auto_start=False,
+            execution_mode="background",
+        )
+    )
+    ledger = SQLiteResourceLedger(tmp_path)
+    grant = GlobalResourceGateway(
+        ResourceLimits(max_concurrent=1),
+        ledger=ledger,
+        scope_id=opened.loop_run.run_id,
+    ).request(ResourceRequest(kind="llm:planner"))
+    assert grant.allowed
+    monkeypatch.setattr(
+        LoopRunStore,
+        "claim_active_for_execution_mode",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        LoopRunStore,
+        "list_retryable_background_pauses",
+        lambda *args, **kwargs: [],
+    )
+
+    assert await daemon.process_queue_once() == []
+    assert ledger.usage(opened.loop_run.run_id).active == 0
+
+
+def test_daemon_releases_expired_foreground_execution_lease(tmp_path: Path) -> None:
+    service = LoopControlService(tmp_path)
+    opened = service.open_goal(
+        OpenGoalRequest(
+            objective="recover expired foreground lease",
+            workspace=str(tmp_path),
+            auto_start=False,
+            execution_mode="foreground",
+        )
+    )
+    claimed = LoopRunStore(tmp_path).claim_for_execution(
+        opened.loop_run.run_id,
+        owner="stalled-worker",
+        lease_seconds=1,
+        now=1.0,
+    )
+    assert claimed is not None
+
+    SystemDaemon(tmp_path, project_dir=tmp_path)
+
+    recovered = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
+    assert recovered is not None
+    assert recovered.lease_owner == ""
+    assert recovered.lease_expires_at == 0.0
+
+
+@pytest.mark.asyncio
+async def test_daemon_projects_transport_failure_and_releases_resource(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="fetch a current fact",
+            workspace=str(tmp_path),
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            execution_mode="background",
+        )
+    )
+    monkeypatch.setattr("navi.provider.build_provider", lambda _config: _TransportFailingProvider())
+
+    processed = await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
+    assert [run.id for run in processed] == [opened.run.id]
+
+    loop_run = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
+    assert loop_run is not None
+    assert str(loop_run.terminal_state) == "failed"
+    assert loop_run.evidence["tool"] == "system.planner_error"
+    assert loop_run.evidence["args"]["error_type"] == "ReadError"
+    goal = GoalStore(tmp_path).get(opened.goal.id)
+    assert goal is not None
+    assert goal.phase == "ended"
+    assert goal.resolution == "failed"
+    assert SQLiteResourceLedger(tmp_path).usage(opened.loop_run.run_id).active == 0
 
 
 @pytest.mark.asyncio
@@ -243,7 +382,8 @@ async def test_daemon_advances_and_traces_failed_cron_occurrence(
             allowed_capabilities=("respond",),
         )
     )
-    GoalStore(home).update_cron_run(registered.goal.id, 1.0)
+    scheduled_for = time.time() - 1.0
+    GoalStore(home).update_cron_run(registered.goal.id, scheduled_for)
     vanished.rmdir()
     daemon = SystemDaemon(home, project_dir=tmp_path)
 
@@ -263,7 +403,7 @@ async def test_daemon_advances_and_traces_failed_cron_occurrence(
     assert created[0]["facts"]["kind"] == "scheduled_occurrence_failed"
     refreshed = GoalStore(home).get(registered.goal.id)
     assert refreshed is not None
-    assert refreshed.next_run_at > 1.0
+    assert refreshed.next_run_at > scheduled_for
     failure_events = [
         event
         for event in GoalStore(home).list_events(registered.goal.id)
@@ -325,9 +465,9 @@ async def test_daemon_blocks_invalid_persisted_cron_without_guessed_retry(
     assert refreshed.task_status == "blocked"
     assert refreshed.blocked_reason == "invalid_cron_schedule"
     assert refreshed.next_run_at == 0.0
-    assert [
-        event.event_type for event in store.list_events(registered.goal.id)
-    ].count("goal.schedule_invalid") == 1
+    assert [event.event_type for event in store.list_events(registered.goal.id)].count(
+        "goal.schedule_invalid"
+    ) == 1
     assert await daemon.process_background_once() == []
 
 

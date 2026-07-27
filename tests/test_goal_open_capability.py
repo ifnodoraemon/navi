@@ -289,14 +289,14 @@ async def test_goal_cancel_scope_accepts_shadow_for_same_durable_workspace(
         "reason": "user requested rebuild",
     }
     cancel_context = CapabilityContext(
-            home=home,
-            goal_id=opened.facts["goal_id"],
-            source="weixin",
-            peer_id="peer-1",
-            sender_id="user-1",
-            permission_ceiling="write",
-            workspace=shadow.shadow_workspace,
-        )
+        home=home,
+        goal_id=opened.facts["goal_id"],
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="user-1",
+        permission_ceiling="write",
+        workspace=shadow.shadow_workspace,
+    )
     cancelled = await _approve_capability_call(
         registry,
         home,
@@ -896,6 +896,85 @@ async def test_goal_state_scheduled_view_is_actor_scoped_and_authoritative(
     assert state.facts["matched_count"] == 1
     assert [goal["id"] for goal in state.facts["scheduled_goals"]] == [visible.facts["goal_id"]]
     assert "active_goals" not in state.facts
+
+
+@pytest.mark.asyncio
+async def test_goal_state_scheduled_view_includes_recent_occurrence_delivery_failure(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    visible = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "hourly usage report",
+            "workspace": str(tmp_path),
+            "loop_kind": "scheduled",
+            "cron_schedule": "0 * * * *",
+            "allowed_capabilities": ["respond"],
+        },
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+    service = LoopControlService(tmp_path)
+    occurrence = service.open_scheduled_occurrence(service.goals.get(visible.facts["goal_id"]))
+    outbox = service.goals.record_result_delivery_outbox(
+        run=occurrence.run,
+        goal=occurrence.goal,
+        body="usage: 95%",
+        body_provenance="state_graph.evidence.responded_message",
+        channel="cli",
+    )
+    assert outbox is not None
+    error = "connector_rate_limited: WeixinTransportError: prepare failed"
+    service.goals.mark_delivery_outbox_failed(outbox.id, error=error)
+    service.goals.record_delivery_failure(
+        run_id=occurrence.run.id,
+        channel="cli",
+        error=error,
+        error_reason="connector_rate_limited",
+        delivery_id=outbox.id,
+    )
+
+    state = await registry.invoke(
+        "goal.state",
+        {"view": "scheduled"},
+        permission="read",
+        context=_context(tmp_path),
+    )
+    occurrences = state.facts["scheduled_goals"][0]["recent_occurrences"]
+    recent_failures = state.facts["scheduled_goals"][0]["recent_failed_occurrences"]
+
+    assert occurrences[0]["goal_id"] == occurrence.goal.id
+    assert occurrences[0]["resolution"] == Resolution.FAILED
+    assert occurrences[0]["delivery"]["delivery_status"] == "failed"
+    assert occurrences[0]["delivery"]["delivery_error_reason"] == "connector_rate_limited"
+    assert "body" not in occurrences[0]["delivery"]
+    assert recent_failures[0]["goal_id"] == occurrence.goal.id
+    assert any(
+        event.event_type == "goal.occurrence_delivery_failed"
+        for event in service.goals.list_events(visible.facts["goal_id"])
+    )
+
+    exact = await registry.invoke(
+        "goal.state",
+        {"view": "occurrences", "parent_goal_id": visible.facts["goal_id"]},
+        permission="read",
+        context=_context(tmp_path),
+    )
+    assert exact.facts["occurrence_goals"][0]["run_id"] == occurrence.run.id
+
+    windowed = await registry.invoke(
+        "goal.state",
+        {
+            "view": "occurrences",
+            "parent_goal_id": visible.facts["goal_id"],
+            "created_after": occurrence.goal.created_at - 1,
+            "created_before": occurrence.goal.created_at + 1,
+        },
+        permission="read",
+        context=_context(tmp_path),
+    )
+    assert [item["goal_id"] for item in windowed.facts["occurrence_goals"]] == [occurrence.goal.id]
 
 
 @pytest.mark.asyncio

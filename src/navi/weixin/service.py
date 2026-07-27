@@ -15,10 +15,17 @@ from navi.connector_runtime import (
     ConnectorMessage,
 )
 from navi.connector_delivery import connector_delivery_from_facts
+from navi.delivery_outbox import (
+    DeliveryCoordinator,
+    DeliveryOutboxStore,
+    DeliveryOutcome,
+    envelope_from_response,
+)
 from navi.event_bus import ResponseReadyEvent
 from navi.finalization import synthesize_background_notification
-from navi.goals import GoalDeliveryOutboxItem, GoalStore
+from navi.goals import GoalStore
 from navi.loop_runs import LoopRunStore
+from navi.lifecycle import Phase
 from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.trace import TracePhase, TraceStore
@@ -26,9 +33,10 @@ from navi.daemon import SystemDaemon
 
 from .client import TYPING_START, TYPING_STOP, WeixinClient
 from .config import WeixinConfig
+from .delivery import WeixinDeliveryTransport
 from .models import WeixinAccount, WeixinUpdate
 
-from .store import ContextTokenStore, WeixinStore
+from .store import WeixinStore
 
 
 class DeliveryReceipt(TypedDict):
@@ -70,9 +78,10 @@ class WeixinService:
         self.local_source = local_source
         self.session_alias_prefix = session_alias_prefix
         self.store = WeixinStore(home)
-        self.context_tokens = ContextTokenStore(home)
         self.dedup = ConnectorIngressDeduplicator(home)
         self.client = client if client is not None else self._build_client()
+        self.delivery_outbox = DeliveryOutboxStore(home)
+        self.delivery_coordinator = DeliveryCoordinator(self.delivery_outbox)
         self.typing_tickets: dict[str, str] = {}
         self.daemon = SystemDaemon(home, project_dir=self.project_dir)
         self.active = self.daemon
@@ -196,11 +205,17 @@ class WeixinService:
 
                 self.update_status("healthy")
 
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 error_msg = str(e)
                 self.record_event("poll.error", error=error_msg)
-                self.update_status("fatal", error_msg)
-                raise
+                self.update_status("degraded", error_msg)
+                if once:
+                    raise
+                sleep_time = min(30.0, max(1.0, sleep_time * 2.0))
+                await asyncio.sleep(sleep_time)
+                continue
 
             if once:
                 return
@@ -246,8 +261,7 @@ class WeixinService:
             text_preview=update.text[:120],
             attachment_count=len(update.attachments),
         )
-        self.context_tokens.put(account.account_id, update.peer_id, update.context_token)
-        context_token = self.context_tokens.get(account.account_id, update.peer_id)
+        context_token = update.context_token
         response = await self._handle_with_typing(update, message, context_token=context_token)
         if not response:
             raise RuntimeError("channel response is empty")
@@ -285,99 +299,25 @@ class WeixinService:
                     error=f"{type(trace_exc).__name__}: {trace_exc}",
                 )
             raise RuntimeError("channel response text is empty")
-        try:
-            delivery = await self._send_reply(
-                account=account,
-                peer_id=update.peer_id,
-                text=response.text,
-                action=response.action,
-                facts=response.facts,
-                context_token=context_token,
-            )
-        except Exception as exc:
-            self.record_event(
-                "reply.error", peer_id=update.peer_id, error=f"{type(exc).__name__}: {exc}"
-            )
-            failed_delivery = connector_delivery_from_facts(response.facts)
-            if failed_delivery is not None and failed_delivery.run_id:
-                try:
-                    GoalStore(self.home).record_delivery_failure(
-                        run_id=failed_delivery.run_id,
-                        channel=self.local_source,
-                        error=f"{type(exc).__name__}: {exc}",
-                        trace_id=update.message_id,
-                        delivery_id=failed_delivery.delivery_id,
-                    )
-                except Exception as ledger_exc:
-                    self.record_event(
-                        "delivery_state.error",
-                        run_id=failed_delivery.run_id,
-                        operation="record_delivery_failure",
-                        error=f"{type(ledger_exc).__name__}: {ledger_exc}",
-                    )
-            try:
-                TraceStore(self.home).add_event(
-                    trace_id=update.message_id,
-                    phase=TracePhase.CHANNEL_EGRESS,
-                    run_id=failed_delivery.run_id if failed_delivery is not None else "",
-                    source=self.local_source,
-                    peer_id=update.peer_id,
-                    sender_id=update.sender_id,
-                    output_data={
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "media_count": 0,
-                        "delivery_id": (
-                            failed_delivery.delivery_id if failed_delivery is not None else ""
-                        ),
-                    },
-                    message="Channel delivery failed",
-                    ok=False,
-                )
-                TraceStore(self.home).evaluate_trace(update.message_id)
-            except Exception as trace_exc:
-                self.record_event(
-                    "trace.error",
-                    trace_id=update.message_id,
-                    operation="record_delivery_failure",
-                    error=f"{type(trace_exc).__name__}: {trace_exc}",
-                )
-            raise
-        self.record_event(
-            "reply.sent",
-            peer_id=update.peer_id,
-            text_preview=delivery["text_preview"],
-            media_count=delivery["media_count"],
-        )
-        connector_delivery = connector_delivery_from_facts(response.facts)
-        delivery_run_id = connector_delivery.run_id if connector_delivery is not None else ""
-        if connector_delivery is not None and delivery_run_id:
-            GoalStore(self.home).record_delivery(
-                run_id=delivery_run_id,
+        items = self.delivery_outbox.enqueue(
+            envelope_from_response(
                 channel=self.local_source,
-                text_preview=str(delivery["text_preview"]),
-                text_length=len(response.text.strip()),
-                media_count=delivery["media_count"],
+                peer_id=update.peer_id,
+                sender_id=update.sender_id,
                 trace_id=update.message_id,
-                delivery_id=connector_delivery.delivery_id,
+                text=response.text,
+                connector_delivery=response_delivery,
+                body_provenance="response_ready",
+                transport_context={"context_token": context_token},
             )
-        TraceStore(self.home).add_event(
-            trace_id=update.message_id,
-            phase=TracePhase.CHANNEL_EGRESS,
-            run_id=delivery_run_id,
-            source=self.local_source,
-            peer_id=update.peer_id,
-            sender_id=update.sender_id,
-            output_data={
-                "response": delivery["text_preview"],
-                "action": response.action,
-                "media_count": delivery["media_count"],
-                "delivery_id": (
-                    connector_delivery.delivery_id if connector_delivery is not None else ""
-                ),
-            },
-            message="Delivered response to channel",
         )
-        TraceStore(self.home).evaluate_trace(update.message_id)
+        self.record_event(
+            "reply.queued",
+            peer_id=update.peer_id,
+            outbox_ids=[item.id for item in items],
+            media_count=sum(1 for item in items if item.kind == "file"),
+        )
+        await self._drain_delivery_outbox(account)
         return True
 
     async def _handle_with_typing(
@@ -430,9 +370,7 @@ class WeixinService:
         cached = self.typing_tickets.get(sender_id)
         if cached:
             return cached
-        ticket = await self.client.get_typing_ticket(
-            user_id=sender_id, context_token=context_token
-        )
+        ticket = await self.client.get_typing_ticket(user_id=sender_id, context_token=context_token)
         if ticket:
             self.typing_tickets[sender_id] = ticket
             self.record_event("typing.ticket", sender_id=sender_id)
@@ -460,9 +398,7 @@ class WeixinService:
 
     async def _send_typing(self, peer_id: str, typing_ticket: str, status: int) -> None:
         await asyncio.wait_for(
-            self.client.send_typing(
-                peer_id=peer_id, typing_ticket=typing_ticket, status=status
-            ),
+            self.client.send_typing(peer_id=peer_id, typing_ticket=typing_ticket, status=status),
             timeout=1.5,
         )
         self.record_event("typing.sent", peer_id=peer_id, status=status)
@@ -495,6 +431,7 @@ class WeixinService:
         account: WeixinAccount,
         result: dict,
     ) -> None:
+        del account
         run_id = str(result.get("run_id") or "")
         trace_id = str(result.get("trace_id") or "") or run_id or uuid.uuid4().hex
         peer_id = str(result.get("peer_id") or "") or self.config.home_channel
@@ -520,31 +457,23 @@ class WeixinService:
                 run_id=run_id,
             )
             return
-        await self._send_reply(
-            account=account,
-            peer_id=peer_id,
-            text=text,
-            action="chat",
-            facts={},
-            context_token=self.context_tokens.get(account.account_id, peer_id),
+        items = self.delivery_outbox.enqueue(
+            envelope_from_response(
+                channel=self.local_source,
+                peer_id=peer_id,
+                sender_id="",
+                trace_id=trace_id,
+                text=text,
+                run_id=run_id,
+                body_provenance="background_notification",
+            )
         )
         self.record_event(
-            "background.sent",
+            "background.queued",
             peer_id=peer_id,
             background_event="background_event",
             text_preview=text[:120],
-        )
-        TraceStore(self.home).add_event(
-            trace_id=trace_id,
-            phase=TracePhase.CHANNEL_EGRESS,
-            run_id=run_id,
-            source=self.local_source,
-            peer_id=peer_id,
-            output_data={
-                "response": text,
-                "background_event": "background_event",
-            },
-            message="Sent background event notification to channel",
+            outbox_ids=[item.id for item in items],
         )
 
     async def _surface_background_task(
@@ -552,9 +481,19 @@ class WeixinService:
         account: WeixinAccount,
         task: Run,
     ) -> None:
+        del account
         if not task.peer_id:
             return
         task_facts = self._background_task_facts(task)
+        if _is_transient_background_resource_pause(task_facts):
+            self.record_event(
+                "background.skipped",
+                peer_id=task.peer_id,
+                background_event="background_task_result",
+                reason="transient_resource_pause",
+                run_id=task.id,
+            )
+            return
         has_notify_input = bool(
             str(task_facts.get("error") or "").strip()
             or task.resolution not in {"", "none", "success"}
@@ -594,104 +533,152 @@ class WeixinService:
             )
             return
         text = decision_text
-        delivery = await self._send_reply(
-            account=account,
-            peer_id=task.peer_id,
-            text=text,
-            action="chat",
-            facts={},
-            context_token=self.context_tokens.get(account.account_id, task.peer_id),
+        items = self.delivery_outbox.enqueue(
+            envelope_from_response(
+                channel=self.local_source,
+                peer_id=task.peer_id,
+                sender_id=task.sender_id,
+                trace_id=task.id,
+                text=text,
+                body_provenance="background_notification",
+            )
         )
         self.record_event(
-            "background.sent",
+            "background.queued",
             peer_id=task.peer_id,
             background_event="background_task_result",
-            text_preview=delivery["text_preview"],
-            media_count=delivery["media_count"],
-        )
-        TraceStore(self.home).add_event(
-            trace_id=task.id,
-            phase=TracePhase.CHANNEL_EGRESS,
-            run_id=task.id,
-            source=self.local_source,
-            peer_id=task.peer_id,
-            output_data={
-                "response": text,
-                "background_event": "background_task_result",
-                "media_count": delivery["media_count"],
-            },
-            message="Sent background task result to channel",
+            text_preview=text[:120],
+            outbox_ids=[item.id for item in items],
         )
 
     async def _drain_delivery_outbox(self, account: WeixinAccount) -> None:
-        store = GoalStore(self.home)
-        for item in store.claim_pending_delivery_outbox(channel=self.local_source, limit=10):
+        transport = WeixinDeliveryTransport(
+            client=self.client,
+            account=account,
+            channel=self.local_source,
+        )
+        outcomes = await self.delivery_coordinator.drain(transport, limit=10)
+        for outcome in outcomes:
+            self._record_delivery_outbox_outcome(outcome)
+        self._project_completed_delivery_batches()
+
+    def _record_delivery_outbox_outcome(self, outcome: DeliveryOutcome) -> None:
+        item = outcome.item
+        payload: dict[str, Any] = {
+            "outbox_id": item.id,
+            "batch_id": item.batch_id,
+            "kind": item.kind,
+            "attempts": item.attempts,
+        }
+        ok = outcome.state == "sent"
+        if outcome.receipt is not None:
+            payload["receipt"] = outcome.receipt.to_dict()
+        if outcome.failure is not None:
+            payload["error_reason"] = outcome.failure.reason
+            payload["error"] = outcome.failure.error
+            payload["retry_scheduled"] = outcome.state == "retry_scheduled"
+        self.record_event(
+            "reply.sent"
+            if ok
+            else "reply.deferred"
+            if outcome.state == "retry_scheduled"
+            else "reply.error",
+            peer_id=item.peer_id,
+            run_id=item.run_id,
+            **payload,
+        )
+        try:
+            trace = TraceStore(self.home)
+            trace.add_event(
+                trace_id=item.trace_id,
+                phase=TracePhase.CHANNEL_EGRESS,
+                run_id=item.run_id,
+                source=self.local_source,
+                peer_id=item.peer_id,
+                sender_id=item.sender_id,
+                ok=ok,
+                output_data=payload,
+                message=(
+                    "Connector delivery item accepted"
+                    if ok
+                    else "Connector delivery retry scheduled"
+                    if outcome.state == "retry_scheduled"
+                    else "Connector delivery item failed"
+                ),
+            )
+            if outcome.state != "retry_scheduled":
+                trace.evaluate_trace(item.trace_id)
+        except Exception as trace_exc:
+            self.record_event(
+                "trace.error",
+                trace_id=item.trace_id,
+                operation="record_delivery_outbox_outcome",
+                error=f"{type(trace_exc).__name__}: {trace_exc}",
+            )
+        if outcome.state == "failed" and item.goal_id and item.run_id:
             try:
-                await self._send_delivery_outbox_item(account, item)
-            except Exception as exc:
-                error = f"{type(exc).__name__}: {exc}"
-                store.mark_delivery_outbox_failed(item.id, error=error)
-                store.record_delivery_failure(
+                GoalStore(self.home).record_delivery_failure(
                     run_id=item.run_id,
                     channel=self.local_source,
-                    error=error,
+                    error=f"{outcome.failure.reason}: {outcome.failure.error}"
+                    if outcome.failure
+                    else item.error,
+                    error_reason=outcome.failure.reason
+                    if outcome.failure
+                    else "connector_delivery_failed",
                     trace_id=item.trace_id,
-                    delivery_id=item.id,
+                    delivery_id=item.batch_id,
                 )
+            except Exception as projection_exc:
                 self.record_event(
-                    "background.delivery_outbox.error",
-                    peer_id=item.peer_id,
+                    "delivery_state.error",
                     run_id=item.run_id,
-                    error=error,
+                    operation="project_failed_delivery",
+                    error=f"{type(projection_exc).__name__}: {projection_exc}",
                 )
 
-    async def _send_delivery_outbox_item(
-        self,
-        account: WeixinAccount,
-        item: GoalDeliveryOutboxItem,
-    ) -> None:
-        delivery = await self._send_reply(
-            account=account,
-            peer_id=item.peer_id,
-            text=item.body,
-            action="chat",
-            facts={},
-            context_token=self.context_tokens.get(account.account_id, item.peer_id),
-        )
-        store = GoalStore(self.home)
-        store.record_delivery(
-            run_id=item.run_id,
+    def _project_completed_delivery_batches(self) -> None:
+        goals = GoalStore(self.home)
+        for batch_id, items in self.delivery_outbox.complete_unprojected_batches(
             channel=self.local_source,
-            text_preview=str(delivery.get("text_preview") or ""),
-            text_length=len(item.body.strip()),
-            media_count=delivery["media_count"],
-            trace_id=item.trace_id,
-            delivery_id=item.id,
-        )
-        self.record_event(
-            "background.sent",
-            peer_id=item.peer_id,
-            background_event="accepted_result_delivery",
-            text_preview=delivery["text_preview"],
-            media_count=delivery["media_count"],
-            run_id=item.run_id,
-        )
-        TraceStore(self.home).add_event(
-            trace_id=item.trace_id,
-            phase=TracePhase.CHANNEL_EGRESS,
-            run_id=item.run_id,
-            source=self.local_source,
-            peer_id=item.peer_id,
-            output_data={
-                "response": item.body,
-                "background_event": "accepted_result_delivery",
-                "media_count": delivery["media_count"],
-                "outbox_id": item.id,
-                "body_provenance": item.body_provenance,
-            },
-            message="Sent accepted background result to channel",
-        )
-        store.mark_delivery_outbox_sent(item.id, delivery_id=item.id)
+            limit=100,
+        ):
+            anchor = items[0]
+            try:
+                if anchor.goal_id and anchor.run_id:
+                    goal = goals.get(anchor.goal_id)
+                    if goal is not None and goal.phase != Phase.ENDED:
+                        text = next((item.body for item in items if item.kind == "text"), "")
+                        media_count = sum(
+                            int(item.receipt.get("media_count") or 0) for item in items
+                        )
+                        goals.record_delivery(
+                            run_id=anchor.run_id,
+                            channel=self.local_source,
+                            text_preview=text[:200],
+                            text_length=len(text),
+                            media_count=media_count,
+                            trace_id=anchor.trace_id,
+                            delivery_id=batch_id,
+                            sent_at=max(item.sent_at for item in items),
+                        )
+                        self.record_event(
+                            "background.sent",
+                            peer_id=anchor.peer_id,
+                            background_event="accepted_result_delivery",
+                            text_preview=text[:120],
+                            media_count=media_count,
+                            run_id=anchor.run_id,
+                            batch_id=batch_id,
+                        )
+                self.delivery_outbox.mark_batch_projected(batch_id)
+            except Exception as projection_exc:
+                self.record_event(
+                    "delivery_state.error",
+                    run_id=anchor.run_id,
+                    operation="project_completed_delivery_batch",
+                    error=f"{type(projection_exc).__name__}: {projection_exc}",
+                )
 
     def _background_task_facts(self, task: Run) -> dict[str, object]:
         facts: dict[str, object] = {
@@ -776,41 +763,43 @@ class WeixinService:
         facts: dict | None = None,
         context_token: str,
     ) -> DeliveryReceipt:
+        """Compatibility-free diagnostic helper backed by the shared outbox.
+
+        Production paths enqueue first and drain from their normal loop.  This
+        helper keeps the opt-in connector smoke on that exact protocol while
+        requiring a receipt before it returns.
+        """
         facts = facts or {}
         delivery = connector_delivery_from_facts(facts)
         if action == "connector_outbound" and delivery is None:
             raise RuntimeError("connector_outbound response is missing a valid delivery contract")
-        sent_media = 0
         outbound_text = (delivery.text if delivery is not None else text).strip()
         if not outbound_text and delivery is None:
             raise RuntimeError("refusing to record an empty connector response as delivered")
-        if outbound_text:
-            await self.client.send_message(
-                account_id=account.account_id,
+        trace_id = str(getattr(delivery, "delivery_id", "") or "") or TraceStore.new_trace_id()
+        items = self.delivery_outbox.enqueue(
+            envelope_from_response(
+                channel=self.local_source,
                 peer_id=peer_id,
-                text=outbound_text,
-                context_token=context_token,
+                sender_id="",
+                trace_id=trace_id,
+                text=text,
+                connector_delivery=delivery,
+                body_provenance="connector_smoke",
+                transport_context={"context_token": context_token},
             )
-        if delivery is not None:
-            file_path = Path(delivery.path).expanduser().resolve()
-            if not file_path.is_file():
-                raise FileNotFoundError(f"connector delivery file not found: {file_path}")
-            await self.client.send_file(
-                account_id=account.account_id,
-                peer_id=peer_id,
-                file_path=file_path,
-                context_token=context_token,
-                idempotency_key=delivery.delivery_id,
+        )
+        await self._drain_delivery_outbox(account)
+        batch = self.delivery_outbox.list_batch(items[0].batch_id)
+        if not batch or not all(item.status == "sent" for item in batch):
+            error = next(
+                (item.error for item in batch if item.error), "delivery receipt is pending"
             )
-            sent_media = 1
-            self.record_event(
-                "reply.media.sent",
-                peer_id=peer_id,
-                path=str(file_path),
-                delivery_id=delivery.delivery_id,
-                media_count=sent_media,
-            )
-        return {"media_count": sent_media, "text_preview": outbound_text[:120]}
+            raise RuntimeError(error)
+        return {
+            "media_count": sum(int(item.receipt.get("media_count") or 0) for item in batch),
+            "text_preview": outbound_text[:120],
+        }
 
     def _resolve_account(self) -> WeixinAccount:
         if self.config.account_id:
@@ -865,13 +854,19 @@ def _background_loop_diagnostics(state: Any) -> dict[str, object]:
         "node": str(state.node),
         "terminal_state": str(state.terminal_state),
         "attempt": state.attempt,
-        "reason_code": str(
-            evidence.get("reason_code") or recovery.get("reason_code") or ""
-        ),
+        "reason_code": str(evidence.get("reason_code") or recovery.get("reason_code") or ""),
         "failure_domain": str(recovery.get("failure_domain") or ""),
         "reason": str(evidence.get("reason") or ""),
         "repeat_count": int(evidence.get("repeat_count") or 0),
     }
+    resource_grant = evidence.get("resource_grant")
+    if isinstance(resource_grant, dict):
+        diagnostics["resource_grant"] = resource_grant
+        diagnostics["resource_pause_reason"] = str(resource_grant.get("reason") or "")
+        diagnostics["resource_retry_after_seconds"] = max(
+            0.0,
+            float(resource_grant.get("retry_after_seconds") or 0.0),
+        )
 
     raw_checker_results = evidence.get("checker_results")
     if isinstance(raw_checker_results, list):
@@ -887,9 +882,7 @@ def _background_loop_diagnostics(state: Any) -> dict[str, object]:
                     "passed": bool(raw.get("passed", False)),
                     "reason": str(raw.get("reason") or ""),
                     "evaluator_role": str(checker_facts.get("evaluator_role") or ""),
-                    "evidence_summary": str(
-                        checker_facts.get("evidence_summary") or ""
-                    )[:2000],
+                    "evidence_summary": str(checker_facts.get("evidence_summary") or "")[:2000],
                 }
             )
         diagnostics["checker_results"] = checker_results
@@ -904,6 +897,17 @@ def _background_loop_diagnostics(state: Any) -> dict[str, object]:
             "facts": executor.get("facts") if isinstance(executor.get("facts"), dict) else {},
         }
     return diagnostics
+
+
+def _is_transient_background_resource_pause(task_facts: dict[str, object]) -> bool:
+    from ..loop_runs import is_retryable_resource_pause
+
+    diagnostics = task_facts.get("loop_diagnostics")
+    if not isinstance(diagnostics, dict):
+        return False
+    return str(diagnostics.get("terminal_state") or "") == "paused" and is_retryable_resource_pause(
+        diagnostics.get("resource_grant")
+    )
 
 
 def _redact_event_facts(facts: dict) -> dict:
@@ -940,3 +944,8 @@ def _weixin_message_facts(update: WeixinUpdate) -> dict[str, object]:
         "attachment_count": len(attachments),
         "attachments": attachments,
     }
+
+
+def _connector_error_reason(exc: Exception) -> str:
+    reason = str(getattr(exc, "reason", "") or "").strip()
+    return reason if reason.startswith("connector_") else "connector_delivery_failed"

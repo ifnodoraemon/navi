@@ -39,6 +39,7 @@ from .loop_contracts import (
 from .loop_runs import LoopCheckpoint, LoopRunStore
 
 from .memory import ACTIVE_MEMORY_CONTEXT_LIMIT
+from .model_facts import project_model_facts
 from .prompt_os import assemble_semantic_checker_messages
 from .runtime import AgentRuntime
 from .syscalls import ModelSyscallPlanner
@@ -269,11 +270,7 @@ class ContractViolationRecoveryPort:
         planned: PlannedCapabilityStep,
         domain: str,
     ) -> ReflectionDecision:
-        reason_code = str(
-            planned.args.get("reason")
-            or planned.reason
-            or "runtime_contract_failed"
-        )
+        reason_code = str(planned.args.get("reason") or planned.reason or "runtime_contract_failed")
         recovery_facts = {
             "trigger": "runtime.contract_failed",
             "reason_code": reason_code,
@@ -430,6 +427,8 @@ def _goal_task_context(spec: LoopSpec) -> dict[str, Any]:
     lineage = dict(raw_lineage) if isinstance(raw_lineage, dict) else {}
     raw_progress = context.get("progress")
     progress = dict(raw_progress) if isinstance(raw_progress, dict) else {}
+    raw_delivery = context.get("delivery")
+    delivery = dict(raw_delivery) if isinstance(raw_delivery, dict) else {}
     parent_goal_id = str(metadata.get("parent_goal_id") or "")
     lineage_id = str(lineage.get("id") or parent_goal_id or spec.goal_id)
     prior_items = [
@@ -454,6 +453,10 @@ def _goal_task_context(spec: LoopSpec) -> dict[str, Any]:
             "ambient_history_authoritative": bool(
                 progress.get("ambient_history_authoritative", False)
             ),
+        },
+        "delivery": {
+            "stage": str(delivery.get("stage") or "not_applicable"),
+            "transport_receipt_available": bool(delivery.get("transport_receipt_available", False)),
         },
     }
 
@@ -1155,9 +1158,7 @@ class CapabilityExecutorPort:
             workspace=_scope_workspace_for_spec(
                 spec,
                 default_workspace=(
-                    Path(self.context.workspace)
-                    if self.context.workspace
-                    else workspace
+                    Path(self.context.workspace) if self.context.workspace else workspace
                 ),
             ),
             permission_ceiling=spec.goal.permission_ceiling,
@@ -1341,13 +1342,14 @@ class DurableStateGraphRunner:
                         resource_grants=tuple(grants),
                         evidence=collected_evidence,
                     )
+                except Exception:
+                    self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
+                    raise
 
                 collected_evidence["planned_capability"] = planned_step.to_dict()
                 if planned_step.tool == "system.planner_error":
                     self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
-                    planner_failures = list(
-                        collected_evidence.get("planner_failure_history") or []
-                    )
+                    planner_failures = list(collected_evidence.get("planner_failure_history") or [])
                     planner_failures.append(
                         {
                             "attempt": state.attempt,
@@ -1442,12 +1444,16 @@ class DurableStateGraphRunner:
                 inputs={"planned_capability": planned_step.to_dict()},
                 state=state.to_dict(),
             )
-            executed = await self.executor_port.execute(
-                planned_step,
-                spec,
-                state,
-                workspace=execution_workspace,
-            )
+            try:
+                executed = await self.executor_port.execute(
+                    planned_step,
+                    spec,
+                    state,
+                    workspace=execution_workspace,
+                )
+            except Exception:
+                self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
+                raise
             collected_evidence["capability_result"] = executed.to_dict()
             # ``ask`` explicitly yields control, so it is safe to surface before
             # evaluation. A terminal chat response is only a candidate until the
@@ -1626,6 +1632,9 @@ class DurableStateGraphRunner:
                     harness_results=tuple(harness_results),
                     evidence=collected_evidence,
                 )
+            except Exception:
+                self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
+                raise
             if result.run_state.node == LoopNode.PLAN and not result.run_state.is_terminal():
                 return await self.run_async(
                     spec,
@@ -2379,8 +2388,9 @@ def _gate_loop_decision(
     grant: ResourceGrant,
 ) -> LoopDecision:
     decision = _gate_decision_kind(grant)
+    is_external_pause = grant.decision == ResourceDecision.PAUSE
     check = LoopCheckResult(
-        name=LoopCheckName.APPROVAL_GATE,
+        name=(LoopCheckName.EXTERNAL_PAUSE if is_external_pause else LoopCheckName.APPROVAL_GATE),
         passed=grant.allowed,
         reason=grant.reason,
         evidence={
@@ -2394,10 +2404,10 @@ def _gate_loop_decision(
         decision=decision,
         reason=LoopReason.CAPABILITY_FACT_RECORDED
         if grant.allowed
-        else LoopReason.APPROVAL_REQUIRED,
+        else (LoopReason.EXTERNAL_PAUSE if is_external_pause else LoopReason.APPROVAL_REQUIRED),
         phase=LoopPhase.DECISION,
         failure_domain=TraceFailureDomain.NONE
-        if grant.allowed
+        if grant.allowed or is_external_pause
         else TraceFailureDomain.SAFEGUARD_POLICY,
         tool=kind,
         run_id=state.run_id,
@@ -2685,9 +2695,7 @@ def _execution_args_for_workspace(
     for path_field in tool_spec.workspace_fields:
         if path_field in translated:
             translated[path_field] = translate(translated[path_field])
-    if tool_spec.workspace_policy == "sandbox" and isinstance(
-        translated.get("command"), list
-    ):
+    if tool_spec.workspace_policy == "sandbox" and isinstance(translated.get("command"), list):
         translated["command"] = [translate(item) for item in translated["command"]]
     return translated
 
@@ -3170,9 +3178,14 @@ def _planner_loop_run_facts(state: LoopRunState) -> dict[str, Any]:
 
 
 def _planner_objective_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
-    # Attempt history is exposed once, in compact form. The latest capability
-    # and checker facts remain complete so the model can decide what to do next.
-    return {key: value for key, value in evidence.items() if key != "attempt_history"}
+    # Attempt history is exposed once, in compact form.  Keep durable evidence
+    # intact, but give the planner a bounded projection so one file read cannot
+    # crowd out the task, checker facts, and tool contract.
+    projected = project_model_facts(
+        {key: value for key, value in evidence.items() if key != "attempt_history"},
+        max_characters=24_000,
+    )
+    return projected if isinstance(projected, dict) else {}
 
 
 def _planner_attempt_history(evidence: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3206,15 +3219,14 @@ def _semantic_checker_capability_result(
 
 
 def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return bounded capability facts without planner rationale or verdicts."""
+    """Return bounded executed-capability facts without planner rationale or verdicts."""
     from .safeguards import redact_secrets, redact_secrets_deep
 
     history = evidence.get("attempt_history") or []
     if not isinstance(history, list):
         return []
-    supporting_attempts = history[:-1] if history else []
     compact: list[dict[str, Any]] = []
-    for raw in supporting_attempts[-SEMANTIC_CHECKER_ATTEMPT_LIMIT:]:
+    for raw in history[-SEMANTIC_CHECKER_ATTEMPT_LIMIT:]:
         if not isinstance(raw, dict):
             continue
         compact.append(

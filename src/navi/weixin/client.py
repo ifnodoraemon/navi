@@ -46,6 +46,28 @@ TYPING_STOP = 2
 CONFIG_TIMEOUT_SECONDS = 10.0
 
 
+class WeixinTransportError(RuntimeError):
+    """Typed iLink rejection facts; callers decide whether/how to recover."""
+
+    def __init__(
+        self,
+        operation: str,
+        *,
+        ret: Any = None,
+        errcode: Any = None,
+        errmsg: Any = None,
+    ) -> None:
+        self.operation = operation
+        self.ret = ret
+        self.errcode = errcode
+        self.errmsg = " ".join(str(errmsg or "").split())[:300]
+        self.reason = _ilink_error_reason(ret=ret, errcode=errcode)
+        super().__init__(
+            f"iLink {operation} rejected ret={ret} errcode={errcode}"
+            + (f" errmsg={self.errmsg}" if self.errmsg else "")
+        )
+
+
 class WeixinClient:
     def __init__(
         self,
@@ -131,10 +153,16 @@ class WeixinClient:
         peer_id: str,
         text: str,
         context_token: str = "",
+        idempotency_key: str = "",
     ) -> None:
         chunks = split_text_for_weixin(text)
         for index, chunk in enumerate(chunks):
-            await self._send_chunk(peer_id=peer_id, text=chunk, context_token=context_token)
+            await self._send_chunk(
+                peer_id=peer_id,
+                text=chunk,
+                context_token=context_token,
+                idempotency_key=(f"{idempotency_key}:chunk:{index}" if idempotency_key else ""),
+            )
             if index < len(chunks) - 1:
                 await self._sleep_between_chunks()
 
@@ -210,10 +238,22 @@ class WeixinClient:
             timeout=CONFIG_TIMEOUT_SECONDS,
         )
 
-    async def _send_chunk(self, *, peer_id: str, text: str, context_token: str = "") -> None:
+    async def _send_chunk(
+        self,
+        *,
+        peer_id: str,
+        text: str,
+        context_token: str = "",
+        idempotency_key: str = "",
+    ) -> None:
         if not text.strip():
             raise ValueError("Weixin text must not be empty")
-        client_id = f"navi-weixin-{uuid.uuid4().hex}"
+        if idempotency_key:
+            from navi.connector_delivery import connector_delivery_client_id
+
+            client_id = connector_delivery_client_id(idempotency_key, prefix="navi-weixin")
+        else:
+            client_id = f"navi-weixin-{uuid.uuid4().hex}"
         message = self._message_payload(
             peer_id=peer_id,
             text=text,
@@ -224,8 +264,11 @@ class WeixinClient:
         ret = response.get("ret")
         errcode = response.get("errcode")
         if ret not in (None, 0) or errcode not in (None, 0):
-            raise RuntimeError(
-                f"iLink sendmessage error ret={ret} errcode={errcode}: {response}"
+            raise WeixinTransportError(
+                "sendmessage",
+                ret=ret,
+                errcode=errcode,
+                errmsg=response.get("errmsg"),
             )
 
     @staticmethod
@@ -287,9 +330,7 @@ class WeixinClient:
         elif upload_param:
             upload_url = _cdn_upload_url(self.cdn_base_url, upload_param, filekey)
         else:
-            raise RuntimeError(
-                f"iLink getuploadurl returned no upload target: {upload_response}"
-            )
+            raise RuntimeError(f"iLink getuploadurl returned no upload target: {upload_response}")
         encrypted_query_param = await self._upload_ciphertext(
             upload_url=upload_url,
             ciphertext=_aes128_ecb_encrypt(plaintext, aes_key),
@@ -329,9 +370,7 @@ class WeixinClient:
         for index, item in enumerate(items):
             if not isinstance(item, dict):
                 continue
-            attachment = await self._attachment_from_item(
-                item, message_id=message_id, index=index
-            )
+            attachment = await self._attachment_from_item(item, message_id=message_id, index=index)
             if attachment is not None:
                 attachments.append(attachment)
         return attachments
@@ -532,4 +571,17 @@ def _raise_ilink_error(response: dict[str, Any], operation: str) -> None:
     errcode = response.get("errcode")
     if ret in (None, 0) and errcode in (None, 0):
         return
-    raise RuntimeError(f"iLink {operation} error ret={ret} errcode={errcode}: {response}")
+    raise WeixinTransportError(
+        operation,
+        ret=ret,
+        errcode=errcode,
+        errmsg=response.get("errmsg"),
+    )
+
+
+def _ilink_error_reason(*, ret: Any, errcode: Any) -> str:
+    # iLink response codes are connector facts, not a stable cross-provider
+    # semantic taxonomy. Preserve them on WeixinTransportError and expose one
+    # uniform rejection category until the connector contract states otherwise.
+    del ret, errcode
+    return "connector_rejected"

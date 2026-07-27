@@ -79,14 +79,14 @@ def test_mutating_tool_spec_defaults_to_local_side_effect_policy() -> None:
     }
 
 
-def test_connector_delivery_declares_synchronous_external_side_effect(tmp_path: Path) -> None:
+def test_connector_delivery_declares_durable_external_side_effect(tmp_path: Path) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
     spec = registry.get("channel.send_file")
 
     assert spec is not None
     policy = spec.side_effect_policy
     assert policy.scope == "external"
-    assert policy.mode == "synchronous"
+    assert policy.mode == "durable"
     assert policy.state_field == "side_effect_state"
     assert policy.artifact_field == "source_path"
     assert policy.commit_tool == ""

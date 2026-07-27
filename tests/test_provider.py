@@ -1,5 +1,6 @@
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 
 from navi.config import ModelConfig, _model_config
@@ -7,13 +8,19 @@ from navi.provider import (
     ChatMessage,
     ModelPool,
     OpenAICompatibleProvider,
+    ProviderHTTPError,
     ProviderUsage,
     _complete_with_optional_schema,
     _messages_for_response_format,
     _validate_structured_output,
 )
-from navi.resource_gateway import ResourceRequest
-from navi.resource_gateway import GlobalResourceGateway, ResourceLimits
+from navi.resource_gateway import (
+    GlobalResourceGateway,
+    ResourceLimits,
+    ResourceRequest,
+    SQLiteResourceLedger,
+)
+from navi.provider_specs import ProviderSpec
 
 
 def test_model_config_role_params_use_global_defaults_and_overrides():
@@ -32,13 +39,85 @@ def test_model_config_rejects_provider_fallbacks():
 def test_openai_provider_init(mock_resolve):
     mock_config = Mock()
     mock_spec = Mock()
-    
+
     mock_resolve.return_value = mock_config
-    
+
     provider = OpenAICompatibleProvider(mock_config, mock_spec)
-    
+
     assert provider.spec == mock_spec
     mock_resolve.assert_called_once_with(mock_config)
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_preserves_bounded_http_error_facts() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            request=request,
+            json={
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "context_length_exceeded",
+                    "param": "messages",
+                    "message": "maximum context length exceeded",
+                    "ignored": "must not leak into the exception",
+                }
+            },
+        )
+
+    provider = OpenAICompatibleProvider(
+        ModelConfig(
+            provider="openai-compatible",
+            model="model",
+            api_base_url="https://provider.example/v1",
+            api_key="secret-token",
+        ),
+        ProviderSpec(
+            name="openai-compatible",
+            kind="openai-compatible",
+            default_model="model",
+            default_base_url="https://provider.example/v1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ProviderHTTPError) as captured:
+        await provider.complete([ChatMessage("user", "hello")])
+
+    error = captured.value
+    assert error.status_code == 400
+    assert error.error_code == "context_length_exceeded"
+    assert error.error_param == "messages"
+    assert error.provider_message == "maximum context length exceeded"
+    assert error.request_chars == 5
+    assert error.max_output_tokens == 32768
+    assert "secret-token" not in str(error)
+    assert "ignored" not in str(error)
+
+
+class _ReadErrorProvider:
+    last_usage = None
+
+    async def complete(self, messages, **kwargs):
+        del messages, kwargs
+        raise httpx.ReadError("upstream connection reset")
+
+
+@pytest.mark.asyncio
+async def test_model_pool_releases_reservation_on_transport_error(tmp_path) -> None:
+    ledger = SQLiteResourceLedger(tmp_path)
+    gateway = GlobalResourceGateway(
+        ResourceLimits(max_concurrent=1),
+        ledger=ledger,
+        scope_id="transport-pause",
+    )
+    pool = ModelPool(default=_ReadErrorProvider())
+
+    with pool.bind_resource_gateway(gateway):
+        with pytest.raises(httpx.ReadError):
+            await pool.complete_for("planner", [ChatMessage("user", "hello")])
+
+    assert ledger.usage("transport-pause").active == 0
 
 
 def test_structured_output_validation_checks_json_schema_types():
@@ -212,9 +291,7 @@ async def test_model_pool_reserves_declared_output_tokens_before_calling_provide
     pool = ModelPool(
         default=provider,
         config=ModelConfig(role_params={"planner": {"max_tokens": 90}}),
-        resource_gateway=GlobalResourceGateway(
-            ResourceLimits(token_budget=100, max_concurrent=1)
-        ),
+        resource_gateway=GlobalResourceGateway(ResourceLimits(token_budget=100, max_concurrent=1)),
     )
 
     with pytest.raises(RuntimeError, match="token_budget_exhausted"):

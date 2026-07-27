@@ -90,17 +90,7 @@ _LOCAL_READ_ONLY_COMMANDS = frozenset(
     }
 )
 _GIT_READ_ONLY_SUBCOMMANDS = frozenset(
-    {
-        "blame",
-        "diff",
-        "grep",
-        "log",
-        "ls-files",
-        "ls-tree",
-        "rev-parse",
-        "show",
-        "status",
-    }
+    {"blame", "diff", "grep", "log", "ls-files", "ls-tree", "rev-parse", "show", "status"}
 )
 _SYSTEMCTL_READ_ONLY_SUBCOMMANDS = frozenset(
     {
@@ -121,6 +111,7 @@ _NETWORK_READ_ONLY_COMMANDS = {
     "kubectl": frozenset({"describe", "get", "logs", "top"}),
 }
 
+
 _DEFAULT_SAFEGUARDS = {
     "read": ("low", (), False, "default_read_safeguard"),
     "network": ("medium", ("network",), False, "default_network_safeguard"),
@@ -139,30 +130,24 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
     reason = "opaque_or_effectful_command"
     if argv and not bool(call_args.get("allocate_pty")):
         if binary in _LOCAL_READ_ONLY_COMMANDS:
-            permission = "read"
-            reason = "declared_local_read_only_command"
+            permission, reason = "read", "declared_local_read_only_command"
         elif binary == "hostname" and not _first_positional(argv[1:]):
-            permission = "read"
-            reason = "hostname_read_only_query"
+            permission, reason = "read", "hostname_read_only_query"
         elif binary == "find" and not _find_has_effectful_action(argv[1:]):
-            permission = "read"
-            reason = "find_without_effectful_action"
+            permission, reason = "read", "find_without_effectful_action"
         elif (
             binary == "git"
             and _first_positional(argv[1:]) in _GIT_READ_ONLY_SUBCOMMANDS
             and not _git_has_output_file(argv[1:])
         ):
-            permission = "read"
-            reason = "declared_git_read_only_subcommand"
+            permission, reason = "read", "declared_git_read_only_subcommand"
         elif (
             binary == "systemctl"
             and _first_positional(argv[1:]) in _SYSTEMCTL_READ_ONLY_SUBCOMMANDS
         ):
-            permission = "read"
-            reason = "declared_systemctl_read_only_subcommand"
+            permission, reason = "read", "declared_systemctl_read_only_subcommand"
         elif binary in {"curl", "docker", "kubectl"}:
             subcommand = _first_positional(argv[1:])
-            allowed = _NETWORK_READ_ONLY_COMMANDS[binary]
             if binary == "curl":
                 method = _curl_method(argv[1:])
                 if (
@@ -170,11 +155,9 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
                     and not _curl_has_output_file(argv[1:])
                     and not _curl_has_credentials(argv[1:])
                 ):
-                    permission = "network"
-                    reason = "curl_read_only_request"
-            elif subcommand in allowed:
-                permission = "network"
-                reason = f"declared_{binary}_read_only_subcommand"
+                    permission, reason = "network", "curl_read_only_request"
+            elif subcommand in _NETWORK_READ_ONLY_COMMANDS[binary]:
+                permission, reason = "network", f"declared_{binary}_read_only_subcommand"
     return {
         "binary": binary,
         "argument_count": max(0, len(argv) - 1),
@@ -283,18 +266,21 @@ def _first_positional(args: list[str]) -> str:
 
 
 def _find_has_effectful_action(args: list[str]) -> bool:
-    effectful = {
-        "-delete",
-        "-exec",
-        "-execdir",
-        "-fprint",
-        "-fprint0",
-        "-fprintf",
-        "-fls",
-        "-ok",
-        "-okdir",
-    }
-    return any(item in effectful for item in args)
+    return any(
+        item
+        in {
+            "-delete",
+            "-exec",
+            "-execdir",
+            "-fprint",
+            "-fprint0",
+            "-fprintf",
+            "-fls",
+            "-ok",
+            "-okdir",
+        }
+        for item in args
+    )
 
 
 def _curl_method(args: list[str]) -> str:
@@ -302,7 +288,8 @@ def _curl_method(args: list[str]) -> str:
         if item in {"-X", "--request"} and index + 1 < len(args):
             return args[index + 1].upper()
     if any(
-        item in {"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--json", "-F", "--form"}
+        item
+        in {"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--json", "-F", "--form"}
         or item.startswith("--data-")
         for item in args
     ):
@@ -314,22 +301,22 @@ def _curl_method(args: list[str]) -> str:
 
 def _curl_has_output_file(args: list[str]) -> bool:
     return any(
-        item in {"-o", "--output", "-O", "--remote-name", "--remote-header-name"}
-        for item in args
+        item in {"-o", "--output", "-O", "--remote-name", "--remote-header-name"} for item in args
     )
 
 
 def _curl_has_credentials(args: list[str]) -> bool:
-    credential_flags = {"-u", "--user", "-b", "--cookie", "--oauth2-bearer"}
-    if any(item in credential_flags for item in args):
+    if any(item in {"-u", "--user", "-b", "--cookie", "--oauth2-bearer"} for item in args):
         return True
-    for index, item in enumerate(args):
-        if item not in {"-H", "--header"} or index + 1 >= len(args):
-            continue
-        header = args[index + 1].strip().lower()
-        if header.startswith(("authorization:", "cookie:", "proxy-authorization:")):
-            return True
-    return False
+    return any(
+        item in {"-H", "--header"}
+        and index + 1 < len(args)
+        and args[index + 1]
+        .strip()
+        .lower()
+        .startswith(("authorization:", "cookie:", "proxy-authorization:"))
+        for index, item in enumerate(args)
+    )
 
 
 def _git_has_output_file(args: list[str]) -> bool:
@@ -397,21 +384,27 @@ def assess_capability_call(
     elif spec.risk_policy == "shell_argv":
         shell_policy = shell_call_policy(call_args)
         evidence.update(shell_policy)
-        required_permission = str(shell_policy["required_permission"])
-        if required_permission == "read":
-            risk_class = "medium"
-            confirmation_required = False
-            reason_code = "declared_shell_read_only"
-            contexts = ["terminal", "local_read"]
-        elif required_permission == "network":
-            risk_class = "medium"
-            confirmation_required = False
-            reason_code = "declared_shell_network_read"
-            contexts = ["terminal", "network"]
+        call_permission = str(shell_policy["required_permission"])
+        if call_permission == "read":
+            risk_class, confirmation_required, reason_code, contexts = (
+                "medium",
+                False,
+                "declared_shell_read_only",
+                ["terminal", "local_read"],
+            )
+        elif call_permission == "network":
+            risk_class, confirmation_required, reason_code, contexts = (
+                "medium",
+                False,
+                "declared_shell_network_read",
+                ["terminal", "network"],
+            )
         else:
-            risk_class = "high"
-            confirmation_required = True
-            reason_code = "opaque_shell_effect_requires_approval"
+            risk_class, confirmation_required, reason_code = (
+                "high",
+                True,
+                "opaque_shell_effect_requires_approval",
+            )
             contexts.append("opaque_process_effect")
     elif spec.risk_policy == "agent_operation":
         operation = str(call_args.get("operation") or "").strip().lower()
@@ -504,7 +497,6 @@ def _file_write_risk_facts(args: dict[str, Any], *, workspace: str) -> dict[str,
     before_size = resolved_path.stat().st_size if exists else 0
     requested_size = len(str(args.get("content") or "").encode("utf-8"))
     mode = str(args.get("mode") or "overwrite").strip().lower()
-    destructive_overwrite = mode == "overwrite" and exists and requested_size < before_size
     return {
         "path": str(resolved_path),
         "mode": mode,
@@ -512,7 +504,7 @@ def _file_write_risk_facts(args: dict[str, Any], *, workspace: str) -> dict[str,
         "target_exists": exists,
         "before_size": before_size,
         "requested_size": requested_size,
-        "destructive_overwrite": destructive_overwrite,
+        "destructive_overwrite": mode == "overwrite" and exists and requested_size < before_size,
     }
 
 
@@ -580,9 +572,9 @@ def _http_fetch_risk_facts(args: dict[str, Any]) -> dict[str, Any]:
 
 def _declared_safeguard(spec: ToolSpec) -> dict:
     default_key = "write" if spec.mutates or spec.permission == "write" else spec.permission
-    default_risk, default_contexts, default_confirmation, default_reason = (
-        _DEFAULT_SAFEGUARDS[default_key]
-    )
+    default_risk, default_contexts, default_confirmation, default_reason = _DEFAULT_SAFEGUARDS[
+        default_key
+    ]
     sensitive_contexts = spec.sensitive_contexts or default_contexts
     if spec.side_effect_policy.scope == "external":
         sensitive_contexts = (*sensitive_contexts, "external_side_effect")
@@ -702,9 +694,7 @@ _PERSONAL_FIELD_NAMES = frozenset(
     }
 )
 
-_APPROVAL_PRIVATE_FIELD_NAMES = frozenset(
-    {"content", "message", "objective", "prompt", "query"}
-)
+_APPROVAL_PRIVATE_FIELD_NAMES = frozenset({"content", "message", "objective", "prompt", "query"})
 
 
 def redact_secrets_deep(value: Any) -> Any:

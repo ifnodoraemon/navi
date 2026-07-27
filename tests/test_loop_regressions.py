@@ -10,7 +10,14 @@ from navi.capabilities_types import CapabilityContext
 from navi.control import ApprovalService, CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.goals import GoalStore
 from navi.lifecycle import Governance, Phase, Resolution
-from navi.loop_contracts import GoalSpec, LoopNode, LoopSpec, LoopTerminalState, VerificationKind, VerificationStep
+from navi.loop_contracts import (
+    GoalSpec,
+    LoopNode,
+    LoopSpec,
+    LoopTerminalState,
+    VerificationKind,
+    VerificationStep,
+)
 from navi.loop_runs import LoopRunStore
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
@@ -20,7 +27,9 @@ from navi.state_graph import ModelCapabilityPlannerPort
 
 class _NoModelCalls:
     async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
-        raise AssertionError(f"model must not be called while resolving a superseded approval: {role}")
+        raise AssertionError(
+            f"model must not be called while resolving a superseded approval: {role}"
+        )
 
     def list_roles(self) -> list[str]:
         return ["planner", "checker", "responder"]
@@ -65,9 +74,7 @@ class _CorrectedTerminalResponseProvider:
         if role == "planner":
             self.planner_calls += 1
             message = (
-                "I need to stop here."
-                if self.planner_calls == 1
-                else "The verified answer is 42."
+                "I need to stop here." if self.planner_calls == 1 else "The verified answer is 42."
             )
             return json.dumps(
                 {

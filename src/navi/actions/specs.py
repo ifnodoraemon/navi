@@ -563,15 +563,27 @@ ACTION_SPECS = [
         confirmation_required=False,
         risk_reason_code="capability_safeguard_goal_state",
         execution_contexts=("turn", API_CONTEXT),
-        description="""Read authoritative durable Goal and LoopRun state without mutating execution. An ID selects that exact goal or loop run. Without an ID, inbox returns one task-oriented view; narrower views select current foreground goals, scheduled recurring goals, goals waiting for approval, or task history.""",
+        description="""Read authoritative durable Goal and LoopRun state without mutating execution. An ID selects that exact goal or loop run. Without an ID, inbox returns one task-oriented view; narrower views select current foreground goals, scheduled recurring goals with recent occurrence delivery facts, individual scheduled occurrences, goals waiting for approval, or task history.""",
         input_schema={
             "type": "object",
             "properties": {
                 "goal_id": {"type": "string"},
                 "loop_run_id": {"type": "string"},
+                "parent_goal_id": {
+                    "type": "string",
+                    "description": "Optional scheduled template ID when view=occurrences.",
+                },
+                "created_after": {
+                    "type": "number",
+                    "description": "Optional inclusive Unix timestamp for view=occurrences.",
+                },
+                "created_before": {
+                    "type": "number",
+                    "description": "Optional inclusive Unix timestamp for view=occurrences.",
+                },
                 "view": {
                     "type": "string",
-                    "description": "inbox, current, scheduled, pending_approval, or history; defaults to current.",
+                    "description": "inbox, current, scheduled, occurrences, pending_approval, or history; defaults to current.",
                 },
                 "limit": {"type": "integer"},
             },
@@ -587,6 +599,8 @@ ACTION_SPECS = [
                 "run": {"type": "object"},
                 "loop_run": {"type": "object"},
                 "loop_runs": {"type": "array", "items": {"type": "object"}},
+                "delivery": {"type": "object"},
+                "recent_occurrences": {"type": "array", "items": {"type": "object"}},
                 "active_loop_runs": {"type": "array", "items": {"type": "object"}},
                 "active_goals": {"type": "array", "items": {"type": "object"}},
                 "query_scope": {"type": "string"},
@@ -597,6 +611,7 @@ ACTION_SPECS = [
                 "goals": {"type": "array", "items": {"type": "object"}},
                 "current_goals": {"type": "array", "items": {"type": "object"}},
                 "scheduled_goals": {"type": "array", "items": {"type": "object"}},
+                "occurrence_goals": {"type": "array", "items": {"type": "object"}},
                 "pending_approval_goals": {"type": "array", "items": {"type": "object"}},
                 "history_goals": {"type": "array", "items": {"type": "object"}},
             },

@@ -36,12 +36,31 @@ class SystemDaemon:
 
         # Orphan recovery reads loop_runs directly, so initialize that schema
         # before recovery on a fresh installation.
-        LoopRunStore(home)
+        loop_runs = LoopRunStore(home)
         lifecycle_sagas = LifecycleSagaStore(home)
         lifecycle_sagas.recover_pending()
         lifecycle_sagas.recover_open_orphans()
+        reconciliation = self._reconcile_loop_execution(loop_runs)
+        if reconciliation["released_leases"] or reconciliation["released_grants"]:
+            logger.warning(
+                "Reconciled %s expired execution leases and %s orphaned durable-loop resource reservations",
+                len(reconciliation["released_leases"]),
+                len(reconciliation["released_grants"]),
+            )
 
         self._setup_subscriptions()
+
+    def _reconcile_loop_execution(self, loop_runs: Any | None = None) -> dict[str, list[str]]:
+        """Clear expired execution ownership and its stale resource reservations."""
+        from .loop_runs import LoopRunStore
+        from .resource_gateway import SQLiteResourceLedger
+
+        store = loop_runs or LoopRunStore(self.home)
+        released_leases = store.release_expired_execution_leases()
+        released_grants = SQLiteResourceLedger(self.home).release_active_grants_for_scopes(
+            store.list_releasable_resource_scope_ids()
+        )
+        return {"released_leases": released_leases, "released_grants": released_grants}
 
     def _setup_subscriptions(self) -> None:
         async def on_turn_completed(event: NaviEvent) -> None:
@@ -96,6 +115,13 @@ class SystemDaemon:
         from .goals import GoalStore
 
         loop_runs = LoopRunStore(self.home)
+        reconciliation = self._reconcile_loop_execution(loop_runs)
+        if reconciliation["released_leases"] or reconciliation["released_grants"]:
+            logger.warning(
+                "Reconciled %s expired leases and %s resource reservations before queue claim",
+                len(reconciliation["released_leases"]),
+                len(reconciliation["released_grants"]),
+            )
         # Active is a lifecycle fact, not permission for the daemon to execute.
         # Foreground turns and manually prepared goals have their own explicit
         # owner; only loops created for background execution belong here.
@@ -118,7 +144,11 @@ class SystemDaemon:
         ]
         states = [
             *active_states,
-            *(state for state in retryable_states if state.run_id not in {item.run_id for item in active_states}),
+            *(
+                state
+                for state in retryable_states
+                if state.run_id not in {item.run_id for item in active_states}
+            ),
         ]
         retryable_ids = {state.run_id for state in retryable_states}
         if not states:
@@ -231,7 +261,10 @@ class SystemDaemon:
                 )
                 continue
             try:
-                occurrence = service.open_scheduled_occurrence(g)
+                occurrence = service.open_scheduled_occurrence(
+                    g,
+                    scheduled_for=scheduled_for,
+                )
 
                 goal_store.update_cron_run(g.id, next_time)
                 created.append(
@@ -385,12 +418,15 @@ class SystemDaemon:
         graph_facts = memory.sync_semantic_graph(graph_store=self.graph)
         from .workspaces import ShadowWorkspaceManager
 
-        workspace_facts = ShadowWorkspaceManager(self.home).purge_terminal_artifacts()
+        workspaces = ShadowWorkspaceManager(self.home)
+        workspace_reconciliation = workspaces.reconcile_terminal_shadows()
+        workspace_facts = workspaces.purge_terminal_artifacts()
         return {
             "ok": True,
             "memory_gc": gc_facts,
             "semantic_graph": graph_facts,
             "workspace_gc": workspace_facts,
+            "workspace_reconciliation": workspace_reconciliation,
         }
 
     async def process_events_once(self) -> list[dict]:
@@ -514,10 +550,7 @@ class SystemDaemon:
         )
 
     def _active_workspaces(self) -> set[str]:
-        return {
-            self._canonical_path(workspace)
-            for workspace in self.runs.list_active_workspaces()
-        }
+        return {self._canonical_path(workspace) for workspace in self.runs.list_active_workspaces()}
 
     @staticmethod
     def _canonical_path(path: str) -> str:

@@ -107,10 +107,16 @@ class TelegramService:
 
                 self.update_status("healthy")
 
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 error_msg = str(e)
-                self.update_status("fatal", error_msg)
-                raise
+                self.update_status("degraded", error_msg)
+                if once:
+                    raise
+                sleep_time = min(30.0, max(1.0, sleep_time * 2.0))
+                await asyncio.sleep(sleep_time)
+                continue
 
             if once:
                 return

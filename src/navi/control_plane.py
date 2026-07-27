@@ -251,9 +251,7 @@ class TurnController(TurnLifecycleMixin):
                 else None
             ),
             disabled_tools=frozenset(self.capabilities.disabled_tools),
-            disabled_capability_classes=frozenset(
-                self.capabilities.disabled_capability_classes
-            ),
+            disabled_capability_classes=frozenset(self.capabilities.disabled_capability_classes),
         )
         state_context = SurfaceContext(
             home=self.home,
@@ -309,7 +307,9 @@ class TurnController(TurnLifecycleMixin):
                 session_id=turn_res.session_id,
                 evidence={"final_action": turn_res.action},
             )
-        self._record_trace_final(turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id)
+        self._record_trace_final(
+            turn_res, trace_id, source=source, peer_id=peer_id, sender_id=sender_id
+        )
         self._trigger_background_memory(turn_res)
         return turn_res
 
@@ -333,10 +333,17 @@ class TurnController(TurnLifecycleMixin):
         if self.event_bus:
             try:
                 await asyncio.wait_for(self.event_bus.drain(), timeout=5.0)
+            except Exception as exc:
+                logger.error(
+                    "Failed to drain event bus during engine shutdown: %s",
+                    exc,
+                    exc_info=True,
+                )
+            try:
                 await asyncio.wait_for(self.event_bus.shutdown(), timeout=5.0)
             except Exception as exc:
                 logger.error(
-                    "Failed to drain/shutdown event bus during engine shutdown: %s",
+                    "Failed to shut down event bus during engine shutdown: %s",
                     exc,
                     exc_info=True,
                 )

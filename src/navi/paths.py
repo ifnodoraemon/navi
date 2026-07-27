@@ -44,6 +44,7 @@ class DbPaths:
     vault: Path
     resource_ledger: Path
     personal_resources: Path
+    delivery_outbox: Path
 
 
 def db_paths(home: Path) -> DbPaths:
@@ -61,4 +62,5 @@ def db_paths(home: Path) -> DbPaths:
         vault=home / "vault.db",
         resource_ledger=home / "resource_ledger.db",
         personal_resources=home / "personal_resources.db",
+        delivery_outbox=home / "delivery_outbox.db",
     )

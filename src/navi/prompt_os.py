@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 from .operating_context import OperatingContext, PromptLayer, permission_allows
+from .model_facts import project_model_facts
 from .provider import ChatMessage
 from .specs_data import PROMPT_ASSEMBLIES_SPEC, SYSCALL_PLANNER_SPEC
 from .tools import ToolSpec
@@ -155,6 +156,7 @@ def assemble_planner_turn_input(
     )
 
     if runtime_facts:
+        projected_runtime_facts = project_model_facts(runtime_facts)
         blocks.append(
             PromptBlock(
                 "RUNTIME FACTS",
@@ -162,7 +164,12 @@ def assemble_planner_turn_input(
                 "runtime.facts",
                 (
                     "<runtime_facts>\n"
-                    + json.dumps(runtime_facts, ensure_ascii=False, sort_keys=True, default=str)
+                    + json.dumps(
+                        projected_runtime_facts,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    )
                     + "\n</runtime_facts>"
                 ),
                 trusted=False,
@@ -202,11 +209,46 @@ def assemble_planner_turn_input(
                 "TOOL MANIFEST",
                 "manifest",
                 "capability_registry",
-                json.dumps([asdict(tool) for tool in tools], ensure_ascii=False),
+                json.dumps(
+                    [_planner_tool_manifest_entry(tool) for tool in tools],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             ),
         ]
     )
     return PromptAssembly("planner_turn_input", tuple(blocks))
+
+
+def _planner_tool_manifest_entry(tool: ToolSpec) -> dict[str, Any]:
+    """Project the registry contract needed for planning, not runtime internals.
+
+    The full ToolSpec remains authoritative in the registry and executor.  In
+    particular, embedding every output JSON Schema and governance field in
+    every planner call made the prompt larger than the task facts themselves.
+    A planner needs valid inputs, permission/effect boundaries, and the names
+    of facts it can observe; the executor still validates the complete schema.
+    """
+    output_properties = tool.output_schema.get("properties")
+    output_fields = (
+        sorted(str(key) for key in output_properties) if isinstance(output_properties, dict) else []
+    )
+    side_effect = tool.side_effect_policy.to_dict()
+    return {
+        "name": tool.name,
+        "capability_class": tool.capability_class,
+        "description": tool.description,
+        "input_schema": tool.input_schema,
+        "permission": tool.permission,
+        "facts_only": tool.facts_only,
+        "mutates": tool.mutates,
+        "side_effect": {
+            "mode": side_effect.get("mode", "none"),
+            "commit_tool": side_effect.get("commit_tool", ""),
+            "compensate_tool": side_effect.get("compensate_tool", ""),
+        },
+        "output_fields": output_fields,
+    }
 
 
 def assemble_responder_system_prompt(
@@ -251,7 +293,12 @@ def assemble_fact_response_turn_input(
                 "VERIFIED FACTS",
                 "turn_input",
                 "runtime.final_facts",
-                json.dumps(facts, ensure_ascii=False, sort_keys=True, default=str),
+                json.dumps(
+                    project_model_facts(facts),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ),
                 trusted=False,
                 mutable=True,
             ),
@@ -271,7 +318,12 @@ def assemble_notification_turn_input(*, facts: dict[str, Any]) -> PromptAssembly
                 "VERIFIED BACKGROUND FACTS",
                 "turn_input",
                 "runtime.background_facts",
-                json.dumps(facts, ensure_ascii=False, sort_keys=True, default=str),
+                json.dumps(
+                    project_model_facts(facts),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ),
                 trusted=False,
                 mutable=True,
             ),
@@ -362,9 +414,7 @@ def assemble_memory_consolidation_messages(
 
 
 def assemble_goal_event_compaction_messages(lines: Iterable[str]) -> list[ChatMessage]:
-    template = _prompt_spec_content(
-        "goal_event_compaction_messages", "GOAL EVENT COMPACTION USER"
-    )
+    template = _prompt_spec_content("goal_event_compaction_messages", "GOAL EVENT COMPACTION USER")
     return [
         ChatMessage(
             "user",

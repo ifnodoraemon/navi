@@ -328,15 +328,15 @@ async def test_active_turn_sensitive_shell_call_creates_durable_approval(tmp_pat
     assert approval.requested_permission == "write"
 
 
-def test_network_tools_are_not_plain_read_capabilities(tmp_path):
+def test_network_tools_remain_visible_without_a_permission_filter(tmp_path):
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
 
     read_names = {spec.name for spec in registry.planner_specs(permission_ceiling="read")}
     network_names = {spec.name for spec in registry.planner_specs(permission_ceiling="network")}
 
-    assert "web.search" not in read_names
-    assert "http.fetch" not in read_names
-    assert "account.usage" not in read_names
+    assert "web.search" in read_names
+    assert "http.fetch" in read_names
+    assert "account.usage" in read_names
     assert "web.search" in network_names
     assert "http.fetch" in network_names
     assert "account.usage" in network_names

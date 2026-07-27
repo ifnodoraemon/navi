@@ -57,7 +57,8 @@ class WeixinStore:
         return [
             path.stem
             for path in sorted(self.dir.glob("*.json"))
-            if not path.name.endswith(".context-tokens.json") and not path.name.endswith(".sync.json")
+            if not path.name.endswith(".context-tokens.json")
+            and not path.name.endswith(".sync.json")
         ]
 
     def sync_path(self, account_id: str) -> Path:
@@ -72,28 +73,6 @@ class WeixinStore:
 
     def save_sync_buf(self, account_id: str, sync_buf: str) -> None:
         _atomic_json_write(self.sync_path(account_id), {"get_updates_buf": sync_buf})
-
-
-class ContextTokenStore:
-    def __init__(self, home: Path):
-        self.path = home / "weixin" / "context-tokens.json"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._tokens = self._load()
-
-    def _load(self) -> dict[str, str]:
-        if not self.path.exists():
-            return {}
-        data = json.loads(self.path.read_text(encoding="utf-8"))
-        return {str(key): str(value) for key, value in data.items()}
-
-    def get(self, account_id: str, peer_id: str) -> str:
-        return self._tokens.get(f"{account_id}:{peer_id}", "")
-
-    def put(self, account_id: str, peer_id: str, token: str) -> None:
-        if not token:
-            return
-        self._tokens[f"{account_id}:{peer_id}"] = token
-        _atomic_json_write(self.path, self._tokens)
 
 
 def extract_text(payload: dict[str, Any]) -> str:

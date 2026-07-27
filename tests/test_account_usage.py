@@ -86,7 +86,7 @@ def test_fetch_openai_codex_usage_from_credential_pool(
 
 
 @pytest.mark.asyncio
-async def test_account_usage_capability_is_network_scoped(
+async def test_account_usage_capability_is_visible_without_permission_filtering(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -97,7 +97,7 @@ async def test_account_usage_capability_is_network_scoped(
     monkeypatch.setattr("navi.account_usage.httpx.Client", _FakeClient)
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
 
-    assert "account.usage" not in {
+    assert "account.usage" in {
         spec.name for spec in registry.planner_specs(permission_ceiling="read")
     }
     assert "account.usage" in {

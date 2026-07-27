@@ -838,9 +838,7 @@ class CapabilityRegistry:
 
         def _is_class_blocked(name: str) -> bool:
             spec = handlers[name].spec
-            if spec.capability_class in self.disabled_capability_classes:
-                return True
-            return False
+            return spec.capability_class in self.disabled_capability_classes
 
         filtered = {
             name: handler

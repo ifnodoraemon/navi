@@ -7,6 +7,8 @@ import pytest
 import navi.workspaces as workspaces_module
 from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from navi.loop_contracts import LockMode, MergeStatus
+from navi.loop_control_service import LoopControlService, OpenGoalRequest
+from navi.loop_runs import LoopRunStore
 from navi.workspaces import (
     ShadowWorkspaceManager,
     WorkspaceLockStore,
@@ -98,6 +100,45 @@ def test_terminal_artifact_gc_preserves_active_shadows(tmp_path: Path) -> None:
     assert facts == {"removed": 1, "already_missing": 0}
     assert not Path(merged.shadow_workspace).parent.exists()
     assert Path(active.shadow_workspace).parent.exists()
+
+
+def test_terminal_shadow_reconciliation_discards_failed_run_and_hides_it_from_state(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("base\n", encoding="utf-8")
+    home = tmp_path / ".navi"
+    opened = LoopControlService(home).open_goal(
+        OpenGoalRequest(
+            objective="failed shadow task",
+            workspace=str(repo),
+            auto_start=False,
+        )
+    )
+    manager = ShadowWorkspaceManager(home)
+    shadow = manager.create_shadow(run_id=opened.loop_run.run_id, workspace=repo)
+    loop_runs = LoopRunStore(home)
+    owner = "test-owner"
+    assert loop_runs.claim_for_execution(opened.loop_run.run_id, owner=owner) is not None
+    loop_runs.fail_active_run(opened.loop_run.run_id, lease_owner=owner)
+
+    before = CurrentStateBuilder(home).build(
+        SurfaceContext(
+            home=home,
+            source="",
+            peer_id="",
+            sender_id="",
+            workspace=str(repo),
+        )
+    )
+    facts = manager.reconcile_terminal_shadows()
+
+    assert before.workspace_state is not None
+    assert before.workspace_state.shadow_workspaces == ()
+    assert facts["discarded"] == [opened.loop_run.run_id]
+    assert manager.get_shadow(opened.loop_run.run_id).status == "discarded"
+    assert not Path(shadow.shadow_workspace).parent.exists()
 
 
 def test_shadow_copy_ignores_generated_and_agent_metadata(tmp_path: Path) -> None:

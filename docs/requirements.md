@@ -53,6 +53,11 @@ Each model role resolves to one declared provider. The runtime invokes that
 provider once per model call and propagates provider, transport, empty-response,
 and structured-output failures without retrying or switching providers. A later
 planning turn may choose another attempt only from the surfaced failure facts.
+The only transport-level exception is a persisted connector delivery item with a
+stable idempotency key: its connector-neutral outbox may make a bounded retry of
+the unchanged item after an adapter-classified transient failure. This does not
+repeat a model or capability call, alter content, switch channels, or replace
+the required connector receipt.
 
 Active-path state and retrieval failures must also propagate. A corrupt durable
 cursor, dedup ledger, FTS index, embedding result, or semantic graph must not be
@@ -127,7 +132,10 @@ remains separate and requires the child LoopRun and checker evidence to
 converge. Transient background resource pauses resume at their persisted node;
 they must not be mislabeled or replayed as approval continuations.
 `agent.control` exposes only depth-1 child records. `goal.state` exposes
-actor-scoped top-level task, history, and recurring-schedule views. Read
+actor-scoped top-level task, history, recurring-schedule, and scheduled-
+occurrence views. A recurring template read includes a bounded set of recent
+occurrences and their authoritative delivery status, attempts, typed failure
+reason, and trace/run identities without embedding the delivered body. Read
 results declare the scope for which an empty result is authoritative.
 Recurring schedule changes use `goal.update` against an explicit `goal_id`;
 `goal.open` creates a new schedule and refuses same-actor same-cron duplicates

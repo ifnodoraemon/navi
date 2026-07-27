@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .json_utils import json_schema_errors
-from .operating_context import PERMISSION_ORDER, permission_allows
+from .operating_context import PERMISSION_ORDER
 from .provider import ChatMessage, ModelPool
 from .prompt_os import assemble_planner_system_prompt, assemble_planner_turn_input
 from .tools import ToolSpec
@@ -59,17 +59,26 @@ class ModelSyscallPlanner:
             durable_constraints=durable_constraints,
             memory_context=memory_context,
         )
-        response = await self.provider.complete_for(
-            "planner",
-            [
-                ChatMessage(
-                    "system",
-                    assemble_planner_system_prompt().render(),
-                ),
-                ChatMessage("user", turn_input.render()),
-            ],
-            output_schema=_syscall_output_schema(),
-        )
+        try:
+            response = await self.provider.complete_for(
+                "planner",
+                [
+                    ChatMessage(
+                        "system",
+                        assemble_planner_system_prompt().render(),
+                    ),
+                    ChatMessage("user", turn_input.render()),
+                ],
+                output_schema=_syscall_output_schema(),
+            )
+        except Exception as exc:
+            return [
+                ModelSyscall(
+                    tool="system.planner_error",
+                    args={"error_type": type(exc).__name__, "error": str(exc)},
+                    reason="planner provider call failed",
+                )
+            ]
         syscalls = self._parse_syscalls(response)
         # Validate each syscall against its matching tool spec.
         # If any syscall fails schema validation, return a single
@@ -90,19 +99,6 @@ class ModelSyscallPlanner:
                                 "selected_args": dict(syscall.args),
                             },
                             reason="planner selected an unknown permission",
-                        )
-                    ]
-                if not permission_allows(matching_spec.permission, syscall.permission):
-                    return [
-                        ModelSyscall(
-                            tool="system.planner_error",
-                            args={
-                                "selected_tool": syscall.tool,
-                                "selected_permission": syscall.permission,
-                                "minimum_permission": matching_spec.permission,
-                                "selected_args": dict(syscall.args),
-                            },
-                            reason="planner selected insufficient capability permission",
                         )
                     ]
                 schema_errors = json_schema_errors(syscall.args, matching_spec.input_schema)

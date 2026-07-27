@@ -23,6 +23,8 @@ from navi.loop_contracts import (
     TimeoutPolicy,
     VerificationKind,
     VerificationStep,
+    WorkspaceMode,
+    WorkspacePolicy,
 )
 from navi.provider import ChatMessage
 from navi.runtime import AgentRuntime
@@ -33,10 +35,12 @@ from navi.state_graph import (
     ExecutedCapabilityStep,
     ModelCapabilityPlannerPort,
     PlannedCapabilityStep,
+    _semantic_checker_attempt_evidence,
     _transition_loop_decision,
 )
 from navi.trace import TraceStore
 from navi.trace_proxies import TracingPlannerPortProxy
+from navi.workspaces import ShadowWorkspaceManager
 
 
 def _command(script: str) -> str:
@@ -62,6 +66,41 @@ def _runtime_facts_from_turn_input(turn_input: str) -> dict:
     match = re.search(r"<runtime_facts>\s*(.*?)\s*</runtime_facts>", turn_input, re.DOTALL)
     assert match is not None
     return json.loads(match.group(1))
+
+
+def test_semantic_checker_evidence_includes_current_capability_execution() -> None:
+    evidence = _semantic_checker_attempt_evidence(
+        {
+            "attempt_history": [
+                {
+                    "attempt": 1,
+                    "tool": "account.usage",
+                    "args": {},
+                    "ok": True,
+                    "action": "read",
+                    "facts": {"remaining_percent": 86.0},
+                    "message": "",
+                    "error_reason": "",
+                    "terminal": False,
+                },
+                {
+                    "attempt": 2,
+                    "tool": "respond",
+                    "args": {},
+                    "ok": True,
+                    "action": "chat",
+                    "facts": {},
+                    "message": "Current remaining quota is 86%.",
+                    "error_reason": "",
+                    "terminal": True,
+                },
+            ]
+        }
+    )
+
+    assert [item["tool"] for item in evidence] == ["account.usage", "respond"]
+    assert evidence[-1]["action"] == "chat"
+    assert evidence[-1]["terminal"] is True
 
 
 def _spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
@@ -126,6 +165,39 @@ def _write_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
             ),
         ),
     )
+
+
+class _ExplodingPlanner:
+    async def plan(self, spec, state, *, workspace, evidence):
+        del spec, state, workspace, evidence
+        raise RuntimeError("provider exploded")
+
+
+class _UnusedExecutor:
+    async def execute(self, step, spec, state, *, workspace):
+        del step, spec, state, workspace
+        raise AssertionError("executor must not run")
+
+
+@pytest.mark.asyncio
+async def test_unexpected_planner_exception_discards_shadow_workspace(tmp_path: Path) -> None:
+    spec = replace(
+        _spec(_command("print('ok')")),
+        workspace_policy=WorkspacePolicy(mode=WorkspaceMode.SHADOW),
+    )
+    runner = DurableStateGraphRunner(
+        home=tmp_path / ".navi",
+        planner_port=_ExplodingPlanner(),
+        executor_port=_UnusedExecutor(),
+    )
+
+    with pytest.raises(RuntimeError, match="provider exploded"):
+        await runner.run_async(spec, workspace=tmp_path)
+
+    shadows = ShadowWorkspaceManager(tmp_path / ".navi").list_shadows(limit=10)
+    assert len(shadows) == 1
+    assert shadows[0].status == "discarded"
+    assert not Path(shadows[0].shadow_workspace).parent.exists()
 
 
 def test_capability_recovery_replans_after_non_retryable_call_failure() -> None:
@@ -900,7 +972,7 @@ async def test_durable_state_graph_uses_loop_budget_policy_and_traces_gate(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_durable_state_graph_pauses_until_synchronous_delivery_receipt(
+async def test_durable_state_graph_pauses_until_durable_delivery_receipt(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "resume.docx"
@@ -945,7 +1017,7 @@ async def test_durable_state_graph_pauses_until_synchronous_delivery_receipt(
     assert result.evidence["capability_result"]["yields_control"] is True
     assert "side_effect_commit_result" not in result.evidence
     delivery = result.evidence["capability_result"]["facts"]["connector_delivery"]
-    assert delivery["mode"] == "synchronous"
+    assert delivery["mode"] == "durable"
     assert Path(delivery["path"]) == source.resolve()
     assert source.exists()
     assert not _loop_decision_payloads_by_tool(
@@ -1080,9 +1152,7 @@ class _RespondPlanningProvider:
                         "permission": "read",
                         "args": {
                             "message": "which investor should I send the resume to?",
-                            "private_evidence": {
-                                "smoke_token": "STATE_GRAPH_PRIVATE_TOKEN"
-                            },
+                            "private_evidence": {"smoke_token": "STATE_GRAPH_PRIVATE_TOKEN"},
                         },
                         "reason": "objective is blocked by missing recipient identity",
                     }

@@ -229,11 +229,13 @@ async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
     assert checker_input["current_time"]["iso"]
     assert "utc_offset" in checker_input["current_time"]
     supporting = checker_input["observed_capability_evidence"]
-    assert [item["tool"] for item in supporting] == ["web.search"]
+    assert [item["tool"] for item in supporting] == ["web.search", "respond"]
     assert "result_count" in supporting[0]["facts_json"]
     assert "secret-token" not in supporting[0]["args_json"]
     assert "[REDACTED]" in supporting[0]["args_json"]
     assert "reason" not in supporting[0]
+    assert supporting[-1]["action"] == "respond"
+    assert supporting[-1]["terminal"] is True
 
 
 @pytest.mark.asyncio
@@ -269,7 +271,9 @@ async def test_semantic_checker_receives_exact_duplicate_prior_result_facts(
         GoalSpec(
             objective="teach a progressive daily topic with fresh content",
             scope=(f"repo:{tmp_path}",),
-            acceptance_criteria=("respond for the current occurrence without duplicating prior output",),
+            acceptance_criteria=(
+                "respond for the current occurrence without duplicating prior output",
+            ),
             metadata={"task_context": task_context},
         ),
         goal_id="current-occurrence",
@@ -550,9 +554,13 @@ async def test_semantic_checker_verdict_does_not_own_loop_control(tmp_path: Path
     )
 
     assert result.ok is False
-    assert result.facts["loop_terminal_state"] == LoopTerminalState.BLOCKED
-    assert result.facts["resolution"] == Resolution.BLOCKED
-    assert provider.calls.count("planner") == 4
+    assert result.facts["loop_terminal_state"] == LoopTerminalState.FAILED
+    assert result.facts["resolution"] == Resolution.FAILED
+    # The checker was observed four times; it did not terminate the loop. Later
+    # planner-provider failures are structured facts and consume the generic
+    # retry budget rather than escaping as uncaught runtime exceptions.
+    assert provider.calls.count("planner") == 10
+    assert provider.calls.count("checker") == 4
 
 
 @pytest.mark.asyncio
