@@ -206,7 +206,7 @@ class CheckpointPolicy:
 
 @dataclass(frozen=True)
 class WorkspacePolicy:
-    mode: WorkspaceMode | str = WorkspaceMode.SHADOW
+    mode: WorkspaceMode | str = WorkspaceMode.READ_ONLY
     require_fingerprint: bool = True
     require_three_way_merge: bool = True
     require_locks: bool = True

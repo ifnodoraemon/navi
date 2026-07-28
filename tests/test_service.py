@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 from navi import diagnostics
-from navi.service import build_systemd_user_unit
+from navi.service import SystemdNotifier, build_systemd_user_unit
 
 
 def test_build_systemd_user_unit_uses_project_and_home(tmp_path):
@@ -19,8 +20,47 @@ def test_build_systemd_user_unit_uses_project_and_home(tmp_path):
     assert "ExecStart=" in unit
     assert "-m navi.cli run" in unit
     assert "EnvironmentFile=" not in unit
-    assert "Restart=no" in unit
-    assert "RestartSec=" not in unit
+    assert "NotifyAccess=main" in unit
+    assert "Restart=on-failure" in unit
+    assert "RestartSec=5s" in unit
+    assert "WatchdogSec=90s" in unit
+    assert "TimeoutStopSec=30s" in unit
+
+
+def test_systemd_notifier_sends_ready_and_watchdog(monkeypatch):
+    class FakeSocket:
+        def __init__(self):
+            self.addresses: list[str | bytes] = []
+            self.payloads: list[bytes] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def connect(self, address):
+            self.addresses.append(address)
+
+        def sendall(self, payload):
+            self.payloads.append(payload)
+
+    fake = FakeSocket()
+    monkeypatch.setattr("navi.service.socket.socket", lambda *args: fake)
+    notifier = SystemdNotifier.from_environment(
+        {
+            "NOTIFY_SOCKET": "@navi-notify",
+            "WATCHDOG_USEC": "90000000",
+            "WATCHDOG_PID": str(os.getpid()),
+        }
+    )
+
+    assert notifier.watchdog_interval_seconds == 30.0
+    assert notifier.ready("Navi active") is True
+    assert fake.addresses == [b"\0navi-notify"]
+    assert fake.payloads == [b"READY=1\nSTATUS=Navi active"]
+    assert notifier.notify("WATCHDOG=1") is True
+    assert fake.payloads[-1] == b"WATCHDOG=1"
 
 
 def test_service_diagnostic_does_not_retry_with_another_systemctl_command(monkeypatch):

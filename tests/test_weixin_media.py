@@ -12,7 +12,12 @@ from navi.approval_contract import APPROVAL_ACTION_CAPABILITY, APPROVAL_DECISION
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.connector_delivery import ConnectorDelivery, connector_delivery_client_id
-from navi.delivery_outbox import DeliveryOutboxStore
+from navi.delivery_outbox import (
+    DeliveryCoordinator,
+    DeliveryEnvelope,
+    DeliveryOutboxStore,
+    envelope_from_response,
+)
 from navi.event_bus import ResponseReadyEvent
 from navi.goals import GoalStore
 from navi.lifecycle import Acceptance, Governance, Phase, Resolution
@@ -32,9 +37,10 @@ from navi.weixin.client import (
     WeixinTransportError,
 )
 from navi.weixin.config import WeixinConfig
+from navi.weixin.delivery import WeixinDeliveryTransport
 from navi.weixin.models import WeixinAccount, WeixinUpdate
 from navi.weixin.service import WeixinService
-from navi.weixin.store import WeixinStore
+from navi.weixin.store import WeixinSessionStore, WeixinStatusStore, WeixinStore
 
 
 class NoModelCalls:
@@ -51,6 +57,75 @@ def test_weixin_store_rejects_corrupt_sync_cursor(tmp_path: Path):
 
     with pytest.raises(ValueError):
         store.load_sync_buf("acct")
+
+
+def test_weixin_session_store_persists_freshness_and_invalidation(tmp_path: Path):
+    sessions = WeixinSessionStore(tmp_path)
+    assert sessions.put("acct", "peer", "ctx-1", observed_at=100.0) is True
+    assert WeixinSessionStore(tmp_path).get("acct", "peer", now=105.0, max_age_seconds=10) == "ctx-1"
+    assert WeixinSessionStore(tmp_path).get("acct", "peer", now=111.0, max_age_seconds=10) == ""
+
+    assert sessions.invalidate(
+        "acct",
+        "peer",
+        reason="connector_session_expired",
+        invalidated_at=106.0,
+    )
+    assert WeixinSessionStore(tmp_path).get("acct", "peer", now=106.0) == ""
+    assert sessions.put("acct", "peer", "ctx-1", observed_at=100.0) is False
+    assert sessions.get("acct", "peer", now=106.0) == ""
+    assert (tmp_path / "weixin" / "peer-sessions.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_weixin_status_keeps_proactive_egress_degraded_until_proactive_receipt(
+    tmp_path: Path,
+) -> None:
+    status = WeixinStatusStore(tmp_path)
+    status.update_ingress("healthy")
+    status.record_egress_failure(
+        proactive=True,
+        error="connector_rate_limited",
+        provider_code="ret=-2 errcode=-2",
+        retry_after_seconds=900,
+        at=100.0,
+    )
+    status.record_egress_success(proactive=False, at=101.0)
+
+    degraded = status.load()
+    assert degraded["status"] == "degraded"
+    assert degraded["egress_status"] == "degraded"
+    assert degraded["reactive_egress_status"] == "healthy"
+    assert degraded["proactive_egress_status"] == "degraded"
+    assert degraded["consecutive_proactive_egress_failures"] == 1
+    assert degraded["consecutive_egress_failures"] == 1
+    assert status.proactive_circuit_open(now=999.0)
+
+    status.record_egress_success(proactive=True, at=1001.0)
+    healthy = status.load()
+    assert healthy["status"] == "healthy"
+    assert healthy["egress_status"] == "healthy"
+    assert healthy["proactive_circuit_open_until"] == 0.0
+
+
+def test_weixin_status_marks_stale_ingress_and_does_not_mask_partial_egress(
+    tmp_path: Path,
+) -> None:
+    status = WeixinStatusStore(tmp_path)
+    status.update_ingress("healthy")
+    state = status.load()
+    state["last_ingress_update"] = 100.0
+    status._write(state)
+
+    partial = status.snapshot(now=101.0, ingress_stale_after_seconds=10.0)
+    assert partial["status"] == "partial"
+    assert partial["ingress_status"] == "healthy"
+    assert partial["egress_status"] == "unknown"
+
+    stale = status.snapshot(now=111.0, ingress_stale_after_seconds=10.0)
+    assert stale["status"] == "stale"
+    assert stale["ingress_status"] == "stale"
+    assert stale["ingress_age_seconds"] == 11.0
+    assert "heartbeat is stale" in stale["ingress_error"]
 
 
 class WatchNotificationProvider:
@@ -172,7 +247,7 @@ async def test_get_updates_keeps_file_only_messages_as_attachment(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_send_message_propagates_first_provider_failure_without_retry(
+async def test_send_message_classifies_rate_limit_without_hidden_client_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = WeixinClient(base_url="https://ilink.example", token="token")
@@ -196,7 +271,7 @@ async def test_send_message_propagates_first_provider_failure_without_retry(
         )
 
     assert calls == 1
-    assert captured.value.reason == "connector_rejected"
+    assert captured.value.reason == "connector_rate_limited"
 
 
 @pytest.mark.asyncio
@@ -305,10 +380,106 @@ class RejectedWeixinClient(CaptureWeixinClient):
         self.messages.append(kwargs)
         raise WeixinTransportError(
             "sendmessage",
+            ret=-3,
+            errcode=-3,
+            errmsg="permanent rejection",
+        )
+
+
+class RateLimitedWeixinClient(CaptureWeixinClient):
+    async def send_message(self, **kwargs: Any) -> None:
+        self.messages.append(kwargs)
+        raise WeixinTransportError(
+            "sendmessage",
             ret=-2,
             errcode=-2,
             errmsg="prepare failed",
         )
+
+
+class SessionExpiredOnceWeixinClient(CaptureWeixinClient):
+    async def send_message(self, **kwargs: Any) -> None:
+        self.messages.append(kwargs)
+        if len(self.messages) == 1:
+            raise WeixinTransportError(
+                "sendmessage",
+                ret=-14,
+                errcode=-14,
+                errmsg="session timeout",
+            )
+
+
+@pytest.mark.asyncio
+async def test_delivery_retries_session_expiry_without_token_using_same_item(
+    tmp_path: Path,
+) -> None:
+    sessions = WeixinSessionStore(tmp_path)
+    sessions.put("acct", "wx-user", "ctx")
+    store = DeliveryOutboxStore(tmp_path)
+    item = store.enqueue(
+        DeliveryEnvelope(
+            batch_id="session-fallback",
+            channel="weixin",
+            peer_id="wx-user",
+            text="hello",
+        )
+    )[0]
+    client = SessionExpiredOnceWeixinClient()
+    transport = WeixinDeliveryTransport(
+        client=client,
+        account=WeixinAccount(
+            account_id="acct",
+            token="token",
+            base_url="https://ilink.example",
+        ),
+        sessions=sessions,
+    )
+
+    outcomes = await DeliveryCoordinator(store).drain(transport)
+
+    assert [outcome.state for outcome in outcomes] == ["sent"]
+    assert [message["context_token"] for message in client.messages] == ["ctx", ""]
+    assert [message["idempotency_key"] for message in client.messages] == [item.id, item.id]
+    assert outcomes[0].receipt is not None
+    assert outcomes[0].receipt.details == {"retried_without_context_token": True}
+    assert sessions.get("acct", "wx-user") == ""
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_schedules_bounded_retry_and_stops_the_weixin_batch(
+    tmp_path: Path,
+) -> None:
+    store = DeliveryOutboxStore(tmp_path)
+    items = store.enqueue(
+        DeliveryEnvelope(
+            batch_id="rate-limited",
+            channel="weixin",
+            peer_id="wx-user",
+            text="first",
+            file_path="/tmp/second.txt",
+        )
+    )
+    client = RateLimitedWeixinClient()
+    transport = WeixinDeliveryTransport(
+        client=client,
+        account=WeixinAccount(
+            account_id="acct",
+            token="token",
+            base_url="https://ilink.example",
+        ),
+    )
+
+    outcomes = await DeliveryCoordinator(store).drain(transport, limit=10)
+
+    assert [outcome.state for outcome in outcomes] == ["retry_scheduled"]
+    assert outcomes[0].failure is not None
+    assert outcomes[0].failure.reason == "connector_rate_limited"
+    retried = store.get(items[0].id)
+    assert retried is not None
+    assert retried.status == "pending"
+    assert retried.attempts == 1
+    assert retried.next_attempt_at - retried.updated_at >= 899.0
+    assert store.get(items[1].id).status == "pending"
 
 
 class TransientTextFailingWeixinClient(CaptureWeixinClient):
@@ -632,9 +803,11 @@ async def test_background_outbox_sends_accepted_result_verbatim(tmp_path: Path):
         channel="weixin",
         trace_id=run.id,
     )
-    context_tokens = tmp_path / "weixin" / "context-tokens.json"
-    context_tokens.parent.mkdir(parents=True, exist_ok=True)
-    context_tokens.write_text(json.dumps({"acct:wx-user": "stale-context-token"}), encoding="utf-8")
+    WeixinSessionStore(tmp_path).put(
+        "acct",
+        "wx-user",
+        "current-context-token",
+    )
     client = CaptureWeixinClient()
     service = WeixinService(
         home=tmp_path,
@@ -652,7 +825,7 @@ async def test_background_outbox_sends_accepted_result_verbatim(tmp_path: Path):
     delivery = GoalStore(tmp_path).latest_delivery(goal.id)
     assert client.files == []
     assert client.messages[0]["text"] == body
-    assert client.messages[0]["context_token"] == ""
+    assert client.messages[0]["context_token"] == "current-context-token"
     assert delivery["state_transition"] == "delivered"
     assert delivery["text_length"] == len(body)
     events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8").splitlines()
@@ -766,6 +939,129 @@ async def test_background_outbox_failure_records_typed_goal_and_trace_facts(
     ]
     assert len(failures) == 1
     assert json.loads(failures[0].output_json)["error_reason"] == "connector_rejected"
+
+    recovery_client = CaptureWeixinClient()
+    service.client = recovery_client
+    DeliveryOutboxStore(tmp_path).requeue_failed(outbox.id)
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    assert recovery_client.messages[0]["idempotency_key"] == outbox.id
+    assert goal_store.latest_delivery(goal.id)["state_transition"] == "delivered"
+    recovered_run = RunStore(tmp_path).get(run.id)
+    assert recovered_run is not None
+    assert recovered_run.resolution == Resolution.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_background_rate_limit_stays_pending_and_opens_proactive_circuit(
+    tmp_path: Path,
+) -> None:
+    run = RunStore(tmp_path).create(
+        "scheduled usage",
+        kind="loop:durable_goal",
+        source="weixin",
+        peer_id="wx-user",
+        sender_id="wx-user",
+        workspace=str(tmp_path),
+    )
+    goals = GoalStore(tmp_path)
+    goal = goals.create(
+        objective=run.prompt,
+        workspace=str(tmp_path),
+        source=run.source,
+        peer_id=run.peer_id,
+        sender_id=run.sender_id,
+        run_id=run.id,
+    )
+    item = goals.record_result_delivery_outbox(
+        run=run,
+        goal=goal,
+        body="usage: 95%",
+        body_provenance="state_graph.evidence.responded_message",
+        channel="weixin",
+        trace_id=run.id,
+    )
+    assert item is not None
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=RateLimitedWeixinClient(),
+    )
+    service.daemon = StaticDaemon([])
+
+    await service.process_background(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example")
+    )
+
+    accepted = goals.accepted_result_for_run(run.id)
+    assert accepted["delivery_status"] == "pending"
+    assert accepted["delivery_attempts"] == 1
+    assert accepted["delivery_error_reason"] == "connector_rate_limited"
+    health = WeixinStatusStore(tmp_path).load()
+    assert health["proactive_egress_status"] == "degraded"
+    assert health["proactive_circuit_open_until"] > health["last_egress_attempt_at"]
+    assert RunStore(tmp_path).get(run.id).phase != Phase.ENDED
+
+
+def test_fresh_weixin_session_requeues_only_unexpired_session_failures(
+    tmp_path: Path,
+) -> None:
+    now = 1_000.0
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=CaptureWeixinClient(),
+    )
+    service.sessions.put("acct", "peer", "fresh-token", observed_at=now)
+    outbox = DeliveryOutboxStore(tmp_path)
+    current, expired, unrelated = [
+        outbox.enqueue(
+            envelope_from_response(
+                channel="weixin",
+                peer_id="peer",
+                sender_id="sender",
+                trace_id=trace_id,
+                text=trace_id,
+                body_provenance="accepted_result",
+                transport_context={"expires_at": expires_at},
+            )
+        )[0]
+        for trace_id, expires_at in (
+            ("current", now + 60),
+            ("expired", now),
+            ("unrelated", now + 60),
+        )
+    ]
+    outbox.mark_failed(
+        current.id,
+        error="connector_session_expired: WeixinTransportError: ret=-14",
+    )
+    outbox.mark_failed(
+        expired.id,
+        error="connector_session_expired: WeixinTransportError: ret=-14",
+    )
+    outbox.mark_failed(
+        unrelated.id,
+        error="connector_rejected: WeixinTransportError: ret=-3",
+    )
+
+    requeued = service._requeue_session_recoverable_deliveries(
+        account_id="acct",
+        peer_id="peer",
+        now=now,
+    )
+
+    assert requeued == [current.id]
+    assert outbox.get(current.id).status == "pending"
+    assert outbox.get(current.id).attempts == 0
+    assert outbox.get(expired.id).status == "failed"
+    assert outbox.get(unrelated.id).status == "failed"
 
 
 @pytest.mark.asyncio
@@ -1200,9 +1496,17 @@ async def test_service_deduplicates_message_id_across_instances(tmp_path: Path):
     second.ingress = StaticIngress("第二次不应回复")
 
     assert await first.handle_update(account, update) is True
-    assert await second.handle_update(account, update) is False
+    duplicate_with_fresh_token = WeixinUpdate(
+        message_id=update.message_id,
+        peer_id=update.peer_id,
+        sender_id=update.sender_id,
+        text=update.text,
+        context_token="ctx-refreshed",
+    )
+    assert await second.handle_update(account, duplicate_with_fresh_token) is False
     assert first_client.messages[0]["text"] == "第一次回复"
     assert second_client.messages == []
+    assert WeixinSessionStore(tmp_path).get("acct", "wx-user") == "ctx-refreshed"
 
     events = (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8")
     assert '"event": "message.duplicate"' in events

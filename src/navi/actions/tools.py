@@ -79,7 +79,8 @@ class ToolCapability:
                 facts=tool_catalog_facts(
                     specs,
                     definition=(
-                        "callable capabilities available in the current permission context"
+                        "declared capability catalog; concrete calls remain policy- and "
+                        "approval-gated"
                     ),
                 ),
             )

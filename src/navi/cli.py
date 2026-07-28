@@ -40,7 +40,11 @@ from .paths import ensure_home
 from .prompt_os import assemble_planner_system_prompt
 from .prompting import build_system_prompt_assembly
 from .provider import build_provider
-from .service import build_systemd_user_unit, install_systemd_user_unit
+from .service import (
+    build_systemd_user_unit,
+    install_systemd_user_unit,
+    run_with_systemd_watchdog,
+)
 from .safeguards import redact_secrets_deep
 from .skills import SkillStore
 from .trace import TraceStore
@@ -280,7 +284,16 @@ def status() -> None:
     typer.echo(f"tools={len(tools)} sessions={len(sessions)} goals={goals}")
     for adapter in connectors:
         marker = "enabled" if adapter.enabled(home) else "disabled"
-        typer.echo(f"connector.{adapter.name}={marker}")
+        facts = adapter.status(home)
+        health = str(facts.get("status") or "unknown")
+        detail = ""
+        if "ingress_status" in facts or "egress_status" in facts:
+            detail = (
+                f" ingress={facts.get('ingress_status', 'unknown')}"
+                f" egress={facts.get('egress_status', 'unknown')}"
+                f" proactive={facts.get('proactive_egress_status', 'unknown')}"
+            )
+        typer.echo(f"connector.{adapter.name}={marker} status={health}{detail}")
 
 
 @app.command()
@@ -320,7 +333,12 @@ def run(once: bool = False, connector: str | None = None) -> None:
     home = ensure_home()
     write_default_config(home)
     adapter = _select_runnable_connector(connector)
-    asyncio.run(adapter.run(home, Path.cwd(), once))
+    asyncio.run(
+        run_with_systemd_watchdog(
+            adapter.run(home, Path.cwd(), once),
+            status=f"Navi connector {adapter.name} active",
+        )
+    )
 
 
 @app.command()
@@ -1165,6 +1183,60 @@ def connector_tail(name: str, limit: int = 20, json_output: bool = False) -> Non
             f"{key}={value}" for key, value in event.items() if key not in {"ts", "event"}
         )
         typer.echo(f"{ts} {kind} {facts}".rstrip())
+
+
+@connectors_app.command("outbox")
+def connector_outbox(
+    name: str,
+    status: str = "",
+    limit: int = 20,
+    retry_id: str = "",
+    json_output: bool = False,
+) -> None:
+    """Inspect connector delivery state or explicitly retry one failed item."""
+    from .delivery_outbox import DeliveryOutboxStore
+
+    home = ensure_home()
+    _require_connector(name)
+    store = DeliveryOutboxStore(home)
+    if retry_id:
+        item = store.get(retry_id)
+        if item is None or item.channel != name:
+            raise typer.BadParameter(f"delivery item does not belong to connector {name}")
+        restored = store.requeue_failed(retry_id)
+        typer.echo(f"requeued {restored.id} status={restored.status}")
+        return
+    items = store.list_items(channel=name, status=status, limit=limit)
+    payload = [
+        {
+            "id": item.id,
+            "batch_id": item.batch_id,
+            "status": item.status,
+            "kind": item.kind,
+            "run_id": item.run_id,
+            "goal_id": item.goal_id,
+            "attempts": item.attempts,
+            "max_attempts": item.max_attempts,
+            "next_attempt_at": item.next_attempt_at,
+            "expires_at": item.transport_context.get("expires_at", 0.0),
+            "error": item.error,
+            "created_at": item.created_at,
+            "sent_at": item.sent_at,
+        }
+        for item in items
+    ]
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    if not payload:
+        typer.echo("(no delivery items)")
+        return
+    for item in payload:
+        typer.echo(
+            f"{item['id']} status={item['status']} attempts={item['attempts']}/"
+            f"{item['max_attempts']} next={item['next_attempt_at']:g} "
+            f"expires={item['expires_at']} error={item['error']}"
+        )
 
 
 def _require_connector(name: str):

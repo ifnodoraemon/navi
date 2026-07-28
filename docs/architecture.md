@@ -137,8 +137,12 @@ returned without an automatic repeat, provider switch, argument rewrite, or
 degraded substitute. A later planner turn is a new model-owned decision, not a
 runtime retry. Lease recovery after a crashed owner and database transaction
 conflict handling remain deterministic control-plane coordination, not semantic
-recovery choices. The systemd unit uses `Restart=no`; a failed assistant process
-stays failed until an explicit operator or governed model action starts it again.
+recovery choices. The systemd unit uses `Restart=on-failure`; the assistant process
+is supervised with a 90-second event-loop watchdog and restarts after process or
+watchdog failure. Restart recovery only resumes persisted control-plane state; it
+does not repeat model work or invent a semantic recovery choice. Connector
+heartbeat freshness remains a separate health fact so an active PID cannot make
+a stale polling loop appear healthy.
 
 Prompt assembly is an inspectable interface, not scattered inline runtime text.
 Stable prompt specifications live in `src/navi/specs_data.py`; assembly,
@@ -158,7 +162,11 @@ converge the LoopRun and accept the Run and Goal. A bounded re-submit is allowed
 only for the same durable item and idempotency key; it never replays model work,
 changes payload, or selects another channel. Connector adapters own their API
 mapping and failure classification, while the outbox owns queue state, recovery,
-receipt persistence, and retry scheduling.
+receipt persistence, and retry scheduling. Adapter-classified retry intervals
+are bounded by the outbox, interactive responses may carry a higher transport
+priority than proactive notifications, and recurring occurrences expire at the
+next persisted occurrence deadline instead of accumulating a stale replay
+backlog.
 
 ## Persistence
 
@@ -248,6 +256,18 @@ For a blocked or failed background task, the notification role receives a
 bounded projection of persisted Goal and LoopRun diagnostics, including reason
 codes, checker verdicts, and the last capability facts. The connector still
 does not decide whether the event is noteworthy or author its own fallback text.
+An adapter persists channel session material only at its native account-and-peer
+scope, invalidates it from authoritative provider errors, and never emits it to
+events or status output. Connector health separates ingress, reactive egress,
+and proactive egress; a healthy poll loop cannot mask rejected outbound
+notifications.
+Ingress heartbeat age is evaluated when health is read. A stale ingress loop
+degrades overall connector health, while partial or unknown egress prevents a
+top-level healthy projection. After a fresh native peer session is observed, the
+adapter may requeue only receipt-free items that failed specifically because the
+old session expired and whose persisted delivery deadline is still in the
+future. The original payload and idempotency key are preserved; expired and
+unrelated failures remain terminal.
 
 Outbound files use the connector-neutral `ConnectorDelivery` contract. The
 kernel validates the original file and emits one structured durable delivery

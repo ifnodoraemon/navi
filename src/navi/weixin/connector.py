@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +8,7 @@ import yaml
 from navi.connector_registry import ConnectorAdapter, ConnectorSpec
 
 from .config import load_weixin_config
-from .store import WeixinStore
+from .store import WeixinStatusStore, WeixinStore
 
 
 def _load_spec() -> ConnectorSpec:
@@ -69,27 +67,8 @@ def _status(home: Path) -> dict[str, Any]:
         "status": "unknown",
         "error": "",
         "last_update": 0.0,
+        **WeixinStatusStore(home).snapshot(),
     }
-    status_file = home / "weixin" / "status.json"
-    if status_file.exists():
-        try:
-            data = json.loads(status_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                logging.getLogger("navi.weixin").warning(
-                    "status.json must be a JSON object, got %s", type(data).__name__
-                )
-            else:
-                facts.update(
-                    {
-                        "status": data.get("status", "unknown"),
-                        "error": data.get("error", ""),
-                        "last_update": data.get("last_update", 0.0),
-                    }
-                )
-        except json.JSONDecodeError as e:
-            logging.getLogger("navi.weixin").warning("Corrupted status.json: %s", e)
-        except OSError as e:
-            logging.getLogger("navi.weixin").warning("Failed to read status file: %s", e)
     return facts
 
 
@@ -98,6 +77,9 @@ def _diagnostics(home: Path) -> list[dict[str, str]]:
     saved_account = WeixinStore(home).load_account(config.account_id) if config.account_id else None
     token_present = bool(config.token or (saved_account and saved_account.token))
     ready = config.enabled and config.account_id and token_present
+    health = WeixinStatusStore(home).snapshot()
+    ingress_status = str(health.get("ingress_status") or "unknown")
+    egress_status = str(health.get("egress_status") or "unknown")
     return [
         {
             "name": f"connector.{SPEC.name}.config",
@@ -107,7 +89,40 @@ def _diagnostics(home: Path) -> list[dict[str, str]]:
                 f"account_present={bool(config.account_id)} "
                 f"token_present={token_present}"
             ),
-        }
+        },
+        {
+            "name": f"connector.{SPEC.name}.ingress",
+            "status": (
+                "ok"
+                if ingress_status == "healthy"
+                else "error"
+                if ingress_status in {"fatal", "degraded", "stale"}
+                else "warn"
+            ),
+            "detail": (
+                f"ingress={ingress_status} "
+                f"age_seconds={health.get('ingress_age_seconds', 0):.1f} "
+                f"stale_after_seconds={health.get('ingress_stale_after_seconds', 0):.1f}"
+            ),
+        },
+        {
+            "name": f"connector.{SPEC.name}.egress",
+            "status": (
+                "ok"
+                if egress_status == "healthy"
+                else "error"
+                if egress_status == "degraded"
+                else "warn"
+            ),
+            "detail": (
+                f"egress={egress_status} "
+                f"reactive={health.get('reactive_egress_status', 'unknown')} "
+                f"proactive={health.get('proactive_egress_status', 'unknown')} "
+                "proactive_consecutive_failures="
+                f"{health.get('consecutive_proactive_egress_failures', 0)} "
+                f"last_provider_code={health.get('last_provider_code', '')}"
+            ),
+        },
     ]
 
 
@@ -132,6 +147,26 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
                     "status": {"type": "string"},
                     "error": {"type": "string"},
                     "last_update": {"type": "number"},
+                    "ingress_status": {"type": "string"},
+                    "ingress_error": {"type": "string"},
+                    "last_ingress_update": {"type": "number"},
+                    "ingress_age_seconds": {"type": "number"},
+                    "ingress_stale_after_seconds": {"type": "number"},
+                    "egress_status": {"type": "string"},
+                    "egress_error": {"type": "string"},
+                    "last_egress_attempt_at": {"type": "number"},
+                    "last_egress_success_at": {"type": "number"},
+                    "consecutive_egress_failures": {"type": "integer"},
+                    "consecutive_reactive_egress_failures": {"type": "integer"},
+                    "consecutive_proactive_egress_failures": {"type": "integer"},
+                    "reactive_egress_status": {"type": "string"},
+                    "proactive_egress_status": {"type": "string"},
+                    "reactive_egress_error": {"type": "string"},
+                    "proactive_egress_error": {"type": "string"},
+                    "last_reactive_egress_success_at": {"type": "number"},
+                    "last_proactive_egress_success_at": {"type": "number"},
+                    "proactive_circuit_open_until": {"type": "number"},
+                    "last_provider_code": {"type": "string"},
                 },
             },
             source=spec.surface,

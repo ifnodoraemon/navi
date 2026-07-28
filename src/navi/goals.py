@@ -892,6 +892,16 @@ class GoalStore:
         existing = outbox.latest_for_run(run.id)
         if existing is not None:
             return existing
+        transport_context: dict[str, Any] = {"priority": 0}
+        if goal.parent_goal_id:
+            parent = self.get(goal.parent_goal_id)
+            if parent is not None and parent.next_run_at > 0:
+                transport_context.update(
+                    {
+                        "expires_at": parent.next_run_at,
+                        "supersession_key": parent.id,
+                    }
+                )
         items = outbox.enqueue(
             DeliveryEnvelope(
                 batch_id=f"goal:{run.id}",
@@ -903,6 +913,7 @@ class GoalStore:
                 goal_id=goal.id,
                 text=text,
                 body_provenance=body_provenance,
+                transport_context=transport_context,
             )
         )
         return items[0] if items else None
@@ -989,6 +1000,8 @@ class GoalStore:
             "delivery_error": item.error,
             "delivery_error_reason": _delivery_error_reason(item.error),
             "delivery_updated_at": item.updated_at,
+            "delivery_next_attempt_at": item.next_attempt_at,
+            "delivery_expires_at": item.transport_context.get("expires_at", 0.0),
         }
 
     def record_delivery(

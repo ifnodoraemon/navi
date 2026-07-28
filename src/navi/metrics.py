@@ -7,6 +7,7 @@ from typing import Any
 
 from .db import connect
 from .effect_journal import EffectJournal
+from .delivery_outbox import DeliveryOutboxStore
 from .evolution import EvolutionLedger
 from .evolution_experiments import EvolutionExperimentStore
 from .goals import GoalStore
@@ -81,6 +82,7 @@ class MetricsProjector:
         EvolutionExperimentStore(home)
         SQLiteResourceLedger(home)
         PersonalResourceStore(home)
+        DeliveryOutboxStore(home)
 
     def snapshot(self, *, now: float | None = None, window_seconds: float = 604800) -> SystemMetricsSnapshot:
         current_time = time.time() if now is None else now
@@ -89,6 +91,7 @@ class MetricsProjector:
         traces = self._trace_metrics(cutoff)
         integrity = self._integrity_metrics(current_time)
         pipeline = self._pipeline_metrics(current_time)
+        delivery = self._delivery_metrics(cutoff, current_time)
         metrics = (
             MetricFact(
                 "task_success_rate",
@@ -145,6 +148,22 @@ class MetricsProjector:
                 pipeline["memory_jobs"],
                 0,
                 "memory.db",
+            ),
+            MetricFact(
+                "proactive_delivery_success_rate",
+                delivery["proactive_success_rate"],
+                "ratio",
+                delivery["proactive_terminal"],
+                window_seconds,
+                "delivery_outbox.db",
+            ),
+            MetricFact(
+                "connector_delivery_overdue_count",
+                float(delivery["overdue_pending"]),
+                "count",
+                delivery["items"],
+                window_seconds,
+                "delivery_outbox.db",
             ),
         )
         slos = (
@@ -210,6 +229,23 @@ class MetricsProjector:
                 target=0.1,
                 higher_is_better=False,
             ),
+            _ratio_slo(
+                "proactive_delivery_success_rate",
+                delivery["proactive_success_rate"],
+                samples=delivery["proactive_terminal"],
+                minimum_samples=5,
+                target=0.95,
+                higher_is_better=True,
+            ),
+            _zero_slo(
+                "connector_delivery_backlog_health",
+                delivery["overdue_pending"],
+                samples=delivery["items"],
+                evidence={
+                    "pending": delivery["pending"],
+                    "overdue_pending": delivery["overdue_pending"],
+                },
+            ),
         )
         overall = "breached" if any(item.status == "breached" for item in slos) else "met"
         if overall == "met" and any(item.status == "insufficient_data" for item in slos):
@@ -223,6 +259,7 @@ class MetricsProjector:
             "successful_runs": runs["successful"],
             "evaluated_traces": traces["evaluated"],
             "failed_traces": traces["failed"],
+            **delivery,
         }
         return SystemMetricsSnapshot(
             generated_at=current_time,
@@ -441,6 +478,53 @@ class MetricsProjector:
             "uncertain_evolution_applies": uncertain_evolution_applies,
             "evolution_apply_attempts": evolution_apply_attempts,
             "personal_resources": personal_resources,
+        }
+
+    def _delivery_metrics(self, cutoff: float, now: float) -> dict[str, Any]:
+        with connect(self.paths.delivery_outbox) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*),
+                       SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
+                       SUM(
+                           CASE
+                               WHEN status = 'pending' AND next_attempt_at <= ? THEN 1
+                               ELSE 0
+                           END
+                       ),
+                       SUM(
+                           CASE
+                               WHEN body_provenance != 'response_ready'
+                                AND status IN ('sent', 'failed') THEN 1
+                               ELSE 0
+                           END
+                       ),
+                       SUM(
+                           CASE
+                               WHEN body_provenance != 'response_ready' AND status = 'sent'
+                               THEN 1
+                               ELSE 0
+                           END
+                       )
+                FROM delivery_outbox WHERE created_at >= ?
+                """,
+                (now - 300.0, cutoff),
+            ).fetchone()
+        items = int(row[0] or 0) if row else 0
+        pending = int(row[1] or 0) if row else 0
+        overdue_pending = int(row[2] or 0) if row else 0
+        proactive_terminal = int(row[3] or 0) if row else 0
+        proactive_sent = int(row[4] or 0) if row else 0
+        return {
+            "delivery_items": items,
+            "items": items,
+            "pending": pending,
+            "overdue_pending": overdue_pending,
+            "proactive_terminal": proactive_terminal,
+            "proactive_sent": proactive_sent,
+            "proactive_success_rate": (
+                proactive_sent / proactive_terminal if proactive_terminal else 0.0
+            ),
         }
 
 

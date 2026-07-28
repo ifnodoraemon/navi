@@ -376,7 +376,7 @@ def test_scheduled_occurrence_exposes_prior_output_and_delivery_as_facts(tmp_pat
     )
     assert first_run is not None
     service.goals.update_for_run(first_run)
-    service.goals.record_result_delivery_outbox(
+    first_outbox = service.goals.record_result_delivery_outbox(
         run=first_run,
         goal=first.goal,
         body="Lesson 1: foundations. Next topic: supervised learning.",
@@ -384,6 +384,9 @@ def test_scheduled_occurrence_exposes_prior_output_and_delivery_as_facts(tmp_pat
         channel="weixin",
         trace_id=first.loop_run.run_id,
     )
+    assert first_outbox is not None
+    assert first_outbox.transport_context["expires_at"] == registered.goal.next_run_at
+    assert first_outbox.transport_context["supersession_key"] == registered.goal.id
     service.goals.record_delivery(
         run_id=first.run.id,
         channel="weixin",

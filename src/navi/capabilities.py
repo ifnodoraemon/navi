@@ -130,13 +130,12 @@ class CapabilityRegistry:
         *,
         permission_ceiling: str | None = None,
     ) -> list[ToolSpec]:
-        ceiling = permission_ceiling or self.permission_ceiling
+        # Capability discovery is a fact surface, not an authorization
+        # decision.  The caller's policy envelope and concrete-call approval
+        # gate are enforced by ``invoke``.
+        del permission_ceiling
         return sorted(
-            [
-                handler.spec
-                for handler in self.handlers.values()
-                if permission_allows(handler.spec.permission, ceiling)
-            ],
+            [handler.spec for handler in self.handlers.values()],
             key=lambda spec: spec.name,
         )
 
@@ -144,12 +143,10 @@ class CapabilityRegistry:
         return self.planner_specs()
 
     def capability_graph(self, *, permission_ceiling: str | None = None) -> list[CapabilityNode]:
-        ceiling = permission_ceiling or self.permission_ceiling
+        del permission_ceiling
         nodes = []
         for handler in self.handlers.values():
             spec = handler.spec
-            if not permission_allows(spec.permission, ceiling):
-                continue
             nodes.append(
                 CapabilityNode(
                     name=spec.name,
@@ -212,17 +209,17 @@ class CapabilityRegistry:
                     "execution_context": self.execution_context,
                 },
             )
-        actual_ceiling = context.permission_ceiling
-        if not permission_allows(permission, actual_ceiling):
+        if self.allowed_tools is not None and name not in self.allowed_tools:
             return _capability_error(
                 action=f"execute:{name}",
-                error_reason="permission_ceiling",
-                message=f"permission ceiling {actual_ceiling} blocks requested permission {permission}",
+                error_reason="policy_envelope",
+                message=f"capability {name} is outside the current policy envelope",
                 observation_facts={
-                    "requested_permission": permission,
-                    "permission_ceiling": actual_ceiling,
+                    "tool": name,
+                    "allowed_tools": sorted(self.allowed_tools),
                 },
             )
+        actual_ceiling = context.permission_ceiling
         if not permission_allows(handler.spec.permission, permission):
             return _capability_error(
                 action=f"execute:{name}",
@@ -292,12 +289,45 @@ class CapabilityRegistry:
             handler.spec,
             call_args,
         )
-        if not permission_allows(effective_required_permission, actual_ceiling):
+        approval_permission = (
+            permission
+            if permission_allows(effective_required_permission, permission)
+            else effective_required_permission
+        )
+        ceiling_exceeded = not permission_allows(
+            approval_permission,
+            actual_ceiling,
+        )
+        ceiling_risk = (
+            CapabilityRiskAssessment(
+                risk_class="high",
+                sensitive_contexts=("permission_ceiling",),
+                confirmation_required=True,
+                reason_code="permission_ceiling_requires_approval",
+                evidence={
+                    "tool": name,
+                    "requested_permission": permission,
+                    "effective_required_permission": effective_required_permission,
+                    "permission_ceiling": actual_ceiling,
+                },
+            )
+            if ceiling_exceeded
+            else None
+        )
+        approval_risk, approved_approval_id = self._approval_state_for_call(
+            handler.spec,
+            name,
+            approval_permission,
+            call_args,
+            context=context,
+            required_risk=ceiling_risk,
+        )
+        if ceiling_exceeded and approval_risk is None and not approved_approval_id:
             return _capability_error(
                 action=f"execute:{name}",
                 error_reason="permission_ceiling",
                 message=(
-                    f"capability {name} call requires {effective_required_permission} "
+                    f"capability {name} call requires {approval_permission} "
                     f"but the permission ceiling is {actual_ceiling}"
                 ),
                 observation_facts={
@@ -308,13 +338,6 @@ class CapabilityRegistry:
                     "call_dependent_permission": True,
                 },
             )
-        approval_risk, approved_approval_id = self._approval_state_for_call(
-            handler.spec,
-            name,
-            effective_required_permission,
-            call_args,
-            context=context,
-        )
         permission_underdeclared = not permission_allows(
             effective_required_permission,
             permission,
@@ -339,7 +362,7 @@ class CapabilityRegistry:
                 return self._suspend_turn_for_sensitive_approval(
                     handler.spec,
                     name,
-                    effective_required_permission,
+                    approval_permission,
                     call_args,
                     risk=approval_risk,
                     context=context,
@@ -347,7 +370,7 @@ class CapabilityRegistry:
             return self._suspend_for_sensitive_approval(
                 handler.spec,
                 name,
-                effective_required_permission,
+                approval_permission,
                 call_args,
                 risk=approval_risk,
                 context=context,
@@ -564,6 +587,7 @@ class CapabilityRegistry:
         call_args: dict[str, Any],
         *,
         context: CapabilityContext,
+        required_risk: CapabilityRiskAssessment | None = None,
     ) -> tuple[CapabilityRiskAssessment | None, str]:
         if self.sensitive_approval_mode == "skip":
             return None, ""
@@ -580,6 +604,10 @@ class CapabilityRegistry:
                 else str(self.gateway.project_dir)
             ),
         )
+        if required_risk is not None and (
+            not risk.confirmation_required and risk.risk_class != "high"
+        ):
+            risk = required_risk
         if not risk.confirmation_required and risk.risk_class != "high":
             return None, ""
         args_json = _canonical_args_json(call_args, home=self.home)
@@ -843,8 +871,7 @@ class CapabilityRegistry:
         filtered = {
             name: handler
             for name, handler in handlers.items()
-            if (self.allowed_tools is None or name in self.allowed_tools)
-            and name not in self.disabled_tools
+            if name not in self.disabled_tools
             and not _is_class_blocked(name)
             and (self.allow_sources is None or handler.spec.source in self.allow_sources)
             and handler.spec.available_in(self.execution_context)

@@ -23,6 +23,7 @@ from .loop_contracts import (
     TimeoutPolicy,
     VerificationKind,
     VerificationStep,
+    WorkspaceMode,
     WorkspacePolicy,
 )
 from .loop_runs import LoopRunState, LoopRunStore
@@ -988,6 +989,11 @@ class LoopControlService:
         )
         spec = replace(
             spec,
+            workspace_policy=_workspace_policy_for_capabilities(
+                home=self.home,
+                workspace=workspace,
+                allowed_capabilities=allowed,
+            ),
             budget_policy=BudgetPolicy(
                 token_budget=max(0, int(request.token_budget)),
                 call_budget=max(0, int(request.call_budget)),
@@ -1273,6 +1279,31 @@ def _timeout_seconds_from_spec(spec: LoopSpec) -> int:
         120.0,
     )
     return max(1, int(seconds))
+
+
+def _workspace_policy_for_capabilities(
+    *,
+    home: Path,
+    workspace: str,
+    allowed_capabilities: tuple[str, ...],
+) -> WorkspacePolicy:
+    """Choose isolation from declared capability effects, not goal wording."""
+
+    from .tools import build_tool_gateway
+
+    allowed = set(allowed_capabilities)
+    requires_shadow = any(
+        spec.mutates
+        and spec.workspace_policy in {"paths", "sandbox"}
+        and ("*" in allowed or spec.name in allowed)
+        for spec in build_tool_gateway(
+            home,
+            project_dir=Path(workspace),
+        ).list_specs()
+    )
+    return WorkspacePolicy(
+        mode=WorkspaceMode.SHADOW if requires_shadow else WorkspaceMode.READ_ONLY,
+    )
 
 
 def _execution_mode(request: OpenGoalRequest, *, loop_kind: str) -> str:

@@ -42,6 +42,7 @@ from .memory import ACTIVE_MEMORY_CONTEXT_LIMIT
 from .model_facts import project_model_facts
 from .prompt_os import assemble_semantic_checker_messages
 from .runtime import AgentRuntime
+from .safeguards import required_permission_for_call
 from .syscalls import ModelSyscallPlanner
 from .resource_gateway import (
     GlobalResourceGateway,
@@ -135,6 +136,7 @@ class ExecutedCapabilityStep:
     terminal: bool = False
     yields_control: bool = False
     deterministic_completion_authority: bool = False
+    mutates: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +148,7 @@ class ExecutedCapabilityStep:
             "terminal": self.terminal,
             "yields_control": self.yields_control,
             "deterministic_completion_authority": self.deterministic_completion_authority,
+            "mutates": self.mutates,
         }
 
 
@@ -1189,6 +1192,11 @@ class CapabilityExecutorPort:
             deterministic_completion_authority=bool(
                 tool_spec and tool_spec.deterministic_completion_authority
             ),
+            mutates=bool(
+                tool_spec
+                and tool_spec.mutates
+                and required_permission_for_call(tool_spec, execution_args) == "write"
+            ),
         )
 
 
@@ -1496,7 +1504,7 @@ class DurableStateGraphRunner:
                 for item in attempt_history
                 if item.get("progress_signature") == progress_signature
             )
-            if repeated_count >= 3:
+            if repeated_count >= 3 and not executed.mutates:
                 warning_count = repeated_count - 2
                 collected_evidence["loop_gate"] = {
                     "reason": "repeated_progress_signature",
@@ -2088,6 +2096,7 @@ class DurableStateGraphRunner:
             deterministic_completion_authority=bool(
                 cap_result.get("deterministic_completion_authority", False)
             ),
+            mutates=bool(cap_result.get("mutates", False)),
         )
         execution_profile = spec.goal.metadata.get("execution_profile")
         checker_tier = (

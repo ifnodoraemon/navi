@@ -44,6 +44,8 @@ MSG_STATE_FINISH = 2
 TYPING_START = 1
 TYPING_STOP = 2
 CONFIG_TIMEOUT_SECONDS = 10.0
+SESSION_EXPIRED_ERRCODE = -14
+RATE_LIMIT_ERRCODE = -2
 
 
 class WeixinTransportError(RuntimeError):
@@ -61,7 +63,7 @@ class WeixinTransportError(RuntimeError):
         self.ret = ret
         self.errcode = errcode
         self.errmsg = " ".join(str(errmsg or "").split())[:300]
-        self.reason = _ilink_error_reason(ret=ret, errcode=errcode)
+        self.reason = _ilink_error_reason(ret=ret, errcode=errcode, errmsg=self.errmsg)
         super().__init__(
             f"iLink {operation} rejected ret={ret} errcode={errcode}"
             + (f" errmsg={self.errmsg}" if self.errmsg else "")
@@ -579,9 +581,12 @@ def _raise_ilink_error(response: dict[str, Any], operation: str) -> None:
     )
 
 
-def _ilink_error_reason(*, ret: Any, errcode: Any) -> str:
-    # iLink response codes are connector facts, not a stable cross-provider
-    # semantic taxonomy. Preserve them on WeixinTransportError and expose one
-    # uniform rejection category until the connector contract states otherwise.
-    del ret, errcode
+def _ilink_error_reason(*, ret: Any, errcode: Any, errmsg: str = "") -> str:
+    codes = {_coerce_int(ret), _coerce_int(errcode)}
+    if SESSION_EXPIRED_ERRCODE in codes or (
+        RATE_LIMIT_ERRCODE in codes and errmsg.strip().lower() == "unknown error"
+    ):
+        return "connector_session_expired"
+    if RATE_LIMIT_ERRCODE in codes:
+        return "connector_rate_limited"
     return "connector_rejected"

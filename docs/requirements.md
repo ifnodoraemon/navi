@@ -57,7 +57,14 @@ The only transport-level exception is a persisted connector delivery item with a
 stable idempotency key: its connector-neutral outbox may make a bounded retry of
 the unchanged item after an adapter-classified transient failure. This does not
 repeat a model or capability call, alter content, switch channels, or replace
-the required connector receipt.
+the required connector receipt. The adapter supplies typed provider codes and a
+minimum retry interval; the outbox enforces the item attempt bound and delivery
+deadline. A recurring occurrence that reaches its next persisted schedule
+deadline without a receipt expires instead of joining a later replay burst.
+When authoritative inbound activity refreshes a connector session, only an
+unchanged, receipt-free delivery that failed for session expiry and remains
+inside its persisted deadline may be requeued under its original idempotency
+key. Other failures require an explicit retry decision.
 
 Active-path state and retrieval failures must also propagate. A corrupt durable
 cursor, dedup ledger, FTS index, embedding result, or semantic graph must not be
@@ -279,9 +286,17 @@ triggers rollback, and uncertain application state is an SLO breach.
 Metrics and SLOs are projections of durable facts, not model judgments. At
 minimum they cover lifecycle orphans/sagas, execution leases, uncertain effects,
 resource release, memory jobs, task outcomes, trace outcomes, and evolution
-activation safety. Empty samples are reported as insufficient data, never as
+activation safety, proactive connector delivery success, and overdue delivery
+backlog. Empty samples are reported as insufficient data, never as
 healthy. User-requested cancellation is reported separately and is not classified
 as task execution failure in the success-rate denominator.
+
+The active assistant service must expose an event-loop watchdog to its external
+process supervisor. Connector status reads must classify an overdue ingress
+heartbeat as stale, and overall health must not report healthy while egress is
+partial, unknown, or degraded. Supervisor restart is process recovery only;
+durable leases, outbox idempotency, and connector receipts remain the authority
+for work recovery and completion.
 
 Recurring Goal templates must persist a durable real workspace, never a
 turn-scoped shadow workspace. Registration resolves managed paths from workspace

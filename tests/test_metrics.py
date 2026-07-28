@@ -7,6 +7,11 @@ import pytest
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.db import connect
+from navi.delivery_outbox import (
+    DeliveryEnvelope,
+    DeliveryOutboxStore,
+    DeliveryReceipt,
+)
 from navi.effect_journal import EffectJournal
 from navi.evolution import EvolutionLedger
 from navi.loop_control_service import LoopControlService, OpenGoalRequest
@@ -176,6 +181,38 @@ def test_trace_metrics_use_only_the_latest_evaluation_per_trace(tmp_path: Path) 
     assert len(traces.list_evaluations("trace-one")) == 1
     assert snapshot.diagnostics["evaluated_traces"] == 1
     assert snapshot.diagnostics["failed_traces"] == 1
+
+
+def test_metrics_surface_proactive_delivery_success_and_backlog(tmp_path: Path) -> None:
+    store = DeliveryOutboxStore(tmp_path)
+    for index in range(5):
+        item = store.enqueue(
+            DeliveryEnvelope(
+                batch_id=f"proactive-{index}",
+                channel="weixin",
+                peer_id="peer",
+                text=f"notification {index}",
+                body_provenance="background_notification",
+            )
+        )[0]
+        claimed = store.claim_ready(channel="weixin", limit=1)[0]
+        assert claimed.id == item.id
+        if index < 4:
+            store.mark_sent(
+                item.id,
+                receipt=DeliveryReceipt(transport="test"),
+            )
+        else:
+            store.mark_failed(item.id, error="connector_rejected")
+
+    snapshot = MetricsProjector(tmp_path).snapshot()
+    metrics = {item.name: item for item in snapshot.metrics}
+    slos = {item.name: item for item in snapshot.slos}
+
+    assert metrics["proactive_delivery_success_rate"].value == 0.8
+    assert metrics["proactive_delivery_success_rate"].samples == 5
+    assert slos["proactive_delivery_success_rate"].status == "breached"
+    assert snapshot.diagnostics["proactive_sent"] == 4
 
 
 @pytest.mark.asyncio

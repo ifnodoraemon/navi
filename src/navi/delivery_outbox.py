@@ -167,6 +167,8 @@ class DeliveryFailure:
     reason: str
     error: str
     retryable: bool
+    retry_after_seconds: float = 0.0
+    provider_code: str = ""
 
 
 @dataclass(frozen=True)
@@ -265,9 +267,20 @@ class DeliveryOutboxStore:
         channel: str,
         limit: int = 10,
         now: float | None = None,
+        minimum_priority: int | None = None,
     ) -> list[DeliveryItem]:
         current_time = time.time() if now is None else float(now)
         claimed: list[DeliveryItem] = []
+        priority_clause = (
+            "AND COALESCE(CAST(json_extract(transport_context_json, '$.priority') "
+            "AS INTEGER), 0) >= ?"
+            if minimum_priority is not None
+            else ""
+        )
+        params: list[Any] = [channel, current_time]
+        if minimum_priority is not None:
+            params.append(int(minimum_priority))
+        params.append(max(1, int(limit)))
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
@@ -275,9 +288,13 @@ class DeliveryOutboxStore:
                 SELECT {DELIVERY_OUTBOX_TABLE.select_list}
                 FROM delivery_outbox
                 WHERE channel = ? AND status = 'pending' AND next_attempt_at <= ?
-                ORDER BY created_at ASC LIMIT ?
+                {priority_clause}
+                ORDER BY COALESCE(
+                    CAST(json_extract(transport_context_json, '$.priority') AS INTEGER), 0
+                ) DESC, created_at ASC
+                LIMIT ?
                 """,
-                (channel, current_time, max(1, int(limit))),
+                tuple(params),
             ).fetchall()
             for row in rows:
                 item = _item_from_row(row)
@@ -362,11 +379,39 @@ class DeliveryOutboxStore:
                 """
                 UPDATE delivery_outbox
                 SET status = 'failed', error = ?, updated_at = ?
-                WHERE id = ? AND status = 'sending'
+                WHERE id = ? AND status IN ('pending', 'sending')
                 """,
                 (error[:1000], current_time, item_id),
             )
         return self.get(item_id)
+
+    def requeue_failed(self, item_id: str, *, now: float | None = None) -> DeliveryItem:
+        """Explicitly requeue one failed, non-expired item with the same payload and key."""
+        current_time = time.time() if now is None else float(now)
+        item = self.get(item_id)
+        if item is None:
+            raise KeyError(f"delivery item not found: {item_id}")
+        if item.status != "failed":
+            raise ValueError(f"delivery item is not failed: {item_id} status={item.status}")
+        expires_at = _delivery_expires_at(item)
+        if expires_at and expires_at <= current_time:
+            raise ValueError(f"delivery item has expired and cannot be retried: {item_id}")
+        with connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE delivery_outbox
+                SET status = 'pending', attempts = 0, next_attempt_at = ?,
+                    error = '', updated_at = ?, projected_at = 0
+                WHERE id = ? AND status = 'failed'
+                """,
+                (current_time, current_time, item_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(f"delivery item changed while requeueing: {item_id}")
+        restored = self.get(item_id)
+        if restored is None:
+            raise RuntimeError(f"delivery item disappeared while requeueing: {item_id}")
+        return restored
 
     def recover_stale_sending(
         self,
@@ -462,6 +507,31 @@ class DeliveryOutboxStore:
                 FROM delivery_outbox WHERE batch_id = ? ORDER BY created_at ASC
                 """,
                 (batch_id,),
+            ).fetchall()
+        return [_item_from_row(row) for row in rows]
+
+    def list_items(
+        self,
+        *,
+        channel: str,
+        status: str = "",
+        limit: int = 50,
+    ) -> list[DeliveryItem]:
+        clauses = ["channel = ?"]
+        params: list[Any] = [channel]
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        params.append(max(1, int(limit)))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {DELIVERY_OUTBOX_TABLE.select_list}
+                FROM delivery_outbox
+                WHERE {" AND ".join(clauses)}
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                tuple(params),
             ).fetchall()
         return [_item_from_row(row) for row in rows]
 
@@ -577,10 +647,32 @@ class DeliveryCoordinator:
         transport: DeliveryTransport,
         *,
         limit: int = 10,
+        minimum_priority: int | None = None,
     ) -> list[DeliveryOutcome]:
         self.store.recover_stale_sending(channel=transport.channel)
         outcomes: list[DeliveryOutcome] = []
-        for item in self.store.claim_ready(channel=transport.channel, limit=limit):
+        for _ in range(max(1, int(limit))):
+            claimed = self.store.claim_ready(
+                channel=transport.channel,
+                limit=1,
+                minimum_priority=minimum_priority,
+            )
+            if not claimed:
+                break
+            item = claimed[0]
+            expires_at = _delivery_expires_at(item)
+            if expires_at and expires_at <= time.time():
+                failure = DeliveryFailure(
+                    reason="connector_delivery_expired",
+                    error=f"delivery deadline {expires_at:g} elapsed before connector receipt",
+                    retryable=False,
+                )
+                error = f"{failure.reason}: {failure.error}"
+                stored = self.store.mark_failed(item.id, error=error)
+                outcomes.append(
+                    DeliveryOutcome(item=stored or item, state="expired", failure=failure)
+                )
+                continue
             try:
                 receipt = await transport.deliver(item)
             except Exception as exc:
@@ -590,13 +682,18 @@ class DeliveryCoordinator:
                     stored = self.store.schedule_retry(
                         item.id,
                         error=error,
-                        retry_after_seconds=_retry_delay(item.attempts),
+                        retry_after_seconds=_retry_delay(
+                            item.attempts,
+                            base_seconds=failure.retry_after_seconds,
+                        ),
                     )
                     outcomes.append(
                         DeliveryOutcome(
                             item=stored or item, state="retry_scheduled", failure=failure
                         )
                     )
+                    if failure.reason == "connector_rate_limited":
+                        break
                 else:
                     stored = self.store.mark_failed(item.id, error=error)
                     outcomes.append(
@@ -643,8 +740,16 @@ def envelope_from_response(
     )
 
 
-def _retry_delay(attempts: int) -> float:
-    return min(60.0, float(2 ** max(0, int(attempts) - 1)))
+def _retry_delay(attempts: int, *, base_seconds: float = 0.0) -> float:
+    base = max(1.0, float(base_seconds))
+    return min(3600.0, base * float(2 ** max(0, int(attempts) - 1)))
+
+
+def _delivery_expires_at(item: DeliveryItem) -> float:
+    try:
+        return max(0.0, float(item.transport_context.get("expires_at") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _stable_batch_id(value: str) -> str:

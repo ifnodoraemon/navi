@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+
 from typer.testing import CliRunner
 
 from navi.cli import app
+from navi.delivery_outbox import DeliveryEnvelope, DeliveryOutboxStore
 from navi.evolution import EvolutionLedger
 from navi.memory import MemoryStore
 from navi.trace import TraceStore
@@ -88,3 +91,35 @@ def test_cli_skills_lists_local_catalog_without_model_runtime(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "catalog-test" in result.output
+
+
+def test_cli_connector_outbox_lists_and_explicitly_requeues_failed_item(tmp_path):
+    store = DeliveryOutboxStore(tmp_path)
+    item = store.enqueue(
+        DeliveryEnvelope(
+            batch_id="operator-retry",
+            channel="weixin",
+            peer_id="peer",
+            text="notification",
+        )
+    )[0]
+    store.claim_ready(channel="weixin")
+    store.mark_failed(item.id, error="connector_rejected")
+    runner = CliRunner()
+    env = {"NAVI_HOME": str(tmp_path)}
+
+    listed = runner.invoke(
+        app,
+        ["connectors", "outbox", "weixin", "--status", "failed", "--json-output"],
+        env=env,
+    )
+    assert listed.exit_code == 0, listed.output
+    assert json.loads(listed.output)[0]["id"] == item.id
+
+    retried = runner.invoke(
+        app,
+        ["connectors", "outbox", "weixin", "--retry-id", item.id],
+        env=env,
+    )
+    assert retried.exit_code == 0, retried.output
+    assert store.get(item.id).status == "pending"

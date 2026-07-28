@@ -25,7 +25,6 @@ from navi.event_bus import ResponseReadyEvent
 from navi.finalization import synthesize_background_notification
 from navi.goals import GoalStore
 from navi.loop_runs import LoopRunStore
-from navi.lifecycle import Phase
 from navi.runtime import AgentRuntime
 from navi.runs import Run
 from navi.trace import TracePhase, TraceStore
@@ -36,7 +35,7 @@ from .config import WeixinConfig
 from .delivery import WeixinDeliveryTransport
 from .models import WeixinAccount, WeixinUpdate
 
-from .store import WeixinStore
+from .store import WeixinSessionStore, WeixinStatusStore, WeixinStore
 
 
 class DeliveryReceipt(TypedDict):
@@ -82,6 +81,10 @@ class WeixinService:
         self.client = client if client is not None else self._build_client()
         self.delivery_outbox = DeliveryOutboxStore(home)
         self.delivery_coordinator = DeliveryCoordinator(self.delivery_outbox)
+        self.sessions = WeixinSessionStore(home)
+        self.health = WeixinStatusStore(home)
+        self._send_lock = asyncio.Lock()
+        self._restored_session_accounts: set[str] = set()
         self.typing_tickets: dict[str, str] = {}
         self.daemon = SystemDaemon(home, project_dir=self.project_dir)
         self.active = self.daemon
@@ -111,6 +114,7 @@ class WeixinService:
             "saved_accounts": self.store.list_accounts(),
             "dm_policy": self.config.dm_policy,
             "group_policy": self.config.group_policy,
+            **self.health.snapshot(),
         }
 
     async def setup(
@@ -136,20 +140,7 @@ class WeixinService:
             await asyncio.sleep(1)
 
     def update_status(self, status: str, error: str = "") -> None:
-        status_dir = self.home / "weixin"
-        status_dir.mkdir(parents=True, exist_ok=True)
-        status_file = status_dir / "status.json"
-        status_file.write_text(
-            json.dumps(
-                {
-                    "status": status,
-                    "error": error,
-                    "last_update": time.time(),
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+        self.health.update_ingress(status, error)
 
     def record_event(self, event: str, **facts) -> None:
         event_dir = self.home / "weixin"
@@ -231,6 +222,36 @@ class WeixinService:
             session_alias_prefix=self.session_alias_prefix,
             facts=_weixin_message_facts(update),
         )
+        if not self._allowed(update):
+            self.record_event(
+                "message.blocked",
+                message_id=update.message_id,
+                peer_id=update.peer_id,
+                sender_id=update.sender_id,
+            )
+            return False
+        context_token = update.context_token
+        context_token_observed_at = time.time()
+        if context_token:
+            session_refreshed = self.sessions.put(
+                account.account_id,
+                update.peer_id,
+                context_token,
+                observed_at=context_token_observed_at,
+            )
+            if session_refreshed:
+                requeued = self._requeue_session_recoverable_deliveries(
+                    account_id=account.account_id,
+                    peer_id=update.peer_id,
+                    now=context_token_observed_at,
+                )
+                if requeued:
+                    self.record_event(
+                        "delivery.requeued_after_session_refresh",
+                        peer_id=update.peer_id,
+                        outbox_ids=requeued,
+                    )
+        self.health.record_user_activity()
         duplicate = self.dedup.check(message)
         if duplicate.duplicate:
             event_name = (
@@ -245,14 +266,6 @@ class WeixinService:
                 dedup_key=duplicate.key,
             )
             return False
-        if not self._allowed(update):
-            self.record_event(
-                "message.blocked",
-                message_id=update.message_id,
-                peer_id=update.peer_id,
-                sender_id=update.sender_id,
-            )
-            return False
         self.record_event(
             "message.received",
             message_id=update.message_id,
@@ -261,7 +274,6 @@ class WeixinService:
             text_preview=update.text[:120],
             attachment_count=len(update.attachments),
         )
-        context_token = update.context_token
         response = await self._handle_with_typing(update, message, context_token=context_token)
         if not response:
             raise RuntimeError("channel response is empty")
@@ -308,7 +320,11 @@ class WeixinService:
                 text=response.text,
                 connector_delivery=response_delivery,
                 body_provenance="response_ready",
-                transport_context={"context_token": context_token},
+                transport_context={
+                    "context_token": context_token,
+                    "context_token_observed_at": context_token_observed_at,
+                    "priority": 100,
+                },
             )
         )
         self.record_event(
@@ -552,15 +568,79 @@ class WeixinService:
         )
 
     async def _drain_delivery_outbox(self, account: WeixinAccount) -> None:
+        self._restore_session_tokens_from_outbox(account)
         transport = WeixinDeliveryTransport(
             client=self.client,
             account=account,
             channel=self.local_source,
+            sessions=self.sessions,
+            send_lock=self._send_lock,
         )
-        outcomes = await self.delivery_coordinator.drain(transport, limit=10)
+        outcomes = await self.delivery_coordinator.drain(
+            transport,
+            limit=10,
+            minimum_priority=1 if self.health.proactive_circuit_open() else None,
+        )
         for outcome in outcomes:
             self._record_delivery_outbox_outcome(outcome)
         self._project_completed_delivery_batches()
+
+    def _restore_session_tokens_from_outbox(self, account: WeixinAccount) -> None:
+        if account.account_id in self._restored_session_accounts:
+            return
+        restored_peers: set[str] = set()
+        for item in self.delivery_outbox.list_items(
+            channel=self.local_source,
+            limit=200,
+        ):
+            if item.peer_id in restored_peers:
+                continue
+            context_token = str(item.transport_context.get("context_token") or "")
+            if not context_token:
+                continue
+            observed_at = float(
+                item.transport_context.get("context_token_observed_at") or item.created_at
+            )
+            self.sessions.put(
+                account.account_id,
+                item.peer_id,
+                context_token,
+                observed_at=observed_at,
+            )
+            restored_peers.add(item.peer_id)
+        self._restored_session_accounts.add(account.account_id)
+
+    def _requeue_session_recoverable_deliveries(
+        self,
+        *,
+        account_id: str,
+        peer_id: str,
+        now: float | None = None,
+    ) -> list[str]:
+        """Replay only current, receipt-free items after a fresh peer session."""
+
+        if not self.sessions.get(account_id, peer_id, now=now):
+            return []
+        current_time = time.time() if now is None else float(now)
+        requeued: list[str] = []
+        for item in self.delivery_outbox.list_items(
+            channel=self.local_source,
+            status="failed",
+            limit=200,
+        ):
+            if item.peer_id != peer_id:
+                continue
+            if not item.error.startswith("connector_session_expired:"):
+                continue
+            expires_at = float(item.transport_context.get("expires_at") or 0.0)
+            if expires_at <= current_time:
+                continue
+            try:
+                restored = self.delivery_outbox.requeue_failed(item.id, now=current_time)
+            except (KeyError, RuntimeError, ValueError):
+                continue
+            requeued.append(restored.id)
+        return requeued
 
     def _record_delivery_outbox_outcome(self, outcome: DeliveryOutcome) -> None:
         item = outcome.item
@@ -577,6 +657,22 @@ class WeixinService:
             payload["error_reason"] = outcome.failure.reason
             payload["error"] = outcome.failure.error
             payload["retry_scheduled"] = outcome.state == "retry_scheduled"
+            payload["provider_code"] = outcome.failure.provider_code
+            payload["retry_after_seconds"] = outcome.failure.retry_after_seconds
+        proactive = item.body_provenance != "response_ready"
+        if ok:
+            self.health.record_egress_success(proactive=proactive, at=item.sent_at or None)
+        elif outcome.failure is not None:
+            self.health.record_egress_failure(
+                proactive=proactive,
+                error=f"{outcome.failure.reason}: {outcome.failure.error}",
+                provider_code=outcome.failure.provider_code,
+                retry_after_seconds=(
+                    outcome.failure.retry_after_seconds
+                    if outcome.state == "retry_scheduled"
+                    else 0.0
+                ),
+            )
         self.record_event(
             "reply.sent"
             if ok
@@ -615,7 +711,7 @@ class WeixinService:
                 operation="record_delivery_outbox_outcome",
                 error=f"{type(trace_exc).__name__}: {trace_exc}",
             )
-        if outcome.state == "failed" and item.goal_id and item.run_id:
+        if outcome.state in {"failed", "expired"} and item.goal_id and item.run_id:
             try:
                 GoalStore(self.home).record_delivery_failure(
                     run_id=item.run_id,
@@ -647,7 +743,7 @@ class WeixinService:
             try:
                 if anchor.goal_id and anchor.run_id:
                     goal = goals.get(anchor.goal_id)
-                    if goal is not None and goal.phase != Phase.ENDED:
+                    if goal is not None:
                         text = next((item.body for item in items if item.kind == "text"), "")
                         media_count = sum(
                             int(item.receipt.get("media_count") or 0) for item in items
@@ -786,7 +882,11 @@ class WeixinService:
                 text=text,
                 connector_delivery=delivery,
                 body_provenance="connector_smoke",
-                transport_context={"context_token": context_token},
+                transport_context={
+                    "context_token": context_token,
+                    "context_token_observed_at": time.time(),
+                    "priority": 100,
+                },
             )
         )
         await self._drain_delivery_outbox(account)
