@@ -3,11 +3,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 
 from navi.mcp_tools import load_mcp_config
-from navi.mcp_client import MCPClient, MCPServerConfig
+from navi.mcp_client import MCPClient, MCPServerConfig, mcp_exception_facts
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.tools import build_tool_gateway
@@ -19,6 +20,28 @@ def _write_mcp_config(home: Path, servers: dict) -> None:
         yaml.safe_dump({"mcp": {"servers": servers}}, sort_keys=False),
         encoding="utf-8",
     )
+
+
+def test_mcp_exception_facts_use_nested_exception_types_not_message_markers() -> None:
+    request = httpx.Request("POST", "https://mcp.example.test/mcp")
+    response = httpx.Response(429, request=request)
+    status_error = httpx.HTTPStatusError(
+        "arbitrary upstream wording",
+        request=request,
+        response=response,
+    )
+
+    status_facts = mcp_exception_facts(
+        ExceptionGroup("task group failed", [status_error])
+    )
+    prose_only = mcp_exception_facts(RuntimeError("timeout 429 rate limited"))
+
+    assert status_facts.status_code == 429
+    assert status_facts.retryable is True
+    assert status_facts.timed_out is False
+    assert prose_only.status_code == 0
+    assert prose_only.retryable is False
+    assert prose_only.timed_out is False
 
 
 def test_mcp_config_supports_remote_and_stdio_from_global_config(

@@ -12,7 +12,7 @@ from .config import NaviConfig, load_config
 from .mcp_client import (
     MCPClient,
     MCPServerConfig,
-    describe_mcp_exception,
+    MCPTransportError,
 )
 from .tools import ALL_EXECUTION_CONTEXTS, ToolRegistry, ToolResult, ToolSpec
 
@@ -188,7 +188,7 @@ def _register_server_tools(registry: ToolRegistry, server: MCPServerConfig) -> N
 async def _list_server_tools(server: MCPServerConfig) -> ToolResult:
     try:
         tools = await MCPClient(server).list_tools()
-    except Exception as exc:
+    except MCPTransportError as exc:
         return _mcp_failure(server, "", exc)
     if server.allowed_tools:
         tools = [tool for tool in tools if tool["name"] in server.allowed_tools]
@@ -249,7 +249,7 @@ async def _call_server_tool(server: MCPServerConfig, args: dict[str, Any]) -> To
         )
     try:
         result = await MCPClient(server).call_tool(tool_name, arguments)
-    except Exception as exc:
+    except MCPTransportError as exc:
         return _mcp_failure(server, tool_name, exc)
     facts = {
         "server": server.name,
@@ -274,21 +274,35 @@ async def _call_server_tool(server: MCPServerConfig, args: dict[str, Any]) -> To
     )
 
 
-def _mcp_failure(server: MCPServerConfig, tool_name: str, exc: Exception) -> ToolResult:
-    message, timed_out = describe_mcp_exception(exc)
+def _mcp_failure(
+    server: MCPServerConfig,
+    tool_name: str,
+    exc: MCPTransportError,
+) -> ToolResult:
+    info = exc.facts
+    reason = (
+        "mcp_timeout"
+        if info.timed_out
+        else "mcp_http_error"
+        if info.status_code
+        else "mcp_transport_error"
+    )
+    facts: dict[str, Any] = {
+        CAPABILITY_ERROR_REASON_KEY: reason,
+        CAPABILITY_RETRYABLE_KEY: info.retryable,
+        "server": server.name,
+        "transport": server.transport,
+        "endpoint": server.safe_endpoint,
+        "mcp_tool": tool_name,
+        "error_type": type(exc.cause).__name__,
+    }
+    if info.status_code:
+        facts["status_code"] = info.status_code
     return ToolResult(
         tool=f"mcp.{server.name}.call" if tool_name else f"mcp.{server.name}.tools",
         ok=False,
-        error=message,
-        facts={
-            CAPABILITY_ERROR_REASON_KEY: "mcp_timeout" if timed_out else "mcp_transport_error",
-            CAPABILITY_RETRYABLE_KEY: timed_out,
-            "server": server.name,
-            "transport": server.transport,
-            "endpoint": server.safe_endpoint,
-            "mcp_tool": tool_name,
-            "error_type": type(exc).__name__,
-        },
+        error=info.message,
+        facts=facts,
     )
 
 

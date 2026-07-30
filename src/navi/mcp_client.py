@@ -89,6 +89,23 @@ class MCPServerConfig:
         return tuple(errors)
 
 
+@dataclass(frozen=True)
+class MCPExceptionFacts:
+    message: str
+    timed_out: bool
+    retryable: bool
+    status_code: int = 0
+
+
+class MCPTransportError(RuntimeError):
+    """Typed boundary for failures raised while talking to an MCP server."""
+
+    def __init__(self, cause: Exception):
+        self.cause = cause
+        self.facts = mcp_exception_facts(cause)
+        super().__init__(self.facts.message)
+
+
 class MCPClient:
     """Open one MCP session per bounded discovery or tool call."""
 
@@ -137,8 +154,11 @@ class MCPClient:
                 yield session
 
     async def list_tools(self) -> list[dict[str, Any]]:
-        async with self._session() as session:
-            result = await session.list_tools()
+        try:
+            async with self._session() as session:
+                result = await session.list_tools()
+        except Exception as exc:
+            raise MCPTransportError(exc) from exc
         return [
             {
                 "name": tool.name,
@@ -156,8 +176,11 @@ class MCPClient:
         ]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        async with self._session() as session:
-            result = await session.call_tool(name, arguments=arguments)
+        try:
+            async with self._session() as session:
+                result = await session.call_tool(name, arguments=arguments)
+        except Exception as exc:
+            raise MCPTransportError(exc) from exc
         content = [_bounded_content(block.model_dump(mode="json", by_alias=True)) for block in result.content]
         text = "\n".join(
             str(block.get("text") or "") for block in content if block.get("type") == "text"
@@ -188,15 +211,22 @@ def _stdio_environment(configured: dict[str, str]) -> dict[str, str]:
     }
 
 
-def describe_mcp_exception(exc: BaseException) -> tuple[str, bool]:
-    """Flatten SDK exception groups so timeout facts survive task-group wrappers."""
+def mcp_exception_facts(exc: BaseException) -> MCPExceptionFacts:
+    """Flatten typed SDK exception groups into bounded transport facts."""
     messages: list[str] = []
     seen: set[int] = set()
+    timed_out = False
+    status_codes: list[int] = []
 
     def visit(current: BaseException) -> None:
+        nonlocal timed_out
         if id(current) in seen:
             return
         seen.add(id(current))
+        if isinstance(current, (TimeoutError, httpx.TimeoutException)):
+            timed_out = True
+        if isinstance(current, httpx.HTTPStatusError):
+            status_codes.append(int(current.response.status_code))
         message = str(current).strip()
         if message and message not in messages:
             messages.append(message)
@@ -210,9 +240,14 @@ def describe_mcp_exception(exc: BaseException) -> tuple[str, bool]:
 
     visit(exc)
     detail = "; ".join(messages) or type(exc).__name__
-    lowered = detail.lower()
-    timed_out = "timeout" in lowered or "timed out" in lowered or "deadline exceeded" in lowered
-    return detail[:4000], timed_out
+    status_code = status_codes[0] if status_codes else 0
+    retryable = timed_out or status_code in {408, 409, 425, 429} or status_code >= 500
+    return MCPExceptionFacts(
+        message=detail[:4000],
+        timed_out=timed_out,
+        retryable=retryable,
+        status_code=status_code,
+    )
 
 
 def _bounded_content(block: dict[str, Any]) -> dict[str, Any]:

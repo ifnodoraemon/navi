@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY, CAPABILITY_RETRYABLE_KEY
 from navi.config import NaviConfig, SearchProviderConfig, load_config
-from navi.mcp_client import MCPClient, MCPServerConfig, describe_mcp_exception
+from navi.mcp_client import MCPClient, MCPServerConfig, MCPTransportError
 from navi.mcp_tools import parse_mcp_config
 
 from ..tools import ToolResult
@@ -704,17 +704,20 @@ async def _exa_mcp_search(
             "web_search_exa",
             {"query": request.query, "numResults": request.limit},
         )
-    except Exception as exc:
-        error, timed_out = describe_mcp_exception(exc)
+    except MCPTransportError as exc:
+        info = exc.facts
+        extra: dict[str, Any] = {"error_type": type(exc.cause).__name__}
+        if info.status_code:
+            extra["status_code"] = info.status_code
         return _provider_failure(
             provider_id=provider_id,
             provider_kind="exa_mcp",
             query=request.query,
             endpoint=server.safe_endpoint,
-            error=error,
-            reason="search_timeout" if timed_out else "search_provider_error",
-            retryable=timed_out,
-            extra={"error_type": type(exc).__name__},
+            error=info.message,
+            reason="search_timeout" if info.timed_out else "search_provider_error",
+            retryable=info.retryable,
+            extra=extra,
         )
     if not result["ok"]:
         return _provider_failure(

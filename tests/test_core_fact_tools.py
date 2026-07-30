@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 
 from navi.config import NaviConfig, SearchConfig, SearchProviderConfig
@@ -1048,3 +1049,51 @@ async def test_web_search_exa_tool_error_is_not_retryable(monkeypatch) -> None:
     assert result.facts["provider_kind"] == "exa_mcp"
     assert result.facts["error_reason"] == "search_provider_error"
     assert result.facts["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_web_search_exa_preserves_nested_http_retry_facts(monkeypatch) -> None:
+    request = httpx.Request("POST", "https://mcp.exa.ai/mcp")
+    response = httpx.Response(429, request=request)
+
+    async def fake_call(self, name, arguments):
+        del self, name, arguments
+        raise web_search_utils.MCPTransportError(
+            ExceptionGroup(
+                "task group failed",
+                [
+                    httpx.HTTPStatusError(
+                        "arbitrary upstream wording",
+                        request=request,
+                        response=response,
+                    )
+                ],
+            )
+        )
+
+    monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
+
+    result = await web_search_utils._web_search(
+        {"query": "navi smoke", "provider": "exa"}
+    )
+
+    assert result.ok is False
+    assert result.facts["error_reason"] == "search_provider_error"
+    assert result.facts["status_code"] == 429
+    assert result.facts["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_web_search_exa_does_not_reclassify_programming_errors(
+    monkeypatch,
+) -> None:
+    async def broken_call(self, name, arguments):
+        del self, name, arguments
+        raise AssertionError("exa adapter bug")
+
+    monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", broken_call)
+
+    with pytest.raises(AssertionError, match="exa adapter bug"):
+        await web_search_utils._web_search(
+            {"query": "navi smoke", "provider": "exa"}
+        )
