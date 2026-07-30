@@ -9,6 +9,7 @@ from navi.provider import (
     ModelPool,
     OpenAICompatibleProvider,
     ProviderHTTPError,
+    ProviderResponseError,
     ProviderUsage,
     StructuredOutputError,
     _complete_with_optional_schema,
@@ -22,6 +23,7 @@ from navi.resource_gateway import (
     SQLiteResourceLedger,
 )
 from navi.provider_specs import ProviderSpec
+from navi.syscalls import provider_failure_facts
 
 
 def test_model_config_role_params_use_global_defaults_and_overrides():
@@ -34,6 +36,31 @@ def test_model_config_role_params_use_global_defaults_and_overrides():
 def test_model_config_rejects_provider_fallbacks():
     with pytest.raises(ValueError, match="model.fallbacks is unsupported"):
         _model_config({"fallbacks": []})
+
+
+def test_model_config_preserves_explicit_model_across_provider_names() -> None:
+    config = _model_config(
+        {
+            "provider": "anthropic",
+            "model": "qwen3.5-397b-a17b",
+        }
+    )
+
+    assert config.model == "qwen3.5-397b-a17b"
+
+
+def test_provider_failure_facts_do_not_reclassify_programming_errors() -> None:
+    implementation_failure = provider_failure_facts(
+        AssertionError("provider adapter implementation bug")
+    )
+    response_failure = provider_failure_facts(
+        ProviderResponseError("provider response shape is invalid")
+    )
+
+    assert implementation_failure["provider_call_failure"] is False
+    assert implementation_failure["retryable"] is False
+    assert response_failure["provider_call_failure"] is True
+    assert response_failure["retryable"] is False
 
 
 @patch("navi.provider.resolve_model_config")

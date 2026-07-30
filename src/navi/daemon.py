@@ -5,6 +5,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,13 @@ from .loop_runs import DETACHED_EXECUTION_RECOVERY_GRACE_SECONDS
 from .runs import Run, RunStore
 
 logger = logging.getLogger("navi.daemon")
+
+
+def _timestamp_facts(name: str, value: float) -> dict[str, object]:
+    return {
+        name: value,
+        f"{name}_iso": datetime.fromtimestamp(value).astimezone().isoformat(),
+    }
 
 
 def _execution_owner_process_is_alive(owner: str) -> bool:
@@ -304,7 +312,7 @@ class SystemDaemon:
                     "cron_goal_id": g.id,
                     "objective": g.objective,
                     "cron_schedule": g.cron_schedule,
-                    "scheduled_for": scheduled_for,
+                    **_timestamp_facts("scheduled_for", scheduled_for),
                     "state_transition": "schedule_blocked",
                     "error_type": error_type,
                     "error": error,
@@ -376,8 +384,8 @@ class SystemDaemon:
                     "cron_goal_id": g.id,
                     "objective": g.objective,
                     "cron_schedule": g.cron_schedule,
-                    "scheduled_for": scheduled_for,
-                    "next_run_at": next_time,
+                    **_timestamp_facts("scheduled_for", scheduled_for),
+                    **_timestamp_facts("next_run_at", next_time),
                     "error_type": error_type,
                     "error": error,
                 }

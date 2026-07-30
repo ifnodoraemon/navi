@@ -3,6 +3,7 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Any
+from ..config import load_config
 from ..tools import ALL_EXECUTION_CONTEXTS, SideEffectPolicy, ToolRegistry, ToolSpec
 from .browser import _browser_screenshot
 from .codebase import _codebase_search
@@ -19,7 +20,7 @@ from .shell import _shell_run
 from .skills import _skills_list, _skills_view
 from .tools_list import _tools_list
 from .utils import _http_fetch
-from .web_search import _web_search
+from .web_search import _web_search, enabled_search_provider_ids
 from ..connector_delivery import register_connector_delivery_tool
 
 
@@ -36,6 +37,7 @@ def _array_of_objects() -> dict[str, Any]:
 
 
 def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
+    search_provider_ids = list(enabled_search_provider_ids(load_config(home)))
     register_connector_delivery_tool(registry, home=home)
     registry.register(
         _core_tool_spec(
@@ -629,17 +631,23 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             confirmation_required=False,
             risk_reason_code="capability_safeguard_web_search",
             description=(
-                "Search the web through the explicitly configured provider and return "
-                "structured result facts. The configured provider is selected by Navi "
-                "configuration, not by a per-call query or argument. Search results prove "
-                "which sources and snippets were retrieved, not that every source claim is "
-                "true or representative; preserve source attribution for material claims. "
-                "The default provider is Exa MCP."
+                "Search one configured source selected explicitly by provider ID and return "
+                "structured result facts. Navi does not infer the provider from query text, "
+                "retry through another provider, or silently fuse calls. Search results "
+                "establish retrieved source facts within their evidence contract, not "
+                "universal truth or completeness."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query."},
+                    "provider": {
+                        "type": "string",
+                        "enum": search_provider_ids,
+                        "description": (
+                            "Configured provider ID selected by the model for this call."
+                        ),
+                    },
                     "limit": {
                         "type": "integer",
                         "description": "Maximum result count, capped at 10.",
@@ -657,20 +665,42 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                         "type": "string",
                         "description": "Optional SearXNG time_range parameter.",
                     },
+                    "start_time": {
+                        "type": "string",
+                        "description": "Optional provider-supported ISO 8601 lower time bound.",
+                    },
+                    "end_time": {
+                        "type": "string",
+                        "description": "Optional provider-supported ISO 8601 upper time bound.",
+                    },
+                    "sort_order": {
+                        "type": "string",
+                        "description": "Optional provider-supported result ordering.",
+                    },
+                    "next_token": {
+                        "type": "string",
+                        "description": "Optional provider pagination token.",
+                    },
                 },
-                "required": ["query"],
+                "required": ["query", "provider"],
             },
             output_schema=_output_schema(
                 {
                     "query": {"type": "string"},
                     "provider": {"type": "string"},
+                    "provider_kind": {"type": "string"},
                     "endpoint": {"type": "string"},
                     "source_url": {"type": "string"},
+                    "available_providers": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
                     "results": _array_of_objects(),
                     "answers": {"type": "array", "items": {"type": "string"}},
                     "corrections": {"type": "array", "items": {"type": "string"}},
                     "suggestions": {"type": "array", "items": {"type": "string"}},
                     "infoboxes": _array_of_objects(),
+                    "provider_errors": _array_of_objects(),
                     "response": {"type": "object"},
                     "evidence_contract": {"type": "object"},
                 }

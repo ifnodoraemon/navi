@@ -153,7 +153,6 @@ DEFAULTS_SPEC: Any = {
     "local_surface": "local",
     "api_host": "127.0.0.1",
     "api_port": 8765,
-    "search_provider": "exa_mcp",
     "search_mcp_server": "exa",
     "exa_mcp_url": "https://mcp.exa.ai/mcp",
     "telegram_enabled": False,
@@ -338,7 +337,9 @@ PROMPT_ASSEMBLIES_SPEC: Any = {
                     "Decide whether the verified background event warrants a user "
                     "notification. If it does, write concise connector-appropriate text "
                     "using only the supplied facts. Do not invent causes, actions, hidden "
-                    "state, or completion. Accepted result bodies are delivered through "
+                    "state, completion, dates, times, identifiers, or quantities. Preserve "
+                    "exact fact values; copy supplied ISO timestamps instead of converting "
+                    "numeric epochs. Accepted result bodies are delivered through "
                     "the result outbox, not by this notification role. Return the "
                     "structured notify/message decision; an empty or low-value event "
                     "should not be surfaced."

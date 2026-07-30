@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from navi.config import NaviConfig, SearchConfig
+from navi.config import NaviConfig, SearchConfig, SearchProviderConfig
 from navi.core_tools import web_search as web_search_utils
 from navi.harness import Harness
 from navi.loop_contracts import LockMode, MergeStatus
@@ -363,7 +363,7 @@ async def test_python_ast_replace_symbol_can_patch_shadow_then_merge(
 
 
 @pytest.mark.asyncio
-async def test_web_search_uses_exa_mcp_default(monkeypatch) -> None:
+async def test_web_search_uses_explicit_exa_mcp_provider(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     async def fake_call(self, name, arguments):
@@ -387,7 +387,9 @@ async def test_web_search_uses_exa_mcp_default(monkeypatch) -> None:
 
     monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
 
-    result = await web_search_utils._web_search({"query": "navi smoke", "limit": 3})
+    result = await web_search_utils._web_search(
+        {"query": "navi smoke", "provider": "exa", "limit": 3}
+    )
 
     assert result.ok is True
     assert captured == {
@@ -395,9 +397,11 @@ async def test_web_search_uses_exa_mcp_default(monkeypatch) -> None:
         "name": "web_search_exa",
         "arguments": {"query": "navi smoke", "numResults": 3},
     }
-    assert result.facts["provider"] == "exa_mcp"
+    assert result.facts["provider"] == "exa"
+    assert result.facts["provider_kind"] == "exa_mcp"
     assert result.facts["results"] == [
         {
+            "kind": "web_document",
             "title": "Navi result",
             "url": "https://example.com/navi",
             "snippet": "Search result snippet",
@@ -416,10 +420,12 @@ async def test_web_search_uses_exa_mcp_default(monkeypatch) -> None:
         ),
         "truncated": False,
         "result_count": 1,
+        "provider_error_count": 0,
     }
     assert result.facts["evidence_contract"] == {
         "scope": "query_ranked_web_documents",
-        "provider": "exa_mcp",
+        "provider": "exa",
+        "provider_kind": "exa_mcp",
         "establishes": [
             "search_result_presence",
             "source_attribution",
@@ -462,7 +468,9 @@ async def test_web_search_bounds_exa_snippets_without_raw_response_duplication(
 
     monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
 
-    result = await web_search_utils._web_search({"query": "bounded search"})
+    result = await web_search_utils._web_search(
+        {"query": "bounded search", "provider": "exa"}
+    )
 
     assert result.ok is True
     assert len(result.facts["results"][0]["snippet"]) < len(long_snippet)
@@ -474,7 +482,14 @@ async def test_web_search_bounds_exa_snippets_without_raw_response_duplication(
 async def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> None:
     captured: dict[str, object] = {}
     config = NaviConfig(
-        search=SearchConfig(provider="searxng", searxng_url="https://search.example")
+        search=SearchConfig(
+            providers={
+                "local": SearchProviderConfig(
+                    kind="searxng",
+                    endpoint="https://search.example",
+                )
+            }
+        )
     )
 
     class FakeResponse:
@@ -514,17 +529,25 @@ async def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> 
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
 
     result = await web_search_utils._web_search(
-        {"query": "navi smoke", "limit": 3, "categories": "general", "language": "en"},
+        {
+            "query": "navi smoke",
+            "provider": "local",
+            "limit": 3,
+            "categories": "general",
+            "language": "en",
+        },
         config=config,
     )
 
     assert result.ok is True
-    assert result.facts["provider"] == "searxng"
+    assert result.facts["provider"] == "local"
+    assert result.facts["provider_kind"] == "searxng"
     assert result.facts["endpoint"] == "https://search.example"
     assert result.facts["answers"] == ["direct answer"]
     assert result.facts["suggestions"] == ["navi agent"]
     assert result.facts["results"] == [
         {
+            "kind": "web_document",
             "title": "Navi",
             "url": "https://example.com/navi",
             "snippet": "Search result",
@@ -550,7 +573,7 @@ async def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> 
 
 @pytest.mark.asyncio
 async def test_web_search_rejects_auto_provider_without_calling_any_backend(monkeypatch) -> None:
-    config = NaviConfig(search=SearchConfig(provider="auto"))
+    config = NaviConfig()
 
     def fake_urlopen(request, timeout):
         del request, timeout
@@ -563,18 +586,59 @@ async def test_web_search_rejects_auto_provider_without_calling_any_backend(monk
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
     monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
 
-    result = await web_search_utils._web_search({"query": "navi smoke"}, config=config)
+    result = await web_search_utils._web_search(
+        {"query": "navi smoke", "provider": "auto"}, config=config
+    )
 
     assert result.ok is False
-    assert result.error == "unsupported web search provider: auto"
+    assert result.error == "search provider is not configured: auto"
     assert result.facts["provider"] == "auto"
+    assert result.facts["error_reason"] == "search_provider_not_configured"
+    assert result.facts["available_providers"] == ["exa"]
     assert result.facts["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_web_search_requires_model_selected_provider_without_backend_call(
+    monkeypatch,
+) -> None:
+    def fake_urlopen(request, timeout):
+        del request, timeout
+        raise AssertionError("missing provider must not call an HTTP backend")
+
+    async def fake_call(self, name, arguments):
+        del self, name, arguments
+        raise AssertionError("missing provider must not call an MCP backend")
+
+    monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
+    monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
+
+    result = await web_search_utils._web_search({"query": "navi smoke"})
+
+    assert result.ok is False
+    assert result.error == (
+        "provider is required; the model must select one configured provider"
+    )
+    assert result.facts == {
+        "error_reason": "missing_required_argument",
+        "retryable": False,
+        "provider": "",
+        "missing_argument": "provider",
+        "available_providers": ["exa"],
+    }
 
 
 @pytest.mark.asyncio
 async def test_web_search_explicit_searxng_failure_does_not_use_exa(monkeypatch) -> None:
     config = NaviConfig(
-        search=SearchConfig(provider="searxng", searxng_url="https://search.example")
+        search=SearchConfig(
+            providers={
+                "local": SearchProviderConfig(
+                    kind="searxng",
+                    endpoint="https://search.example",
+                )
+            }
+        )
     )
 
     def fake_urlopen(request, timeout):
@@ -588,10 +652,13 @@ async def test_web_search_explicit_searxng_failure_does_not_use_exa(monkeypatch)
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
     monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fail_call)
 
-    result = await web_search_utils._web_search({"query": "navi smoke"}, config=config)
+    result = await web_search_utils._web_search(
+        {"query": "navi smoke", "provider": "local"}, config=config
+    )
 
     assert result.ok is False
-    assert result.facts["provider"] == "searxng"
+    assert result.facts["provider"] == "local"
+    assert result.facts["provider_kind"] == "searxng"
     assert result.facts["error_reason"] == "search_timeout"
     assert result.facts["retryable"] is True
     assert result.error == "SearXNG search request timed out"
@@ -601,7 +668,14 @@ async def test_web_search_explicit_searxng_failure_does_not_use_exa(monkeypatch)
 @pytest.mark.asyncio
 async def test_web_search_searxng_http_error_preserves_retry_facts(monkeypatch) -> None:
     config = NaviConfig(
-        search=SearchConfig(provider="searxng", searxng_url="https://search.example")
+        search=SearchConfig(
+            providers={
+                "local": SearchProviderConfig(
+                    kind="searxng",
+                    endpoint="https://search.example",
+                )
+            }
+        )
     )
 
     def fake_urlopen(request, timeout):
@@ -610,11 +684,14 @@ async def test_web_search_searxng_http_error_preserves_retry_facts(monkeypatch) 
 
     monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
 
-    result = await web_search_utils._web_search({"query": "navi smoke"}, config=config)
+    result = await web_search_utils._web_search(
+        {"query": "navi smoke", "provider": "local"}, config=config
+    )
 
     assert result.ok is False
     assert result.error == "SearXNG returned HTTP 503"
-    assert result.facts["provider"] == "searxng"
+    assert result.facts["provider"] == "local"
+    assert result.facts["provider_kind"] == "searxng"
     assert result.facts["error_reason"] == "search_provider_error"
     assert result.facts["status_code"] == 503
     assert result.facts["retryable"] is True
@@ -622,15 +699,329 @@ async def test_web_search_searxng_http_error_preserves_retry_facts(monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_web_search_explicit_searxng_without_endpoint_is_config_error(monkeypatch) -> None:
-    config = NaviConfig(search=SearchConfig(provider="searxng"))
+    del monkeypatch
+    config = NaviConfig(
+        search=SearchConfig(
+            providers={"local": SearchProviderConfig(kind="searxng")}
+        )
+    )
 
-    result = await web_search_utils._web_search({"query": "navi smoke"}, config=config)
+    result = await web_search_utils._web_search(
+        {"query": "navi smoke", "provider": "local"}, config=config
+    )
 
     assert result.ok is False
-    assert result.facts["provider"] == "searxng"
+    assert result.facts["provider"] == "local"
+    assert result.facts["provider_kind"] == "searxng"
     assert result.facts["error_reason"] == "search_provider_config_error"
     assert result.facts["retryable"] is False
-    assert "search.searxng_url" in result.error
+    assert "search.providers.local.endpoint" in result.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("results", "expected_ok", "expected_reason"),
+    [
+        (
+            [
+                {
+                    "title": "Verified result",
+                    "url": "https://example.com/result",
+                    "content": "available",
+                    "engine": "google",
+                }
+            ],
+            True,
+            "",
+        ),
+        ([], False, "search_provider_blocked"),
+    ],
+)
+async def test_web_search_searxng_exposes_upstream_engine_failures(
+    monkeypatch,
+    results,
+    expected_ok,
+    expected_reason,
+) -> None:
+    config = NaviConfig(
+        search=SearchConfig(
+            providers={
+                "local": SearchProviderConfig(
+                    kind="searxng",
+                    endpoint="https://search.example",
+                )
+            }
+        )
+    )
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def read(self, max_bytes):
+            del max_bytes
+            return json.dumps(
+                {
+                    "results": results,
+                    "unresponsive_engines": [["brave", "Too many requests"]],
+                }
+            ).encode()
+
+    monkeypatch.setattr(
+        web_search_utils,
+        "urlopen",
+        lambda request, timeout: FakeResponse(),
+    )
+
+    result = await web_search_utils._web_search(
+        {"query": "navi smoke", "provider": "local"},
+        config=config,
+    )
+
+    assert result.ok is expected_ok
+    assert result.facts["provider_errors"] == [
+        {"engine": "brave", "reason": "Too many requests"}
+    ]
+    if expected_ok:
+        assert result.facts["response"] == {
+            "result_count": 1,
+            "provider_error_count": 1,
+        }
+    else:
+        assert result.facts["error_reason"] == expected_reason
+        assert result.facts["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_web_search_does_not_reclassify_programming_errors_as_provider_failures(
+    monkeypatch,
+) -> None:
+    config = NaviConfig(
+        search=SearchConfig(
+            providers={
+                "local": SearchProviderConfig(
+                    kind="searxng",
+                    endpoint="https://search.example",
+                )
+            }
+        )
+    )
+
+    def broken_urlopen(request, timeout):
+        del request, timeout
+        raise AssertionError("adapter bug")
+
+    monkeypatch.setattr(web_search_utils, "urlopen", broken_urlopen)
+
+    with pytest.raises(AssertionError, match="adapter bug"):
+        await web_search_utils._web_search(
+            {"query": "navi smoke", "provider": "local"},
+            config=config,
+        )
+
+
+@pytest.mark.asyncio
+async def test_web_search_x_api_normalizes_posts_without_exposing_token(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+    config = NaviConfig(
+        search=SearchConfig(
+            providers={
+                "x_live": SearchProviderConfig(
+                    kind="x_api",
+                    endpoint="https://api.x.com",
+                    bearer_token="test-token",
+                )
+            }
+        )
+    )
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def read(self, max_bytes):
+            captured["max_bytes"] = max_bytes
+            return json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "123",
+                            "text": "Navi search update",
+                            "author_id": "42",
+                            "created_at": "2026-07-30T04:00:00Z",
+                            "lang": "en",
+                            "conversation_id": "100",
+                            "public_metrics": {"like_count": 7},
+                        }
+                    ],
+                    "includes": {
+                        "users": [
+                            {
+                                "id": "42",
+                                "name": "OpenAI",
+                                "username": "OpenAI",
+                                "verified": True,
+                            }
+                        ]
+                    },
+                    "meta": {
+                        "newest_id": "123",
+                        "oldest_id": "123",
+                        "next_token": "next",
+                    },
+                }
+            ).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
+
+    result = await web_search_utils._web_search(
+        {
+            "query": "from:OpenAI -is:retweet",
+            "provider": "x_live",
+            "limit": 3,
+            "start_time": "2026-07-29T00:00:00Z",
+            "sort_order": "recency",
+        },
+        config=config,
+    )
+
+    assert result.ok is True
+    assert result.facts["provider"] == "x_live"
+    assert result.facts["provider_kind"] == "x_api"
+    assert result.facts["results"] == [
+        {
+            "kind": "social_post",
+            "title": "OpenAI (@OpenAI) on X",
+            "url": "https://x.com/OpenAI/status/123",
+            "snippet": "Navi search update",
+            "engine": "x_api",
+            "source_id": "123",
+            "author": {
+                "id": "42",
+                "name": "OpenAI",
+                "username": "OpenAI",
+                "verified": True,
+            },
+            "published_date": "2026-07-30T04:00:00Z",
+            "language": "en",
+            "conversation_id": "100",
+            "public_metrics": {"like_count": 7},
+        }
+    ]
+    parsed = urlparse(str(captured["url"]))
+    query = parse_qs(parsed.query)
+    assert parsed.path == "/2/tweets/search/recent"
+    assert query["query"] == ["from:OpenAI -is:retweet"]
+    assert query["max_results"] == ["10"]
+    assert query["start_time"] == ["2026-07-29T00:00:00Z"]
+    assert captured["authorization"] == "Bearer test-token"
+    assert captured["timeout"] == 20
+    assert captured["max_bytes"] == 4_000_000
+    assert "test-token" not in json.dumps(result.facts)
+
+
+@pytest.mark.asyncio
+async def test_web_search_disabled_x_provider_does_not_call_api(monkeypatch) -> None:
+    config = NaviConfig(
+        search=SearchConfig(
+            providers={
+                "x": SearchProviderConfig(
+                    kind="x_api",
+                    enabled=False,
+                    endpoint="https://api.x.com",
+                )
+            }
+        )
+    )
+
+    def fake_urlopen(request, timeout):
+        del request, timeout
+        raise AssertionError("disabled X provider must not call the API")
+
+    monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
+
+    result = await web_search_utils._web_search(
+        {"query": "navi smoke", "provider": "x"},
+        config=config,
+    )
+
+    assert result.ok is False
+    assert result.facts["error_reason"] == "search_provider_disabled"
+    assert result.facts["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_web_search_x_api_fails_closed_on_error_only_response(
+    monkeypatch,
+) -> None:
+    config = NaviConfig(
+        search=SearchConfig(
+            providers={
+                "x_live": SearchProviderConfig(
+                    kind="x_api",
+                    endpoint="https://api.x.com",
+                    bearer_token="test-token",
+                )
+            }
+        )
+    )
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def read(self, max_bytes):
+            del max_bytes
+            return json.dumps(
+                {
+                    "errors": [
+                        {
+                            "title": "Too Many Requests",
+                            "detail": "Rate limit exceeded",
+                            "status": 429,
+                        }
+                    ]
+                }
+            ).encode()
+
+    monkeypatch.setattr(
+        web_search_utils,
+        "urlopen",
+        lambda request, timeout: FakeResponse(),
+    )
+
+    result = await web_search_utils._web_search(
+        {"query": "navi smoke", "provider": "x_live"},
+        config=config,
+    )
+
+    assert result.ok is False
+    assert result.facts["error_reason"] == "search_provider_blocked"
+    assert result.facts["retryable"] is True
+    assert result.facts["provider_errors"][0]["status"] == 429
 
 
 @pytest.mark.asyncio
@@ -648,9 +1039,12 @@ async def test_web_search_exa_tool_error_is_not_retryable(monkeypatch) -> None:
 
     monkeypatch.setattr(web_search_utils.MCPClient, "call_tool", fake_call)
 
-    result = await web_search_utils._web_search({"query": "navi smoke"})
+    result = await web_search_utils._web_search(
+        {"query": "navi smoke", "provider": "exa"}
+    )
 
     assert result.ok is False
-    assert result.facts["provider"] == "exa_mcp"
+    assert result.facts["provider"] == "exa"
+    assert result.facts["provider_kind"] == "exa_mcp"
     assert result.facts["error_reason"] == "search_provider_error"
     assert result.facts["retryable"] is False

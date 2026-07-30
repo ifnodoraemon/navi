@@ -37,6 +37,14 @@ def test_default_config_contains_every_global_section_and_is_private(tmp_path: P
     ]
     assert raw["api"]["api_key"]
     assert raw["mcp"]["servers"]["exa"]["url"] == "https://mcp.exa.ai/mcp"
+    assert raw["search"]["providers"]["exa"]["kind"] == "exa_mcp"
+    assert raw["search"]["providers"]["searxng"]["enabled"] is False
+    assert raw["search"]["providers"]["x"] == {
+        "kind": "x_api",
+        "enabled": False,
+        "endpoint": "https://api.x.com",
+        "bearer_token": "",
+    }
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
@@ -93,14 +101,60 @@ def test_invalid_search_reference_fails_validation(tmp_path: Path) -> None:
         {
             "model": {"api_key": "model-key"},
             "api": {"api_key": "api-key"},
-            "search": {"provider": "exa_mcp", "mcp_server": "missing"},
+            "search": {
+                "providers": {
+                    "exa": {
+                        "kind": "exa_mcp",
+                        "mcp_server": "missing",
+                    }
+                }
+            },
             "mcp": {"servers": {}},
         },
     )
     config = load_config(tmp_path)
 
-    assert "search.mcp_server 'missing' is not defined in mcp.servers" in validate_config(
-        config, tmp_path
+    assert (
+        "search.providers.exa.mcp_server 'missing' is not an enabled MCP server"
+        in validate_config(config, tmp_path)
+    )
+
+
+def test_legacy_flat_search_config_is_rejected(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        {
+            "search": {
+                "provider": "exa_mcp",
+                "mcp_server": "exa",
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="search has unsupported fields"):
+        load_config(tmp_path)
+
+
+def test_enabled_x_provider_requires_bearer_token(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        {
+            "search": {
+                "providers": {
+                    "x": {
+                        "kind": "x_api",
+                        "enabled": True,
+                        "endpoint": "https://api.x.com",
+                    }
+                }
+            }
+        },
+    )
+    config = load_config(tmp_path)
+
+    assert (
+        "search.providers.x.bearer_token is required when enabled"
+        in validate_config(config, tmp_path)
     )
 
 
@@ -111,6 +165,16 @@ def test_config_command_redacts_all_secrets(tmp_path: Path) -> None:
             "model": {"api_key": "model-secret"},
             "api": {"api_key": "api-secret"},
             "connectors": {"telegram": {"bot_token": "telegram-secret"}},
+            "search": {
+                "providers": {
+                    "x": {
+                        "kind": "x_api",
+                        "enabled": False,
+                        "endpoint": "https://api.x.com",
+                        "bearer_token": "x-secret",
+                    }
+                }
+            },
             "mcp": {
                 "servers": {
                     "exa": {
@@ -132,5 +196,6 @@ def test_config_command_redacts_all_secrets(tmp_path: Path) -> None:
     assert "model-secret" not in result.output
     assert "api-secret" not in result.output
     assert "telegram-secret" not in result.output
+    assert "x-secret" not in result.output
     assert "mcp-secret" not in result.output
-    assert result.output.count("[REDACTED]") >= 4
+    assert result.output.count("[REDACTED]") >= 5

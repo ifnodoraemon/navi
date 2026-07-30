@@ -124,6 +124,10 @@ class StructuredOutputError(RuntimeError):
     """The provider returned content that failed the declared output contract."""
 
 
+class ProviderResponseError(RuntimeError):
+    """The provider returned a response without the required protocol shape."""
+
+
 @dataclass(frozen=True)
 class ProviderAdapter:
     kind: str
@@ -699,13 +703,15 @@ def _validate_structured_output(content: str, output_schema: dict[str, Any]) -> 
 def _extract_openai_content(data: dict[str, Any]) -> str:
     choices = data.get("choices") or []
     if not choices:
-        raise RuntimeError(f"Provider response did not include choices: {data}")
+        raise ProviderResponseError(f"Provider response did not include choices: {data}")
     choice = choices[0]
     message = choice.get("message") or {}
     content = message.get("content")
 
     if content is None:
-        raise RuntimeError(f"Provider response did not include message content: {data}")
+        raise ProviderResponseError(
+            f"Provider response did not include message content: {data}"
+        )
 
     content_str = str(content).strip()
     if not content_str:
@@ -715,7 +721,7 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
             "choice_keys": sorted(str(key) for key in choice.keys()),
             "message_keys": sorted(str(key) for key in message.keys()),
         }
-        raise RuntimeError(
+        raise ProviderResponseError(
             "Provider response content is empty. "
             f"Finish reason: {finish_reason}. Response shape: {response_shape}"
         )
@@ -870,21 +876,25 @@ def _extract_anthropic_content(
                 tool_input = block.get("input")
                 if isinstance(tool_input, dict):
                     return json.dumps(tool_input, ensure_ascii=False)
-                raise RuntimeError(
+                raise ProviderResponseError(
                     f"Provider structured tool output {tool_name} was not an object: {data}"
                 )
         for block in blocks:
             if block.get("type") == "tool_use":
                 if block.get("name") == tool_name:
-                    raise RuntimeError(
+                    raise ProviderResponseError(
                         f"Provider structured tool output {tool_name} was invalid: {data}"
                     )
-        raise RuntimeError(f"Provider response did not include tool output {tool_name}: {data}")
+        raise ProviderResponseError(
+            f"Provider response did not include tool output {tool_name}: {data}"
+        )
     text = "\n".join(
         str(block.get("text") or "") for block in blocks if block.get("type") == "text"
     ).strip()
     if not text:
-        raise RuntimeError(f"Provider response did not include text content: {data}")
+        raise ProviderResponseError(
+            f"Provider response did not include text content: {data}"
+        )
     return text
 
 

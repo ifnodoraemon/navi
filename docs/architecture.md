@@ -57,6 +57,16 @@ authority. `navi config` renders the effective structure with secret-bearing
 fields redacted. Model routes, search providers, connector credentials, API
 authentication, and MCP servers do not read process-environment overrides.
 
+`search.providers` is an instance registry rather than a global provider
+switch. Each instance declares an adapter kind, enabled state, endpoint or MCP
+server reference, and adapter-specific credentials or defaults. The
+`web.search` capability exposes enabled instance IDs in its schema and requires
+the planner to select one on every call. Registry dispatch performs exactly one
+adapter call and returns its facts; it does not inspect query keywords, choose
+an instance, retry, switch providers, or merge results. New search backends
+extend the adapter registry without adding product-specific tools or routing
+branches.
+
 Child agents reuse this exact loop. `agent.control(operation=...)` is the single
 parent lifecycle surface; `agent.report` is separate because it is a child-only
 terminal protocol with different authority. Child policy is the intersection of

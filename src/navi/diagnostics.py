@@ -55,7 +55,7 @@ def run_diagnostics(
     checks.extend(_mcp_config_checks(home))
     if include_connectivity:
         checks.extend(_api_connectivity_checks(config))
-        checks.append(_search_connectivity_check(home))
+        checks.extend(_search_connectivity_checks(home))
     unit = systemd_user_unit_path(config.runtime.service_name)
     checks.append(_check_path("service.unit", unit, required=False))
     checks.append(_service_runtime_check(config.runtime.service_name))
@@ -201,24 +201,34 @@ def _api_config_checks(config) -> list[DiagnosticCheck]:
 
 
 def _search_config_checks(config: NaviConfig) -> list[DiagnosticCheck]:
-    provider = config.search.provider
-    if provider == "searxng" and not config.search.searxng_url:
-        return [
+    from .core_tools.web_search import search_provider_catalog
+
+    catalog = search_provider_catalog(config)
+    enabled = [item["id"] for item in catalog if item["enabled"]]
+    checks = [
+        DiagnosticCheck(
+            "search.config",
+            "ok" if enabled else "error",
+            f"enabled={','.join(enabled) or 'none'} configured={len(catalog)}",
+        )
+    ]
+    for item in catalog:
+        detail_parts = [f"kind={item['kind']}"]
+        if item["endpoint"]:
+            detail_parts.append(f"endpoint={item['endpoint']}")
+        if item["mcp_server"]:
+            detail_parts.append(f"mcp_server={item['mcp_server']}")
+        if item["requires_credentials"]:
+            detail_parts.append(f"credentials_present={item['has_credentials']}")
+        checks.append(
             DiagnosticCheck(
-                "search.config",
-                "error",
-                "SearXNG selected but search.searxng_url is missing",
+                f"search.provider.{item['id']}",
+                "ok" if item["enabled"] else "warn",
+                ("enabled " if item["enabled"] else "disabled ")
+                + " ".join(detail_parts),
             )
-        ]
-    if provider not in {"searxng", "exa_mcp"}:
-        return [DiagnosticCheck("search.config", "error", f"unsupported provider {provider}")]
-    if provider == "searxng":
-        detail = f"provider=searxng endpoint={config.search.searxng_url}"
-    else:
-        server = config.mcp_servers.get(config.search.mcp_server) or {}
-        endpoint = str(server.get("url") or "").split("?", 1)[0]
-        detail = f"provider=exa_mcp server={config.search.mcp_server} endpoint={endpoint}"
-    return [DiagnosticCheck("search.config", "ok", detail)]
+        )
+    return checks
 
 
 def _mcp_config_checks(home: Path) -> list[DiagnosticCheck]:
@@ -236,26 +246,54 @@ def _mcp_config_checks(home: Path) -> list[DiagnosticCheck]:
     ]
 
 
-def _search_connectivity_check(home: Path) -> DiagnosticCheck:
-    from .core_tools.web_search import _web_search
-
-    try:
-        result = asyncio.run(
-            _web_search({"query": "Navi web search connectivity check", "limit": 1}, home=home)
-        )
-    except Exception as exc:  # pragma: no cover - defensive diagnostic boundary.
-        return DiagnosticCheck("search.connectivity", "error", str(exc))
-    if result.ok:
-        return DiagnosticCheck(
-            "search.connectivity",
-            "ok",
-            f"provider={result.facts.get('provider')} results={len(result.facts.get('results') or [])}",
-        )
-    return DiagnosticCheck(
-        "search.connectivity",
-        "error",
-        f"{result.facts.get('error_reason')}: {result.error}",
+def _search_connectivity_checks(home: Path) -> list[DiagnosticCheck]:
+    from .core_tools.web_search import (
+        _web_search,
+        enabled_search_provider_ids,
     )
+
+    config = load_config(home)
+    checks: list[DiagnosticCheck] = []
+    for provider_id in enabled_search_provider_ids(config):
+        try:
+            result = asyncio.run(
+                _web_search(
+                    {
+                        "query": "Navi web search connectivity check",
+                        "provider": provider_id,
+                        "limit": 1,
+                    },
+                    home=home,
+                    config=config,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive diagnostic boundary.
+            checks.append(
+                DiagnosticCheck(
+                    f"search.connectivity.{provider_id}",
+                    "error",
+                    str(exc),
+                )
+            )
+            continue
+        if result.ok:
+            checks.append(
+                DiagnosticCheck(
+                    f"search.connectivity.{provider_id}",
+                    "ok",
+                    f"kind={result.facts.get('provider_kind')} "
+                    f"results={len(result.facts.get('results') or [])}",
+                )
+            )
+        else:
+            checks.append(
+                DiagnosticCheck(
+                    f"search.connectivity.{provider_id}",
+                    "error",
+                    f"{result.facts.get('error_reason')}: {result.error}",
+                )
+            )
+    return checks
 
 
 def _api_connectivity_checks(config) -> list[DiagnosticCheck]:

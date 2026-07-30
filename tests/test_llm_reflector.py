@@ -24,7 +24,7 @@ from navi.loop_contracts import (
     VerificationKind,
     VerificationStep,
 )
-from navi.provider import ChatMessage
+from navi.provider import ChatMessage, ProviderResponseError
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 from navi.state_graph import ExecutedCapabilityStep, LLMSemanticCheckerPort
@@ -54,9 +54,13 @@ class _ScriptedProvider:
         self.calls.append(role)
         self.messages[role] = messages
         if role == "planner":
+            if not self._planner_syscalls:
+                raise ProviderResponseError("scripted planner response unavailable")
             syscall = self._planner_syscalls.pop(0)
             return json.dumps({"syscalls": [syscall]})
         if role == "checker":
+            if not self._checker_decisions:
+                raise ProviderResponseError("scripted checker response unavailable")
             decision = self._checker_decisions.pop(0)
             return json.dumps(decision)
         # responder / default — synthesize from the facts payload

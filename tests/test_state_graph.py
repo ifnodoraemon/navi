@@ -36,6 +36,7 @@ from navi.state_graph import (
     ModelCapabilityPlannerPort,
     PlannedCapabilityStep,
     _semantic_checker_attempt_evidence,
+    _surface_response_required,
     _transition_loop_decision,
 )
 from navi.trace import TraceStore
@@ -147,6 +148,39 @@ def _respond_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
     )
 
 
+def test_surface_response_requirement_uses_capability_metadata_not_tool_name(
+    tmp_path: Path,
+) -> None:
+    capabilities = CapabilityRegistry(home=tmp_path, project_dir=tmp_path)
+    goal = GoalSpec(
+        objective="present verified facts",
+        scope=("repo:/tmp/project",),
+        acceptance_criteria=("verified facts are presented",),
+        metadata={"loop_kind": "turn"},
+    )
+    verification_ladder = (
+        VerificationStep(
+            kind=VerificationKind.LLM_CHECKER,
+            name="semantic checker",
+        ),
+    )
+    surface_spec = LoopSpec.from_goal(
+        goal,
+        goal_id="goal-surface",
+        allowed_capabilities=("ask.user",),
+        verification_ladder=verification_ladder,
+    )
+    facts_only_spec = LoopSpec.from_goal(
+        goal,
+        goal_id="goal-facts",
+        allowed_capabilities=("file.read",),
+        verification_ladder=verification_ladder,
+    )
+
+    assert _surface_response_required(surface_spec, capabilities) is True
+    assert _surface_response_required(facts_only_spec, capabilities) is False
+
+
 def _write_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
     return LoopSpec.from_goal(
         GoalSpec(
@@ -181,6 +215,34 @@ class _UnusedExecutor:
         raise AssertionError("executor must not run")
 
 
+class _StaticResponsePlanner:
+    async def plan(self, spec, state, *, workspace, evidence):
+        del spec, state, workspace, evidence
+        return PlannedCapabilityStep(
+            tool="respond",
+            permission="read",
+            args={"message": "verified response"},
+        )
+
+
+class _StaticResponseExecutor:
+    async def execute(self, step, spec, state, *, workspace):
+        del step, spec, state, workspace
+        return ExecutedCapabilityStep(
+            ok=True,
+            action="chat",
+            facts={},
+            message="verified response",
+            terminal=True,
+        )
+
+
+class _ExplodingSemanticChecker:
+    async def assess(self, spec, state, *, executed, evidence):
+        del spec, state, executed, evidence
+        raise AssertionError("checker implementation bug")
+
+
 @pytest.mark.asyncio
 async def test_unexpected_planner_exception_discards_shadow_workspace(tmp_path: Path) -> None:
     spec = replace(
@@ -200,6 +262,36 @@ async def test_unexpected_planner_exception_discards_shadow_workspace(tmp_path: 
     assert len(shadows) == 1
     assert shadows[0].status == "discarded"
     assert not Path(shadows[0].shadow_workspace).parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_semantic_checker_programming_error_is_not_provider_failure(
+    tmp_path: Path,
+) -> None:
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="present a verified response",
+            scope=(f"repo:{tmp_path}",),
+            acceptance_criteria=("response is verified",),
+        ),
+        goal_id="goal-checker-bug",
+        allowed_capabilities=("respond",),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="semantic checker",
+            ),
+        ),
+    )
+    runner = DurableStateGraphRunner(
+        home=tmp_path / ".navi",
+        planner_port=_StaticResponsePlanner(),
+        executor_port=_StaticResponseExecutor(),
+        semantic_checker_port=_ExplodingSemanticChecker(),
+    )
+
+    with pytest.raises(AssertionError, match="checker implementation bug"):
+        await runner.run_async(spec, workspace=tmp_path)
 
 
 def test_capability_recovery_replans_after_non_retryable_call_failure() -> None:

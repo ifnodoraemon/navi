@@ -121,6 +121,33 @@ async def test_planner_projects_structured_output_failure_as_replannable_contrac
     assert decision[0].args["retryable"] is False
 
 
+@pytest.mark.asyncio
+async def test_planner_does_not_reclassify_programming_errors_as_provider_failures():
+    class Provider:
+        async def complete_for(self, role, messages, **kwargs):
+            del role, messages, kwargs
+            raise AssertionError("planner implementation bug")
+
+    with pytest.raises(AssertionError, match="planner implementation bug"):
+        await ModelSyscallPlanner(Provider()).plan(
+            "answer",
+            tools=[
+                ToolSpec(
+                    name="respond",
+                    capability_class="conversation",
+                    execution_contexts=("turn",),
+                    description="Respond.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"message": {"type": "string"}},
+                        "required": ["message"],
+                    },
+                    output_schema={"type": "object", "properties": {}},
+                )
+            ],
+        )
+
+
 def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:
     runs = RunStore(tmp_path)
     run = runs.create(

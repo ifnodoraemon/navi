@@ -672,6 +672,8 @@ async def test_daemon_advances_and_traces_failed_cron_occurrence(
     assert len(created) == 1
     assert created[0]["surface"] is True
     assert created[0]["facts"]["kind"] == "scheduled_occurrence_failed"
+    assert created[0]["facts"]["scheduled_for_iso"]
+    assert created[0]["facts"]["next_run_at_iso"]
     refreshed = GoalStore(home).get(registered.goal.id)
     assert refreshed is not None
     assert refreshed.next_run_at > scheduled_for

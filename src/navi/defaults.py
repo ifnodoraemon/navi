@@ -20,7 +20,6 @@ DEFAULT_MODEL_ROLE_PARAMS: dict[str, dict[str, Any]] = {
 DEFAULT_LOCAL_SURFACE = str(_DEFAULTS["local_surface"])
 DEFAULT_API_HOST = str(_DEFAULTS["api_host"])
 DEFAULT_API_PORT = int(_DEFAULTS["api_port"])
-DEFAULT_SEARCH_PROVIDER = str(_DEFAULTS["search_provider"])
 DEFAULT_SEARCH_MCP_SERVER = str(_DEFAULTS["search_mcp_server"])
 DEFAULT_EXA_MCP_URL = str(_DEFAULTS["exa_mcp_url"])
 DEFAULT_TELEGRAM_ENABLED = bool(_DEFAULTS["telegram_enabled"])

@@ -432,6 +432,14 @@ class LLMSemanticCheckerPort:
         )
 
 
+class SemanticCheckerCallError(RuntimeError):
+    """Preserve the checker-call boundary for typed provider recovery."""
+
+    def __init__(self, cause: Exception):
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 def _goal_trigger_facts(spec: LoopSpec) -> dict[str, Any]:
     value = spec.goal.metadata.get("trigger_facts")
     return dict(value) if isinstance(value, dict) else {}
@@ -1865,11 +1873,15 @@ class DurableStateGraphRunner:
                     harness_results=tuple(harness_results),
                     evidence=collected_evidence,
                 )
-            except Exception as exc:
-                failure_facts = provider_failure_facts(exc)
+            except SemanticCheckerCallError as exc:
+                failure_facts = provider_failure_facts(exc.cause)
                 if not bool(failure_facts.get("provider_call_failure", False)):
-                    self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
-                    raise
+                    self._discard_shadow_if_needed(
+                        spec,
+                        state.run_id,
+                        shadow_workspace,
+                    )
+                    raise exc.cause
                 retry_gate = _next_provider_transport_retry_gate_for_facts(
                     failure_facts,
                     evidence=collected_evidence,
@@ -1926,6 +1938,9 @@ class DurableStateGraphRunner:
                     harness_results=tuple(harness_results),
                     evidence=collected_evidence,
                 )
+            except Exception:
+                self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
+                raise
             if result.run_state.node == LoopNode.PLAN and not result.run_state.is_terminal():
                 return await self.run_async(
                     spec,
@@ -2096,7 +2111,13 @@ class DurableStateGraphRunner:
                 collected_evidence["responded_message"] = candidate_response
                 collected_evidence["responded_action"] = candidate_action
             if (
-                _surface_response_required(spec)
+                _surface_response_required(
+                    spec,
+                    CapabilityRegistry(
+                        home=self.home,
+                        project_dir=workspace,
+                    ),
+                )
                 and not _has_surface_result(collected_evidence)
                 and not is_terminal
                 and state.attempt < spec.retry_policy.max_attempts
@@ -2105,10 +2126,8 @@ class DurableStateGraphRunner:
                     "required": True,
                     "verified_work_complete": True,
                     "authority": "semantic_checker",
-                    "next_result_contract": (
-                        "author one grounded user-facing result with respond; "
-                        "do not repeat the completed effect"
-                    ),
+                    "presentation_missing": True,
+                    "completed_effect_replay_prohibited": True,
                 }
                 state = self._transition(
                     state,
@@ -2423,12 +2442,15 @@ class DurableStateGraphRunner:
                 collected_evidence["semantic_checker_result"] = facts
                 continue
 
-            decision = await self.semantic_checker_port.assess(
-                spec,
-                state,
-                executed=executed_step,
-                evidence=collected_evidence,
-            )
+            try:
+                decision = await self.semantic_checker_port.assess(
+                    spec,
+                    state,
+                    executed=executed_step,
+                    evidence=collected_evidence,
+                )
+            except Exception as exc:
+                raise SemanticCheckerCallError(exc) from exc
 
             facts = {**decision.to_facts(), "attempt": state.attempt}
             collected_evidence[key] = facts
@@ -3567,7 +3589,8 @@ def _is_candidate_response_attempt(raw: dict[str, Any]) -> bool:
 def _is_planner_provider_failure(planned: PlannedCapabilityStep) -> bool:
     return (
         planned.tool == "system.planner_error"
-        and planned.reason == "planner provider call failed"
+        and planned.args.get("provider_call_failure") is True
+        and planned.args.get("structured_output_failure") is False
     )
 
 
@@ -3694,11 +3717,16 @@ def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[st
     return compact
 
 
-def _surface_response_required(spec: LoopSpec) -> bool:
-    # The persisted LoopSpec carries capability names, not ToolSpec protocol
-    # metadata, so verify that the standard presentation capability is in the
-    # policy envelope before asking the planner to produce a surface result.
-    if "respond" not in spec.allowed_capabilities and "*" not in spec.allowed_capabilities:
+def _surface_response_required(
+    spec: LoopSpec,
+    capabilities: CapabilityRegistry,
+) -> bool:
+    allowed = set(spec.allowed_capabilities)
+    surface_available = any(
+        not item.facts_only and ("*" in allowed or item.name in allowed)
+        for item in capabilities.planner_specs()
+    )
+    if not surface_available:
         return False
     metadata = spec.goal.metadata if isinstance(spec.goal.metadata, dict) else {}
     loop_kind = str(metadata.get("loop_kind") or "")

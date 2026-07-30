@@ -1,0 +1,45 @@
+# Copy to .navi/searxng/settings.yml and replace the secret before starting the
+# loopback-only SearXNG container. The runtime file is intentionally ignored.
+use_default_settings: true
+
+general:
+  instance_name: Navi SearXNG
+
+search:
+  formats:
+    - html
+    - json
+
+outgoing:
+  request_timeout: 5.0
+  max_request_timeout: 10.0
+
+# These independently tested general engines supplement the small default
+# selection. SearXNG reports individual upstream failures in its JSON response.
+engines:
+  - name: bing
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: yandex
+    disabled: false
+  - name: mwmbl
+    disabled: false
+  - name: wiby
+    disabled: false
+  - name: baidu
+    disabled: false
+  - name: sogou
+    disabled: false
+  - name: 360search
+    disabled: false
+  - name: naver
+    disabled: false
+  - name: quark
+    disabled: false
+
+server:
+  # Generate a unique value for every installation. Never commit the real key.
+  secret_key: REPLACE_WITH_A_RANDOM_SECRET
+  limiter: false
+  image_proxy: false

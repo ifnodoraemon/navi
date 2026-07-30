@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,7 +20,6 @@ from .defaults import (
     DEFAULT_MODEL_PROVIDER,
     DEFAULT_MODEL_ROLE_PARAMS,
     DEFAULT_SEARCH_MCP_SERVER,
-    DEFAULT_SEARCH_PROVIDER,
     DEFAULT_SERVICE_NAME,
     DEFAULT_TELEGRAM_API_BASE_URL,
     DEFAULT_TELEGRAM_DM_POLICY,
@@ -89,13 +89,40 @@ class ApiConfig:
 
 
 @dataclass
-class SearchConfig:
-    provider: str = DEFAULT_SEARCH_PROVIDER
-    mcp_server: str = DEFAULT_SEARCH_MCP_SERVER
-    searxng_url: str = ""
+class SearchProviderConfig:
+    kind: str
+    enabled: bool = True
+    endpoint: str = ""
+    mcp_server: str = ""
+    bearer_token: str = ""
     categories: str = ""
     language: str = ""
     time_range: str = ""
+
+
+def _default_search_providers() -> dict[str, SearchProviderConfig]:
+    return {
+        "exa": SearchProviderConfig(
+            kind="exa_mcp",
+            mcp_server=DEFAULT_SEARCH_MCP_SERVER,
+        ),
+        "searxng": SearchProviderConfig(
+            kind="searxng",
+            enabled=False,
+        ),
+        "x": SearchProviderConfig(
+            kind="x_api",
+            enabled=False,
+            endpoint="https://api.x.com",
+        ),
+    }
+
+
+@dataclass
+class SearchConfig:
+    providers: dict[str, SearchProviderConfig] = field(
+        default_factory=_default_search_providers
+    )
 
 
 def _default_connectors() -> dict[str, dict[str, Any]]:
@@ -183,11 +210,7 @@ def load_config(home: Path | None = None) -> NaviConfig:
     _reject_unknown(runtime_raw, {"service_name", "local_surface"}, "runtime")
     _reject_unknown(execution_raw, {"provider", "timeout_seconds"}, "execution")
     _reject_unknown(api_raw, {"host", "port", "api_key"}, "api")
-    _reject_unknown(
-        search_raw,
-        {"provider", "mcp_server", "searxng_url", "categories", "language", "time_range"},
-        "search",
-    )
+    _reject_unknown(search_raw, {"providers"}, "search")
     model = _model_config(model_raw)
 
     runtime = RuntimeConfig(
@@ -207,13 +230,19 @@ def load_config(home: Path | None = None) -> NaviConfig:
         port=_port(api_raw.get("port", DEFAULT_API_PORT), "api.port"),
         api_key=str(api_raw.get("api_key") or "").strip(),
     )
+    search_providers_raw = _mapping(search_raw.get("providers"), "search.providers")
     search = SearchConfig(
-        provider=str(search_raw.get("provider", DEFAULT_SEARCH_PROVIDER)).strip().lower(),
-        mcp_server=str(search_raw.get("mcp_server", DEFAULT_SEARCH_MCP_SERVER)).strip(),
-        searxng_url=str(search_raw.get("searxng_url") or "").strip().rstrip("/"),
-        categories=str(search_raw.get("categories") or "").strip(),
-        language=str(search_raw.get("language") or "").strip(),
-        time_range=str(search_raw.get("time_range") or "").strip(),
+        providers=(
+            {
+                _search_provider_name(name): _search_provider_config(
+                    _mapping(item, f"search.providers.{name}"),
+                    path=f"search.providers.{name}",
+                )
+                for name, item in search_providers_raw.items()
+            }
+            if "providers" in search_raw
+            else _default_search_providers()
+        )
     )
     connectors = _default_connectors()
     for name, item in connectors_raw.items():
@@ -271,12 +300,27 @@ def write_default_config(home: Path | None = None) -> Path:
                     "api_key": secrets.token_hex(32),
                 },
                 "search": {
-                    "provider": DEFAULT_SEARCH_PROVIDER,
-                    "mcp_server": DEFAULT_SEARCH_MCP_SERVER,
-                    "searxng_url": "",
-                    "categories": "",
-                    "language": "",
-                    "time_range": "",
+                    "providers": {
+                        "exa": {
+                            "kind": "exa_mcp",
+                            "enabled": True,
+                            "mcp_server": DEFAULT_SEARCH_MCP_SERVER,
+                        },
+                        "searxng": {
+                            "kind": "searxng",
+                            "enabled": False,
+                            "endpoint": "",
+                            "categories": "",
+                            "language": "",
+                            "time_range": "",
+                        },
+                        "x": {
+                            "kind": "x_api",
+                            "enabled": False,
+                            "endpoint": "https://api.x.com",
+                            "bearer_token": "",
+                        },
+                    }
                 },
                 "connectors": _default_connectors(),
                 "mcp": {"servers": _default_mcp_servers()},
@@ -301,6 +345,55 @@ def _reject_unknown(raw: dict[str, Any], allowed: set[str], path: str) -> None:
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise ValueError(f"{path} has unsupported fields: {', '.join(unknown)}")
+
+
+def _boolean(value: object, path: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{path} must be a boolean")
+    return value
+
+
+def _search_provider_name(value: object) -> str:
+    name = str(value).strip()
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+        raise ValueError(
+            f"search provider name '{name}' must use lowercase letters, digits, and underscores"
+        )
+    return name
+
+
+def _search_provider_config(
+    raw: dict[str, Any],
+    *,
+    path: str,
+) -> SearchProviderConfig:
+    _reject_unknown(
+        raw,
+        {
+            "kind",
+            "enabled",
+            "endpoint",
+            "mcp_server",
+            "bearer_token",
+            "categories",
+            "language",
+            "time_range",
+        },
+        path,
+    )
+    kind = str(raw.get("kind") or "").strip().lower()
+    if not kind:
+        raise ValueError(f"{path}.kind is required")
+    return SearchProviderConfig(
+        kind=kind,
+        enabled=_boolean(raw.get("enabled", True), f"{path}.enabled"),
+        endpoint=str(raw.get("endpoint") or "").strip().rstrip("/"),
+        mcp_server=str(raw.get("mcp_server") or "").strip(),
+        bearer_token=str(raw.get("bearer_token") or "").strip(),
+        categories=str(raw.get("categories") or "").strip(),
+        language=str(raw.get("language") or "").strip(),
+        time_range=str(raw.get("time_range") or "").strip(),
+    )
 
 
 def _positive_float(value: object, path: str) -> float:
@@ -351,8 +444,6 @@ def _model_config(model_raw: dict, path: str = "model") -> ModelConfig:
     provider = str(model_raw.get("provider", DEFAULT_MODEL_PROVIDER)).strip()
     provider_spec = _provider_spec(provider, model_raw)
     raw_model = model_raw.get("model", provider_spec.default_model)
-    if provider_spec.name != DEFAULT_MODEL_PROVIDER and raw_model == DEFAULT_MODEL_MODEL:
-        raw_model = provider_spec.default_model
     model = str(raw_model).strip()
     api_base_url = str(model_raw.get("api_base_url", provider_spec.default_base_url)).rstrip("/")
     kind = str(model_raw.get("kind", provider_spec.kind)).strip()
@@ -416,23 +507,9 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
     if not config.api.api_key:
         errors.append("api.api_key is required")
 
-    if config.search.provider not in {"exa_mcp", "searxng"}:
-        errors.append(f"search.provider '{config.search.provider}' is unsupported")
-    elif config.search.provider == "searxng" and not config.search.searxng_url:
-        errors.append("search.searxng_url is required for the searxng provider")
-    elif config.search.provider == "exa_mcp":
-        server_name = config.search.mcp_server
-        server = config.mcp_servers.get(server_name)
-        if not server_name:
-            errors.append("search.mcp_server is required for the exa_mcp provider")
-        elif server is None:
-            errors.append(f"search.mcp_server '{server_name}' is not defined in mcp.servers")
-        elif not bool(server.get("enabled", True)):
-            errors.append(f"search.mcp_server '{server_name}' is disabled")
-        elif "web_search_exa" not in (server.get("tool_permissions") or {}):
-            errors.append(
-                f"mcp.servers.{server_name}.tool_permissions must include web_search_exa"
-            )
+    from .core_tools.web_search import validate_search_config
+
+    errors.extend(validate_search_config(config, home))
 
     # Validate Connector Specs and configuration
     from .connector_registry import load_connector_adapters

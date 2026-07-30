@@ -1,4 +1,4 @@
-"""Web search provider handlers."""
+"""Model-selected structured web search providers."""
 
 from __future__ import annotations
 
@@ -6,14 +6,15 @@ import asyncio
 import html
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse, urlunparse
-from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY, CAPABILITY_RETRYABLE_KEY
-from navi.config import NaviConfig, load_config
+from navi.config import NaviConfig, SearchProviderConfig, load_config
 from navi.mcp_client import MCPClient, MCPServerConfig, describe_mcp_exception
 from navi.mcp_tools import parse_mcp_config
 
@@ -23,14 +24,428 @@ from .utils import _positive_int
 _SEARCH_USER_AGENT = "Navi/1.0"
 _SEARCH_TITLE_MAX_CHARS = 300
 _SEARCH_SNIPPET_MAX_CHARS = 1200
-_WEB_SEARCH_PROVIDER_SEARXNG = "searxng"
-_WEB_SEARCH_PROVIDER_EXA_MCP = "exa_mcp"
+_SEARCH_RESPONSE_MAX_BYTES = 2_000_000
+_X_RESPONSE_MAX_BYTES = 4_000_000
 
 
-def _web_search_evidence_contract(*, provider: str) -> dict[str, Any]:
+@dataclass(frozen=True)
+class SearchRequest:
+    query: str
+    limit: int
+    categories: str = ""
+    language: str = ""
+    time_range: str = ""
+    start_time: str = ""
+    end_time: str = ""
+    sort_order: str = ""
+    next_token: str = ""
+
+
+class SearchProviderAdapter(Protocol):
+    kind: str
+    requires_credentials: bool
+
+    def validate(
+        self,
+        provider_id: str,
+        provider: SearchProviderConfig,
+        config: NaviConfig,
+        *,
+        home: Path | None,
+    ) -> list[str]: ...
+
+    def safe_endpoint(
+        self,
+        provider: SearchProviderConfig,
+        config: NaviConfig,
+    ) -> str: ...
+
+    async def search(
+        self,
+        provider_id: str,
+        provider: SearchProviderConfig,
+        request: SearchRequest,
+        config: NaviConfig,
+        *,
+        home: Path | None,
+    ) -> ToolResult: ...
+
+
+class SearXNGSearchProvider:
+    kind = "searxng"
+    requires_credentials = False
+
+    def validate(
+        self,
+        provider_id: str,
+        provider: SearchProviderConfig,
+        config: NaviConfig,
+        *,
+        home: Path | None,
+    ) -> list[str]:
+        del config, home
+        _, error = _searxng_search_url(provider.endpoint, query="validation")
+        return [f"search.providers.{provider_id}.endpoint: {error}"] if error else []
+
+    def safe_endpoint(
+        self,
+        provider: SearchProviderConfig,
+        config: NaviConfig,
+    ) -> str:
+        del config
+        return _safe_http_endpoint(provider.endpoint)
+
+    async def search(
+        self,
+        provider_id: str,
+        provider: SearchProviderConfig,
+        request: SearchRequest,
+        config: NaviConfig,
+        *,
+        home: Path | None,
+    ) -> ToolResult:
+        del config, home
+        return await asyncio.to_thread(
+            _searxng_search,
+            provider_id,
+            provider,
+            request,
+        )
+
+
+class ExaMCPSearchProvider:
+    kind = "exa_mcp"
+    requires_credentials = False
+
+    def validate(
+        self,
+        provider_id: str,
+        provider: SearchProviderConfig,
+        config: NaviConfig,
+        *,
+        home: Path | None,
+    ) -> list[str]:
+        _, error = _exa_server(
+            provider_id,
+            provider,
+            config,
+            home=home,
+        )
+        return [error] if error else []
+
+    def safe_endpoint(
+        self,
+        provider: SearchProviderConfig,
+        config: NaviConfig,
+    ) -> str:
+        server = config.mcp_servers.get(provider.mcp_server) or {}
+        return _safe_http_endpoint(str(server.get("url") or ""))
+
+    async def search(
+        self,
+        provider_id: str,
+        provider: SearchProviderConfig,
+        request: SearchRequest,
+        config: NaviConfig,
+        *,
+        home: Path | None,
+    ) -> ToolResult:
+        server, error = _exa_server(
+            provider_id,
+            provider,
+            config,
+            home=home,
+        )
+        if server is None:
+            return _provider_failure(
+                provider_id=provider_id,
+                provider_kind=self.kind,
+                query=request.query,
+                endpoint=self.safe_endpoint(provider, config),
+                error=error,
+                reason="search_provider_config_error",
+                retryable=False,
+            )
+        return await _exa_mcp_search(provider_id, request, server=server)
+
+
+class XAPISearchProvider:
+    kind = "x_api"
+    requires_credentials = True
+
+    def validate(
+        self,
+        provider_id: str,
+        provider: SearchProviderConfig,
+        config: NaviConfig,
+        *,
+        home: Path | None,
+    ) -> list[str]:
+        del config, home
+        errors: list[str] = []
+        parsed = urlparse(provider.endpoint)
+        if parsed.scheme != "https" or not parsed.netloc:
+            errors.append(
+                f"search.providers.{provider_id}.endpoint must be an https URL"
+            )
+        elif parsed.username or parsed.password:
+            errors.append(
+                f"search.providers.{provider_id}.endpoint must not include credentials"
+            )
+        if not provider.bearer_token:
+            errors.append(
+                f"search.providers.{provider_id}.bearer_token is required when enabled"
+            )
+        return errors
+
+    def safe_endpoint(
+        self,
+        provider: SearchProviderConfig,
+        config: NaviConfig,
+    ) -> str:
+        del config
+        return _safe_http_endpoint(provider.endpoint)
+
+    async def search(
+        self,
+        provider_id: str,
+        provider: SearchProviderConfig,
+        request: SearchRequest,
+        config: NaviConfig,
+        *,
+        home: Path | None,
+    ) -> ToolResult:
+        del config, home
+        return await asyncio.to_thread(
+            _x_api_search,
+            provider_id,
+            provider,
+            request,
+        )
+
+
+_SEARCH_PROVIDER_ADAPTERS: dict[str, SearchProviderAdapter] = {
+    adapter.kind: adapter
+    for adapter in (
+        SearXNGSearchProvider(),
+        ExaMCPSearchProvider(),
+        XAPISearchProvider(),
+    )
+}
+
+
+def validate_search_config(config: NaviConfig, home: Path) -> list[str]:
+    errors: list[str] = []
+    if not config.search.providers:
+        return ["search.providers must configure at least one provider"]
+    enabled = 0
+    for provider_id, provider in sorted(config.search.providers.items()):
+        adapter = _SEARCH_PROVIDER_ADAPTERS.get(provider.kind)
+        if adapter is None:
+            errors.append(
+                f"search.providers.{provider_id}.kind '{provider.kind}' is unsupported"
+            )
+            continue
+        if not provider.enabled:
+            continue
+        enabled += 1
+        errors.extend(
+            adapter.validate(
+                provider_id,
+                provider,
+                config,
+                home=home,
+            )
+        )
+    if enabled == 0:
+        errors.append("search.providers must enable at least one provider")
+    return errors
+
+
+def search_provider_catalog(
+    config: NaviConfig,
+) -> list[dict[str, Any]]:
+    catalog: list[dict[str, Any]] = []
+    for provider_id, provider in sorted(config.search.providers.items()):
+        adapter = _SEARCH_PROVIDER_ADAPTERS.get(provider.kind)
+        endpoint = adapter.safe_endpoint(provider, config) if adapter else ""
+        catalog.append(
+            {
+                "id": provider_id,
+                "kind": provider.kind,
+                "enabled": provider.enabled,
+                "endpoint": endpoint,
+                "mcp_server": provider.mcp_server,
+                "requires_credentials": bool(
+                    adapter and adapter.requires_credentials
+                ),
+                "has_credentials": bool(provider.bearer_token),
+            }
+        )
+    return catalog
+
+
+def enabled_search_provider_ids(config: NaviConfig) -> tuple[str, ...]:
+    return tuple(
+        provider_id
+        for provider_id, provider in sorted(config.search.providers.items())
+        if provider.enabled and provider.kind in _SEARCH_PROVIDER_ADAPTERS
+    )
+
+
+async def _web_search(
+    args: dict[str, Any],
+    *,
+    home: Path | None = None,
+    config: NaviConfig | None = None,
+) -> ToolResult:
+    query = str(args.get("query") or "").strip()
+    provider_id = str(args.get("provider") or "").strip()
+    config = config or (load_config(home) if home is not None else NaviConfig())
+    available = list(enabled_search_provider_ids(config))
+
+    if not query:
+        return _invalid_search_request(
+            provider_id=provider_id,
+            error="query is required",
+            missing="query",
+            available=available,
+        )
+    if not provider_id:
+        return _invalid_search_request(
+            provider_id="",
+            error="provider is required; the model must select one configured provider",
+            missing="provider",
+            available=available,
+        )
+
+    provider = config.search.providers.get(provider_id)
+    if provider is None:
+        return _provider_failure(
+            provider_id=provider_id,
+            provider_kind="",
+            query=query,
+            endpoint="",
+            error=f"search provider is not configured: {provider_id}",
+            reason="search_provider_not_configured",
+            retryable=False,
+            extra={"available_providers": available},
+        )
+    if not provider.enabled:
+        return _provider_failure(
+            provider_id=provider_id,
+            provider_kind=provider.kind,
+            query=query,
+            endpoint="",
+            error=f"search provider is disabled: {provider_id}",
+            reason="search_provider_disabled",
+            retryable=False,
+            extra={"available_providers": available},
+        )
+
+    adapter = _SEARCH_PROVIDER_ADAPTERS.get(provider.kind)
+    if adapter is None:
+        return _provider_failure(
+            provider_id=provider_id,
+            provider_kind=provider.kind,
+            query=query,
+            endpoint="",
+            error=f"unsupported search provider kind: {provider.kind}",
+            reason="unsupported_search_provider",
+            retryable=False,
+        )
+    validation_errors = adapter.validate(
+        provider_id,
+        provider,
+        config,
+        home=home,
+    )
+    if validation_errors:
+        return _provider_failure(
+            provider_id=provider_id,
+            provider_kind=provider.kind,
+            query=query,
+            endpoint=adapter.safe_endpoint(provider, config),
+            error="; ".join(validation_errors),
+            reason="search_provider_config_error",
+            retryable=False,
+        )
+
+    request = SearchRequest(
+        query=query,
+        limit=_positive_int(args.get("limit"), default=5, maximum=10),
+        categories=str(args.get("categories") or provider.categories).strip(),
+        language=str(args.get("language") or provider.language).strip(),
+        time_range=str(args.get("time_range") or provider.time_range).strip(),
+        start_time=str(args.get("start_time") or "").strip(),
+        end_time=str(args.get("end_time") or "").strip(),
+        sort_order=str(args.get("sort_order") or "").strip(),
+        next_token=str(args.get("next_token") or "").strip(),
+    )
+    return await adapter.search(
+        provider_id,
+        provider,
+        request,
+        config,
+        home=home,
+    )
+
+
+def _invalid_search_request(
+    *,
+    provider_id: str,
+    error: str,
+    missing: str,
+    available: list[str],
+) -> ToolResult:
+    return ToolResult(
+        tool="web.search",
+        ok=False,
+        error=error,
+        facts={
+            CAPABILITY_ERROR_REASON_KEY: "missing_required_argument",
+            CAPABILITY_RETRYABLE_KEY: False,
+            "provider": provider_id,
+            "missing_argument": missing,
+            "available_providers": available,
+        },
+    )
+
+
+def _provider_failure(
+    *,
+    provider_id: str,
+    provider_kind: str,
+    query: str,
+    endpoint: str,
+    error: str,
+    reason: str,
+    retryable: bool,
+    extra: dict[str, Any] | None = None,
+) -> ToolResult:
+    facts: dict[str, Any] = {
+        CAPABILITY_ERROR_REASON_KEY: reason,
+        CAPABILITY_RETRYABLE_KEY: retryable,
+        "query": query,
+        "provider": provider_id,
+        "provider_kind": provider_kind,
+    }
+    if endpoint:
+        facts["endpoint"] = endpoint
+    if extra:
+        facts.update(extra)
+    return ToolResult(tool="web.search", ok=False, error=error, facts=facts)
+
+
+def _web_document_evidence_contract(
+    *,
+    provider_id: str,
+    provider_kind: str,
+) -> dict[str, Any]:
     return {
         "scope": "query_ranked_web_documents",
-        "provider": provider,
+        "provider": provider_id,
+        "provider_kind": provider_kind,
         "establishes": [
             "search_result_presence",
             "source_attribution",
@@ -47,209 +462,105 @@ def _web_search_evidence_contract(*, provider: str) -> dict[str, Any]:
     }
 
 
-async def _web_search(
-    args: dict[str, Any],
-    *,
-    home: Path | None = None,
-    config: NaviConfig | None = None,
-) -> ToolResult:
-    query = str(args.get("query") or "").strip()
-    if not query:
-        return ToolResult(
-            tool="web.search",
-            ok=False,
-            error="query is required",
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "missing_required_argument",
-                CAPABILITY_RETRYABLE_KEY: False,
-                "provider": "web.search",
-            },
-        )
-
-    limit = _positive_int(args.get("limit"), default=5, maximum=10)
-    config = config or (load_config(home) if home is not None else NaviConfig())
-    provider = config.search.provider
-
-    if provider == _WEB_SEARCH_PROVIDER_SEARXNG:
-        endpoint = config.search.searxng_url
-        if not endpoint:
-            return ToolResult(
-                tool="web.search",
-                ok=False,
-                error="search.searxng_url is required",
-                facts={
-                    CAPABILITY_ERROR_REASON_KEY: "search_provider_config_error",
-                    CAPABILITY_RETRYABLE_KEY: False,
-                    "query": query,
-                    "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
-                },
-            )
-        return await asyncio.to_thread(
-            _searxng_search,
-            query,
-            limit=limit,
-            endpoint=endpoint,
-            categories=str(args.get("categories") or config.search.categories).strip(),
-            language=str(args.get("language") or config.search.language).strip(),
-            time_range=str(args.get("time_range") or config.search.time_range).strip(),
-        )
-
-    if provider != _WEB_SEARCH_PROVIDER_EXA_MCP:
-        return ToolResult(
-            tool="web.search",
-            ok=False,
-            error=f"unsupported web search provider: {provider}",
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "unsupported_search_provider",
-                CAPABILITY_RETRYABLE_KEY: False,
-                "query": query,
-                "provider": provider,
-            },
-        )
-
-    report = parse_mcp_config(
-        config,
-        path=(home / "config.yaml") if home is not None else Path("config.yaml"),
-    )
-    if report.errors:
-        return _search_config_error(query, "; ".join(report.errors))
-    server = next(
-        (item for item in report.servers if item.name == config.search.mcp_server),
-        None,
-    )
-    if server is None:
-        return _search_config_error(
-            query,
-            f"search.mcp_server '{config.search.mcp_server}' is not an enabled MCP server",
-        )
-    if server.allowed_tools and "web_search_exa" not in server.allowed_tools:
-        return _search_config_error(
-            query,
-            f"mcp.servers.{config.search.mcp_server}.tool_permissions must include web_search_exa",
-        )
-    return await _exa_mcp_search(query, limit=limit, server=server)
-
-
-def _search_config_error(query: str, error: str) -> ToolResult:
-    return ToolResult(
-        tool="web.search",
-        ok=False,
-        error=error,
-        facts={
-            CAPABILITY_ERROR_REASON_KEY: "search_provider_config_error",
-            CAPABILITY_RETRYABLE_KEY: False,
-            "query": query,
-            "provider": _WEB_SEARCH_PROVIDER_EXA_MCP,
-        },
-    )
+def _x_post_evidence_contract(*, provider_id: str) -> dict[str, Any]:
+    return {
+        "scope": "x_api_query_posts",
+        "provider": provider_id,
+        "provider_kind": "x_api",
+        "establishes": [
+            "provider_returned_post_presence",
+            "post_id",
+            "author_attribution",
+            "provider_reported_creation_time",
+            "provider_reported_public_metrics",
+        ],
+        "does_not_establish": [
+            "query_result_completeness",
+            "future_post_visibility",
+            "claim_truth",
+            "real_world_outcome",
+        ],
+        "sampling": "provider_ranked_or_recent_query_page",
+    }
 
 
 def _searxng_search(
-    query: str,
-    *,
-    limit: int,
-    endpoint: str,
-    categories: str = "",
-    language: str = "",
-    time_range: str = "",
+    provider_id: str,
+    provider: SearchProviderConfig,
+    request: SearchRequest,
 ) -> ToolResult:
     search_url, error = _searxng_search_url(
-        endpoint,
-        query=query,
-        categories=categories,
-        language=language,
-        time_range=time_range,
+        provider.endpoint,
+        query=request.query,
+        categories=request.categories,
+        language=request.language,
+        time_range=request.time_range,
     )
     if error:
-        return ToolResult(
-            tool="web.search",
-            ok=False,
+        return _provider_failure(
+            provider_id=provider_id,
+            provider_kind="searxng",
+            query=request.query,
+            endpoint=_safe_http_endpoint(provider.endpoint),
             error=error,
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_provider_config_error",
-                CAPABILITY_RETRYABLE_KEY: False,
-                "query": query,
-                "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
-                "endpoint": endpoint,
+            reason="search_provider_config_error",
+            retryable=False,
+        )
+
+    payload, failure = _read_json_response(
+        provider_id=provider_id,
+        provider_kind="searxng",
+        query=request.query,
+        endpoint=_safe_http_endpoint(provider.endpoint),
+        request=Request(search_url, headers={"User-Agent": _SEARCH_USER_AGENT}),
+        timeout=15,
+        max_bytes=_SEARCH_RESPONSE_MAX_BYTES,
+        provider_label="SearXNG",
+    )
+    if failure is not None:
+        return failure
+    assert isinstance(payload, dict)
+
+    results = _normalize_searxng_results(payload, limit=request.limit)
+    provider_errors = _normalize_searxng_provider_errors(payload)
+    if not results and provider_errors:
+        return _provider_failure(
+            provider_id=provider_id,
+            provider_kind="searxng",
+            query=request.query,
+            endpoint=_safe_http_endpoint(provider.endpoint),
+            error="SearXNG returned no results while upstream engines reported failures",
+            reason="search_provider_blocked",
+            retryable=any(_provider_error_retryable(item) for item in provider_errors),
+            extra={
+                "source_url": search_url,
+                "provider_errors": provider_errors,
             },
         )
 
-    try:
-        request = Request(search_url, headers={"User-Agent": _SEARCH_USER_AGENT})
-        with urlopen(request, timeout=15) as response:
-            status = int(getattr(response, "status", 200))
-            body = response.read(2_000_000).decode("utf-8", errors="replace")
-        if status >= 400:
-            return ToolResult(
-                tool="web.search",
-                ok=False,
-                error=f"SearXNG returned HTTP {status}",
-                facts={
-                    CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
-                    CAPABILITY_RETRYABLE_KEY: status in {429, 500, 502, 503, 504},
-                    "query": query,
-                    "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
-                    "endpoint": endpoint,
-                    "status_code": status,
-                },
-            )
-        payload = json.loads(body)
-    except HTTPError as exc:
-        status = int(exc.code)
-        return ToolResult(
-            tool="web.search",
-            ok=False,
-            error=f"SearXNG returned HTTP {status}",
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
-                CAPABILITY_RETRYABLE_KEY: status in {429, 500, 502, 503, 504},
-                "query": query,
-                "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
-                "endpoint": endpoint,
-                "status_code": status,
-            },
-        )
-    except TimeoutError:
-        return ToolResult(
-            tool="web.search",
-            ok=False,
-            error="SearXNG search request timed out",
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_timeout",
-                CAPABILITY_RETRYABLE_KEY: True,
-                "query": query,
-                "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
-                "endpoint": endpoint,
-            },
-        )
-    except Exception as exc:
-        return ToolResult(
-            tool="web.search",
-            ok=False,
-            error=str(exc),
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
-                CAPABILITY_RETRYABLE_KEY: False,
-                "query": query,
-                "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
-                "endpoint": endpoint,
-                "error_type": type(exc).__name__,
-            },
-        )
-
-    results = _normalize_searxng_results(payload, limit=limit)
     facts = {
-        "query": query,
-        "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
-        "endpoint": endpoint,
+        "query": request.query,
+        "provider": provider_id,
+        "provider_kind": "searxng",
+        "endpoint": _safe_http_endpoint(provider.endpoint),
+        "source_url": search_url,
         "results": results,
         "answers": _as_string_list(payload.get("answers"))[:3],
         "corrections": _as_string_list(payload.get("corrections"))[:3],
         "suggestions": _as_string_list(payload.get("suggestions"))[:5],
-        "infoboxes": payload.get("infoboxes") if isinstance(payload.get("infoboxes"), list) else [],
-        "response": {"result_count": len(results)},
-        "evidence_contract": _web_search_evidence_contract(
-            provider=_WEB_SEARCH_PROVIDER_SEARXNG
+        "infoboxes": (
+            payload.get("infoboxes")
+            if isinstance(payload.get("infoboxes"), list)
+            else []
+        ),
+        "provider_errors": provider_errors,
+        "response": {
+            "result_count": len(results),
+            "provider_error_count": len(provider_errors),
+        },
+        "evidence_contract": _web_document_evidence_contract(
+            provider_id=provider_id,
+            provider_kind="searxng",
         ),
     }
     return ToolResult(tool="web.search", ok=True, facts=facts)
@@ -302,13 +613,17 @@ def _normalize_searxng_results(payload: Any, *, limit: int) -> list[dict[str, An
         )
         if not url and not title and not content:
             continue
-        result = {
+        result: dict[str, Any] = {
+            "kind": "web_document",
             "title": title,
             "url": url,
             "snippet": content,
             "engine": str(item.get("engine") or "").strip(),
             "category": str(item.get("category") or "").strip(),
         }
+        engines = _as_string_list(item.get("engines"))
+        if engines:
+            result["engines"] = engines
         if item.get("publishedDate"):
             result["published_date"] = str(item.get("publishedDate"))
         results.append(result)
@@ -317,78 +632,133 @@ def _normalize_searxng_results(payload: Any, *, limit: int) -> list[dict[str, An
     return results
 
 
-async def _exa_mcp_search(
-    query: str,
+def _normalize_searxng_provider_errors(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    raw_errors = payload.get("unresponsive_engines")
+    if not isinstance(raw_errors, list):
+        return []
+    errors: list[dict[str, Any]] = []
+    for item in raw_errors:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        engine = _clean_search_text(item[0])
+        reason = _clean_search_text(item[1])
+        if engine or reason:
+            errors.append({"engine": engine, "reason": reason})
+    return errors[:20]
+
+
+def _provider_error_retryable(item: dict[str, Any]) -> bool:
+    status = item.get("status")
+    if isinstance(status, int) and not isinstance(status, bool):
+        return _retryable_http_status(status)
+    return False
+
+
+def _exa_server(
+    provider_id: str,
+    provider: SearchProviderConfig,
+    config: NaviConfig,
     *,
-    limit: int,
+    home: Path | None,
+) -> tuple[MCPServerConfig | None, str]:
+    if not provider.mcp_server:
+        return (
+            None,
+            f"search.providers.{provider_id}.mcp_server is required for exa_mcp",
+        )
+    report = parse_mcp_config(
+        config,
+        path=(home / "config.yaml") if home is not None else Path("config.yaml"),
+    )
+    if report.errors:
+        return None, "; ".join(report.errors)
+    server = next(
+        (item for item in report.servers if item.name == provider.mcp_server),
+        None,
+    )
+    if server is None:
+        return (
+            None,
+            f"search.providers.{provider_id}.mcp_server "
+            f"'{provider.mcp_server}' is not an enabled MCP server",
+        )
+    if "web_search_exa" not in server.allowed_tools:
+        return (
+            None,
+            f"mcp.servers.{provider.mcp_server}.tool_permissions must include "
+            "web_search_exa",
+        )
+    return server, ""
+
+
+async def _exa_mcp_search(
+    provider_id: str,
+    request: SearchRequest,
+    *,
     server: MCPServerConfig,
 ) -> ToolResult:
     try:
         result = await MCPClient(server).call_tool(
             "web_search_exa",
-            {"query": query, "numResults": limit},
+            {"query": request.query, "numResults": request.limit},
         )
     except Exception as exc:
         error, timed_out = describe_mcp_exception(exc)
-        return ToolResult(
-            tool="web.search",
-            ok=False,
+        return _provider_failure(
+            provider_id=provider_id,
+            provider_kind="exa_mcp",
+            query=request.query,
+            endpoint=server.safe_endpoint,
             error=error,
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_timeout"
-                if timed_out
-                else "search_provider_error",
-                CAPABILITY_RETRYABLE_KEY: timed_out,
-                "query": query,
-                "provider": _WEB_SEARCH_PROVIDER_EXA_MCP,
-                "endpoint": server.safe_endpoint,
-                "error_type": type(exc).__name__,
-            },
+            reason="search_timeout" if timed_out else "search_provider_error",
+            retryable=timed_out,
+            extra={"error_type": type(exc).__name__},
         )
     if not result["ok"]:
-        return ToolResult(
-            tool="web.search",
-            ok=False,
+        return _provider_failure(
+            provider_id=provider_id,
+            provider_kind="exa_mcp",
+            query=request.query,
+            endpoint=server.safe_endpoint,
             error="Exa MCP reported a search tool error",
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
-                CAPABILITY_RETRYABLE_KEY: False,
-                "query": query,
-                "provider": _WEB_SEARCH_PROVIDER_EXA_MCP,
-                "endpoint": server.safe_endpoint,
-            },
+            reason="search_provider_error",
+            retryable=False,
         )
     text = str(result.get("text") or "")
-    results = _normalize_exa_text_results(text, limit=limit)
+    results = _normalize_exa_text_results(text, limit=request.limit)
     if not results:
-        return ToolResult(
-            tool="web.search",
-            ok=False,
+        return _provider_failure(
+            provider_id=provider_id,
+            provider_kind="exa_mcp",
+            query=request.query,
+            endpoint=server.safe_endpoint,
             error="Exa MCP returned no parseable search results",
-            facts={
-                CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
-                CAPABILITY_RETRYABLE_KEY: False,
-                "query": query,
-                "provider": _WEB_SEARCH_PROVIDER_EXA_MCP,
-                "endpoint": server.safe_endpoint,
-                "response_length": len(text),
-            },
+            reason="search_provider_error",
+            retryable=False,
+            extra={"response_length": len(text)},
         )
     return ToolResult(
         tool="web.search",
         ok=True,
         facts={
-            "query": query,
-            "provider": _WEB_SEARCH_PROVIDER_EXA_MCP,
+            "query": request.query,
+            "provider": provider_id,
+            "provider_kind": "exa_mcp",
             "endpoint": server.safe_endpoint,
+            "source_url": server.safe_endpoint,
             "results": results,
+            "provider_errors": [],
             "response": {
                 "text_length": len(text),
                 "truncated": bool(result.get("truncated")),
                 "result_count": len(results),
+                "provider_error_count": 0,
             },
-            "evidence_contract": _web_search_evidence_contract(
-                provider=_WEB_SEARCH_PROVIDER_EXA_MCP
+            "evidence_contract": _web_document_evidence_contract(
+                provider_id=provider_id,
+                provider_kind="exa_mcp",
             ),
         },
     )
@@ -401,7 +771,10 @@ def _normalize_exa_text_results(value: str, *, limit: int) -> list[dict[str, Any
         highlights = ""
         match = re.search(r"(?m)^Highlights:\s*\n?(.*)$", block, flags=re.DOTALL)
         if match:
-            highlights = _bounded_search_text(match.group(1), _SEARCH_SNIPPET_MAX_CHARS)
+            highlights = _bounded_search_text(
+                match.group(1),
+                _SEARCH_SNIPPET_MAX_CHARS,
+            )
             header = block[: match.start()]
         else:
             header = block
@@ -414,6 +787,7 @@ def _normalize_exa_text_results(value: str, *, limit: int) -> list[dict[str, Any
         if not url and not title:
             continue
         item = {
+            "kind": "web_document",
             "title": title,
             "url": url,
             "snippet": highlights,
@@ -429,6 +803,302 @@ def _normalize_exa_text_results(value: str, *, limit: int) -> list[dict[str, Any
         if len(results) >= limit:
             break
     return results
+
+
+def _x_api_search(
+    provider_id: str,
+    provider: SearchProviderConfig,
+    request: SearchRequest,
+) -> ToolResult:
+    search_url, error = _x_api_search_url(provider.endpoint, request)
+    endpoint = _safe_http_endpoint(provider.endpoint)
+    if error:
+        return _provider_failure(
+            provider_id=provider_id,
+            provider_kind="x_api",
+            query=request.query,
+            endpoint=endpoint,
+            error=error,
+            reason="search_provider_config_error",
+            retryable=False,
+        )
+    payload, failure = _read_json_response(
+        provider_id=provider_id,
+        provider_kind="x_api",
+        query=request.query,
+        endpoint=endpoint,
+        request=Request(
+            search_url,
+            headers={
+                "Authorization": f"Bearer {provider.bearer_token}",
+                "User-Agent": _SEARCH_USER_AGENT,
+                "Accept": "application/json",
+            },
+        ),
+        timeout=20,
+        max_bytes=_X_RESPONSE_MAX_BYTES,
+        provider_label="X API",
+    )
+    if failure is not None:
+        return failure
+    assert isinstance(payload, dict)
+
+    results = _normalize_x_api_results(payload, limit=request.limit)
+    provider_errors = _normalize_x_api_errors(payload)
+    if not results and provider_errors:
+        return _provider_failure(
+            provider_id=provider_id,
+            provider_kind="x_api",
+            query=request.query,
+            endpoint=endpoint,
+            error="X API returned no posts while reporting provider errors",
+            reason="search_provider_blocked",
+            retryable=any(_provider_error_retryable(item) for item in provider_errors),
+            extra={
+                "source_url": search_url,
+                "provider_errors": provider_errors,
+            },
+        )
+    raw_meta = payload.get("meta")
+    meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
+    response = {
+        "result_count": len(results),
+        "provider_error_count": len(provider_errors),
+        "newest_id": str(meta.get("newest_id") or ""),
+        "oldest_id": str(meta.get("oldest_id") or ""),
+        "next_token": str(meta.get("next_token") or ""),
+    }
+    return ToolResult(
+        tool="web.search",
+        ok=True,
+        facts={
+            "query": request.query,
+            "provider": provider_id,
+            "provider_kind": "x_api",
+            "endpoint": endpoint,
+            "source_url": search_url,
+            "results": results,
+            "provider_errors": provider_errors,
+            "response": response,
+            "evidence_contract": _x_post_evidence_contract(provider_id=provider_id),
+        },
+    )
+
+
+def _x_api_search_url(
+    endpoint: str,
+    request: SearchRequest,
+) -> tuple[str, str]:
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return "", "X API endpoint must be an https URL"
+    if parsed.username or parsed.password:
+        return "", "X API endpoint must not include credentials"
+    base_path = parsed.path.rstrip("/")
+    path = f"{base_path}/2/tweets/search/recent"
+    params = {
+        "query": request.query,
+        "max_results": max(10, request.limit),
+        "tweet.fields": (
+            "id,text,author_id,created_at,lang,public_metrics,conversation_id"
+        ),
+        "expansions": "author_id",
+        "user.fields": "id,name,username,verified,profile_image_url",
+    }
+    for key, value in (
+        ("start_time", request.start_time),
+        ("end_time", request.end_time),
+        ("sort_order", request.sort_order),
+        ("next_token", request.next_token),
+    ):
+        if value:
+            params[key] = value
+    return (
+        urlunparse((parsed.scheme, parsed.netloc, path, "", urlencode(params), "")),
+        "",
+    )
+
+
+def _normalize_x_api_results(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    raw_data = payload.get("data")
+    if not isinstance(raw_data, list):
+        return []
+    includes = payload.get("includes")
+    candidate_users = includes.get("users") if isinstance(includes, dict) else []
+    raw_users: list[Any] = candidate_users if isinstance(candidate_users, list) else []
+    users = {
+        str(item.get("id") or ""): item
+        for item in raw_users
+        if isinstance(item, dict) and item.get("id")
+    }
+    results: list[dict[str, Any]] = []
+    for post in raw_data:
+        if not isinstance(post, dict):
+            continue
+        post_id = str(post.get("id") or "").strip()
+        text = _bounded_search_text(post.get("text") or "", _SEARCH_SNIPPET_MAX_CHARS)
+        if not post_id and not text:
+            continue
+        author_id = str(post.get("author_id") or "").strip()
+        user = users.get(author_id, {})
+        username = str(user.get("username") or "").strip()
+        name = _bounded_search_text(user.get("name") or "", _SEARCH_TITLE_MAX_CHARS)
+        title = (
+            f"{name} (@{username}) on X"
+            if name and username
+            else f"@{username} on X"
+            if username
+            else f"X post {post_id}"
+        )
+        url = (
+            f"https://x.com/{username}/status/{post_id}"
+            if username and post_id
+            else f"https://x.com/i/status/{post_id}"
+            if post_id
+            else ""
+        )
+        item: dict[str, Any] = {
+            "kind": "social_post",
+            "title": title,
+            "url": url,
+            "snippet": text,
+            "engine": "x_api",
+            "source_id": post_id,
+            "author": {
+                "id": author_id,
+                "name": name,
+                "username": username,
+                "verified": bool(user.get("verified")),
+            },
+        }
+        if post.get("created_at"):
+            item["published_date"] = str(post.get("created_at"))
+        if post.get("lang"):
+            item["language"] = str(post.get("lang"))
+        if post.get("conversation_id"):
+            item["conversation_id"] = str(post.get("conversation_id"))
+        metrics = post.get("public_metrics")
+        if isinstance(metrics, dict):
+            item["public_metrics"] = {
+                str(key): value
+                for key, value in metrics.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
+        results.append(item)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _normalize_x_api_errors(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_errors = payload.get("errors")
+    if not isinstance(raw_errors, list):
+        return []
+    errors: list[dict[str, Any]] = []
+    for item in raw_errors:
+        if not isinstance(item, dict):
+            continue
+        error: dict[str, Any] = {
+            "title": _bounded_search_text(item.get("title") or "", 300),
+            "detail": _bounded_search_text(item.get("detail") or "", 1200),
+            "type": str(item.get("type") or ""),
+        }
+        if item.get("status") is not None:
+            error["status"] = item.get("status")
+        errors.append(error)
+    return errors[:20]
+
+
+def _read_json_response(
+    *,
+    provider_id: str,
+    provider_kind: str,
+    query: str,
+    endpoint: str,
+    request: Request,
+    timeout: float,
+    max_bytes: int,
+    provider_label: str,
+) -> tuple[dict[str, Any] | None, ToolResult | None]:
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            status = int(getattr(response, "status", 200))
+            body = response.read(max_bytes).decode("utf-8", errors="replace")
+        if status >= 400:
+            return None, _provider_failure(
+                provider_id=provider_id,
+                provider_kind=provider_kind,
+                query=query,
+                endpoint=endpoint,
+                error=f"{provider_label} returned HTTP {status}",
+                reason="search_provider_error",
+                retryable=_retryable_http_status(status),
+                extra={"status_code": status},
+            )
+        payload = json.loads(body)
+        if not isinstance(payload, dict):
+            raise ValueError(f"{provider_label} returned a non-object JSON response")
+        return payload, None
+    except HTTPError as exc:
+        status = int(exc.code)
+        return None, _provider_failure(
+            provider_id=provider_id,
+            provider_kind=provider_kind,
+            query=query,
+            endpoint=endpoint,
+            error=f"{provider_label} returned HTTP {status}",
+            reason="search_provider_error",
+            retryable=_retryable_http_status(status),
+            extra={"status_code": status},
+        )
+    except TimeoutError as exc:
+        return None, _provider_failure(
+            provider_id=provider_id,
+            provider_kind=provider_kind,
+            query=query,
+            endpoint=endpoint,
+            error=f"{provider_label} search request timed out",
+            reason="search_timeout",
+            retryable=True,
+            extra={"error_type": type(exc).__name__},
+        )
+    except URLError as exc:
+        return None, _provider_failure(
+            provider_id=provider_id,
+            provider_kind=provider_kind,
+            query=query,
+            endpoint=endpoint,
+            error=str(exc),
+            reason="search_provider_error",
+            retryable=True,
+            extra={"error_type": type(exc).__name__},
+        )
+    except (UnicodeError, ValueError) as exc:
+        return None, _provider_failure(
+            provider_id=provider_id,
+            provider_kind=provider_kind,
+            query=query,
+            endpoint=endpoint,
+            error=str(exc),
+            reason="search_provider_error",
+            retryable=False,
+            extra={"error_type": type(exc).__name__},
+        )
+
+
+def _retryable_http_status(status: int) -> bool:
+    return status in {429, 500, 502, 503, 504}
+
+
+def _safe_http_endpoint(value: str) -> str:
+    parsed = urlparse(str(value or ""))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
 
 
 def _clean_search_text(value: Any) -> str:

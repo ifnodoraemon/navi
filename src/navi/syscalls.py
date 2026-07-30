@@ -12,6 +12,7 @@ from .provider import (
     ChatMessage,
     ModelPool,
     ProviderHTTPError,
+    ProviderResponseError,
     StructuredOutputError,
 )
 from .prompt_os import assemble_planner_system_prompt, assemble_planner_turn_input
@@ -82,7 +83,12 @@ class ModelSyscallPlanner:
                 ],
                 output_schema=_syscall_output_schema(),
             )
-        except Exception as exc:
+        except (
+            ProviderHTTPError,
+            ProviderResponseError,
+            StructuredOutputError,
+            httpx.TransportError,
+        ) as exc:
             failure_facts = provider_failure_facts(exc)
             return [
                 ModelSyscall(
@@ -92,6 +98,8 @@ class ModelSyscallPlanner:
                         "planner structured output failed"
                         if failure_facts.get("structured_output_failure")
                         else "planner provider call failed"
+                        if failure_facts.get("provider_call_failure")
+                        else "planner implementation failed"
                     ),
                 )
             ]
@@ -269,7 +277,10 @@ def _single_syscall_schema() -> dict[str, Any]:
 def provider_failure_facts(exc: Exception) -> dict[str, Any]:
     """Project a provider failure into bounded transport-recovery facts."""
     structured_output_failure = isinstance(exc, StructuredOutputError)
-    provider_call_failure = not structured_output_failure
+    provider_call_failure = isinstance(
+        exc,
+        (ProviderHTTPError, ProviderResponseError, httpx.TransportError),
+    )
     retryable = isinstance(exc, httpx.TransportError)
     retry_after_seconds = (
         PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS if retryable else 0.0

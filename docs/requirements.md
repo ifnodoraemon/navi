@@ -444,9 +444,16 @@ Web search must use supported structured providers, surface provider and
 configuration facts, and label whether the same failed provider call is
 retryable. The loop may still let the model choose a different capability,
 arguments, clarification, or blocker response within its remaining budget.
-Supported providers are `searxng` and `exa_mcp`. Each request uses exactly one
-configured provider and one endpoint; the runtime must not retry a failed call
-or switch providers. All Navi runtime configuration belongs in
+Provider instances are configured under `search.providers`; each has a
+model-visible ID and an adapter kind. Supported adapter kinds are `searxng`,
+`exa_mcp`, and the official `x_api`. Every request must name one enabled
+provider ID explicitly. The runtime must not infer a provider from query text,
+retry a failed call, switch providers, or fuse provider results. SearXNG must
+surface upstream engine failures rather than representing an empty blocked
+response as a successful search. The X adapter must remain disabled until its
+Bearer Token is present, use the official API, and return post identity,
+attribution, timestamps, pagination, metrics, and provider errors as bounded
+facts. All Navi runtime configuration belongs in
 `.navi/config.yaml`; `NAVI_HOME` is the only bootstrap environment variable and
 only selects the directory containing that file. Process environment variables
 must not override configuration values. `navi config`, `navi doctor`, and

@@ -11,7 +11,7 @@ Define the question, intended decision, freshness requirement, and material clai
 
 ## Build evidence progressively
 
-1. Use `web.search` for discovery. Write a semantically rich description of the ideal source; include a domain, date, document type, or exact phrase only when the question requires it.
+1. Use `web.search` for discovery. Select one available provider ID explicitly from the capability schema based on the needed source scope; do not encode provider selection as a query keyword or assume a default. Write a semantically rich description of the ideal source; include a domain, date, document type, or exact phrase only when the question requires it.
 2. Inspect result titles, URLs, dates, and snippets. Treat snippets as leads, never as sufficient evidence for a detailed claim.
 3. Fetch the strongest primary source. Prefer `mcp.exa.call` with `web_fetch_exa` for clean page text when available; otherwise use another declared page-fetch capability.
 4. Search again only to close a specific gap, find an independent source, or check for a newer correction. Change the query based on what the first pass revealed.
@@ -25,6 +25,6 @@ For each material claim, retain the source URL, publication or update date when 
 
 ## Handle failures honestly
 
-Do not repeat an identical call when its facts say `retryable: false`. Use another declared search or MCP capability, refine the query for a known gap, or report the missing provider or configuration. Never fill an evidence gap with plausible text.
+Do not repeat an identical call when its facts say `retryable: false`. After inspecting the failure facts, choose whether another declared provider or capability can close a specific evidence gap, whether to refine the query, or whether to report the missing provider or configuration. Never fill an evidence gap with plausible text.
 
 Synthesize only supported claims, state disagreements and confidence limits, and place direct source links next to the claims they support.

@@ -13,6 +13,7 @@ from .prompt_os import (
 from .provider import ChatMessage
 from .safeguards import redact_secrets, redact_secrets_deep
 
+
 @dataclass(frozen=True)
 class NotificationDecision:
     notify: bool

@@ -4,7 +4,10 @@ import json
 
 import pytest
 
-from navi.finalization import synthesize_user_reply_from_facts
+from navi.finalization import (
+    synthesize_background_notification,
+    synthesize_user_reply_from_facts,
+)
 
 
 class _FailingRuntime:
@@ -26,6 +29,24 @@ class _CapturingRuntime:
         assert role == "responder"
         self.messages = messages
         return "已整理。"
+
+
+class _NotificationProvider:
+    def __init__(self, response: dict[str, object]) -> None:
+        self.response = response
+        self.messages = []
+
+    async def complete_for(self, role, messages, *, output_schema):
+        assert role == "notification"
+        assert messages
+        assert output_schema
+        self.messages = messages
+        return json.dumps(self.response, ensure_ascii=False)
+
+
+class _NotificationRuntime:
+    def __init__(self, response: dict[str, object]) -> None:
+        self.provider = _NotificationProvider(response)
 
 
 @pytest.mark.asyncio
@@ -63,3 +84,23 @@ async def test_fact_response_projects_large_capability_evidence_before_model_cal
         )[1]
     )
     assert "[truncated" in facts["capability_result"]["facts"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_background_notification_receives_typed_calendar_facts():
+    runtime = _NotificationRuntime(
+        {
+            "notify": True,
+            "message": "计划执行时间是 2026-07-30 13:00:00。",
+        }
+    )
+
+    decision = await synthesize_background_notification(
+        runtime,
+        facts={"scheduled_for_iso": "2026-07-30T13:00:00+08:00"},
+        output_schema={"name": "background_notification"},
+    )
+
+    assert decision.notify is True
+    assert decision.message == "计划执行时间是 2026-07-30 13:00:00。"
+    assert "2026-07-30T13:00:00+08:00" in runtime.provider.messages[-1].content
