@@ -251,11 +251,24 @@ Declared read-only process inspection argv use a read-only host `/proc` view
 inside the remaining sandbox boundaries. Their output declares
 `observation_scope=host_process_table`; a matching row proves only process
 presence and sampled state, never task progress or completion by itself.
-Web search uses the provider selected by configuration; query text cannot switch
-providers. Its evidence contract establishes retrieved URLs, snippets, and
+Web search uses one configured provider explicitly selected by the model for
+each call; query text cannot switch providers. Its evidence contract
+establishes retrieved URLs, snippets, and
 source-reported claims, but not claim truth, source authority,
 representativeness, or real-world outcomes. Material numbers and outcome claims
 must retain source attribution or be described as unverified reports.
+Account-usage reads likewise require an explicit model-selected provider ID.
+Adapters preserve provider field names and scalar values as structured facts;
+the runtime must not choose a default provider, invent window labels, format
+credit values as currency, or normalize plan names for presentation. Their
+snapshot contract does not establish future request acceptance, future usage,
+provider availability, or billing state after the observation.
+
+Opt-in proactive project detectors emit bounded observations rather than
+runtime-authored summaries. Git status, sampled TCP connectivity, and appended
+log bytes each declare their own evidence scope. In particular, an unstructured
+log watcher must redact secrets and leave error classification, root-cause
+analysis, service health, and notification wording to the model.
 
 Tools execute or observe and return facts. Skills provide procedures and may
 package scripts, templates, or assets, but execution still passes through

@@ -67,13 +67,26 @@ class PortEventDetector:
             if was_active and not is_active:
                 events.append(
                     ProactiveEvent(
-                        source="event_port",
-                        message=f"Local service on port {port} went offline.",
                         facts={
-                            "kind": "port_went_offline",
+                            "detector": "tcp_connect",
+                            "kind": "port_reachability_changed",
                             "port": port,
                             "previous_active": was_active,
                             "active": is_active,
+                            "evidence_contract": {
+                                "scope": "localhost_tcp_connect_sample",
+                                "establishes": [
+                                    "sampled_tcp_connectivity",
+                                    "sampled_port_reachability_change",
+                                ],
+                                "does_not_establish": [
+                                    "service_health",
+                                    "service_identity",
+                                    "task_activity",
+                                    "task_completion",
+                                ],
+                                "sampling": "single_ipv4_and_ipv6_connect_attempt",
+                            },
                         },
                         state_updates={port_key: is_active},
                     )

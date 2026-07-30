@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
@@ -14,10 +14,9 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 @dataclass(frozen=True)
 class AccountUsageWindow:
-    label: str
+    window_id: str
     used_percent: float | None = None
     reset_at: str = ""
-    detail: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         remaining_percent = (
@@ -26,12 +25,27 @@ class AccountUsageWindow:
             else max(0.0, min(100.0, 100.0 - float(self.used_percent)))
         )
         return {
-            "label": self.label,
+            "window_id": self.window_id,
             "used_percent": self.used_percent,
             "remaining_percent": remaining_percent,
             "reset_at": self.reset_at,
-            "detail": self.detail,
         }
+
+
+@dataclass(frozen=True)
+class AccountUsageCredits:
+    has_credits: bool
+    balance: float | None = None
+    unlimited: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        facts: dict[str, Any] = {
+            "has_credits": self.has_credits,
+            "unlimited": self.unlimited,
+        }
+        if self.balance is not None:
+            facts["balance"] = self.balance
+        return facts
 
 
 @dataclass(frozen=True)
@@ -39,15 +53,15 @@ class AccountUsageSnapshot:
     provider: str
     source: str
     fetched_at: str
-    plan: str = ""
+    plan_type: str = ""
     windows: tuple[AccountUsageWindow, ...] = ()
-    details: tuple[str, ...] = ()
+    credits: AccountUsageCredits | None = None
     unavailable_reason: str = ""
     auth_status: str = ""
 
     @property
     def available(self) -> bool:
-        return not self.unavailable_reason and bool(self.windows or self.details)
+        return not self.unavailable_reason and bool(self.windows or self.credits is not None)
 
     def to_facts(self) -> dict[str, Any]:
         return {
@@ -59,12 +73,51 @@ class AccountUsageSnapshot:
             "source": self.source,
             "fetched_at": self.fetched_at,
             "available": self.available,
-            "plan": self.plan,
+            "plan_type": self.plan_type,
             "auth_status": self.auth_status,
             "windows": [window.to_dict() for window in self.windows],
-            "details": list(self.details),
+            "credits": self.credits.to_dict() if self.credits is not None else {},
             "unavailable_reason": self.unavailable_reason,
+            "evidence_contract": {
+                "scope": "provider_account_usage_snapshot",
+                "provider": self.provider,
+                "establishes": [
+                    "provider_usage_snapshot_availability",
+                    "provider_reported_plan_type",
+                    "provider_reported_usage_windows",
+                    "provider_reported_credit_fields",
+                ],
+                "does_not_establish": [
+                    "future_request_acceptance",
+                    "future_usage",
+                    "provider_service_availability",
+                    "billing_state_beyond_snapshot",
+                ],
+                "sampling": "single_provider_account_api_snapshot",
+            },
         }
+
+
+class AccountUsageProviderAdapter(Protocol):
+    provider_id: str
+
+    def fetch(self, *, home: Path, timeout_seconds: float) -> AccountUsageSnapshot: ...
+
+
+class OpenAICodexUsageProvider:
+    provider_id = "openai-codex"
+
+    def fetch(self, *, home: Path, timeout_seconds: float) -> AccountUsageSnapshot:
+        return _fetch_codex_account_usage(home=home, timeout_seconds=timeout_seconds)
+
+
+_ACCOUNT_USAGE_PROVIDERS: dict[str, AccountUsageProviderAdapter] = {
+    adapter.provider_id: adapter for adapter in (OpenAICodexUsageProvider(),)
+}
+
+
+def account_usage_provider_ids() -> tuple[str, ...]:
+    return tuple(sorted(_ACCOUNT_USAGE_PROVIDERS))
 
 
 def fetch_account_usage(
@@ -74,8 +127,9 @@ def fetch_account_usage(
     timeout_seconds: float = 15.0,
 ) -> AccountUsageSnapshot:
     normalized = str(provider or "").strip().lower().replace("_", "-")
-    if normalized in {"codex", "openai-codex", "openai-codex-oauth"}:
-        return _fetch_codex_account_usage(home=home, timeout_seconds=timeout_seconds)
+    adapter = _ACCOUNT_USAGE_PROVIDERS.get(normalized)
+    if adapter is not None:
+        return adapter.fetch(home=home, timeout_seconds=timeout_seconds)
     return AccountUsageSnapshot(
         provider=normalized or "unknown",
         source="account_usage",
@@ -130,7 +184,7 @@ def _fetch_codex_account_usage(*, home: Path, timeout_seconds: float) -> Account
     windows: list[AccountUsageWindow] = []
     rate_limit = payload.get("rate_limit") if isinstance(payload, dict) else {}
     if isinstance(rate_limit, dict):
-        for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+        for key in ("primary_window", "secondary_window"):
             window = rate_limit.get(key)
             if not isinstance(window, dict):
                 continue
@@ -139,30 +193,33 @@ def _fetch_codex_account_usage(*, home: Path, timeout_seconds: float) -> Account
                 continue
             windows.append(
                 AccountUsageWindow(
-                    label=label,
+                    window_id=key,
                     used_percent=used,
                     reset_at=_iso_from_any(window.get("reset_at")),
                 )
             )
 
-    details: list[str] = []
+    credit_facts: AccountUsageCredits | None = None
     credits = payload.get("credits") if isinstance(payload, dict) else {}
-    if isinstance(credits, dict) and credits.get("has_credits"):
-        balance = credits.get("balance")
-        if isinstance(balance, (int, float)) and not isinstance(balance, bool):
-            details.append(f"Credits balance: ${float(balance):.2f}")
-        elif credits.get("unlimited"):
-            details.append("Credits balance: unlimited")
+    if isinstance(credits, dict) and any(
+        key in credits for key in ("has_credits", "balance", "unlimited")
+    ):
+        balance = _float_or_none(credits.get("balance"))
+        credit_facts = AccountUsageCredits(
+            has_credits=bool(credits.get("has_credits", False)),
+            balance=balance,
+            unlimited=bool(credits.get("unlimited", False)),
+        )
 
     return AccountUsageSnapshot(
         provider="openai-codex",
-        source="usage_api",
+        source="openai_codex_usage_api",
         fetched_at=_utc_now_iso(),
-        plan=_title_case(payload.get("plan_type") if isinstance(payload, dict) else ""),
+        plan_type=str(payload.get("plan_type") or "") if isinstance(payload, dict) else "",
         windows=tuple(windows),
-        details=tuple(details),
+        credits=credit_facts,
         auth_status="configured",
-        unavailable_reason="" if windows or details else "usage_payload_empty",
+        unavailable_reason="" if windows or credit_facts is not None else "usage_payload_empty",
     )
 
 
@@ -170,7 +227,6 @@ def _resolve_codex_credentials(home: Path) -> dict[str, Any]:
     candidates = [
         home / "auth.json",
         Path.home() / ".codex" / "auth.json",
-        Path.home() / ".hermes" / "auth.json",
     ]
     for path in candidates:
         data = _read_json(path)
@@ -197,67 +253,17 @@ def _extract_codex_token(data: dict[str, Any]) -> dict[str, Any]:
         if found:
             return found
 
-    providers = data.get("providers")
-    if isinstance(providers, dict):
-        for key in ("openai-codex", "codex", "openai_codex"):
-            value = providers.get(key)
-            if isinstance(value, dict):
-                found = _token_from_mapping(value)
-                if found:
-                    return found
-
-    credentials = data.get("credentials")
-    if isinstance(credentials, dict):
-        for key in ("openai-codex", "codex", "openai_codex"):
-            value = credentials.get(key)
-            if isinstance(value, dict):
-                found = _token_from_mapping(value)
-                if found:
-                    return found
-    if isinstance(credentials, list):
-        for item in credentials:
-            if not isinstance(item, dict):
-                continue
-            provider = str(item.get("provider") or item.get("name") or "").lower()
-            if provider not in {"openai-codex", "codex", "openai_codex"}:
-                continue
-            found = _token_from_mapping(item)
-            if found:
-                return found
-
-    credential_pool = data.get("credential_pool")
-    if isinstance(credential_pool, dict):
-        for key in ("openai-codex", "codex", "openai_codex"):
-            value = credential_pool.get(key)
-            if isinstance(value, dict):
-                found = _token_from_mapping(value)
-                if found:
-                    return found
-            if isinstance(value, list):
-                for item in value:
-                    if not isinstance(item, dict):
-                        continue
-                    found = _token_from_mapping(item)
-                    if found:
-                        return found
-
     return {}
 
 
 def _token_from_mapping(data: dict[str, Any]) -> dict[str, Any]:
-    token = (
-        data.get("access_token")
-        or data.get("api_key")
-        or data.get("runtime_api_key")
-        or data.get("token")
-    )
-    token_text = str(token or "").strip()
+    token_text = str(data.get("access_token") or "").strip()
     if not token_text:
         return {}
     return {
         "access_token": token_text,
-        "account_id": str(data.get("account_id") or data.get("chatgpt_account_id") or "").strip(),
-        "base_url": str(data.get("base_url") or data.get("runtime_base_url") or "").strip(),
+        "account_id": str(data.get("account_id") or "").strip(),
+        "base_url": str(data.get("base_url") or "").strip(),
         "expires_at": data.get("expires_at"),
     }
 
@@ -283,7 +289,7 @@ def _utc_now_iso() -> str:
 
 
 def _iso_from_any(value: Any) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
@@ -294,12 +300,9 @@ def _iso_from_any(value: Any) -> str:
 
 
 def _float_or_none(value: Any) -> float | None:
+    if value is None or value == "" or isinstance(value, bool):
+        return None
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _title_case(value: Any) -> str:
-    text = str(value or "").strip()
-    return text.replace("_", " ").replace("-", " ").title() if text else ""

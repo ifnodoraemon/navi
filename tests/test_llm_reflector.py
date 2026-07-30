@@ -178,6 +178,60 @@ async def test_semantic_checker_uses_conversation_only_to_resolve_elliptical_tur
 
 
 @pytest.mark.asyncio
+async def test_terminal_fact_action_is_not_reclassified_as_user_candidate(
+    tmp_path: Path,
+) -> None:
+    provider = _ScriptedProvider(
+        planner_syscalls=[],
+        checker_decisions=[
+            {
+                "passed": True,
+                "evidence_summary": "the terminal protocol facts cover the objective",
+            }
+        ],
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="report findings to the parent",
+            scope=(f"repo:{tmp_path}",),
+        ),
+        goal_id="child-report",
+        allowed_capabilities=("agent.report",),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                evidence_key="semantic_checker_result",
+            ),
+        ),
+    )
+
+    decision = await LLMSemanticCheckerPort(runtime=runtime).assess(
+        spec,
+        LoopRunState(
+            run_id="child-report-run",
+            goal_id=spec.goal_id,
+            loop_spec_id=spec.id,
+        ),
+        executed=ExecutedCapabilityStep(
+            ok=True,
+            action="agent_report",
+            facts={"result_summary": "machine protocol summary"},
+            terminal=True,
+        ),
+        evidence={},
+    )
+
+    assert decision.passed is True
+    checker_input = json.loads(provider.messages["checker"][-1].content)
+    evaluation_contract = checker_input["evaluation_contract"]
+    assert evaluation_contract["scope"] == "capability_evidence_before_candidate_presentation"
+    assert evaluation_contract["presentation_semantics"]["candidate_copy_present"] is False
+    assert evaluation_contract["presentation_semantics"]["candidate_copy_source"] == ""
+
+
+@pytest.mark.asyncio
 async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
     tmp_path: Path,
 ) -> None:

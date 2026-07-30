@@ -9,6 +9,7 @@ from ..capabilities_types import (
     CapabilityResult,
     capability,
 )
+from ..result import SchemaMismatch
 from .helpers import arg_text as _arg_text
 
 
@@ -21,7 +22,9 @@ class AccountUsageCapability(BaseCapability):
         permission: str,
         context: CapabilityContext,
     ) -> CapabilityResult:
-        provider = _arg_text(args, "provider") or "openai-codex"
+        provider = _arg_text(args, "provider")
+        if not provider:
+            raise SchemaMismatch("account.usage requires provider")
         timeout_seconds = _timeout_seconds(args.get("timeout_seconds"))
         snapshot = fetch_account_usage(
             provider,

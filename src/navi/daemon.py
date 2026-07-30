@@ -688,10 +688,8 @@ class SystemDaemon:
     @staticmethod
     def _event_result(event: ProactiveEvent, *, workspace: str) -> dict:
         return {
-            "message": event.message,
             "facts": event.facts,
             "run_id": "",
             "action": "runtime.fact",
-            "observation": event.message,
             "workspace": workspace,
         }

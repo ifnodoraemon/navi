@@ -1,4 +1,4 @@
-"""Service log error proactive event detector."""
+"""Service log append proactive event detector."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from ..daemon_types import (
-    LOG_ERROR_KEYWORDS,
     MAX_LOG_PROMPT_CHARS,
     MAX_LOG_READ_BYTES,
     EventBatch,
@@ -23,7 +22,7 @@ logger = logging.getLogger("navi.daemon")
 
 
 class ServiceLogDetector:
-    """Detects new exception/error lines appended to project log files."""
+    """Observes bounded new content appended to opted-in project log files."""
 
     async def __call__(self, context: ProjectEventContext) -> EventBatch:
         return await self.detect(context)
@@ -54,37 +53,49 @@ class ServiceLogDetector:
                         continue
 
                     read_end = min(last_size + MAX_LOG_READ_BYTES, current_size)
-                    new_content, error_lines, new_last_size = await asyncio.to_thread(
+                    new_content, new_last_size = await asyncio.to_thread(
                         self._read_log_diff,
                         file_path,
                         last_size,
                         read_end,
                     )
-                    if not error_lines:
+                    if not new_content:
                         state_updates[log_key] = new_last_size
                         continue
 
-                    error_fingerprint = hashlib.sha256("\n".join(error_lines).encode()).hexdigest()
-                    fp_key = f"last_err_fp_{log_rel_path}"
+                    content_fingerprint = hashlib.sha256(new_content.encode()).hexdigest()
+                    fp_key = f"last_log_fp_{log_rel_path}"
                     last_fingerprint = project_data.get(fp_key, "")
-                    if error_fingerprint == last_fingerprint:
+                    if content_fingerprint == last_fingerprint:
                         state_updates[log_key] = new_last_size
                         continue
 
                     events.append(
                         ProactiveEvent(
-                            source="event_log",
-                            message=f"Exception detected in log {log_rel_path}.",
                             facts={
-                                "kind": "log_error_detected",
+                                "detector": "log_append",
+                                "kind": "log_entries_appended",
                                 "project_path": project_path,
                                 "log_path": log_rel_path,
                                 "new_entries": new_content,
-                                "matched_error_lines": error_lines,
+                                "evidence_contract": {
+                                    "scope": "appended_log_bytes",
+                                    "establishes": [
+                                        "log_entries_observed",
+                                        "log_file_append",
+                                    ],
+                                    "does_not_establish": [
+                                        "error_classification",
+                                        "root_cause",
+                                        "service_health",
+                                        "task_completion",
+                                    ],
+                                    "sampling": "bounded_incremental_log_read",
+                                },
                             },
                             state_updates={
                                 log_key: new_last_size,
-                                fp_key: error_fingerprint,
+                                fp_key: content_fingerprint,
                             },
                         )
                     )
@@ -95,9 +106,8 @@ class ServiceLogDetector:
     @staticmethod
     def _read_log_diff(
         file_path: Path, last_size: int, read_end: int
-    ) -> tuple[str, list[str], int]:
+    ) -> tuple[str, int]:
         chunks: list[str] = []
-        error_lines: list[str] = []
         total_chars = 0
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         pending_text = ""
@@ -113,26 +123,24 @@ class ServiceLogDetector:
                 if lines and not lines[-1].endswith(("\n", "\r")):
                     pending_text = lines.pop()
                 for line in lines:
+                    safe_line = redact_secrets(line)
                     total_chars = ServiceLogDetector._append_log_prompt_chunk(
-                        chunks, total_chars, line
+                        chunks, total_chars, safe_line
                     )
-                    if any(keyword in line.lower() for keyword in LOG_ERROR_KEYWORDS):
-                        error_lines.append(redact_secrets(line.strip()))
             new_offset = f.tell()
         pending_text += decoder.decode(b"", final=True)
         if pending_text:
+            safe_pending_text = redact_secrets(pending_text)
             total_chars = ServiceLogDetector._append_log_prompt_chunk(
-                chunks, total_chars, pending_text
+                chunks, total_chars, safe_pending_text
             )
-            if any(keyword in pending_text.lower() for keyword in LOG_ERROR_KEYWORDS):
-                error_lines.append(redact_secrets(pending_text.strip()))
-        return "".join(chunks), error_lines, new_offset
+        return "".join(chunks), new_offset
 
     @staticmethod
     def _append_log_prompt_chunk(chunks: list[str], total_chars: int, line: str) -> int:
-        # Principle 13/16: external log content is untrusted and may contain
-        # secrets; redact before it enters the prompt-bound diff or error facts.
+        # Principle 13/16: callers redact external log content before it enters
+        # the prompt-bound diff facts; this helper only enforces the text bound.
         if total_chars < MAX_LOG_PROMPT_CHARS:
-            chunks.append(redact_secrets(line))
+            chunks.append(line)
             total_chars += len(line)
         return total_chars

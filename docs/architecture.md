@@ -286,6 +286,11 @@ filesystem, environment, network, and session restrictions but binds host
 limits its semantics to process presence and sampled state, avoiding both a
 private-PID false positive and an unsupported claim that a task is making
 progress.
+Proactive project detectors use the same fact boundary. They publish structured
+Git status, TCP-connect samples, or bounded redacted log appends with explicit
+`establishes` and `does_not_establish` domains. They do not author notification
+copy or classify free-form log text as an error; the notification model decides
+whether the observed event warrants surfacing.
 
 Trace events are append-oriented audit evidence. Materialized Run, Goal, and
 LoopRun records own active lifecycle state. Foreground completion and every

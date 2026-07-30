@@ -457,9 +457,11 @@ def _semantic_checker_evaluation_contract(
         else ""
     )
     current_result = _executed_result_text(executed)
-    candidate_copy_present = bool(current_result["text"]) and (
-        executed.action in {"ask", "chat", "respond"} or executed.terminal
-    )
+    candidate_copy_present = bool(current_result["text"]) and executed.action in {
+        "ask",
+        "chat",
+        "respond",
+    }
     return {
         "scope": (
             "candidate_semantics_before_external_transport"

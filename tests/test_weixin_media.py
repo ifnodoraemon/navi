@@ -1690,7 +1690,9 @@ async def test_background_watch_respects_model_decision_not_to_notify(tmp_path: 
     )
     service.daemon = StaticDaemon(
         tasks=[],
-        watch_results=[{"facts": {"kind": "port_went_offline", "port": 8000}}],
+        watch_results=[
+            {"facts": {"kind": "port_reachability_changed", "port": 8000, "active": False}}
+        ],
     )
 
     await service.process_background(
@@ -1728,7 +1730,9 @@ async def test_background_notification_model_failure_propagates_without_fallback
     )
     service.daemon = StaticDaemon(
         tasks=[],
-        watch_results=[{"facts": {"kind": "port_went_offline", "port": 8000}}],
+        watch_results=[
+            {"facts": {"kind": "port_reachability_changed", "port": 8000, "active": False}}
+        ],
     )
 
     with pytest.raises(RuntimeError, match="notification model unavailable"):

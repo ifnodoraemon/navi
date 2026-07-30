@@ -79,12 +79,25 @@ class GitMutationDetector:
             status_text = truncate_middle(status_text, MAX_GIT_STATUS_PROMPT_CHARS)
             events.append(
                 ProactiveEvent(
-                    source="event_git",
-                    message=f"Git filesystem mutation detected in {project_path}.",
                     facts={
+                        "detector": "git_status",
                         "kind": "git_status_changed",
                         "project_path": project_path,
                         "changed_files": status_text.splitlines(),
+                        "evidence_contract": {
+                            "scope": "git_worktree_status_snapshot",
+                            "establishes": [
+                                "git_status_entries",
+                                "observed_worktree_change",
+                            ],
+                            "does_not_establish": [
+                                "change_author",
+                                "change_intent",
+                                "task_activity",
+                                "task_completion",
+                            ],
+                            "sampling": "single_git_status_porcelain_snapshot",
+                        },
                     },
                     state_updates={"last_git_status_hash": current_hash},
                 )

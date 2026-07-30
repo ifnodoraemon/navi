@@ -1,3 +1,4 @@
+from ..account_usage import account_usage_provider_ids
 from ..approval_contract import APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT
 from ..tools import API_CONTEXT, CONTROL_PLANE_CONTEXT, ToolSpec
 
@@ -85,8 +86,10 @@ ACTION_SPECS = [
         capability_class="account",
         execution_contexts=("turn", API_CONTEXT),
         description=(
-            "Read account quota, usage, credit, or rate-limit windows for a configured "
-            "inference provider through provider account APIs and local auth state. "
+            "Read account quota, usage, credit, or rate-limit windows from one provider "
+            "explicitly selected by provider ID through its account API and local auth state. "
+            "The runtime never chooses a default provider or rewrites provider fields into "
+            "presentation labels. "
             "Returns typed facts when live usage is available and typed "
             "unavailable_reason/auth facts when "
             "the provider or network cannot supply account usage."
@@ -96,13 +99,15 @@ ACTION_SPECS = [
             "properties": {
                 "provider": {
                     "type": "string",
-                    "description": "Provider slug, such as openai-codex or codex.",
+                    "enum": list(account_usage_provider_ids()),
+                    "description": "Account-usage provider ID selected by the model.",
                 },
                 "timeout_seconds": {
                     "type": "number",
                     "description": "Network timeout in seconds, clamped by the capability.",
                 },
             },
+            "required": ["provider"],
         },
         output_schema={
             "type": "object",
@@ -115,11 +120,12 @@ ACTION_SPECS = [
                 "source": {"type": "string"},
                 "fetched_at": {"type": "string"},
                 "available": {"type": "boolean"},
-                "plan": {"type": "string"},
+                "plan_type": {"type": "string"},
                 "auth_status": {"type": "string"},
                 "windows": {"type": "array", "items": {"type": "object"}},
-                "details": {"type": "array", "items": {"type": "string"}},
+                "credits": {"type": "object"},
                 "unavailable_reason": {"type": "string"},
+                "evidence_contract": {"type": "object"},
             },
             "required": [
                 "entity_type",

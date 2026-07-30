@@ -120,10 +120,10 @@ class _CheckerTransportRecoveringProvider:
         return {}
 
 
-def test_read_log_diff_redacts_secrets_in_diff_and_error_lines(tmp_path: Path) -> None:
+def test_read_log_diff_redacts_secrets_without_classifying_lines(tmp_path: Path) -> None:
     """Principle 13/16: external log content is untrusted and may contain secrets.
-    Both the prompt-bound diff and the matched error-line facts must be redacted
-    before they can reach the agent."""
+    The prompt-bound append facts must be redacted before they reach the model,
+    while semantic error classification remains model-owned."""
     log = tmp_path / "service.log"
     body = (
         "info: starting up with api_key=sk-supersecretvalue123\n"
@@ -131,18 +131,15 @@ def test_read_log_diff_redacts_secrets_in_diff_and_error_lines(tmp_path: Path) -
     )
     log.write_text(body, encoding="utf-8")
 
-    diff, error_lines, offset = ServiceLogDetector._read_log_diff(
+    diff, offset = ServiceLogDetector._read_log_diff(
         log, last_size=0, read_end=len(body.encode("utf-8"))
     )
 
-    # No raw secret survives in either the diff body or the error facts.
+    # No raw secret survives in the observed append body.
     assert "sk-supersecretvalue123" not in diff
     assert "abcDEF123tokenvalue" not in diff
     assert "[REDACTED]" in diff
-
-    # The FATAL line is collected as an error fact and is also redacted.
-    assert any("FATAL" in line for line in error_lines)
-    assert all("abcDEF123tokenvalue" not in line for line in error_lines)
+    assert "FATAL" in diff
     assert offset == len(body.encode("utf-8"))
 
 
@@ -151,12 +148,11 @@ def test_read_log_diff_without_secrets_is_unchanged(tmp_path: Path) -> None:
     body = "info: request handled in 12ms\ninfo: cache warm\n"
     log.write_text(body, encoding="utf-8")
 
-    diff, error_lines, _ = ServiceLogDetector._read_log_diff(
+    diff, _ = ServiceLogDetector._read_log_diff(
         log, last_size=0, read_end=len(body.encode("utf-8"))
     )
 
     assert diff == body
-    assert error_lines == []
 
 
 @pytest.mark.asyncio
@@ -191,15 +187,19 @@ async def test_proactive_detectors_require_explicit_project_watchers(
         has_active_task=False,
     )
     watched_events, _ = await ServiceLogDetector().detect(watched_context)
-    assert [event.facts["kind"] for event in watched_events] == ["log_error_detected"]
+    assert [event.facts["kind"] for event in watched_events] == ["log_entries_appended"]
+    assert watched_events[0].facts["evidence_contract"]["does_not_establish"] == [
+        "error_classification",
+        "root_cause",
+        "service_health",
+        "task_completion",
+    ]
 
 
 @pytest.mark.asyncio
 async def test_active_task_defers_event_without_consuming_detector_state(tmp_path: Path) -> None:
     daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
     event = ProactiveEvent(
-        source="event_git",
-        message="runtime-authored observation",
         facts={"kind": "git_status_changed", "changed_files": ["M app.py"]},
         state_updates={"last_git_status_hash": "new-hash"},
     )
@@ -224,8 +224,43 @@ async def test_active_task_defers_event_without_consuming_detector_state(tmp_pat
     )
     assert created is not None
     assert created["facts"] == event.facts
+    assert "message" not in created
+    assert "observation" not in created
     assert changed is True
     assert surfaced_data["last_git_status_hash"] == "new-hash"
+
+
+@pytest.mark.asyncio
+async def test_port_detector_returns_scoped_connectivity_facts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def refused(*args, **kwargs):
+        del args, kwargs
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(asyncio, "open_connection", refused)
+    context = ProjectEventContext(
+        project_path=str(tmp_path),
+        project_data={
+            "watchers": {"ports": [4321]},
+            "port_active_4321": True,
+        },
+        has_active_task=False,
+    )
+
+    events, updates = await PortEventDetector().detect(context)
+
+    assert updates == {}
+    assert len(events) == 1
+    assert events[0].facts["kind"] == "port_reachability_changed"
+    assert events[0].facts["active"] is False
+    assert events[0].facts["evidence_contract"]["does_not_establish"] == [
+        "service_health",
+        "service_identity",
+        "task_activity",
+        "task_completion",
+    ]
 
 
 def test_active_workspace_detection_is_not_truncated_by_global_run_limit(tmp_path: Path) -> None:

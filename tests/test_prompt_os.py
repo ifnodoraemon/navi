@@ -214,7 +214,7 @@ def test_planner_runtime_facts_preserve_bounded_nested_observation_rows() -> Non
                     "facts": {
                         "windows": [
                             {
-                                "label": "Session",
+                                "window_id": "primary_window",
                                 "remaining_percent": 75.0,
                                 "used_percent": 25.0,
                             }
@@ -234,7 +234,7 @@ def test_planner_runtime_facts_preserve_bounded_nested_observation_rows() -> Non
 
     assert facts["attempt_history"][0]["facts"]["windows"] == [
         {
-            "label": "Session",
+            "window_id": "primary_window",
             "remaining_percent": 75.0,
             "used_percent": 25.0,
         }
