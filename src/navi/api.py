@@ -98,11 +98,10 @@ class EvolutionProposalRequest(BaseModel):
     target_type: str
     target_id: str
     reason: str
-    expected_benefit: str = ""
+    expected_benefit: str
     risk: str = ""
-    before: str = ""
-    after: str = ""
-    rollback_plan: str = ""
+    after: str
+    rollback_plan: str
     required_approval_level: str = "L2"
     evidence: str = ""
     source_run_id: str = ""

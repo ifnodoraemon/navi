@@ -79,6 +79,18 @@ class _FactResponderProvider:
         return {}
 
 
+class _FailingFactResponderProvider(_FactResponderProvider):
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        **kwargs,
+    ) -> str:
+        del messages, kwargs
+        assert role == "responder"
+        raise RuntimeError("provider disconnected")
+
+
 class _DrainFailingEventBus:
     def __init__(self) -> None:
         self.drain_calls = 0
@@ -204,6 +216,96 @@ async def test_turn_controller_does_not_author_system_error_when_fact_response_i
     assert result.facts["finalization"]["reason"] == "internal_error"
     assert result.facts["finalization"]["trace_id"] == result.trace_id
     assert result.facts["finalization"]["model_response_present"] is False
+
+
+@pytest.mark.asyncio
+async def test_turn_controller_persists_user_turn_when_fact_responder_fails(
+    tmp_path,
+    monkeypatch,
+):
+    runtime = AgentRuntime(home=tmp_path, provider=_FailingFactResponderProvider())
+    controller = TurnController(
+        home=tmp_path,
+        runtime=runtime,
+        project_dir=tmp_path,
+    )
+
+    async def invoke(*args, **kwargs):
+        return CapabilityResult(
+            ok=False,
+            action="error",
+            message="planner provider failed",
+            error_reason="planner_provider_failure",
+            facts={"error_type": "ReadError"},
+            run_id="run-provider-failure",
+        )
+
+    monkeypatch.setattr(controller.capabilities, "invoke", invoke)
+
+    result = await controller.handle(
+        "你还在吗",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+    )
+
+    assert result.text == ""
+    assert result.ok is False
+    assert result.error_reason == "responder_RuntimeError"
+    assert result.facts["finalization"]["model_response_present"] is False
+    messages = runtime.memory.get_messages(result.session_id)
+    assert [(message.role, message.content) for message in messages] == [
+        ("user", "你还在吗")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_turn_controller_does_not_call_responder_during_durable_provider_retry(
+    tmp_path,
+    monkeypatch,
+):
+    provider = _FactResponderProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    controller = TurnController(
+        home=tmp_path,
+        runtime=runtime,
+        project_dir=tmp_path,
+    )
+
+    async def invoke(*args, **kwargs):
+        return CapabilityResult(
+            ok=False,
+            action="goal_open",
+            error_reason="loop_paused",
+            facts={
+                "loop_terminal_state": "paused",
+                "retry_gate": {
+                    "decision": "pause",
+                    "kind": "provider_transport",
+                    "retry_count": 1,
+                    "max_retries": 1,
+                },
+            },
+            run_id="run-provider-retry",
+        )
+
+    monkeypatch.setattr(controller.capabilities, "invoke", invoke)
+
+    result = await controller.handle(
+        "你还在吗",
+        peer_id="peer-1",
+        sender_id="sender-1",
+        source="weixin",
+    )
+
+    assert provider.calls == []
+    assert result.text == ""
+    assert result.error_reason == "provider_transport_retry_pending"
+    assert result.facts["finalization"]["durable_retry_pending"] is True
+    messages = runtime.memory.get_messages(result.session_id)
+    assert [(message.role, message.content) for message in messages] == [
+        ("user", "你还在吗")
+    ]
 
 
 @pytest.mark.asyncio
@@ -639,17 +741,16 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
     assert planner_facts["loop_run_state"]["evidence_keys"] == ["durable_payload"]
     assert "attempt_history" not in planner_facts["objective_evidence"]
     assert planner_facts["objective_evidence"]["capability_result"]["facts"] == {"latest": "kept"}
-    assert planner_facts["attempt_history"] == [
-        {
-            "args": {"query": "recent jobs"},
-            "attempt": 1,
-            "fact_keys": ["results"],
-            "message_present": True,
-            "ok": True,
-            "progress_signature": "sig-1",
-            "tool": "web.search",
-        }
-    ]
+    attempt = planner_facts["attempt_history"][0]
+    assert attempt["attempt"] == 1
+    assert attempt["tool"] == "web.search"
+    assert attempt["args"] == {"query": "recent jobs"}
+    assert attempt["fact_keys"] == ["results"]
+    assert attempt["facts"]["results"][0]
+    assert attempt["evidence_authority"] == "declared_capability_observation"
+    assert attempt["message_present"] is True
+    assert attempt["message_preview"] == ""
+    assert attempt["progress_signature"] == "sig-1"
     assert (
         planner_facts["ingress_facts"]["current_state"]["current_time"]["unix"]
         >= (runtime_facts["current_state"]["current_time"]["unix"])

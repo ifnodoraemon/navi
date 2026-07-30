@@ -34,6 +34,27 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
         sandbox_workspace=project_dir,
         workspace_writable=shell_policy["required_permission"] == "write",
         network_allowed=shell_policy["required_permission"] == "network",
+        host_process_visibility=shell_policy["observation_scope"] == "host_process_table",
+    )
+    observation_scope = str(shell_policy["observation_scope"])
+    evidence_contract = (
+        {
+            "scope": "host_process_table",
+            "establishes": ["process_presence", "sampled_process_state"],
+            "does_not_establish": [
+                "task_activity",
+                "task_progress",
+                "task_completion",
+            ],
+            "sampling": "single_command_execution",
+        }
+        if observation_scope == "host_process_table"
+        else {
+            "scope": "isolated_workspace_command",
+            "establishes": ["command_result"],
+            "does_not_establish": [],
+            "sampling": "single_command_execution",
+        }
     )
     return ToolResult(
         tool="shell.run",
@@ -48,6 +69,14 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
             "cwd": str(cwd),
             "timeout_seconds": timeout,
             "required_permission": shell_policy["required_permission"],
+            "observation_scope": observation_scope,
+            "evidence_contract": evidence_contract,
+            "observation_semantics": (
+                "process rows prove process presence and sampled state only; "
+                "they do not by themselves prove task progress or completion"
+                if observation_scope == "host_process_table"
+                else "command output is scoped to the isolated workspace sandbox"
+            ),
         },
         error=result["stderr"],
         error_reason=str(result.get("error_reason") or "") if result["exit_code"] != 0 else "",

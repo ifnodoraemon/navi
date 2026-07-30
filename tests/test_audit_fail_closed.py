@@ -50,6 +50,34 @@ async def test_mutating_gateway_tool_does_not_execute_without_audit_reservation(
 
 
 @pytest.mark.asyncio
+async def test_read_only_shell_call_does_not_use_mutating_audit_reservation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    def unavailable(*args, **kwargs):
+        raise OSError("audit db unavailable")
+
+    monkeypatch.setattr(ToolRegistry, "_reserve_mutating_audit", unavailable)
+    result = await registry.invoke(
+        "shell.run",
+        {"command": ["pgrep", "-f", "definitely-not-a-real-navi-process"]},
+        permission="read",
+        context=CapabilityContext(
+            home=tmp_path,
+            source="local",
+            peer_id="cli",
+            sender_id="tester",
+            workspace=str(tmp_path),
+            permission_ceiling="read",
+        ),
+    )
+
+    assert result.error_reason != "audit_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_mutating_action_does_not_execute_without_audit_reservation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

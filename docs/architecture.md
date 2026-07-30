@@ -70,6 +70,8 @@ through `goal.update(goal_id=...)`, and uses `goal.open` only for new schedules
 or explicitly independent duplicate schedules. The scheduled view projects a
 bounded recent occurrence ledger, including the connector receipt or typed
 delivery rejection, so diagnosis does not depend on guessing a child Goal id.
+Failed occurrences remain control-plane history. Without a checker-accepted
+result body, they are excluded from semantic prior-result authority.
 
 ## Layer Ownership
 
@@ -115,7 +117,10 @@ compensated on rejection. Capability inputs and outputs pass through one closed
 JSON Schema validator, and failures expose typed reason and retryability facts.
 
 The semantic checker evaluates objective evidence independently from planner
-reasoning and returns only a verdict plus evidence summary. A LoopSpec may use
+reasoning and returns only a verdict plus a non-authoritative judgment summary.
+That summary must preserve exact capability field labels and values and cannot
+become a fact source for later planning; the Planner reads names, numbers, units,
+times, statuses, and sources from the original capability facts. A LoopSpec may use
 the deterministic objective-evidence tier when the capability contract itself
 returns authoritative completion facts; durable semantic work uses the isolated
 LLM checker. The capability's `deterministic_completion_authority` declaration
@@ -131,11 +136,40 @@ is evidence, not a runtime-selected next action. Trace proxies record model call
 and capability spans without changing their decisions. If a later attempt
 converges, the LoopRun clears active recovery fields while the earlier rejection
 remains available through attempt history and trace events.
+Evidence authority is domain-scoped. Navi Goal/approval reads cannot establish
+an external application's task or approval state, process-table observations
+cannot establish task activity, and web search establishes retrieved,
+source-attributed reports rather than universal truth. A later disclaimer does
+not repair an earlier claim that exceeded those boundaries.
+For connector and interactive work, accepted tool facts enter a response phase
+when `respond` is allowed: the planner sees that verified work is complete,
+authors the surface result, and the checker evaluates that candidate before it
+becomes `responded_message`. A `respond` call is candidate copy rather than
+independent evidence for its own claims. Approval continuation lifts that
+checker-accepted original response back to the approval surface, preventing an
+approval acknowledgement from replacing the requested result.
+The checker input carries a typed pre-transport evaluation contract. Semantic
+acceptance covers objective fit, grounding, and contradiction checks only;
+connector transport and receipts stay outside that authority and are evaluated
+by the durable outbox boundary. The checker projection omits the necessarily
+receipt-free pre-acceptance delivery state: user-facing communication
+obligations are satisfied at this stage by grounded candidate copy, while a
+later outbox receipt independently establishes external delivery. This prevents
+semantic acceptance and transport from depending circularly on one another.
 
-A failed model, capability, connector, or external-provider call is recorded and
-returned without an automatic repeat, provider switch, argument rewrite, or
-degraded substitute. A later planner turn is a new model-owned decision, not a
-runtime retry. Lease recovery after a crashed owner and database transaction
+A failed capability, connector, structured model response, or non-transient
+external-provider call is recorded without an automatic repeat, provider switch,
+argument rewrite, or degraded substitute. A malformed structured model response
+is represented separately from provider transport and may enter the ordinary
+model-owned replan budget. A typed transient Planner/Checker transport failure
+crosses at most one persisted retry gate: the daemon resumes the original graph
+node after its delay, records the retry count, and terminates on exhaustion. An
+Evaluate retry restores the persisted executor result and candidate response, so
+no capability or effect is replayed. A foreground retry pause does not invoke
+the fact responder as a hidden second model route; the inbound user message
+persists without an empty assistant message and an eventual accepted connector
+result uses the ordinary durable outbox. Lease recovery after a crashed owner
+and database transaction
 conflict handling remain deterministic control-plane coordination, not semantic
 recovery choices. The systemd unit uses `Restart=on-failure`; the assistant process
 is supervised with a 90-second event-loop watchdog and restarts after process or
@@ -143,6 +177,12 @@ watchdog failure. Restart recovery only resumes persisted control-plane state; i
 does not repeat model work or invent a semantic recovery choice. Connector
 heartbeat freshness remains a separate health fact so an active PID cannot make
 a stale polling loop appear healthy.
+Daemon and StateGraph lease owners include the owning PID. Reconciliation
+releases a future lease early only when that declared process is observably
+absent; unknown or old owner formats fail closed until expiry. The queue also
+claims stale, unowned foreground checkpoints after a bounded grace period.
+Recovered connector turns persist accepted output through the ordinary durable
+outbox, so restart recovery cannot bypass receipt-based completion.
 
 Prompt assembly is an inspectable interface, not scattered inline runtime text.
 Stable prompt specifications live in `src/navi/specs_data.py`; assembly,
@@ -153,6 +193,26 @@ inspect prompt manifests and digests rather than parse rendered prose.
 The semantic checker receives one evidence-authority contract rather than
 task-type branches. Memory consolidation combines its evolvable task layer with
 the same stable Prompt OS boundary and treats transcript data as untrusted input.
+Foreground turns retain bounded transcript continuity. Detached background
+loops omit ambient session transcripts unless their task context explicitly
+grants that history authority; this prevents old assistant candidates from
+competing with current capability facts. Planner attempt state retains a bounded
+typed fact projection, with `respond` marked candidate-only, so recovery can use
+an earlier observation after a later capability overwrites `last_capability`.
+The final Prompt OS projection uses enough structural depth to preserve nested
+rows inside that already bounded state, avoiding a second projection that erases
+leaf facts.
+The semantic checker receives the bounded foreground transcript through a
+separate `semantic_context_only` contract. It may resolve a referent or elliptical
+turn such as a confirmation, but cannot use conversation text to prove execution,
+completion, effects, or transport. Its evaluation contract explicitly distinguishes
+current candidate copy from capability-evidence-only evaluation, so an assistant
+message from a previous turn cannot be mistaken for the current result. A passing
+fact-only check enters the model-authored response phase.
+`context.search` keeps ordinary conversation at `conversation_log` trust. It
+promotes only an exact checker-accepted LoopRun response and projects transport
+receipt state separately, so follow-up questions can retrieve a verified result
+without laundering an earlier assistant claim into runtime truth.
 
 Connector delivery is a two-boundary operation: the capability records
 `delivery_requested` and pauses the loop; the connector-neutral durable
@@ -181,6 +241,11 @@ live in separate databases. Synchronous open failures compensate immediately;
 startup recovery deterministically terminates stale partial opens after a grace
 period. Terminal StateGraph projections use a persisted lifecycle saga and are
 replayed until both Run and Goal match.
+Approval-gate reconciliation uses the same rule. The gate id is extracted only
+from the approval request directly owned by that LoopRun, never from nested
+continuation facts about another task. Missing, expired, rejected, or mismatched
+gates are cancelled through a saga that first settles the LoopRun and then
+projects Run and Goal; an approved gate stranded by a crash is reopened.
 
 LoopRun execution uses a versioned lease and compare-and-swap transitions, so a
 foreground driver and daemon cannot both advance one loop. Mutating capability
@@ -188,6 +253,13 @@ effects are reserved in `loop_effects` before invocation and replay only from a
 completed result. Resource budgets live in `resource_ledger.db`; standard model
 providers reconcile reserved cost/tokens with actual usage, while custom
 providers use conservative declared phase estimates.
+A Goal stores one permission envelope: every statically permitted capability
+must fit inside its ceiling at both create and update time. Dynamic-permission
+capabilities remain selectable, but their concrete calls are classified and
+gated against that same ceiling before execution.
+Lease-health projection counts both expired leases and stale unowned active
+loops, preventing a detached checkpoint from appearing healthy merely because
+its owner field is empty.
 
 `process_sandbox.py` is the shared local-process isolation boundary used by
 `shell.run`, browser artifacts, command verification, and proactive Git reads.
@@ -198,9 +270,20 @@ workspace for authorization and audit while effects and command verifiers are
 translated into the active shadow workspace before merge. Shadow creation,
 merge, and discard remain loop-kernel operations rather than planner-callable
 tools addressed by arbitrary run identifiers.
+For argv classified as read-only process inspection, Bubblewrap keeps the
+filesystem, environment, network, and session restrictions but binds host
+`/proc` read-only. The result records `host_process_table` scope and explicitly
+limits its semantics to process presence and sampled state, avoiding both a
+private-PID false positive and an unsupported claim that a task is making
+progress.
 
 Trace events are append-oriented audit evidence. Materialized Run, Goal, and
-LoopRun records own active lifecycle state. Trace deletion is an API-only
+LoopRun records own active lifecycle state. Foreground completion and every
+background LoopRun processing pass
+materialize the latest rule evaluation for that trace, including scheduled
+failure and no-progress outcomes. Duplicate-effect rules consume the executor's
+call-level mutability fact rather than inferring effects from domain transition
+labels, so repeated observations cannot corrupt reliability metrics. Trace deletion is an API-only
 capability with an explicit single/all scope and post-delete read-back facts;
 the API does not mutate the trace store around the capability boundary.
 The Goal-to-StateGraph boundary derives a missing trace id from the persisted
@@ -208,6 +291,9 @@ Goal or governed Run, so planner, capability, checker, notification, and
 delivery spans share one root. Trace views also correlate older partial traces
 through Run to Goal and LoopRun and project the durable terminal state over an
 otherwise successful individual model-call span.
+When a later Planner attempt recovers an earlier call or parse error, trace
+evaluation classifies the result as degraded recovery rather than runtime
+failure; an unrecovered Planner error remains a failure.
 
 Scheduled Goal templates persist the real workspace rather than the ephemeral
 shadow used by their registration turn. The registration capability resolves
@@ -225,11 +311,20 @@ exhausted jobs to a visible dead-letter state. Retention reconstructs a missing
 job from the run transcript before it can remove detail. Hybrid text/embedding
 recall can discover candidates without FTS, and graph neighbors are ranked before
 embedding-only candidates so graph recall cannot be starved. Retention removes
-expired transient detail only after consolidation while preserving terminal summaries.
+expired transient detail only after consolidation and durable external-wait
+settlement while preserving terminal summaries. It cannot delete approval or
+LoopSpec state from a resumable lifecycle.
 
 `EvolutionTargetAdapterRegistry` is the authority for evolvable target types.
 Prompt layers, skills, memory items, eval cases, and graph nodes have real readers
 and writers. Run lifecycle records and inert spec files are not evolution targets.
+Prompt adapters accept only declared layers loaded by `PromptLayerStore`.
+Proposal creation reads the current target through its adapter, preserves the
+candidate byte-for-byte, and returns hashes and lengths rather than target
+payloads to model-facing capabilities. Immutable built-in evaluation contracts
+bootstrap creation of the first managed eval case; managed cases remain
+fingerprinted durable inputs to experiments, and every effectful proposal/apply
+edge retains its approval boundary.
 `EvolutionExperimentStore` persists candidate checks, eval-case fingerprints, and
 activation windows. Only successful apply events are reversible; rollback restores
 the exact pre-apply snapshot through the same adapter. `EvolutionEngine` is kept

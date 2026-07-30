@@ -16,6 +16,7 @@ from navi.delivery_outbox import (
     DeliveryCoordinator,
     DeliveryEnvelope,
     DeliveryOutboxStore,
+    DeliveryReceipt,
     envelope_from_response,
 )
 from navi.event_bus import ResponseReadyEvent
@@ -1094,7 +1095,15 @@ async def test_sent_outbox_repairs_lifecycle_projection_without_resending(
         trace_id=run.id,
     )
     assert outbox is not None
-    goal_store.mark_delivery_outbox_sent(outbox.id, delivery_id=outbox.id, sent_at=123.0)
+    DeliveryOutboxStore(tmp_path).mark_sent(
+        outbox.id,
+        receipt=DeliveryReceipt(
+            transport="test",
+            details={"provider_receipt_id": outbox.id},
+        ),
+        delivery_id=outbox.id,
+        sent_at=123.0,
+    )
     client = CaptureWeixinClient()
     service = WeixinService(
         home=tmp_path,

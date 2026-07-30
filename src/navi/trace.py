@@ -1522,6 +1522,13 @@ def _duplicate_entity_mutation_rule(
     for event in events:
         if event.phase != TracePhase.CAPABILITY_RESULT or not event.ok:
             continue
+        output = _event_output(event)
+        # Entity transition labels describe observed lifecycle facts as well as
+        # effects. Duplicate-effect classification therefore requires the
+        # executor's call-level mutability decision; names such as "retrieved"
+        # or "observed" are not mutation evidence.
+        if output.get("mutates") is not True:
+            continue
         facts = _event_facts(event)
         for mutation_ref in _entity_mutation_refs(facts):
             seen[mutation_ref] = seen.get(mutation_ref, 0) + 1
@@ -1615,6 +1622,7 @@ def _planner_failure_rule(
 ) -> TraceEvaluationDraft | None:
     failure = _first_failure(events)
     if failure is None or failure.phase not in {
+        TracePhase.PLANNER_CALL_ERROR,
         TracePhase.PLANNER_SYSCALL,
         TracePhase.PLANNER_PARSE_ERROR,
     }:

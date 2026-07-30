@@ -60,13 +60,6 @@ class SideEffectPolicy:
             "description": self.description,
         }
 
-
-def validate_schema(data: Any, schema: dict[str, Any], path: str = "") -> list[str]:
-    """Compatibility wrapper around the one runtime JSON Schema validator."""
-    json_path = "$" if not path else f"$.{path}"
-    return json_schema_errors(data, schema, path=json_path)
-
-
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -369,7 +362,10 @@ class ToolRegistry:
                 self._audit_call(args or {}, result)
                 return result
         audit_log_id = ""
-        if tool.spec.mutates:
+        # Imported lazily because safeguards type-checks against ToolSpec.
+        from .safeguards import call_mutates
+
+        if call_mutates(tool.spec, args):
             try:
                 audit_log_id = self._reserve_mutating_audit(
                     tool.spec,

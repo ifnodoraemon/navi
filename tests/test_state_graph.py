@@ -85,7 +85,7 @@ def test_semantic_checker_evidence_includes_current_capability_execution() -> No
                 },
                 {
                     "attempt": 2,
-                    "tool": "respond",
+                    "tool": "custom.presenter",
                     "args": {},
                     "ok": True,
                     "action": "chat",
@@ -98,7 +98,9 @@ def test_semantic_checker_evidence_includes_current_capability_execution() -> No
         }
     )
 
-    assert [item["tool"] for item in evidence] == ["account.usage", "respond"]
+    assert [item["tool"] for item in evidence] == ["account.usage", "custom.presenter"]
+    assert evidence[0]["evidence_authority"] == "declared_capability_observation"
+    assert evidence[-1]["evidence_authority"] == "candidate_response_only"
     assert evidence[-1]["action"] == "chat"
     assert evidence[-1]["terminal"] is True
 
@@ -684,6 +686,68 @@ async def test_planner_context_compacts_long_session_history(tmp_path: Path) -> 
     assert compaction["omitted_older_assistant_message_count"] == 3
     assert compaction["retained_recent_message_count"] == 12
     assert compaction["compacted_character_count"] <= compaction["max_character_count"]
+
+
+@pytest.mark.asyncio
+async def test_background_goal_excludes_non_authoritative_session_history(
+    tmp_path: Path,
+) -> None:
+    provider = _PlanningProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    session_id = runtime.memory.create_session()
+    runtime.memory.add_message(session_id, "user", "codex remaining quota")
+    runtime.memory.add_message(
+        session_id,
+        "assistant",
+        "The non-authoritative old remaining quota is 40.0%.",
+    )
+    spec = _write_spec(_command("print('ok')"))
+    spec = replace(
+        spec,
+        goal=replace(
+            spec.goal,
+            metadata={
+                **spec.goal.metadata,
+                "session_id": session_id,
+                "execution_mode": "background",
+                "task_context": {
+                    "progress": {
+                        "ambient_history_authoritative": False,
+                    }
+                },
+            },
+        ),
+    )
+    planned = await ModelCapabilityPlannerPort(
+        runtime=runtime,
+        capabilities=CapabilityRegistry(
+            home=tmp_path,
+            project_dir=tmp_path,
+            permission_ceiling="write",
+        ),
+    ).plan(
+        spec,
+        LoopRunState(
+            run_id="background-loop",
+            goal_id=spec.goal_id,
+            loop_spec_id=spec.id,
+        ),
+        workspace=tmp_path,
+        evidence={},
+    )
+
+    assert planned.tool == "file.write"
+    turn_input = _planner_turn_input(provider)
+    assert "[CONVERSATION HISTORY]" not in turn_input
+    assert "40.0%" not in turn_input
+    runtime_facts = _runtime_facts_from_turn_input(turn_input)
+    assert runtime_facts["conversation_compaction"] == {
+        "consumer": "planner",
+        "included": False,
+        "policy": "bounded_conversation_context_v1",
+        "reason": "background_ambient_history_not_authoritative",
+        "session_id": session_id,
+    }
 
 
 @pytest.mark.asyncio

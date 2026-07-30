@@ -31,6 +31,11 @@ class PromptLayerStore:
     def read(self, name: str) -> str:
         return self.get(name).content
 
+    @staticmethod
+    def is_declared(name: str) -> bool:
+        spec = PROMPT_LAYERS_SPEC or {}
+        return isinstance(spec.get(name), dict)
+
     def write_override(self, name: str, content: str) -> Path:
         if not _valid_layer_name(name):
             raise ValueError("invalid prompt layer name")

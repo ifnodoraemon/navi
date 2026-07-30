@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 
@@ -28,9 +29,95 @@ from navi.trace import TraceStore
 class _TransportFailingProvider:
     last_usage = None
 
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def complete_for(self, role: str, messages, **kwargs) -> str:
         del role, messages, kwargs
+        self.calls += 1
         raise httpx.ReadError("upstream connection reset")
+
+
+class _TransportRecoveringProvider:
+    last_usage = None
+
+    def __init__(self) -> None:
+        self.planner_calls = 0
+
+    async def complete_for(self, role: str, messages, **kwargs) -> str:
+        del messages, kwargs
+        if role == "planner":
+            self.planner_calls += 1
+            if self.planner_calls == 1:
+                raise httpx.ReadError("upstream connection reset")
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "respond",
+                            "permission": "read",
+                            "args": {"message": "recovered after transport retry"},
+                        }
+                    ]
+                }
+            )
+        if role == "checker":
+            return json.dumps(
+                {
+                    "passed": True,
+                    "evidence_summary": "the current response completes the objective",
+                }
+            )
+        raise AssertionError(f"unexpected provider role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "checker"]
+
+    def usage_for(self, role: str) -> dict:
+        del role
+        return {}
+
+
+class _CheckerTransportRecoveringProvider:
+    last_usage = None
+
+    def __init__(self) -> None:
+        self.planner_calls = 0
+        self.checker_calls = 0
+
+    async def complete_for(self, role: str, messages, **kwargs) -> str:
+        del messages, kwargs
+        if role == "planner":
+            self.planner_calls += 1
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "respond",
+                            "permission": "read",
+                            "args": {"message": "checker retry kept this candidate"},
+                        }
+                    ]
+                }
+            )
+        if role == "checker":
+            self.checker_calls += 1
+            if self.checker_calls == 1:
+                raise httpx.ReadError("checker connection reset")
+            return json.dumps(
+                {
+                    "passed": True,
+                    "evidence_summary": "the preserved candidate completes the objective",
+                }
+            )
+        raise AssertionError(f"unexpected provider role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "checker"]
+
+    def usage_for(self, role: str) -> dict:
+        del role
+        return {}
 
 
 def test_read_log_diff_redacts_secrets_in_diff_and_error_lines(tmp_path: Path) -> None:
@@ -295,7 +382,7 @@ async def test_daemon_reconciles_resource_reservations_after_startup(
     )
     monkeypatch.setattr(
         LoopRunStore,
-        "list_retryable_background_pauses",
+        "list_retryable_pauses",
         lambda *args, **kwargs: [],
     )
 
@@ -329,6 +416,70 @@ def test_daemon_releases_expired_foreground_execution_lease(tmp_path: Path) -> N
     assert recovered.lease_expires_at == 0.0
 
 
+def test_daemon_releases_future_lease_owned_by_dead_daemon_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="recover dead daemon ownership",
+            workspace=str(tmp_path),
+            auto_start=False,
+            execution_mode="background",
+        )
+    )
+    store = LoopRunStore(tmp_path)
+    claimed = store.claim_for_execution(
+        opened.loop_run.run_id,
+        owner="daemon:999999:old-process",
+        lease_seconds=10_000,
+    )
+    assert claimed is not None
+    monkeypatch.setattr(
+        "navi.daemon._execution_owner_process_is_alive",
+        lambda _owner: False,
+    )
+
+    SystemDaemon(tmp_path, project_dir=tmp_path)
+
+    recovered = store.get_run(opened.loop_run.run_id)
+    assert recovered is not None
+    assert recovered.lease_owner == ""
+    assert recovered.lease_expires_at == 0.0
+
+
+def test_daemon_releases_future_lease_owned_by_dead_state_graph_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="recover dead foreground execution",
+            workspace=str(tmp_path),
+            auto_start=False,
+            execution_mode="foreground",
+        )
+    )
+    store = LoopRunStore(tmp_path)
+    claimed = store.claim_for_execution(
+        opened.loop_run.run_id,
+        owner="state-graph:999999:old-process",
+        lease_seconds=10_000,
+    )
+    assert claimed is not None
+    monkeypatch.setattr(
+        "navi.daemon._execution_owner_process_is_alive",
+        lambda _owner: False,
+    )
+
+    SystemDaemon(tmp_path, project_dir=tmp_path)
+
+    recovered = store.get_run(opened.loop_run.run_id)
+    assert recovered is not None
+    assert recovered.lease_owner == ""
+    assert recovered.lease_expires_at == 0.0
+
+
 @pytest.mark.asyncio
 async def test_daemon_projects_transport_failure_and_releases_resource(
     tmp_path: Path,
@@ -344,21 +495,141 @@ async def test_daemon_projects_transport_failure_and_releases_resource(
             execution_mode="background",
         )
     )
-    monkeypatch.setattr("navi.provider.build_provider", lambda _config: _TransportFailingProvider())
+    provider = _TransportFailingProvider()
+    monkeypatch.setattr("navi.provider.build_provider", lambda _config: provider)
 
     processed = await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
     assert [run.id for run in processed] == [opened.run.id]
 
     loop_run = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
     assert loop_run is not None
-    assert str(loop_run.terminal_state) == "failed"
+    assert str(loop_run.terminal_state) == "paused"
     assert loop_run.evidence["tool"] == "system.planner_error"
     assert loop_run.evidence["args"]["error_type"] == "ReadError"
+    assert loop_run.evidence["args"]["retryable"] is True
+    assert loop_run.evidence["args"]["retry_after_seconds"] == 15.0
+    assert loop_run.evidence["automatic_model_retry"] is False
+    assert loop_run.evidence["retry_gate"]["kind"] == "provider_transport"
+    assert loop_run.evidence["retry_gate"]["retry_count"] == 1
+    goal = GoalStore(tmp_path).get(opened.goal.id)
+    assert goal is not None
+    assert goal.phase == "running"
+    assert goal.resolution == "blocked"
+    assert SQLiteResourceLedger(tmp_path).usage(opened.loop_run.run_id).active == 0
+    assert provider.calls == 1
+
+    with connect(LoopRunStore(tmp_path).db_path) as conn:
+        conn.execute(
+            "UPDATE loop_runs SET updated_at = 0 WHERE id = ?",
+            (opened.loop_run.run_id,),
+        )
+    processed = await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
+    assert [run.id for run in processed] == [opened.run.id]
+
+    exhausted = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
+    assert exhausted is not None
+    assert str(exhausted.terminal_state) == "failed"
+    assert exhausted.evidence["retry_gate"]["retry_count"] == 1
+    assert exhausted.evidence["reflection"]["facts"]["transport_retry_exhausted"] is True
     goal = GoalStore(tmp_path).get(opened.goal.id)
     assert goal is not None
     assert goal.phase == "ended"
     assert goal.resolution == "failed"
     assert SQLiteResourceLedger(tmp_path).usage(opened.loop_run.run_id).active == 0
+    assert provider.calls == 2
+    evaluation = TraceStore(tmp_path).list_evaluations(opened.run.id)
+    assert len(evaluation) == 1
+    assert evaluation[0].outcome == "failure"
+    assert evaluation[0].failure_domain == "planner_or_parser"
+
+
+@pytest.mark.asyncio
+async def test_daemon_durably_recovers_one_provider_transport_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="answer after a transient provider reset",
+            workspace=str(tmp_path),
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            execution_mode="background",
+        )
+    )
+    provider = _TransportRecoveringProvider()
+    monkeypatch.setattr("navi.provider.build_provider", lambda _config: provider)
+
+    await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
+    paused = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
+    assert paused is not None
+    assert str(paused.terminal_state) == "paused"
+    assert provider.planner_calls == 1
+
+    with connect(LoopRunStore(tmp_path).db_path) as conn:
+        conn.execute(
+            "UPDATE loop_runs SET updated_at = 0 WHERE id = ?",
+            (opened.loop_run.run_id,),
+        )
+    await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
+
+    recovered = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
+    assert recovered is not None
+    assert str(recovered.terminal_state) == "converged"
+    assert recovered.evidence["retry_gate"]["retry_count"] == 1
+    assert provider.planner_calls == 2
+    goal = GoalStore(tmp_path).get(opened.goal.id)
+    assert goal is not None
+    assert goal.phase == "running"
+    assert goal.resolution == "none"
+    pending = GoalStore(tmp_path).accepted_result_for_run(opened.run.id)
+    assert pending["delivery_status"] == "pending"
+    assert pending["body"] == "recovered after transport retry"
+
+
+@pytest.mark.asyncio
+async def test_daemon_recovers_checker_transport_without_reexecuting_capability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="preserve the candidate while checker transport recovers",
+            workspace=str(tmp_path),
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            execution_mode="background",
+        )
+    )
+    provider = _CheckerTransportRecoveringProvider()
+    monkeypatch.setattr("navi.provider.build_provider", lambda _config: provider)
+
+    await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
+    paused = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
+    assert paused is not None
+    assert str(paused.terminal_state) == "paused"
+    assert paused.evidence["retry_gate"]["model_role"] == "checker"
+    assert paused.evidence["retry_gate"]["resume_node"] == "evaluate"
+    assert provider.planner_calls == 1
+    assert provider.checker_calls == 1
+
+    with connect(LoopRunStore(tmp_path).db_path) as conn:
+        conn.execute(
+            "UPDATE loop_runs SET updated_at = 0 WHERE id = ?",
+            (opened.loop_run.run_id,),
+        )
+    await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
+
+    recovered = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
+    assert recovered is not None
+    assert str(recovered.terminal_state) == "converged"
+    assert provider.planner_calls == 1
+    assert provider.checker_calls == 2
+    pending = GoalStore(tmp_path).accepted_result_for_run(opened.run.id)
+    assert pending["delivery_status"] == "pending"
+    assert pending["body"] == "checker retry kept this candidate"
 
 
 @pytest.mark.asyncio
@@ -495,3 +766,40 @@ async def test_daemon_does_not_execute_foreground_or_manual_loops(tmp_path: Path
     assert processed == []
     assert str(LoopRunStore(tmp_path).get_run(foreground.loop_run.run_id).node) == "plan"
     assert str(LoopRunStore(tmp_path).get_run(manual.loop_run.run_id).node) == "plan"
+
+
+@pytest.mark.asyncio
+async def test_daemon_recovers_stale_connector_foreground_loop_with_durable_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="recover interrupted connector turn",
+            workspace=str(tmp_path),
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            auto_start=False,
+            execution_mode="foreground",
+        )
+    )
+    store = LoopRunStore(tmp_path)
+    with connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE loop_runs SET updated_at = ? WHERE id = ?",
+            (time.time() - 120.0, opened.loop_run.run_id),
+        )
+    captured: dict[str, object] = {}
+
+    async def capture_resume(**kwargs):
+        captured.update(kwargs)
+        return opened
+
+    monkeypatch.setattr("navi.goal_state_graph.resume_goal_loop_run", capture_resume)
+
+    processed = await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
+
+    assert [run.id for run in processed] == [opened.run.id]
+    assert captured["loop_run_id"] == opened.loop_run.run_id
+    assert captured["persist_result_delivery"] is True

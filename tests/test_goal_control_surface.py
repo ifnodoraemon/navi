@@ -5,7 +5,8 @@ import shlex
 import sys
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+import httpx
+import pytest
 from typer.testing import CliRunner
 
 import navi.api as api_module
@@ -66,13 +67,23 @@ class _PlanningProvider:
         return {}
 
 
-def test_goal_api_exposes_open_state_and_cancel_controls(tmp_path, valid_runtime_config):
+def _api_client(app) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    )
+
+
+@pytest.mark.asyncio
+async def test_goal_api_exposes_open_state_and_cancel_controls(
+    tmp_path, valid_runtime_config
+):
     app = api_module.create_app(tmp_path)
     api_key = load_config(tmp_path).api.api_key
     headers = {"X-API-Key": api_key}
-    client = TestClient(app)
+    client = _api_client(app)
 
-    opened_response = client.post(
+    opened_response = await client.post(
         api_path("goals"),
         json={
             "objective": "api durable goal",
@@ -86,7 +97,7 @@ def test_goal_api_exposes_open_state_and_cancel_controls(tmp_path, valid_runtime
     assert opened["state_transition"] == "opened"
     assert opened["loop_terminal_state"] == ""
 
-    state_response = client.get(
+    state_response = await client.get(
         api_path("goal_state").format(goal_id=opened["goal_id"]),
         headers=headers,
     )
@@ -96,7 +107,7 @@ def test_goal_api_exposes_open_state_and_cancel_controls(tmp_path, valid_runtime
     assert state["goal"]["id"] == opened["goal_id"]
     assert state["loop_runs"][0]["run_id"] == opened["loop_run_id"]
 
-    cancel_response = client.post(
+    cancel_response = await client.post(
         api_path("goal_cancel").format(goal_id=opened["goal_id"]),
         json={"reason": "api cancel"},
         headers=headers,
@@ -106,6 +117,7 @@ def test_goal_api_exposes_open_state_and_cancel_controls(tmp_path, valid_runtime
     assert cancelled["state_transition"] == "cancelled"
     assert cancelled["loop_terminal_state"] == LoopTerminalState.CANCELLED
     assert cancelled["resolution"] == Resolution.CANCELED
+    await client.aclose()
 
 
 def test_goal_cli_exposes_open_state_and_cancel_controls(tmp_path):
@@ -147,7 +159,10 @@ def test_goal_cli_exposes_open_state_and_cancel_controls(tmp_path):
     assert cancelled["resolution"] == Resolution.CANCELED
 
 
-def test_goal_api_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch, valid_runtime_config):
+@pytest.mark.asyncio
+async def test_goal_api_auto_start_uses_runtime_state_graph(
+    tmp_path, monkeypatch, valid_runtime_config
+):
     provider = _PlanningProvider()
     monkeypatch.setattr(
         api_module,
@@ -157,9 +172,9 @@ def test_goal_api_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch, val
     app = api_module.create_app(tmp_path)
     api_key = load_config(tmp_path).api.api_key
     headers = {"X-API-Key": api_key}
-    client = TestClient(app)
+    client = _api_client(app)
 
-    opened_response = client.post(
+    opened_response = await client.post(
         api_path("goals"),
         json={
             "objective": "api auto-start goal writes app.py",
@@ -183,7 +198,7 @@ def test_goal_api_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch, val
     assert evidence["planned_capability"]["tool"] == "file.write"
     assert evidence["capability_result"]["yields_control"] is True
     _approve_pending(tmp_path, opened["run_id"])
-    resumed_response = client.post(
+    resumed_response = await client.post(
         api_path("goal_resume").format(goal_id=opened["goal_id"]),
         json={"workspace": str(tmp_path)},
         headers=headers,
@@ -194,9 +209,13 @@ def test_goal_api_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch, val
     assert completed["loop_terminal_state"] == LoopTerminalState.CONVERGED
     assert completed["completion_evidence"] is True
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
+    await client.aclose()
 
 
-def test_goal_api_resume_uses_runtime_state_graph(tmp_path, monkeypatch, valid_runtime_config):
+@pytest.mark.asyncio
+async def test_goal_api_resume_uses_runtime_state_graph(
+    tmp_path, monkeypatch, valid_runtime_config
+):
     provider = _PlanningProvider()
     monkeypatch.setattr(
         api_module,
@@ -206,9 +225,9 @@ def test_goal_api_resume_uses_runtime_state_graph(tmp_path, monkeypatch, valid_r
     app = api_module.create_app(tmp_path)
     api_key = load_config(tmp_path).api.api_key
     headers = {"X-API-Key": api_key}
-    client = TestClient(app)
+    client = _api_client(app)
 
-    opened_response = client.post(
+    opened_response = await client.post(
         api_path("goals"),
         json={
             "objective": "api resume goal writes app.py",
@@ -226,7 +245,7 @@ def test_goal_api_resume_uses_runtime_state_graph(tmp_path, monkeypatch, valid_r
     opened = opened_response.json()["data"]["facts"]
     assert opened["loop_terminal_state"] == ""
 
-    resumed_response = client.post(
+    resumed_response = await client.post(
         api_path("goal_resume").format(goal_id=opened["goal_id"]),
         json={"workspace": str(tmp_path)},
         headers=headers,
@@ -241,7 +260,7 @@ def test_goal_api_resume_uses_runtime_state_graph(tmp_path, monkeypatch, valid_r
     assert evidence["planned_capability"]["tool"] == "file.write"
     assert evidence["capability_result"]["yields_control"] is True
     _approve_pending(tmp_path, resumed["run_id"])
-    completed_response = client.post(
+    completed_response = await client.post(
         api_path("goal_resume").format(goal_id=opened["goal_id"]),
         json={"workspace": str(tmp_path)},
         headers=headers,
@@ -252,6 +271,7 @@ def test_goal_api_resume_uses_runtime_state_graph(tmp_path, monkeypatch, valid_r
     assert completed["loop_terminal_state"] == LoopTerminalState.CONVERGED
     assert completed["completion_evidence"] is True
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"
+    await client.aclose()
 
 
 def test_goal_cli_auto_start_uses_runtime_state_graph(tmp_path, monkeypatch):

@@ -17,9 +17,32 @@ from .daemon_types import (
 from .detectors import GitMutationDetector, PortEventDetector, ServiceLogDetector
 from .event_bus import AgentTurnCompletedEvent, EventBus, NaviEvent
 from .graph import GraphNode, GraphStore
+from .loop_runs import DETACHED_EXECUTION_RECOVERY_GRACE_SECONDS
 from .runs import Run, RunStore
 
 logger = logging.getLogger("navi.daemon")
+
+
+def _execution_owner_process_is_alive(owner: str) -> bool:
+    """Interpret only process-owned lease identities with an explicit PID."""
+    parts = owner.split(":", 2)
+    if len(parts) < 3 or parts[0] not in {"daemon", "state-graph"}:
+        return True
+    try:
+        pid = int(parts[1])
+    except ValueError:
+        return True
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
 
 
 class SystemDaemon:
@@ -40,6 +63,13 @@ class SystemDaemon:
         lifecycle_sagas = LifecycleSagaStore(home)
         lifecycle_sagas.recover_pending()
         lifecycle_sagas.recover_open_orphans()
+        approval_reconciliation = self._reconcile_approval_waits()
+        if approval_reconciliation["cancelled"] or approval_reconciliation["resumed"]:
+            logger.warning(
+                "Reconciled %s orphaned/expired approval waits and resumed %s approved waits",
+                len(approval_reconciliation["cancelled"]),
+                len(approval_reconciliation["resumed"]),
+            )
         reconciliation = self._reconcile_loop_execution(loop_runs)
         if reconciliation["released_leases"] or reconciliation["released_grants"]:
             logger.warning(
@@ -50,13 +80,32 @@ class SystemDaemon:
 
         self._setup_subscriptions()
 
+    def _reconcile_approval_waits(self) -> dict[str, Any]:
+        from .loop_control_service import LoopControlService
+
+        return LoopControlService(self.home).reconcile_approval_waits()
+
     def _reconcile_loop_execution(self, loop_runs: Any | None = None) -> dict[str, list[str]]:
         """Clear expired execution ownership and its stale resource reservations."""
         from .loop_runs import LoopRunStore
         from .resource_gateway import SQLiteResourceLedger
 
         store = loop_runs or LoopRunStore(self.home)
-        released_leases = store.release_expired_execution_leases()
+        unavailable_owners = [
+            owner
+            for owner in store.active_execution_lease_owners()
+            if owner.split(":", 1)[0] in {"daemon", "state-graph"}
+            and not _execution_owner_process_is_alive(owner)
+        ]
+        released_leases = store.release_execution_leases_for_owners(
+            unavailable_owners,
+            reason="execution_owner_unavailable",
+        )
+        released_leases.extend(
+            run_id
+            for run_id in store.release_expired_execution_leases()
+            if run_id not in released_leases
+        )
         released_grants = SQLiteResourceLedger(self.home).release_active_grants_for_scopes(
             store.list_releasable_resource_scope_ids()
         )
@@ -115,6 +164,13 @@ class SystemDaemon:
         from .goals import GoalStore
 
         loop_runs = LoopRunStore(self.home)
+        approval_reconciliation = self._reconcile_approval_waits()
+        if approval_reconciliation["cancelled"] or approval_reconciliation["resumed"]:
+            logger.warning(
+                "Reconciled %s approval waits and resumed %s before queue claim",
+                len(approval_reconciliation["cancelled"]),
+                len(approval_reconciliation["resumed"]),
+            )
         reconciliation = self._reconcile_loop_execution(loop_runs)
         if reconciliation["released_leases"] or reconciliation["released_grants"]:
             logger.warning(
@@ -129,7 +185,13 @@ class SystemDaemon:
         active_states = loop_runs.claim_active_for_execution_mode(
             "background", owner=execution_owner, limit=10
         )
-        retryable_candidates = loop_runs.list_retryable_background_pauses(limit=10)
+        detached_foreground_states = loop_runs.claim_active_for_execution_mode(
+            "foreground",
+            owner=execution_owner,
+            limit=10,
+            updated_before=time.time() - DETACHED_EXECUTION_RECOVERY_GRACE_SECONDS,
+        )
+        retryable_candidates = loop_runs.list_retryable_pauses(limit=10)
         retryable_states = [
             claimed
             for item in retryable_candidates
@@ -146,8 +208,17 @@ class SystemDaemon:
             *active_states,
             *(
                 state
-                for state in retryable_states
+                for state in detached_foreground_states
                 if state.run_id not in {item.run_id for item in active_states}
+            ),
+            *(
+                state
+                for state in retryable_states
+                if state.run_id
+                not in {
+                    item.run_id
+                    for item in [*active_states, *detached_foreground_states]
+                }
             ),
         ]
         retryable_ids = {state.run_id for state in retryable_states}
@@ -163,9 +234,12 @@ class SystemDaemon:
         for state in states:
             goal = goals.get(state.goal_id)
             if not goal:
+                loop_runs.release_execution_lease(state.run_id, owner=execution_owner)
                 continue
 
             try:
+                from .connector_registry import get_connector_adapter
+
                 result = await resume_goal_loop_run(
                     home=self.home,
                     loop_run_id=state.run_id,
@@ -174,10 +248,14 @@ class SystemDaemon:
                     entrypoint="system_daemon.process_queue_once",
                     resume_reason="background_execution",
                     state_transition="background_resumed",
-                    resource_retry=state.run_id in retryable_ids,
+                    retry_pause=state.run_id in retryable_ids,
                     execution_owner=execution_owner,
+                    persist_result_delivery=get_connector_adapter(goal.source) is not None,
                 )
                 affected_runs.append(result.run)
+                from .trace import TraceStore
+
+                TraceStore(self.home).evaluate_trace(goal.trace_id or result.run.id)
             except Exception as e:
                 logger.error(f"Failed to process loop run {state.run_id}: {e}", exc_info=True)
 

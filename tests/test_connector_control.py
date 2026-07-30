@@ -26,12 +26,27 @@ class _ConnectorDeleteProvider:
     def __init__(self, target: Path) -> None:
         self.target = target
         self.calls: list[str] = []
+        self.planner_calls = 0
 
     async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
         self.calls.append(role)
         if role == "responder":
             return "原删除任务已执行并验证。"
         assert role == "planner"
+        self.planner_calls += 1
+        if self.planner_calls > 1:
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "respond",
+                            "permission": "read",
+                            "args": {"message": "原删除任务已执行并验证。"},
+                            "reason": "surface the verified original task result",
+                        }
+                    ]
+                }
+            )
         return json.dumps(
             {
                 "syscalls": [
@@ -60,7 +75,6 @@ class _BareApprovalProvider(_ConnectorDeleteProvider):
     def __init__(self, target: Path) -> None:
         super().__init__(target)
         self.approval_run_id = ""
-        self.planner_calls = 0
 
     async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
         self.calls.append(role)
@@ -79,6 +93,19 @@ class _BareApprovalProvider(_ConnectorDeleteProvider):
                                     "timeout_seconds": 10,
                                 },
                                 "reason": "request approval for the exact delete",
+                            }
+                        ]
+                    }
+                )
+            if self.planner_calls > 2:
+                return json.dumps(
+                    {
+                        "syscalls": [
+                            {
+                                "tool": "respond",
+                                "permission": "read",
+                                "args": {"message": "原删除任务已执行并验证。"},
+                                "reason": "surface the checker-accepted continuation",
                             }
                         ]
                     }
@@ -489,7 +516,7 @@ async def test_connector_approval_resumes_original_goal_before_reply(tmp_path: P
         {
             "objective": "delete connector report",
             "workspace": str(tmp_path),
-            "allowed_capabilities": ["shell.run"],
+            "allowed_capabilities": ["shell.run", "respond"],
             "verification_command": _missing_file_verification(target),
         },
         permission="prepare",
@@ -532,7 +559,7 @@ async def test_connector_approval_resumes_original_goal_before_reply(tmp_path: P
     ]
     assert len(resumed_shell) == 1
     assert resumed_shell[0].ok is True
-    assert provider.calls == ["planner", "responder"]
+    assert provider.calls == ["planner", "planner"]
 
 
 @pytest.mark.asyncio
@@ -740,7 +767,7 @@ async def test_connector_bare_approval_model_path_resumes_original_goal(tmp_path
         {
             "objective": "delete report after approval",
             "workspace": str(tmp_path),
-            "allowed_capabilities": ["shell.run"],
+            "allowed_capabilities": ["shell.run", "respond"],
             "verification_command": _missing_file_verification(target),
         },
         permission="prepare",
@@ -781,7 +808,7 @@ async def test_connector_bare_approval_model_path_resumes_original_goal(tmp_path
     original = RunStore(tmp_path).get(opened.run_id)
     assert original is not None
     assert original.resolution == Resolution.SUCCESS
-    assert provider.calls == ["planner", "planner", "checker", "responder"]
+    assert provider.calls == ["planner", "planner", "planner", "checker"]
 
 
 @pytest.mark.asyncio

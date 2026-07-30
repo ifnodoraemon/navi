@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,7 @@ def _context_search(home: Path, args: dict[str, Any]) -> ToolResult:
             _put_evidence(
                 evidence,
                 _message_evidence(
+                    home,
                     message,
                     score=recent_base - offset,
                     reasons=["same_session_recent"],
@@ -63,6 +65,7 @@ def _context_search(home: Path, args: dict[str, Any]) -> ToolResult:
                 _put_evidence(
                     evidence,
                     _message_evidence(
+                        home,
                         message,
                         score=max(0.0, 900.0 - abs(rank)),
                         reasons=[*reasons, f"search_query={search_query}"],
@@ -112,11 +115,13 @@ def _context_search(home: Path, args: dict[str, Any]) -> ToolResult:
 
 
 def _message_evidence(
+    home: Path,
     message: StoredMessage,
     *,
     score: float,
     reasons: list[str],
 ) -> dict[str, Any]:
+    provenance = _message_result_provenance(home, message)
     return {
         "evidence_id": f"msg:{message.message_id}",
         "kind": "conversation_message",
@@ -132,10 +137,71 @@ def _message_evidence(
         "content": truncate_middle(message.content, CONTEXT_EVIDENCE_EXCERPT_CHARS),
         "score": score,
         "rank_reasons": list(dict.fromkeys(reasons)),
-        "trust": "conversation_log",
+        "trust": str(provenance.pop("trust", "conversation_log")),
         "stale": False,
         "conflicts": [],
+        **provenance,
     }
+
+
+def _message_result_provenance(home: Path, message: StoredMessage) -> dict[str, Any]:
+    """Separate conversation recall from checker-accepted task results.
+
+    Conversation text can resolve a referent, but an assistant message is not
+    automatically evidence for its own claims.  It is promoted only when its
+    exact body is the checker-accepted response of a converged LoopRun.  A
+    connector receipt remains a separate transport fact.
+    """
+    facts: dict[str, Any] = {
+        "trust": "conversation_log",
+        "semantic_verification": {"status": "unverified_conversation"},
+        "delivery": {"status": "unknown"},
+    }
+    if message.role != "assistant" or not message.run_id:
+        return facts
+
+    from ..goals import GoalStore
+    from ..loop_contracts import LoopTerminalState
+    from ..loop_runs import LoopRunStore
+
+    goal = GoalStore(home).get_by_run(message.run_id)
+    if goal is not None:
+        for loop_run in LoopRunStore(home).list_by_goal(goal.id, limit=5):
+            accepted_body = str(loop_run.evidence.get("responded_message") or "").strip()
+            if (
+                str(loop_run.terminal_state) == str(LoopTerminalState.CONVERGED)
+                and accepted_body
+                and accepted_body == message.content.strip()
+            ):
+                facts["trust"] = "checker_accepted_result"
+                facts["semantic_verification"] = {
+                    "status": "accepted",
+                    "goal_id": goal.id,
+                    "loop_run_id": loop_run.run_id,
+                    "terminal_state": str(loop_run.terminal_state),
+                }
+                break
+
+    if message.trace_id:
+        from ..trace import TraceStore
+
+        for event in reversed(TraceStore(home).list_events(message.trace_id)):
+            if event.phase != "channel.egress" or not event.ok:
+                continue
+            try:
+                output = json.loads(event.output_json or "{}")
+            except json.JSONDecodeError:
+                continue
+            receipt = output.get("receipt")
+            if not isinstance(receipt, dict) or not str(receipt.get("transport") or ""):
+                continue
+            facts["delivery"] = {
+                "status": "delivered",
+                "transport": str(receipt["transport"]),
+                "outbox_id": str(output.get("outbox_id") or ""),
+            }
+            break
+    return facts
 
 
 def _memory_evidence(recall: MemoryRecall, *, search_query: str) -> dict[str, Any]:

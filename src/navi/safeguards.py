@@ -73,8 +73,11 @@ _LOCAL_READ_ONLY_COMMANDS = frozenset(
         "ls",
         "lscpu",
         "nproc",
+        "pgrep",
+        "pidof",
         "printenv",
         "ps",
+        "pstree",
         "pwd",
         "readlink",
         "realpath",
@@ -89,6 +92,7 @@ _LOCAL_READ_ONLY_COMMANDS = frozenset(
         "whoami",
     }
 )
+_HOST_PROCESS_OBSERVATION_COMMANDS = frozenset({"pgrep", "pidof", "ps", "pstree"})
 _GIT_READ_ONLY_SUBCOMMANDS = frozenset(
     {"blame", "diff", "grep", "log", "ls-files", "ls-tree", "rev-parse", "show", "status"}
 )
@@ -128,9 +132,12 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
     binary = Path(argv[0]).name if argv else ""
     permission = "write"
     reason = "opaque_or_effectful_command"
+    observation_scope = "workspace_sandbox"
     if argv and not bool(call_args.get("allocate_pty")):
         if binary in _LOCAL_READ_ONLY_COMMANDS:
             permission, reason = "read", "declared_local_read_only_command"
+            if binary in _HOST_PROCESS_OBSERVATION_COMMANDS:
+                observation_scope = "host_process_table"
         elif binary == "hostname" and not _first_positional(argv[1:]):
             permission, reason = "read", "hostname_read_only_query"
         elif binary == "find" and not _find_has_effectful_action(argv[1:]):
@@ -164,6 +171,7 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
         "required_permission": permission,
         "effect_is_declared": permission in {"read", "network"},
         "effect_classification": reason,
+        "observation_scope": observation_scope,
     }
 
 
@@ -178,6 +186,27 @@ def required_permission_for_call(spec: ToolSpec, args: dict[str, Any] | None) ->
         mapped = dict(spec.argument_permissions).get(selected, "write")
         return max((spec.permission, mapped), key=PERMISSION_ORDER.__getitem__)
     return spec.permission
+
+
+def call_mutates(spec: ToolSpec, args: dict[str, Any] | None) -> bool:
+    """Return whether this concrete call can change state.
+
+    ``ToolSpec.mutates`` is a catalog-level upper bound.  Capabilities whose
+    effect depends on an argument need a call-level answer so read-only
+    observations do not enter the effect journal or require a mutating audit.
+    """
+
+    if not spec.mutates:
+        return False
+    call_args = args or {}
+    if spec.permission_policy == "shell_argv":
+        return not bool(shell_call_policy(call_args)["effect_is_declared"])
+    if spec.permission_policy == "agent_operation":
+        operation = str(call_args.get("operation") or "").strip().lower()
+        return operation not in {"list", "state", "collect"}
+    if spec.permission_policy == "argument_map":
+        return required_permission_for_call(spec, call_args) == "write"
+    return True
 
 
 def prepare_capability_call(

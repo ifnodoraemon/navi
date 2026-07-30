@@ -12,7 +12,12 @@ from navi.evolution import EvolutionLedger
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.lifecycle import Governance, Phase, Resolution
-from navi.provider import ChatMessage, _extract_anthropic_content, _extract_openai_content
+from navi.provider import (
+    ChatMessage,
+    StructuredOutputError,
+    _extract_anthropic_content,
+    _extract_openai_content,
+)
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 from navi.syscalls import ModelSyscallPlanner
@@ -81,6 +86,39 @@ def test_provider_rejects_structured_json_hidden_in_tool_call_arguments():
 
     with pytest.raises(RuntimeError, match="Provider response content is empty"):
         _extract_openai_content(data)
+
+
+@pytest.mark.asyncio
+async def test_planner_projects_structured_output_failure_as_replannable_contract_fact():
+    class Provider:
+        async def complete_for(self, role, messages, **kwargs):
+            del role, messages, kwargs
+            raise StructuredOutputError("structured output is not valid JSON")
+
+    decision = await ModelSyscallPlanner(Provider()).plan(
+        "answer",
+        tools=[
+            ToolSpec(
+                name="respond",
+                capability_class="conversation",
+                execution_contexts=("turn",),
+                description="Respond.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"],
+                },
+                output_schema={"type": "object", "properties": {}},
+            )
+        ],
+    )
+
+    assert len(decision) == 1
+    assert decision[0].tool == "system.planner_error"
+    assert decision[0].reason == "planner structured output failed"
+    assert decision[0].args["structured_output_failure"] is True
+    assert decision[0].args["provider_call_failure"] is False
+    assert decision[0].args["retryable"] is False
 
 
 def test_current_state_exposes_only_pending_approval_codes(tmp_path) -> None:

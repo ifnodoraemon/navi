@@ -125,6 +125,34 @@ def test_metrics_find_loop_runs_without_goals_and_expired_effects(tmp_path: Path
     assert snapshot.diagnostics["uncertain_effects"] == 1
 
 
+def test_metrics_breach_on_stale_unowned_active_loop(tmp_path: Path) -> None:
+    opened = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="interrupted foreground execution",
+            workspace=str(tmp_path),
+            auto_start=False,
+            execution_mode="foreground",
+        )
+    )
+    with connect(db_paths(tmp_path).loop_runs) as conn:
+        conn.execute(
+            "UPDATE loop_runs SET updated_at = 1, lease_owner = '', lease_expires_at = 0 "
+            "WHERE id = ?",
+            (opened.loop_run.run_id,),
+        )
+
+    snapshot = MetricsProjector(tmp_path).snapshot(now=1000.0)
+    metric = {item.name: item for item in snapshot.metrics}[
+        "expired_execution_lease_count"
+    ]
+    slo = {item.name: item for item in snapshot.slos}["execution_lease_health"]
+
+    assert metric.value == 1.0
+    assert snapshot.diagnostics["stale_unowned_loops"] == 1
+    assert slo.status == "breached"
+    assert slo.evidence == {"expired_leases": 0, "stale_unowned_loops": 1}
+
+
 def test_metrics_surface_dead_letters_and_uncertain_evolution_apply(tmp_path: Path) -> None:
     memory = MemoryStore(tmp_path)
     job_id = memory.enqueue_consolidation(

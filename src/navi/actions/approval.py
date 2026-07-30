@@ -19,7 +19,6 @@ from ..control import ApprovalService, SurfaceContext
 from ..connector_delivery import connector_delivery_from_facts
 from ..goal_state_graph import resume_goal_loop_run
 from ..lifecycle import Phase, Governance, Resolution
-from ..loop_contracts import LoopTerminalState
 from ..result import NotFound, SchemaMismatch, guarded
 from ..runs import RunStore
 from .helpers import (
@@ -160,12 +159,21 @@ class ApprovalResolveCapability(BaseCapability):
                 error_reason="" if resolved.ok else _approval_error_reason(facts),
                 yields_control=True,
             )
-        continuation_status = str(facts.get("continuation_status") or "")
-        yields_control = continuation_status in {
-            str(LoopTerminalState.PAUSED),
-            str(LoopTerminalState.WAITING_APPROVAL),
-            "waiting_approval",
-        }
+        continuation_response = str(facts.get("continuation_response") or "").strip()
+        if continuation_response and facts.get("completion_evidence") is True:
+            return CapabilityResult(
+                ok=resolved.ok,
+                action="chat",
+                message=continuation_response,
+                run_id=str(facts.get("run_id") or ""),
+                facts=facts,
+                terminal=True,
+                error_reason="" if resolved.ok else _approval_error_reason(facts),
+                yields_control=False,
+            )
+        # A continuation may be paused on a gate owned by the original
+        # business LoopRun. The approval-control turn must report that fact,
+        # not inherit the other LoopRun's durable wait.
         return CapabilityResult(
             ok=resolved.ok,
             action="approval",
@@ -174,7 +182,7 @@ class ApprovalResolveCapability(BaseCapability):
             facts=facts,
             terminal=_approval_failure_is_terminal(facts),
             error_reason="" if resolved.ok else _approval_error_reason(facts),
-            yields_control=yields_control,
+            yields_control=False,
         )
 
 

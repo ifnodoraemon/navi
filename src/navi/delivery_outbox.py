@@ -95,50 +95,54 @@ class DeliveryEnvelope:
     def items(self, *, now: float | None = None) -> tuple[DeliveryItem, ...]:
         current_time = time.time() if now is None else float(now)
         batch_id = _stable_batch_id(self.batch_id)
-        base = {
-            "batch_id": batch_id,
-            "channel": self.channel.strip(),
-            "peer_id": self.peer_id.strip(),
-            "sender_id": self.sender_id.strip(),
-            "trace_id": self.trace_id.strip(),
-            "run_id": self.run_id.strip(),
-            "goal_id": self.goal_id.strip(),
-            "body_provenance": self.body_provenance.strip(),
-            "status": "pending",
-            "attempts": 0,
-            "max_attempts": max(1, int(self.max_attempts)),
-            "next_attempt_at": current_time,
-            "error": "",
-            "receipt_json": "{}",
-            "delivery_id": "",
-            "projected_at": 0.0,
-            "created_at": current_time,
-            "updated_at": current_time,
-            "sent_at": 0.0,
-        }
+
+        def item(*, item_id: str, kind: str, payload_json: str, body: str) -> DeliveryItem:
+            return DeliveryItem(
+                id=item_id,
+                batch_id=batch_id,
+                channel=self.channel.strip(),
+                peer_id=self.peer_id.strip(),
+                sender_id=self.sender_id.strip(),
+                trace_id=self.trace_id.strip(),
+                run_id=self.run_id.strip(),
+                goal_id=self.goal_id.strip(),
+                kind=kind,
+                payload_json=payload_json,
+                transport_context_json=_json_dump(dict(self.transport_context or {})),
+                body=body,
+                body_provenance=self.body_provenance.strip(),
+                status="pending",
+                attempts=0,
+                max_attempts=max(1, int(self.max_attempts)),
+                next_attempt_at=current_time,
+                error="",
+                receipt_json="{}",
+                delivery_id="",
+                projected_at=0.0,
+                created_at=current_time,
+                updated_at=current_time,
+                sent_at=0.0,
+            )
+
         items: list[DeliveryItem] = []
         text = self.text.strip()
         if text:
             items.append(
-                DeliveryItem(
-                    id=f"{batch_id}:text",
+                item(
+                    item_id=f"{batch_id}:text",
                     kind="text",
                     payload_json=_json_dump({"text": text}),
-                    transport_context_json=_json_dump(dict(self.transport_context or {})),
                     body=text,
-                    **base,
                 )
             )
         path = self.file_path.strip()
         if path:
             items.append(
-                DeliveryItem(
-                    id=f"{batch_id}:file",
+                item(
+                    item_id=f"{batch_id}:file",
                     kind="file",
                     payload_json=_json_dump({"path": path}),
-                    transport_context_json=_json_dump(dict(self.transport_context or {})),
                     body="",
-                    **base,
                 )
             )
         return tuple(items)

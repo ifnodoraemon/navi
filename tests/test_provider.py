@@ -10,6 +10,7 @@ from navi.provider import (
     OpenAICompatibleProvider,
     ProviderHTTPError,
     ProviderUsage,
+    StructuredOutputError,
     _complete_with_optional_schema,
     _messages_for_response_format,
     _validate_structured_output,
@@ -139,7 +140,7 @@ def test_structured_output_validation_checks_json_schema_types():
 
     _validate_structured_output('{"tool":"search","args":{"limit":3}}', output_schema)
 
-    with pytest.raises(RuntimeError, match=r"structured output schema mismatch"):
+    with pytest.raises(StructuredOutputError, match=r"structured output schema mismatch"):
         _validate_structured_output('{"tool":"search","args":{"limit":"3"}}', output_schema)
 
 

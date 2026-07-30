@@ -4,11 +4,22 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
+
 from .json_utils import json_schema_errors
 from .operating_context import PERMISSION_ORDER
-from .provider import ChatMessage, ModelPool
+from .provider import (
+    ChatMessage,
+    ModelPool,
+    ProviderHTTPError,
+    StructuredOutputError,
+)
 from .prompt_os import assemble_planner_system_prompt, assemble_planner_turn_input
+from .text_utils import truncate_middle
 from .tools import ToolSpec
+
+PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS = 15.0
+PROVIDER_ERROR_MAX_CHARS = 1_000
 
 
 @dataclass(frozen=True)
@@ -72,11 +83,16 @@ class ModelSyscallPlanner:
                 output_schema=_syscall_output_schema(),
             )
         except Exception as exc:
+            failure_facts = provider_failure_facts(exc)
             return [
                 ModelSyscall(
                     tool="system.planner_error",
-                    args={"error_type": type(exc).__name__, "error": str(exc)},
-                    reason="planner provider call failed",
+                    args=failure_facts,
+                    reason=(
+                        "planner structured output failed"
+                        if failure_facts.get("structured_output_failure")
+                        else "planner provider call failed"
+                    ),
                 )
             ]
         syscalls = self._parse_syscalls(response)
@@ -248,6 +264,36 @@ def _single_syscall_schema() -> dict[str, Any]:
         "required": ["tool", "permission", "args"],
         "additionalProperties": False,
     }
+
+
+def provider_failure_facts(exc: Exception) -> dict[str, Any]:
+    """Project a provider failure into bounded transport-recovery facts."""
+    structured_output_failure = isinstance(exc, StructuredOutputError)
+    provider_call_failure = not structured_output_failure
+    retryable = isinstance(exc, httpx.TransportError)
+    retry_after_seconds = (
+        PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS if retryable else 0.0
+    )
+    status_code = 0
+    if isinstance(exc, ProviderHTTPError):
+        status_code = exc.status_code
+        retryable = status_code in {408, 409, 425, 429} or status_code >= 500
+        retry_after_seconds = (
+            exc.retry_after_seconds
+            if retryable and exc.retry_after_seconds > 0
+            else PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS if retryable else 0.0
+        )
+    facts: dict[str, Any] = {
+        "error_type": type(exc).__name__,
+        "error": truncate_middle(str(exc), PROVIDER_ERROR_MAX_CHARS),
+        "provider_call_failure": provider_call_failure,
+        "structured_output_failure": structured_output_failure,
+        "retryable": retryable,
+        "retry_after_seconds": retry_after_seconds,
+    }
+    if status_code:
+        facts["status_code"] = status_code
+    return facts
 
 
 def _confidence(value: object) -> float:

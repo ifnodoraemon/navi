@@ -36,6 +36,7 @@ from .runs import RunStore
 from .safeguards import (
     CapabilityRiskAssessment,
     assess_capability_call,
+    call_mutates,
     prepare_capability_call,
     required_permission_for_call,
     workspace_boundary_facts,
@@ -381,6 +382,7 @@ class CapabilityRegistry:
                 approved_approval_id=approved_approval_id,
             )
         execution_permission = effective_required_permission
+        call_has_effect = call_mutates(handler.spec, call_args)
         before_decisions = self.hooks.run(
             HookEvent(
                 event="before_capability",
@@ -390,7 +392,7 @@ class CapabilityRegistry:
                     "source": context.source,
                     "sender_id": context.sender_id,
                     "workspace": context.workspace,
-                    "mutates": handler.spec.mutates,
+                    "mutates": call_has_effect,
                     "side_effect_policy": handler.spec.side_effect_policy.to_dict(),
                     "args_keys": sorted(call_args),
                 },
@@ -409,7 +411,7 @@ class CapabilityRegistry:
         effect_journal: EffectJournal | None = None
         effect_owner = ""
         effect_key = context.effect_idempotency_key
-        if handler.spec.mutates and context.loop_run_id and effect_key:
+        if call_has_effect and context.loop_run_id and effect_key:
             effect_journal = EffectJournal(self.home)
             effect_owner = f"capability:{uuid.uuid4().hex}"
             reservation = effect_journal.reserve(
@@ -450,7 +452,7 @@ class CapabilityRegistry:
             )
         started_at = time.time()
         audit_log_id = ""
-        if handler.spec.mutates and not isinstance(handler, ToolCapability):
+        if call_has_effect and not isinstance(handler, ToolCapability):
             try:
                 audit_log_id = self._reserve_action_audit(
                     handler.spec,
@@ -575,7 +577,7 @@ class CapabilityRegistry:
                 },
             )
         )
-        if not handler.spec.mutates and not isinstance(handler, ToolCapability):
+        if not call_has_effect and not isinstance(handler, ToolCapability):
             self._audit_action_capability(handler.spec, call_args, result, started_at=started_at)
         return result
 

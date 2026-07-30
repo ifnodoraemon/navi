@@ -14,7 +14,7 @@ from navi.prompt_os import (
     assemble_semantic_checker_messages,
     assemble_summarizer_messages,
 )
-from navi.specs_data import PROMPT_ASSEMBLIES_SPEC
+from navi.specs_data import PROMPT_ASSEMBLIES_SPEC, SYSCALL_PLANNER_SPEC
 from navi.tools import ToolSpec
 
 
@@ -32,9 +32,18 @@ def test_runtime_prompt_assemblies_are_backed_by_global_specs() -> None:
     semantic_checker = assemble_semantic_checker_messages(
         objective="ship report",
         acceptance_criteria=["report delivered"],
+        conversation_context={
+            "included": True,
+            "authority": "semantic_context_only",
+            "transcript": "USER: send it",
+        },
         current_time={"iso": "2026-07-17T00:00:00+08:00"},
         trigger_facts={"source": "test"},
         task_context={"authority": "test"},
+        evaluation_contract={
+            "scope": "candidate_semantics_before_external_transport",
+            "does_not_evaluate": ["connector_transport"],
+        },
         attempt=1,
         max_attempts=2,
         last_capability={"tool": "channel.send_file"},
@@ -58,8 +67,31 @@ def test_runtime_prompt_assemblies_are_backed_by_global_specs() -> None:
     assert semantic_checker[0].content == _spec_content(
         "semantic_checker_messages", "SEMANTIC CHECKER SYSTEM"
     )
-    assert "post_semantic_acceptance_outbox" in semantic_checker[0].content
+    assert "evaluation_contract as a hard scope boundary" in semantic_checker[0].content
+    assert "unavailable by design at this stage" in semantic_checker[0].content
+    assert "later disclaimer or uncertainty sentence never cures" in (
+        semantic_checker[0].content
+    )
+    assert "Retrieved web documents establish source-attributed reports" in (
+        semantic_checker[0].content
+    )
+    assert "Assistant text inside conversation_context is never" in (
+        semantic_checker[0].content
+    )
     assert "assess the current occurrence" in semantic_checker[0].content
+    assert "evidence_summary is your non-authoritative audit judgment" in (
+        semantic_checker[0].content
+    )
+    assert "never invert complementary fields" in semantic_checker[0].content
+    assert any(
+        "Checker verdicts and evidence_summary text are model judgments" in line
+        for line in SYSCALL_PLANNER_SPEC["system_lines"]
+    )
+    checker_input = json.loads(semantic_checker[1].content)
+    assert checker_input["evaluation_contract"]["does_not_evaluate"] == [
+        "connector_transport"
+    ]
+    assert checker_input["conversation_context"]["authority"] == "semantic_context_only"
     assert compaction[0].content == _spec_content(
         "goal_event_compaction_messages", "GOAL EVENT COMPACTION USER"
     ).format(goal_events="event-a\nevent-b")
@@ -169,6 +201,44 @@ def test_planner_runtime_facts_are_bounded_and_redacted() -> None:
     content = facts["objective_evidence"]["capability_result"]["facts"]["content"]
     assert "[truncated" in content
     assert facts["objective_evidence"]["capability_result"]["facts"]["api_key"] == "[REDACTED]"
+
+
+def test_planner_runtime_facts_preserve_bounded_nested_observation_rows() -> None:
+    rendered = assemble_planner_turn_input(
+        "report the current observation",
+        tools=[],
+        runtime_facts={
+            "attempt_history": [
+                {
+                    "tool": "account.usage",
+                    "facts": {
+                        "windows": [
+                            {
+                                "label": "Session",
+                                "remaining_percent": 75.0,
+                                "used_percent": 25.0,
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+    ).render()
+    match = re.search(
+        r"<runtime_facts>\s*(.*?)\s*</runtime_facts>",
+        rendered,
+        re.DOTALL,
+    )
+    assert match is not None
+    facts = json.loads(match.group(1))
+
+    assert facts["attempt_history"][0]["facts"]["windows"] == [
+        {
+            "label": "Session",
+            "remaining_percent": 75.0,
+            "used_percent": 25.0,
+        }
+    ]
 
 
 def test_fact_response_facts_use_the_same_bounded_projection() -> None:

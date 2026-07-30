@@ -120,6 +120,10 @@ class ProviderHTTPError(RuntimeError):
         super().__init__(" ".join(fields))
 
 
+class StructuredOutputError(RuntimeError):
+    """The provider returned content that failed the declared output contract."""
+
+
 @dataclass(frozen=True)
 class ProviderAdapter:
     kind: str
@@ -192,7 +196,7 @@ class OpenAICompatibleProvider:
 
         if not self.config.api_key:
             raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
             "temperature": 0 if temperature is None else temperature,
@@ -683,13 +687,13 @@ def _validate_structured_output(content: str, output_schema: dict[str, Any]) -> 
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"structured output is not valid JSON: {exc}") from exc
+        raise StructuredOutputError(f"structured output is not valid JSON: {exc}") from exc
     if not isinstance(parsed, dict):
-        raise RuntimeError("structured output must be a JSON object")
+        raise StructuredOutputError("structured output must be a JSON object")
     errors = json_schema_errors(parsed, schema)
     if errors:
         detail = "; ".join(errors[:5])
-        raise RuntimeError(f"structured output schema mismatch: {detail}")
+        raise StructuredOutputError(f"structured output schema mismatch: {detail}")
 
 
 def _extract_openai_content(data: dict[str, Any]) -> str:

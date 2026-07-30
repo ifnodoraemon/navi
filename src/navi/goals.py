@@ -918,54 +918,6 @@ class GoalStore:
         )
         return items[0] if items else None
 
-    def claim_pending_delivery_outbox(
-        self,
-        *,
-        channel: str,
-        limit: int = 10,
-    ) -> builtins.list[DeliveryItem]:
-        return DeliveryOutboxStore(self.home).claim_ready(channel=channel, limit=limit)
-
-    def mark_delivery_outbox_sent(
-        self,
-        outbox_id: str,
-        *,
-        delivery_id: str = "",
-        sent_at: float | None = None,
-    ) -> None:
-        from .delivery_outbox import DeliveryReceipt
-
-        DeliveryOutboxStore(self.home).mark_sent(
-            outbox_id,
-            receipt=DeliveryReceipt(transport="legacy_goal_projection"),
-            delivery_id=delivery_id,
-            sent_at=sent_at,
-        )
-
-    def mark_delivery_outbox_failed(
-        self,
-        outbox_id: str,
-        *,
-        error: str,
-    ) -> None:
-        DeliveryOutboxStore(self.home).mark_failed(outbox_id, error=error)
-
-    def mark_stale_sending_delivery_outbox_unknown(
-        self,
-        *,
-        channel: str,
-        stale_after_seconds: float = 300.0,
-        now: float | None = None,
-        limit: int = 100,
-    ) -> builtins.list[DeliveryItem]:
-        """Recover an interrupted idempotent delivery with the same key."""
-        return DeliveryOutboxStore(self.home).recover_stale_sending(
-            channel=channel,
-            stale_after_seconds=stale_after_seconds,
-            now=now,
-            limit=limit,
-        )
-
     def list_unprojected_sent_delivery_outbox(
         self,
         *,

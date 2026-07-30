@@ -14,6 +14,7 @@ from .schema import Column, Table, assert_schema_exact
 
 
 LOOP_RUN_STORE_SCHEMA_VERSION = 3
+DETACHED_EXECUTION_RECOVERY_GRACE_SECONDS = 90.0
 
 
 @dataclass(frozen=True)
@@ -189,21 +190,29 @@ class LoopRunStore:
         limit: int = 50,
         lease_seconds: float = 180.0,
         now: float | None = None,
+        updated_before: float | None = None,
     ) -> list[LoopRunState]:
         current_time = time.time() if now is None else now
+        stale_clause = ""
+        params: list[Any] = [execution_mode, owner, current_time]
+        if updated_before is not None:
+            stale_clause = " AND updated_at <= ?"
+            params.append(float(updated_before))
+        params.append(limit)
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             ids = [
                 str(row[0])
                 for row in conn.execute(
-                    """
+                    f"""
                     SELECT id FROM loop_runs
                     WHERE terminal_state = ''
                       AND json_extract(evidence_json, '$.execution_mode') = ?
                       AND (lease_owner = '' OR lease_owner = ? OR lease_expires_at <= ?)
+                      {stale_clause}
                     ORDER BY updated_at ASC LIMIT ?
                     """,
-                    (execution_mode, owner, current_time, limit),
+                    params,
                 ).fetchall()
             ]
             for run_id in ids:
@@ -225,6 +234,78 @@ class LoopRunStore:
                 ids,
             ).fetchall()
         return [_loop_run_from_row(row) for row in rows]
+
+    def active_execution_lease_owners(self) -> list[str]:
+        """Return durable execution owners without interpreting their identity."""
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT lease_owner FROM loop_runs
+                WHERE terminal_state = ''
+                  AND lease_owner <> ''
+                  AND lease_expires_at > 0
+                ORDER BY lease_owner
+                """
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def release_execution_leases_for_owners(
+        self,
+        owners: list[str] | tuple[str, ...] | set[str],
+        *,
+        reason: str,
+        now: float | None = None,
+    ) -> list[str]:
+        """Release leases whose externally observed owner is unavailable."""
+        normalized = sorted({str(owner).strip() for owner in owners if str(owner).strip()})
+        if not normalized:
+            return []
+        current_time = time.time() if now is None else float(now)
+        placeholders = ", ".join("?" for _ in normalized)
+        released: list[str] = []
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                f"""
+                SELECT {LOOP_RUNS_TABLE.select_list}
+                FROM loop_runs
+                WHERE terminal_state = ''
+                  AND lease_owner IN ({placeholders})
+                ORDER BY updated_at ASC
+                """,
+                normalized,
+            ).fetchall()
+            for row in rows:
+                current = _loop_run_from_row(row)
+                cursor = conn.execute(
+                    """
+                    UPDATE loop_runs
+                    SET lease_owner = '', lease_expires_at = 0,
+                        updated_at = ?, version = version + 1
+                    WHERE id = ? AND terminal_state = '' AND lease_owner = ?
+                    """,
+                    (current_time, current.run_id, current.lease_owner),
+                )
+                if cursor.rowcount != 1:
+                    continue
+                released.append(current.run_id)
+                _insert_event(
+                    conn,
+                    replace(
+                        current,
+                        updated_at=current_time,
+                        version=current.version + 1,
+                        lease_owner="",
+                        lease_expires_at=0.0,
+                    ),
+                    "loop.execution_lease_released",
+                    evidence={
+                        "reason": reason,
+                        "previous_owner": current.lease_owner,
+                        "previous_expires_at": current.lease_expires_at,
+                    },
+                )
+        return released
 
     def release_execution_lease(self, run_id: str, *, owner: str) -> bool:
         with connect(self.db_path) as conn:
@@ -410,6 +491,82 @@ class LoopRunStore:
                 reopened,
                 "loop.resource_retry",
                 evidence=reopened.evidence["resource_retry"],
+            )
+        return reopened
+
+    def reopen_retryable_pause(self, run_id: str) -> LoopRunState:
+        """Reopen one due typed retry gate without changing model semantics."""
+        snapshot = self.get_run(run_id)
+        if snapshot is None:
+            raise KeyError(f"loop run not found: {run_id}")
+        if not isinstance(snapshot.evidence.get("retry_gate"), dict):
+            # Resource-gateway pauses predate typed retry gates and retain
+            # their original validation and resume event contract.
+            return self.reopen_resource_pause(run_id)
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"loop run not found: {run_id}")
+            current = _loop_run_from_row(row)
+            gate = current.evidence.get("retry_gate")
+            if str(current.terminal_state) != str(LoopTerminalState.PAUSED) or not isinstance(
+                gate, dict
+            ):
+                raise ValueError("loop run is not at a typed retry pause")
+            if gate.get("decision") != "pause":
+                raise ValueError("retry gate is not paused")
+            raw_node = str(gate.get("resume_node") or "")
+            if raw_node not in {
+                str(LoopNode.PLAN),
+                str(LoopNode.EXECUTE),
+                str(LoopNode.EVALUATE),
+            }:
+                raise ValueError("retry pause has no valid resume node")
+            now = time.time()
+            retry_facts = {
+                "kind": str(gate.get("kind") or ""),
+                "reason": str(gate.get("reason") or ""),
+                "retry_count": gate.get("retry_count"),
+                "max_retries": gate.get("max_retries"),
+                "resumed_at": now,
+                "resume_node": raw_node,
+            }
+            reopened = replace(
+                current,
+                node=raw_node,
+                terminal_state="",
+                evidence={
+                    **current.evidence,
+                    "durable_retry": retry_facts,
+                },
+                updated_at=now,
+                version=current.version + 1,
+            )
+            cursor = conn.execute(
+                """
+                UPDATE loop_runs
+                SET node = ?, terminal_state = '', evidence_json = ?, updated_at = ?,
+                    version = ? WHERE id = ? AND version = ?
+                """,
+                (
+                    raw_node,
+                    _json_dumps(reopened.evidence),
+                    now,
+                    reopened.version,
+                    run_id,
+                    current.version,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("loop state changed concurrently")
+            _insert_event(
+                conn,
+                reopened,
+                "loop.durable_retry",
+                evidence=retry_facts,
             )
         return reopened
 
@@ -675,6 +832,21 @@ class LoopRunStore:
             ).fetchall()
         return [_loop_run_from_row(row) for row in rows]
 
+    def list_waiting_approval(self, *, limit: int = 1000) -> list[LoopRunState]:
+        """List durable approval waits for ownership and expiry reconciliation."""
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {LOOP_RUNS_TABLE.select_list}
+                FROM loop_runs
+                WHERE terminal_state = ?
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                (str(LoopTerminalState.WAITING_APPROVAL), max(1, int(limit))),
+            ).fetchall()
+        return [_loop_run_from_row(row) for row in rows]
+
     def list_current_for_goals(
         self,
         goal_ids: list[str] | tuple[str, ...] | set[str],
@@ -759,11 +931,68 @@ class LoopRunStore:
             grant = state.evidence.get("resource_grant")
             if not is_retryable_resource_pause(grant):
                 continue
+            if not isinstance(grant, dict):
+                continue
             try:
                 retry_after = max(0.0, float(grant.get("retry_after_seconds") or 0.0))
             except (TypeError, ValueError):
                 retry_after = 0.0
             if state.updated_at + retry_after > current_time:
+                continue
+            ready.append(state)
+            if len(ready) >= limit:
+                break
+        return ready
+
+    def list_retryable_pauses(
+        self,
+        *,
+        now: float | None = None,
+        limit: int = 50,
+    ) -> list[LoopRunState]:
+        """Return due typed retries plus legacy background resource pauses."""
+        current_time = time.time() if now is None else now
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {LOOP_RUNS_TABLE.select_list}
+                FROM loop_runs
+                WHERE terminal_state = ?
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                (str(LoopTerminalState.PAUSED), limit * 5),
+            ).fetchall()
+        ready: list[LoopRunState] = []
+        for row in rows:
+            state = _loop_run_from_row(row)
+            gate = state.evidence.get("retry_gate")
+            retry_after = 0.0
+            if isinstance(gate, dict) and gate.get("decision") == "pause":
+                retryable = True
+                try:
+                    retry_after = max(
+                        0.0,
+                        float(gate.get("retry_after_seconds") or 0.0),
+                    )
+                except (TypeError, ValueError):
+                    retry_after = 0.0
+            else:
+                retryable = False
+                grant = state.evidence.get("resource_grant")
+                retryable = (
+                    state.evidence.get("execution_mode") == "background"
+                    and is_retryable_resource_pause(grant)
+                )
+                if retryable and isinstance(grant, dict):
+                    try:
+                        retry_after = max(
+                            0.0,
+                            float(grant.get("retry_after_seconds") or 0.0),
+                        )
+                    except (TypeError, ValueError):
+                        retry_after = 0.0
+            if not retryable or state.updated_at + retry_after > current_time:
                 continue
             ready.append(state)
             if len(ready) >= limit:

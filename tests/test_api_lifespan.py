@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+from pathlib import Path
+
+import pytest
 
 import navi.api as api_module
 
@@ -23,7 +25,10 @@ class FakeConnectorAdapter:
         self.run_calls += 1
 
 
-def test_api_lifespan_is_headless_by_default(tmp_path, monkeypatch, valid_runtime_config):
+@pytest.mark.asyncio
+async def test_api_lifespan_is_headless_by_default(
+    tmp_path, monkeypatch, valid_runtime_config
+):
     background_calls = []
     adapter = FakeConnectorAdapter()
 
@@ -44,7 +49,7 @@ def test_api_lifespan_is_headless_by_default(tmp_path, monkeypatch, valid_runtim
     monkeypatch.setattr(api_module, "load_connector_adapters", lambda: [adapter])
 
     app = api_module.create_app(tmp_path)
-    with TestClient(app):
+    async with app.router.lifespan_context(app):
         pass
 
     assert background_calls == []
@@ -55,9 +60,12 @@ def test_api_lifespan_is_headless_by_default(tmp_path, monkeypatch, valid_runtim
 def test_trace_ui_is_served_from_packaged_assets(tmp_path, valid_runtime_config):
     app = api_module.create_app(tmp_path)
 
-    with TestClient(app) as client:
-        response = client.get("/ui/trace/")
+    static_route = next(
+        route for route in app.routes if getattr(route, "path", "") == "/ui/trace"
+    )
+    index = Path(static_route.app.directory) / "index.html"
+    body = index.read_text(encoding="utf-8")
 
-    assert response.status_code == 200
-    assert "Navi Trace Explorer" in response.text
-    assert "/ui/trace/assets/" in response.text
+    assert static_route.app.html is True
+    assert "Navi Trace Explorer" in body
+    assert "/ui/trace/assets/" in body

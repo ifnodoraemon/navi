@@ -81,3 +81,17 @@ def test_service_diagnostic_does_not_retry_with_another_systemctl_command(monkey
     assert check.detail == "navi.service unknown/unknown exit_code=1"
     assert len(calls) == 1
     assert calls[0][0:3] == ["systemctl", "--user", "show"]
+
+
+def test_playwright_browser_diagnostic_requires_real_executable(tmp_path):
+    empty_cache = tmp_path / "empty-cache" / "1.0"
+    empty_cache.mkdir(parents=True)
+
+    assert diagnostics._playwright_browser_executable((empty_cache.parent,)) is None
+
+    browser = tmp_path / "browser-cache" / "chromium-1" / "chrome-linux" / "chrome"
+    browser.parent.mkdir(parents=True)
+    browser.write_text("#!/bin/sh\n", encoding="utf-8")
+    browser.chmod(0o755)
+
+    assert diagnostics._playwright_browser_executable((browser.parents[2],)) == browser

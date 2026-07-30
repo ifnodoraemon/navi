@@ -175,6 +175,17 @@ class ConnectorRouter:
                 action="connector_outbound",
                 facts=result.facts,
             )
+        continuation_response = str(result.facts.get("continuation_response") or "").strip()
+        if continuation_response and result.facts.get("completion_evidence") is True:
+            return ResponseReadyEvent(
+                source_agent="router",
+                text=continuation_response,
+                source=message.source,
+                peer_id=message.peer_id,
+                sender_id=message.sender_id,
+                action="chat",
+                facts=result.facts,
+            )
         if self.runtime is None:
             raise RuntimeError("connector approval response requires an agent runtime")
         text = await synthesize_user_reply_from_facts(

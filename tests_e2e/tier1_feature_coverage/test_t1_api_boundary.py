@@ -19,7 +19,7 @@ def _logged_tools(home: Path) -> set[str]:
 
 
 def _prompt_proposal(home: Path, *, marker: str, eval_case_id: str) -> dict:
-    before = PromptLayerStore(home).read("planner")
+    before = PromptLayerStore(home).read("identity")
     EvolutionTargetAdapterRegistry(home).get("eval_case").apply(
         eval_case_id,
         json.dumps(
@@ -33,11 +33,10 @@ def _prompt_proposal(home: Path, *, marker: str, eval_case_id: str) -> dict:
     )
     return {
         "target_type": "prompt_layer",
-        "target_id": "planner",
+        "target_id": "identity",
         "reason": f"E2E governed evolution: {marker}",
         "expected_benefit": "verify the governed API lifecycle",
         "risk": "behavior change",
-        "before": before,
         "after": before + f"\n{marker}\n",
         "rollback_plan": "restore the exact prompt snapshot",
         "eval_cases": [eval_case_id],
@@ -167,7 +166,7 @@ def test_t1_api_evolution_propose_routes_capability(
     data = response.json()["data"]
     assert "id" in data
     assert data["target_type"] == "prompt_layer"
-    assert data["target_id"] == "planner"
+    assert data["target_id"] == "identity"
     assert data["reason"] == proposal_data["reason"]
     assert data["status"] == "proposed"
 
@@ -228,7 +227,7 @@ def test_t1_api_evolution_apply_routes_capability(api_client: TestClient, navi_h
     apply_data = apply_response.json()["data"]
     assert "id" in apply_data
     assert apply_data["target_type"] == "prompt_layer"
-    assert apply_data["target_id"] == "planner"
+    assert apply_data["target_id"] == "identity"
     assert apply_data["reason"] == proposal_data["reason"]
     logged = _logged_tools(navi_home)
     assert {"evolution.propose", "evolution.record_evaluation", "evolution.apply"} <= logged

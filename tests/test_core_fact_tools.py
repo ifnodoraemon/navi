@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -63,6 +65,40 @@ async def test_shell_run_rejects_shell_strings_instead_of_guessing_argv(tmp_path
         "retryable": False,
     }
     assert "array" in result.error
+
+
+@pytest.mark.asyncio
+async def test_shell_process_inspection_observes_host_process_table_read_only(
+    tmp_path: Path,
+) -> None:
+    observed = subprocess.Popen(["sleep", "30"])
+    try:
+        gateway = build_tool_gateway(tmp_path / "home", project_dir=tmp_path)
+        result = await gateway.call(
+            "shell.run",
+            {"command": ["ps", "-eo", "pid=,comm="]},
+        )
+    finally:
+        observed.terminate()
+        observed.wait(timeout=5)
+
+    assert result.ok is True
+    assert result.facts["required_permission"] == "read"
+    assert result.facts["observation_scope"] == "host_process_table"
+    assert str(observed.pid) in result.facts["stdout"]
+    assert result.facts["evidence_contract"] == {
+        "scope": "host_process_table",
+        "establishes": ["process_presence", "sampled_process_state"],
+        "does_not_establish": [
+            "task_activity",
+            "task_progress",
+            "task_completion",
+        ],
+        "sampling": "single_command_execution",
+    }
+    assert "do not by themselves prove task progress" in result.facts[
+        "observation_semantics"
+    ]
 
 
 @pytest.mark.asyncio
@@ -381,6 +417,23 @@ async def test_web_search_uses_exa_mcp_default(monkeypatch) -> None:
         "truncated": False,
         "result_count": 1,
     }
+    assert result.facts["evidence_contract"] == {
+        "scope": "query_ranked_web_documents",
+        "provider": "exa_mcp",
+        "establishes": [
+            "search_result_presence",
+            "source_attribution",
+            "source_reported_claims",
+            "document_snippets",
+        ],
+        "does_not_establish": [
+            "claim_truth",
+            "source_authority",
+            "result_representativeness",
+            "real_world_outcome",
+        ],
+        "sampling": "provider_ranked_query_results",
+    }
     assert "text" not in result.facts["response"]
 
 
@@ -543,6 +596,28 @@ async def test_web_search_explicit_searxng_failure_does_not_use_exa(monkeypatch)
     assert result.facts["retryable"] is True
     assert result.error == "SearXNG search request timed out"
     assert "provider_errors" not in result.facts
+
+
+@pytest.mark.asyncio
+async def test_web_search_searxng_http_error_preserves_retry_facts(monkeypatch) -> None:
+    config = NaviConfig(
+        search=SearchConfig(provider="searxng", searxng_url="https://search.example")
+    )
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        raise HTTPError(request.full_url, 503, "unavailable", {}, None)
+
+    monkeypatch.setattr(web_search_utils, "urlopen", fake_urlopen)
+
+    result = await web_search_utils._web_search({"query": "navi smoke"}, config=config)
+
+    assert result.ok is False
+    assert result.error == "SearXNG returned HTTP 503"
+    assert result.facts["provider"] == "searxng"
+    assert result.facts["error_reason"] == "search_provider_error"
+    assert result.facts["status_code"] == 503
+    assert result.facts["retryable"] is True
 
 
 @pytest.mark.asyncio

@@ -305,6 +305,15 @@ def test_shell_effect_classification_is_argument_sensitive(tmp_path: Path) -> No
     assert destructive.confirmation_required is True
     assert destructive.evidence["required_permission"] == "write"
 
+    process_read = assess_capability_call(
+        spec,
+        {"command": ["pgrep", "-fa", "codex"]},
+        workspace=str(tmp_path),
+    )
+    assert process_read.confirmation_required is False
+    assert process_read.evidence["required_permission"] == "read"
+    assert process_read.evidence["observation_scope"] == "host_process_table"
+
 
 def test_call_policy_is_declared_by_contract_not_capability_name(tmp_path: Path) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)

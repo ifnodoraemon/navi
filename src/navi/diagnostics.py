@@ -119,7 +119,7 @@ def _browser_dependency_checks() -> list[DiagnosticCheck]:
             "browser.playwright", "ok" if playwright else "missing", playwright or "not found"
         )
     )
-    chromium = _first_existing_path(
+    chromium = _playwright_browser_executable(
         (
             Path.home() / ".cache" / "ms-playwright",
             Path.home() / ".cache" / "ms-playwright-go",
@@ -305,6 +305,26 @@ def _first_existing_path(paths: tuple[Path, ...]) -> Path | None:
     for path in paths:
         if path.exists():
             return path
+    return None
+
+
+def _playwright_browser_executable(cache_roots: tuple[Path, ...]) -> Path | None:
+    executable_names = {
+        "chrome",
+        "chrome-headless-shell",
+        "chromium",
+        "headless_shell",
+    }
+    for root in cache_roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if (
+                path.name in executable_names
+                and path.is_file()
+                and os.access(path, os.X_OK)
+            ):
+                return path
     return None
 
 

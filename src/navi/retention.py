@@ -52,6 +52,25 @@ class DataRetentionManager:
         compacted: list[str] = []
         deferred = 0
         for item in candidates:
+            terminal_state = str(item.get("terminal_state") or "")
+            if terminal_state in {"paused", "waiting_approval"}:
+                from .loop_control_service import LoopControlService
+
+                LoopControlService(self.home).cancel_external_wait_durably(
+                    loop_run_id=str(item["run_id"]),
+                    reason="transient_wait_retention_expired",
+                )
+                item["terminal_state"] = "cancelled"
+            elif terminal_state not in {
+                "converged",
+                "blocked",
+                "failed",
+                "cancelled",
+                "superseded",
+                "timed_out",
+            }:
+                deferred += 1
+                continue
             lifecycle_run_id = self._lifecycle_run_id(str(item["goal_id"]))
             if not lifecycle_run_id or not self._memory_ready(lifecycle_run_id):
                 deferred += 1
@@ -69,7 +88,8 @@ class DataRetentionManager:
         with connect(self.paths.loop_runs) as conn:
             rows = conn.execute(
                 """
-                SELECT lr.id, lr.goal_id, lr.loop_spec_id, lr.updated_at, ls.spec_json
+                SELECT lr.id, lr.goal_id, lr.loop_spec_id, lr.terminal_state,
+                       lr.updated_at, ls.spec_json
                 FROM loop_runs lr
                 JOIN loop_specs ls ON ls.id = lr.loop_spec_id
                 WHERE lr.terminal_state != ''
@@ -77,7 +97,7 @@ class DataRetentionManager:
                 """
             ).fetchall()
         candidates: list[dict[str, Any]] = []
-        for run_id, goal_id, spec_id, updated_at, spec_json in rows:
+        for run_id, goal_id, spec_id, terminal_state, updated_at, spec_json in rows:
             try:
                 spec = json.loads(str(spec_json))
             except json.JSONDecodeError:
@@ -98,6 +118,7 @@ class DataRetentionManager:
                     "run_id": str(run_id),
                     "goal_id": str(goal_id),
                     "spec_id": str(spec_id),
+                    "terminal_state": str(terminal_state),
                 }
             )
         return candidates
@@ -143,7 +164,7 @@ class DataRetentionManager:
 
     def _compact_one(
         self,
-        item: dict[str, str],
+        item: dict[str, Any],
         now: float,
         *,
         lifecycle_run_id: str,
@@ -153,7 +174,11 @@ class DataRetentionManager:
         goal_id = item["goal_id"]
         spec_id = item["spec_id"]
         summary = json.dumps(
-            {"retention": "summary_only", "compacted_at": now},
+            {
+                "retention": "summary_only",
+                "compacted_at": now,
+                "terminal_state": str(item.get("terminal_state") or ""),
+            },
             sort_keys=True,
         )
         with connect(self.paths.memory) as conn:

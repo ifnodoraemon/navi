@@ -331,6 +331,29 @@ async def test_superseded_approved_code_does_not_resume_current_approval_gate(tm
     )
     assert runs.get_approval(current.id).status == "pending"
 
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=_NoModelCalls()),
+    )
+    control_result = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": old.code},
+        permission="prepare",
+        context=CapabilityContext(
+            home=tmp_path,
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+            session_id="session-1",
+            workspace=str(tmp_path),
+            input_text=f"批准 {old.code}",
+        ),
+    )
+    assert control_result.ok is True
+    assert control_result.facts["continuation_status"] == "waiting_approval"
+    assert control_result.yields_control is False
+
 
 @pytest.mark.asyncio
 async def test_planner_rebuilds_current_state_after_approval_changes(tmp_path) -> None:

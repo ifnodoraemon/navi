@@ -18,9 +18,131 @@ from navi.runs import RunStore
 from navi.tools import API_CONTEXT
 
 
+@pytest.mark.asyncio
+async def test_model_evolution_can_bootstrap_from_runtime_eval_contracts(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(
+        home=tmp_path,
+        loop_run_id="loop-model-evolution",
+        trace_id="trace-model-evolution",
+        source="cli",
+        peer_id="cli",
+        sender_id="cli",
+        workspace=str(tmp_path),
+    )
+
+    state = await registry.invoke(
+        "evolution.state",
+        {},
+        permission="read",
+        context=context,
+    )
+    assert state.ok is True
+    cases = {
+        item["id"]: item
+        for item in state.facts["available_eval_cases"]
+    }
+    assert cases["runtime.text.nonempty"] == {
+        "id": "runtime.text.nonempty",
+        "target_types": ["prompt_layer", "skill"],
+        "assertion_types": ["nonempty"],
+        "source": "runtime",
+        "mutable": False,
+    }
+
+    before = PromptLayerStore(tmp_path).read("identity")
+    candidate = before + "\nPrefer auditable evolution proposals.\n"
+    proposed = await registry.invoke(
+        "evolution.propose",
+        {
+            "target_type": "prompt_layer",
+            "target_id": "identity",
+            "reason": "exercise model-owned evolution",
+            "expected_benefit": "reviewable behavior improvement",
+            "risk": "planner behavior change",
+            "after": candidate,
+            "rollback_plan": "restore the authoritative prompt baseline",
+            "evidence": "repeated trace evidence",
+            "source_run_id": "spoofed-run-id",
+            "eval_cases": ["runtime.text.nonempty"],
+        },
+        permission="prepare",
+        context=context,
+    )
+    assert proposed.error_reason == "sensitive_op_requires_approval"
+    approved = await registry.invoke(
+        "approval.resolve",
+        {
+            "decision": "approve",
+            "code": proposed.facts["approval"]["code"],
+        },
+        permission="write",
+        context=context,
+    )
+    assert approved.ok is True
+    proposed = await registry.invoke(
+        "evolution.propose",
+        {
+            "target_type": "prompt_layer",
+            "target_id": "identity",
+            "reason": "exercise model-owned evolution",
+            "expected_benefit": "reviewable behavior improvement",
+            "risk": "planner behavior change",
+            "after": candidate,
+            "rollback_plan": "restore the authoritative prompt baseline",
+            "evidence": "repeated trace evidence",
+            "source_run_id": "spoofed-run-id",
+            "eval_cases": ["runtime.text.nonempty"],
+        },
+        permission="prepare",
+        context=context,
+    )
+
+    assert proposed.ok is True
+    proposal_id = proposed.facts["proposal_id"]
+    proposal = EvolutionLedger(tmp_path).get_proposal(proposal_id)
+    assert proposal is not None
+    assert proposal.before == before
+    assert proposal.after == candidate
+    assert proposal.source_run_id == "loop-model-evolution"
+    assert "before" not in proposed.facts["proposal"]
+    assert "after" not in proposed.facts["proposal"]
+    assert proposed.facts["target_validation"]["loaded_by"] == "PromptLayerStore"
+
+    experiment = await registry.invoke(
+        "evolution.experiment",
+        {"proposal_id": proposal_id},
+        permission="prepare",
+        context=context,
+    )
+    assert experiment.error_reason == "sensitive_op_requires_approval"
+    approved = await registry.invoke(
+        "approval.resolve",
+        {
+            "decision": "approve",
+            "code": experiment.facts["approval"]["code"],
+        },
+        permission="write",
+        context=context,
+    )
+    assert approved.ok is True
+    experiment = await registry.invoke(
+        "evolution.experiment",
+        {"proposal_id": proposal_id},
+        permission="prepare",
+        context=context,
+    )
+
+    assert experiment.ok is True
+    assert experiment.facts["experiment"]["status"] == "passed"
+    assert PromptLayerStore(tmp_path).read("identity") == before
+
+
 def test_evolution_experiment_activation_and_regression_rollback(tmp_path: Path) -> None:
     prompts = PromptLayerStore(tmp_path)
-    before = prompts.read("planner")
+    before = prompts.read("identity")
     after = before + "\nPrefer the smallest sufficient capability set.\n"
     eval_case = {
         "id": "planner-safety",
@@ -37,7 +159,7 @@ def test_evolution_experiment_activation_and_regression_rollback(tmp_path: Path)
     ledger = EvolutionLedger(tmp_path)
     proposal = ledger.propose(
         target_type="prompt_layer",
-        target_id="planner",
+        target_id="identity",
         reason="reduce capability overreach",
         expected_benefit="fewer unnecessarily broad plans",
         risk="routing regression",
@@ -77,13 +199,13 @@ def test_evolution_experiment_activation_and_regression_rollback(tmp_path: Path)
     assert evaluation_event.event_kind == "audit"
     with pytest.raises(ValueError, match="only successful evolution apply events"):
         EvolutionEngine(tmp_path).rollback(evaluation_event.id)
-    assert prompts.read("planner") == before
+    assert prompts.read("identity") == before
 
     event = EvolutionEngine(tmp_path).apply_proposal(proposal.id)
     assert event is not None
     assert event.event_kind == "apply"
     assert EvolutionEngine(tmp_path).apply_proposal(proposal.id).id == event.id
-    assert prompts.read("planner") == after
+    assert prompts.read("identity") == after
     activations = EvolutionExperimentStore(tmp_path)
     assert activations.activation_for_event(event.id).status == "observing"
 
@@ -103,8 +225,8 @@ def test_evolution_experiment_activation_and_regression_rollback(tmp_path: Path)
     )
 
     assert rolled_back.status == "rolled_back"
-    assert prompts.read("planner") == before
-    assert prompts.override_path("planner").exists() is False
+    assert prompts.read("identity") == before
+    assert prompts.override_path("identity").exists() is False
     assert ledger.get(event.id).rolled_back_at > 0
 
 
@@ -123,26 +245,33 @@ def test_unloaded_spec_file_targets_are_not_declared_as_evolution(tmp_path: Path
         )
 
 
+def test_prompt_evolution_rejects_layers_not_consumed_by_runtime(tmp_path: Path) -> None:
+    adapter = EvolutionTargetAdapterRegistry(tmp_path).get("prompt_layer")
+
+    with pytest.raises(ValueError, match="not loaded by the runtime"):
+        adapter.validate("planner", "This file would be inert.")
+
+
 def test_manual_rollback_rejects_an_audit_event(tmp_path: Path) -> None:
     prompts = PromptLayerStore(tmp_path)
-    before = prompts.read("planner")
+    before = prompts.read("identity")
     after = before + "\nPrefer reversible changes.\n"
     event = EvolutionLedger(tmp_path).record(
         run_id="run-manual-rollback",
         target_type="prompt_layer",
-        target_id="planner",
+        target_id="identity",
         reason="exercise explicit rollback",
         before=before,
         after=after,
     )
-    EvolutionTargetAdapterRegistry(tmp_path).get("prompt_layer").apply("planner", after)
+    EvolutionTargetAdapterRegistry(tmp_path).get("prompt_layer").apply("identity", after)
     activations = EvolutionExperimentStore(tmp_path)
     activations.start_activation(proposal_id="proposal-manual", event_id=event.id)
 
     with pytest.raises(ValueError, match="only successful evolution apply events"):
         EvolutionEngine(tmp_path).rollback(event.id)
 
-    assert prompts.read("planner") == after
+    assert prompts.read("identity") == after
     activation = activations.activation_for_event(event.id)
     assert activation is not None
     assert activation.status == "observing"
@@ -150,12 +279,12 @@ def test_manual_rollback_rejects_an_audit_event(tmp_path: Path) -> None:
 
 def test_interrupted_apply_is_reconciled_without_reexecuting_target(tmp_path: Path) -> None:
     prompts = PromptLayerStore(tmp_path)
-    before = prompts.read("planner")
+    before = prompts.read("identity")
     after = before + "\nRecover interrupted apply.\n"
     ledger = EvolutionLedger(tmp_path)
     proposal = ledger.propose(
         target_type="prompt_layer",
-        target_id="planner",
+        target_id="identity",
         reason="recovery test",
         expected_benefit="crash recovery",
         risk="behavior change",
@@ -168,20 +297,20 @@ def test_interrupted_apply_is_reconciled_without_reexecuting_target(tmp_path: Pa
     adapter = EvolutionTargetAdapterRegistry(tmp_path).get("prompt_layer")
     event = ledger.record_apply_event(
         claimed,
-        rollback_state=adapter.snapshot("planner"),
+        rollback_state=adapter.snapshot("identity"),
     )
-    adapter.apply("planner", after)
+    adapter.apply("identity", after)
 
     reconciled = EvolutionEngine(tmp_path).apply_proposal(proposal.id)
 
     assert reconciled.id == event.id
     assert ledger.get_proposal(proposal.id).status == "applied"
-    assert prompts.read("planner") == after
+    assert prompts.read("identity") == after
 
 
 def test_changed_eval_case_invalidates_a_persisted_experiment(tmp_path: Path) -> None:
     prompts = PromptLayerStore(tmp_path)
-    before = prompts.read("planner")
+    before = prompts.read("identity")
     after = before + "\nUse bounded plans.\n"
     eval_adapter = EvolutionTargetAdapterRegistry(tmp_path).get("eval_case")
     eval_adapter.apply(
@@ -197,7 +326,7 @@ def test_changed_eval_case_invalidates_a_persisted_experiment(tmp_path: Path) ->
     )
     proposal = EvolutionLedger(tmp_path).propose(
         target_type="prompt_layer",
-        target_id="planner",
+        target_id="identity",
         reason="bound planning",
         expected_benefit="bounded plans",
         risk="behavior change",
@@ -259,10 +388,10 @@ async def test_evolution_apply_and_manual_rollback_require_capability_approval(
     tmp_path: Path,
 ) -> None:
     prompts = PromptLayerStore(tmp_path)
-    before = prompts.read("planner")
+    before = prompts.read("identity")
     proposal = EvolutionLedger(tmp_path).propose(
         target_type="prompt_layer",
-        target_id="planner",
+        target_id="identity",
         reason="governed apply",
         expected_benefit="safer changes",
         risk="behavior change",

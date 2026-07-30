@@ -19,6 +19,7 @@ from .approval_contract import (
     APPROVAL_STATUS_EXPIRED,
     APPROVAL_STATUS_PENDING,
     APPROVAL_STATUS_REJECTED,
+    owned_approval_gate_id,
 )
 from .lifecycle import Acceptance, Governance, Phase, Resolution
 from .loop_contracts import BudgetState, LoopTerminalState, WorkspaceLock, WorkspaceState
@@ -339,11 +340,15 @@ class ApprovalService:
                 "continuation_status": "completed",
                 "completion_evidence": completion_evidence,
                 "continuation_requires_approval": False,
+                "continuation_objective": goal.objective,
                 "loop_run_id": loop_run.run_id,
                 "loop_terminal_state": str(loop_run.terminal_state),
                 "result_summary": current_run.result_summary,
                 **_approval_continuation_facts(loop_run),
             }
+            if completion_evidence and current_run.result_summary.strip():
+                facts["continuation_response"] = current_run.result_summary.strip()
+                facts["continuation_response_authority"] = "checker_accepted_result"
             return ApprovalResolution(
                 ok=True,
                 facts=facts,
@@ -398,12 +403,17 @@ class ApprovalService:
             "run_resolution": str(continued.run.resolution),
             "continuation_status": continuation_status,
             "completion_evidence": completion_evidence,
+            "continuation_objective": continued.goal.objective,
             "goal_id": continued.goal.id,
             "loop_run_id": continued.loop_run.run_id,
             "loop_terminal_state": str(continued.loop_run.terminal_state),
             "result_summary": continued.run.result_summary,
             **_approval_continuation_facts(continued.loop_run),
         }
+        continued_response = _continued_surface_response(continued)
+        if completion_evidence and continued_response:
+            facts["continuation_response"] = continued_response
+            facts["continuation_response_authority"] = "checker_accepted_result"
         pending_approval = self._current_gate_approval(
             runs=RunStore(self.home),
             loop_run=continued.loop_run,
@@ -434,7 +444,7 @@ class ApprovalService:
         loop_run: LoopRunState,
         context: SurfaceContext,
     ) -> Approval | None:
-        expected_id = _waiting_approval_id(loop_run.evidence)
+        expected_id = owned_approval_gate_id(loop_run.evidence)
         approval = runs.get_approval(expected_id) if expected_id else None
         if approval is None or not run_matches_context(approval, context):
             return None
@@ -766,26 +776,6 @@ def _loop_run_prompt_facts(loop_run: LoopRunState) -> dict[str, Any]:
     }
 
 
-def _waiting_approval_id(evidence: dict[str, Any]) -> str:
-    for container in (
-        evidence,
-        evidence.get("capability_result") if isinstance(evidence, dict) else None,
-        evidence.get("executor") if isinstance(evidence, dict) else None,
-    ):
-        if not isinstance(container, dict):
-            continue
-        facts = container.get("facts")
-        if not isinstance(facts, dict):
-            continue
-        approval = facts.get("approval")
-        if isinstance(approval, dict) and str(approval.get("id") or ""):
-            return str(approval["id"])
-        entity_id = str(facts.get("entity_id") or "")
-        if facts.get("entity_type") == "approval_request" and entity_id:
-            return entity_id
-    return ""
-
-
 def _approval_continuation_facts(loop_run: LoopRunState) -> dict[str, Any]:
     """Expose the resumed operation's facts separately from approval metadata."""
     evidence = loop_run.evidence if isinstance(loop_run.evidence, dict) else {}
@@ -798,7 +788,22 @@ def _approval_continuation_facts(loop_run: LoopRunState) -> dict[str, Any]:
         facts["continuation_checker_results"] = [
             dict(item) for item in checker_results if isinstance(item, dict)
         ]
+    responded_message = str(evidence.get("responded_message") or "").strip()
+    if responded_message:
+        facts["continuation_response"] = responded_message
+        facts["continuation_response_authority"] = "checker_accepted_result"
     return facts
+
+
+def _continued_surface_response(continued: Any) -> str:
+    state_graph_result = getattr(continued, "state_graph_result", None)
+    evidence = getattr(state_graph_result, "evidence", None)
+    if isinstance(evidence, dict):
+        responded = str(evidence.get("responded_message") or "").strip()
+        if responded:
+            return responded
+    run = getattr(continued, "run", None)
+    return str(getattr(run, "result_summary", "") or "").strip()
 
 
 def _active_goals(home: Path, context: SurfaceContext) -> tuple[Any, ...]:

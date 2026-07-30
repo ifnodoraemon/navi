@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict
 from typing import Any
 
@@ -12,6 +14,7 @@ from ..capabilities_types import (
 from ..evolution import EvolutionLedger
 from ..evolution_engine import EvolutionEngine
 from ..evolution_experiments import EvolutionExperimentStore
+from ..evolution_targets import EvolutionTargetAdapterRegistry
 from .helpers import arg_text as _arg_text
 from .helpers import failure_result as _failure_result
 from .helpers import fact_result as _fact_result
@@ -29,27 +32,40 @@ class EvolutionProposeCapability(BaseCapability):
         context: CapabilityContext,
     ) -> CapabilityResult:
         try:
+            target_type = _arg_text(args, "target_type")
+            target_id = _arg_text(args, "target_id")
+            candidate_value = args.get("after")
+            candidate = candidate_value if isinstance(candidate_value, str) else ""
+            targets = EvolutionTargetAdapterRegistry(self.home)
+            adapter = targets.get(target_type)
+            before = adapter.read(target_id)
+            validation = adapter.validate(target_id, candidate)
             proposal = EvolutionLedger(self.home).propose(
-                target_type=_arg_text(args, "target_type"),
-                target_id=_arg_text(args, "target_id"),
+                target_type=target_type,
+                target_id=target_id,
                 reason=_arg_text(args, "reason"),
                 expected_benefit=_arg_text(args, "expected_benefit"),
                 risk=_arg_text(args, "risk"),
-                before=_arg_text(args, "before"),
-                after=_arg_text(args, "after"),
+                before=before,
+                after=candidate,
                 rollback_plan=_arg_text(args, "rollback_plan"),
                 required_approval_level=_arg_text(args, "required_approval_level") or "L2",
                 evidence=_arg_text(args, "evidence"),
-                source_run_id=_arg_text(args, "source_run_id"),
+                source_run_id=(
+                    context.loop_run_id
+                    or context.trace_id
+                    or _arg_text(args, "source_run_id")
+                ),
                 eval_cases=_string_list(args.get("eval_cases")),
             )
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             return _evolution_error(str(exc), reason="schema_mismatch")
-        proposal_facts = asdict(proposal)
+        proposal_facts = _proposal_facts(proposal)
         facts = {
             **_transition_facts("evolution_proposal", proposal.id, "created"),
             "proposal_id": proposal.id,
             "proposal": proposal_facts,
+            "target_validation": validation,
         }
         return _fact_result("evolution", facts, run_id=proposal.id)
 
@@ -84,7 +100,7 @@ class EvolutionRecordEvaluationCapability(BaseCapability):
             return _evolution_error(
                 "proposal not found", reason="not_found", proposal_id=proposal_id
             )
-        proposal_facts = asdict(proposal)
+        proposal_facts = _proposal_facts(proposal)
         facts = {
             **_transition_facts("evolution_proposal", proposal.id, "updated"),
             "proposal_id": proposal.id,
@@ -168,6 +184,7 @@ class EvolutionStateCapability(BaseCapability):
         event_id = _arg_text(args, "event_id")
         ledger = EvolutionLedger(self.home)
         experiments = EvolutionExperimentStore(self.home)
+        targets = EvolutionTargetAdapterRegistry(self.home)
         proposal = ledger.get_proposal(proposal_id) if proposal_id else None
         experiment = experiments.latest_experiment(proposal_id) if proposal_id else None
         activation = experiments.activation_for_event(event_id) if event_id else None
@@ -179,13 +196,18 @@ class EvolutionStateCapability(BaseCapability):
             return _evolution_error("activation not found", reason="not_found", event_id=event_id)
         facts = {
             **_transition_facts("evolution_state", proposal_id or event_id or "latest", "observed"),
-            "proposal": asdict(proposal) if proposal else {},
+            "proposal": _proposal_facts(proposal) if proposal else {},
             "experiment": experiment.to_dict() if experiment else {},
             "activation": activation.to_dict() if activation else {},
             "active_observations": [
                 item.to_dict()
                 for item in experiments.list_activations(status="observing", limit=100)
             ],
+            "targets": [
+                asdict(item)
+                for item in targets.descriptors()
+            ],
+            "available_eval_cases": list(targets.available_eval_cases()),
         }
         return _fact_result("evolution", facts)
 
@@ -292,6 +314,27 @@ def _evolution_error(
             "event_id": event_id,
         },
     )
+
+
+def _proposal_facts(proposal) -> dict[str, Any]:
+    """Expose proposal lifecycle without leaking target payload through model tools."""
+    data = asdict(proposal)
+    before = str(data.pop("before", "") or "")
+    after = str(data.pop("after", "") or "")
+    data.pop("diff", None)
+    try:
+        data["eval_cases"] = json.loads(str(data.get("eval_cases") or "[]"))
+    except json.JSONDecodeError:
+        data["eval_cases"] = []
+    data["baseline"] = {
+        "sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
+        "characters": len(before),
+    }
+    data["candidate"] = {
+        "sha256": hashlib.sha256(after.encode("utf-8")).hexdigest(),
+        "characters": len(after),
+    }
+    return data
 
 
 def _string_list(value: Any) -> list[str]:

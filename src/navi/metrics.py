@@ -13,7 +13,7 @@ from .evolution_experiments import EvolutionExperimentStore
 from .goals import GoalStore
 from .identity import IdentityStore
 from .lifecycle_saga import LifecycleSagaStore
-from .loop_runs import LoopRunStore
+from .loop_runs import DETACHED_EXECUTION_RECOVERY_GRACE_SECONDS, LoopRunStore
 from .memory import MemoryStore
 from .paths import db_paths
 from .personal_resources import PersonalResourceStore
@@ -127,7 +127,7 @@ class MetricsProjector:
             ),
             MetricFact(
                 "expired_execution_lease_count",
-                float(integrity["expired_leases"]),
+                float(integrity["expired_leases"] + integrity["stale_unowned_loops"]),
                 "count",
                 integrity["active_loops"],
                 0,
@@ -184,9 +184,12 @@ class MetricsProjector:
             ),
             _zero_slo(
                 "execution_lease_health",
-                integrity["expired_leases"],
+                integrity["expired_leases"] + integrity["stale_unowned_loops"],
                 samples=integrity["active_loops"],
-                evidence={"expired_leases": integrity["expired_leases"]},
+                evidence={
+                    "expired_leases": integrity["expired_leases"],
+                    "stale_unowned_loops": integrity["stale_unowned_loops"],
+                },
             ),
             _zero_slo(
                 "resource_release_integrity",
@@ -359,6 +362,17 @@ class MetricsProjector:
                     (now,),
                 ).fetchone()[0]
             )
+            stale_unowned_loops = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM loop_runs
+                    WHERE terminal_state = ''
+                      AND lease_owner = ''
+                      AND updated_at <= ?
+                    """,
+                    (now - DETACHED_EXECUTION_RECOVERY_GRACE_SECONDS,),
+                ).fetchone()[0]
+            )
             active_loops = int(
                 conn.execute(
                     "SELECT COUNT(*) FROM loop_runs WHERE terminal_state = ''"
@@ -401,6 +415,7 @@ class MetricsProjector:
             "orphan_run_ids": missing_goal_runs[:20],
             "active_loops": active_loops,
             "expired_leases": expired_leases,
+            "stale_unowned_loops": stale_unowned_loops,
             "uncertain_effects": uncertain_effects,
             "effects": effects,
             "pending_sagas": pending_sagas,

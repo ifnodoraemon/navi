@@ -555,7 +555,12 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 "Run one argv-only command in the project workspace and return bounded "
                 "stdout/stderr facts. Declared read-only commands require read permission, "
                 "network reads require network permission, and unknown or effectful commands "
-                "fail closed to write permission and approval."
+                "fail closed to write permission and approval. Declared process-inspection "
+                "commands such as ps and pgrep observe the host process table through a "
+                "read-only procfs view; their rows prove presence and sampled state, not task "
+                "activity, progress, or completion. Prefer ps with the comm column or exact "
+                "executable matching such as pgrep -x; pgrep -f can match the observer's own "
+                "wrapper command line."
             ),
             input_schema={
                 "type": "object",
@@ -598,6 +603,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "cwd": {"type": "string"},
                     "timeout_seconds": {"type": "integer"},
                     "required_permission": {"type": "string"},
+                    "observation_scope": {"type": "string"},
+                    "observation_semantics": {"type": "string"},
+                    "evidence_contract": {"type": "object"},
                     "sandboxed": {"type": "boolean"},
                     "sandbox_backend": {"type": "string"},
                 }
@@ -622,7 +630,11 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             risk_reason_code="capability_safeguard_web_search",
             description=(
                 "Search the web through the explicitly configured provider and return "
-                "structured result facts. The default provider is Exa MCP."
+                "structured result facts. The configured provider is selected by Navi "
+                "configuration, not by a per-call query or argument. Search results prove "
+                "which sources and snippets were retrieved, not that every source claim is "
+                "true or representative; preserve source attribution for material claims. "
+                "The default provider is Exa MCP."
             ),
             input_schema={
                 "type": "object",
@@ -660,6 +672,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "suggestions": {"type": "array", "items": {"type": "string"}},
                     "infoboxes": _array_of_objects(),
                     "response": {"type": "object"},
+                    "evidence_contract": {"type": "object"},
                 }
             ),
             permission="network",

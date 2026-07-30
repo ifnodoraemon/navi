@@ -134,7 +134,25 @@ class TurnController(TurnLifecycleMixin):
         )
         invoked_facts = dict(invoked.facts or {})
         surface_text = str(invoked_facts.get("responded_message") or "").strip()
-        if not surface_text:
+        responder_error_reason = ""
+        retry_gate = invoked_facts.get("retry_gate")
+        provider_retry_pending = (
+            invoked_facts.get("loop_terminal_state") == "paused"
+            and isinstance(retry_gate, dict)
+            and retry_gate.get("kind") == "provider_transport"
+            and retry_gate.get("decision") == "pause"
+        )
+        if not surface_text and provider_retry_pending:
+            # The durable graph owns this transport recovery. Calling a second
+            # model role here would be an immediate hidden retry and could
+            # produce a duplicate failure reply before the real result arrives.
+            responder_error_reason = "provider_transport_retry_pending"
+            invoked_facts["finalization"] = {
+                "reason": responder_error_reason,
+                "model_response_present": False,
+                "durable_retry_pending": True,
+            }
+        elif not surface_text:
             # Capability messages are machine observations, not user copy.
             # Give the responder both the structured result and the raw
             # observation as facts; never surface the observation directly.
@@ -153,13 +171,32 @@ class TurnController(TurnLifecycleMixin):
                     "resolution": invoked_facts.get("resolution"),
                 },
             }
-            surface_text = await self._response_from_facts(text, response_facts)
+            try:
+                surface_text = await self._response_from_facts(text, response_facts)
+            except Exception as exc:
+                responder_error_reason = f"responder_{type(exc).__name__}"
+                raw_finalization = invoked_facts.get("finalization")
+                finalization_facts = (
+                    dict(raw_finalization) if isinstance(raw_finalization, dict) else {}
+                )
+                invoked_facts["finalization"] = {
+                    **finalization_facts,
+                    "reason": responder_error_reason,
+                    "planner_result_available": bool(invoked.ok),
+                    "model_response_present": False,
+                }
+                logger.warning(
+                    "Fact responder failed for trace %s after loop result: %s",
+                    trace_id,
+                    type(exc).__name__,
+                )
+                surface_text = ""
         from .connector_delivery import connector_delivery_from_facts
 
         has_delivery = connector_delivery_from_facts(invoked_facts) is not None
         has_surface_result = bool(surface_text) or has_delivery
         turn_ok = invoked.ok and has_surface_result
-        turn_error_reason = getattr(invoked, "error_reason", "")
+        turn_error_reason = responder_error_reason or getattr(invoked, "error_reason", "")
         if invoked.ok and not has_surface_result:
             turn_error_reason = "empty_response"
         if not turn_ok and not surface_text:

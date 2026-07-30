@@ -9,6 +9,7 @@ import pytest
 
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
+from navi.delivery_outbox import DeliveryOutboxStore
 from navi.goals import GoalStore
 from navi.lifecycle import Governance, Phase, Resolution
 from navi.loop_control_service import LoopControlService, OpenGoalRequest
@@ -67,6 +68,67 @@ def test_goal_open_description_is_factual_capability_metadata() -> None:
     assert "current capability and permission envelope" in spec.description
     assert "Use this when" not in spec.description
     assert "full system capabilities" not in spec.description
+
+
+@pytest.mark.asyncio
+async def test_goal_open_rejects_capability_above_declared_permission_ceiling(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    result = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "search current weather",
+            "workspace": str(tmp_path),
+            "loop_kind": "scheduled",
+            "cron_schedule": "30 7 * * *",
+            "permission_ceiling": "read",
+            "allowed_capabilities": ["web.search", "respond"],
+            "auto_start": False,
+        },
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+
+    assert result.ok is False
+    assert result.error_reason == "schema_mismatch"
+    assert "outside the current policy envelope" in result.message
+
+
+@pytest.mark.asyncio
+async def test_goal_update_rejects_ceiling_below_persisted_capabilities(
+    tmp_path: Path,
+) -> None:
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    opened = await registry.invoke(
+        "goal.open",
+        {
+            "objective": "search current weather",
+            "workspace": str(tmp_path),
+            "loop_kind": "scheduled",
+            "cron_schedule": "30 7 * * *",
+            "permission_ceiling": "network",
+            "allowed_capabilities": ["web.search", "respond"],
+        },
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+    assert opened.ok is True
+
+    result = await registry.invoke(
+        "goal.update",
+        {
+            "goal_id": opened.facts["goal_id"],
+            "permission_ceiling": "read",
+        },
+        permission="prepare",
+        context=_context(tmp_path),
+    )
+
+    assert result.ok is False
+    assert result.error_reason == "schema_mismatch"
+    assert "outside the current policy envelope" in result.message
 
 
 @pytest.mark.asyncio
@@ -548,6 +610,7 @@ async def test_goal_open_capability_auto_start_uses_runtime_state_graph(tmp_path
     assert result.facts["execution_mode"] == "foreground"
     assert result.facts["loop_terminal_state"] == LoopTerminalState.WAITING_APPROVAL
     assert result.facts["completion_evidence"] is False
+    assert result.yields_control is False
     evidence = result.facts["state_graph_result"]["evidence"]
     assert evidence["planned_capability"]["tool"] == "file.write"
     assert evidence["capability_result"]["yields_control"] is True
@@ -770,6 +833,11 @@ async def test_goal_state_capability_reads_durable_loop_state(tmp_path: Path) ->
     assert state.facts["state_transition"] == "state_read"
     assert state.facts["goal"]["id"] == opened.facts["goal_id"]
     assert state.facts["loop_runs"][0]["run_id"] == opened.facts["loop_run_id"]
+    assert state.facts["run_diagnostics"]["phase"] == Phase.RUNNING
+    assert state.facts["loop_diagnostics"]["loop_run_id"] == opened.facts["loop_run_id"]
+    assert state.facts["loop_diagnostics"]["diagnostic_authority"] == (
+        "persisted_loop_run_state"
+    )
 
 
 @pytest.mark.asyncio
@@ -893,6 +961,10 @@ async def test_goal_state_scheduled_view_is_actor_scoped_and_authoritative(
 
     assert state.ok is True
     assert state.facts["authoritative_for"] == "actor_scheduled_goals"
+    assert state.facts["evidence_contract"]["authority"] == "navi_persistent_goal_stores"
+    assert "external_agent_approval_state" in (
+        state.facts["evidence_contract"]["does_not_establish"]
+    )
     assert state.facts["matched_count"] == 1
     assert [goal["id"] for goal in state.facts["scheduled_goals"]] == [visible.facts["goal_id"]]
     assert "active_goals" not in state.facts
@@ -926,7 +998,7 @@ async def test_goal_state_scheduled_view_includes_recent_occurrence_delivery_fai
     )
     assert outbox is not None
     error = "connector_rate_limited: WeixinTransportError: prepare failed"
-    service.goals.mark_delivery_outbox_failed(outbox.id, error=error)
+    DeliveryOutboxStore(tmp_path).mark_failed(outbox.id, error=error)
     service.goals.record_delivery_failure(
         run_id=occurrence.run.id,
         channel="cli",
@@ -945,7 +1017,14 @@ async def test_goal_state_scheduled_view_includes_recent_occurrence_delivery_fai
     recent_failures = state.facts["scheduled_goals"][0]["recent_failed_occurrences"]
 
     assert occurrences[0]["goal_id"] == occurrence.goal.id
+    assert occurrences[0]["trace_id"] == occurrence.run.id
     assert occurrences[0]["resolution"] == Resolution.FAILED
+    assert occurrences[0]["run_diagnostics"]["resolution"] == Resolution.FAILED
+    assert occurrences[0]["run_diagnostics"]["error"]
+    assert (
+        occurrences[0]["loop_diagnostics"]["diagnostic_authority"]
+        == "persisted_loop_run_state"
+    )
     assert occurrences[0]["delivery"]["delivery_status"] == "failed"
     assert occurrences[0]["delivery"]["delivery_error_reason"] == "connector_rate_limited"
     assert "body" not in occurrences[0]["delivery"]
@@ -1048,6 +1127,9 @@ async def test_goal_state_pending_approval_view_is_explicit(tmp_path: Path) -> N
 
     assert state.ok is True
     assert state.facts["authoritative_for"] == "current_actor_pending_approval_goals"
+    assert "external_agent_approval_state" in (
+        state.facts["evidence_contract"]["does_not_establish"]
+    )
     assert state.facts["goal_counts"]["pending_approval"] == 1
     assert [goal["id"] for goal in state.facts["pending_approval_goals"]] == [
         pending.facts["goal_id"]

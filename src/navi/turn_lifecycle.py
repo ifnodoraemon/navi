@@ -91,16 +91,18 @@ class TurnLifecycleMixin:
             trace_id=trace_id,
             run_id=result.run_id,
         )
-        self.runtime.memory.add_message(
-            session_id,
-            "assistant",
-            result.surfaced_text(),
-            source=source,
-            peer_id=peer_id,
-            sender_id=sender_id,
-            trace_id=trace_id,
-            run_id=result.run_id,
-        )
+        surfaced_text = result.surfaced_text()
+        if surfaced_text:
+            self.runtime.memory.add_message(
+                session_id,
+                "assistant",
+                surfaced_text,
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+                trace_id=trace_id,
+                run_id=result.run_id,
+            )
         self.runtime.memory.enqueue_consolidation(
             session_id=session_id,
             run_id=result.run_id or trace_id or result.session_id,

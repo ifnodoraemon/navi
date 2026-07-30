@@ -7,6 +7,8 @@ from contextlib import contextmanager
 import pytest
 
 from navi.db import connect
+from navi.lifecycle import Phase, Resolution
+from navi.loop_contracts import LoopTerminalState
 from navi.loop_control_service import LoopControlService, OpenGoalRequest
 from navi.memory import MemoryStore
 from navi.paths import db_paths
@@ -46,6 +48,45 @@ def test_missing_memory_job_is_reconstructed_from_run_transcript(tmp_path: Path)
         "sender-a",
         "pending",
     )
+
+
+def test_expired_paused_transient_turn_is_cancelled_before_compaction(tmp_path: Path) -> None:
+    service = LoopControlService(tmp_path)
+    opened = service.open_goal(
+        OpenGoalRequest(
+            objective="wait for a transient clarification",
+            workspace=str(tmp_path),
+            loop_kind="turn",
+            source="cli",
+            peer_id="cli",
+            sender_id="cli",
+            session_id="session-paused",
+        )
+    )
+    with connect(db_paths(tmp_path).loop_runs) as conn:
+        conn.execute(
+            """
+            UPDATE loop_runs
+            SET node = 'pause', terminal_state = 'paused', updated_at = 1
+            WHERE id = ?
+            """,
+            (opened.loop_run.run_id,),
+        )
+
+    facts = DataRetentionManager(tmp_path).compact_expired(now=100000)
+
+    assert facts.compacted == 1
+    loop_run = service.loop_runs.get_run(opened.loop_run.run_id)
+    assert loop_run is not None
+    assert loop_run.terminal_state == LoopTerminalState.CANCELLED
+    run = service.runs.get(opened.run.id)
+    goal = service.goals.get(opened.goal.id)
+    assert run is not None and run.phase == Phase.ENDED
+    assert run.resolution == Resolution.CANCELED
+    assert goal is not None and goal.phase == Phase.ENDED
+    assert goal.resolution == Resolution.CANCELED
+    with pytest.raises(KeyError):
+        service.loop_runs.get_spec_json(opened.loop_spec.id)
 
 
 @pytest.mark.asyncio

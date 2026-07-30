@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import uuid
 from difflib import SequenceMatcher
@@ -42,8 +43,8 @@ from .memory import ACTIVE_MEMORY_CONTEXT_LIMIT
 from .model_facts import project_model_facts
 from .prompt_os import assemble_semantic_checker_messages
 from .runtime import AgentRuntime
-from .safeguards import required_permission_for_call
-from .syscalls import ModelSyscallPlanner
+from .safeguards import call_mutates
+from .syscalls import ModelSyscallPlanner, provider_failure_facts
 from .resource_gateway import (
     GlobalResourceGateway,
     ResourceGrant,
@@ -62,11 +63,17 @@ PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES = 8
 PLANNER_CONTEXT_OLDER_PREVIEW_CHARS = 220
 PLANNER_CONTEXT_RECENT_MESSAGE_MAX_CHARS = 2_000
 PLANNER_MEMORY_ITEM_MAX_CHARS = 800
+PLANNER_ATTEMPT_HISTORY_LIMIT = 8
+PLANNER_ATTEMPT_HISTORY_MAX_CHARS = 16_000
+PLANNER_ATTEMPT_MESSAGE_MAX_CHARS = 1_000
 SEMANTIC_CHECKER_ATTEMPT_LIMIT = 4
 SEMANTIC_CHECKER_ARGS_MAX_CHARS = 3_000
 SEMANTIC_CHECKER_FACTS_MAX_CHARS = 6_000
 SEMANTIC_CHECKER_MESSAGE_MAX_CHARS = 3_000
 TASK_RESULT_PREVIEW_CHARS = 240
+PROVIDER_TRANSPORT_MAX_RETRIES = 1
+PROVIDER_TRANSPORT_RETRY_MIN_SECONDS = 1.0
+PROVIDER_TRANSPORT_RETRY_MAX_SECONDS = 300.0
 
 
 @dataclass(frozen=True)
@@ -384,15 +391,23 @@ class LLMSemanticCheckerPort:
         executed: ExecutedCapabilityStep,
         evidence: dict[str, Any],
     ) -> SemanticCheckDecision:
-        task_context = _goal_task_context_with_result_comparison(spec, executed)
+        task_context = _semantic_checker_task_context(spec, executed)
         response = await self.runtime.provider.complete_for(
             "checker",
             assemble_semantic_checker_messages(
                 objective=spec.goal.objective,
                 acceptance_criteria=list(spec.goal.acceptance_criteria),
+                conversation_context=_semantic_checker_conversation_context(
+                    runtime=self.runtime,
+                    spec=spec,
+                ),
                 current_time=current_time_facts(),
                 trigger_facts=_goal_trigger_facts(spec),
                 task_context=task_context,
+                evaluation_contract=_semantic_checker_evaluation_contract(
+                    spec,
+                    executed,
+                ),
                 attempt=state.attempt,
                 max_attempts=spec.retry_policy.max_attempts,
                 last_capability=_semantic_checker_capability_result(executed),
@@ -420,6 +435,83 @@ class LLMSemanticCheckerPort:
 def _goal_trigger_facts(spec: LoopSpec) -> dict[str, Any]:
     value = spec.goal.metadata.get("trigger_facts")
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _semantic_checker_evaluation_contract(
+    spec: LoopSpec,
+    executed: ExecutedCapabilityStep,
+) -> dict[str, Any]:
+    task_context = _goal_task_context(spec)
+    delivery = task_context.get("delivery")
+    delivery_stage = (
+        str(delivery.get("stage") or "")
+        if isinstance(delivery, dict)
+        else ""
+    )
+    current_result = _executed_result_text(executed)
+    candidate_copy_present = bool(current_result["text"]) and (
+        executed.action in {"ask", "chat", "respond"} or executed.terminal
+    )
+    return {
+        "scope": (
+            "candidate_semantics_before_external_transport"
+            if candidate_copy_present
+            else "capability_evidence_before_candidate_presentation"
+        ),
+        "evaluates": [
+            "objective_coverage",
+            "acceptance_criteria",
+            "grounding_in_authoritative_capability_facts",
+            "contradiction_absence",
+        ],
+        "does_not_evaluate": [
+            "connector_transport",
+            "external_delivery_receipt",
+        ],
+        "presentation_semantics": {
+            "candidate_copy_role": "proposed_user_facing_communication",
+            "candidate_copy_present": candidate_copy_present,
+            "candidate_copy_source": (
+                current_result["source"] if candidate_copy_present else ""
+            ),
+            "conversation_assistant_is_current_candidate": False,
+            "communication_obligation_rule": (
+                "judge whether the candidate copy communicates the requested grounded "
+                "content within this pre-transport scope"
+                if candidate_copy_present
+                else "judge whether current capability evidence covers the objective; "
+                "missing candidate copy is not a failure because a passed fact check "
+                "enters the governed response phase"
+            ),
+            "transport_proof_rule": (
+                "never require an outbox entry, connector send result, or external "
+                "delivery receipt in this check"
+            ),
+        },
+        "downstream_transport_evidence_unavailable_by_design": [
+            "outbox_entry",
+            "connector_send_result",
+            "external_delivery_receipt",
+        ],
+        "transport_receipt_required_for_this_check": False,
+        "transport_stage_after_acceptance": (
+            delivery_stage == "post_semantic_acceptance_outbox"
+        ),
+        "conversation_context_authority": "resolve_referents_only",
+    }
+
+
+def _semantic_checker_task_context(
+    spec: LoopSpec,
+    executed: ExecutedCapabilityStep,
+) -> dict[str, Any]:
+    """Project only facts the pre-transport semantic checker may evaluate."""
+    context = _goal_task_context_with_result_comparison(spec, executed)
+    # Delivery is owned by a later durable protocol. Its necessarily
+    # receipt-free pre-acceptance state would create a dependency cycle:
+    # semantic acceptance would require the transport it authorizes.
+    context.pop("delivery", None)
+    return context
 
 
 def _goal_task_context(spec: LoopSpec) -> dict[str, Any]:
@@ -613,7 +705,7 @@ def _int_or_default(value: Any, default: int) -> int:
 
 
 @dataclass(frozen=True)
-class PlannerConversationContext:
+class BoundedConversationContext:
     text: str
     facts: dict[str, Any]
 
@@ -787,11 +879,12 @@ class SideEffectSagaPort:
         )
 
 
-def _planner_conversation_context(
+def _bounded_conversation_context(
     *,
     session_id: str,
     messages: list[Any],
-) -> PlannerConversationContext:
+    consumer: str,
+) -> BoundedConversationContext:
     relevant = [msg for msg in messages if str(getattr(msg, "role", "")) in {"user", "assistant"}]
     raw_chars = sum(len(str(getattr(msg, "content", "") or "")) for msg in relevant)
     base_facts: dict[str, Any] = {
@@ -801,17 +894,18 @@ def _planner_conversation_context(
         "max_character_count": PLANNER_CONTEXT_MAX_CHARS,
         "recent_message_limit": PLANNER_CONTEXT_RECENT_MESSAGES,
         "message_fetch_limit": PLANNER_CONTEXT_MESSAGE_LIMIT,
-        "policy": "planner_conversation_context_v1",
+        "policy": "bounded_conversation_context_v1",
+        "consumer": consumer,
     }
     if not relevant:
-        return PlannerConversationContext(text="", facts={**base_facts, "compacted": False})
+        return BoundedConversationContext(text="", facts={**base_facts, "compacted": False})
 
     raw_text = "\n\n".join(_format_conversation_message(msg) for msg in relevant)
     should_compact = (
         len(relevant) > PLANNER_CONTEXT_RECENT_MESSAGES or len(raw_text) > PLANNER_CONTEXT_MAX_CHARS
     )
     if not should_compact:
-        return PlannerConversationContext(
+        return BoundedConversationContext(
             text=raw_text,
             facts={
                 **base_facts,
@@ -831,7 +925,7 @@ def _planner_conversation_context(
     ]
     preview_items = older_user_messages[-PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES:]
     preview_lines = [
-        "Conversation context was compacted before planner intake.",
+        f"Conversation context was compacted before {consumer} intake.",
         f"Older messages omitted: {len(older)}.",
         (
             "Older user-message provenance preview. Older assistant replies are "
@@ -845,7 +939,7 @@ def _planner_conversation_context(
             f"created_at={float(getattr(msg, 'created_at', 0.0) or 0.0):.3f} "
             f"chars={len(str(getattr(msg, 'content', '') or ''))} preview={preview}"
         )
-    recent_lines = ["Recent messages preserved for planner:"]
+    recent_lines = [f"Recent messages preserved for {consumer}:"]
     truncated_recent = 0
     for msg in recent:
         content = str(getattr(msg, "content", "") or "")
@@ -856,7 +950,7 @@ def _planner_conversation_context(
     compacted_text = "\n".join(preview_lines + [""] + recent_lines)
     if len(compacted_text) > PLANNER_CONTEXT_MAX_CHARS:
         compacted_text = truncate_middle(compacted_text, PLANNER_CONTEXT_MAX_CHARS)
-    return PlannerConversationContext(
+    return BoundedConversationContext(
         text=compacted_text,
         facts={
             **base_facts,
@@ -869,6 +963,77 @@ def _planner_conversation_context(
             "compacted_character_count": len(compacted_text),
         },
     )
+
+
+def _conversation_context_policy(spec: LoopSpec) -> tuple[bool, str]:
+    """Keep ambient transcript out of detached background cognition by default."""
+    metadata = spec.goal.metadata if isinstance(spec.goal.metadata, dict) else {}
+    execution_mode = str(metadata.get("execution_mode") or "")
+    task_context = metadata.get("task_context")
+    progress = (
+        task_context.get("progress")
+        if isinstance(task_context, dict)
+        else {}
+    )
+    ambient_authoritative = bool(
+        progress.get("ambient_history_authoritative", False)
+        if isinstance(progress, dict)
+        else False
+    )
+    if execution_mode == "background" and not ambient_authoritative:
+        return False, "background_ambient_history_not_authoritative"
+    if ambient_authoritative:
+        return True, "task_context_declared_ambient_history_authoritative"
+    return True, "foreground_conversation_continuity"
+
+
+def _semantic_checker_conversation_context(
+    *,
+    runtime: AgentRuntime,
+    spec: LoopSpec,
+) -> dict[str, Any]:
+    session_id = str(spec.goal.metadata.get("session_id") or "")
+    authority = {
+        "authority": "semantic_context_only",
+        "establishes": ["conversation_referents", "elliptical_turn_meaning"],
+        "does_not_establish": [
+            "capability_facts",
+            "task_completion",
+            "external_effects",
+            "connector_delivery",
+        ],
+    }
+    if not session_id:
+        return {
+            **authority,
+            "included": False,
+            "reason": "no_session_context",
+            "policy": "bounded_conversation_context_v1",
+        }
+    include_conversation, reason = _conversation_context_policy(spec)
+    if not include_conversation:
+        return {
+            **authority,
+            "session_id": session_id,
+            "included": False,
+            "reason": reason,
+            "policy": "bounded_conversation_context_v1",
+        }
+    conversation = _bounded_conversation_context(
+        session_id=session_id,
+        messages=runtime.memory.get_messages(
+            session_id,
+            limit=PLANNER_CONTEXT_MESSAGE_LIMIT,
+        ),
+        consumer="semantic_checker",
+    )
+    return {
+        **authority,
+        **conversation.facts,
+        "included": True,
+        "reason": reason,
+        "transcript": conversation.text,
+    }
 
 
 def _planner_memory_context(*, memory: Any, spec: LoopSpec) -> PlannerMemoryContext:
@@ -1042,15 +1207,30 @@ class ModelCapabilityPlannerPort:
         conversation_context = ""
         conversation_facts: dict[str, Any] = {}
         if session_id:
-            conversation = _planner_conversation_context(
-                session_id=session_id,
-                messages=self.runtime.memory.get_messages(
-                    session_id,
-                    limit=PLANNER_CONTEXT_MESSAGE_LIMIT,
-                ),
-            )
-            conversation_context = conversation.text
-            conversation_facts = conversation.facts
+            include_conversation, conversation_reason = _conversation_context_policy(spec)
+            if include_conversation:
+                conversation = _bounded_conversation_context(
+                    session_id=session_id,
+                    messages=self.runtime.memory.get_messages(
+                        session_id,
+                        limit=PLANNER_CONTEXT_MESSAGE_LIMIT,
+                    ),
+                    consumer="planner",
+                )
+                conversation_context = conversation.text
+                conversation_facts = {
+                    **conversation.facts,
+                    "included": True,
+                    "reason": conversation_reason,
+                }
+            else:
+                conversation_facts = {
+                    "session_id": session_id,
+                    "included": False,
+                    "reason": conversation_reason,
+                    "policy": "bounded_conversation_context_v1",
+                    "consumer": "planner",
+                }
         memory_context = _planner_memory_context(memory=self.runtime.memory, spec=spec)
 
         syscalls = await self.planner.plan(
@@ -1194,8 +1374,7 @@ class CapabilityExecutorPort:
             ),
             mutates=bool(
                 tool_spec
-                and tool_spec.mutates
-                and required_permission_for_call(tool_spec, execution_args) == "write"
+                and call_mutates(tool_spec, execution_args)
             ),
         )
 
@@ -1241,7 +1420,9 @@ class DurableStateGraphRunner:
         self.side_effect_saga_port = side_effect_saga_port or SideEffectSagaPort(home=home)
         self.trace_store = trace_store
         self.trace_context = trace_context
-        self.execution_owner = execution_owner or f"state-graph:{uuid.uuid4().hex}"
+        self.execution_owner = (
+            execution_owner or f"state-graph:{os.getpid()}:{uuid.uuid4().hex}"
+        )
         self._lease_claimed = False
 
     def run(
@@ -1371,6 +1552,50 @@ class DurableStateGraphRunner:
                         planned=planned_step,
                         domain="planner",
                     )
+                    if _is_planner_provider_failure(planned_step):
+                        # There is no model decision available when the provider
+                        # call itself failed. Never recurse into another model
+                        # call in this execution. A typed, retryable transport
+                        # failure may instead cross one durable pause/resume edge.
+                        decision = replace(
+                            decision,
+                            replan_allowed=False,
+                            facts={
+                                **decision.facts,
+                                "automatic_model_retry": False,
+                            },
+                        )
+                        retry_gate = _next_provider_transport_retry_gate(
+                            planned_step,
+                            evidence=collected_evidence,
+                        )
+                        if retry_gate is not None:
+                            retry_evidence = {
+                                **planned_step.to_dict(),
+                                "automatic_model_retry": False,
+                                "durable_transport_retry": True,
+                                "retry_gate": retry_gate,
+                            }
+                            collected_evidence.update(retry_evidence)
+                            state = self._pause_for_provider_transport_retry(
+                                state,
+                                evidence=retry_evidence,
+                            )
+                            self.gateway.release(grant_id=grant.grant_id)
+                            return StateGraphRunResult(
+                                run_state=state,
+                                resource_grants=tuple(grants),
+                                evidence=collected_evidence,
+                            )
+                        if bool(planned_step.args.get("retryable", False)):
+                            decision = replace(
+                                decision,
+                                facts={
+                                    **decision.facts,
+                                    "durable_transport_retry": True,
+                                    "transport_retry_exhausted": True,
+                                },
+                            )
                     collected_evidence["reflection"] = decision.to_dict()
                     if decision.replan_allowed:
                         reflected = self._transition(
@@ -1640,9 +1865,67 @@ class DurableStateGraphRunner:
                     harness_results=tuple(harness_results),
                     evidence=collected_evidence,
                 )
-            except Exception:
+            except Exception as exc:
+                failure_facts = provider_failure_facts(exc)
+                if not bool(failure_facts.get("provider_call_failure", False)):
+                    self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
+                    raise
+                retry_gate = _next_provider_transport_retry_gate_for_facts(
+                    failure_facts,
+                    evidence=collected_evidence,
+                    model_role="checker",
+                    resume_node=LoopNode.EVALUATE,
+                )
+                if retry_gate is not None:
+                    retry_evidence = {
+                        "checker_provider_failure": failure_facts,
+                        "automatic_model_retry": False,
+                        "durable_transport_retry": True,
+                        "retry_gate": retry_gate,
+                        "executor": collected_evidence.get("capability_result", {}),
+                    }
+                    collected_evidence.update(retry_evidence)
+                    return StateGraphRunResult(
+                        run_state=self._pause_for_provider_transport_retry(
+                            state,
+                            evidence=retry_evidence,
+                        ),
+                        resource_grants=tuple(grants),
+                        harness_results=tuple(harness_results),
+                        evidence=collected_evidence,
+                    )
+                failure_evidence = {
+                    "checker_provider_failure": failure_facts,
+                    "automatic_model_retry": False,
+                    "durable_transport_retry": bool(
+                        collected_evidence.get("retry_gate")
+                    ),
+                    "transport_retry_exhausted": bool(
+                        failure_facts.get("retryable", False)
+                        and collected_evidence.get("retry_gate")
+                    ),
+                }
+                collected_evidence.update(failure_evidence)
+                reflected = self._transition(
+                    state,
+                    node=LoopNode.REFLECT,
+                    condition="checker_failed",
+                    evidence=failure_evidence,
+                )
+                failed = self._transition(
+                    reflected,
+                    node=LoopNode.REFLECT,
+                    condition="checker_rejected",
+                    terminal_state=LoopTerminalState.FAILED,
+                    evidence=failure_evidence,
+                )
                 self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
-                raise
+                return StateGraphRunResult(
+                    run_state=failed,
+                    resource_grants=tuple(grants),
+                    harness_results=tuple(harness_results),
+                    evidence=collected_evidence,
+                )
             if result.run_state.node == LoopNode.PLAN and not result.run_state.is_terminal():
                 return await self.run_async(
                     spec,
@@ -1812,17 +2095,29 @@ class DurableStateGraphRunner:
             if candidate_response:
                 collected_evidence["responded_message"] = candidate_response
                 collected_evidence["responded_action"] = candidate_action
-            has_required_steps = any(step.required for step in spec.verification_ladder)
             if (
-                not has_required_steps
+                _surface_response_required(spec)
+                and not _has_surface_result(collected_evidence)
                 and not is_terminal
                 and state.attempt < spec.retry_policy.max_attempts
             ):
+                collected_evidence["surface_response"] = {
+                    "required": True,
+                    "verified_work_complete": True,
+                    "authority": "semantic_checker",
+                    "next_result_contract": (
+                        "author one grounded user-facing result with respond; "
+                        "do not repeat the completed effect"
+                    ),
+                }
                 state = self._transition(
                     state,
                     node=LoopNode.PLAN,
                     condition="continue_iteration",
-                    evidence={"reason": "non_terminal_capability", "attempt": state.attempt},
+                    evidence={
+                        "reason": "verified_facts_require_user_facing_result",
+                        "attempt": state.attempt,
+                    },
                 )
                 return StateGraphRunResult(
                     run_state=state,
@@ -2235,6 +2530,26 @@ class DurableStateGraphRunner:
         lock_result: LockAcquireResult,
     ) -> LoopRunState:
         evidence = {"workspace_lock": lock_result.to_dict(), "reason": "workspace_lock_conflict"}
+        paused = self._transition(
+            state,
+            node=LoopNode.PAUSE,
+            condition="resource_pause",
+            evidence=evidence,
+        )
+        return self._transition(
+            paused,
+            node=LoopNode.PAUSE,
+            condition="resource_or_user_pause",
+            terminal_state=LoopTerminalState.PAUSED,
+            evidence=evidence,
+        )
+
+    def _pause_for_provider_transport_retry(
+        self,
+        state: LoopRunState,
+        *,
+        evidence: dict[str, Any],
+    ) -> LoopRunState:
         paused = self._transition(
             state,
             node=LoopNode.PAUSE,
@@ -3199,18 +3514,114 @@ def _planner_objective_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
 
 def _planner_attempt_history(evidence: dict[str, Any]) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
-    for raw in evidence.get("attempt_history") or []:
+    raw_history = evidence.get("attempt_history") or []
+    if not isinstance(raw_history, list):
+        return []
+    for raw in raw_history[-PLANNER_ATTEMPT_HISTORY_LIMIT:]:
         if not isinstance(raw, dict):
             continue
         facts = raw.get("facts")
+        message = str(raw.get("message") or "").strip()
+        candidate_response = _is_candidate_response_attempt(raw)
         compact.append(
             {key: value for key, value in raw.items() if key not in {"facts", "message"}}
             | {
+                "evidence_authority": (
+                    "candidate_response_only"
+                    if candidate_response
+                    else "declared_capability_observation"
+                ),
                 "fact_keys": sorted(facts) if isinstance(facts, dict) else [],
-                "message_present": bool(str(raw.get("message") or "").strip()),
+                "facts": (
+                    facts
+                    if not candidate_response and isinstance(facts, dict)
+                    else {}
+                ),
+                "message_present": bool(message),
+                "message_preview": (
+                    truncate_middle(message, PLANNER_ATTEMPT_MESSAGE_MAX_CHARS)
+                    if candidate_response and message
+                    else ""
+                ),
             }
         )
-    return compact
+    projected = project_model_facts(
+        compact,
+        max_characters=PLANNER_ATTEMPT_HISTORY_MAX_CHARS,
+        max_string_characters=PLANNER_ATTEMPT_MESSAGE_MAX_CHARS,
+        max_depth=6,
+        max_items=30,
+    )
+    return projected if isinstance(projected, list) else []
+
+
+def _is_candidate_response_attempt(raw: dict[str, Any]) -> bool:
+    """Classify presentation results by the graph protocol, not a tool name."""
+    return (
+        str(raw.get("action") or "") == "chat"
+        and bool(raw.get("terminal", False))
+        and bool(str(raw.get("message") or "").strip())
+    )
+
+
+def _is_planner_provider_failure(planned: PlannedCapabilityStep) -> bool:
+    return (
+        planned.tool == "system.planner_error"
+        and planned.reason == "planner provider call failed"
+    )
+
+
+def _next_provider_transport_retry_gate(
+    planned: PlannedCapabilityStep,
+    *,
+    evidence: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not _is_planner_provider_failure(planned):
+        return None
+    return _next_provider_transport_retry_gate_for_facts(
+        planned.args,
+        evidence=evidence,
+        model_role="planner",
+        resume_node=LoopNode.PLAN,
+    )
+
+
+def _next_provider_transport_retry_gate_for_facts(
+    failure_facts: dict[str, Any],
+    *,
+    evidence: dict[str, Any],
+    model_role: str,
+    resume_node: LoopNode,
+) -> dict[str, Any] | None:
+    if not bool(failure_facts.get("retryable", False)):
+        return None
+    prior = evidence.get("retry_gate")
+    prior_count = 0
+    if isinstance(prior, dict) and prior.get("kind") == "provider_transport":
+        try:
+            prior_count = max(0, int(prior.get("retry_count") or 0))
+        except (TypeError, ValueError):
+            prior_count = PROVIDER_TRANSPORT_MAX_RETRIES
+    if prior_count >= PROVIDER_TRANSPORT_MAX_RETRIES:
+        return None
+    try:
+        retry_after = float(failure_facts.get("retry_after_seconds") or 0.0)
+    except (TypeError, ValueError):
+        retry_after = 0.0
+    retry_after = min(
+        PROVIDER_TRANSPORT_RETRY_MAX_SECONDS,
+        max(PROVIDER_TRANSPORT_RETRY_MIN_SECONDS, retry_after),
+    )
+    return {
+        "decision": "pause",
+        "kind": "provider_transport",
+        "reason": "provider_transport_unavailable",
+        "model_role": model_role,
+        "retry_after_seconds": retry_after,
+        "retry_count": prior_count + 1,
+        "max_retries": PROVIDER_TRANSPORT_MAX_RETRIES,
+        "resume_node": str(resume_node),
+    }
 
 
 def _semantic_checker_capability_result(
@@ -3238,10 +3649,16 @@ def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[st
     for raw in history[-SEMANTIC_CHECKER_ATTEMPT_LIMIT:]:
         if not isinstance(raw, dict):
             continue
+        candidate_response = _is_candidate_response_attempt(raw)
         compact.append(
             {
                 "attempt": raw.get("attempt"),
                 "tool": str(raw.get("tool") or ""),
+                "evidence_authority": (
+                    "candidate_response_only"
+                    if candidate_response
+                    else "declared_capability_observation"
+                ),
                 "args_json": truncate_middle(
                     json.dumps(
                         redact_secrets_deep(
@@ -3275,6 +3692,39 @@ def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[st
             }
         )
     return compact
+
+
+def _surface_response_required(spec: LoopSpec) -> bool:
+    # The persisted LoopSpec carries capability names, not ToolSpec protocol
+    # metadata, so verify that the standard presentation capability is in the
+    # policy envelope before asking the planner to produce a surface result.
+    if "respond" not in spec.allowed_capabilities and "*" not in spec.allowed_capabilities:
+        return False
+    metadata = spec.goal.metadata if isinstance(spec.goal.metadata, dict) else {}
+    loop_kind = str(metadata.get("loop_kind") or "")
+    execution_mode = str(metadata.get("execution_mode") or "")
+    source = str(metadata.get("source") or "")
+    delivery = (
+        metadata.get("task_context", {}).get("delivery", {})
+        if isinstance(metadata.get("task_context"), dict)
+        else {}
+    )
+    delivery_stage = str(delivery.get("stage") or "") if isinstance(delivery, dict) else ""
+    return (
+        loop_kind == "turn"
+        or delivery_stage == "post_semantic_acceptance_outbox"
+        or (bool(source) and execution_mode == "foreground")
+    )
+
+
+def _has_surface_result(evidence: dict[str, Any]) -> bool:
+    if str(evidence.get("responded_message") or "").strip():
+        return True
+    capability_result = evidence.get("capability_result")
+    if not isinstance(capability_result, dict):
+        return False
+    facts = capability_result.get("facts")
+    return isinstance(facts, dict) and isinstance(facts.get("connector_delivery"), dict)
 
 
 def _effect_idempotency_key(

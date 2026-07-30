@@ -39,6 +39,7 @@ async def run_goal_loop_state_graph(
     result_evidence: dict[str, Any] | None = None,
     state_transition: str = "opened",
     execution_owner: str = "",
+    persist_result_delivery: bool | None = None,
 ) -> LoopControlServiceResult:
     """Execute a prepared Goal/LoopRun through the durable LLM-backed StateGraph."""
     trace_id = context.trace_id or base.goal.trace_id or base.run.id
@@ -129,6 +130,7 @@ async def run_goal_loop_state_graph(
         graph_result,
         state_transition=state_transition,
         evidence=result_evidence,
+        persist_result_delivery=persist_result_delivery,
     )
 
 
@@ -169,7 +171,9 @@ async def resume_goal_loop_run(
     resume_reason: str = "approval_approved",
     state_transition: str = "approval_resumed",
     resource_retry: bool = False,
+    retry_pause: bool = False,
     execution_owner: str = "",
+    persist_result_delivery: bool | None = None,
 ) -> LoopControlServiceResult:
     """Resume one durable loop from its persisted checkpoint.
 
@@ -185,12 +189,22 @@ async def resume_goal_loop_run(
     goal = service.goals.get(state.goal_id)
     if goal is None:
         raise KeyError(f"goal not found for loop run: {state.goal_id}")
-    prior_evidence = dict(state.evidence) if resource_retry else {}
-    if resource_retry and "capability_result" not in prior_evidence:
+    preserve_pause_evidence = resource_retry or retry_pause
+    prior_evidence = dict(state.evidence) if preserve_pause_evidence else {}
+    if preserve_pause_evidence and "capability_result" not in prior_evidence:
         executor = prior_evidence.get("executor")
         if isinstance(executor, dict):
             prior_evidence["capability_result"] = dict(executor)
-    if resource_retry:
+    capability_result = prior_evidence.get("capability_result")
+    if preserve_pause_evidence and isinstance(capability_result, dict):
+        message = str(capability_result.get("message") or "")
+        action = str(capability_result.get("action") or "")
+        if action == "chat" and message:
+            prior_evidence.setdefault("candidate_response", message)
+            prior_evidence.setdefault("candidate_response_action", action)
+    if retry_pause:
+        service.loop_runs.reopen_retryable_pause(loop_run_id)
+    elif resource_retry:
         service.loop_runs.reopen_resource_pause(loop_run_id)
     prepared = service.resume_loop(loop_run_id=loop_run_id, workspace=goal.workspace)
     permission_ceiling = prepared.loop_spec.goal.permission_ceiling
@@ -275,4 +289,5 @@ async def resume_goal_loop_run(
         },
         state_transition=state_transition,
         execution_owner=execution_owner,
+        persist_result_delivery=persist_result_delivery,
     )

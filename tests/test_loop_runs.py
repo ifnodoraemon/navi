@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from navi.db import connect
 from navi.loop_contracts import (
     GoalSpec,
     LoopNode,
@@ -109,6 +110,52 @@ def test_loop_run_execution_claim_is_atomic_and_recoverable_after_expiry(tmp_pat
     assert recovered is not None
     assert recovered.lease_owner == "worker-b"
     assert recovered.version > claimed.version
+
+
+def test_execution_mode_claim_can_require_a_stale_unowned_loop(tmp_path):
+    store = LoopRunStore(tmp_path)
+    fresh = store.create_run(_spec(), evidence={"execution_mode": "foreground"})
+    stale = store.create_run(_spec(), evidence={"execution_mode": "foreground"})
+    with connect(store.db_path) as conn:
+        conn.execute("UPDATE loop_runs SET updated_at = 10 WHERE id = ?", (stale.run_id,))
+
+    claimed = store.claim_active_for_execution_mode(
+        "foreground",
+        owner="recovery-worker",
+        now=100.0,
+        updated_before=20.0,
+    )
+
+    assert [state.run_id for state in claimed] == [stale.run_id]
+    assert store.get_run(fresh.run_id).lease_owner == ""
+
+
+def test_execution_leases_can_be_released_by_observed_owner(tmp_path):
+    store = LoopRunStore(tmp_path)
+    run = store.create_run(_spec(), evidence={"execution_mode": "background"})
+    claimed = store.claim_for_execution(
+        run.run_id,
+        owner="daemon:999999:old-process",
+        lease_seconds=10_000,
+        now=100.0,
+    )
+    assert claimed is not None
+    assert store.active_execution_lease_owners() == ["daemon:999999:old-process"]
+
+    released = store.release_execution_leases_for_owners(
+        {"daemon:999999:old-process"},
+        reason="execution_owner_unavailable",
+        now=101.0,
+    )
+
+    assert released == [run.run_id]
+    recovered = store.get_run(run.run_id)
+    assert recovered is not None
+    assert recovered.lease_owner == ""
+    assert recovered.lease_expires_at == 0.0
+    event = store.list_events(run.run_id)[-1]
+    assert event.event_type == "loop.execution_lease_released"
+    assert json.loads(event.evidence_json)["reason"] == "execution_owner_unavailable"
 
 
 def test_expired_execution_lease_is_released_without_ending_the_loop(tmp_path):

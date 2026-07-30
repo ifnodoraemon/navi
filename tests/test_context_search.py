@@ -9,10 +9,21 @@ import pytest
 
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
+from navi.goals import GoalStore
+from navi.loop_contracts import (
+    GoalSpec,
+    LoopSpec,
+    LoopTerminalState,
+    VerificationKind,
+    VerificationStep,
+)
+from navi.loop_runs import LoopRunStore
 from navi.memory import MemoryStore
 from navi.memory.provider import SQLiteMemoryProvider
 from navi.paths import db_paths
+from navi.runs import RunStore
 from navi.syscalls import ModelSyscallPlanner
+from navi.trace import TraceStore
 
 
 def _context(home: Path, *, sender_id: str, session_id: str) -> CapabilityContext:
@@ -131,6 +142,90 @@ async def test_context_search_uses_actor_identity_without_cross_sender_leak(
     assert any("alpha budget" in item["content"] for item in term_only.facts["evidence"])
     assert beta.facts["identity"]["sender_id"] == "sender-a"
     assert beta.facts["model_decides_usage"] is True
+
+
+@pytest.mark.asyncio
+async def test_context_search_separates_conversation_from_verified_result_and_receipt(
+    tmp_path: Path,
+) -> None:
+    run = RunStore(tmp_path).create(
+        "inspect current task state",
+        source="weixin",
+        peer_id="room-1",
+        sender_id="sender-a",
+        workspace=str(tmp_path),
+    )
+    goal = GoalStore(tmp_path).create(
+        objective="inspect current task state",
+        workspace=str(tmp_path),
+        source="weixin",
+        peer_id="room-1",
+        sender_id="sender-a",
+        session_id="session-a",
+        run_id=run.id,
+        trace_id="trace-result",
+    )
+    accepted_text = "The sampled process table shows an active Codex worker."
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective=goal.objective,
+            scope=(f"repo:{tmp_path}",),
+            permission_ceiling="read",
+        ),
+        goal_id=goal.id,
+        allowed_capabilities=("respond",),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                evidence_key="semantic_checker_result",
+            ),
+        ),
+    )
+    LoopRunStore(tmp_path).create_run(
+        spec,
+        terminal_state=LoopTerminalState.CONVERGED,
+        evidence={"responded_message": accepted_text},
+    )
+    MemoryStore(tmp_path).add_message(
+        "session-a",
+        "assistant",
+        accepted_text,
+        source="weixin",
+        peer_id="room-1",
+        sender_id="sender-a",
+        trace_id="trace-result",
+        run_id=run.id,
+    )
+    TraceStore(tmp_path).add_event(
+        trace_id="trace-result",
+        phase="channel.egress",
+        source="weixin",
+        peer_id="room-1",
+        sender_id="sender-a",
+        ok=True,
+        output_data={
+            "outbox_id": "trace-result:text",
+            "receipt": {"transport": "test_transport"},
+        },
+    )
+
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    result = await registry.invoke(
+        "context.search",
+        {"query": "sampled process", "max_items": 5},
+        permission="read",
+        context=_context(tmp_path, sender_id="sender-a", session_id="session-a"),
+    )
+
+    item = next(row for row in result.facts["evidence"] if row["role"] == "assistant")
+    assert item["trust"] == "checker_accepted_result"
+    assert item["semantic_verification"]["status"] == "accepted"
+    assert item["delivery"] == {
+        "status": "delivered",
+        "transport": "test_transport",
+        "outbox_id": "trace-result:text",
+    }
 
 
 def test_planner_syscall_accepts_used_evidence_ids() -> None:

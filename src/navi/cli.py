@@ -1021,14 +1021,13 @@ def evolution_propose(
     target_id: str,
     reason: str,
     after: str,
-    before: str = "",
-    expected_benefit: str = "",
+    expected_benefit: str,
+    rollback_plan: str,
+    eval_cases: str,
     risk: str = "",
-    rollback_plan: str = "",
     required_approval_level: str = "L2",
     evidence: str = "",
     source_run_id: str = "",
-    eval_cases: str = "",
 ) -> None:
     """Create a reviewable evolution proposal without mutating the target."""
     facts = _invoke_capability(
@@ -1039,7 +1038,6 @@ def evolution_propose(
             "reason": reason,
             "expected_benefit": expected_benefit,
             "risk": risk,
-            "before": before,
             "after": after,
             "rollback_plan": rollback_plan,
             "required_approval_level": required_approval_level,
@@ -1231,11 +1229,11 @@ def connector_outbox(
     if not payload:
         typer.echo("(no delivery items)")
         return
-    for item in payload:
+    for row in payload:
         typer.echo(
-            f"{item['id']} status={item['status']} attempts={item['attempts']}/"
-            f"{item['max_attempts']} next={item['next_attempt_at']:g} "
-            f"expires={item['expires_at']} error={item['error']}"
+            f"{row['id']} status={row['status']} attempts={row['attempts']}/"
+            f"{row['max_attempts']} next={row['next_attempt_at']:g} "
+            f"expires={row['expires_at']} error={row['error']}"
         )
 
 

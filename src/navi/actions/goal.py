@@ -14,6 +14,7 @@ from ..loop_control_service import (
     UpdateGoalRequest,
 )
 from ..loop_contracts import LoopTerminalState
+from ..permission_contract import PERMISSION_ORDER, normalize_permission
 from ..result import Conflict, NaviError, NotFound, PermissionDenied, SchemaMismatch, guarded
 from ..tools import ToolSpec
 from ..workspaces import workspaces_match
@@ -66,11 +67,16 @@ class GoalOpenCapability(BaseCapability):
             context=context,
             runtime=self.runtime,
         )
+        permission_ceiling = _goal_permission_ceiling(
+            _arg_text(args, "permission_ceiling") or context.permission_ceiling,
+            context=context,
+        )
         requested_capabilities = _string_tuple(args.get("allowed_capabilities"))
         allowed_capabilities = _effective_allowed_capabilities(
             requested=requested_capabilities,
             context=context,
             registry=planner_capabilities,
+            permission_ceiling=permission_ceiling,
         )
         request = OpenGoalRequest(
             objective=objective,
@@ -83,7 +89,7 @@ class GoalOpenCapability(BaseCapability):
             scope=_string_tuple(args.get("scope")),
             constraints=_string_tuple(args.get("constraints")),
             acceptance_criteria=_string_tuple(args.get("acceptance_criteria")),
-            permission_ceiling=_arg_text(args, "permission_ceiling") or context.permission_ceiling,
+            permission_ceiling=permission_ceiling,
             allowed_capabilities=allowed_capabilities,
             verification_command=_arg_text(args, "verification_command"),
             timeout_seconds=_positive_int(args.get("timeout_seconds"), default=120, maximum=3600),
@@ -174,13 +180,32 @@ class GoalUpdateCapability(BaseCapability):
             goal = service.goals.get(goal_id)
             if goal is None:
                 raise NotFound(f"goal not found: {goal_id}")
+            previous_spec = service.goal_loop_spec(goal_id)
+            permission_ceiling = _goal_permission_ceiling(
+                _arg_text(args, "permission_ceiling")
+                or previous_spec.goal.permission_ceiling,
+                context=context,
+            )
             allowed_capabilities = _updated_allowed_capabilities(
                 args,
                 home=self.home,
                 workspace=goal.workspace,
                 context=context,
                 runtime=self.runtime,
+                permission_ceiling=permission_ceiling,
             )
+            if allowed_capabilities is None:
+                allowed_capabilities = _effective_allowed_capabilities(
+                    requested=tuple(previous_spec.allowed_capabilities),
+                    context=context,
+                    registry=_planner_capabilities(
+                        self.home,
+                        goal.workspace,
+                        context=context,
+                        runtime=self.runtime,
+                    ),
+                    permission_ceiling=permission_ceiling,
+                )
             result = service.update_goal(
                 UpdateGoalRequest(
                     goal_id=goal_id,
@@ -192,7 +217,7 @@ class GoalUpdateCapability(BaseCapability):
                         args,
                         "acceptance_criteria",
                     ),
-                    permission_ceiling=_arg_text(args, "permission_ceiling"),
+                    permission_ceiling=permission_ceiling,
                     allowed_capabilities=allowed_capabilities,
                     verification_command=(
                         _arg_text(args, "verification_command")
@@ -459,6 +484,28 @@ class GoalStateCapability(BaseCapability):
                     loop_run_id=loop_run_id,
                     limit=limit,
                 )
+                resolved_goal = facts.get("goal")
+                resolved_goal_id = (
+                    str(resolved_goal.get("id") or "")
+                    if isinstance(resolved_goal, dict)
+                    else ""
+                )
+                goal = service.goals.get(resolved_goal_id) if resolved_goal_id else None
+                run = service.runs.get(goal.run_id) if goal and goal.run_id else None
+                if loop_run_id:
+                    loop_run = service.loop_runs.get_run(loop_run_id)
+                else:
+                    loop_runs = (
+                        service.loop_runs.list_by_goal(resolved_goal_id, limit=1)
+                        if resolved_goal_id
+                        else []
+                    )
+                    loop_run = loop_runs[0] if loop_runs else None
+                facts = {
+                    **facts,
+                    "run_diagnostics": _run_diagnostics(run),
+                    "loop_diagnostics": _loop_run_diagnostics(loop_run),
+                }
             else:
                 if parent_goal_id:
                     _require_goal_scope(
@@ -478,6 +525,10 @@ class GoalStateCapability(BaseCapability):
                 )
         except KeyError as exc:
             raise NotFound(str(exc)) from exc
+        facts = {
+            **facts,
+            "evidence_contract": _goal_state_evidence_contract(facts),
+        }
         run_id = str(facts.get("run", {}).get("id") or "")
         return _fact_result("goal", facts, run_id=run_id)
 
@@ -545,6 +596,7 @@ def _updated_allowed_capabilities(
     workspace: str,
     context: CapabilityContext,
     runtime: Any | None,
+    permission_ceiling: str,
 ) -> tuple[str, ...] | None:
     if "allowed_capabilities" not in args:
         return None
@@ -560,6 +612,7 @@ def _updated_allowed_capabilities(
             context=context,
             runtime=runtime,
         ),
+        permission_ceiling=permission_ceiling,
     )
 
 
@@ -568,6 +621,7 @@ def _effective_allowed_capabilities(
     requested: tuple[str, ...],
     context: CapabilityContext,
     registry: Any | None,
+    permission_ceiling: str,
 ) -> tuple[str, ...]:
     if registry is None:
         if context.allowed_tools is None:
@@ -577,22 +631,44 @@ def _effective_allowed_capabilities(
         visible = {
             spec.name
             for spec in registry.planner_specs(
-                permission_ceiling=context.permission_ceiling,
+                permission_ceiling=permission_ceiling,
             )
+            if spec.permission_policy != "static"
+            or PERMISSION_ORDER[spec.permission]
+            <= PERMISSION_ORDER[permission_ceiling]
         }
     if context.allowed_tools is not None:
         visible &= set(context.allowed_tools)
     if requested:
-        unknown = sorted(set(requested) - visible)
+        requested_set = set(requested)
+        wildcard = "*" in requested_set
+        unknown = sorted(requested_set - visible - {"*"})
         if unknown:
             raise SchemaMismatch(
-                "goal.open capabilities are outside the current policy envelope: "
+                "goal capabilities are outside the current policy envelope: "
                 + ", ".join(unknown)
             )
-        visible &= set(requested)
+        if not wildcard:
+            visible &= requested_set
     if not visible:
         raise SchemaMismatch("goal.open has no capabilities in the current policy envelope")
     return tuple(sorted(visible))
+
+
+def _goal_permission_ceiling(
+    value: str,
+    *,
+    context: CapabilityContext,
+) -> str:
+    try:
+        ceiling = normalize_permission(value, default=context.permission_ceiling)
+    except ValueError as exc:
+        raise SchemaMismatch(str(exc)) from exc
+    if PERMISSION_ORDER[ceiling] > PERMISSION_ORDER[context.permission_ceiling]:
+        raise PermissionDenied(
+            "goal permission ceiling exceeds the caller policy envelope."
+        )
+    return ceiling
 
 
 def _schedule_conflict_result(exc: ScheduleConflict) -> CapabilityResult:
@@ -777,6 +853,26 @@ def _scoped_goal_state(
     return facts
 
 
+def _goal_state_evidence_contract(facts: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "scope": str(facts.get("query_scope") or "navi_goal_control_plane"),
+        "authority": "navi_persistent_goal_stores",
+        "establishes": [
+            "navi_goal_lifecycle_state",
+            "navi_loop_run_state",
+            "navi_scheduled_occurrence_state",
+            "navi_approval_state",
+            "navi_delivery_projection",
+        ],
+        "does_not_establish": [
+            "external_application_state",
+            "external_agent_task_activity",
+            "external_agent_approval_state",
+            "host_process_state",
+        ],
+    }
+
+
 def _goals_for_view(
     service: LoopControlService,
     *,
@@ -898,11 +994,14 @@ def _goal_occurrence_summary(service: LoopControlService, goal: Any) -> dict[str
         for key, value in accepted.items()
         if key not in {"body", "body_provenance"}
     }
+    run = service.runs.get(goal.run_id) if goal.run_id else None
+    loop_runs = service.loop_runs.list_by_goal(goal.id, limit=1)
+    loop_run = loop_runs[0] if loop_runs else None
     return {
         "goal_id": goal.id,
         "parent_goal_id": goal.parent_goal_id,
         "run_id": goal.run_id,
-        "trace_id": goal.trace_id,
+        "trace_id": goal.trace_id or goal.run_id,
         "phase": goal.phase,
         "acceptance": goal.acceptance,
         "resolution": goal.resolution,
@@ -911,6 +1010,50 @@ def _goal_occurrence_summary(service: LoopControlService, goal: Any) -> dict[str
         "created_at": goal.created_at,
         "updated_at": goal.updated_at,
         "delivery": delivery,
+        "run_diagnostics": _run_diagnostics(run),
+        "loop_diagnostics": _loop_run_diagnostics(loop_run),
+    }
+
+
+def _run_diagnostics(run: Any | None) -> dict[str, Any]:
+    return {
+        "phase": str(run.phase) if run is not None else "",
+        "governance": str(run.governance) if run is not None else "",
+        "acceptance": str(run.acceptance) if run is not None else "",
+        "resolution": str(run.resolution) if run is not None else "",
+        "error": str(run.error) if run is not None else "",
+    }
+
+
+def _loop_run_diagnostics(loop_run: Any | None) -> dict[str, Any]:
+    if loop_run is None:
+        return {}
+    evidence = loop_run.evidence if isinstance(loop_run.evidence, dict) else {}
+    raw_args = evidence.get("args")
+    args = dict(raw_args) if isinstance(raw_args, dict) else {}
+    checker_summaries: list[str] = []
+    raw_checker_results = evidence.get("checker_results")
+    if isinstance(raw_checker_results, list):
+        for item in raw_checker_results[-3:]:
+            if not isinstance(item, dict):
+                continue
+            raw_checker_evidence = item.get("evidence")
+            checker_evidence = (
+                raw_checker_evidence if isinstance(raw_checker_evidence, dict) else {}
+            )
+            summary = str(checker_evidence.get("evidence_summary") or "").strip()
+            if summary:
+                checker_summaries.append(summary[:1200])
+    return {
+        "loop_run_id": str(loop_run.run_id),
+        "node": str(loop_run.node),
+        "terminal_state": str(loop_run.terminal_state),
+        "attempt": int(loop_run.attempt),
+        "reason_code": str(evidence.get("reason_code") or ""),
+        "reason": str(evidence.get("reason") or ""),
+        "error_type": str(args.get("error_type") or ""),
+        "checker_summaries": checker_summaries,
+        "diagnostic_authority": "persisted_loop_run_state",
     }
 
 
@@ -1097,15 +1240,19 @@ def _goal_result(
         str(LoopTerminalState.PAUSED),
         str(LoopTerminalState.WAITING_APPROVAL),
     }
+    target_is_paused = terminal_state in paused_states
     return CapabilityResult(
         ok=terminal_state not in failed_states,
         action=action,
         message=message,
         run_id=result.run.id,
-        terminal=bool(terminal_state) and terminal_state not in paused_states,
+        terminal=bool(terminal_state) and not target_is_paused,
         facts=facts,
         error_reason=f"loop_{terminal_state}" if terminal_state in failed_states else "",
-        yields_control=terminal_state in paused_states,
+        # The returned LoopRun is the governed target of goal.open/resume, not
+        # the control turn that invoked this capability. Its durable gate is
+        # reported in facts and must never be copied into the control LoopRun.
+        yields_control=False,
     )
 
 

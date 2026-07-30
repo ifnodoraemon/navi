@@ -65,6 +65,68 @@ def test_loop_control_service_opens_goal_without_executing_state_graph(tmp_path)
     assert LoopRunStore(tmp_path).get_run(result.loop_run.run_id) is not None
 
 
+def test_reconcile_approval_wait_without_owned_gate_uses_recoverable_saga(tmp_path):
+    service = LoopControlService(tmp_path)
+    opened = service.open_goal(
+        OpenGoalRequest(
+            objective="approval control wrapper",
+            workspace=str(tmp_path),
+            loop_kind="turn",
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="sender-1",
+            session_id="session-1",
+        )
+    )
+    service.runs.update_run(
+        opened.run.id,
+        phase=Phase.PAUSED,
+        governance=Governance.AWAITING_APPROVAL,
+        resolution=Resolution.BLOCKED,
+    )
+    with connect(service.loop_runs.db_path) as conn:
+        conn.execute(
+            """
+            UPDATE loop_runs
+            SET node = 'escalate', terminal_state = 'waiting_approval',
+                evidence_json = ?, updated_at = 1
+            WHERE id = ?
+            """,
+            (
+                json.dumps(
+                    {
+                        "action": "approval",
+                        "facts": {
+                            "continuation_status": "waiting_approval",
+                            "pending_approval": {"id": "belongs-to-another-run"},
+                        },
+                    }
+                ),
+                opened.loop_run.run_id,
+            ),
+        )
+        conn.execute("DELETE FROM loop_specs WHERE id = ?", (opened.loop_spec.id,))
+
+    facts = service.reconcile_approval_waits(now=100, orphan_grace_seconds=0)
+
+    assert facts["cancelled"] == [opened.loop_run.run_id]
+    loop_run = service.loop_runs.get_run(opened.loop_run.run_id)
+    assert loop_run is not None
+    assert loop_run.terminal_state == LoopTerminalState.CANCELLED
+    run = service.runs.get(opened.run.id)
+    goal = service.goals.get(opened.goal.id)
+    assert run is not None and run.phase == Phase.ENDED
+    assert run.resolution == Resolution.CANCELED
+    assert goal is not None and goal.phase == Phase.ENDED
+    assert goal.resolution == Resolution.CANCELED
+    with connect(service.loop_runs.db_path) as conn:
+        saga = conn.execute(
+            "SELECT status FROM lifecycle_sagas WHERE operation_key = ?",
+            (f"external_wait_cancel:{opened.loop_run.run_id}",),
+        ).fetchone()
+    assert tuple(saga) == ("completed",)
+
+
 def test_loop_control_service_does_not_invent_a_checker_acceptance_criterion(tmp_path):
     result = LoopControlService(tmp_path).open_goal(
         OpenGoalRequest(
@@ -128,12 +190,13 @@ def test_background_converged_result_creates_delivery_outbox(tmp_path):
         "transport_receipt_available": False,
     }
 
-    claimed = service.goals.claim_pending_delivery_outbox(channel="weixin")
+    outbox_store = DeliveryOutboxStore(tmp_path)
+    claimed = outbox_store.claim_ready(channel="weixin")
     assert len(claimed) == 1
     assert claimed[0].trace_id == opened.run.id
-    service.goals.mark_delivery_outbox_failed(claimed[0].id, error="provider unavailable")
-    assert service.goals.claim_pending_delivery_outbox(channel="weixin") == []
-    status = DeliveryOutboxStore(tmp_path).get(claimed[0].id)
+    outbox_store.mark_failed(claimed[0].id, error="provider unavailable")
+    assert outbox_store.claim_ready(channel="weixin") == []
+    status = outbox_store.get(claimed[0].id)
     assert status is not None
     assert status.status == "failed"
 
@@ -159,10 +222,11 @@ def test_stale_sending_delivery_is_requeued_with_the_same_idempotency_key(tmp_pa
         channel="weixin",
     )
     assert outbox is not None
-    claimed = service.goals.claim_pending_delivery_outbox(channel="weixin")
+    outbox_store = DeliveryOutboxStore(tmp_path)
+    claimed = outbox_store.claim_ready(channel="weixin")
     assert len(claimed) == 1
 
-    recovered = service.goals.mark_stale_sending_delivery_outbox_unknown(
+    recovered = outbox_store.recover_stale_sending(
         channel="weixin",
         now=claimed[0].updated_at + 301,
     )
@@ -413,6 +477,43 @@ def test_scheduled_occurrence_exposes_prior_output_and_delivery_as_facts(tmp_pat
     assert task_context["progress"]["scope"] == "lineage"
     assert task_context["progress"]["sequence_number"] == 2
     assert task_context["progress"]["authoritative_prior_items"] == [previous]
+
+
+def test_scheduled_occurrence_keeps_failed_prior_out_of_semantic_authority(tmp_path):
+    service = LoopControlService(tmp_path)
+    registered = service.open_goal(
+        OpenGoalRequest(
+            objective="report current account state",
+            workspace=str(tmp_path),
+            loop_kind="scheduled",
+            cron_schedule="15 8 * * *",
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            allowed_capabilities=("account.usage", "respond"),
+        )
+    )
+    first = service.open_scheduled_occurrence(registered.goal)
+    failed_run = service.runs.update_run(
+        first.run.id,
+        phase=Phase.ENDED,
+        governance=Governance.NONE,
+        acceptance=Acceptance.REJECTED,
+        resolution=Resolution.FAILED,
+        result_summary="candidate was rejected",
+        error="checker_rejected",
+    )
+    assert failed_run is not None
+    service.goals.update_for_run(failed_run)
+
+    second = service.open_scheduled_occurrence(registered.goal)
+
+    trigger = second.loop_spec.goal.metadata["trigger_facts"]
+    assert len(trigger["prior_occurrences"]) == 1
+    assert trigger["prior_occurrences"][0]["task_status"] == "blocked"
+    task_context = second.loop_spec.goal.metadata["task_context"]
+    assert task_context["progress"]["sequence_number"] == 2
+    assert task_context["progress"]["authoritative_prior_items"] == []
 
 
 def test_scheduled_goal_can_be_cancelled_after_registration(tmp_path):

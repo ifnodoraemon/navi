@@ -50,17 +50,29 @@ The runtime owns deterministic enforcement:
 - durable lifecycle transitions.
 
 Each model role resolves to one declared provider. The runtime invokes that
-provider once per model call and propagates provider, transport, empty-response,
-and structured-output failures without retrying or switching providers. A later
-planning turn may choose another attempt only from the surfaced failure facts.
-The only transport-level exception is a persisted connector delivery item with a
-stable idempotency key: its connector-neutral outbox may make a bounded retry of
-the unchanged item after an adapter-classified transient failure. This does not
-repeat a model or capability call, alter content, switch channels, or replace
-the required connector receipt. The adapter supplies typed provider codes and a
-minimum retry interval; the outbox enforces the item attempt bound and delivery
-deadline. A recurring occurrence that reaches its next persisted schedule
-deadline without a receipt expires instead of joining a later replay burst.
+provider once in an execution pass and must not recurse, switch providers,
+rewrite arguments, or synthesize a substitute after failure. Structured-output
+and semantic failures propagate to the loop. A malformed structured model
+response is a typed Planner/Checker contract fact: it may enter the ordinary
+model-owned replan budget, but it is never a provider-transport retry. A typed
+transient provider transport failure may create one persisted retry gate with a
+bounded delay and resume the same Planner or Checker node once. The gate records
+model role, resume node, retry count, and maximum; exhaustion is terminal.
+Checker recovery must reuse the persisted capability result and candidate
+response without reexecuting the capability. A foreground retry pause persists
+the inbound user message, writes no empty assistant message, and suppresses the
+otherwise automatic fact responder; a later accepted connector result enters
+the ordinary outbox.
+
+A persisted connector delivery item with a stable idempotency key is the other
+transport-level recovery boundary: its connector-neutral outbox may make a
+bounded retry of the unchanged item after an adapter-classified transient
+failure. This does not repeat a model or capability call, alter content, switch
+channels, or replace the required connector receipt. The adapter supplies typed
+provider codes and a minimum retry interval; the outbox enforces the item attempt
+bound and delivery deadline. A recurring occurrence that reaches its next
+persisted schedule deadline without a receipt expires instead of joining a later
+replay burst.
 When authoritative inbound activity refreshes a connector session, only an
 unchanged, receipt-free delivery that failed for session expiry and remains
 inside its persisted deadline may be requeued under its original idempotency
@@ -116,9 +128,41 @@ The loop must:
   bounded replanning opportunity remains; the runtime must not choose the
   semantic recovery route.
 
+For a connector or interactive turn, checker acceptance of raw capability facts
+is not yet a user-visible result. When `respond` is inside the governed
+capability envelope, the model must author a grounded response and that response
+must pass the checker before the LoopRun converges. The runtime may expose that
+the verified work is complete and a surface response remains; it must not repeat
+the completed effect or let an unchecked finalizer turn a tool observation into
+a completion claim.
+The semantic checker operates before external transport under an explicit
+evaluation contract. It judges objective coverage, grounding, and
+contradictions; it never requires or infers a connector receipt. A separate
+outbox/receipt protocol owns transport completion. Its input omits
+pre-acceptance delivery state, because no receipt can exist before semantic
+acceptance authorizes the outbox. Within that scope, communication obligations
+are evaluated from grounded candidate copy; only the later receipt establishes
+external delivery.
+
 When a later attempt converges, prior rejection and recovery facts remain in
 attempt history and trace evidence but must not remain as the current LoopRun
 reason code or active recovery state.
+Planner recovery receives a bounded typed projection of prior capability facts,
+not only their field names, so a later response can use an earlier authoritative
+observation after another capability has run. `respond` output remains labeled
+candidate-only in that projection. The final Planner assembly must preserve
+ordinary nested rows inside an already bounded projection rather than truncating
+them again at a shallower generic depth. Detached background execution excludes
+ambient session transcripts unless its task context explicitly declares them
+authoritative; lineage facts and governed memory remain available. For foreground
+turns, the isolated semantic checker receives the same bounded transcript as
+semantic context so it can resolve referents and elliptical replies. That context
+never establishes capability facts, effects, completion, or delivery, and
+assistant messages remain explicitly non-authoritative candidates. The current
+candidate exists only when the current capability result declares candidate copy;
+an assistant message in transcript history cannot be substituted for it. Before
+candidate copy exists, the checker judges current capability-evidence coverage;
+a pass enters the governed response phase rather than failing for missing prose.
 
 ## Delegation Contract
 
@@ -136,14 +180,20 @@ Children cannot recursively delegate, contact the user, resolve approvals, use
 connectors, or mutate the workspace. They return findings only through the
 child-only terminal `agent.report` protocol. A report is a claim; completion
 remains separate and requires the child LoopRun and checker evidence to
-converge. Transient background resource pauses resume at their persisted node;
-they must not be mislabeled or replayed as approval continuations.
+converge. Transient background resource pauses and typed provider transport
+pauses resume at their persisted node; they must not be mislabeled or replayed
+as approval continuations. Provider retry gates are eligible for foreground
+recovery because connector ingress may own the original turn; accepted output
+still requires the same outbox and receipt path.
 `agent.control` exposes only depth-1 child records. `goal.state` exposes
 actor-scoped top-level task, history, recurring-schedule, and scheduled-
 occurrence views. A recurring template read includes a bounded set of recent
 occurrences and their authoritative delivery status, attempts, typed failure
-reason, and trace/run identities without embedding the delivered body. Read
-results declare the scope for which an empty result is authoritative.
+reason, persisted Run/Loop diagnostics, and trace/run identities without
+embedding the delivered body. Read results declare the scope for which an empty
+result is authoritative. `goal.state` is authoritative only for Navi's control
+plane and must explicitly exclude external application, agent-process, and
+external approval state.
 Recurring schedule changes use `goal.update` against an explicit `goal_id`;
 `goal.open` creates a new schedule and refuses same-actor same-cron duplicates
 unless the caller explicitly declares an independent duplicate schedule.
@@ -151,6 +201,8 @@ unless the caller explicitly declares an independent duplicate schedule.
 Planner and checker progress claims are governed by `task_context`, not by
 hardcoded task types, keywords, or connector names. A loop may declare a
 lineage, sequence number, progress authority, and authoritative prior items.
+Failed or blocked occurrences may remain in the control ledger but must not be
+projected as authoritative prior semantic results.
 Ambient actor/workspace history is background only unless the task context
 explicitly declares it authoritative for the current task.
 
@@ -195,6 +247,15 @@ are translated into its active shadow workspace for both effects and command
 verification, without changing the Goal's durable authorization scope.
 Shadow create, merge, and discard are loop-kernel operations, not planner-callable
 capabilities selected by arbitrary run identifiers.
+Declared read-only process inspection argv use a read-only host `/proc` view
+inside the remaining sandbox boundaries. Their output declares
+`observation_scope=host_process_table`; a matching row proves only process
+presence and sampled state, never task progress or completion by itself.
+Web search uses the provider selected by configuration; query text cannot switch
+providers. Its evidence contract establishes retrieved URLs, snippets, and
+source-reported claims, but not claim truth, source authority,
+representativeness, or real-world outcomes. Material numbers and outcome claims
+must retain source attribution or be described as unverified reports.
 
 Tools execute or observe and return facts. Skills provide procedures and may
 package scripts, templates, or assets, but execution still passes through
@@ -228,10 +289,25 @@ that control-plane policy; model-planned and connector calls remain subject to
 the normal durable approval gate. Authorization preflight runs before approval
 creation and is repeated before the effect to prevent approval of an operation
 the caller cannot perform.
+Approval of an observation is not evidence about the observed entity. When the
+approved continuation reaches its own checker-accepted response, the approval
+surface returns that original task result as the primary reply rather than
+stopping at “approval succeeded.”
+An approval wait belongs to exactly one LoopRun and must name a durable approval
+whose Run matches that LoopRun's governed Run. An approval-control turn may
+report that the original task reached another gate, but must not copy that gate
+into its own lifecycle. Expired, rejected, missing, or mismatched gates are
+reconciled through a recoverable lifecycle saga; an approved gate left behind by
+a crash is reopened at its persisted checkpoint.
 
 Run, Goal, and LoopRun creation and lifecycle changes must be atomic or use an
 explicit, recoverable saga. Partial failure must not leave an apparently active
 or approved orphan entity.
+A Goal's statically declared capabilities must each require no more permission
+than that Goal's immutable permission ceiling; `goal.open` and `goal.update`
+reject an invalid envelope before persistence. Capabilities with call-dependent
+permission remain eligible for model selection, but every concrete call is
+derived and gated against the same ceiling.
 
 Only one execution driver may own an active LoopRun. Claims and transitions use
 durable leases, versions, and compare-and-swap checks. Mutating capability calls
@@ -239,6 +315,12 @@ use a durable Effect Journal: completed calls replay their recorded result,
 concurrent calls wait/fail closed, and uncertain outcomes require reconciliation
 instead of blind retry. Model and capability budgets are accounted in a
 process-safe ledger and reconciled with observed provider usage.
+Process-owned execution leases must carry an inspectable process identity.
+Startup and queue reconciliation may release a lease only after its declared
+owner is observably unavailable or the lease has expired. A stale, unowned
+foreground LoopRun may then resume from its persisted checkpoint; if it belongs
+to a connector, any accepted result enters the same durable result outbox and
+still requires an authoritative transport receipt.
 Before a mutating capability effect begins, the audit store must reserve its
 tool-call record. Reservation failure blocks the effect; completion failure
 surfaces an uncertain audit outcome instead of reporting clean success.
@@ -253,19 +335,38 @@ memory rather than self-approved facts, and hybrid recall must not depend on an
 FTS seed. Consolidation is bound to one run transcript, reclaims expired leases,
 and dead-letters a recorded processing failure without retrying it. Missing jobs are
 reconstructed before retention. Expired transient turns are compacted only after
-consolidation, while terminal lifecycle summaries remain available for metrics. User-facing
+consolidation and after any external wait has been durably cancelled; retention
+must never delete a gate or LoopSpec while its Run, Goal, or LoopRun still claims
+to be resumable. Terminal lifecycle summaries remain available for metrics. User-facing
 actors cannot write global memory. Assistant conversation text and run result
 summaries are non-authoritative candidates, not durable facts. Preferences
 learned from prior approvals may inform explanations but must not expand
 permissions.
+Context search promotes an assistant message to
+`trust=checker_accepted_result` only when its exact body matches a converged
+LoopRun response. A connector receipt is projected separately and is the only
+authority for transport completion; ordinary `trust=conversation_log` text may
+resolve a referent but cannot prove task state or completion.
 
 Trace is audit evidence, not the authoritative runtime state. Secrets and
-sensitive payloads must be redacted before persistence. One latest evaluation is
-stored per trace so rerunning evaluation cannot inflate SLO samples.
+sensitive payloads must be redacted before persistence. An evaluation is
+materialized after each background LoopRun processing pass as well as foreground
+turn completion, so scheduled failures and no-progress stops are not absent from
+SLO evidence. Exactly one latest evaluation is stored per trace, so rerunning
+evaluation cannot inflate SLO samples. Duplicate-effect diagnostics use the
+executor's call-level `mutates` fact; repeated read observations are not effects
+even when their domain payload contains a lifecycle `state_transition`.
 Goal execution inherits the governed Run trace identity when an ingress caller
 does not provide a separate trace id. Trace projections correlate that identity
 back to durable Goal and LoopRun records, and a successful model call must not
 make a blocked or failed durable task appear successful.
+An earlier Planner call or parse error followed by a later accepted result is a
+degraded recovered trace, not a runtime failure. An unrecovered Planner error
+remains a failure.
+Checker verdicts and summaries are model judgments, not observation facts.
+Their summaries must preserve exact capability labels and values, and no later
+Planner or responder may use a checker paraphrase instead of conflicting raw
+capability fields.
 
 Calendar events, reminders, contacts, mail drafts, and attention policies share
 a scoped personal-resource adapter contract with schema validation, optimistic
@@ -274,11 +375,18 @@ records; no capability may claim delivery without an authoritative external
 connector receipt.
 
 Evolution proposals are allowed only for targets with a runtime Target Adapter.
+The adapter, not proposal input, reads the authoritative baseline and validates
+that the target is actually consumed by the runtime. Inert prompt-layer names
+are rejected. Proposal and state capability facts expose lifecycle and
+fingerprints rather than copying target payloads back into model context.
 Candidate evaluation cases, fingerprints, checks, approval evidence, applied
 events, activation observations, and rollback facts are durable. Every proposal
 declares evaluation cases and cannot apply unless its latest candidate experiment
 passed. Human approval is bound to the exact apply arguments using keyed digests
 for private values, so matching does not require their plaintext persistence.
+Immutable runtime evaluation contracts provide the minimum schema/non-empty
+checks needed to propose and test the first managed evaluation case; they do not
+authorize apply or replace proposal-specific evaluation and human approval.
 Activation evidence must be explicitly attributed to its proposal; unrelated
 system outcomes are not canary evidence. Regression beyond the approved threshold
 triggers rollback, and uncertain application state is an SLO breach.
@@ -290,6 +398,8 @@ activation safety, proactive connector delivery success, and overdue delivery
 backlog. Empty samples are reported as insufficient data, never as
 healthy. User-requested cancellation is reported separately and is not classified
 as task execution failure in the success-rate denominator.
+Execution-lease health includes stale unowned active loops, not only leases whose
+expiry timestamp has passed.
 
 The active assistant service must expose an event-loop watchdog to its external
 process supervisor. Connector status reads must classify an overdue ingress

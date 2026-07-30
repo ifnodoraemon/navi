@@ -12,6 +12,8 @@ from .provider import ChatMessage
 from .specs_data import PROMPT_ASSEMBLIES_SPEC, SYSCALL_PLANNER_SPEC
 from .tools import ToolSpec
 
+PLANNER_RUNTIME_FACT_MAX_DEPTH = 8
+
 
 @dataclass(frozen=True)
 class PromptBlock:
@@ -156,7 +158,14 @@ def assemble_planner_turn_input(
     )
 
     if runtime_facts:
-        projected_runtime_facts = project_model_facts(runtime_facts)
+        # Runtime facts may already contain bounded typed projections (for
+        # example attempt_history -> facts -> windows -> item). Preserve those
+        # ordinary records at the final assembly boundary instead of truncating
+        # them a second time solely because they are nested.
+        projected_runtime_facts = project_model_facts(
+            runtime_facts,
+            max_depth=PLANNER_RUNTIME_FACT_MAX_DEPTH,
+        )
         blocks.append(
             PromptBlock(
                 "RUNTIME FACTS",
@@ -335,9 +344,11 @@ def assemble_semantic_checker_messages(
     *,
     objective: str,
     acceptance_criteria: list[str],
+    conversation_context: dict[str, Any],
     current_time: dict[str, Any],
     trigger_facts: dict[str, Any],
     task_context: dict[str, Any],
+    evaluation_contract: dict[str, Any],
     attempt: int,
     max_attempts: int,
     last_capability: dict[str, Any],
@@ -354,9 +365,11 @@ def assemble_semantic_checker_messages(
                 {
                     "objective": objective,
                     "acceptance_criteria": acceptance_criteria,
+                    "conversation_context": conversation_context,
                     "current_time": current_time,
                     "trigger_facts": trigger_facts,
                     "task_context": task_context,
+                    "evaluation_contract": evaluation_contract,
                     "attempt": attempt,
                     "max_attempts": max_attempts,
                     "last_capability": last_capability,

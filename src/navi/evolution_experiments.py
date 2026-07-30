@@ -421,6 +421,8 @@ def _evaluate_assertion(case_id: str, raw: Any, candidate: str) -> dict[str, Any
         passed = bool(value) and value in candidate
     elif kind == "not_contains":
         passed = bool(value) and value not in candidate
+    elif kind == "nonempty":
+        passed = bool(candidate.strip())
     elif kind == "json_valid":
         try:
             json.loads(candidate)

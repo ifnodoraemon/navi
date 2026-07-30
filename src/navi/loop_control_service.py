@@ -6,6 +6,13 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from .approval_contract import (
+    APPROVAL_STATUS_APPROVED,
+    APPROVAL_STATUS_EXPIRED,
+    APPROVAL_STATUS_PENDING,
+    APPROVAL_STATUS_REJECTED,
+    owned_approval_gate_id,
+)
 from .cron import next_cron_time, validate_cron
 from .goals import Goal, GoalStore
 from .lifecycle import Acceptance, Governance, Phase, Resolution
@@ -494,6 +501,11 @@ class LoopControlService:
                     "delivery": self.goals.latest_delivery(child.id),
                 }
             )
+        authoritative_prior_items = [
+            item
+            for item in prior_occurrences
+            if str(item.get("accepted_result_text") or "").strip()
+        ]
         trigger_facts = {
             "type": "scheduled_occurrence",
             "schedule_goal_id": goal.id,
@@ -507,7 +519,7 @@ class LoopControlService:
             lineage_id=goal.id,
             lineage_kind="recurring_goal",
             sequence_number=occurrence_number,
-            authoritative_prior_items=prior_occurrences,
+            authoritative_prior_items=authoritative_prior_items,
         )
         return self.open_goal(
             OpenGoalRequest(
@@ -595,6 +607,7 @@ class LoopControlService:
         *,
         state_transition: str | None = None,
         evidence: dict[str, Any] | None = None,
+        persist_result_delivery: bool | None = None,
     ) -> LoopControlServiceResult:
         merged_evidence = {
             "loop_run_id": graph_result.run_state.run_id,
@@ -604,9 +617,14 @@ class LoopControlService:
             else {},
             **(evidence or {}),
         }
+        delivery_required = (
+            str(graph_result.run_state.evidence.get("execution_mode") or "") == "background"
+            if persist_result_delivery is None
+            else bool(persist_result_delivery)
+        )
         background_delivery_pending = (
             graph_result.terminal_state == str(LoopTerminalState.CONVERGED)
-            and str(graph_result.run_state.evidence.get("execution_mode") or "") == "background"
+            and delivery_required
             and bool(_surface_message_from_result(graph_result))
             and bool(base.goal.source and base.goal.peer_id)
         )
@@ -715,6 +733,127 @@ class LoopControlService:
                 return self._cancel_scheduled_goal(goal, reason=reason)
             raise ValueError(f"goal has no active loop run to cancel: {goal_id}")
         return self.cancel_loop(loop_run_id=loop_run.run_id, reason=reason)
+
+    def reconcile_approval_waits(
+        self,
+        *,
+        now: float | None = None,
+        orphan_grace_seconds: float = 60.0,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Reconcile approval entities with the exact LoopRuns that own them."""
+        current_time = time.time() if now is None else now
+        expired_approvals = self.runs.expire_pending_approvals(now=current_time)
+        cancelled: list[str] = []
+        resumed: list[str] = []
+        valid: list[str] = []
+        deferred: list[str] = []
+        grace = max(0.0, orphan_grace_seconds)
+        for state in self.loop_runs.list_waiting_approval(limit=limit):
+            if state.updated_at + grace > current_time:
+                deferred.append(state.run_id)
+                continue
+            goal = self.goals.get(state.goal_id)
+            run = self.runs.get(goal.run_id) if goal is not None and goal.run_id else None
+            if goal is None or run is None:
+                deferred.append(state.run_id)
+                continue
+            approval_id = owned_approval_gate_id(state.evidence)
+            approval = self.runs.get_approval(approval_id) if approval_id else None
+            if approval is None:
+                self.cancel_external_wait_durably(
+                    loop_run_id=state.run_id,
+                    reason="approval_gate_owner_missing",
+                )
+                cancelled.append(state.run_id)
+                continue
+            if approval.run_id != run.id:
+                self.cancel_external_wait_durably(
+                    loop_run_id=state.run_id,
+                    reason="approval_gate_owner_mismatch",
+                )
+                cancelled.append(state.run_id)
+                continue
+            if approval.status == APPROVAL_STATUS_PENDING:
+                valid.append(state.run_id)
+                continue
+            if approval.status == APPROVAL_STATUS_APPROVED and run.phase != Phase.ENDED:
+                self.loop_runs.reopen_for_resume(state.run_id)
+                resumed.append(state.run_id)
+                continue
+            if approval.status in {
+                APPROVAL_STATUS_EXPIRED,
+                APPROVAL_STATUS_REJECTED,
+                APPROVAL_STATUS_APPROVED,
+            }:
+                self.cancel_external_wait_durably(
+                    loop_run_id=state.run_id,
+                    reason=f"approval_gate_{approval.status}",
+                )
+                cancelled.append(state.run_id)
+                continue
+            deferred.append(state.run_id)
+        return {
+            "expired_approvals": expired_approvals,
+            "cancelled": cancelled,
+            "resumed": resumed,
+            "valid": valid,
+            "deferred": deferred,
+        }
+
+    def cancel_external_wait_durably(
+        self,
+        *,
+        loop_run_id: str,
+        reason: str,
+    ) -> LoopRunState:
+        """Cancel an external wait through a recoverable Loop/Run/Goal saga."""
+        state = self.loop_runs.get_run(loop_run_id)
+        if state is None:
+            raise KeyError(f"loop run not found: {loop_run_id}")
+        if str(state.terminal_state) == str(LoopTerminalState.CANCELLED):
+            return state
+        if str(state.terminal_state) not in {
+            str(LoopTerminalState.PAUSED),
+            str(LoopTerminalState.WAITING_APPROVAL),
+        }:
+            raise ValueError(f"loop run is not at an external wait: {state.terminal_state}")
+        goal = self.goals.get(state.goal_id)
+        if goal is None:
+            raise KeyError(f"goal not found for loop run: {state.goal_id}")
+        run = self.runs.get(goal.run_id) if goal.run_id else None
+        if run is None:
+            raise KeyError(f"run not found for goal: {goal.run_id}")
+        normalized_reason = reason.strip() or "external_wait_cancelled"
+        evidence = {
+            "state_transition": "external_wait_cancelled",
+            "loop_run_id": state.run_id,
+            "reason": normalized_reason,
+        }
+        saga = self.lifecycle_sagas.prepare(
+            operation_key=f"external_wait_cancel:{state.run_id}",
+            run_id=run.id,
+            goal_id=goal.id,
+            run_updates={
+                "phase": Phase.ENDED,
+                "governance": Governance.NONE,
+                "acceptance": Acceptance.REJECTED,
+                "resolution": Resolution.CANCELED,
+                "result_summary": "external wait cancelled",
+                "error": normalized_reason,
+            },
+            goal_evidence=evidence,
+            loop_transition={
+                "kind": "external_wait_cancel",
+                "loop_run_id": state.run_id,
+                "evidence": evidence,
+            },
+        )
+        self.lifecycle_sagas.apply(saga)
+        cancelled = self.loop_runs.get_run(state.run_id)
+        if cancelled is None:
+            raise KeyError(f"loop run not found after cancellation: {state.run_id}")
+        return cancelled
 
     def _cancel_scheduled_goal(
         self,

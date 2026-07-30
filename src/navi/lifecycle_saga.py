@@ -65,10 +65,15 @@ class LifecycleSagaStore:
         goal_id: str,
         run_updates: dict[str, Any],
         goal_evidence: dict[str, Any],
+        loop_transition: dict[str, Any] | None = None,
     ) -> LifecycleSaga:
         now = time.time()
         payload = json.dumps(
-            {"run_updates": run_updates, "goal_evidence": goal_evidence},
+            {
+                "run_updates": run_updates,
+                "goal_evidence": goal_evidence,
+                "loop_transition": loop_transition or {},
+            },
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -102,6 +107,7 @@ class LifecycleSagaStore:
         if not isinstance(run_updates, dict) or not isinstance(goal_evidence, dict):
             raise ValueError("lifecycle saga payload is invalid")
         try:
+            self._apply_loop_transition(payload.get("loop_transition"))
             run = RunStore(self.home).update_run(saga.run_id, **run_updates)
             if run is None:
                 raise KeyError(f"run not found: {saga.run_id}")
@@ -113,6 +119,22 @@ class LifecycleSagaStore:
             raise
         self._mark_completed(saga.id)
         return run, goal
+
+    def _apply_loop_transition(self, transition: Any) -> None:
+        if not isinstance(transition, dict) or not transition:
+            return
+        if transition.get("kind") != "external_wait_cancel":
+            raise ValueError("unsupported lifecycle saga loop transition")
+        loop_run_id = str(transition.get("loop_run_id") or "")
+        evidence = transition.get("evidence")
+        if not loop_run_id or not isinstance(evidence, dict):
+            raise ValueError("external-wait lifecycle transition is invalid")
+        from .loop_runs import LoopRunStore
+
+        LoopRunStore(self.home).cancel_external_wait(
+            loop_run_id,
+            evidence=evidence,
+        )
 
     def recover_pending(self, *, limit: int = 100) -> list[str]:
         with connect(self.db_path) as conn:

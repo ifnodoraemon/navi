@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse, urlunparse
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY, CAPABILITY_RETRYABLE_KEY
@@ -23,6 +25,26 @@ _SEARCH_TITLE_MAX_CHARS = 300
 _SEARCH_SNIPPET_MAX_CHARS = 1200
 _WEB_SEARCH_PROVIDER_SEARXNG = "searxng"
 _WEB_SEARCH_PROVIDER_EXA_MCP = "exa_mcp"
+
+
+def _web_search_evidence_contract(*, provider: str) -> dict[str, Any]:
+    return {
+        "scope": "query_ranked_web_documents",
+        "provider": provider,
+        "establishes": [
+            "search_result_presence",
+            "source_attribution",
+            "source_reported_claims",
+            "document_snippets",
+        ],
+        "does_not_establish": [
+            "claim_truth",
+            "source_authority",
+            "result_representativeness",
+            "real_world_outcome",
+        ],
+        "sampling": "provider_ranked_query_results",
+    }
 
 
 async def _web_search(
@@ -62,7 +84,8 @@ async def _web_search(
                     "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
                 },
             )
-        return _searxng_search(
+        return await asyncio.to_thread(
+            _searxng_search,
             query,
             limit=limit,
             endpoint=endpoint,
@@ -171,6 +194,21 @@ def _searxng_search(
                 },
             )
         payload = json.loads(body)
+    except HTTPError as exc:
+        status = int(exc.code)
+        return ToolResult(
+            tool="web.search",
+            ok=False,
+            error=f"SearXNG returned HTTP {status}",
+            facts={
+                CAPABILITY_ERROR_REASON_KEY: "search_provider_error",
+                CAPABILITY_RETRYABLE_KEY: status in {429, 500, 502, 503, 504},
+                "query": query,
+                "provider": _WEB_SEARCH_PROVIDER_SEARXNG,
+                "endpoint": endpoint,
+                "status_code": status,
+            },
+        )
     except TimeoutError:
         return ToolResult(
             tool="web.search",
@@ -210,6 +248,9 @@ def _searxng_search(
         "suggestions": _as_string_list(payload.get("suggestions"))[:5],
         "infoboxes": payload.get("infoboxes") if isinstance(payload.get("infoboxes"), list) else [],
         "response": {"result_count": len(results)},
+        "evidence_contract": _web_search_evidence_contract(
+            provider=_WEB_SEARCH_PROVIDER_SEARXNG
+        ),
     }
     return ToolResult(tool="web.search", ok=True, facts=facts)
 
@@ -346,6 +387,9 @@ async def _exa_mcp_search(
                 "truncated": bool(result.get("truncated")),
                 "result_count": len(results),
             },
+            "evidence_contract": _web_search_evidence_contract(
+                provider=_WEB_SEARCH_PROVIDER_EXA_MCP
+            ),
         },
     )
 

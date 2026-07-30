@@ -10,6 +10,20 @@ from .memory import MemoryStore
 from .prompting import PromptLayerStore
 
 
+BUILTIN_EVOLUTION_EVAL_CASES: dict[str, dict[str, Any]] = {
+    "runtime.text.nonempty": {
+        "id": "runtime.text.nonempty",
+        "target_types": ["prompt_layer", "skill"],
+        "assertions": [{"type": "nonempty"}],
+    },
+    "runtime.json.valid": {
+        "id": "runtime.json.valid",
+        "target_types": ["memory_item", "eval_case", "graph_node"],
+        "assertions": [{"type": "json_valid"}],
+    },
+}
+
+
 @dataclass(frozen=True, slots=True)
 class EvolutionTargetDescriptor:
     target_type: str
@@ -54,6 +68,12 @@ class EvolutionTargetAdapterRegistry:
     def descriptors(self) -> tuple[EvolutionTargetDescriptor, ...]:
         return tuple(adapter.descriptor for adapter in self._adapters.values())
 
+    def available_eval_cases(self) -> tuple[dict[str, Any], ...]:
+        adapter = self.get("eval_case")
+        if not isinstance(adapter, _EvalCaseAdapter):
+            return ()
+        return adapter.list_available()
+
 
 class _PromptLayerAdapter:
     descriptor = EvolutionTargetDescriptor(
@@ -70,6 +90,8 @@ class _PromptLayerAdapter:
 
     def validate(self, target_id: str, candidate: str) -> dict[str, Any]:
         self.store.override_path(target_id)
+        if not self.store.is_declared(target_id):
+            raise ValueError("prompt_layer target is not loaded by the runtime")
         if not candidate.strip():
             raise ValueError("prompt_layer candidate must not be empty")
         return {"loaded_by": "PromptLayerStore", "characters": len(candidate)}
@@ -218,10 +240,15 @@ class _EvalCaseAdapter:
         return self.root / f"{_safe_name(target_id)}.json"
 
     def read(self, target_id: str) -> str:
+        builtin = BUILTIN_EVOLUTION_EVAL_CASES.get(target_id)
+        if builtin is not None:
+            return json.dumps(builtin, ensure_ascii=False, sort_keys=True)
         path = self._path(target_id)
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
     def validate(self, target_id: str, candidate: str) -> dict[str, Any]:
+        if target_id in BUILTIN_EVOLUTION_EVAL_CASES:
+            raise ValueError("built-in eval cases are immutable runtime contracts")
         data = _json_object(candidate, "eval_case")
         if str(data.get("id") or target_id) != target_id:
             raise ValueError("eval_case id must match target_id")
@@ -237,12 +264,59 @@ class _EvalCaseAdapter:
         path.write_text(candidate, encoding="utf-8")
 
     def rollback(self, target_id: str, before: str) -> None:
+        if target_id in BUILTIN_EVOLUTION_EVAL_CASES:
+            raise ValueError("built-in eval cases are immutable runtime contracts")
         path = self._path(target_id)
         if before:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(before, encoding="utf-8")
         elif path.exists():
             path.unlink()
+
+    def list_available(self) -> tuple[dict[str, Any], ...]:
+        cases: list[dict[str, Any]] = [
+            {
+                "id": case_id,
+                "target_types": list(case["target_types"]),
+                "assertion_types": [
+                    str(assertion.get("type") or "")
+                    for assertion in case["assertions"]
+                    if isinstance(assertion, dict)
+                ],
+                "source": "runtime",
+                "mutable": False,
+            }
+            for case_id, case in sorted(BUILTIN_EVOLUTION_EVAL_CASES.items())
+        ]
+        if not self.root.exists():
+            return tuple(cases)
+        for path in sorted(self.root.glob("*.json")):
+            try:
+                data = _json_object(path.read_text(encoding="utf-8"), "eval_case")
+                self.validate(path.stem, json.dumps(data, ensure_ascii=False, sort_keys=True))
+            except (OSError, ValueError):
+                continue
+            assertions = data.get("assertions")
+            if not isinstance(assertions, list):
+                continue
+            cases.append(
+                {
+                    "id": path.stem,
+                    "target_types": [
+                        str(item)
+                        for item in data.get("target_types", [])
+                        if str(item).strip()
+                    ],
+                    "assertion_types": [
+                        str(assertion.get("type") or "")
+                        for assertion in assertions
+                        if isinstance(assertion, dict)
+                    ],
+                    "source": "managed",
+                    "mutable": True,
+                }
+            )
+        return tuple(cases)
 
 
 class _GraphNodeAdapter:

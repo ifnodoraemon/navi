@@ -4,8 +4,8 @@ import json
 import sqlite3
 from contextlib import contextmanager
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from navi.api import create_app
 from navi.capabilities import build_capability_registry
@@ -41,6 +41,13 @@ def _loop_spec_for_trace(goal_id: str) -> LoopSpec:
                 evidence_key="capability_result",
             ),
         ),
+    )
+
+
+def _api_client(app) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
     )
 
 
@@ -325,7 +332,10 @@ def test_trace_store_reinitializes_schema_drift(tmp_path):
     assert "trace_runs" not in tables
 
 
-def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path, valid_runtime_config):
+@pytest.mark.asyncio
+async def test_trace_decisions_api_returns_structured_loop_decisions(
+    tmp_path, valid_runtime_config
+):
     store = TraceStore(tmp_path)
     store.add_loop_decision(
         trace_id="trace-api",
@@ -344,9 +354,9 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path, valid_r
     )
     app = create_app(tmp_path)
     api_key = load_config(tmp_path).api.api_key
-    client = TestClient(app)
+    client = _api_client(app)
 
-    response = client.get(
+    response = await client.get(
         "/v1/traces/trace-api/decisions",
         headers={"X-API-Key": api_key},
     )
@@ -359,7 +369,7 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path, valid_r
     assert decisions[0]["decision"]["decision"] == "finalize"
     assert decisions[0]["decision"]["checker_results"][0]["name"] == "terminal_result"
 
-    trace_response = client.get(
+    trace_response = await client.get(
         "/v1/traces/trace-api",
         headers={"X-API-Key": api_key},
     )
@@ -368,7 +378,7 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path, valid_r
     assert trace_payload["data"]["runs"][0]["id"] == "trace-api"
     assert trace_payload["data"]["runs"][0]["feedback"] == {}
 
-    runs_response = client.get(
+    runs_response = await client.get(
         "/v1/traces/trace-api/runs",
         headers={"X-API-Key": api_key},
     )
@@ -376,9 +386,13 @@ def test_trace_decisions_api_returns_structured_loop_decisions(tmp_path, valid_r
     runs_payload = runs_response.json()
     assert runs_payload["data"]["runs"][0]["run_type"] == "chain"
     assert "thread_id" in runs_payload["data"]["runs"][0]
+    await client.aclose()
 
 
-def test_trace_api_includes_durable_loop_run_details_for_web_tree(tmp_path, valid_runtime_config):
+@pytest.mark.asyncio
+async def test_trace_api_includes_durable_loop_run_details_for_web_tree(
+    tmp_path, valid_runtime_config
+):
     loop_store = LoopRunStore(tmp_path)
     loop_run = loop_store.create_run(_loop_spec_for_trace("goal-trace"))
     checkpoint = loop_store.write_checkpoint(
@@ -409,14 +423,14 @@ def test_trace_api_includes_durable_loop_run_details_for_web_tree(tmp_path, vali
 
     app = create_app(tmp_path)
     api_key = load_config(tmp_path).api.api_key
-    client = TestClient(app)
+    client = _api_client(app)
 
-    list_response = client.get("/v1/traces", headers={"X-API-Key": api_key})
+    list_response = await client.get("/v1/traces", headers={"X-API-Key": api_key})
     assert list_response.status_code == 200
     meta = list_response.json()["data"]["traces"][0]
     assert meta["thread_id"] == "session-loop-ui"
 
-    trace_response = client.get(
+    trace_response = await client.get(
         "/v1/traces/trace-loop-ui",
         headers={"X-API-Key": api_key},
     )
@@ -429,6 +443,7 @@ def test_trace_api_includes_durable_loop_run_details_for_web_tree(tmp_path, vali
     assert "Loop Transition: execute" in run_names
     engine_runs = [item for item in payload["runs"] if item["run_type"] == "engine"]
     assert engine_runs
+    await client.aclose()
 
 
 def test_trace_root_uses_correlated_durable_loop_failure_as_authoritative_status(tmp_path):
@@ -480,23 +495,27 @@ def test_trace_root_uses_correlated_durable_loop_failure_as_authoritative_status
     assert details[0]["run_state"]["run_id"] == opened.loop_run.run_id
 
 
-def test_trace_delete_api_endpoints(tmp_path, valid_runtime_config):
+@pytest.mark.asyncio
+async def test_trace_delete_api_endpoints(tmp_path, valid_runtime_config):
     store = TraceStore(tmp_path)
     store.add_event(trace_id="trace-to-delete-1", phase="turn.start")
     store.add_event(trace_id="trace-to-delete-2", phase="turn.start")
 
     app = create_app(tmp_path)
     api_key = load_config(tmp_path).api.api_key
-    client = TestClient(app)
+    client = _api_client(app)
 
     # Verify initial traces exist
-    res = client.get("/v1/traces", headers={"X-API-Key": api_key})
+    res = await client.get("/v1/traces", headers={"X-API-Key": api_key})
     assert res.status_code == 200
     assert res.json()["ok"] is True
     assert len(res.json()["data"]["traces"]) == 2
 
     # Delete one trace
-    delete_res = client.delete("/v1/traces/trace-to-delete-1", headers={"X-API-Key": api_key})
+    delete_res = await client.delete(
+        "/v1/traces/trace-to-delete-1",
+        headers={"X-API-Key": api_key},
+    )
     assert delete_res.status_code == 200
     assert delete_res.json()["ok"] is True
     deletion = delete_res.json()["data"]
@@ -506,13 +525,13 @@ def test_trace_delete_api_endpoints(tmp_path, valid_runtime_config):
     assert deletion["verified_after"] == {"event_count": 0, "evaluation_count": 0}
 
     # Verify only one trace remains
-    res = client.get("/v1/traces", headers={"X-API-Key": api_key})
+    res = await client.get("/v1/traces", headers={"X-API-Key": api_key})
     assert res.json()["ok"] is True
     assert len(res.json()["data"]["traces"]) == 1
     assert res.json()["data"]["traces"][0]["trace_id"] == "trace-to-delete-2"
 
     # Clear all traces
-    clear_res = client.delete("/v1/traces", headers={"X-API-Key": api_key})
+    clear_res = await client.delete("/v1/traces", headers={"X-API-Key": api_key})
     assert clear_res.status_code == 200
     assert clear_res.json()["ok"] is True
     deletion = clear_res.json()["data"]
@@ -525,36 +544,39 @@ def test_trace_delete_api_endpoints(tmp_path, valid_runtime_config):
     }
 
     # Verify no traces remain
-    res = client.get("/v1/traces", headers={"X-API-Key": api_key})
+    res = await client.get("/v1/traces", headers={"X-API-Key": api_key})
     assert res.json()["ok"] is True
     assert len(res.json()["data"]["traces"]) == 0
+    await client.aclose()
 
 
-def test_trace_ui_read_endpoints_are_public_but_writes_require_api_key(
+@pytest.mark.asyncio
+async def test_trace_ui_read_endpoints_are_public_but_writes_require_api_key(
     tmp_path, valid_runtime_config
 ):
     store = TraceStore(tmp_path)
     store.add_event(trace_id="trace-public", phase="turn.start")
     app = create_app(tmp_path)
-    client = TestClient(app)
+    client = _api_client(app)
 
-    list_res = client.get("/v1/traces")
+    list_res = await client.get("/v1/traces")
     assert list_res.status_code == 200
     assert list_res.json()["ok"] is True
 
-    detail_res = client.get("/v1/traces/trace-public")
+    detail_res = await client.get("/v1/traces/trace-public")
     assert detail_res.status_code == 200
     assert detail_res.json()["ok"] is True
 
-    runs_res = client.get("/v1/traces/trace-public/runs")
+    runs_res = await client.get("/v1/traces/trace-public/runs")
     assert runs_res.status_code == 200
     assert runs_res.json()["ok"] is True
 
-    delete_res = client.delete("/v1/traces/trace-public")
+    delete_res = await client.delete("/v1/traces/trace-public")
     assert delete_res.status_code == 401
 
-    evaluate_res = client.post("/v1/traces/trace-public/evaluate")
+    evaluate_res = await client.post("/v1/traces/trace-public/evaluate")
     assert evaluate_res.status_code == 401
+    await client.aclose()
 
 
 @pytest.mark.asyncio
@@ -783,6 +805,7 @@ def test_trace_duplicate_entity_mutation_is_degraded(tmp_path):
             tool="goal.cancel",
             ok=True,
             output_data={
+                "mutates": True,
                 "facts": {
                     "entity_type": "goal",
                     "entity_id": "goal-1",
@@ -818,6 +841,7 @@ def test_trace_duplicate_collection_entity_mutation_is_degraded(tmp_path):
             tool="goal.cancel",
             ok=True,
             output_data={
+                "mutates": True,
                 "facts": {
                     "entity_type": "goal_collection",
                     "state_transition": "batch_cancelled",
@@ -846,6 +870,42 @@ def test_trace_duplicate_collection_entity_mutation_is_degraded(tmp_path):
     assert evaluation.failure_domain == "loop_no_progress"
     assert evidence["evaluation_rule"] == "duplicate_entity_mutation"
     assert evidence["duplicate_mutation"]["refs"] == {"cancelled_goals:goal-1:already_terminal": 2}
+
+
+def test_trace_repeated_observation_transition_is_not_duplicate_mutation(tmp_path):
+    store = TraceStore(tmp_path)
+    for _ in range(2):
+        store.add_event(
+            trace_id="trace-repeated-observation",
+            phase="capability.result",
+            tool="account.usage",
+            ok=True,
+            output_data={
+                "mutates": False,
+                "facts": {
+                    "entity_type": "account_usage",
+                    "entity_id": "openai-codex",
+                    "state_transition": "retrieved",
+                    "remaining_percent": 81,
+                },
+            },
+        )
+    store.add_loop_decision(
+        trace_id="trace-repeated-observation",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.CONVERGED,
+            reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
+            failure_domain=TraceFailureDomain.NONE,
+        ),
+    )
+
+    evaluation = store.evaluate_trace("trace-repeated-observation")
+    evidence = json.loads(evaluation.evidence_json)
+
+    assert evaluation.outcome == "success"
+    assert evaluation.failure_domain == "none"
+    assert evidence["evaluation_rule"] == "loop_decision_converged"
+    assert "duplicate_mutation" not in evidence
 
 
 def test_trace_final_text_keywords_do_not_drive_evaluation(tmp_path):
@@ -1004,6 +1064,33 @@ def test_trace_evaluation_degrades_recovered_planner_parse_failure(tmp_path):
     )
 
     evaluation = store.evaluate_trace("trace-recovered-planner")
+    evidence = json.loads(evaluation.evidence_json)
+
+    assert evaluation.outcome == "degraded"
+    assert evaluation.failure_domain == "planner_or_parser"
+    assert evidence["evaluation_rule"] == "planner_failed_then_recovered"
+    assert evidence["recovered_after_first_failure"] is True
+
+
+def test_trace_evaluation_degrades_recovered_planner_call_error(tmp_path):
+    store = TraceStore(tmp_path)
+    store.add_event(
+        trace_id="trace-recovered-planner-call",
+        phase="planner.call.error",
+        ok=False,
+        tool="system.planner_error",
+        message="planner returned more than one syscall",
+    )
+    store.add_loop_decision(
+        trace_id="trace-recovered-planner-call",
+        decision=LoopDecision(
+            decision=LoopDecisionKind.FINALIZE,
+            reason=LoopReason.COMPLETION_EVIDENCE_TRUE,
+            failure_domain=TraceFailureDomain.NONE,
+        ),
+    )
+
+    evaluation = store.evaluate_trace("trace-recovered-planner-call")
     evidence = json.loads(evaluation.evidence_json)
 
     assert evaluation.outcome == "degraded"

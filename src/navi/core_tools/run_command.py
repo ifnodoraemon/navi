@@ -26,6 +26,7 @@ def _run_command(
     sandbox_workspace: Path | None = None,
     workspace_writable: bool = False,
     network_allowed: bool = False,
+    host_process_visibility: bool = False,
 ) -> dict[str, Any]:
     command = _normalize_argv(command)
     env = os.environ.copy()
@@ -60,6 +61,7 @@ def _run_command(
             workspace=sandbox_workspace,
             writable=workspace_writable,
             network_allowed=network_allowed,
+            host_process_visibility=host_process_visibility,
             path=env["PATH"],
         )
         if sandbox_error:

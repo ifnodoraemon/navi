@@ -30,6 +30,7 @@ def bubblewrap_command(
     writable: bool,
     network_allowed: bool,
     path: str,
+    host_process_visibility: bool = False,
 ) -> tuple[list[str], str]:
     bwrap = shutil.which("bwrap")
     if not bwrap:
@@ -48,8 +49,6 @@ def bubblewrap_command(
         "--die-with-parent",
         "--new-session",
         "--unshare-pid",
-        "--proc",
-        "/proc",
         "--dev",
         "/dev",
         "--tmpfs",
@@ -61,6 +60,14 @@ def bubblewrap_command(
         "--dir",
         "/run",
     ]
+    if host_process_visibility:
+        # Keep the filesystem, environment, network, and session isolated while
+        # allowing declared read-only process-inspection argv (ps/pgrep/etc.) to
+        # observe the host process table.  A private procfs would otherwise make
+        # these commands report only the sandbox wrapper and create false facts.
+        argv.extend(("--ro-bind", "/proc", "/proc"))
+    else:
+        argv.extend(("--proc", "/proc"))
     if not network_allowed:
         argv.append("--unshare-net")
     for source in (Path("/usr"), Path("/sys")):

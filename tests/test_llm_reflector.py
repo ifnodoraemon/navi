@@ -95,6 +95,85 @@ def _file_write_syscall(path: str, content: str) -> dict:
 
 
 @pytest.mark.asyncio
+async def test_semantic_checker_uses_conversation_only_to_resolve_elliptical_turn(
+    tmp_path: Path,
+) -> None:
+    provider = _ScriptedProvider(
+        planner_syscalls=[],
+        checker_decisions=[
+            {
+                "passed": True,
+                "evidence_summary": "the current result answers the contextual request",
+            }
+        ],
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    session_id = runtime.memory.create_session()
+    runtime.memory.add_message(session_id, "user", "我们是不是应该换个搜索引擎呢")
+    runtime.memory.add_message(
+        session_id,
+        "assistant",
+        "可以切换到另一个搜索引擎继续搜索，也可以查看官方文档。",
+    )
+    runtime.memory.add_message(session_id, "user", "可以")
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="可以",
+            scope=(f"repo:{tmp_path}",),
+            metadata={
+                "session_id": session_id,
+                "execution_mode": "foreground",
+            },
+        ),
+        goal_id="elliptical-turn",
+        allowed_capabilities=("web.search", "respond"),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                evidence_key="semantic_checker_result",
+            ),
+        ),
+    )
+
+    decision = await LLMSemanticCheckerPort(runtime=runtime).assess(
+        spec,
+        LoopRunState(
+            run_id="elliptical-run",
+            goal_id=spec.goal_id,
+            loop_spec_id=spec.id,
+        ),
+        executed=ExecutedCapabilityStep(
+            ok=True,
+            action="tool",
+            facts={"provider": "alternate-search", "result_count": 3},
+        ),
+        evidence={},
+    )
+
+    assert decision.passed is True
+    checker_input = json.loads(provider.messages["checker"][-1].content)
+    context = checker_input["conversation_context"]
+    assert context["included"] is True
+    assert context["authority"] == "semantic_context_only"
+    assert context["reason"] == "foreground_conversation_continuity"
+    assert context["consumer"] == "semantic_checker"
+    assert "ASSISTANT_CANDIDATE_NON_AUTHORITATIVE" in context["transcript"]
+    assert "我们是不是应该换个搜索引擎呢" in context["transcript"]
+    assert "可以" in context["transcript"]
+    assert "task_completion" in context["does_not_establish"]
+    evaluation_contract = checker_input["evaluation_contract"]
+    assert evaluation_contract["scope"] == "capability_evidence_before_candidate_presentation"
+    assert evaluation_contract["presentation_semantics"]["candidate_copy_present"] is False
+    assert (
+        evaluation_contract["presentation_semantics"][
+            "conversation_assistant_is_current_candidate"
+        ]
+        is False
+    )
+
+
+@pytest.mark.asyncio
 async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
     tmp_path: Path,
 ) -> None:
@@ -123,6 +202,10 @@ async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
             "authority": "same_lineage_authoritative_prior_items",
             "authoritative_prior_items": trigger_facts["prior_occurrences"],
             "ambient_history_authoritative": False,
+        },
+        "delivery": {
+            "stage": "post_semantic_acceptance_outbox",
+            "transport_receipt_available": False,
         },
     }
     spec = LoopSpec.from_goal(
@@ -228,6 +311,55 @@ async def test_semantic_checker_receives_authoritative_schedule_trigger_facts(
     assert checker_input["current_time"]["unix"] > 0
     assert checker_input["current_time"]["iso"]
     assert "utc_offset" in checker_input["current_time"]
+    assert checker_input["conversation_context"] == {
+        "authority": "semantic_context_only",
+        "does_not_establish": [
+            "capability_facts",
+            "task_completion",
+            "external_effects",
+            "connector_delivery",
+        ],
+        "establishes": ["conversation_referents", "elliptical_turn_meaning"],
+        "included": False,
+        "policy": "bounded_conversation_context_v1",
+        "reason": "no_session_context",
+    }
+    assert "delivery" not in checker_input["task_context"]
+    assert checker_input["evaluation_contract"] == {
+        "scope": "candidate_semantics_before_external_transport",
+        "evaluates": [
+            "objective_coverage",
+            "acceptance_criteria",
+            "grounding_in_authoritative_capability_facts",
+            "contradiction_absence",
+        ],
+        "does_not_evaluate": [
+            "connector_transport",
+            "external_delivery_receipt",
+        ],
+        "presentation_semantics": {
+            "candidate_copy_role": "proposed_user_facing_communication",
+            "candidate_copy_present": True,
+            "candidate_copy_source": "capability.facts.responded_message",
+            "conversation_assistant_is_current_candidate": False,
+            "communication_obligation_rule": (
+                "judge whether the candidate copy communicates the requested grounded "
+                "content within this pre-transport scope"
+            ),
+            "transport_proof_rule": (
+                "never require an outbox entry, connector send result, or external "
+                "delivery receipt in this check"
+            ),
+        },
+        "downstream_transport_evidence_unavailable_by_design": [
+            "outbox_entry",
+            "connector_send_result",
+            "external_delivery_receipt",
+        ],
+        "transport_receipt_required_for_this_check": False,
+        "transport_stage_after_acceptance": True,
+        "conversation_context_authority": "resolve_referents_only",
+    }
     supporting = checker_input["observed_capability_evidence"]
     assert [item["tool"] for item in supporting] == ["web.search", "respond"]
     assert "result_count" in supporting[0]["facts_json"]
@@ -556,10 +688,10 @@ async def test_semantic_checker_verdict_does_not_own_loop_control(tmp_path: Path
     assert result.ok is False
     assert result.facts["loop_terminal_state"] == LoopTerminalState.FAILED
     assert result.facts["resolution"] == Resolution.FAILED
-    # The checker was observed four times; it did not terminate the loop. Later
-    # planner-provider failures are structured facts and consume the generic
-    # retry budget rather than escaping as uncaught runtime exceptions.
-    assert provider.calls.count("planner") == 10
+    # The checker was observed four times; it did not terminate the loop. The
+    # next planner-provider failure is preserved as a terminal structured fact
+    # instead of being repeated by the runtime.
+    assert provider.calls.count("planner") == 5
     assert provider.calls.count("checker") == 4
 
 
