@@ -14,6 +14,7 @@ from navi.provider import (
     StructuredOutputError,
     _complete_with_optional_schema,
     _messages_for_response_format,
+    _openai_usage_facts,
     _validate_structured_output,
 )
 from navi.resource_gateway import (
@@ -61,6 +62,26 @@ def test_provider_failure_facts_do_not_reclassify_programming_errors() -> None:
     assert implementation_failure["retryable"] is False
     assert response_failure["provider_call_failure"] is True
     assert response_failure["retryable"] is False
+
+
+def test_openai_usage_rejects_invalid_or_missing_canonical_counts() -> None:
+    config = ModelConfig(provider="openai-compatible", model="usage-model")
+    with pytest.raises(ProviderResponseError, match="prompt_tokens"):
+        _openai_usage_facts(
+            config,
+            {
+                "usage": {
+                    "prompt_tokens": "unknown",
+                    "completion_tokens": 2,
+                    "total_tokens": 2,
+                }
+            },
+        )
+    with pytest.raises(ProviderResponseError, match="completion_tokens"):
+        _openai_usage_facts(
+            config,
+            {"usage": {"prompt_tokens": 1, "total_tokens": 1}},
+        )
 
 
 @patch("navi.provider.resolve_model_config")

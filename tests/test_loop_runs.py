@@ -112,6 +112,38 @@ def test_loop_run_execution_claim_is_atomic_and_recoverable_after_expiry(tmp_pat
     assert recovered.version > claimed.version
 
 
+def test_execution_lease_can_be_renewed_only_by_its_live_owner(tmp_path):
+    store = LoopRunStore(tmp_path)
+    run = store.create_run(_spec(), evidence={"execution_mode": "background"})
+    claimed = store.claim_for_execution(
+        run.run_id,
+        owner="worker-a",
+        lease_seconds=10.0,
+        now=100.0,
+    )
+    assert claimed is not None
+
+    assert store.renew_execution_lease(
+        run.run_id,
+        owner="worker-a",
+        lease_seconds=10.0,
+        now=105.0,
+    ) is True
+    assert store.get_run(run.run_id).lease_expires_at == 115.0
+    assert store.renew_execution_lease(
+        run.run_id,
+        owner="worker-b",
+        lease_seconds=10.0,
+        now=106.0,
+    ) is False
+    assert store.renew_execution_lease(
+        run.run_id,
+        owner="worker-a",
+        lease_seconds=10.0,
+        now=116.0,
+    ) is False
+
+
 def test_execution_mode_claim_can_require_a_stale_unowned_loop(tmp_path):
     store = LoopRunStore(tmp_path)
     fresh = store.create_run(_spec(), evidence={"execution_mode": "foreground"})

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -74,6 +75,8 @@ TASK_RESULT_PREVIEW_CHARS = 240
 PROVIDER_TRANSPORT_MAX_RETRIES = 1
 PROVIDER_TRANSPORT_RETRY_MIN_SECONDS = 1.0
 PROVIDER_TRANSPORT_RETRY_MAX_SECONDS = 300.0
+EXECUTION_LEASE_MIN_SECONDS = 900.0
+EXECUTION_LEASE_HEARTBEAT_MAX_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -1434,6 +1437,10 @@ class DurableStateGraphRunner:
             execution_owner or f"state-graph:{os.getpid()}:{uuid.uuid4().hex}"
         )
         self._lease_claimed = False
+        self._lease_heartbeat_task: asyncio.Task[None] | None = None
+        self._lease_renewal_error: RuntimeError | None = None
+        self._run_async_depth = 0
+        self._pending_transition_evidence: dict[str, Any] = {}
 
     def run(
         self,
@@ -1456,6 +1463,36 @@ class DurableStateGraphRunner:
         run_id: str = "",
         evidence: dict[str, Any] | None = None,
     ) -> StateGraphRunResult:
+        root_call = self._run_async_depth == 0
+        if root_call:
+            self._lease_renewal_error = None
+            self._pending_transition_evidence.clear()
+        self._run_async_depth += 1
+        try:
+            result = await self._run_async_impl(
+                spec,
+                workspace=workspace,
+                run_id=run_id,
+                evidence=evidence,
+            )
+            if self._lease_renewal_error is not None:
+                raise self._lease_renewal_error
+            return result
+        finally:
+            self._run_async_depth -= 1
+            if root_call:
+                await self._stop_execution_lease_heartbeat()
+                self._lease_claimed = False
+                self._pending_transition_evidence.clear()
+
+    async def _run_async_impl(
+        self,
+        spec: LoopSpec,
+        *,
+        workspace: Path,
+        run_id: str = "",
+        evidence: dict[str, Any] | None = None,
+    ) -> StateGraphRunResult:
         if self.planner_port is None or self.executor_port is None:
             raise RuntimeError(
                 "Durable StateGraph requires explicit planner_port and executor_port."
@@ -1469,18 +1506,23 @@ class DurableStateGraphRunner:
         if state.is_terminal():
             return StateGraphRunResult(run_state=state, evidence=evidence or {})
         if not self._lease_claimed:
+            lease_seconds = max(
+                EXECUTION_LEASE_MIN_SECONDS,
+                max(step.timeout.seconds for step in spec.verification_ladder) + 60.0,
+            )
             claimed = self.store.claim_for_execution(
                 state.run_id,
                 owner=self.execution_owner,
-                lease_seconds=max(
-                    900.0,
-                    max(step.timeout.seconds for step in spec.verification_ladder) + 60.0,
-                ),
+                lease_seconds=lease_seconds,
             )
             if claimed is None:
                 raise RuntimeError("loop run is already claimed by another execution driver")
             state = claimed
             self._lease_claimed = True
+            self._start_execution_lease_heartbeat(
+                run_id=state.run_id,
+                lease_seconds=lease_seconds,
+            )
 
         collected_evidence: dict[str, Any] = dict(evidence or {})
         attempt_history: list[dict[str, Any]] = list(
@@ -1643,11 +1685,18 @@ class DurableStateGraphRunner:
                         resource_grants=tuple(grants),
                         evidence=collected_evidence,
                     )
+                _clear_provider_transport_retry_gate(
+                    collected_evidence,
+                    model_role="planner",
+                )
             state = self._transition(
                 state,
                 node=LoopNode.EXECUTE,
                 condition="plan_ready",
-                evidence={"planned_capability": planned_step.to_dict()},
+                evidence={
+                    "planned_capability": planned_step.to_dict(),
+                    **_provider_transport_retry_clearance_evidence(collected_evidence),
+                },
             )
             self.gateway.release(grant_id=grant.grant_id)
 
@@ -2100,6 +2149,13 @@ class DurableStateGraphRunner:
             spec,
             state,
             collected_evidence=collected_evidence,
+        )
+        _clear_provider_transport_retry_gate(
+            collected_evidence,
+            model_role="checker",
+        )
+        self._pending_transition_evidence.update(
+            _provider_transport_retry_clearance_evidence(collected_evidence)
         )
         checker_report = self.checker.evaluate(spec, collected_evidence)
         cap_result = collected_evidence.get("capability_result", {})
@@ -2597,6 +2653,8 @@ class DurableStateGraphRunner:
         terminal_state: LoopTerminalState | str = "",
         evidence: dict[str, Any] | None = None,
     ) -> LoopRunState:
+        if self._lease_renewal_error is not None:
+            raise self._lease_renewal_error
         checkpoint = self._checkpoint(
             state,
             inputs={
@@ -2605,24 +2663,90 @@ class DurableStateGraphRunner:
                 "terminal_state": str(terminal_state),
             },
         )
+        transition_evidence = {
+            **self._pending_transition_evidence,
+            **dict(evidence or {}),
+        }
         transitioned = self.store.transition(
             state.run_id,
             node=node,
             checkpoint_id=checkpoint.id,
             terminal_state=terminal_state,
             condition=condition,
-            evidence=evidence,
+            evidence=transition_evidence,
             lease_owner=self.execution_owner,
         )
+        self._pending_transition_evidence.clear()
         self._record_transition_decision(
             from_state=state,
             to_state=transitioned,
             checkpoint_id=checkpoint.id,
             condition=condition,
             terminal_state=terminal_state,
-            evidence=evidence or {},
+            evidence=transition_evidence,
         )
         return transitioned
+
+    def _start_execution_lease_heartbeat(
+        self,
+        *,
+        run_id: str,
+        lease_seconds: float,
+    ) -> None:
+        if self._lease_heartbeat_task is not None:
+            return
+        self._lease_renewal_error = None
+        self._lease_heartbeat_task = asyncio.create_task(
+            self._renew_execution_lease(
+                run_id=run_id,
+                lease_seconds=lease_seconds,
+            )
+        )
+
+    async def _renew_execution_lease(
+        self,
+        *,
+        run_id: str,
+        lease_seconds: float,
+    ) -> None:
+        interval = max(
+            0.05,
+            min(EXECUTION_LEASE_HEARTBEAT_MAX_SECONDS, lease_seconds / 3.0),
+        )
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                renewed = await asyncio.to_thread(
+                    self.store.renew_execution_lease,
+                    run_id,
+                    owner=self.execution_owner,
+                    lease_seconds=lease_seconds,
+                )
+                if not renewed:
+                    current = await asyncio.to_thread(self.store.get_run, run_id)
+                    if current is not None and current.is_terminal():
+                        return
+                    self._lease_renewal_error = RuntimeError(
+                        "loop execution lease could not be renewed by this driver"
+                    )
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._lease_renewal_error = RuntimeError(
+                f"loop execution lease renewal failed: {type(exc).__name__}: {exc}"
+            )
+
+    async def _stop_execution_lease_heartbeat(self) -> None:
+        task = self._lease_heartbeat_task
+        self._lease_heartbeat_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     def _record_transition_decision(
         self,
@@ -3622,7 +3746,11 @@ def _next_provider_transport_retry_gate_for_facts(
         return None
     prior = evidence.get("retry_gate")
     prior_count = 0
-    if isinstance(prior, dict) and prior.get("kind") == "provider_transport":
+    if (
+        isinstance(prior, dict)
+        and prior.get("kind") == "provider_transport"
+        and str(prior.get("model_role") or "") == model_role
+    ):
         try:
             prior_count = max(0, int(prior.get("retry_count") or 0))
         except (TypeError, ValueError):
@@ -3646,6 +3774,40 @@ def _next_provider_transport_retry_gate_for_facts(
         "retry_count": prior_count + 1,
         "max_retries": PROVIDER_TRANSPORT_MAX_RETRIES,
         "resume_node": str(resume_node),
+    }
+
+
+def _clear_provider_transport_retry_gate(
+    evidence: dict[str, Any],
+    *,
+    model_role: str,
+) -> None:
+    prior = evidence.get("retry_gate")
+    if not (
+        isinstance(prior, dict)
+        and prior.get("kind") == "provider_transport"
+        and str(prior.get("model_role") or "") == model_role
+    ):
+        return
+    history = [
+        dict(item)
+        for item in evidence.get("provider_transport_retry_history") or ()
+        if isinstance(item, dict)
+    ]
+    history.append({**prior, "outcome": "recovered"})
+    evidence["provider_transport_retry_history"] = history[-10:]
+    evidence["retry_gate"] = None
+
+
+def _provider_transport_retry_clearance_evidence(
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    if "retry_gate" not in evidence or evidence.get("retry_gate") is not None:
+        return {}
+    history = evidence.get("provider_transport_retry_history")
+    return {
+        "retry_gate": None,
+        "provider_transport_retry_history": list(history or ()),
     }
 
 

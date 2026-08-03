@@ -93,6 +93,7 @@ class SearchProviderConfig:
     kind: str
     enabled: bool = True
     endpoint: str = ""
+    allow_private_network: bool = False
     mcp_server: str = ""
     bearer_token: str = ""
     categories: str = ""
@@ -310,6 +311,7 @@ def write_default_config(home: Path | None = None) -> Path:
                             "kind": "searxng",
                             "enabled": False,
                             "endpoint": "",
+                            "allow_private_network": False,
                             "categories": "",
                             "language": "",
                             "time_range": "",
@@ -373,6 +375,7 @@ def _search_provider_config(
             "kind",
             "enabled",
             "endpoint",
+            "allow_private_network",
             "mcp_server",
             "bearer_token",
             "categories",
@@ -388,6 +391,10 @@ def _search_provider_config(
         kind=kind,
         enabled=_boolean(raw.get("enabled", True), f"{path}.enabled"),
         endpoint=str(raw.get("endpoint") or "").strip().rstrip("/"),
+        allow_private_network=_boolean(
+            raw.get("allow_private_network", False),
+            f"{path}.allow_private_network",
+        ),
         mcp_server=str(raw.get("mcp_server") or "").strip(),
         bearer_token=str(raw.get("bearer_token") or "").strip(),
         categories=str(raw.get("categories") or "").strip(),

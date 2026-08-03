@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -22,6 +24,28 @@ def sandbox_environment() -> dict[str, str]:
     return {key: value for key, value in env.items() if value}
 
 
+def sandbox_environment_fd(environment: dict[str, str]) -> int | None:
+    """Place explicitly selected child variables in an anonymous in-memory file."""
+    if not environment:
+        return None
+    lines: list[str] = []
+    for key, value in sorted(environment.items()):
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(key)):
+            raise ValueError(f"invalid sandbox environment variable: {key}")
+        text = str(value)
+        if "\x00" in text:
+            raise ValueError(f"sandbox environment variable contains NUL: {key}")
+        lines.append(f"export {key}={shlex.quote(text)}\n")
+    descriptor = os.memfd_create("navi-sandbox-environment", flags=os.MFD_CLOEXEC)
+    try:
+        os.write(descriptor, "".join(lines).encode("utf-8"))
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
 def bubblewrap_command(
     command: list[str],
     *,
@@ -31,6 +55,7 @@ def bubblewrap_command(
     network_allowed: bool,
     path: str,
     host_process_visibility: bool = False,
+    environment_fd: int | None = None,
 ) -> tuple[list[str], str]:
     bwrap = shutil.which("bwrap")
     if not bwrap:
@@ -48,6 +73,7 @@ def bubblewrap_command(
         bwrap,
         "--die-with-parent",
         "--new-session",
+        "--clearenv",
         "--unshare-pid",
         "--dev",
         "/dev",
@@ -119,7 +145,26 @@ def bubblewrap_command(
 
     for key, value in sandbox_environment().items():
         argv.extend(("--setenv", key, value))
-    argv.extend(("--chdir", str(working_dir), "--", str(sandbox_executable), *command[1:]))
+    if environment_fd is not None:
+        environment_path = "/run/navi-command-environment"
+        argv.extend(("--file", str(environment_fd), environment_path))
+        argv.extend(
+            (
+                "--chdir",
+                str(working_dir),
+                "--",
+                "/bin/sh",
+                "-c",
+                f'. {environment_path}\nexec "$@"',
+                "navi-sandbox-environment",
+                str(sandbox_executable),
+                *command[1:],
+            )
+        )
+    else:
+        argv.extend(
+            ("--chdir", str(working_dir), "--", str(sandbox_executable), *command[1:])
+        )
     return argv, ""
 
 

@@ -182,6 +182,34 @@ class LoopRunStore:
             ).fetchone()
         return _loop_run_from_row(row) if row else None
 
+    def renew_execution_lease(
+        self,
+        run_id: str,
+        *,
+        owner: str,
+        lease_seconds: float = 180.0,
+        now: float | None = None,
+    ) -> bool:
+        """Extend an unexpired execution lease held by the same driver."""
+        current_time = time.time() if now is None else float(now)
+        with connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE loop_runs
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE id = ? AND terminal_state = ''
+                  AND lease_owner = ? AND lease_expires_at > ?
+                """,
+                (
+                    current_time + max(1.0, float(lease_seconds)),
+                    current_time,
+                    run_id,
+                    owner,
+                    current_time,
+                ),
+            )
+        return cursor.rowcount == 1
+
     def claim_active_for_execution_mode(
         self,
         execution_mode: str,

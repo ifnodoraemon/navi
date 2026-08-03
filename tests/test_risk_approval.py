@@ -314,6 +314,17 @@ def test_shell_effect_classification_is_argument_sensitive(tmp_path: Path) -> No
     assert process_read.evidence["required_permission"] == "read"
     assert process_read.evidence["observation_scope"] == "host_process_table"
 
+    direct_http_client = assess_capability_call(
+        spec,
+        {"command": ["curl", "http://169.254.169.254/latest/meta-data/"]},
+        workspace=str(tmp_path),
+    )
+    assert direct_http_client.confirmation_required is True
+    assert direct_http_client.evidence["required_permission"] == "write"
+    assert direct_http_client.evidence["effect_classification"] == (
+        "opaque_or_effectful_command"
+    )
+
 
 def test_call_policy_is_declared_by_contract_not_capability_name(tmp_path: Path) -> None:
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)

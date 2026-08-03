@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
@@ -570,6 +572,110 @@ async def test_web_search_uses_configured_searxng_json_provider(monkeypatch) -> 
     assert captured["user_agent"] == "Navi/1.0"
     assert captured["timeout"] == 15
     assert captured["max_bytes"] == 2_000_000
+
+
+@pytest.mark.asyncio
+async def test_web_search_rejects_link_local_searxng_target(monkeypatch) -> None:
+    config = NaviConfig(
+        search=SearchConfig(
+            providers={
+                "local": SearchProviderConfig(
+                    kind="searxng",
+                    endpoint="http://metadata.invalid",
+                    allow_private_network=True,
+                )
+            }
+        )
+    )
+    monkeypatch.setattr(
+        web_search_utils.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (2, 1, 6, "", ("169.254.169.254", 80)),
+        ],
+    )
+
+    result = await web_search_utils._web_search(
+        {"query": "metadata", "provider": "local"},
+        config=config,
+    )
+
+    assert result.ok is False
+    assert result.facts["error_reason"] == "search_target_rejected"
+    assert result.facts["rejected_addresses"] == ["169.254.169.254"]
+
+
+def test_web_search_safe_endpoint_removes_embedded_credentials() -> None:
+    endpoint = web_search_utils._safe_http_endpoint(
+        "https://user:password@search.example:8443/api?token=secret"
+    )
+
+    assert endpoint == "https://search.example:8443/api"
+    assert "user" not in endpoint
+    assert "password" not in endpoint
+
+
+@pytest.mark.asyncio
+async def test_web_search_rejects_redirect_without_following_target() -> None:
+    target_hits = 0
+
+    class TargetHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            nonlocal target_hits
+            target_hits += 1
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"results": []}')
+
+        def log_message(self, *_args) -> None:
+            return None
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), TargetHandler)
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(302)
+            self.send_header(
+                "Location",
+                f"http://127.0.0.1:{target.server_port}/metadata",
+            )
+            self.end_headers()
+
+        def log_message(self, *_args) -> None:
+            return None
+
+    redirect = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    target_thread = threading.Thread(target=target.serve_forever, daemon=True)
+    redirect_thread = threading.Thread(target=redirect.serve_forever, daemon=True)
+    target_thread.start()
+    redirect_thread.start()
+    try:
+        config = NaviConfig(
+            search=SearchConfig(
+                providers={
+                    "local": SearchProviderConfig(
+                        kind="searxng",
+                        endpoint=f"http://127.0.0.1:{redirect.server_port}",
+                        allow_private_network=True,
+                    )
+                }
+            )
+        )
+        result = await web_search_utils._web_search(
+            {"query": "redirect", "provider": "local"},
+            config=config,
+        )
+    finally:
+        redirect.shutdown()
+        target.shutdown()
+        redirect.server_close()
+        target.server_close()
+        redirect_thread.join(timeout=2)
+        target_thread.join(timeout=2)
+
+    assert result.ok is False
+    assert result.facts["error_reason"] == "search_provider_redirect_rejected"
+    assert target_hits == 0
 
 
 @pytest.mark.asyncio

@@ -110,7 +110,6 @@ _SYSTEMCTL_READ_ONLY_SUBCOMMANDS = frozenset(
     }
 )
 _NETWORK_READ_ONLY_COMMANDS = {
-    "curl": frozenset({"--head", "-I"}),
     "docker": frozenset({"images", "info", "inspect", "logs", "ps", "version"}),
     "kubectl": frozenset({"describe", "get", "logs", "top"}),
 }
@@ -153,17 +152,9 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
             and _first_positional(argv[1:]) in _SYSTEMCTL_READ_ONLY_SUBCOMMANDS
         ):
             permission, reason = "read", "declared_systemctl_read_only_subcommand"
-        elif binary in {"curl", "docker", "kubectl"}:
+        elif binary in {"docker", "kubectl"}:
             subcommand = _first_positional(argv[1:])
-            if binary == "curl":
-                method = _curl_method(argv[1:])
-                if (
-                    method in {"GET", "HEAD"}
-                    and not _curl_has_output_file(argv[1:])
-                    and not _curl_has_credentials(argv[1:])
-                ):
-                    permission, reason = "network", "curl_read_only_request"
-            elif subcommand in _NETWORK_READ_ONLY_COMMANDS[binary]:
+            if subcommand in _NETWORK_READ_ONLY_COMMANDS[binary]:
                 permission, reason = "network", f"declared_{binary}_read_only_subcommand"
     return {
         "binary": binary,
@@ -309,42 +300,6 @@ def _find_has_effectful_action(args: list[str]) -> bool:
             "-okdir",
         }
         for item in args
-    )
-
-
-def _curl_method(args: list[str]) -> str:
-    for index, item in enumerate(args):
-        if item in {"-X", "--request"} and index + 1 < len(args):
-            return args[index + 1].upper()
-    if any(
-        item
-        in {"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--json", "-F", "--form"}
-        or item.startswith("--data-")
-        for item in args
-    ):
-        return "POST"
-    if any(item in {"-T", "--upload-file"} for item in args):
-        return "PUT"
-    return "HEAD" if any(item in {"-I", "--head"} for item in args) else "GET"
-
-
-def _curl_has_output_file(args: list[str]) -> bool:
-    return any(
-        item in {"-o", "--output", "-O", "--remote-name", "--remote-header-name"} for item in args
-    )
-
-
-def _curl_has_credentials(args: list[str]) -> bool:
-    if any(item in {"-u", "--user", "-b", "--cookie", "--oauth2-bearer"} for item in args):
-        return True
-    return any(
-        item in {"-H", "--header"}
-        and index + 1 < len(args)
-        and args[index + 1]
-        .strip()
-        .lower()
-        .startswith(("authorization:", "cookie:", "proxy-authorization:"))
-        for index, item in enumerate(args)
     )
 
 

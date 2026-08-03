@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
 
@@ -7,6 +8,7 @@ import pytest
 
 from navi.harness import Harness, HarnessCommand, SecretVault
 from navi.loop_contracts import LockMode, MergeStatus, TimeoutPolicy, VaultHandle
+from navi.process_sandbox import bubblewrap_command, sandbox_environment
 
 
 def test_harness_injects_vault_secret_without_leaking_output(tmp_path):
@@ -100,6 +102,32 @@ def test_harness_sandboxes_verifier_and_does_not_inherit_host_secrets(
     assert result.stdout.splitlines() == ["absent", "False"]
     assert result.to_facts()["sandboxed"] is True
     assert result.to_facts()["sandbox_backend"] == "bubblewrap"
+
+
+def test_bubblewrap_constructor_clears_even_explicit_parent_environment(tmp_path) -> None:
+    command, error = bubblewrap_command(
+        ["printenv", "NAVI_PARENT_SECRET"],
+        cwd=tmp_path,
+        workspace=tmp_path,
+        writable=False,
+        network_allowed=False,
+        path=sandbox_environment()["PATH"],
+    )
+    assert error == ""
+    parent_env = sandbox_environment()
+    parent_env["NAVI_PARENT_SECRET"] = "must-be-cleared"
+
+    result = subprocess.run(
+        command,
+        cwd=tmp_path,
+        env=parent_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "must-be-cleared" not in result.stdout
 
 
 def test_harness_timeout_kills_child_process_group(tmp_path):

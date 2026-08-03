@@ -3,23 +3,31 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 
-from navi.control import CurrentStateBuilder, SurfaceContext, current_state_facts
-from navi.connector_runtime import ConnectorMessage, ConnectorIngressRuntime
-from navi.evolution import EvolutionLedger
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
+from navi.connector_runtime import ConnectorIngressRuntime, ConnectorMessage
+from navi.control import (
+    CurrentStateBuilder,
+    SurfaceContext,
+    _continued_surface_response,
+    current_state_facts,
+)
+from navi.diagnostics import _api_config_checks
+from navi.evolution import EvolutionLedger
 from navi.lifecycle import Governance, Phase, Resolution
 from navi.provider import (
     ChatMessage,
+    ProviderResponseError,
     StructuredOutputError,
     _extract_anthropic_content,
     _extract_openai_content,
 )
-from navi.runtime import AgentRuntime
 from navi.runs import RunStore
+from navi.runtime import AgentRuntime
 from navi.syscalls import ModelSyscallPlanner
 from navi.tools import ToolSpec
 
@@ -86,6 +94,55 @@ def test_provider_rejects_structured_json_hidden_in_tool_call_arguments():
 
     with pytest.raises(RuntimeError, match="Provider response content is empty"):
         _extract_openai_content(data)
+
+
+def test_provider_rejects_empty_openai_content_block_list() -> None:
+    with pytest.raises(ProviderResponseError, match="non-empty string or text-block list"):
+        _extract_openai_content(
+            {"choices": [{"message": {"content": []}, "finish_reason": "stop"}]}
+        )
+
+
+def test_provider_joins_declared_openai_text_blocks() -> None:
+    assert _extract_openai_content(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "hello "},
+                            {"type": "output_text", "text": "world"},
+                        ]
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    ) == "hello world"
+
+
+def test_approval_continuation_never_promotes_run_summary_fallback() -> None:
+    continued = SimpleNamespace(
+        state_graph_result=SimpleNamespace(evidence={}),
+        run=SimpleNamespace(result_summary="schedule registered"),
+    )
+    assert _continued_surface_response(continued) == ""
+
+    continued.state_graph_result.evidence["responded_message"] = "verified result"
+    assert _continued_surface_response(continued) == "verified result"
+
+
+def test_diagnostics_redacts_credentials_embedded_in_model_endpoint() -> None:
+    config = SimpleNamespace(
+        model=SimpleNamespace(
+            provider="openai-compatible",
+            api_base_url="https://user:password@proxy.example/v1",
+            api_key="configured",
+        )
+    )
+    detail = _api_config_checks(config)[0].detail
+    assert "password" not in detail
+    assert "[REDACTED]" in detail
 
 
 @pytest.mark.asyncio

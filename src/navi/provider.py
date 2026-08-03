@@ -157,6 +157,7 @@ class OpenAICompatibleProvider:
     ) -> str:
         if not self.config.api_key:
             raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
+        self.last_usage = None
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
@@ -260,6 +261,7 @@ class AnthropicCompatibleProvider:
     ) -> str:
         if not self.config.api_key:
             raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
+        self.last_usage = None
         payload = _anthropic_payload(
             self.config.model, messages, temperature=temperature, max_tokens=max_tokens
         )
@@ -713,7 +715,8 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
             f"Provider response did not include message content: {data}"
         )
 
-    content_str = str(content).strip()
+    content_text = _openai_content_text(content)
+    content_str = content_text.strip()
     if not content_str:
         finish_reason = choice.get("finish_reason", "unknown")
         response_shape = {
@@ -725,16 +728,41 @@ def _extract_openai_content(data: dict[str, Any]) -> str:
             "Provider response content is empty. "
             f"Finish reason: {finish_reason}. Response shape: {response_shape}"
         )
-    return str(content)
+    return content_text
+
+
+def _openai_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list) or not content:
+        raise ProviderResponseError(
+            "Provider response message content must be a non-empty string or text-block list"
+        )
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict) or str(item.get("type") or "") not in {
+            "text",
+            "output_text",
+        }:
+            raise ProviderResponseError(
+                "Provider response message content included a non-text block"
+            )
+        text = item.get("text")
+        if not isinstance(text, str):
+            raise ProviderResponseError(
+                "Provider response message text block did not include string text"
+            )
+        parts.append(text)
+    return "".join(parts)
 
 
 def _openai_usage_facts(config: ModelConfig, data: dict[str, Any]) -> ProviderUsage | None:
     usage = data.get("usage")
     if not isinstance(usage, dict):
         return None
-    input_tokens = _int_usage(usage.get("prompt_tokens"))
-    output_tokens = _int_usage(usage.get("completion_tokens"))
-    total_tokens = _int_usage(usage.get("total_tokens"))
+    input_tokens = _int_usage(usage.get("prompt_tokens"), field="prompt_tokens")
+    output_tokens = _int_usage(usage.get("completion_tokens"), field="completion_tokens")
+    total_tokens = _int_usage(usage.get("total_tokens"), field="total_tokens")
     return ProviderUsage(
         provider=config.provider,
         model=config.model,
@@ -749,8 +777,8 @@ def _anthropic_usage_facts(config: ModelConfig, data: dict[str, Any]) -> Provide
     usage = data.get("usage")
     if not isinstance(usage, dict):
         return None
-    input_tokens = _int_usage(usage.get("input_tokens"))
-    output_tokens = _int_usage(usage.get("output_tokens"))
+    input_tokens = _int_usage(usage.get("input_tokens"), field="input_tokens")
+    output_tokens = _int_usage(usage.get("output_tokens"), field="output_tokens")
     return ProviderUsage(
         provider=config.provider,
         model=config.model,
@@ -761,13 +789,12 @@ def _anthropic_usage_facts(config: ModelConfig, data: dict[str, Any]) -> Provide
     )
 
 
-def _int_usage(value: Any) -> int:
-    if isinstance(value, bool):
-        return 0
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
+def _int_usage(value: Any, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ProviderResponseError(
+            f"Provider usage field {field} must be a non-negative integer"
+        )
+    return value
 
 
 def _structured_response_format(

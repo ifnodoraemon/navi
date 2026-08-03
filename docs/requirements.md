@@ -58,6 +58,8 @@ model-owned replan budget, but it is never a provider-transport retry. A typed
 transient provider transport failure may create one persisted retry gate with a
 bounded delay and resume the same Planner or Checker node once. The gate records
 model role, resume node, retry count, and maximum; exhaustion is terminal.
+Retry accounting is role-scoped, and a recovered role's stale gate is archived
+and cleared before a different role can fail.
 Checker recovery must reuse the persisted capability result and candidate
 response without reexecuting the capability. A foreground retry pause persists
 the inbound user message, writes no empty assistant message, and suppresses the
@@ -328,6 +330,11 @@ use a durable Effect Journal: completed calls replay their recorded result,
 concurrent calls wait/fail closed, and uncertain outcomes require reconciliation
 instead of blind retry. Model and capability budgets are accounted in a
 process-safe ledger and reconciled with observed provider usage.
+Present provider usage must contain canonical non-negative integer counts;
+malformed counts are protocol failures, never synthetic zero-cost usage.
+An active execution driver renews its lease while model or capability work is in
+flight; losing renewal authority fails the driver closed before its next state
+transition.
 Process-owned execution leases must carry an inspectable process identity.
 Startup and queue reconciliation may release a lease only after its declared
 owner is observably unavailable or the lease has expired. A stale, unowned
@@ -467,7 +474,11 @@ model-visible ID and an adapter kind. Supported adapter kinds are `searxng`,
 provider ID explicitly. The runtime must not infer a provider from query text,
 retry a failed call, switch providers, or fuse provider results. SearXNG must
 surface upstream engine failures rather than representing an empty blocked
-response as a successful search. The X adapter must remain disabled until its
+response as a successful search. Search HTTP adapters resolve once, reject
+redirects, and connect to a pinned address. Loopback and private SearXNG targets
+require an explicit per-provider `allow_private_network` opt-in; link-local,
+multicast, reserved, and unspecified targets are always rejected. The X adapter
+must remain disabled until its
 Bearer Token is present, use the official API, and return post identity,
 attribution, timestamps, pagination, metrics, and provider errors as bounded
 facts. All Navi runtime configuration belongs in
@@ -483,6 +494,9 @@ Direct HTTP capabilities resolve every target before approval and invocation,
 classify all resolved addresses, bind the approved address set into the call,
 and connect to a pinned address while preserving the original Host and TLS
 identity. A later DNS answer cannot redirect an already approved call.
+General shell execution is not a raw-network escape hatch: direct HTTP clients
+remain effectful and approval-gated, and execute without sandbox network
+access. Governed HTTP and search capabilities own outbound request policy.
 
 ## Verification Contract
 

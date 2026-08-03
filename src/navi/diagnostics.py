@@ -15,6 +15,7 @@ from .config import NaviConfig, load_config, validate_config
 from .connector_registry import ConnectorAdapter, load_connector_adapters
 from .provider import resolve_model_config
 from .provider_specs import get_provider_spec
+from .safeguards import redact_secrets
 from .service import systemd_user_unit_path
 
 
@@ -194,7 +195,9 @@ def _api_config_checks(config) -> list[DiagnosticCheck]:
             DiagnosticCheck(
                 "api.model.config",
                 "ok",
-                f"{config.model.provider} {config.model.api_base_url} key_present=True",
+                redact_secrets(
+                    f"{config.model.provider} {config.model.api_base_url} key_present=True"
+                ),
             )
         )
     return checks
@@ -216,6 +219,8 @@ def _search_config_checks(config: NaviConfig) -> list[DiagnosticCheck]:
         detail_parts = [f"kind={item['kind']}"]
         if item["endpoint"]:
             detail_parts.append(f"endpoint={item['endpoint']}")
+        if item["allow_private_network"]:
+            detail_parts.append("allow_private_network=true")
         if item["mcp_server"]:
             detail_parts.append(f"mcp_server={item['mcp_server']}")
         if item["requires_credentials"]:

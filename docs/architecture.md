@@ -173,7 +173,8 @@ argument rewrite, or degraded substitute. A malformed structured model response
 is represented separately from provider transport and may enter the ordinary
 model-owned replan budget. A typed transient Planner/Checker transport failure
 crosses at most one persisted retry gate: the daemon resumes the original graph
-node after its delay, records the retry count, and terminates on exhaustion. An
+node after its delay, records the role-scoped retry count, clears the gate after
+that role recovers, and terminates on same-role exhaustion. An
 Evaluate retry restores the persisted executor result and candidate response, so
 no capability or effect is replayed. A foreground retry pause does not invoke
 the fact responder as a hidden second model route; the inbound user message
@@ -258,7 +259,9 @@ gates are cancelled through a saga that first settles the LoopRun and then
 projects Run and Goal; an approved gate stranded by a crash is reopened.
 
 LoopRun execution uses a versioned lease and compare-and-swap transitions, so a
-foreground driver and daemon cannot both advance one loop. Mutating capability
+foreground driver and daemon cannot both advance one loop. The active driver
+heartbeats that lease throughout long model and capability calls and fails
+closed if ownership cannot be renewed. Mutating capability
 effects are reserved in `loop_effects` before invocation and replay only from a
 completed result. Resource budgets live in `resource_ledger.db`; standard model
 providers reconcile reserved cost/tokens with actual usage, while custom

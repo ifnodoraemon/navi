@@ -346,9 +346,6 @@ class ApprovalService:
                 "result_summary": current_run.result_summary,
                 **_approval_continuation_facts(loop_run),
             }
-            if completion_evidence and current_run.result_summary.strip():
-                facts["continuation_response"] = current_run.result_summary.strip()
-                facts["continuation_response_authority"] = "checker_accepted_result"
             return ApprovalResolution(
                 ok=True,
                 facts=facts,
@@ -802,8 +799,7 @@ def _continued_surface_response(continued: Any) -> str:
         responded = str(evidence.get("responded_message") or "").strip()
         if responded:
             return responded
-    run = getattr(continued, "run", None)
-    return str(getattr(run, "result_summary", "") or "").strip()
+    return ""
 
 
 def _active_goals(home: Path, context: SurfaceContext) -> tuple[Any, ...]:

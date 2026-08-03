@@ -120,6 +120,50 @@ class _CheckerTransportRecoveringProvider:
         return {}
 
 
+class _PlannerThenCheckerTransportRecoveringProvider:
+    last_usage = None
+
+    def __init__(self) -> None:
+        self.planner_calls = 0
+        self.checker_calls = 0
+
+    async def complete_for(self, role: str, messages, **kwargs) -> str:
+        del messages, kwargs
+        if role == "planner":
+            self.planner_calls += 1
+            if self.planner_calls == 1:
+                raise httpx.ReadError("planner connection reset")
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "respond",
+                            "permission": "read",
+                            "args": {"message": "both provider roles recovered"},
+                        }
+                    ]
+                }
+            )
+        if role == "checker":
+            self.checker_calls += 1
+            if self.checker_calls == 1:
+                raise httpx.ReadError("checker connection reset")
+            return json.dumps(
+                {
+                    "passed": True,
+                    "evidence_summary": "the preserved response completes the objective",
+                }
+            )
+        raise AssertionError(f"unexpected provider role: {role}")
+
+    def list_roles(self) -> list[str]:
+        return ["planner", "checker"]
+
+    def usage_for(self, role: str) -> dict:
+        del role
+        return {}
+
+
 def test_read_log_diff_redacts_secrets_without_classifying_lines(tmp_path: Path) -> None:
     """Principle 13/16: external log content is untrusted and may contain secrets.
     The prompt-bound append facts must be redacted before they reach the model,
@@ -612,7 +656,10 @@ async def test_daemon_durably_recovers_one_provider_transport_failure(
     recovered = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
     assert recovered is not None
     assert str(recovered.terminal_state) == "converged"
-    assert recovered.evidence["retry_gate"]["retry_count"] == 1
+    assert recovered.evidence["retry_gate"] is None
+    assert recovered.evidence["provider_transport_retry_history"][-1]["model_role"] == (
+        "planner"
+    )
     assert provider.planner_calls == 2
     goal = GoalStore(tmp_path).get(opened.goal.id)
     assert goal is not None
@@ -665,6 +712,62 @@ async def test_daemon_recovers_checker_transport_without_reexecuting_capability(
     pending = GoalStore(tmp_path).accepted_result_for_run(opened.run.id)
     assert pending["delivery_status"] == "pending"
     assert pending["body"] == "checker retry kept this candidate"
+
+
+@pytest.mark.asyncio
+async def test_planner_retry_gate_does_not_consume_checker_retry_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = LoopControlService(tmp_path).open_goal(
+        OpenGoalRequest(
+            objective="recover each model role independently",
+            workspace=str(tmp_path),
+            source="weixin",
+            peer_id="peer-1",
+            sender_id="user-1",
+            execution_mode="background",
+        )
+    )
+    provider = _PlannerThenCheckerTransportRecoveringProvider()
+    monkeypatch.setattr("navi.provider.build_provider", lambda _config: provider)
+
+    await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
+    planner_pause = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
+    assert planner_pause is not None
+    assert planner_pause.evidence["retry_gate"]["model_role"] == "planner"
+
+    with connect(LoopRunStore(tmp_path).db_path) as conn:
+        conn.execute(
+            "UPDATE loop_runs SET updated_at = 0 WHERE id = ?",
+            (opened.loop_run.run_id,),
+        )
+    await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
+    checker_pause = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
+    assert checker_pause is not None
+    assert str(checker_pause.terminal_state) == "paused"
+    assert checker_pause.evidence["retry_gate"]["model_role"] == "checker"
+    assert checker_pause.evidence["retry_gate"]["retry_count"] == 1
+    assert checker_pause.evidence["provider_transport_retry_history"][-1][
+        "model_role"
+    ] == "planner"
+
+    with connect(LoopRunStore(tmp_path).db_path) as conn:
+        conn.execute(
+            "UPDATE loop_runs SET updated_at = 0 WHERE id = ?",
+            (opened.loop_run.run_id,),
+        )
+    await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
+    recovered = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
+    assert recovered is not None
+    assert str(recovered.terminal_state) == "converged"
+    assert recovered.evidence["retry_gate"] is None
+    assert [
+        item["model_role"]
+        for item in recovered.evidence["provider_transport_retry_history"]
+    ] == ["planner", "checker"]
+    assert provider.planner_calls == 2
+    assert provider.checker_calls == 2
 
 
 @pytest.mark.asyncio

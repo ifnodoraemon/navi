@@ -39,6 +39,7 @@ def test_default_config_contains_every_global_section_and_is_private(tmp_path: P
     assert raw["mcp"]["servers"]["exa"]["url"] == "https://mcp.exa.ai/mcp"
     assert raw["search"]["providers"]["exa"]["kind"] == "exa_mcp"
     assert raw["search"]["providers"]["searxng"]["enabled"] is False
+    assert raw["search"]["providers"]["searxng"]["allow_private_network"] is False
     assert raw["search"]["providers"]["x"] == {
         "kind": "x_api",
         "enabled": False,
@@ -56,6 +57,26 @@ def test_runtime_construction_fails_closed_on_invalid_config(tmp_path: Path) -> 
         match=r"invalid Navi configuration: .*model\.api_key is required",
     ):
         build_runtime(tmp_path)
+
+
+def test_search_private_network_opt_in_must_be_boolean(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        {
+            "search": {
+                "providers": {
+                    "local": {
+                        "kind": "searxng",
+                        "endpoint": "http://127.0.0.1:8888",
+                        "allow_private_network": "yes",
+                    }
+                }
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="allow_private_network must be a boolean"):
+        load_config(tmp_path)
 
 
 def test_process_environment_does_not_override_global_config(

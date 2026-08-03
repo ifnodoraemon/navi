@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shlex
@@ -125,6 +126,38 @@ def _spec(command: str, *, timeout: float = 5.0) -> LoopSpec:
             ),
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_state_graph_heartbeat_renews_live_execution_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("navi.state_graph.EXECUTION_LEASE_HEARTBEAT_MAX_SECONDS", 0.05)
+    runner = DurableStateGraphRunner(
+        home=tmp_path / ".navi",
+        execution_owner="state-graph:test-heartbeat",
+    )
+    state = runner.store.create_run(_spec("true"))
+    claimed = runner.store.claim_for_execution(
+        state.run_id,
+        owner=runner.execution_owner,
+        lease_seconds=1.0,
+    )
+    assert claimed is not None
+    initial_expiry = claimed.lease_expires_at
+
+    runner._start_execution_lease_heartbeat(run_id=state.run_id, lease_seconds=1.0)
+    try:
+        await asyncio.sleep(0.12)
+        renewed = runner.store.get_run(state.run_id)
+        assert renewed is not None
+        assert renewed.lease_expires_at > initial_expiry
+        assert runner.store.release_expired_execution_leases(
+            now=initial_expiry + 0.01
+        ) == []
+    finally:
+        await runner._stop_execution_lease_heartbeat()
 
 
 def _respond_spec(command: str, *, timeout: float = 5.0) -> LoopSpec:

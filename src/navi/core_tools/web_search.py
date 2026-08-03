@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import html
+import http.client
+import ipaddress
 import json
 import re
+import socket
+import ssl
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, Self
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse, urlunparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY, CAPABILITY_RETRYABLE_KEY
 from navi.config import NaviConfig, SearchProviderConfig, load_config
@@ -26,6 +30,152 @@ _SEARCH_TITLE_MAX_CHARS = 300
 _SEARCH_SNIPPET_MAX_CHARS = 1200
 _SEARCH_RESPONSE_MAX_BYTES = 2_000_000
 _X_RESPONSE_MAX_BYTES = 4_000_000
+_FORBIDDEN_SEARCH_HEADERS = frozenset(
+    {"host", "content-length", "transfer-encoding", "connection"}
+)
+
+
+class SearchTargetRejectedError(ValueError):
+    def __init__(
+        self,
+        *,
+        target_host: str,
+        rejected_addresses: list[str],
+        reason: str,
+    ):
+        super().__init__(f"search target rejected: {reason}")
+        self.target_host = target_host
+        self.rejected_addresses = tuple(rejected_addresses)
+        self.reason = reason
+
+
+class _PinnedHTTPResponse:
+    def __init__(
+        self,
+        connection: http.client.HTTPConnection,
+        response: http.client.HTTPResponse,
+    ):
+        self._connection = connection
+        self._response = response
+        self.status = int(response.status)
+        self.headers = response.headers
+
+    def read(self, max_bytes: int) -> bytes:
+        return self._response.read(max_bytes)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        del exc_type, exc, traceback
+        self._connection.close()
+
+
+def urlopen(request: Request, timeout: float) -> _PinnedHTTPResponse:
+    """Open one pinned request without following redirects."""
+    parsed = urlparse(request.full_url)
+    host = (parsed.hostname or "").strip().lower()
+    if parsed.scheme not in {"http", "https"} or not host:
+        raise SearchTargetRejectedError(
+            target_host=host,
+            rejected_addresses=[],
+            reason="invalid_http_target",
+        )
+    if parsed.username or parsed.password:
+        raise SearchTargetRejectedError(
+            target_host=host,
+            rejected_addresses=[],
+            reason="credentialed_target",
+        )
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    addresses = sorted({str(item[4][0]) for item in infos if item and item[4]})
+    if not addresses:
+        raise OSError(f"target host did not resolve: {host}")
+    rejected = _rejected_search_addresses(
+        addresses,
+        allow_loopback=bool(getattr(request, "_navi_allow_loopback", False)),
+        allow_private_network=bool(
+            getattr(request, "_navi_allow_private_network", False)
+        ),
+    )
+    rejected_set = set(rejected)
+    allowed_addresses = [item for item in addresses if item not in rejected_set]
+    if not allowed_addresses:
+        raise SearchTargetRejectedError(
+            target_host=host,
+            rejected_addresses=rejected,
+            reason="non_public_address",
+        )
+    pinned_address = allowed_addresses[0]
+    headers = {
+        str(key): str(value)
+        for key, value in request.header_items()
+        if str(key).lower() not in _FORBIDDEN_SEARCH_HEADERS
+    }
+    default_port = 443 if parsed.scheme == "https" else 80
+    host_label = f"[{host}]" if ":" in host else host
+    headers["Host"] = host_label if port == default_port else f"{host_label}:{port}"
+    path_query = parsed.path or "/"
+    if parsed.query:
+        path_query += f"?{parsed.query}"
+
+    connection: http.client.HTTPConnection
+    if parsed.scheme == "https":
+        context = ssl.create_default_context()
+        raw_socket = socket.create_connection((pinned_address, port), timeout=timeout)
+        tls_socket = context.wrap_socket(raw_socket, server_hostname=host)
+        connection = http.client.HTTPSConnection(
+            pinned_address,
+            port,
+            timeout=timeout,
+            context=context,
+        )
+        connection.sock = tls_socket
+    else:
+        connection = http.client.HTTPConnection(pinned_address, port, timeout=timeout)
+    try:
+        connection.request(
+            request.get_method(),
+            path_query,
+            body=request.data,
+            headers=headers,
+        )
+        return _PinnedHTTPResponse(connection, connection.getresponse())
+    except Exception:
+        connection.close()
+        raise
+
+
+def _rejected_search_addresses(
+    addresses: list[str],
+    *,
+    allow_loopback: bool,
+    allow_private_network: bool,
+) -> list[str]:
+    rejected: list[str] = []
+    for raw in addresses:
+        try:
+            address = ipaddress.ip_address(raw)
+        except ValueError:
+            rejected.append(raw)
+            continue
+        if (
+            address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+        ):
+            rejected.append(raw)
+        elif address.is_loopback:
+            if not allow_loopback:
+                rejected.append(raw)
+        elif address.is_private:
+            if not allow_private_network:
+                rejected.append(raw)
+        elif not address.is_global:
+            rejected.append(raw)
+    return rejected
 
 
 @dataclass(frozen=True)
@@ -275,6 +425,7 @@ def search_provider_catalog(
                 "kind": provider.kind,
                 "enabled": provider.enabled,
                 "endpoint": endpoint,
+                "allow_private_network": provider.allow_private_network,
                 "mcp_server": provider.mcp_server,
                 "requires_credentials": bool(
                     adapter and adapter.requires_credentials
@@ -516,6 +667,8 @@ def _searxng_search(
         timeout=15,
         max_bytes=_SEARCH_RESPONSE_MAX_BYTES,
         provider_label="SearXNG",
+        allow_loopback=provider.allow_private_network,
+        allow_private_network=provider.allow_private_network,
     )
     if failure is not None:
         return failure
@@ -1026,11 +1179,37 @@ def _read_json_response(
     timeout: float,
     max_bytes: int,
     provider_label: str,
+    allow_loopback: bool = False,
+    allow_private_network: bool = False,
 ) -> tuple[dict[str, Any] | None, ToolResult | None]:
+    request._navi_allow_loopback = allow_loopback  # type: ignore[attr-defined]
+    request._navi_allow_private_network = (  # type: ignore[attr-defined]
+        allow_private_network
+    )
     try:
         with urlopen(request, timeout=timeout) as response:
             status = int(getattr(response, "status", 200))
             body = response.read(max_bytes).decode("utf-8", errors="replace")
+            response_headers = getattr(response, "headers", {})
+        if 300 <= status < 400:
+            location = str(
+                response_headers.get("location", "")
+                if hasattr(response_headers, "get")
+                else ""
+            )
+            return None, _provider_failure(
+                provider_id=provider_id,
+                provider_kind=provider_kind,
+                query=query,
+                endpoint=endpoint,
+                error=f"{provider_label} redirect was rejected",
+                reason="search_provider_redirect_rejected",
+                retryable=False,
+                extra={
+                    "status_code": status,
+                    "redirect_endpoint": _safe_http_endpoint(location),
+                },
+            )
         if status >= 400:
             return None, _provider_failure(
                 provider_id=provider_id,
@@ -1058,6 +1237,21 @@ def _read_json_response(
             retryable=_retryable_http_status(status),
             extra={"status_code": status},
         )
+    except SearchTargetRejectedError as exc:
+        return None, _provider_failure(
+            provider_id=provider_id,
+            provider_kind=provider_kind,
+            query=query,
+            endpoint=endpoint,
+            error=str(exc),
+            reason="search_target_rejected",
+            retryable=False,
+            extra={
+                "target_host": exc.target_host,
+                "rejected_addresses": list(exc.rejected_addresses),
+                "target_rejection_reason": exc.reason,
+            },
+        )
     except TimeoutError as exc:
         return None, _provider_failure(
             provider_id=provider_id,
@@ -1069,7 +1263,7 @@ def _read_json_response(
             retryable=True,
             extra={"error_type": type(exc).__name__},
         )
-    except URLError as exc:
+    except (URLError, OSError) as exc:
         return None, _provider_failure(
             provider_id=provider_id,
             provider_kind=provider_kind,
@@ -1099,9 +1293,16 @@ def _retryable_http_status(status: int) -> bool:
 
 def _safe_http_endpoint(value: str) -> str:
     parsed = urlparse(str(value or ""))
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    host = parsed.hostname or ""
+    if parsed.scheme not in {"http", "https"} or not host:
         return ""
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    host_label = f"[{host}]" if ":" in host else host
+    netloc = host_label if port is None else f"{host_label}:{port}"
+    return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
 
 
 def _clean_search_text(value: Any) -> str:

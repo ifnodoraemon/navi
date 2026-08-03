@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .loop_contracts import LockMode, MergeResult, TimeoutEvidence, TimeoutPolicy, VaultHandle
-from .process_sandbox import bubblewrap_command, sandbox_environment
+from .process_sandbox import (
+    bubblewrap_command,
+    sandbox_environment,
+    sandbox_environment_fd,
+)
 from .safeguards import redact_secrets
 from .workspaces import (
     LockAcquireResult,
@@ -118,9 +122,11 @@ class Harness:
             raise ValueError("HarnessCommand.cwd must be an existing directory")
 
         injected_env, secret_values = self.vault.resolve_env(command.vault_handles)
-        env = sandbox_environment()
-        env.update(command.env)
-        env.update(injected_env)
+        resolution_env = sandbox_environment()
+        resolution_env.update(command.env)
+        resolution_env.update(injected_env)
+        explicit_env = {**command.env, **injected_env}
+        environment_fd = sandbox_environment_fd(explicit_env)
         started = time.time()
         sandbox_command, sandbox_error = bubblewrap_command(
             list(command.command),
@@ -128,9 +134,12 @@ class Harness:
             workspace=command.cwd,
             writable=True,
             network_allowed=False,
-            path=env["PATH"],
+            path=resolution_env["PATH"],
+            environment_fd=environment_fd,
         )
         if sandbox_error:
+            if environment_fd is not None:
+                os.close(environment_fd)
             return HarnessResult(
                 ok=False,
                 command=command.command,
@@ -151,16 +160,21 @@ class Harness:
         stdout_text = ""
         stderr_text = ""
         try:
-            process = subprocess.Popen(
-                sandbox_command,
-                cwd=command.cwd,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
+            try:
+                process = subprocess.Popen(
+                    sandbox_command,
+                    cwd=command.cwd,
+                    env=sandbox_environment(),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                    pass_fds=((environment_fd,) if environment_fd is not None else ()),
+                )
+            finally:
+                if environment_fd is not None:
+                    os.close(environment_fd)
             stdout_text, stderr_text = process.communicate(timeout=command.timeout.seconds)
         except subprocess.TimeoutExpired as exc:
             if process is not None:
