@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from types import SimpleNamespace
 
+import pytest
+
 from navi import diagnostics
-from navi.service import SystemdNotifier, build_systemd_user_unit
+from navi.service import (
+    SystemdNotifier,
+    build_systemd_user_unit,
+    run_with_systemd_watchdog,
+    runtime_environment_error,
+)
 
 
 def test_build_systemd_user_unit_uses_project_and_home(tmp_path):
@@ -20,6 +28,7 @@ def test_build_systemd_user_unit_uses_project_and_home(tmp_path):
     assert "ExecStart=" in unit
     assert "-m navi.cli run" in unit
     assert "EnvironmentFile=" not in unit
+    assert "ExecStartPre=/usr/bin/test -x " in unit
     assert "NotifyAccess=main" in unit
     assert "Restart=on-failure" in unit
     assert "RestartSec=5s" in unit
@@ -61,6 +70,40 @@ def test_systemd_notifier_sends_ready_and_watchdog(monkeypatch):
     assert fake.payloads == [b"READY=1\nSTATUS=Navi active"]
     assert notifier.notify("WATCHDOG=1") is True
     assert fake.payloads[-1] == b"WATCHDOG=1"
+
+
+def test_runtime_environment_error_reports_missing_executable(tmp_path, monkeypatch):
+    prefix = tmp_path / "prefix"
+    prefix.mkdir()
+    monkeypatch.setattr("navi.service.sys.executable", str(tmp_path / "missing-python"))
+    monkeypatch.setattr("navi.service.sys.prefix", str(prefix))
+
+    assert runtime_environment_error() == (
+        f"python executable missing: {tmp_path / 'missing-python'}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_watchdog_runtime_failure_cancels_resident_workload():
+    cancelled = False
+
+    async def workload():
+        nonlocal cancelled
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled = True
+
+    notifier = SystemdNotifier(watchdog_interval_seconds=0.001)
+    with pytest.raises(RuntimeError, match="python executable missing"):
+        await run_with_systemd_watchdog(
+            workload(),
+            status="Navi active",
+            notifier=notifier,
+            runtime_check=lambda: "python executable missing: /missing/python",
+        )
+
+    assert cancelled is True
 
 
 def test_service_diagnostic_does_not_retry_with_another_systemctl_command(monkeypatch):

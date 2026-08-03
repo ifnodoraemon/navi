@@ -1,18 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import socket
 import sys
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar
 
 from .defaults import DEFAULT_SERVICE_NAME
-
-_T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
@@ -72,34 +68,72 @@ class SystemdNotifier:
     def stopping(self) -> bool:
         return self.notify("STOPPING=1")
 
-    async def watchdog_loop(self) -> None:
+    async def watchdog_loop(
+        self,
+        *,
+        runtime_check: Callable[[], str] | None = None,
+    ) -> None:
         if self.watchdog_interval_seconds <= 0:
             return
         while True:
+            error = runtime_check() if runtime_check is not None else ""
+            if error:
+                status = f"Navi runtime unavailable: {error}"
+                self.notify(f"STATUS={status[:500]}")
+                raise RuntimeError(status)
             self.notify("WATCHDOG=1")
             await asyncio.sleep(self.watchdog_interval_seconds)
 
 
-async def run_with_systemd_watchdog(
-    awaitable: Awaitable[_T],
+def runtime_environment_error() -> str:
+    """Return a bounded deployment-integrity fact for a resident service process."""
+    required = (
+        ("python executable", Path(sys.executable), "file"),
+        ("python prefix", Path(sys.prefix), "directory"),
+        ("navi package", Path(__file__), "file"),
+    )
+    for label, path, kind in required:
+        available = path.is_file() if kind == "file" else path.is_dir()
+        if not available:
+            return f"{label} missing: {path}"
+    return ""
+
+
+async def run_with_systemd_watchdog[T](
+    awaitable: Awaitable[T],
     *,
     status: str,
     notifier: SystemdNotifier | None = None,
-) -> _T:
+    runtime_check: Callable[[], str] | None = None,
+) -> T:
     active = notifier or SystemdNotifier.from_environment()
     active.ready(status)
-    watchdog = (
-        asyncio.create_task(active.watchdog_loop())
-        if active.watchdog_interval_seconds > 0
-        else None
+    if active.watchdog_interval_seconds <= 0:
+        try:
+            return await awaitable
+        finally:
+            active.stopping()
+
+    workload = asyncio.ensure_future(awaitable)
+    watchdog = asyncio.create_task(
+        active.watchdog_loop(runtime_check=runtime_check or runtime_environment_error)
     )
     try:
-        return await awaitable
+        done, _ = await asyncio.wait(
+            {workload, watchdog},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if watchdog in done:
+            error = watchdog.exception()
+            if error is not None:
+                raise error
+            raise RuntimeError("Navi systemd watchdog stopped unexpectedly")
+        return workload.result()
     finally:
-        if watchdog is not None:
-            watchdog.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await watchdog
+        for task in (workload, watchdog):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(workload, watchdog, return_exceptions=True)
         active.stopping()
 
 
@@ -122,6 +156,7 @@ def build_systemd_user_unit(*, project_dir: Path, navi_home: Path | None = None)
         "NotifyAccess=main\n"
         f"WorkingDirectory={project_dir}\n"
         f"{env_block}\n"
+        f"ExecStartPre=/usr/bin/test -x {python}\n"
         f"ExecStart={python} -m navi.cli run\n"
         "Restart=on-failure\n"
         "RestartSec=5s\n"

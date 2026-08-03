@@ -419,7 +419,11 @@ process supervisor. Connector status reads must classify an overdue ingress
 heartbeat as stale, and overall health must not report healthy while egress is
 partial, unknown, or degraded. Supervisor restart is process recovery only;
 durable leases, outbox idempotency, and connector receipts remain the authority
-for work recovery and completion.
+for work recovery and completion. Before each watchdog heartbeat, the resident
+service must verify that its configured Python executable, runtime prefix, and
+loaded Navi package remain present. A missing runtime is a deployment-integrity
+failure: the process must stop feeding the watchdog and exit instead of remaining
+an active zombie. This guard must not classify connector or provider outcomes.
 
 Recurring Goal templates must persist a durable real workspace, never a
 turn-scoped shadow workspace. Registration resolves managed paths from workspace

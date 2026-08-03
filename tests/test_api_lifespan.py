@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
 
 import navi.api as api_module
+from navi.api_paths import api_path
+from navi.config import load_config
 
 
 class FakeConnectorAdapter:
@@ -69,3 +72,80 @@ def test_trace_ui_is_served_from_packaged_assets(tmp_path, valid_runtime_config)
     assert static_route.app.html is True
     assert "Navi Trace Explorer" in body
     assert "/ui/trace/assets/" in body
+
+
+@pytest.mark.asyncio
+async def test_health_reports_runtime_and_connector_facts(
+    tmp_path, monkeypatch, valid_runtime_config
+):
+    adapter = FakeConnectorAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "status",
+        lambda home: {
+            "status": "healthy",
+            "ingress_status": "healthy",
+            "egress_status": "healthy",
+            "proactive_egress_status": "healthy",
+        },
+    )
+    monkeypatch.setattr(api_module, "load_connector_adapters", lambda: [adapter])
+    monkeypatch.setattr(api_module, "runtime_environment_error", lambda: "")
+    app = api_module.create_app(tmp_path)
+    api_key = load_config(tmp_path).api.api_key
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    )
+
+    response = await client.get(api_path("health"), headers={"X-API-Key": api_key})
+
+    assert response.status_code == 200
+    health = response.json()["data"]
+    assert health["ok"] is True
+    assert health["runtime"] == {"status": "healthy", "error": ""}
+    assert health["connectors"]["fake"]["status"] == "healthy"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_health_fails_when_resident_runtime_disappears(
+    tmp_path, monkeypatch, valid_runtime_config
+):
+    adapter = FakeConnectorAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "status",
+        lambda home: {
+            "status": "healthy",
+            "ingress_status": "healthy",
+            "egress_status": "healthy",
+            "proactive_egress_status": "healthy",
+        },
+    )
+    monkeypatch.setattr(api_module, "load_connector_adapters", lambda: [adapter])
+    monkeypatch.setattr(
+        api_module,
+        "runtime_environment_error",
+        lambda: "python executable missing: /missing/python",
+    )
+    app = api_module.create_app(tmp_path)
+    api_key = load_config(tmp_path).api.api_key
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    )
+
+    response = await client.get(api_path("health"), headers={"X-API-Key": api_key})
+
+    assert response.status_code == 503
+    health = response.json()["error"]["detail"]
+    assert health["ok"] is False
+    assert health["runtime"]["status"] == "unavailable"
+    assert health["issues"] == [
+        {
+            "component": "runtime",
+            "error": "python executable missing: /missing/python",
+        }
+    ]
+    await client.aclose()

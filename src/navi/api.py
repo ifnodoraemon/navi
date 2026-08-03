@@ -1,38 +1,39 @@
 from __future__ import annotations
-import asyncio
-from contextlib import asynccontextmanager
 
+import asyncio
 import json
 import secrets
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .control_plane import TurnController
+from . import __version__
 from .api_paths import api_path
-from .auth import AuthInspector
 from .app_factory import build_runtime
 from .approval_contract import APPROVAL_DECISION_APPROVE, APPROVAL_DECISION_REJECT
+from .auth import AuthInspector
 from .capabilities import CapabilityContext, CapabilityResult, build_capability_registry
 from .config import load_config, write_default_config
 from .connector_registry import load_connector_adapters
+from .control_plane import TurnController
 from .daemon import SystemDaemon
-from .diagnostics import run_diagnostics
 from .defaults import DEFAULT_LOCAL_SURFACE
+from .diagnostics import run_diagnostics
 from .evolution import EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
 from .graph import GraphStore
 from .json_utils import json_object
 from .paths import ensure_home
 from .runs import RunStore
-from .trace import TraceStore
+from .service import runtime_environment_error
 from .tools import API_CONTEXT
-from . import __version__
+from .trace import TraceStore
 
 
 class ChatRequest(BaseModel):
@@ -170,11 +171,11 @@ def create_app(
         async def _run_wrapper(adapter_to_run):
             try:
                 await adapter_to_run.run(home, project_dir, False)
-            except Exception as e:
+            except Exception:
                 import logging
 
                 logging.getLogger(__name__).exception(
-                    f"ERROR STARTING ADAPTER {adapter_to_run.name}: {e}"
+                    "ERROR STARTING ADAPTER %s", adapter_to_run.name
                 )
 
         async def _run_background() -> None:
@@ -257,17 +258,51 @@ def create_app(
             }
         return JSONResponse(content=envelope, status_code=status_code)
 
-    @app.get(api_path("health"))
-    def health() -> dict:
+    @app.get(api_path("health"), response_model=None)
+    def health() -> dict | JSONResponse:
         config = load_config(home)
-        return {
-            "ok": True,
+        runtime_error = runtime_environment_error()
+        connectors: dict[str, dict[str, Any]] = {}
+        issues: list[dict[str, str]] = []
+        if runtime_error:
+            issues.append({"component": "runtime", "error": runtime_error})
+        for adapter in connector_adapters:
+            enabled = adapter.enabled(home)
+            if not enabled:
+                connectors[adapter.name] = {"enabled": False, "status": "disabled"}
+                continue
+            facts = adapter.status(home)
+            connector_status = str(facts.get("status") or "unknown")
+            connectors[adapter.name] = {
+                "enabled": True,
+                "status": connector_status,
+                "ingress_status": str(facts.get("ingress_status") or "unknown"),
+                "egress_status": str(facts.get("egress_status") or "unknown"),
+                "proactive_egress_status": str(
+                    facts.get("proactive_egress_status") or "unknown"
+                ),
+            }
+            if connector_status != "healthy":
+                issues.append(
+                    {
+                        "component": f"connector.{adapter.name}",
+                        "status": connector_status,
+                    }
+                )
+        payload = {
+            "ok": not issues,
             "home": str(home),
             "model_provider": config.model.provider,
-            "connectors": {
-                adapter.name: {"enabled": adapter.enabled(home)} for adapter in connector_adapters
+            "runtime": {
+                "status": "healthy" if not runtime_error else "unavailable",
+                "error": runtime_error,
             },
+            "connectors": connectors,
+            "issues": issues,
         }
+        if issues:
+            return JSONResponse(status_code=503, content={"detail": payload})
+        return payload
 
     @app.post(api_path("chat"))
     async def chat(request: ChatRequest) -> dict:
