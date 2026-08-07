@@ -1,4 +1,4 @@
-"""Regression coverage for secret redaction (principle 13/16).
+"""Regression coverage for secret redaction.
 
 Covers the secret-bearing formats that previously slipped through the
 keyword-prefix ``_SECRET_PATTERNS``: PEM private keys and connection

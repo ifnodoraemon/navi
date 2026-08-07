@@ -1,4 +1,4 @@
-"""FP-2 regression: mutating tools must return the uniform state-transition
+"""Mutating tools must return the uniform state-transition
 vocabulary (entity_type, entity_id, state_transition, turn_scope) so the agent
 layer can reason over state changes without parsing tool-specific fields.
 """
@@ -51,7 +51,10 @@ def test_shell_run_returns_transition_vocab(tmp_path):
     _assert_transition_vocab(result.facts, "executed")
 
 
-def test_shell_run_normalizes_escaped_find_grouping_args(tmp_path):
+def test_shell_run_passes_model_argv_through_unmodified(tmp_path):
+    # Model-owned parameters reach the process unchanged; the runtime must not
+    # silently rewrite argv. A malformed grouping surfaces as a failure fact
+    # for the model to replan, rather than being masked by argument rewriting.
     target = tmp_path / "resume.docx"
     target.write_text("doc", encoding="utf-8")
 
@@ -65,20 +68,13 @@ def test_shell_run_normalizes_escaped_find_grouping_args(tmp_path):
                 r"\(",
                 "-name",
                 "*.docx",
-                "-o",
-                "-name",
-                "*.pdf",
                 r"\)",
-                "-print",
             ],
             "cwd": str(tmp_path),
         },
         project_dir=tmp_path,
     )
 
-    assert result.ok, result.error
-    assert "resume.docx" in result.facts["stdout"]
-    assert "(" in result.facts["command"]
-    assert ")" in result.facts["command"]
-    assert r"\(" not in result.facts["command"]
-    assert r"\)" not in result.facts["command"]
+    assert r"\(" in result.facts["command"]
+    assert r"\)" in result.facts["command"]
+    assert result.ok is False

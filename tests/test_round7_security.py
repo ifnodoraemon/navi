@@ -3,7 +3,7 @@
 SQL identifiers cannot be parameterized, so table names are f-string
 interpolated into DDL/PRAGMA/DROP. They are schema-as-code today, but the
 ``Table`` constructor now validates the identifier shape so no future table
-declaration can smuggle SQL through ``name`` (defense in depth, principle 16).
+declaration can smuggle SQL through ``name`` (defense in depth).
 """
 
 from __future__ import annotations

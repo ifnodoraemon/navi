@@ -89,11 +89,18 @@ def test_connector_ingress_scopes_message_id_and_content_to_peer(tmp_path):
     assert dedup.check(_peer_message("msg-1", "peer-2", text="same text")).duplicate is False
 
 
-def test_connector_ingress_deduplicates_content_across_message_ids(tmp_path):
+def test_connector_ingress_treats_distinct_native_ids_as_resends(tmp_path):
     dedup = ConnectorIngressDeduplicator(tmp_path)
 
     assert dedup.check(_message("msg-1", text="same text")).duplicate is False
-    duplicate = dedup.check(_message("msg-2", text="same text"))
+    assert dedup.check(_message("msg-2", text="same text")).duplicate is False
+
+
+def test_connector_ingress_deduplicates_content_without_native_id(tmp_path):
+    dedup = ConnectorIngressDeduplicator(tmp_path)
+
+    assert dedup.check(_message("synthetic:abc", text="same text")).duplicate is False
+    duplicate = dedup.check(_message("synthetic:def", text="same text"))
 
     assert duplicate.duplicate is True
     assert duplicate.reason == "content"

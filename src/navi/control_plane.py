@@ -115,7 +115,6 @@ class TurnController(TurnLifecycleMixin):
             peer_id=peer_id,
             sender_id=sender_id,
             tool="goal.open",
-            model_role="loop_kernel",
             ok=invoked.ok,
             input_data={
                 "args": {
@@ -135,7 +134,16 @@ class TurnController(TurnLifecycleMixin):
         invoked_facts = dict(invoked.facts or {})
         surface_text = str(invoked_facts.get("responded_message") or "").strip()
         responder_error_reason = ""
-        retry_gate = invoked_facts.get("retry_gate")
+        responder_authored = False
+        state_graph_facts = invoked_facts.get("state_graph_result")
+        state_graph_evidence = (
+            state_graph_facts.get("evidence") if isinstance(state_graph_facts, dict) else None
+        )
+        retry_gate = (
+            state_graph_evidence.get("retry_gate")
+            if isinstance(state_graph_evidence, dict)
+            else None
+        )
         provider_retry_pending = (
             invoked_facts.get("loop_terminal_state") == "paused"
             and isinstance(retry_gate, dict)
@@ -173,6 +181,7 @@ class TurnController(TurnLifecycleMixin):
             }
             try:
                 surface_text = await self._response_from_facts(text, response_facts)
+                responder_authored = bool(surface_text.strip())
             except Exception as exc:
                 responder_error_reason = f"responder_{type(exc).__name__}"
                 raw_finalization = invoked_facts.get("finalization")
@@ -224,7 +233,7 @@ class TurnController(TurnLifecycleMixin):
                     "error_reason": getattr(invoked, "error_reason", ""),
                 },
             ),
-            model_role="loop_kernel",
+            model_role="responder" if responder_authored else "planner",
             terminal=invoked.terminal,
             ok=turn_ok,
             trace_id=trace_id,

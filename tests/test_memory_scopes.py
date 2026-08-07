@@ -10,7 +10,7 @@ from navi.capabilities_types import CapabilityContext
 from navi.db import connect
 from navi.memory import MemoryStore
 from navi.memory import provider as memory_provider_module
-from navi.memory.scopes import memory_scopes_for_context
+from navi.memory.scopes import default_memory_scope, memory_scopes_for_context
 from navi.paths import db_paths
 from navi.tools import API_CONTEXT
 
@@ -137,6 +137,67 @@ async def test_conversation_memory_consolidation_is_durable_and_actor_scoped(
     assert affected[0].scope.startswith("actor:")
     assert affected[0].provenance == f"memory-job:{job_id}:run:run-a"
     assert store.claim_consolidation_jobs(owner="worker-b") == []
+
+
+@pytest.mark.asyncio
+async def test_consolidation_persists_model_declared_contradiction_links(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore(tmp_path)
+    actor_scope = default_memory_scope(
+        source="cli",
+        peer_id="peer-1",
+        sender_id="user-a",
+        session_id="session-a",
+        workspace="",
+        home=tmp_path,
+    )
+    existing = store.add_item(
+        "preference",
+        "Use verbose status updates",
+        source="user",
+        scope=actor_scope,
+        status="active",
+        reason="explicit preference",
+        provenance="test",
+    )
+    store.add_message(
+        "session-a",
+        "user",
+        "From now on keep status updates concise.",
+        source="cli",
+        peer_id="peer-1",
+        sender_id="user-a",
+        run_id="run-a",
+    )
+
+    class Provider:
+        async def complete_for(self, role, messages, *, output_schema=None):
+            assert role == "consolidator"
+            return (
+                '{"learnings":[{"action":"add","type":"preference",'
+                '"content":"Use concise status updates","confidence":0.9,'
+                '"reason":"explicit user preference",'
+                f'"contradicts":["{existing.id}", "hallucinated-id"]}}]}}'
+            )
+
+    store.enqueue_consolidation(
+        session_id="session-a",
+        run_id="run-a",
+        source="cli",
+        peer_id="peer-1",
+        sender_id="user-a",
+    )
+    claimed = store.claim_consolidation_jobs(owner="worker-a")
+    affected = await store.consolidate_job(
+        claimed[0],
+        SimpleNamespace(provider=Provider()),
+    )
+
+    assert len(affected) == 1
+    assert affected[0].metadata.get("contradicts") == [existing.id]
+    conflicts = store.list_conflicts()
+    assert [conflict.conflicting_item_id for conflict in conflicts] == [existing.id]
 
 
 @pytest.mark.asyncio

@@ -199,7 +199,10 @@ async def _run_journey(
             inbound = step.get("inbound") or {}
             message_index += 1
             update = WeixinUpdate(
-                message_id=str(inbound.get("message_id") or f"msg-{message_index}"),
+                message_id=str(
+                    inbound.get("message_id")
+                    or f"synthetic:msg-{message_index}"
+                ),
                 peer_id=str(inbound.get("peer_id") or "connector-eval-peer"),
                 sender_id=str(inbound.get("sender_id") or "connector-eval-sender"),
                 text=str(inbound.get("text") or ""),

@@ -55,7 +55,7 @@ class Goal:
     created_at: float
     updated_at: float
     completed_at: float
-    # Gap F: persistent task tree fields.
+    # Persistent task tree fields.
     parent_goal_id: str = ""
     task_status: str = "in_progress"
     # Cron / recurring fields
@@ -437,7 +437,7 @@ class GoalStore:
         created_before: float = 0.0,
         resolutions: tuple[str, ...] = (),
     ) -> typing.List[Goal]:
-        """List child goals of *parent_goal_id* (Gap F task tree)."""
+        """List child goals of *parent_goal_id*."""
         order = "DESC" if newest else "ASC"
         clauses = ["parent_goal_id = ?"]
         params: list[Any] = [parent_goal_id]
@@ -488,7 +488,7 @@ class GoalStore:
         return int(row[0]) if row else 0
 
     def update_task_status(self, goal_id: str, task_status: str) -> Goal | None:
-        """Update the ``task_status`` of a goal (Gap F task tree).
+        """Update the ``task_status`` of a goal.
 
         ``task_status`` is the explicit lifecycle state
         (pending/in_progress/done/blocked) that the model updates as it
@@ -502,7 +502,7 @@ class GoalStore:
         return self.get(goal_id)
 
     # Events that encode durable constraint state and must survive context
-    # compression (principle 12). Pending approvals, denials, rejections, and
+    # compression. Pending approvals, denials, rejections, and
     # blocked state cannot be dropped by an LLM summary -- they are reloaded
     # from the store, not trusted to live only inside the model context window.
     def _is_constraint_event(self, e: GoalEvent) -> bool:
@@ -519,7 +519,7 @@ class GoalStore:
 
         # Constraint-bearing events are preserved verbatim inside the compaction
         # record. Routine events are summarized. This bounds context growth while
-        # guaranteeing durable constraint state survives compression (principle 12).
+        # guaranteeing durable constraint state survives compression.
         preserved_events = [
             {
                 "id": e.id,
@@ -736,7 +736,7 @@ class GoalStore:
         """Return structured facts when a long-running goal hits a declared
         state-based stop boundary.
 
-        Principle 17: long-running goals need explicit stop conditions, so a goal
+        Long-running goals need explicit stop conditions, so a goal
         is not retried or kept active forever. This is a boundary rule over durable
         state (wall-clock age, recorded retry events) only -- it makes no semantic
         judgement about whether the objective is "done"; that stays with the agent.
@@ -1595,7 +1595,7 @@ GOALS_TABLE = Table(
         Column("stop_condition", "TEXT", nullable=False),
         Column("timeout", "REAL", nullable=False),
         Column("max_retries", "INTEGER", nullable=False),
-        # Gap F: persistent task tree. parent_goal_id enables a
+        # Persistent task tree. parent_goal_id enables a
         # parent-child hierarchy so the engine can track sub-task
         # decomposition across long-horizon tasks. task_status is the
         # explicit lifecycle state (pending/in_progress/done/blocked)

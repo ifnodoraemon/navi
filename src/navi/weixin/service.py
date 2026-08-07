@@ -171,7 +171,23 @@ class WeixinService:
                     sync_buf = batch.sync_buf
                     self.store.save_sync_buf(account.account_id, sync_buf)
                 for update in batch.updates:
-                    await self.handle_update(account, update)
+                    try:
+                        await self.handle_update(account, update)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        # The sync cursor already advanced past this batch, so
+                        # one failed update must not drop the remaining ones.
+                        self.record_event(
+                            "message.failed",
+                            peer_id=update.peer_id,
+                            message_id=update.message_id,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                        self.update_status(
+                            "degraded",
+                            f"message handler failed: {type(exc).__name__}: {exc}",
+                        )
 
                 # Throttle background processing to at most once per second,
                 # unless there is incoming user activity in the current batch.
@@ -278,6 +294,25 @@ class WeixinService:
         if not response:
             raise RuntimeError("channel response is empty")
         response_delivery = connector_delivery_from_facts(response.facts)
+        finalization = (
+            response.facts.get("finalization") if isinstance(response.facts, dict) else None
+        )
+        if (
+            response_delivery is None
+            and not response.text.strip()
+            and isinstance(finalization, dict)
+            and finalization.get("durable_retry_pending") is True
+        ):
+            # The durable graph owns the pending transport recovery; the
+            # eventual result uses the ordinary outbox. Nothing is authored or
+            # delivered now, and this is not a failed delivery.
+            self.record_event(
+                "reply.deferred",
+                peer_id=update.peer_id,
+                reason=str(finalization.get("reason") or "provider_transport_retry_pending"),
+                action=response.action,
+            )
+            return True
         if response_delivery is None and not response.text.strip():
             self.record_event(
                 "reply.failed",
@@ -519,7 +554,7 @@ class WeixinService:
                 "background.skipped",
                 peer_id=task.peer_id,
                 background_event="background_task_result",
-                reason="empty_surface_text",
+                reason="no_notification_boundary_input",
                 run_id=task.id,
                 phase=task.phase,
                 governance=task.governance,

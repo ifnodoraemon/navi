@@ -536,7 +536,7 @@ class ToolRegistry:
 
     def _audit_call(self, args: dict[str, Any], result: ToolResult) -> None:
         try:
-            # FP-4/L8: redact at the value level before serialization so secrets
+            # Redact at the value level before serialization so secrets
             # nested inside args/facts (not just keyword-prefixed ones) are
             # caught, regardless of key naming or JSON sort order.
             safe_args = redact_secrets_deep(args)

@@ -190,8 +190,8 @@ def chat() -> None:
         typer.echo(f"navi: {result.surfaced_text()}")
 
         # Presentation is driven by the structured `options` fact, not by
-        # interpreting the agent's action label (principle 4: control surfaces
-        # must not encode agent action semantics).
+        # interpreting the agent's action label; control surfaces must not
+        # encode agent action semantics.
         options = result.facts.get("options") if result.facts else None
         pending_options = options if isinstance(options, list) and options else []
 

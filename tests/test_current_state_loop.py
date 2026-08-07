@@ -279,11 +279,15 @@ async def test_turn_controller_does_not_call_responder_during_durable_provider_r
             error_reason="loop_paused",
             facts={
                 "loop_terminal_state": "paused",
-                "retry_gate": {
-                    "decision": "pause",
-                    "kind": "provider_transport",
-                    "retry_count": 1,
-                    "max_retries": 1,
+                "state_graph_result": {
+                    "evidence": {
+                        "retry_gate": {
+                            "decision": "pause",
+                            "kind": "provider_transport",
+                            "retry_count": 1,
+                            "max_retries": 1,
+                        }
+                    }
                 },
             },
             run_id="run-provider-retry",

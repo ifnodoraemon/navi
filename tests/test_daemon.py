@@ -165,7 +165,7 @@ class _PlannerThenCheckerTransportRecoveringProvider:
 
 
 def test_read_log_diff_redacts_secrets_without_classifying_lines(tmp_path: Path) -> None:
-    """Principle 13/16: external log content is untrusted and may contain secrets.
+    """External log content is untrusted and may contain secrets.
     The prompt-bound append facts must be redacted before they reach the model,
     while semantic error classification remains model-owned."""
     log = tmp_path / "service.log"

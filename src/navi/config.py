@@ -80,9 +80,7 @@ class ModelConfig:
 
     def get_role_params(self, role: str) -> dict[str, Any]:
         base = dict(
-            DEFAULT_MODEL_ROLE_PARAMS.get(role)
-            or DEFAULT_MODEL_ROLE_PARAMS.get("default")
-            or {"temperature": 0.3, "max_tokens": 8192}
+            DEFAULT_MODEL_ROLE_PARAMS.get(role) or DEFAULT_MODEL_ROLE_PARAMS["default"]
         )
         overrides = self.role_params.get(role, {})
         if isinstance(overrides, dict):

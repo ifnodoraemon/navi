@@ -796,7 +796,7 @@ def _local_capability_context(
 def _raise_capability_error(result: CapabilityResult, *, not_found_status: int = 409) -> None:
     if result.ok:
         return
-    # Principle 13/16: never echo raw result text (which may contain
+    # Never echo raw result text (which may contain
     # file paths, shell output, or internal state) into an HTTP response.
     # Prefer the capability's structured message; fall back to a generic
     # detail rather than leaking raw result content.

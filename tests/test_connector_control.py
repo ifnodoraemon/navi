@@ -492,6 +492,68 @@ async def test_connector_approval_command_resolves_matching_pending_approval(tmp
 
 
 @pytest.mark.asyncio
+async def test_connector_approval_provider_retry_pause_does_not_call_responder(
+    tmp_path, monkeypatch
+):
+    from navi.control import ApprovalResolution
+
+    async def fake_resolve_and_continue(self, **kwargs):
+        return ApprovalResolution(
+            ok=True,
+            facts={
+                "approval_id": "approval-x",
+                "status": "approved",
+                "loop_terminal_state": "paused",
+                "retry_gate": {
+                    "decision": "pause",
+                    "kind": "provider_transport",
+                    "retry_count": 1,
+                    "max_retries": 1,
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        connector_router.ApprovalService, "resolve_and_continue", fake_resolve_and_continue
+    )
+
+    class NoModelCalls:
+        def __init__(self):
+            self.calls = []
+
+        async def complete_for(self, role, messages, **kwargs):
+            self.calls.append(role)
+            raise AssertionError(f"unexpected model call: {role}")
+
+        def list_roles(self):
+            return ["planner", "responder"]
+
+    provider = NoModelCalls()
+    ingress = ConnectorIngressRuntime(
+        home=tmp_path,
+        runtime=AgentRuntime(home=tmp_path, provider=provider),
+        project_dir=tmp_path,
+    )
+    try:
+        response = await ingress.handle(
+            ConnectorMessage(
+                message_id="msg-retry-pause",
+                peer_id="peer-1",
+                sender_id="sender-1",
+                text="approve 123456",
+                source="weixin",
+                session_alias_prefix="connector:weixin",
+            )
+        )
+    finally:
+        await ingress.event_bus.shutdown()
+
+    assert provider.calls == []
+    assert response.text == ""
+    assert response.facts["finalization"]["durable_retry_pending"] is True
+
+
+@pytest.mark.asyncio
 async def test_connector_approval_resumes_original_goal_before_reply(tmp_path: Path):
     target = tmp_path / "connector-report.md"
     target.write_text("delete only after approval\n", encoding="utf-8")

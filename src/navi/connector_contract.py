@@ -5,6 +5,15 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+# Adapters that fabricate a message id because the upstream payload carries no
+# native one must prefix it with this marker. Native ids are authoritative
+# transport idempotency keys; synthetic ids fall back to content-key dedupe.
+SYNTHETIC_MESSAGE_ID_PREFIX = "synthetic:"
+
+
+def is_synthetic_message_id(message_id: str) -> bool:
+    return message_id.startswith(SYNTHETIC_MESSAGE_ID_PREFIX)
+
 
 @dataclass(frozen=True)
 class ConnectorMessage:

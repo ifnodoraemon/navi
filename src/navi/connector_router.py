@@ -186,6 +186,32 @@ class ConnectorRouter:
                 action="chat",
                 facts=result.facts,
             )
+        retry_gate = result.facts.get("retry_gate")
+        provider_retry_pending = (
+            result.facts.get("loop_terminal_state") == "paused"
+            and isinstance(retry_gate, dict)
+            and retry_gate.get("kind") == "provider_transport"
+            and retry_gate.get("decision") == "pause"
+        )
+        if provider_retry_pending:
+            # The durable graph owns this transport recovery. Calling a second
+            # model role here would be a hidden retry and could produce a
+            # duplicate failure reply before the real result arrives; the
+            # recovered result uses the ordinary durable outbox.
+            return ResponseReadyEvent(
+                source_agent="router",
+                text="",
+                source=message.source,
+                peer_id=message.peer_id,
+                sender_id=message.sender_id,
+                facts={
+                    **result.facts,
+                    "finalization": {
+                        "reason": "provider_transport_retry_pending",
+                        "durable_retry_pending": True,
+                    },
+                },
+            )
         if self.runtime is None:
             raise RuntimeError("connector approval response requires an agent runtime")
         text = await synthesize_user_reply_from_facts(

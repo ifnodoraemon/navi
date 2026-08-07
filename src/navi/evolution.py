@@ -100,7 +100,7 @@ def known_evolution_target(target_type: str) -> bool:
 
 
 # Governance event types recorded in the evolution ledger alongside evolution
-# target types. Declaring these prevents schema drift (principle 1.2): the
+# target types. Declaring these prevents schema drift: the
 # ``record()`` gate rejects any ``target_type`` not in this set, so typos and
 # undeclared event categories surface loudly instead of silently persisting.
 GOVERNANCE_EVENT_TYPES: frozenset[str] = frozenset(
@@ -612,7 +612,7 @@ class EvolutionLedger:
         """Record the evolution ledger event capturing before/after/diff.
 
         Called before the side effect lands so the attempted change is always
-        auditable and rollbackable (principle 7/11)."""
+        auditable and rollbackable."""
         return self.record(
             run_id=proposal.source_run_id,
             target_type=proposal.target_type,

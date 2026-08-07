@@ -14,6 +14,7 @@ from urllib.parse import quote
 import httpx
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from ..connector_contract import SYNTHETIC_MESSAGE_ID_PREFIX
 from .config import DEFAULT_WEIXIN_CDN_BASE_URL
 from .models import (
     WeixinAccount,
@@ -123,7 +124,8 @@ class WeixinClient:
             if not isinstance(raw, dict):
                 continue
             text = extract_text(raw)
-            message_id = str(raw.get("message_id") or raw.get("id") or uuid.uuid4().hex)
+            native_id = raw.get("message_id") or raw.get("id")
+            message_id = str(native_id) if native_id else f"{SYNTHETIC_MESSAGE_ID_PREFIX}{uuid.uuid4().hex}"
             attachments = await self._attachments_from_raw(raw, message_id=message_id)
             if not text and not attachments:
                 continue

@@ -26,6 +26,4 @@ class AgentTurnResult:
 
     def surfaced_text(self) -> str:
         """The text to surface to the user."""
-        if self.text:
-            return self.text
         return self.text

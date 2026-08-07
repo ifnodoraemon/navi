@@ -138,7 +138,7 @@ class ServiceLogDetector:
 
     @staticmethod
     def _append_log_prompt_chunk(chunks: list[str], total_chars: int, line: str) -> int:
-        # Principle 13/16: callers redact external log content before it enters
+        # Callers redact external log content before it enters
         # the prompt-bound diff facts; this helper only enforces the text bound.
         if total_chars < MAX_LOG_PROMPT_CHARS:
             chunks.append(line)

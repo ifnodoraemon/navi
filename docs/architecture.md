@@ -406,7 +406,13 @@ transport, deduplication, and channel-local presentation. They publish the same
 turn contract used by local surfaces. `ConnectorMessage` lives in the transport-
 neutral `connector_contract.py`; adapters consume `ResponseReadyEvent` and never
 reinterpret it as a string. An empty model response is recorded as a failed
-delivery fact rather than replaced with connector-authored prose.
+delivery fact rather than replaced with connector-authored prose. An empty
+response whose finalization facts show a pending durable provider-transport
+retry is recorded as a deferred fact instead: the durable graph owns that
+recovery, the eventual result uses the ordinary outbox, and no second model
+role is invoked in the meantime. A single failing inbound update is recorded
+and isolated; it cannot silently drop the remaining updates of the same poll
+batch.
 For a blocked or failed background task, the notification role receives a
 bounded projection of persisted Goal and LoopRun diagnostics, including reason
 codes, checker verdicts, and the last capability facts. The connector still

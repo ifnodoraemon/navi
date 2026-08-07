@@ -60,7 +60,6 @@ MEMORY_ITEMS_TABLE = Table(
 
 class MemoryProvider(Protocol):
     def store_item(self, item: MemoryItem) -> None: ...
-    def store_item_with_contradictions(self, item: MemoryItem) -> MemoryItem: ...
     def get_items(
         self,
         *,
@@ -355,84 +354,6 @@ class SQLiteMemoryProvider:
                     item.provenance,
                 ),
             )
-
-    def store_item_with_contradictions(self, item: MemoryItem) -> MemoryItem:
-        """Store ``item`` and recompute its ``contradicts`` set against the
-        currently-active items of the same type — all within a single
-        transaction so a concurrent writer cannot interleave between the read
-        and the write (principle 1.2/16). Returns the stored item with its
-        updated metadata."""
-        import difflib
-
-        if not item.source.strip() or not item.reason.strip() or not item.provenance.strip():
-            raise ValueError("memory source, reason, and provenance are required")
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT id, type, status, scope, content, source, confidence,
-                       created_at, updated_at, last_verified_at, expires_at, metadata,
-                       reason, provenance
-                FROM memory_items
-                WHERE type = ? AND status = 'active'
-                """,
-                (item.type,),
-            ).fetchall()
-            metadata = dict(item.metadata)
-            contradicts = set(metadata.get("contradicts", []))
-            for row in rows:
-                existing = self._item_from_row(row)
-                if existing.id == item.id:
-                    continue
-                if existing.scope == item.scope:
-                    ratio = difflib.SequenceMatcher(
-                        None, existing.content.lower(), item.content.lower()
-                    ).ratio()
-                    if ratio > 0.85 and existing.content.lower() != item.content.lower():
-                        contradicts.add(existing.id)
-            if contradicts:
-                metadata["contradicts"] = sorted(contradicts)
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO memory_items(
-                    id, type, status, scope, content, source, confidence,
-                    created_at, updated_at, last_verified_at, expires_at, metadata,
-                    reason, provenance
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    item.id,
-                    item.type,
-                    item.status,
-                    item.scope,
-                    item.content,
-                    item.source,
-                    item.confidence,
-                    item.created_at,
-                    item.updated_at,
-                    item.last_verified_at,
-                    item.expires_at,
-                    json.dumps(metadata, sort_keys=True),
-                    item.reason,
-                    item.provenance,
-                ),
-            )
-        return MemoryItem(
-            id=item.id,
-            type=item.type,
-            status=item.status,
-            scope=item.scope,
-            content=item.content,
-            source=item.source,
-            confidence=item.confidence,
-            created_at=item.created_at,
-            updated_at=item.updated_at,
-            last_verified_at=item.last_verified_at,
-            expires_at=item.expires_at,
-            metadata=metadata,
-            reason=item.reason,
-            provenance=item.provenance,
-        )
 
     def get_items(
         self,

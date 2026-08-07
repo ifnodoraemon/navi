@@ -789,6 +789,9 @@ def _approval_continuation_facts(loop_run: LoopRunState) -> dict[str, Any]:
     if responded_message:
         facts["continuation_response"] = responded_message
         facts["continuation_response_authority"] = "checker_accepted_result"
+    retry_gate = evidence.get("retry_gate")
+    if isinstance(retry_gate, dict):
+        facts["retry_gate"] = dict(retry_gate)
     return facts
 
 

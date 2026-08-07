@@ -142,7 +142,7 @@ class SystemDaemon:
                         limit=None,
                     )
                     for g in goals:
-                        # Principle 17: enforce the goal's declared stop condition
+                        # Enforce the goal's declared stop condition
                         # before doing more work on it, so a long-running goal is
                         # not kept active past its timeout / retry budget.
                         stop_facts = goal_store.stop_condition_facts(g.id)
@@ -603,7 +603,7 @@ class SystemDaemon:
     def _record_project_graph_mutation(
         self, project_name: str, project_data: dict[str, Any]
     ) -> str:
-        # FP-5/L10: background daemon mutations to the project graph are
+        # Background daemon mutations to the project graph are
         # otherwise untraceable. Record a lightweight trace event so the
         # audit trail covers daemon-initiated state changes.
         from navi.trace import TraceStore
@@ -624,7 +624,6 @@ class SystemDaemon:
                 "fields": sorted(project_data.keys()),
             },
         )
-        # Evaluate trace is optional here, but we can keep it
         trace.evaluate_trace(trace_id)
         return trace_id
 

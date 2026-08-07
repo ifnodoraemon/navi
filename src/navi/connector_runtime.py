@@ -7,7 +7,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from .connector_contract import ConnectorMessage
+from .connector_contract import ConnectorMessage, is_synthetic_message_id
 from .connector_router import ConnectorRouter
 from .control_plane import TurnController
 from .event_bus import EventBus, NaviEvent, ResponseReadyEvent, UserIntentEvent
@@ -32,9 +32,12 @@ class ConnectorDedupResult:
 class ConnectorIngressDeduplicator:
     """Shared connector ingress idempotency boundary.
 
-    The agent loop should see each connector message once per source/message id
-    or source/content key, even if an upstream long-poll endpoint redelivers it
-    or a connector service object is recreated.
+    The agent loop should see each connector message once, even if an upstream
+    long-poll endpoint redelivers it or a connector service object is recreated.
+    A native transport message id is the authoritative idempotency key; the
+    content key is only a fallback when no native id exists (synthetic or
+    absent), so a deliberate identical resend under a new native id is not
+    dropped.
     """
 
     def __init__(self, home: Path, *, ttl_seconds: int = 300):
@@ -73,11 +76,12 @@ class ConnectorIngressDeduplicator:
         source = message.source.strip() or "unknown"
         peer_id = message.peer_id.strip() or "unknown"
         sender_id = message.sender_id.strip() or "unknown"
-        keys: list[str] = []
-        if message.message_id:
-            keys.append(f"id:{source}:{peer_id}:{sender_id}:{message.message_id}")
-        keys.append(message.content_key)
-        return keys
+        # A native transport id is the authoritative idempotency key. Content-key
+        # dedupe is only a fallback for fabricated/absent ids; applying it
+        # unconditionally would silently drop a deliberate identical resend.
+        if message.message_id and not is_synthetic_message_id(message.message_id):
+            return [f"id:{source}:{peer_id}:{sender_id}:{message.message_id}"]
+        return [message.content_key]
 
     @staticmethod
     def _pruned(seen: dict[str, float], *, now: float) -> dict[str, float]:

@@ -248,6 +248,31 @@ async def test_get_updates_keeps_file_only_messages_as_attachment(monkeypatch: p
 
 
 @pytest.mark.asyncio
+async def test_get_updates_marks_fabricated_message_ids_synthetic(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from navi.connector_contract import SYNTHETIC_MESSAGE_ID_PREFIX
+
+    client = WeixinClient(base_url="https://ilink.example", token="token")
+
+    async def fake_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        return {
+            "msgs": [
+                {"message_id": "native-1", "from_user_id": "u", "text": "a"},
+                {"from_user_id": "u", "text": "b"},
+            ],
+            "get_updates_buf": "next",
+        }
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    batch = await client.get_updates("acct", sync_buf="prev")
+
+    assert batch.updates[0].message_id == "native-1"
+    assert batch.updates[1].message_id.startswith(SYNTHETIC_MESSAGE_ID_PREFIX)
+
+
+@pytest.mark.asyncio
 async def test_send_message_classifies_rate_limit_without_hidden_client_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

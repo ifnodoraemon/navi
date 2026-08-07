@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from pathlib import Path
 
+from navi.connector_contract import SYNTHETIC_MESSAGE_ID_PREFIX
 from navi.connector_runtime import (
     ConnectorIngressDeduplicator,
     ConnectorIngressRuntime,
@@ -123,7 +125,10 @@ class TelegramService:
             await asyncio.sleep(sleep_time)
 
     async def handle_update(self, update: TelegramUpdate) -> bool:
-        message_key = f"telegram:{update.chat_id}:{update.message_id}"
+        if update.message_id:
+            message_key = f"telegram:{update.chat_id}:{update.message_id}"
+        else:
+            message_key = f"{SYNTHETIC_MESSAGE_ID_PREFIX}telegram:{update.chat_id}:{uuid.uuid4().hex}"
         message = ConnectorMessage(
             message_id=message_key,
             peer_id=update.chat_id,
@@ -138,6 +143,29 @@ class TelegramService:
             return False
         response = await self.ingress.handle(message)
         if response is None or not response.text.strip():
+            finalization = (
+                response.facts.get("finalization")
+                if response is not None and isinstance(response.facts, dict)
+                else None
+            )
+            if isinstance(finalization, dict) and finalization.get("durable_retry_pending") is True:
+                TraceStore(self.home).add_event(
+                    trace_id=message_key,
+                    phase=TracePhase.CHANNEL_EGRESS,
+                    source=self.local_source,
+                    peer_id=update.chat_id,
+                    sender_id=update.sender_id,
+                    output_data={
+                        "delivery_attempted": False,
+                        "reason": str(
+                            finalization.get("reason") or "provider_transport_retry_pending"
+                        ),
+                        "durable_retry_pending": True,
+                    },
+                    message="Response deferred to durable transport recovery",
+                    ok=True,
+                )
+                return True
             TraceStore(self.home).add_event(
                 trace_id=message_key,
                 phase=TracePhase.CHANNEL_EGRESS,

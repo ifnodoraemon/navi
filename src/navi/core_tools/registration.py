@@ -419,7 +419,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "checkpoint": {
                         "type": "boolean",
                         "default": False,
-                        "description": "If true and mode is overwrite, create a git-stash checkpoint before writing so the engine can backtrack (Gap G).",
+                        "description": "If true and mode is overwrite, create a git-stash checkpoint before writing so the engine can backtrack.",
                     },
                     "checkpoint_reason": {
                         "type": "string",

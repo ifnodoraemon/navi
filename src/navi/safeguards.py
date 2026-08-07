@@ -583,7 +583,7 @@ _SECRET_PATTERNS: list[tuple[str, str]] = [
     # Generic ``Authorization: <scheme> <value>`` header.
     (r"(?i)(authorization:\s*(bearer\s+)?)[A-Za-z0-9\-\._~+/=]+", r"\1[REDACTED]"),
     # PEM-encoded private keys (RSA, EC, OPENSSH, ...). Defense in depth
-    # (principle 13/16): these are well-known secret formats that must not
+    # These are well-known secret formats that must not
     # leak through tool args/facts/audit logs even without a keyword prefix.
     (
         r"(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
@@ -621,7 +621,7 @@ def redact_personal_data(text: str) -> str:
     return text
 
 
-# FP-4: secret-bearing field names whose values must be redacted regardless of
+# Secret-bearing field names whose values must be redacted regardless of
 # where they appear in a nested structure (args, facts, HTTP bodies). This is a
 # value-level allowlist complement to the keyword-prefix ``_SECRET_PATTERNS``.
 _REDACT_FIELD_NAMES = frozenset(
@@ -684,7 +684,7 @@ _APPROVAL_PRIVATE_FIELD_NAMES = frozenset({"content", "message", "objective", "p
 def redact_secrets_deep(value: Any) -> Any:
     """Recursively redact secrets inside nested dicts/lists/strings.
 
-    FP-4/L8: ``redact_secrets`` runs against a flattened JSON string, so
+    ``redact_secrets`` runs against a flattened JSON string, so
     secrets in nested objects whose keys don't match a keyword-prefix pattern
     slip through. This walker redacts at the value level: any string leaf is
     passed through ``redact_secrets``, and any dict value whose lowercased key

@@ -59,9 +59,9 @@ def _file_write(args: dict[str, Any], *, project_dir: Path, home: Path | None = 
                 return ToolResult(tool="file.write", ok=False, error=str(exc))
         else:
             return ToolResult(tool="file.write", ok=False, error="parent directory does not exist")
-    # Gap G: snapshot before high-risk overwrite so the engine can
-    # backtrack. Appends are additive and low-risk, so they skip the
-    # snapshot to avoid stash churn.
+    # Snapshot before a high-risk overwrite so the engine can backtrack.
+    # Appends are additive and low-risk, so they skip the snapshot to avoid
+    # stash churn.
     checkpoint_id: str | None = None
     if not shadow_run_id and mode == "overwrite" and bool(args.get("checkpoint")):
         checkpoint_id = _checkpoint_store(project_dir).snapshot(
@@ -425,7 +425,7 @@ def _ast_error_facts(path: Path, shadow_path: str, exc: SyntaxError) -> dict[str
 
 
 class _CheckpointStore:
-    """Minimal git-stash-backed snapshot store (Gap G).
+    """Minimal git-stash-backed snapshot store.
 
     Before a high-risk overwrite, the engine calls ``snapshot()`` which
     runs ``git stash create`` (no branch switch, no working-tree
@@ -481,7 +481,7 @@ class _CheckpointStore:
         return checkpoint_id
 
     def restore(self, checkpoint_id: str) -> bool:
-        """Restore file contents from a checkpoint (Gap G backtrack)."""
+        """Restore file contents from a checkpoint."""
         import json
 
         from .run_command import _run_git

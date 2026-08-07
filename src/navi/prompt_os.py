@@ -198,7 +198,7 @@ def assemble_planner_turn_input(
         )
 
     if durable_constraints.strip():
-        # Principle 12: durable constraints are reloaded from the governed memory
+        # Durable constraints are reloaded from the governed memory
         # store every turn so they survive context compression. They are trusted
         # runtime state (Navi's own store), not untrusted conversation text, and
         # rank above conversation history as a must/must-not boundary.

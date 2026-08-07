@@ -159,9 +159,10 @@ class MemoryStore:
             reason=reason,
             provenance=provenance,
         )
-        # Atomic: recompute contradictions and store in one transaction so a
-        # concurrent writer cannot interleave between read and write.
-        return self.provider.store_item_with_contradictions(item)
+        # Contradiction links are model-declared metadata; the store persists
+        # them without deriving semantic judgments of its own.
+        self.provider.store_item(item)
+        return item
 
     def list_items(
         self,
@@ -219,7 +220,7 @@ class MemoryStore:
         return self.provider.get_item(item_id)
 
     # Lifecycle transitions a governed memory item may take. Validating these
-    # keeps the lifecycle invariant (principle 10): e.g. a revoked item cannot
+    # keeps the lifecycle invariant: e.g. a revoked item cannot
     # silently return to active without resolving the contradiction.
     _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
         "proposed": frozenset({"accepted", "active", "revoked", "archived"}),
@@ -245,7 +246,7 @@ class MemoryStore:
                 )
             # A lifecycle transition is a governed memory write: route it
             # through the ``before_memory_write`` hook so policy can observe
-            # or block the new status (principle 9/10).
+            # or block the new status.
             self._assert_memory_write_allowed(
                 memory_type=current.type,
                 status=status,
@@ -259,7 +260,7 @@ class MemoryStore:
         return self.get_item(item_id)
 
     def verify_item(self, item_id: str) -> MemoryItem | None:
-        # Verification is a governed memory write (principle 9/10): route it
+        # Verification is a governed memory write: route it
         # through the ``before_memory_write`` hook so policy can observe or
         # block verification events, consistent with ``reduce_confidence``.
         current = self.get_item(item_id)
@@ -279,7 +280,7 @@ class MemoryStore:
     def delete_item(self, item_id: str) -> None:
         """Hard-delete a memory item.
 
-        Principle 9/10: deletion is a governed memory write. Prefer
+        Deletion is a governed memory write. Prefer
         :meth:`set_status` with ``archived`` for governance rollback; hard
         deletion is reserved for storage hygiene and gated through the
         ``before_memory_write`` hook so policy can block it."""
@@ -632,7 +633,7 @@ class MemoryStore:
         item = MemoryItem(**item_dict)
         # Restoring a memory item (e.g. evolution rollback) is still a memory
         # write and must pass the before_memory_write hook so policy can block
-        # it (principle 9/16). The original id/metadata are preserved because
+        # it. The original id/metadata are preserved because
         # this restores a previously-governed item rather than creating a new one.
         self._assert_memory_write_allowed(
             memory_type=item.type,
@@ -643,10 +644,8 @@ class MemoryStore:
             content_chars=len(item.content),
             metadata_keys=sorted(item.metadata.keys()),
         )
-        # FP-3/L5: recompute ``contradicts`` against the current active items
-        # atomically (read + contradict + store in one transaction) so a
-        # restored item cannot silently introduce unresolved contradictions
-        # after other items have changed.
+        # A rollback restores the previously-governed snapshot, including its
+        # model-declared contradiction links, unchanged.
         normalized = MemoryItem(
             id=item.id,
             type=item.type,
@@ -663,13 +662,13 @@ class MemoryStore:
             reason=item.reason,
             provenance=item.provenance,
         )
-        self.provider.store_item_with_contradictions(normalized)
+        self.provider.store_item(normalized)
 
     def reduce_confidence(self, item_id: str, *, delta: float = 0.1) -> None:
         """Reduce the confidence of a memory item by ``delta``.
 
         The write is routed through the ``before_memory_write`` hook so policy
-        can observe or block it (principle 9/10). Evolution rollback does not
+        can observe or block it. Evolution rollback does not
         call this method because rollback must restore the exact prior record."""
         current = self.get_item(item_id)
         if current is None:
@@ -960,7 +959,7 @@ class MemoryStore:
     ) -> list[MemoryItem]:
         """Return all active constraint-type memories, unconditionally.
 
-        Principle 12: durable must/must-not rules must survive context compression
+        Durable must/must-not rules must survive context compression
         and be reloaded from the store before the agent acts. Unlike recall(),
         this is NOT query-scored -- constraints are always in scope regardless of
         semantic similarity to the current message, so a long or summarized
@@ -1010,7 +1009,7 @@ class MemoryStore:
     def render_working_memory(self, *, goal_store: Any = None, limit: int = 20) -> str:
         """Render a pinned working-memory snapshot for the planner.
 
-        Gap D: extend the per-step durable-constraints injection to also
+        Extend the per-step durable-constraints injection to also
         carry working state — the active goal + objective, the phase, and
         key run facts. This is the "pin working memory so it survives
         context compression" piece: every step the planner sees a fresh
@@ -1418,6 +1417,7 @@ class MemoryStore:
                                 "content": {"type": "string"},
                                 "confidence": {"type": "number"},
                                 "reason": {"type": "string"},
+                                "contradicts": {"type": "array", "items": {"type": "string"}},
                             },
                             "required": ["action"],
                         },
@@ -1515,8 +1515,8 @@ class MemoryStore:
     ) -> list:
         """Apply extracted add/revoke learnings with full provenance + ledger.
 
-        Shared by conversation consolidation and run reflection so the two
-        learning pipelines cannot drift (DRY, principle 1.1).
+        Used by the governed memory-consolidation pipeline; the store only
+        validates and persists model-declared learnings.
         """
         from ..evolution import EvolutionLedger
 
@@ -1543,6 +1543,7 @@ class MemoryStore:
                 item = self._apply_add_learning(
                     learning,
                     seen_memory_keys,
+                    visible_item_ids=visible_item_ids,
                     source=source,
                     provenance=provenance,
                     default_add_reason=default_add_reason,
@@ -1587,6 +1588,7 @@ class MemoryStore:
         learning: dict,
         seen_memory_keys: set,
         *,
+        visible_item_ids: set,
         source: str,
         provenance: str,
         default_add_reason: str,
@@ -1606,6 +1608,7 @@ class MemoryStore:
         contradicts = learning.get("contradicts", [])
         if not isinstance(contradicts, list):
             contradicts = []
+        contradicts = [str(item_id) for item_id in contradicts if str(item_id) in visible_item_ids]
         # LLM-extracted learnings are proposals, not durable accepted memory.
         # Promotion to accepted/active must go through the governed memory or
         # evolution path with review evidence.

@@ -28,7 +28,6 @@ def _run_command(
     network_allowed: bool = False,
     host_process_visibility: bool = False,
 ) -> dict[str, Any]:
-    command = _normalize_argv(command)
     env = os.environ.copy()
     # Ensure common bin paths are in PATH
     home_dir = str(Path.home())
@@ -211,14 +210,6 @@ def _run_command(
         "sandboxed": sandboxed,
         "sandbox_backend": "bubblewrap" if sandboxed else "none",
     }
-
-
-def _normalize_argv(command: list[str]) -> list[str]:
-    replacements = {
-        r"\(": "(",
-        r"\)": ")",
-    }
-    return [replacements.get(arg, arg) for arg in command]
 
 
 def _run_git(path: Path, *args: str) -> dict[str, Any]:

@@ -889,7 +889,7 @@ async def _complete_with_optional_schema(
     if output_schema is None:
         return await provider.complete(messages, **accepted_kwargs)
     result = await provider.complete(messages, **accepted_kwargs)
-    # Post-hoc schema validation (principle 14/16). For json_object-only
+    # Post-hoc schema validation. For json_object-only
     # providers the schema is prompt-only, so the runtime validates the
     # returned JSON against the declared schema and rejects malformed output
     # as a tool-call parse failure rather than trusting prompt instructions.
@@ -1192,46 +1192,3 @@ def _provider_response_shape(data: dict[str, Any]) -> dict[str, Any]:
             for block in content[:10]
         ]
     return shape
-
-
-def _extract_planner_user_message(content: str) -> str:
-    tagged = re.search(r"<user_message>\s*(.*?)\s*</user_message>", content, re.DOTALL)
-    if tagged:
-        return tagged.group(1).strip()
-    return content.strip()
-
-
-def _extract_planner_conversation_context(content: str) -> str:
-    tagged = re.search(
-        r"<conversation_history>\s*(.*?)\s*</conversation_history>", content, re.DOTALL
-    )
-    return tagged.group(1).strip() if tagged else ""
-
-
-def _extract_required_execution_phase(system: str) -> str:
-    match = re.search(r"`navi_execution\.phase` must be `([^`]+)`", system)
-    return match.group(1) if match else "execute"
-
-
-def _execution_phase_from_output_schema(output_schema: dict[str, Any] | None) -> str:
-    if not output_schema:
-        return ""
-    name = str(output_schema.get("name") or "")
-    match = re.fullmatch(r"navi_(prepare|execute)_execution", name)
-    if match:
-        return match.group(1)
-    schema = output_schema.get("schema")
-    if not isinstance(schema, dict):
-        return ""
-    navi_execution = (schema.get("properties") or {}).get("navi_execution")
-    if not isinstance(navi_execution, dict):
-        return ""
-    phase = ((navi_execution.get("properties") or {}).get("phase") or {}).get("enum")
-    if isinstance(phase, list) and phase:
-        return str(phase[0])
-    return ""
-
-
-def _extract_run_id(user: str) -> str:
-    match = re.search(r"^Run id:\s*(\S+)", user, flags=re.MULTILINE)
-    return match.group(1) if match else ""
