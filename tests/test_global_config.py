@@ -59,6 +59,40 @@ def test_runtime_construction_fails_closed_on_invalid_config(tmp_path: Path) -> 
         build_runtime(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        (
+            {"api_key": "model-key", "response_transport": "automatic"},
+            "response_transport 'automatic' is unsupported",
+        ),
+        (
+            {
+                "provider": "anthropic",
+                "api_key": "model-key",
+                "response_transport": "sse",
+            },
+            "response_transport 'sse' requires kind 'openai-compatible'",
+        ),
+        (
+            {
+                "api_key": "model-key",
+                "request_options": {"stream": True},
+            },
+            "request_options cannot override runtime fields: stream",
+        ),
+    ],
+)
+def test_model_response_transport_is_explicit_and_validated(
+    tmp_path: Path, model: dict, expected: str
+) -> None:
+    _write_config(tmp_path, {"model": model, "api": {"api_key": "api-key"}})
+
+    config = load_config(tmp_path)
+
+    assert any(expected in error for error in validate_config(config, tmp_path))
+
+
 def test_search_private_network_opt_in_must_be_boolean(tmp_path: Path) -> None:
     _write_config(
         tmp_path,

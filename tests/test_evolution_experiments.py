@@ -252,6 +252,38 @@ def test_prompt_evolution_rejects_layers_not_consumed_by_runtime(tmp_path: Path)
         adapter.validate("planner", "This file would be inert.")
 
 
+def test_skill_evolution_requires_a_loadable_instruction_contract(tmp_path: Path) -> None:
+    adapter = EvolutionTargetAdapterRegistry(tmp_path).get("skill")
+
+    for invalid in (
+        "plain text only",
+        "---\nname: demo\n---\nInstructions",
+        "---\nname: demo\ndescription: Demo\npermission: owner\n---\nInstructions",
+        "---\nname: demo\ndescription: Demo\npermission: read\n---\n",
+    ):
+        with pytest.raises(ValueError, match="skill candidate"):
+            adapter.validate("demo", invalid)
+
+    candidate = (
+        "---\n"
+        "name: Demo\n"
+        "description: Demonstrate a governed procedure.\n"
+        "permission: read\n"
+        "---\n"
+        "# Demo\n\nFollow the declared capability contracts.\n"
+    )
+    facts = adapter.validate("demo", candidate)
+
+    assert facts == {
+        "loaded_by": "SkillStore",
+        "characters": len(candidate),
+        "name": "Demo",
+        "description_characters": len("Demonstrate a governed procedure."),
+        "permission": "read",
+        "instructions_present": True,
+    }
+
+
 def test_manual_rollback_rejects_an_audit_event(tmp_path: Path) -> None:
     prompts = PromptLayerStore(tmp_path)
     before = prompts.read("identity")

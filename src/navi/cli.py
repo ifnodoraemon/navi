@@ -440,6 +440,33 @@ def memory_conflicts(limit: int = 50) -> None:
         )
 
 
+@memory_app.command("jobs")
+def memory_jobs(
+    job_id: str = typer.Option("", "--job-id", help="Inspect one exact job ID."),
+    status: str = typer.Option("", "--status", help="Filter by durable job status."),
+    limit: int = typer.Option(100, "--limit", min=1, max=500),
+) -> None:
+    """Inspect consolidation jobs and their append-only lifecycle facts."""
+    facts = _invoke_capability(
+        "memory.jobs",
+        {"job_id": job_id, "status": status, "limit": limit},
+    )
+    typer.echo(json.dumps(facts, ensure_ascii=False, sort_keys=True))
+
+
+@memory_app.command("retry-jobs")
+def memory_retry_jobs(
+    job_ids: list[str] = typer.Argument(..., help="Exact dead-letter job IDs."),
+    reason: str = typer.Option(..., "--reason", help="Verified reason for the retry."),
+) -> None:
+    """Explicitly requeue selected dead-letter consolidation jobs."""
+    facts = _invoke_capability(
+        "memory.retry_jobs",
+        {"job_ids": job_ids, "reason": reason},
+    )
+    typer.echo(json.dumps(facts, ensure_ascii=False, sort_keys=True))
+
+
 @memory_app.command("revoke")
 def memory_revoke(item_id: str) -> None:
     """Mark a memory item revoked."""

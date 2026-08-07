@@ -1,19 +1,22 @@
 """Core tool handlers."""
 
 from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
+
 from ..config import load_config
+from ..connector_delivery import register_connector_delivery_tool
 from ..tools import ALL_EXECUTION_CONTEXTS, SideEffectPolicy, ToolRegistry, ToolSpec
-from .browser import _browser_screenshot
+from .browser import _browser_screenshot, browser_screenshot_availability
 from .codebase import _codebase_search
+from .context import _context_search
 from .files import (
     _file_read,
     _file_write,
     _python_ast_replace_symbol,
 )
 from .hooks import _hooks_list
-from .context import _context_search
 from .memory import _memory_conflicts, _memory_list, _memory_recall, _memory_record_activation
 from .provider import _provider_config
 from .shell import _shell_run
@@ -21,7 +24,6 @@ from .skills import _skills_list, _skills_view
 from .tools_list import _tools_list
 from .utils import _http_fetch
 from .web_search import _web_search, enabled_search_provider_ids
-from ..connector_delivery import register_connector_delivery_tool
 
 
 def _core_tool_spec(**kwargs: Any) -> ToolSpec:
@@ -90,7 +92,6 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                 "properties": {
                     "name": {"type": "string"},
                     "relative_path": {"type": "string", "default": "SKILL.md"},
-                    "max_bytes": {"type": "integer", "default": 50000},
                 },
                 "required": ["name"],
             },
@@ -103,7 +104,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "path": {"type": "string"},
                     "relative_path": {"type": "string"},
                     "size": {"type": "integer"},
-                    "truncated": {"type": "boolean"},
+                    "complete": {"type": "boolean"},
+                    "max_size": {"type": "integer"},
                     "content": {"type": "string"},
                 }
             ),
@@ -124,6 +126,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "not_skills": {"type": "boolean"},
                     "tools": _array_of_objects(),
                     "count": {"type": "integer"},
+                    "unavailable_tools": _array_of_objects(),
+                    "unavailable_count": {"type": "integer"},
                 }
             ),
         ),
@@ -363,6 +367,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             workspace_fields=("path",),
         ),
         lambda args: _browser_screenshot(args, project_dir=registry.project_dir),
+        availability=browser_screenshot_availability(),
     )
     registry.register(
         _core_tool_spec(

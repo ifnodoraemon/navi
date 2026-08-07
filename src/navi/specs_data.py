@@ -433,7 +433,10 @@ PROMPT_ASSEMBLIES_SPEC: Any = {
                     "For trigger_facts.type=scheduled_occurrence, assess the current occurrence. "
                     "Dispatch cadence and earlier occurrence outcomes are control-plane facts, "
                     "not missing semantic evidence for the current result, unless an explicit "
-                    "acceptance criterion requires continuity or comparison."
+                    "acceptance criterion requires continuity or comparison. "
+                    "Respond with ONLY a JSON object with two fields: "
+                    "\"passed\" (boolean) and \"evidence_summary\" (string). "
+                    "No markdown, no code fences, no text outside the JSON object."
                 ),
             }
         ],

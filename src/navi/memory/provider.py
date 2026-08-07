@@ -6,11 +6,11 @@ import json
 from pathlib import Path
 from typing import Protocol
 
-from ..db import connect, check_schema_version, write_schema_version
+from ..db import connect, check_schema_version, read_schema_version, write_schema_version
 from ..schema import Column, Table, assert_schema_exact
 from .models import MemoryItem, SessionAlias, StoredMessage
 
-MEMORY_SCHEMA_VERSION = 2
+MEMORY_SCHEMA_VERSION = 3
 
 MESSAGES_TABLE = Table(
     "messages",
@@ -132,6 +132,7 @@ class SQLiteMemoryProvider:
     def _init_db(self) -> None:
         with connect(self.db_path) as conn:
             check_schema_version(conn, "memory", MEMORY_SCHEMA_VERSION)
+            prior_schema_version = read_schema_version(conn, "memory")
             conn.execute(MESSAGES_TABLE.ddl)
             _migrate_messages_table(conn)
             assert_schema_exact(conn, MESSAGES_TABLE)
@@ -163,6 +164,39 @@ class SQLiteMemoryProvider:
                 "CREATE INDEX IF NOT EXISTS idx_memory_jobs_pending "
                 "ON memory_consolidation_jobs(status, lease_expires_at, updated_at)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_consolidation_job_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    event TEXT NOT NULL,
+                    from_status TEXT NOT NULL,
+                    to_status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    error TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_job_events_job "
+                "ON memory_consolidation_job_events(job_id, id)"
+            )
+            if prior_schema_version is not None and prior_schema_version < 3:
+                conn.execute(
+                    """
+                    INSERT INTO memory_consolidation_job_events(
+                        job_id, event, from_status, to_status, reason, error, created_at
+                    )
+                    SELECT jobs.id, 'schema_snapshot', jobs.status, jobs.status,
+                           'memory_schema_v3_backfill', jobs.error, jobs.updated_at
+                    FROM memory_consolidation_jobs AS jobs
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM memory_consolidation_job_events AS events
+                        WHERE events.job_id = jobs.id
+                    )
+                    """
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)"
             )

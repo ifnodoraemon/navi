@@ -14,9 +14,11 @@ import pytest
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
 from navi.connector_runtime import ConnectorIngressRuntime
+from navi.core_tools import registration as core_registration
 from navi.lifecycle import Governance, Phase
 from navi.runs import RunStore
 from navi.runtime import AgentRuntime
+from navi.tools import ToolAvailability
 
 
 def _context(home: Path, *, source: str, permission_ceiling: str = "write") -> CapabilityContext:
@@ -81,6 +83,53 @@ async def test_tools_list_exposes_the_complete_registry_catalog(tmp_path: Path) 
     assert result.ok is True
     names = {tool["name"] for tool in result.facts["tools"]}
     assert {"respond", "tools.list", "shell.run", "file.write"} <= names
+
+
+@pytest.mark.asyncio
+async def test_unavailable_runtime_tool_is_not_advertised_to_planner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        core_registration,
+        "browser_screenshot_availability",
+        lambda: ToolAvailability(
+            available=False,
+            reason_code="missing_runtime_dependency",
+            detail="playwright CLI not found",
+            requirements=("executable:playwright", "playwright-browser:chromium"),
+        ),
+    )
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    assert registry.get("browser.screenshot") is None
+    result = await registry.invoke(
+        "tools.list",
+        {},
+        permission="read",
+        context=_context(tmp_path, source="cli"),
+    )
+
+    assert result.ok is True
+    assert "browser.screenshot" not in {tool["name"] for tool in result.facts["tools"]}
+    unavailable = {tool["name"]: tool for tool in result.facts["unavailable_tools"]}
+    assert unavailable["browser.screenshot"]["reason_code"] == "missing_runtime_dependency"
+    assert unavailable["browser.screenshot"]["requirements"] == [
+        "executable:playwright",
+        "playwright-browser:chromium",
+    ]
+
+
+def test_available_runtime_tool_is_registered(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        core_registration,
+        "browser_screenshot_availability",
+        lambda: ToolAvailability(available=True),
+    )
+
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+
+    assert registry.get("browser.screenshot") is not None
 
 
 @pytest.mark.asyncio

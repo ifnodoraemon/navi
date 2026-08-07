@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import inspect
 import json
 import re
-import inspect
+from collections.abc import AsyncGenerator, AsyncIterable, Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from collections.abc import AsyncGenerator, Callable
 from typing import Any, Protocol
 
 import httpx
+
 from .config import ModelConfig
 from .json_utils import json_schema_errors
 from .provider_specs import (
@@ -67,6 +68,7 @@ class ChatProvider(Protocol):
         output_schema: dict[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
     ) -> str: ...
 
     def stream(
@@ -75,7 +77,8 @@ class ChatProvider(Protocol):
         *,
         temperature: float | None = None,
         max_tokens: int | None = None,
-    ) -> AsyncGenerator[str, None]: ...
+        request_options: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[str]: ...
 
 
 ProviderFactory = Callable[[ModelConfig, ProviderSpec], ChatProvider]
@@ -154,6 +157,7 @@ class OpenAICompatibleProvider:
         output_schema: dict[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
     ) -> str:
         if not self.config.api_key:
             raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
@@ -164,6 +168,9 @@ class OpenAICompatibleProvider:
             "temperature": 0 if temperature is None else temperature,
             "max_tokens": 32768 if max_tokens is None else max_tokens,
         }
+        if self.config.response_transport == "sse":
+            payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
         structured_format = _structured_response_format(self.spec, output_schema)
         if structured_format:
             payload["response_format"] = structured_format
@@ -171,6 +178,10 @@ class OpenAICompatibleProvider:
         payload["messages"] = [
             {"role": msg.role, "content": msg.content} for msg in outbound_messages
         ]
+        effective_options = _merge_request_options(
+            self.config.request_options, request_options
+        )
+        payload = _apply_provider_request_options(payload, effective_options)
         headers = {"Authorization": f"Bearer {self.config.api_key}"}
         async with httpx.AsyncClient(
             timeout=self.config.timeout_seconds, transport=self.transport
@@ -185,7 +196,10 @@ class OpenAICompatibleProvider:
                 request_chars=sum(len(msg.content) for msg in outbound_messages),
                 max_output_tokens=int(payload["max_tokens"]),
             )
-            data = response.json()
+            if self.config.response_transport == "sse":
+                data = _openai_sse_response_json(response)
+            else:
+                data = _provider_response_json(response)
         self.last_usage = _openai_usage_facts(self.config, data)
         return _extract_openai_content(data)
 
@@ -195,10 +209,9 @@ class OpenAICompatibleProvider:
         *,
         temperature: float | None = None,
         max_tokens: int | None = None,
-    ) -> AsyncGenerator[str, None]:
+        request_options: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[str]:
         """Yield content-delta tokens via SSE (OpenAI-compatible streaming)."""
-        import httpx_sse
-
         if not self.config.api_key:
             raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
         payload: dict[str, Any] = {
@@ -208,34 +221,35 @@ class OpenAICompatibleProvider:
             "max_tokens": 32768 if max_tokens is None else max_tokens,
             "stream": True,
         }
+        effective_options = _merge_request_options(
+            self.config.request_options, request_options
+        )
+        payload = _apply_provider_request_options(payload, effective_options)
         headers = {"Authorization": f"Bearer {self.config.api_key}"}
         async with httpx.AsyncClient(timeout=None, transport=self.transport) as client:
-            async with httpx_sse.aconnect_sse(
-                client,
+            async with client.stream(
                 "POST",
                 f"{self.config.api_base_url}/chat/completions",
                 json=payload,
                 headers=headers,
-            ) as event_source:
+            ) as response:
+                if response.is_error:
+                    await response.aread()
                 _raise_provider_http_error(
-                    event_source.response,
+                    response,
                     request_chars=sum(len(msg.content) for msg in messages),
                     max_output_tokens=int(payload["max_tokens"]),
                 )
-                async for sse in event_source.aiter_sse():
-                    if sse.data == "[DONE]":
+                async for raw in _iter_sse_event_data(response.aiter_lines()):
+                    if raw == "[DONE]":
                         return
-                    try:
-                        chunk = json.loads(sse.data)
-                    except json.JSONDecodeError:
-                        continue
-                    choices = chunk.get("choices") or []
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta") or {}
-                    token = delta.get("content")
+                    chunk = _provider_stream_event_json(raw, protocol="openai")
+                    token, _, _ = _openai_sse_chunk_facts(chunk)
                     if token:
                         yield token
+                raise ProviderResponseError(
+                    "Provider openai stream ended without a DONE event"
+                )
 
 
 class AnthropicCompatibleProvider:
@@ -258,6 +272,7 @@ class AnthropicCompatibleProvider:
         output_schema: dict[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
     ) -> str:
         if not self.config.api_key:
             raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
@@ -269,6 +284,10 @@ class AnthropicCompatibleProvider:
         if structured_tool:
             payload["tools"] = [structured_tool]
             payload["tool_choice"] = {"type": "tool", "name": structured_tool["name"]}
+        effective_options = _merge_request_options(
+            self.config.request_options, request_options
+        )
+        payload = _apply_provider_request_options(payload, effective_options)
         headers = {
             "x-api-key": self.config.api_key,
             "anthropic-version": "2023-06-01",
@@ -287,7 +306,7 @@ class AnthropicCompatibleProvider:
                 request_chars=sum(len(msg.content) for msg in messages),
                 max_output_tokens=int(payload["max_tokens"]),
             )
-            data = response.json()
+            data = _provider_response_json(response)
         self.last_usage = _anthropic_usage_facts(self.config, data)
         return _extract_anthropic_content(
             data,
@@ -300,7 +319,8 @@ class AnthropicCompatibleProvider:
         *,
         temperature: float | None = None,
         max_tokens: int | None = None,
-    ) -> AsyncGenerator[str, None]:
+        request_options: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[str]:
         """Yield content-delta tokens via Anthropic streaming."""
         if not self.config.api_key:
             raise RuntimeError(f"model.api_key is required for {self.config.provider} provider")
@@ -308,46 +328,49 @@ class AnthropicCompatibleProvider:
             self.config.model, messages, temperature=temperature, max_tokens=max_tokens
         )
         payload["stream"] = True
+        effective_options = _merge_request_options(
+            self.config.request_options, request_options
+        )
+        payload = _apply_provider_request_options(payload, effective_options)
         headers = {
             "x-api-key": self.config.api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=None, transport=self.transport) as client:
-            async with client.stream(
+        async with (
+            httpx.AsyncClient(timeout=None, transport=self.transport) as client,
+            client.stream(
                 "POST",
                 f"{self.config.api_base_url}/messages",
                 json=payload,
                 headers=headers,
-            ) as response:
-                _raise_provider_http_error(
-                    response,
-                    request_chars=sum(len(msg.content) for msg in messages),
-                    max_output_tokens=int(payload["max_tokens"]),
-                )
-                event_type = ""
-                async for line in response.aiter_lines():
-                    line = line.strip()
-                    if not line:
-                        event_type = ""
+            ) as response,
+        ):
+            _raise_provider_http_error(
+                response,
+                request_chars=sum(len(msg.content) for msg in messages),
+                max_output_tokens=int(payload["max_tokens"]),
+            )
+            event_type = ""
+            async for line in response.aiter_lines():
+                line = line.strip()
+                if not line:
+                    event_type = ""
+                    continue
+                if line.startswith("event:"):
+                    event_type = line[len("event:") :].strip()
+                    if event_type == "message_stop":
+                        return
+                    continue
+                if line.startswith("data:"):
+                    if event_type != "content_block_delta":
                         continue
-                    if line.startswith("event:"):
-                        event_type = line[len("event:") :].strip()
-                        if event_type == "message_stop":
-                            return
-                        continue
-                    if line.startswith("data:"):
-                        if event_type != "content_block_delta":
-                            continue
-                        raw = line[len("data:") :].strip()
-                        try:
-                            chunk = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        delta = chunk.get("delta") or {}
-                        token = delta.get("text")
-                        if token:
-                            yield token
+                    raw = line[len("data:") :].strip()
+                    chunk = _provider_stream_event_json(raw, protocol="anthropic")
+                    delta = chunk.get("delta") or {}
+                    token = delta.get("text")
+                    if token:
+                        yield token
 
 
 def _raise_provider_http_error(
@@ -388,6 +411,163 @@ def _raise_provider_http_error(
         max_output_tokens=max_output_tokens,
         retry_after_seconds=_retry_after_seconds(response),
     )
+
+
+def _provider_response_json(response: httpx.Response) -> dict[str, Any]:
+    """Decode one successful provider response without exposing its body.
+
+    A 2xx response is not a valid provider result until its protocol envelope
+    is a JSON object.  Keep malformed bodies at the provider boundary so the
+    loop can persist a typed provider failure instead of treating a JSON
+    decoder implementation detail as a StateGraph crash.  The body itself may
+    contain echoed prompts or credentials and is therefore never copied into
+    the exception.
+    """
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        content_type = _bounded_error_text(response.headers.get("content-type"), limit=100)
+        raise ProviderResponseError(
+            "Provider response body was not valid JSON "
+            f"(status_code={response.status_code}, content_type={content_type or 'unknown'}, "
+            f"body_bytes={len(response.content)})"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ProviderResponseError(
+            "Provider response JSON must be an object "
+            f"(status_code={response.status_code}, json_type={type(payload).__name__})"
+        )
+    return payload
+
+
+def _provider_stream_event_json(raw: str, *, protocol: str) -> dict[str, Any]:
+    """Decode one provider stream event without silently dropping corruption."""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ProviderResponseError(
+            f"Provider {protocol} stream event was not valid JSON "
+            f"(event_characters={len(raw)})"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ProviderResponseError(
+            f"Provider {protocol} stream event JSON must be an object "
+            f"(json_type={type(payload).__name__})"
+        )
+    return payload
+
+
+def _openai_sse_response_json(response: httpx.Response) -> dict[str, Any]:
+    """Assemble one explicitly configured SSE completion into its JSON envelope."""
+    events = _sse_event_data(response.text)
+    if not events:
+        raise ProviderResponseError(
+            "Provider openai SSE response did not include data events "
+            f"(status_code={response.status_code}, body_bytes={len(response.content)})"
+        )
+    content_parts: list[str] = []
+    finish_reason: str | None = None
+    usage: dict[str, Any] | None = None
+    completed = False
+    for raw in events:
+        if raw == "[DONE]":
+            completed = True
+            break
+        chunk = _provider_stream_event_json(raw, protocol="openai")
+        token, chunk_finish_reason, chunk_usage = _openai_sse_chunk_facts(chunk)
+        if token:
+            content_parts.append(token)
+        if chunk_finish_reason is not None:
+            finish_reason = chunk_finish_reason
+        if chunk_usage is not None:
+            usage = chunk_usage
+    if not completed:
+        raise ProviderResponseError("Provider openai SSE response ended without a DONE event")
+    assembled: dict[str, Any] = {
+        "choices": [
+            {
+                "message": {"content": "".join(content_parts)},
+                "finish_reason": finish_reason,
+            }
+        ]
+    }
+    if usage is not None:
+        assembled["usage"] = usage
+    return assembled
+
+
+def _openai_sse_chunk_facts(
+    chunk: dict[str, Any],
+) -> tuple[str, str | None, dict[str, Any] | None]:
+    choices = chunk.get("choices")
+    if choices is None:
+        choices = []
+    if not isinstance(choices, list) or len(choices) > 1:
+        raise ProviderResponseError(
+            "Provider openai stream choices must contain at most one item"
+        )
+    usage = chunk.get("usage")
+    if usage is not None and not isinstance(usage, dict):
+        raise ProviderResponseError("Provider openai stream usage must be an object")
+    if not choices:
+        return "", None, usage
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise ProviderResponseError("Provider openai stream choice must be an object")
+    delta = choice.get("delta")
+    if delta is None:
+        delta = {}
+    if not isinstance(delta, dict):
+        raise ProviderResponseError("Provider openai stream delta must be an object")
+    content = delta.get("content")
+    if content is None:
+        content = ""
+    if not isinstance(content, str):
+        raise ProviderResponseError("Provider openai stream content must be a string")
+    finish_reason = choice.get("finish_reason")
+    if finish_reason is not None and not isinstance(finish_reason, str):
+        raise ProviderResponseError("Provider openai stream finish reason must be a string")
+    return content, finish_reason, usage
+
+
+def _sse_event_data(text: str) -> list[str]:
+    events: list[str] = []
+    data_lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\r")
+        if not line:
+            if data_lines:
+                events.append("\n".join(data_lines))
+                data_lines = []
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[len("data:") :].lstrip(" "))
+            continue
+        if line.startswith(("event:", "id:", "retry:", ":")):
+            continue
+        raise ProviderResponseError("Provider SSE response included an invalid field")
+    if data_lines:
+        events.append("\n".join(data_lines))
+    return events
+
+
+async def _iter_sse_event_data(lines: AsyncIterable[str]) -> AsyncGenerator[str]:
+    data_lines: list[str] = []
+    async for raw_line in lines:
+        line = raw_line.rstrip("\r")
+        if not line:
+            if data_lines:
+                yield "\n".join(data_lines)
+                data_lines = []
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[len("data:") :].lstrip(" "))
+            continue
+        if line.startswith(("event:", "id:", "retry:", ":")):
+            continue
+        raise ProviderResponseError("Provider SSE response included an invalid field")
+    if data_lines:
+        yield "\n".join(data_lines)
 
 
 def _bounded_error_text(value: Any, *, limit: int) -> str:
@@ -443,6 +623,7 @@ class ModelPool:
         params = self.config.get_role_params(role) if self.config else {}
         temperature = params.get("temperature")
         max_tokens = params.get("max_tokens")
+        role_request_options = params.get("request_options")
         gateway = self.current_resource_gateway()
         prompt_tokens = _estimate_prompt_tokens(messages)
         output_token_limit = max(0, int(max_tokens if max_tokens is not None else 32768))
@@ -468,6 +649,7 @@ class ModelPool:
                 output_schema=output_schema,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                request_options=role_request_options,
             )
         except (ProviderHTTPError, httpx.HTTPError):
             gateway.release(grant_id=grant.grant_id)
@@ -499,12 +681,13 @@ class ModelPool:
         self,
         role: str,
         messages: list[ChatMessage],
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[str]:
         """Route to the right provider by role and return its stream."""
         provider = self.routes.get(role, self.default)
         params = self.config.get_role_params(role) if self.config else {}
         temperature = params.get("temperature")
         max_tokens = params.get("max_tokens")
+        role_request_options = params.get("request_options")
         gateway = self.current_resource_gateway()
         prompt_tokens = _estimate_prompt_tokens(messages)
         output_token_limit = max(0, int(max_tokens if max_tokens is not None else 32768))
@@ -525,7 +708,10 @@ class ModelPool:
             raise ResourceLimitError(grant)
         try:
             async for token in provider.stream(
-                messages, temperature=temperature, max_tokens=max_tokens
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                request_options=role_request_options,
             ):
                 yield token
         finally:
@@ -604,6 +790,8 @@ def resolve_model_config(config: ModelConfig) -> ModelConfig:
         api_key=config.api_key,
         kind=spec.kind,
         timeout_seconds=config.timeout_seconds,
+        response_transport=config.response_transport,
+        request_options=dict(config.request_options),
     )
 
 
@@ -620,6 +808,39 @@ def _provider_spec(config: ModelConfig) -> ProviderSpec:
             default_base_url=config.api_base_url,
             structured_output=_default_structured_output(config.kind),
         )
+
+
+def _apply_provider_request_options(
+    payload: dict[str, Any],
+    request_options: dict[str, Any],
+) -> dict[str, Any]:
+    """Add explicit adapter options without allowing protocol-field overrides."""
+    conflicts = sorted(set(payload).intersection(request_options))
+    if conflicts:
+        raise ValueError(
+            "model.request_options cannot override runtime fields: " + ", ".join(conflicts)
+        )
+    return {**payload, **request_options}
+
+
+def _merge_request_options(
+    global_options: dict[str, Any],
+    role_options: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge role-specific request_options over global ones.
+
+    A ``None`` value in *role_options* removes the key from the merged result,
+    allowing a role to opt out of a global option (e.g. ``reasoning_effort``).
+    """
+    if not role_options:
+        return dict(global_options)
+    merged = dict(global_options)
+    for key, value in role_options.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _estimate_prompt_tokens(messages: list[ChatMessage]) -> int:
@@ -653,6 +874,7 @@ async def _complete_with_optional_schema(
     output_schema: dict[str, Any] | None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    request_options: dict[str, Any] | None = None,
 ) -> str:
     requested_kwargs: dict[str, Any] = {}
     if output_schema is not None:
@@ -661,6 +883,8 @@ async def _complete_with_optional_schema(
         requested_kwargs["temperature"] = temperature
     if max_tokens is not None:
         requested_kwargs["max_tokens"] = max_tokens
+    if request_options is not None:
+        requested_kwargs["request_options"] = request_options
     accepted_kwargs = _accepted_complete_kwargs(provider, requested_kwargs)
     if output_schema is None:
         return await provider.complete(messages, **accepted_kwargs)
@@ -703,30 +927,36 @@ def _validate_structured_output(content: str, output_schema: dict[str, Any]) -> 
 
 
 def _extract_openai_content(data: dict[str, Any]) -> str:
-    choices = data.get("choices") or []
-    if not choices:
-        raise ProviderResponseError(f"Provider response did not include choices: {data}")
-    choice = choices[0]
-    message = choice.get("message") or {}
-    content = message.get("content")
-
-    if content is None:
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
         raise ProviderResponseError(
-            f"Provider response did not include message content: {data}"
+            f"Provider response did not include choices. Response shape: {_provider_response_shape(data)}"
+        )
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise ProviderResponseError(
+            f"Provider response choice was not an object. Response shape: {_provider_response_shape(data)}"
+        )
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        raise ProviderResponseError(
+            f"Provider response did not include a message object. Response shape: {_provider_response_shape(data)}"
         )
 
+    if "content" not in message or message.get("content") is None:
+        raise ProviderResponseError(
+            "Provider response did not include message content. "
+            f"Response shape: {_provider_response_shape(data)}"
+        )
+
+    content = message["content"]
     content_text = _openai_content_text(content)
     content_str = content_text.strip()
     if not content_str:
         finish_reason = choice.get("finish_reason", "unknown")
-        response_shape = {
-            "top_level_keys": sorted(str(key) for key in data.keys()),
-            "choice_keys": sorted(str(key) for key in choice.keys()),
-            "message_keys": sorted(str(key) for key in message.keys()),
-        }
         raise ProviderResponseError(
             "Provider response content is empty. "
-            f"Finish reason: {finish_reason}. Response shape: {response_shape}"
+            f"Finish reason: {finish_reason}. Response shape: {_provider_response_shape(data)}"
         )
     return content_text
 
@@ -896,7 +1126,12 @@ def _extract_anthropic_content(
     *,
     tool_name: str = "",
 ) -> str:
-    blocks = data.get("content") or []
+    blocks = data.get("content")
+    if not isinstance(blocks, list) or any(not isinstance(block, dict) for block in blocks):
+        raise ProviderResponseError(
+            "Provider response content must be a list of objects. "
+            f"Response shape: {_provider_response_shape(data)}"
+        )
     if tool_name:
         for block in blocks:
             if block.get("type") == "tool_use" and block.get("name") == tool_name:
@@ -904,25 +1139,59 @@ def _extract_anthropic_content(
                 if isinstance(tool_input, dict):
                     return json.dumps(tool_input, ensure_ascii=False)
                 raise ProviderResponseError(
-                    f"Provider structured tool output {tool_name} was not an object: {data}"
+                    f"Provider structured tool output {tool_name} was not an object. "
+                    f"Response shape: {_provider_response_shape(data)}"
                 )
-        for block in blocks:
-            if block.get("type") == "tool_use":
-                if block.get("name") == tool_name:
-                    raise ProviderResponseError(
-                        f"Provider structured tool output {tool_name} was invalid: {data}"
-                    )
         raise ProviderResponseError(
-            f"Provider response did not include tool output {tool_name}: {data}"
+            f"Provider response did not include tool output {tool_name}. "
+            f"Response shape: {_provider_response_shape(data)}"
         )
     text = "\n".join(
         str(block.get("text") or "") for block in blocks if block.get("type") == "text"
     ).strip()
     if not text:
         raise ProviderResponseError(
-            f"Provider response did not include text content: {data}"
+            "Provider response did not include text content. "
+            f"Response shape: {_provider_response_shape(data)}"
         )
     return text
+
+
+def _provider_response_shape(data: dict[str, Any]) -> dict[str, Any]:
+    """Return protocol structure only; provider values can contain user secrets."""
+    shape: dict[str, Any] = {
+        "has_choices": "choices" in data,
+        "has_content": "content" in data,
+        "has_usage": "usage" in data,
+    }
+    choices = data.get("choices")
+    shape["choices_type"] = type(choices).__name__
+    if isinstance(choices, list):
+        shape["choice_count"] = len(choices)
+        if choices:
+            shape["first_choice_type"] = type(choices[0]).__name__
+            if isinstance(choices[0], dict):
+                message = choices[0].get("message")
+                shape["has_message"] = "message" in choices[0]
+                shape["message_type"] = type(message).__name__
+                if isinstance(message, dict):
+                    message_content = message.get("content")
+                    shape["has_message_content"] = "content" in message
+                    shape["message_content_type"] = type(message_content).__name__
+    content = data.get("content")
+    shape["content_type"] = type(content).__name__
+    if isinstance(content, list):
+        shape["content_block_count"] = len(content)
+        shape["content_block_types"] = [
+            (
+                str(block.get("type"))
+                if isinstance(block, dict)
+                and block.get("type") in {"text", "tool_use", "thinking", "redacted_thinking"}
+                else "unknown"
+            )
+            for block in content[:10]
+        ]
+    return shape
 
 
 def _extract_planner_user_message(content: str) -> str:

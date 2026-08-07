@@ -15,6 +15,7 @@ import pytest
 
 from navi.capabilities import build_capability_registry
 from navi.capabilities_types import CapabilityContext
+from navi.core_tools.skills import SKILL_FILE_MAX_BYTES
 from navi.skills import SkillStore
 
 
@@ -82,3 +83,50 @@ async def test_skill_tools_cannot_bypass_context_skill_permission_ceiling(
     assert denied.error_reason == "not_found"
     assert visible.ok is True
     assert "WRITE_SKILL_BODY" in visible.facts["content"]
+
+
+@pytest.mark.asyncio
+async def test_skill_view_returns_one_complete_instruction_file(tmp_path: Path) -> None:
+    body = "STEP\n" * 12_000
+    _write_skill(tmp_path, "complete", "Complete instructions", body)
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(home=tmp_path, workspace=str(tmp_path))
+
+    viewed = await registry.invoke(
+        "skills.view",
+        {"name": "complete"},
+        permission="read",
+        context=context,
+    )
+
+    assert viewed.ok is True
+    assert viewed.facts["complete"] is True
+    assert viewed.facts["size"] < SKILL_FILE_MAX_BYTES
+    assert viewed.facts["content"].count("STEP") == 12_000
+    assert "truncated" not in viewed.facts
+
+
+@pytest.mark.asyncio
+async def test_skill_view_fails_instead_of_returning_partial_instructions(
+    tmp_path: Path,
+) -> None:
+    _write_skill(
+        tmp_path,
+        "oversized",
+        "Oversized instructions",
+        "X" * SKILL_FILE_MAX_BYTES,
+    )
+    registry = build_capability_registry(tmp_path, project_dir=tmp_path)
+    context = CapabilityContext(home=tmp_path, workspace=str(tmp_path))
+
+    viewed = await registry.invoke(
+        "skills.view",
+        {"name": "oversized"},
+        permission="read",
+        context=context,
+    )
+
+    assert viewed.ok is False
+    assert viewed.error_reason == "resource_limit"
+    assert viewed.facts["complete"] is False
+    assert "content" not in viewed.facts

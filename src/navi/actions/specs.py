@@ -961,6 +961,109 @@ ACTION_SPECS = [
         source="action",
     ),
     ToolSpec(
+        name="memory.jobs",
+        capability_class="memory",
+        execution_contexts=(API_CONTEXT,),
+        description=(
+            "Inspect memory consolidation jobs and append-only lifecycle events from the "
+            "trusted local control surface."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string"},
+                "status": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "state_transition": {"type": "string"},
+                "turn_scope": {"type": "string"},
+                "jobs": {"type": "array", "items": {"type": "object"}},
+                "count": {"type": "integer"},
+                "events": {"type": "array", "items": {"type": "object"}},
+                "status": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": [
+                "entity_type",
+                "entity_id",
+                "state_transition",
+                "turn_scope",
+                "jobs",
+                "count",
+                "events",
+            ],
+        },
+        facts_only=True,
+        mutates=False,
+        permission="read",
+        source="action",
+    ),
+    ToolSpec(
+        name="memory.retry_jobs",
+        capability_class="memory",
+        risk_class="high",
+        sensitive_contexts=("memory", "local_state", "background_work"),
+        confirmation_required=True,
+        risk_reason_code="memory_pipeline_maintenance",
+        approval_policy="explicit_control",
+        execution_contexts=(API_CONTEXT,),
+        description=(
+            "Explicitly requeue selected dead-letter memory consolidation jobs after an "
+            "operator has repaired their root cause. Previous failures remain in append-only "
+            "job events; this capability never retries jobs automatically."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "job_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                    "maxItems": 100,
+                },
+                "reason": {"type": "string", "minLength": 1},
+            },
+            "required": ["job_ids", "reason"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "state_transition": {"type": "string"},
+                "turn_scope": {"type": "string"},
+                "jobs": {"type": "array", "items": {"type": "object"}},
+                "requested_job_ids": {"type": "array", "items": {"type": "string"}},
+                "retried_job_ids": {"type": "array", "items": {"type": "string"}},
+                "not_retried_job_ids": {"type": "array", "items": {"type": "string"}},
+                "retried_count": {"type": "integer"},
+                "reason": {"type": "string"},
+            },
+            "required": [
+                "entity_type",
+                "entity_id",
+                "state_transition",
+                "turn_scope",
+                "jobs",
+                "requested_job_ids",
+                "retried_job_ids",
+                "not_retried_job_ids",
+                "retried_count",
+                "reason",
+            ],
+        },
+        facts_only=True,
+        mutates=True,
+        permission="write",
+        source="action",
+    ),
+    ToolSpec(
         name="personal.query",
         capability_class="personal_resource",
         execution_contexts=("turn", API_CONTEXT),

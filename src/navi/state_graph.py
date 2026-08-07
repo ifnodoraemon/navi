@@ -6,14 +6,14 @@ import json
 import os
 import shlex
 import uuid
-from difflib import SequenceMatcher
 from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Protocol
 
-from .capability_contract import CAPABILITY_RETRYABLE_KEY
 from .capabilities import CapabilityRegistry
 from .capabilities_types import CapabilityContext
+from .capability_contract import CAPABILITY_RETRYABLE_KEY
 from .checker import CheckerReport, DeterministicChecker
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts, current_time_facts
 from .harness import Harness, HarnessCommand, HarnessResult
@@ -27,11 +27,11 @@ from .loop import (
     TraceFailureDomain,
 )
 from .loop_contracts import (
+    LockMode,
     LoopNode,
     LoopRunState,
     LoopSpec,
     LoopTerminalState,
-    LockMode,
     MergeStatus,
     ResourceDecision,
     VerificationKind,
@@ -39,13 +39,9 @@ from .loop_contracts import (
     WorkspaceMode,
 )
 from .loop_runs import LoopCheckpoint, LoopRunStore
-
 from .memory import ACTIVE_MEMORY_CONTEXT_LIMIT
 from .model_facts import project_model_facts
 from .prompt_os import assemble_semantic_checker_messages
-from .runtime import AgentRuntime
-from .safeguards import call_mutates
-from .syscalls import ModelSyscallPlanner, provider_failure_facts
 from .resource_gateway import (
     GlobalResourceGateway,
     ResourceGrant,
@@ -53,6 +49,9 @@ from .resource_gateway import (
     ResourceLimits,
     ResourceRequest,
 )
+from .runtime import AgentRuntime
+from .safeguards import call_mutates
+from .syscalls import ModelSyscallPlanner, provider_failure_facts
 from .text_utils import truncate_middle
 from .trace import TraceStore
 from .workspaces import LockAcquireResult
@@ -67,6 +66,8 @@ PLANNER_MEMORY_ITEM_MAX_CHARS = 800
 PLANNER_ATTEMPT_HISTORY_LIMIT = 8
 PLANNER_ATTEMPT_HISTORY_MAX_CHARS = 16_000
 PLANNER_ATTEMPT_MESSAGE_MAX_CHARS = 1_000
+PLANNER_PRIOR_RESULT_MAX_CHARS = 4_000
+PLANNER_AMBIENT_RECORD_LIMIT = 3
 SEMANTIC_CHECKER_ATTEMPT_LIMIT = 4
 SEMANTIC_CHECKER_ARGS_MAX_CHARS = 3_000
 SEMANTIC_CHECKER_FACTS_MAX_CHARS = 6_000
@@ -369,23 +370,6 @@ class LLMSemanticCheckerPort:
     def __init__(self, *, runtime: AgentRuntime):
         self.runtime = runtime
 
-    _OUTPUT_SCHEMA = {
-        "name": "semantic_check_result",
-        "strict": False,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "passed": {"type": "boolean"},
-                "evidence_summary": {"type": "string"},
-            },
-            "required": [
-                "passed",
-                "evidence_summary",
-            ],
-            "additionalProperties": False,
-        },
-    }
-
     async def assess(
         self,
         spec: LoopSpec,
@@ -416,7 +400,6 @@ class LLMSemanticCheckerPort:
                 last_capability=_semantic_checker_capability_result(executed),
                 observed_capability_evidence=_semantic_checker_attempt_evidence(evidence),
             ),
-            output_schema=self._OUTPUT_SCHEMA,
         )
         return self._parse(response)
 
@@ -425,6 +408,11 @@ class LLMSemanticCheckerPort:
         try:
             data = json.loads(response)
         except json.JSONDecodeError:
+            return SemanticCheckDecision(
+                passed=False,
+                evidence_summary="checker returned invalid JSON",
+            )
+        if not isinstance(data, dict):
             return SemanticCheckDecision(
                 passed=False,
                 evidence_summary="checker returned invalid JSON",
@@ -948,7 +936,7 @@ def _bounded_conversation_context(
     for index, msg in preview_items:
         preview = _head_preview(str(getattr(msg, "content", "") or ""))
         preview_lines.append(
-            f"- older_index={index} role={str(getattr(msg, 'role', '') or '')} "
+            f"- older_index={index} role={getattr(msg, 'role', '') or ''!s} "
             f"created_at={float(getattr(msg, 'created_at', 0.0) or 0.0):.3f} "
             f"chars={len(str(getattr(msg, 'content', '') or ''))} preview={preview}"
         )
@@ -2732,7 +2720,7 @@ class DurableStateGraphRunner:
                     return
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # renewal must fail closed on any driver error
             self._lease_renewal_error = RuntimeError(
                 f"loop execution lease renewal failed: {type(exc).__name__}: {exc}"
             )
@@ -3320,12 +3308,65 @@ def _refreshed_ingress_facts(context: CapabilityContext) -> dict[str, Any]:
 def _planner_ingress_facts(context: CapabilityContext, spec: LoopSpec) -> dict[str, Any]:
     facts = _refreshed_ingress_facts(context)
     task_context = _goal_task_context(spec)
-    facts["task_context"] = task_context
+    facts["task_context"] = _planner_task_context(task_context)
     facts["current_state"] = _project_current_state_for_task(
         facts.get("current_state"),
         task_context,
     )
     return facts
+
+
+def _planner_task_context(task_context: dict[str, Any]) -> dict[str, Any]:
+    """Project task lineage once without duplicating delivery and result bodies."""
+    lineage = task_context.get("lineage")
+    progress = task_context.get("progress")
+    delivery = task_context.get("delivery")
+    lineage_facts = dict(lineage) if isinstance(lineage, dict) else {}
+    progress_facts = dict(progress) if isinstance(progress, dict) else {}
+    delivery_facts = dict(delivery) if isinstance(delivery, dict) else {}
+    prior_items: list[dict[str, Any]] = []
+    for item in progress_facts.get("authoritative_prior_items") or []:
+        if not isinstance(item, dict):
+            continue
+        prior = _prior_result_text(item)
+        result_text = prior["text"]
+        prior_items.append(
+            {
+                "goal_id": str(item.get("goal_id") or ""),
+                "run_id": str(item.get("run_id") or ""),
+                "result_source": prior["source"],
+                "result_text": truncate_middle(
+                    result_text,
+                    PLANNER_PRIOR_RESULT_MAX_CHARS,
+                ),
+                "result_characters": len(result_text),
+                "result_truncated": len(result_text) > PLANNER_PRIOR_RESULT_MAX_CHARS,
+            }
+        )
+    projected = {
+        "lineage": lineage_facts,
+        "progress": {
+            "scope": str(progress_facts.get("scope") or ""),
+            "sequence_number": _int_or_default(progress_facts.get("sequence_number"), 0),
+            "authority": str(progress_facts.get("authority") or ""),
+            "authoritative_prior_items": prior_items,
+            "authoritative_prior_item_count": len(prior_items),
+            "ambient_history_authoritative": bool(
+                progress_facts.get("ambient_history_authoritative", False)
+            ),
+        },
+        "delivery": delivery_facts,
+    }
+    bounded = project_model_facts(
+        projected,
+        max_characters=(
+            PLANNER_PRIOR_RESULT_MAX_CHARS * max(1, len(prior_items)) + 4_000
+        ),
+        max_string_characters=PLANNER_PRIOR_RESULT_MAX_CHARS,
+        max_depth=6,
+        max_items=30,
+    )
+    return bounded if isinstance(bounded, dict) else {}
 
 
 def _project_current_state_for_task(
@@ -3455,6 +3496,7 @@ def _project_current_state_for_task(
         "ambient_active_goal_count": len(ambient_goals),
         "ambient_active_loop_run_count": len(ambient_loop_runs),
         "ambient_recent_delivery_count": len(ambient_deliveries),
+        "ambient_record_limit": PLANNER_AMBIENT_RECORD_LIMIT,
     }
     return projected
 
@@ -3550,9 +3592,10 @@ def _append_ambient_records(
 ) -> None:
     if not records:
         return
+    records = records[:PLANNER_AMBIENT_RECORD_LIMIT]
     existing = container.get(key)
     if isinstance(existing, list):
-        container[key] = [*existing, *records]
+        container[key] = [*existing, *records][:PLANNER_AMBIENT_RECORD_LIMIT]
     else:
         container[key] = records
 
@@ -3631,10 +3674,24 @@ def _ambient_delivery(record: dict[str, Any]) -> dict[str, Any]:
 
 def _planner_loop_spec_facts(spec: LoopSpec) -> dict[str, Any]:
     """Expose semantic loop contracts without serializing the runtime graph."""
+    goal = spec.goal.to_dict()
+    metadata = goal.get("metadata")
+    if isinstance(metadata, dict):
+        metadata = dict(metadata)
+        # Task context has a dedicated planner projection. Scheduled prior
+        # occurrences are the durable source used to build that context; do
+        # not serialize either copy again through Goal metadata.
+        metadata.pop("task_context", None)
+        trigger_facts = metadata.get("trigger_facts")
+        if isinstance(trigger_facts, dict):
+            trigger_facts = dict(trigger_facts)
+            trigger_facts.pop("prior_occurrences", None)
+            metadata["trigger_facts"] = trigger_facts
+        goal["metadata"] = metadata
     return {
         "id": spec.id,
         "goal_id": spec.goal_id,
-        "goal": spec.goal.to_dict(),
+        "goal": goal,
         "allowed_capabilities": list(spec.allowed_capabilities),
         "verification_ladder": [item.to_dict() for item in spec.verification_ladder],
         "retry_policy": spec.retry_policy.to_dict(),

@@ -139,6 +139,128 @@ async def test_conversation_memory_consolidation_is_durable_and_actor_scoped(
     assert store.claim_consolidation_jobs(owner="worker-b") == []
 
 
+@pytest.mark.asyncio
+async def test_dead_letter_retry_preserves_events_and_completes_after_repair(
+    tmp_path: Path,
+) -> None:
+    class BrokenProvider:
+        async def complete_for(self, role, messages, *, output_schema=None):
+            del role, messages, output_schema
+            raise RuntimeError("provider transport unavailable")
+
+    class RepairedProvider:
+        async def complete_for(self, role, messages, *, output_schema=None):
+            del role, messages, output_schema
+            return '{"learnings":[]}'
+
+    store = MemoryStore(tmp_path)
+    store.add_message(
+        "session-a",
+        "user",
+        "Remember nothing from this test.",
+        source="cli",
+        peer_id="cli",
+        sender_id="cli",
+        run_id="run-a",
+    )
+    job_id = store.enqueue_consolidation(
+        session_id="session-a",
+        run_id="run-a",
+        source="cli",
+        peer_id="cli",
+        sender_id="cli",
+    )
+    failed = store.claim_consolidation_jobs(owner="worker-a")[0]
+    with pytest.raises(RuntimeError, match="provider transport unavailable"):
+        await store.consolidate_job(failed, SimpleNamespace(provider=BrokenProvider()))
+
+    retried = store.retry_consolidation_jobs(
+        [job_id],
+        reason="provider transport repaired and verified",
+    )
+    assert [job.status for job in retried] == ["pending"]
+    repaired = store.claim_consolidation_jobs(owner="worker-b")[0]
+    assert repaired.attempts == 2
+    assert await store.consolidate_job(
+        repaired,
+        SimpleNamespace(provider=RepairedProvider()),
+    ) == []
+
+    final = store.list_consolidation_jobs(job_id=job_id)[0]
+    assert final.status == "completed"
+    events = store.list_consolidation_job_events(job_id)
+    assert [event["event"] for event in events] == [
+        "enqueued",
+        "claimed",
+        "dead_letter",
+        "retry_requested",
+        "claimed",
+        "completed",
+    ]
+    retry_event = events[3]
+    assert retry_event["reason"] == "provider transport repaired and verified"
+    assert retry_event["error"] == "RuntimeError: provider transport unavailable"
+
+
+@pytest.mark.asyncio
+async def test_memory_job_control_is_local_explicit_and_exact(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    job_id = store.enqueue_consolidation(
+        session_id="session-a",
+        run_id="run-a",
+        source="cli",
+        peer_id="cli",
+        sender_id="cli",
+    )
+    claimed = store.claim_consolidation_jobs(owner="worker-a")[0]
+    store._finish_consolidation_job(
+        claimed,
+        status="dead_letter",
+        error="ProviderResponseError: malformed response",
+    )
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        execution_context=API_CONTEXT,
+    )
+    local = CapabilityContext(
+        home=tmp_path,
+        source="local",
+        peer_id="local",
+        sender_id="local",
+        workspace=str(tmp_path),
+        permission_ceiling="write",
+    )
+    inspected = await registry.invoke(
+        "memory.jobs",
+        {"job_id": job_id},
+        permission="read",
+        context=local,
+    )
+    assert inspected.ok is True
+    assert [job["id"] for job in inspected.facts["jobs"]] == [job_id]
+    assert inspected.facts["events"][-1]["error"].startswith("ProviderResponseError")
+
+    retried = await registry.invoke(
+        "memory.retry_jobs",
+        {"job_ids": [job_id, "missing"], "reason": "root cause repaired"},
+        permission="write",
+        context=local,
+    )
+    assert retried.ok is True
+    assert retried.facts["retried_job_ids"] == [job_id]
+    assert retried.facts["not_retried_job_ids"] == ["missing"]
+
+    remote = _context(tmp_path, sender_id="user-a", session_id="session-a")
+    blocked = await registry.invoke(
+        "memory.jobs",
+        {"job_id": job_id},
+        permission="read",
+        context=remote,
+    )
+    assert blocked.ok is False
+
+
 def test_expired_consolidation_lease_is_reclaimed_and_failures_dead_letter_without_retry(
     tmp_path: Path,
 ) -> None:
@@ -178,6 +300,47 @@ def test_expired_consolidation_lease_is_reclaimed_and_failures_dead_letter_witho
             (job_id,),
         ).fetchone()[0]
     assert status == "dead_letter"
+    assert store.list_consolidation_job_events(job_id)[-1]["event"] == (
+        "legacy_failed_normalized"
+    )
+
+
+def test_memory_schema_backfills_current_state_without_inventing_a_transition(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore(tmp_path)
+    job_id = store.enqueue_consolidation(
+        session_id="session-a",
+        run_id="run-a",
+        source="cli",
+        peer_id="cli",
+        sender_id="cli",
+    )
+    with connect(db_paths(tmp_path).memory) as conn:
+        conn.execute(
+            "DELETE FROM memory_consolidation_job_events WHERE job_id = ?",
+            (job_id,),
+        )
+        conn.execute(
+            """
+            UPDATE memory_consolidation_jobs
+            SET status = 'dead_letter', error = 'legacy provider failure'
+            WHERE id = ?
+            """,
+            (job_id,),
+        )
+        conn.execute(
+            "UPDATE schema_versions SET version = 2 WHERE component = 'memory'"
+        )
+
+    migrated = MemoryStore(tmp_path)
+    events = migrated.list_consolidation_job_events(job_id)
+
+    assert len(events) == 1
+    assert events[0]["event"] == "schema_snapshot"
+    assert events[0]["from_status"] == "dead_letter"
+    assert events[0]["to_status"] == "dead_letter"
+    assert events[0]["error"] == "legacy provider failure"
 
 
 @pytest.mark.asyncio

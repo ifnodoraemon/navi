@@ -49,6 +49,11 @@ The runtime owns deterministic enforcement:
 - checkpoint, merge, compensation, and audit requirements;
 - durable lifecycle transitions.
 
+A capability with unmet declared runtime prerequisites must be absent from the
+planner manifest. The capability catalog keeps structured unavailable facts and
+diagnostics identify the missing prerequisite, so absence is observable without
+offering the model a call that is known to fail.
+
 Each model role resolves to one declared provider. The runtime invokes that
 provider once in an execution pass and must not recurse, switch providers,
 rewrite arguments, or synthesize a substitute after failure. Structured-output
@@ -58,6 +63,18 @@ model-owned replan budget, but it is never a provider-transport retry. A typed
 transient provider transport failure may create one persisted retry gate with a
 bounded delay and resume the same Planner or Checker node once. The gate records
 model role, resume node, retry count, and maximum; exhaustion is terminal.
+An HTTP success status is not a successful provider result until it satisfies
+the configured response transport. `json` requires a JSON object body; `sse`
+requires JSON object data events and a terminal `DONE` event. The transport is
+declared per model route and must never be inferred from a malformed response or
+retried under another mode. Malformed envelopes become bounded
+`ProviderResponseError` facts at the adapter boundary; raw response bodies and
+non-canonical response values must not enter exceptions, traces, or user-facing
+diagnostics.
+Provider-specific request extensions are explicit `request_options` on that
+model route, not model-name branches in runtime code. They must be JSON data and
+cannot override runtime-owned protocol fields such as model, messages, output
+schema, tools, token limit, or response transport.
 Retry accounting is role-scoped, and a recovered role's stale gate is archived
 and cleared before a different role can fail.
 Checker recovery must reuse the persisted capability result and candidate
@@ -207,6 +224,11 @@ Failed or blocked occurrences may remain in the control ledger but must not be
 projected as authoritative prior semantic results.
 Ambient actor/workspace history is background only unless the task context
 explicitly declares it authoritative for the current task.
+Durable task and recurrence records retain their complete authoritative data,
+but the Planner receives one bounded task-context projection. Prior result text,
+delivery state, and lineage must not be duplicated through Goal metadata,
+trigger facts, and current-state records in the same model call. Ambient record
+samples are bounded independently while their total counts remain visible.
 
 ## Capability Contract
 
@@ -223,6 +245,10 @@ reject unknown root fields. One canonical validator owns conditional and
 composite JSON Schema semantics; property declaration order must never create an
 implicit required-field policy. Capability failures expose typed reason and
 retryability facts rather than requiring callers to parse prose.
+The Planner receives the capability manifest as a stable prefix before mutable
+turn facts. Its model projection may remove duplicated schema prose, but it must
+retain the input validation shape and cannot replace the executor's complete
+authoritative schema.
 
 Governance code executes those declared policies generically. It must not infer
 permission, risk, context injection, runtime binding, or delegation eligibility
@@ -278,6 +304,10 @@ governed capabilities. Plugins provide installed code and integrations. Hooks
 observe or deterministically gate lifecycle events. These extension types must
 not silently assume each other's authority or make product-semantic choices for
 the model.
+When a selected skill instruction file is disclosed, the file is returned
+complete or the capability returns an explicit typed resource-limit failure;
+silent truncation cannot satisfy the skill contract. The model cannot choose a
+read limit that changes this completeness guarantee.
 
 First-class lifecycle entities need a complete governed surface inside the
 caller policy envelope: scoped list, create/start, read, update, cancel/delete
@@ -353,15 +383,18 @@ stored as fingerprints and conflicting identities are not implicitly merged.
 Conversation consolidation uses a durable leased job queue, produces proposed
 memory rather than self-approved facts, and hybrid recall must not depend on an
 FTS seed. Consolidation is bound to one run transcript, reclaims expired leases,
-and dead-letters a recorded processing failure without retrying it. Missing jobs are
-reconstructed before retention. Expired transient turns are compacted only after
-consolidation and after any external wait has been durably cancelled; retention
-must never delete a gate or LoopSpec while its Run, Goal, or LoopRun still claims
-to be resumable. Terminal lifecycle summaries remain available for metrics. User-facing
-actors cannot write global memory. Assistant conversation text and run result
-summaries are non-authoritative candidates, not durable facts. Preferences
-learned from prior approvals may inform explanations but must not expand
-permissions.
+and dead-letters a recorded processing failure without retrying it. Every queue
+transition is append-only evidence. A trusted local operator may explicitly
+requeue exact dead-letter job IDs with a reason only after repairing the cause;
+the previous error remains in the retry event, and no broad or automatic retry
+path exists. Missing jobs are reconstructed before retention. Expired transient
+turns are compacted only after consolidation and after any external wait has
+been durably cancelled; retention must never delete a gate or LoopSpec while its
+Run, Goal, or LoopRun still claims to be resumable. Terminal lifecycle summaries
+remain available for metrics. User-facing actors cannot write global memory.
+Assistant conversation text and run result summaries are non-authoritative
+candidates, not durable facts. Preferences learned from prior approvals may
+inform explanations but must not expand permissions.
 Context search promotes an assistant message to
 `trust=checker_accepted_result` only when its exact body matches a converged
 LoopRun response. A connector receipt is projected separately and is the only
@@ -399,6 +432,10 @@ The adapter, not proposal input, reads the authoritative baseline and validates
 that the target is actually consumed by the runtime. Inert prompt-layer names
 are rejected. Proposal and state capability facts expose lifecycle and
 fingerprints rather than copying target payloads back into model context.
+Skill candidates must pass the same load-bearing contract before experiment or
+apply: valid YAML frontmatter with a name and description, a valid permission,
+and non-empty instructions. A generic non-empty-text check alone cannot qualify
+an invalid skill for activation.
 Candidate evaluation cases, fingerprints, checks, approval evidence, applied
 events, activation observations, and rollback facts are durable. Every proposal
 declares evaluation cases and cannot apply unless its latest candidate experiment

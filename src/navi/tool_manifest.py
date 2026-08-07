@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from .safeguards import capability_safeguard_facts
-from .tools import ToolSpec
+from .tools import ToolSpec, UnavailableTool
 
 
 def tool_manifest_facts(spec: ToolSpec) -> dict[str, Any]:
@@ -35,12 +35,28 @@ def tool_manifest_facts(spec: ToolSpec) -> dict[str, Any]:
     }
 
 
-def tool_catalog_facts(specs: Iterable[ToolSpec], *, definition: str) -> dict[str, Any]:
+def tool_catalog_facts(
+    specs: Iterable[ToolSpec],
+    *,
+    definition: str,
+    unavailable: Iterable[UnavailableTool] = (),
+) -> dict[str, Any]:
     manifests = [tool_manifest_facts(spec) for spec in specs]
+    unavailable_manifests = [
+        {
+            "name": item.spec.name,
+            "capability_class": item.spec.capability_class,
+            "source": item.spec.source,
+            **item.availability.to_dict(),
+        }
+        for item in unavailable
+    ]
     return {
         "category": "tools",
         "definition": definition,
         "not_skills": True,
         "tools": manifests,
         "count": len(manifests),
+        "unavailable_tools": unavailable_manifests,
+        "unavailable_count": len(unavailable_manifests),
     }

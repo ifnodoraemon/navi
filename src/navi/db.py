@@ -36,6 +36,13 @@ def _execute_with_busy_retry(conn: sqlite3.Connection, sql: str) -> None:
             time.sleep(0.05 * (attempt + 1))
 
 
+def read_schema_version(conn: sqlite3.Connection, component: str) -> int | None:
+    row = conn.execute(
+        "SELECT version FROM schema_versions WHERE component = ?", (component,)
+    ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
 def check_schema_version(conn: sqlite3.Connection, component: str, version: int) -> None:
     conn.execute(
         """

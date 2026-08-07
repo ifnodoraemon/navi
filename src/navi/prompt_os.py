@@ -119,7 +119,6 @@ def assemble_planner_system_prompt() -> PromptAssembly:
 def assemble_planner_turn_input(
     text: str,
     *,
-    tools: list[ToolSpec],
     conversation_context: str = "",
     runtime_facts: dict[str, Any] | None = None,
     permission_ceiling: str = "write",
@@ -212,8 +211,14 @@ def assemble_planner_turn_input(
             )
         )
 
-    blocks.extend(
-        [
+    return PromptAssembly("planner_turn_input", tuple(blocks))
+
+
+def assemble_planner_tool_manifest(tools: list[ToolSpec]) -> PromptAssembly:
+    """Build the stable capability prefix separately from mutable turn facts."""
+    return PromptAssembly(
+        "planner_tool_manifest",
+        (
             PromptBlock(
                 "TOOL MANIFEST",
                 "manifest",
@@ -224,9 +229,8 @@ def assemble_planner_turn_input(
                     separators=(",", ":"),
                 ),
             ),
-        ]
+        ),
     )
-    return PromptAssembly("planner_turn_input", tuple(blocks))
 
 
 def _planner_tool_manifest_entry(tool: ToolSpec) -> dict[str, Any]:
@@ -247,7 +251,7 @@ def _planner_tool_manifest_entry(tool: ToolSpec) -> dict[str, Any]:
         "name": tool.name,
         "capability_class": tool.capability_class,
         "description": tool.description,
-        "input_schema": tool.input_schema,
+        "input_schema": _planner_input_schema(tool.input_schema),
         "permission": tool.permission,
         "facts_only": tool.facts_only,
         "mutates": tool.mutates,
@@ -258,6 +262,19 @@ def _planner_tool_manifest_entry(tool: ToolSpec) -> dict[str, Any]:
         },
         "output_fields": output_fields,
     }
+
+
+def _planner_input_schema(value: Any) -> Any:
+    """Remove prose duplicated by the tool description; retain validation shape."""
+    if isinstance(value, dict):
+        return {
+            str(key): _planner_input_schema(item)
+            for key, item in value.items()
+            if not (str(key) == "description" and not isinstance(item, dict))
+        }
+    if isinstance(value, list):
+        return [_planner_input_schema(item) for item in value]
+    return value
 
 
 def assemble_responder_system_prompt(

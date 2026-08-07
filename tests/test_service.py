@@ -130,11 +130,11 @@ def test_playwright_browser_diagnostic_requires_real_executable(tmp_path):
     empty_cache = tmp_path / "empty-cache" / "1.0"
     empty_cache.mkdir(parents=True)
 
-    assert diagnostics._playwright_browser_executable((empty_cache.parent,)) is None
+    assert diagnostics.playwright_browser_executable((empty_cache.parent,)) is None
 
     browser = tmp_path / "browser-cache" / "chromium-1" / "chrome-linux" / "chrome"
     browser.parent.mkdir(parents=True)
     browser.write_text("#!/bin/sh\n", encoding="utf-8")
     browser.chmod(0o755)
 
-    assert diagnostics._playwright_browser_executable((browser.parents[2],)) == browser
+    assert diagnostics.playwright_browser_executable((browser.parents[2],)) == browser

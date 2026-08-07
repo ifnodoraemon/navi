@@ -19,6 +19,7 @@ from ..result import PermissionDenied, SchemaMismatch, guarded
 from ..tools import API_CONTEXT
 from .helpers import arg_text as _arg_text
 from .helpers import fact_result as _fact_result
+from .helpers import positive_int as _positive_int
 from .helpers import transition_facts as _transition_facts
 
 
@@ -129,6 +130,85 @@ class MemoryAddCapability(BaseCapability):
             "memory",
             facts,
             run_id=item.id,
+        )
+
+
+@capability("memory_jobs")
+class MemoryJobsCapability(BaseCapability):
+
+    @guarded
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        del permission
+        if not _is_local_memory_admin(context):
+            raise PermissionDenied("memory job inspection requires the local control surface.")
+        status = _arg_text(args, "status")
+        limit = _positive_int(args.get("limit"), default=100, maximum=500)
+        store = MemoryStore(self.home)
+        job_id = _arg_text(args, "job_id")
+        jobs = store.list_consolidation_jobs(job_id=job_id, status=status, limit=limit)
+        events = store.list_consolidation_job_events(job_id) if job_id else []
+        return _fact_result(
+            "memory_jobs",
+            {
+                **_transition_facts("memory_consolidation_jobs", job_id or status, "observed"),
+                "jobs": [asdict(job) for job in jobs],
+                "count": len(jobs),
+                "events": events,
+                "status": status,
+                "limit": limit,
+            },
+        )
+
+
+@capability("memory_retry_jobs")
+class MemoryRetryJobsCapability(BaseCapability):
+
+    @guarded
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        del permission
+        if not _is_local_memory_admin(context):
+            raise PermissionDenied("memory job retry requires the local control surface.")
+        raw_job_ids = args.get("job_ids")
+        job_ids = (
+            [str(item).strip() for item in raw_job_ids if str(item).strip()]
+            if isinstance(raw_job_ids, list)
+            else []
+        )
+        reason = _arg_text(args, "reason")
+        if not job_ids or not reason:
+            raise SchemaMismatch("memory.retry_jobs requires job_ids and reason.")
+        try:
+            jobs = MemoryStore(self.home).retry_consolidation_jobs(job_ids, reason=reason)
+        except ValueError as exc:
+            raise SchemaMismatch(str(exc)) from exc
+        retried_ids = [job.id for job in jobs]
+        return _fact_result(
+            "memory_jobs",
+            {
+                **_transition_facts(
+                    "memory_consolidation_jobs",
+                    ",".join(retried_ids),
+                    "requeued",
+                ),
+                "jobs": [asdict(job) for job in jobs],
+                "requested_job_ids": job_ids,
+                "retried_job_ids": retried_ids,
+                "not_retried_job_ids": [item for item in job_ids if item not in retried_ids],
+                "retried_count": len(retried_ids),
+                "reason": reason,
+            },
         )
 
 

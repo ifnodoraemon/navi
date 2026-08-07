@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+import yaml
+
 from .graph import GraphStore
 from .memory import MemoryStore
+from .permission_contract import normalize_permission
 from .prompting import PromptLayerStore
-
 
 BUILTIN_EVOLUTION_EVAL_CASES: dict[str, dict[str, Any]] = {
     "runtime.text.nonempty": {
@@ -155,7 +157,40 @@ class _SkillAdapter:
         self._path(target_id)
         if not candidate.strip():
             raise ValueError("skill candidate must not be empty")
-        return {"loaded_by": "SkillStore", "characters": len(candidate)}
+        if not candidate.startswith("---"):
+            raise ValueError("skill candidate requires YAML frontmatter")
+        parts = candidate.split("---", 2)
+        if len(parts) < 3:
+            raise ValueError("skill candidate frontmatter is not closed")
+        try:
+            metadata = yaml.safe_load(parts[1]) or {}
+        except yaml.YAMLError as exc:
+            raise ValueError("skill candidate frontmatter is not valid YAML") from exc
+        if not isinstance(metadata, dict):
+            raise ValueError(  # serialized candidate contract failure
+                "skill candidate frontmatter must be an object"
+            )
+        name = str(metadata.get("name") or "").strip()
+        description = str(metadata.get("description") or "").strip()
+        body = parts[2].strip()
+        if not name:
+            raise ValueError("skill candidate frontmatter requires name")
+        if not description:
+            raise ValueError("skill candidate frontmatter requires description")
+        if not body:
+            raise ValueError("skill candidate instructions must not be empty")
+        try:
+            permission = normalize_permission(str(metadata.get("permission") or "read"))
+        except ValueError as exc:
+            raise ValueError("skill candidate permission is invalid") from exc
+        return {
+            "loaded_by": "SkillStore",
+            "characters": len(candidate),
+            "name": name,
+            "description_characters": len(description),
+            "permission": permission,
+            "instructions_present": True,
+        }
 
     def apply(self, target_id: str, candidate: str) -> None:
         self.validate(target_id, candidate)
@@ -370,5 +405,7 @@ def _json_object(value: str, target_type: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"{target_type} candidate must be valid JSON") from exc
     if not isinstance(data, dict):
-        raise ValueError(f"{target_type} candidate must be a JSON object")
+        raise ValueError(  # serialized candidate contract failure
+            f"{target_type} candidate must be a JSON object"
+        )
     return data

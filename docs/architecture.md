@@ -99,6 +99,12 @@ result body, they are excluded from semantic prior-result authority.
 | Observability | `metrics.py`, `diagnostics.py` | Project durable events into SLOs, backlogs, and activation canary facts. |
 | Adapters | `weixin/`, `telegram/`, `connector_registry.py` | Implement channel-specific transport outside the core loop. |
 
+Capability registration carries an explicit runtime-availability observation.
+An unmet prerequisite keeps the tool out of the planner and callable registry;
+`tools.list` retains its name, requirement, and typed reason under unavailable
+facts, while diagnostics reports the concrete missing dependency. Availability
+is therefore runtime-owned without inventing a semantic fallback for the model.
+
 ## Execution Policy Envelope
 
 The architectural security boundary is the execution policy envelope, not an
@@ -188,6 +194,23 @@ watchdog failure. Restart recovery only resumes persisted control-plane state; i
 does not repeat model work or invent a semantic recovery choice. Connector
 heartbeat freshness remains a separate health fact so an active PID cannot make
 a stale polling loop appear healthy.
+
+Provider adapters own protocol decoding. Each model route declares
+`response_transport: json|sse`; the adapter performs exactly that protocol and
+does not negotiate a fallback from response contents. JSON mode admits only an
+object body. SSE mode admits only JSON object data events, assembles their
+content and usage facts, and requires a terminal `DONE` event. Protocol
+corruption is raised as `ProviderResponseError`, using only status, media type,
+byte counts, and canonical structural facts; response bodies and non-canonical
+provider values never cross this boundary. This keeps provider failures typed
+and prevents a decoder detail from surfacing as a StateGraph implementation
+failure.
+
+Optional provider request extensions enter through the model route's declared
+`request_options`. The adapter merges only non-conflicting JSON fields and fails
+closed if an option attempts to replace a runtime-owned protocol field. This
+supports provider features such as template controls without model-name checks,
+hidden defaults, or a second request.
 Daemon and StateGraph lease owners include the owning PID. Reconciliation
 releases a future lease early only when that declared process is observably
 absent; unknown or old owner formats fail closed until expiry. The queue also
@@ -200,6 +223,11 @@ Stable prompt specifications live in `src/navi/specs_data.py`; assembly,
 rendering, and manifest generation live in `src/navi/prompt_os.py`. Runtime
 modules pass bounded facts into prompt OS assemblers, and tests or traces should
 inspect prompt manifests and digests rather than parse rendered prose.
+The planner capability manifest is a stable system-prefix block placed before
+mutable conversation and runtime facts so provider prefix caching can reuse it.
+Its input schemas retain validation structure but omit nested field descriptions
+already covered by the capability description; the registry's full schemas
+remain authoritative for executor validation.
 `navi prompts inspect planner --json-output` is the current inspection surface.
 The semantic checker receives one evidence-authority contract rather than
 task-type branches. Memory consolidation combines its evolvable task layer with
@@ -210,6 +238,11 @@ grants that history authority; this prevents old assistant candidates from
 competing with current capability facts. Planner attempt state retains a bounded
 typed fact projection, with `respond` marked candidate-only, so recovery can use
 an earlier observation after a later capability overwrites `last_capability`.
+Task lineage, authoritative prior results, and delivery state are projected once
+through the dedicated Planner task-context input. Their durable Goal metadata
+remains intact, while duplicate recurrence copies are removed from the model
+projection and ambient current-state record arrays are sampled to a fixed bound
+with full counts preserved.
 The final Prompt OS projection uses enough structural depth to preserve nested
 rows inside that already bounded state, avoiding a second projection that erases
 leaf facts.
@@ -325,18 +358,27 @@ planner and responder receive only scopes derived from the current execution
 identity. Person scope is created only through an explicit hashed identity link.
 Conversation turns enqueue run-bound leased consolidation jobs; extracted items
 remain proposed. Workers reclaim expired leases with bounded backoff and move
-exhausted jobs to a visible dead-letter state. Retention reconstructs a missing
-job from the run transcript before it can remove detail. Hybrid text/embedding
-recall can discover candidates without FTS, and graph neighbors are ranked before
-embedding-only candidates so graph recall cannot be starved. Retention removes
-expired transient detail only after consolidation and durable external-wait
-settlement while preserving terminal summaries. It cannot delete approval or
-LoopSpec state from a resumable lifecycle.
+exhausted jobs to a visible dead-letter state. Queue transitions and schema-
+migration snapshots are append-only job events. `memory.jobs` exposes those facts
+only on the trusted local control surface; `memory.retry_jobs` accepts exact dead-
+letter IDs and an operator reason, carries the prior error into the retry event,
+and never performs automatic retries. Retention reconstructs a missing job from
+the run transcript before it can remove detail. Hybrid text/embedding recall can
+discover candidates without FTS, and graph neighbors are ranked before embedding-
+only candidates so graph recall cannot be starved. Retention removes expired
+transient detail only after consolidation and durable external-wait settlement
+while preserving terminal summaries. It cannot delete approval or LoopSpec state
+from a resumable lifecycle.
 
 `EvolutionTargetAdapterRegistry` is the authority for evolvable target types.
 Prompt layers, skills, memory items, eval cases, and graph nodes have real readers
 and writers. Run lifecycle records and inert spec files are not evolution targets.
 Prompt adapters accept only declared layers loaded by `PromptLayerStore`.
+The skill adapter validates the runtime loading contract before an experiment:
+closed YAML frontmatter, required name and description, normalized permission,
+and non-empty instructions. The `skills.view` capability similarly returns a
+selected instruction file in full or reports a typed size-limit failure, so the
+model never acts on an undisclosed suffix.
 Proposal creation reads the current target through its adapter, preserves the
 candidate byte-for-byte, and returns hashes and lengths rather than target
 payloads to model-facing capabilities. Immutable built-in evaluation contracts

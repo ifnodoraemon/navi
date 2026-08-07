@@ -12,5 +12,6 @@ def _tools_list(registry: ToolRegistry) -> ToolResult:
         facts=tool_catalog_facts(
             registry.list_specs(),
             definition="callable gateway tools registered in this gateway context",
+            unavailable=registry.unavailable_tools(),
         ),
     )

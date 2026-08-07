@@ -765,7 +765,9 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
     )
     assert "[MODEL ROLES]" not in turn_input
     assert "[MODEL ROLE CONTRACTS]" not in turn_input
-    manifest = json.loads(turn_input.split("[TOOL MANIFEST]\n", 1)[1])
+    assert "[TOOL MANIFEST]" not in turn_input
+    system_input = provider.messages[-2].content
+    manifest = json.loads(system_input.split("[TOOL MANIFEST]\n", 1)[1])
     manifest_names = {item["name"] for item in manifest}
     assert {"respond", "shell.run", "web.search"} <= manifest_names
 
@@ -945,6 +947,17 @@ async def test_planner_ingress_projects_ambient_goal_outcomes_by_task_context(
     ingress_facts = planner_facts["ingress_facts"]
     assert ingress_facts["task_context"]["lineage"]["id"] == current_lineage
     assert ingress_facts["task_context"]["progress"]["sequence_number"] == 2
+    assert ingress_facts["task_context"]["progress"]["authoritative_prior_items"] == [
+        {
+            "goal_id": current_prior_goal.id,
+            "run_id": current_prior_run.id,
+            "result_source": "prior_item.result_summary",
+            "result_text": allowed_text,
+            "result_characters": len(allowed_text),
+            "result_truncated": False,
+        }
+    ]
+    assert "task_context" not in planner_facts["loop_spec"]["goal"]["metadata"]
     current_state = ingress_facts["current_state"]
     assert [item["goal_id"] for item in current_state["recent_goal_outcomes"]] == [
         current_prior_goal.id
@@ -957,3 +970,4 @@ async def test_planner_ingress_projects_ambient_goal_outcomes_by_task_context(
     assert current_state["ambient_recent_deliveries"][0]["text_preview_omitted"] is True
     assert current_state["task_projection_policy"]["ambient_goal_outcome_count"] == 1
     assert current_state["task_projection_policy"]["ambient_active_run_count"] == 1
+    assert current_state["task_projection_policy"]["ambient_record_limit"] == 3

@@ -46,6 +46,48 @@ def test_cli_memory_add_uses_control_surface_context(tmp_path):
     assert EvolutionLedger(tmp_path).list() == []
 
 
+def test_cli_memory_jobs_lists_and_explicitly_requeues_dead_letter(tmp_path):
+    store = MemoryStore(tmp_path)
+    job_id = store.enqueue_consolidation(
+        session_id="session-cli",
+        run_id="run-cli",
+        source="cli",
+        peer_id="cli",
+        sender_id="cli",
+    )
+    claimed = store.claim_consolidation_jobs(owner="worker-cli")[0]
+    store._finish_consolidation_job(
+        claimed,
+        status="dead_letter",
+        error="ProviderResponseError: invalid upstream body",
+    )
+    runner = CliRunner()
+    env = {"NAVI_HOME": str(tmp_path)}
+
+    listed = runner.invoke(
+        app,
+        ["memory", "jobs", "--job-id", job_id],
+        env=env,
+    )
+    assert listed.exit_code == 0, listed.output
+    assert json.loads(listed.output)["jobs"][0]["id"] == job_id
+
+    retried = runner.invoke(
+        app,
+        [
+            "memory",
+            "retry-jobs",
+            job_id,
+            "--reason",
+            "provider transport repaired and verified",
+        ],
+        env=env,
+    )
+    assert retried.exit_code == 0, retried.output
+    assert json.loads(retried.output)["retried_job_ids"] == [job_id]
+    assert store.list_consolidation_jobs(job_id=job_id)[0].status == "pending"
+
+
 def test_cli_session_and_trace_mutations_use_governed_surfaces(tmp_path):
     runner = CliRunner()
     env = {"NAVI_HOME": str(tmp_path)}

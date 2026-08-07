@@ -15,7 +15,11 @@ from .provider import (
     ProviderResponseError,
     StructuredOutputError,
 )
-from .prompt_os import assemble_planner_system_prompt, assemble_planner_turn_input
+from .prompt_os import (
+    assemble_planner_system_prompt,
+    assemble_planner_tool_manifest,
+    assemble_planner_turn_input,
+)
 from .text_utils import truncate_middle
 from .tools import ToolSpec
 
@@ -64,7 +68,6 @@ class ModelSyscallPlanner:
     ) -> list[ModelSyscall]:
         turn_input = assemble_planner_turn_input(
             text,
-            tools=tools,
             conversation_context=conversation_context,
             runtime_facts=runtime_facts,
             permission_ceiling=permission_ceiling,
@@ -77,7 +80,12 @@ class ModelSyscallPlanner:
                 [
                     ChatMessage(
                         "system",
-                        assemble_planner_system_prompt().render(),
+                        "\n\n".join(
+                            (
+                                assemble_planner_system_prompt().render(),
+                                assemble_planner_tool_manifest(tools).render(),
+                            )
+                        ),
                     ),
                     ChatMessage("user", turn_input.render()),
                 ],

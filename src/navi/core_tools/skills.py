@@ -1,11 +1,14 @@
 """Core tool handlers."""
 from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
+
 from ..operating_context import permission_allows
 from ..skills import SkillStore
 from ..tools import ToolResult
-from .utils import _positive_int
+
+SKILL_FILE_MAX_BYTES = 200_000
 
 def _skills_list(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolResult:
     permission_ceiling = str(args.get("_skill_permission_ceiling") or "read")
@@ -51,7 +54,6 @@ def _skills_view(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolRe
             error_reason="missing_required_argument",
         )
     relative = str(args.get("relative_path") or "SKILL.md").strip() or "SKILL.md"
-    limit = _positive_int(args.get("max_bytes"), default=50000, maximum=200000)
     store = SkillStore(home)
     permission_ceiling = str(args.get("_skill_permission_ceiling") or "read")
     skills = store.list_skills(permission_ceiling=permission_ceiling, workspace=workspace)
@@ -89,8 +91,22 @@ def _skills_view(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolRe
             error_reason="not_found",
         )
     data = target.read_bytes()
-    truncated = len(data) > limit
-    content = data[:limit].decode("utf-8", errors="replace")
+    if len(data) > SKILL_FILE_MAX_BYTES:
+        return ToolResult(
+            tool="skills.view",
+            ok=False,
+            error="skill file exceeds the complete-read safety limit",
+            facts={
+                "name": skill.name,
+                "path": str(target),
+                "relative_path": str(target.relative_to(base_dir)),
+                "size": len(data),
+                "max_size": SKILL_FILE_MAX_BYTES,
+                "complete": False,
+            },
+            error_reason="resource_limit",
+        )
+    content = data.decode("utf-8", errors="replace")
     return ToolResult(
         tool="skills.view",
         ok=True,
@@ -104,7 +120,7 @@ def _skills_view(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolRe
             "path": str(target),
             "relative_path": str(target.relative_to(base_dir)),
             "size": len(data),
-            "truncated": truncated,
+            "complete": True,
             "content": content,
         },
     )

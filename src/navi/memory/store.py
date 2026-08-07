@@ -53,6 +53,32 @@ MEMORY_GRAPH_EDGE_RELATIONS = (
     "supersedes",
     "superseded_by",
 )
+MEMORY_CONSOLIDATION_HISTORY_RETENTION_SECONDS = 30 * 24 * 60 * 60
+_CONSOLIDATION_JOB_COLUMNS = (
+    "id, session_id, run_id, source, peer_id, sender_id, status, "
+    "owner, lease_expires_at, attempts, error, created_at, updated_at"
+)
+
+
+def _record_job_event(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    event: str,
+    from_status: str,
+    to_status: str,
+    reason: str,
+    error: str = "",
+    created_at: float,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO memory_consolidation_job_events(
+            job_id, event, from_status, to_status, reason, error, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (job_id, event, from_status, to_status, reason, error, created_at),
+    )
 
 
 class MemoryStore:
@@ -344,6 +370,7 @@ class MemoryStore:
         current_time = time.time() if now is None else now
         expired = self.expire_items(now=now, limit=limit)
         decayed = self.decay_inactive_confidence(now=current_time, limit=limit)
+        pruned = self.prune_consolidation_history(now=current_time)
         active_count = len(
             [
                 item
@@ -359,7 +386,31 @@ class MemoryStore:
             "decayed_count": decayed["decayed_count"],
             "decayed_items": decayed["decayed_items"],
             "active_count": active_count,
+            "consolidation_jobs_pruned": pruned["pruned_job_count"],
+            "consolidation_events_pruned": pruned["pruned_event_count"],
         }
+
+    def prune_consolidation_history(
+        self,
+        *,
+        now: float | None = None,
+        retention_seconds: float = MEMORY_CONSOLIDATION_HISTORY_RETENTION_SECONDS,
+    ) -> dict[str, int]:
+        current_time = time.time() if now is None else now
+        cutoff = current_time - retention_seconds
+        with connect(db_paths(self.home).memory) as conn:
+            pruned_jobs = conn.execute(
+                """
+                DELETE FROM memory_consolidation_jobs
+                WHERE status = 'completed' AND updated_at < ?
+                """,
+                (cutoff,),
+            ).rowcount
+            pruned_events = conn.execute(
+                "DELETE FROM memory_consolidation_job_events WHERE created_at < ?",
+                (cutoff,),
+            ).rowcount
+        return {"pruned_job_count": pruned_jobs, "pruned_event_count": pruned_events}
 
     def decay_inactive_confidence(
         self,
@@ -1098,7 +1149,7 @@ class MemoryStore:
         job_id = uuid.uuid4().hex
         now = time.time()
         with connect(db_paths(self.home).memory) as conn:
-            conn.execute(
+            inserted = conn.execute(
                 """
                 INSERT INTO memory_consolidation_jobs(
                     id, session_id, run_id, source, peer_id, sender_id, status,
@@ -1108,11 +1159,136 @@ class MemoryStore:
                 """,
                 (job_id, session_id, run_id, source, peer_id, sender_id, now, now),
             )
+            if inserted.rowcount:
+                _record_job_event(
+                    conn,
+                    job_id,
+                    event="enqueued",
+                    from_status="",
+                    to_status="pending",
+                    reason="conversation_turn_completed",
+                    created_at=now,
+                )
             row = conn.execute(
                 "SELECT id FROM memory_consolidation_jobs WHERE session_id = ? AND run_id = ?",
                 (session_id, run_id),
             ).fetchone()
         return str(row[0]) if row else job_id
+
+    def list_consolidation_jobs(
+        self,
+        *,
+        job_id: str = "",
+        status: str = "",
+        limit: int = 100,
+    ) -> list[MemoryConsolidationJob]:
+        normalized_job_id = str(job_id or "").strip()
+        normalized_status = str(status or "").strip()
+        params: list[Any] = []
+        predicates: list[str] = []
+        if normalized_job_id:
+            predicates.append("id = ?")
+            params.append(normalized_job_id)
+        if normalized_status:
+            predicates.append("status = ?")
+            params.append(normalized_status)
+        where = f"WHERE {' AND '.join(predicates)}" if predicates else ""
+        params.append(max(1, min(int(limit), 500)))
+        with connect(db_paths(self.home).memory) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {_CONSOLIDATION_JOB_COLUMNS}
+                FROM memory_consolidation_jobs
+                {where}
+                ORDER BY updated_at DESC LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [MemoryConsolidationJob(*row) for row in rows]
+
+    def retry_consolidation_jobs(
+        self,
+        job_ids: list[str],
+        *,
+        reason: str,
+        now: float | None = None,
+    ) -> list[MemoryConsolidationJob]:
+        ids = list(dict.fromkeys(str(item).strip() for item in job_ids if str(item).strip()))
+        if not ids:
+            raise ValueError("memory consolidation retry requires job_ids")
+        normalized_reason = str(reason or "").strip()
+        if not normalized_reason:
+            raise ValueError("memory consolidation retry requires reason")
+        current_time = time.time() if now is None else now
+        retried: list[str] = []
+        with connect(db_paths(self.home).memory) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for job_id in ids:
+                row = conn.execute(
+                    "SELECT status, error FROM memory_consolidation_jobs WHERE id = ?",
+                    (job_id,),
+                ).fetchone()
+                if row is None or str(row[0]) != "dead_letter":
+                    continue
+                previous_error = str(row[1] or "")
+                updated = conn.execute(
+                    """
+                    UPDATE memory_consolidation_jobs
+                    SET status = 'pending', owner = '', lease_expires_at = 0,
+                        error = '', updated_at = ?
+                    WHERE id = ? AND status = 'dead_letter'
+                    """,
+                    (current_time, job_id),
+                )
+                if not updated.rowcount:
+                    continue
+                _record_job_event(
+                    conn,
+                    job_id,
+                    event="retry_requested",
+                    from_status="dead_letter",
+                    to_status="pending",
+                    reason=normalized_reason,
+                    error=previous_error,
+                    created_at=current_time,
+                )
+                retried.append(job_id)
+            if not retried:
+                return []
+            placeholders = ", ".join("?" for _ in retried)
+            rows = conn.execute(
+                f"""
+                SELECT {_CONSOLIDATION_JOB_COLUMNS}
+                FROM memory_consolidation_jobs WHERE id IN ({placeholders})
+                ORDER BY updated_at DESC
+                """,
+                retried,
+            ).fetchall()
+        return [MemoryConsolidationJob(*row) for row in rows]
+
+    def list_consolidation_job_events(self, job_id: str) -> list[dict[str, Any]]:
+        with connect(db_paths(self.home).memory) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, event, from_status, to_status, reason, error, created_at
+                FROM memory_consolidation_job_events
+                WHERE job_id = ? ORDER BY id
+                """,
+                (job_id,),
+            ).fetchall()
+        return [
+            {
+                "id": int(row[0]),
+                "job_id": job_id,
+                "event": str(row[1]),
+                "from_status": str(row[2]),
+                "to_status": str(row[3]),
+                "reason": str(row[4]),
+                "error": str(row[5]),
+                "created_at": float(row[6]),
+            }
+            for row in rows
+        ]
 
     def claim_consolidation_jobs(
         self,
@@ -1125,28 +1301,40 @@ class MemoryStore:
         current_time = time.time() if now is None else now
         with connect(db_paths(self.home).memory) as conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                """
-                UPDATE memory_consolidation_jobs
-                SET status = 'dead_letter', owner = '', lease_expires_at = 0,
-                    updated_at = ?
-                WHERE status = 'failed'
-                """,
-                (current_time,),
-            )
-            ids = [
-                str(row[0])
-                for row in conn.execute(
+            legacy_failed = conn.execute(
+                "SELECT id, error FROM memory_consolidation_jobs WHERE status = 'failed'"
+            ).fetchall()
+            for job_id, error in legacy_failed:
+                conn.execute(
                     """
-                    SELECT id FROM memory_consolidation_jobs
-                    WHERE status = 'pending'
-                       OR (status = 'active' AND lease_expires_at <= ?)
-                    ORDER BY updated_at ASC LIMIT ?
+                    UPDATE memory_consolidation_jobs
+                    SET status = 'dead_letter', owner = '', lease_expires_at = 0,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'failed'
                     """,
-                    (current_time, max(1, limit)),
-                ).fetchall()
-            ]
-            for job_id in ids:
+                    (current_time, job_id),
+                )
+                _record_job_event(
+                    conn,
+                    str(job_id),
+                    event="legacy_failed_normalized",
+                    from_status="failed",
+                    to_status="dead_letter",
+                    reason="legacy_status_normalization",
+                    error=str(error or ""),
+                    created_at=current_time,
+                )
+            selected = conn.execute(
+                """
+                SELECT id, status FROM memory_consolidation_jobs
+                WHERE status = 'pending'
+                   OR (status = 'active' AND lease_expires_at <= ?)
+                ORDER BY updated_at ASC LIMIT ?
+                """,
+                (current_time, max(1, limit)),
+            ).fetchall()
+            ids = [str(row[0]) for row in selected]
+            for job_id, previous_status in selected:
                 conn.execute(
                     """
                     UPDATE memory_consolidation_jobs
@@ -1161,13 +1349,25 @@ class MemoryStore:
                         job_id,
                     ),
                 )
+                _record_job_event(
+                    conn,
+                    str(job_id),
+                    event="claimed",
+                    from_status=str(previous_status),
+                    to_status="active",
+                    reason=(
+                        "lease_reclaimed"
+                        if str(previous_status) == "active"
+                        else "worker_claim"
+                    ),
+                    created_at=current_time,
+                )
             if not ids:
                 return []
             placeholders = ", ".join("?" for _ in ids)
             rows = conn.execute(
                 f"""
-                SELECT id, session_id, run_id, source, peer_id, sender_id, status,
-                       owner, lease_expires_at, attempts, error, created_at, updated_at
+                SELECT {_CONSOLIDATION_JOB_COLUMNS}
                 FROM memory_consolidation_jobs WHERE id IN ({placeholders})
                 ORDER BY updated_at ASC
                 """,
@@ -1267,14 +1467,26 @@ class MemoryStore:
         error: str = "",
     ) -> None:
         with connect(db_paths(self.home).memory) as conn:
-            conn.execute(
+            updated_at = time.time()
+            updated = conn.execute(
                 """
                 UPDATE memory_consolidation_jobs
                 SET status = ?, owner = '', lease_expires_at = 0, error = ?, updated_at = ?
                 WHERE id = ? AND owner = ?
                 """,
-                (status, error, time.time(), job.id, job.owner),
+                (status, error, updated_at, job.id, job.owner),
             )
+            if updated.rowcount:
+                _record_job_event(
+                    conn,
+                    job.id,
+                    event=status,
+                    from_status=job.status,
+                    to_status=status,
+                    reason="worker_result",
+                    error=error,
+                    created_at=updated_at,
+                )
 
     def _list_active_learnable_items(self) -> list[MemoryItem]:
         active_items: list[MemoryItem] = []

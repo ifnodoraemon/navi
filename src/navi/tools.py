@@ -60,6 +60,35 @@ class SideEffectPolicy:
             "description": self.description,
         }
 
+
+@dataclass(frozen=True)
+class ToolAvailability:
+    available: bool = True
+    reason_code: str = ""
+    detail: str = ""
+    requirements: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        reason_code = str(self.reason_code or "").strip()
+        detail = str(self.detail or "").strip()
+        requirements = tuple(
+            dict.fromkeys(str(item).strip() for item in self.requirements if str(item).strip())
+        )
+        if not self.available and not reason_code:
+            raise ValueError("unavailable tool must declare a reason_code")
+        object.__setattr__(self, "reason_code", reason_code)
+        object.__setattr__(self, "detail", detail)
+        object.__setattr__(self, "requirements", requirements)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "reason_code": self.reason_code,
+            "detail": self.detail,
+            "requirements": list(self.requirements),
+        }
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -296,6 +325,12 @@ class RegisteredTool:
     handler: ToolHandler
 
 
+@dataclass(frozen=True)
+class UnavailableTool:
+    spec: ToolSpec
+    availability: ToolAvailability
+
+
 ToolProviderRegister = Callable[["ToolRegistry"], None]
 
 
@@ -311,10 +346,23 @@ class ToolRegistry:
         self.home = home
         self.project_dir = project_dir
         self._tools: dict[str, RegisteredTool] = {}
+        self._unavailable_tools: dict[str, UnavailableTool] = {}
 
-    def register(self, spec: ToolSpec, handler: ToolHandler) -> None:
-        if spec.name in self._tools:
+    def register(
+        self,
+        spec: ToolSpec,
+        handler: ToolHandler,
+        *,
+        availability: ToolAvailability | None = None,
+    ) -> None:
+        if spec.name in self._tools or spec.name in self._unavailable_tools:
             raise ValueError(f"tool already registered: {spec.name}")
+        if availability is not None and not availability.available:
+            self._unavailable_tools[spec.name] = UnavailableTool(
+                spec=spec,
+                availability=availability,
+            )
+            return
         self._tools[spec.name] = RegisteredTool(spec=spec, handler=handler)
 
     def list_specs(self) -> list[ToolSpec]:
@@ -325,6 +373,9 @@ class ToolRegistry:
 
     def registered_tools(self) -> list[RegisteredTool]:
         return [tool for tool in sorted(self._tools.values(), key=lambda item: item.spec.name)]
+
+    def unavailable_tools(self) -> list[UnavailableTool]:
+        return sorted(self._unavailable_tools.values(), key=lambda item: item.spec.name)
 
     def get(self, name: str) -> ToolSpec | None:
         tool = self._tools.get(name)
@@ -524,12 +575,21 @@ class ToolGateway:
         self.registry = ToolRegistry(home=self.home, project_dir=self.project_dir)
         for tool in raw.registered_tools():
             self.registry.register(tool.spec, tool.handler)
+        for unavailable_tool in raw.unavailable_tools():
+            self.registry.register(
+                unavailable_tool.spec,
+                lambda args: ToolResult(tool="unavailable", ok=False),
+                availability=unavailable_tool.availability,
+            )
 
     def list_specs(self) -> list[ToolSpec]:
         return self.registry.list_specs()
 
     def list_sources(self) -> list[str]:
         return self.registry.list_sources()
+
+    def list_unavailable(self) -> list[UnavailableTool]:
+        return self.registry.unavailable_tools()
 
     def get(self, name: str) -> ToolSpec | None:
         return self.registry.get(name)

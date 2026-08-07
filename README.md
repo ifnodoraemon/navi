@@ -75,7 +75,8 @@ navi config
 The global parameter groups are:
 
 - `model`: `provider`, `model`, `api_base_url`, `api_key`, `kind`,
-  `timeout_seconds`, `routes`, and per-role `role_params`;
+  `timeout_seconds`, explicit `response_transport` (`json` or `sse`), governed
+  `request_options`, `routes`, and per-role `role_params`;
 - `runtime`: `service_name`, `local_surface`;
 - `execution`: `provider`, `timeout_seconds`;
 - `api`: `host`, `port`, `api_key`;
@@ -115,6 +116,8 @@ navi skills
 navi goal list
 navi trace list
 navi memory list
+navi memory jobs --status dead_letter
+navi memory retry-jobs <exact-job-id> --reason "root cause repaired and verified"
 navi session list
 navi evolution list
 

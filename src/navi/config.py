@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import secrets
 from dataclasses import dataclass, field
@@ -41,9 +42,27 @@ _MODEL_FIELDS = {
     "api_key",
     "kind",
     "timeout_seconds",
+    "response_transport",
+    "request_options",
     "routes",
     "role_params",
 }
+
+
+RESERVED_REQUEST_OPTIONS = frozenset(
+    {
+        "model",
+        "messages",
+        "system",
+        "temperature",
+        "max_tokens",
+        "response_format",
+        "stream",
+        "stream_options",
+        "tools",
+        "tool_choice",
+    }
+)
 
 
 @dataclass
@@ -54,6 +73,8 @@ class ModelConfig:
     api_key: str = ""
     kind: str = ""
     timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
+    response_transport: str = "json"
+    request_options: dict[str, Any] = field(default_factory=dict)
     routes: dict[str, "ModelConfig"] = field(default_factory=dict)
     role_params: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -286,6 +307,8 @@ def write_default_config(home: Path | None = None) -> Path:
                     "provider": DEFAULT_MODEL_PROVIDER,
                     "model": DEFAULT_MODEL_MODEL,
                     "timeout_seconds": DEFAULT_MODEL_TIMEOUT_SECONDS,
+                    "response_transport": "json",
+                    "request_options": {},
                 },
                 "runtime": {
                     "service_name": DEFAULT_SERVICE_NAME,
@@ -458,6 +481,13 @@ def _model_config(model_raw: dict, path: str = "model") -> ModelConfig:
         model_raw.get("timeout_seconds", DEFAULT_MODEL_TIMEOUT_SECONDS),
         f"{path}.timeout_seconds",
     )
+    response_transport = str(model_raw.get("response_transport") or "json").strip()
+    request_options = {
+        str(key): value
+        for key, value in _mapping(
+            model_raw.get("request_options"), f"{path}.request_options"
+        ).items()
+    }
     routes_raw = _mapping(model_raw.get("routes"), f"{path}.routes")
     routes = {
         str(name): _model_config(
@@ -478,6 +508,8 @@ def _model_config(model_raw: dict, path: str = "model") -> ModelConfig:
         api_key=str(model_raw.get("api_key") or "").strip(),
         kind=kind,
         timeout_seconds=timeout_seconds,
+        response_transport=response_transport,
+        request_options=request_options,
         routes=routes,
         role_params=role_params,
     )
@@ -501,6 +533,50 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
 
         if kind and kind not in {"openai-compatible", "anthropic-compatible"}:
             errors.append(f"{path}.kind '{kind}' is unsupported")
+
+        if m.response_transport not in {"json", "sse"}:
+            errors.append(
+                f"{path}.response_transport '{m.response_transport}' is unsupported; "
+                "expected json or sse"
+            )
+        elif m.response_transport == "sse" and kind != "openai-compatible":
+            errors.append(
+                f"{path}.response_transport 'sse' requires kind 'openai-compatible'"
+            )
+
+        conflicts = sorted(RESERVED_REQUEST_OPTIONS.intersection(m.request_options))
+        if conflicts:
+            errors.append(
+                f"{path}.request_options cannot override runtime fields: "
+                + ", ".join(conflicts)
+            )
+        try:
+            json.dumps(m.request_options)
+        except (TypeError, ValueError) as exc:
+            errors.append(f"{path}.request_options must be JSON-serializable: {exc}")
+
+        for role, params in m.role_params.items():
+            options = params.get("request_options")
+            if options is None:
+                continue
+            if not isinstance(options, dict):
+                errors.append(
+                    f"{path}.role_params.{role}.request_options must be a mapping"
+                )
+                continue
+            conflicts = sorted(RESERVED_REQUEST_OPTIONS.intersection(options))
+            if conflicts:
+                errors.append(
+                    f"{path}.role_params.{role}.request_options cannot override "
+                    "runtime fields: " + ", ".join(conflicts)
+                )
+            try:
+                json.dumps(options)
+            except (TypeError, ValueError) as exc:
+                errors.append(
+                    f"{path}.role_params.{role}.request_options must be "
+                    f"JSON-serializable: {exc}"
+                )
 
         if not m.api_key:
             errors.append(f"{path}.api_key is required")

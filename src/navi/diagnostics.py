@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from .auth import AuthInspector
+from .core_tools.browser import PLAYWRIGHT_CACHE_ROOTS, playwright_browser_executable
 from .capabilities import build_capability_registry
 from .config import NaviConfig, load_config, validate_config
 from .connector_registry import ConnectorAdapter, load_connector_adapters
@@ -120,12 +121,7 @@ def _browser_dependency_checks() -> list[DiagnosticCheck]:
             "browser.playwright", "ok" if playwright else "missing", playwright or "not found"
         )
     )
-    chromium = _playwright_browser_executable(
-        (
-            Path.home() / ".cache" / "ms-playwright",
-            Path.home() / ".cache" / "ms-playwright-go",
-        )
-    )
+    chromium = playwright_browser_executable(PLAYWRIGHT_CACHE_ROOTS)
     checks.append(
         DiagnosticCheck(
             "browser.chromium",
@@ -348,26 +344,6 @@ def _first_existing_path(paths: tuple[Path, ...]) -> Path | None:
     for path in paths:
         if path.exists():
             return path
-    return None
-
-
-def _playwright_browser_executable(cache_roots: tuple[Path, ...]) -> Path | None:
-    executable_names = {
-        "chrome",
-        "chrome-headless-shell",
-        "chromium",
-        "headless_shell",
-    }
-    for root in cache_roots:
-        if not root.is_dir():
-            continue
-        for path in sorted(root.rglob("*")):
-            if (
-                path.name in executable_names
-                and path.is_file()
-                and os.access(path, os.X_OK)
-            ):
-                return path
     return None
 
 

@@ -1,3 +1,4 @@
+import json
 from unittest.mock import Mock, patch
 
 import httpx
@@ -5,6 +6,7 @@ import pytest
 
 from navi.config import ModelConfig, _model_config
 from navi.provider import (
+    AnthropicCompatibleProvider,
     ChatMessage,
     ModelPool,
     OpenAICompatibleProvider,
@@ -13,17 +15,20 @@ from navi.provider import (
     ProviderUsage,
     StructuredOutputError,
     _complete_with_optional_schema,
+    _extract_anthropic_content,
+    _extract_openai_content,
     _messages_for_response_format,
     _openai_usage_facts,
+    _provider_stream_event_json,
     _validate_structured_output,
 )
+from navi.provider_specs import ProviderSpec
 from navi.resource_gateway import (
     GlobalResourceGateway,
     ResourceLimits,
     ResourceRequest,
     SQLiteResourceLedger,
 )
-from navi.provider_specs import ProviderSpec
 from navi.syscalls import provider_failure_facts
 
 
@@ -48,6 +53,20 @@ def test_model_config_preserves_explicit_model_across_provider_names() -> None:
     )
 
     assert config.model == "qwen3.5-397b-a17b"
+
+
+def test_model_config_preserves_explicit_provider_request_options() -> None:
+    config = _model_config(
+        {
+            "request_options": {
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+        }
+    )
+
+    assert config.request_options == {
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
 
 
 def test_provider_failure_facts_do_not_reclassify_programming_errors() -> None:
@@ -144,6 +163,236 @@ async def test_openai_provider_preserves_bounded_http_error_facts() -> None:
     assert "ignored" not in str(error)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_class", "provider_kind"),
+    [
+        (OpenAICompatibleProvider, "openai-compatible"),
+        (AnthropicCompatibleProvider, "anthropic-compatible"),
+    ],
+)
+async def test_provider_rejects_non_json_success_as_bounded_protocol_fact(
+    provider_class,
+    provider_kind: str,
+) -> None:
+    leaked_body = "upstream proxy page with secret-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=leaked_body,
+        )
+
+    provider = provider_class(
+        ModelConfig(
+            provider=provider_kind,
+            kind=provider_kind,
+            model="model",
+            api_base_url="https://provider.example/v1",
+            api_key="secret-token",
+        ),
+        ProviderSpec(
+            name=provider_kind,
+            kind=provider_kind,
+            default_model="model",
+            default_base_url="https://provider.example/v1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ProviderResponseError) as captured:
+        await provider.complete([ChatMessage("user", "hello")])
+
+    error = captured.value
+    assert "status_code=200" in str(error)
+    assert "content_type=text/html; charset=utf-8" in str(error)
+    assert f"body_bytes={len(leaked_body)}" in str(error)
+    assert leaked_body not in str(error)
+    assert "secret-token" not in str(error)
+
+
+@pytest.mark.asyncio
+async def test_provider_rejects_non_object_success_json() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, request=request, json=[])
+
+    provider = OpenAICompatibleProvider(
+        ModelConfig(
+            provider="openai-compatible",
+            model="model",
+            api_base_url="https://provider.example/v1",
+            api_key="secret-token",
+        ),
+        ProviderSpec(
+            name="openai-compatible",
+            kind="openai-compatible",
+            default_model="model",
+            default_base_url="https://provider.example/v1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ProviderResponseError, match="json_type=list"):
+        await provider.complete([ChatMessage("user", "hello")])
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_assembles_explicit_sse_response_and_usage() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["stream"] is True
+        assert payload["stream_options"] == {"include_usage": True}
+        assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+        body = "\n\n".join(
+            [
+                'data: {"choices":[{"delta":{"content":"{\\"tool\\":"}}]}',
+                'data: {"choices":[{"delta":{"content":"\\"ok\\"}"},"finish_reason":"stop"}]}',
+                'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+                "data: [DONE]",
+                "",
+            ]
+        )
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "application/json"},
+            text=body,
+        )
+
+    provider = OpenAICompatibleProvider(
+        ModelConfig(
+            provider="openai-compatible",
+            model="model",
+            api_base_url="https://provider.example/v1",
+            api_key="secret-token",
+            response_transport="sse",
+            request_options={"chat_template_kwargs": {"enable_thinking": False}},
+        ),
+        ProviderSpec(
+            name="openai-compatible",
+            kind="openai-compatible",
+            default_model="model",
+            default_base_url="https://provider.example/v1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await provider.complete([ChatMessage("user", "hello")])
+
+    assert result == '{"tool":"ok"}'
+    assert provider.last_usage is not None
+    assert provider.last_usage.to_facts() == {
+        "provider": "openai-compatible",
+        "model": "model",
+        "input_tokens": 3,
+        "output_tokens": 2,
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+        "raw": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_parses_sse_without_trusting_media_type() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "application/json"},
+            text=(
+                'data: {"choices":[{"delta":{"content":"one"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"two"}}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        )
+
+    provider = OpenAICompatibleProvider(
+        ModelConfig(
+            provider="openai-compatible",
+            model="model",
+            api_base_url="https://provider.example/v1",
+            api_key="secret-token",
+        ),
+        ProviderSpec(
+            name="openai-compatible",
+            kind="openai-compatible",
+            default_model="model",
+            default_base_url="https://provider.example/v1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    tokens = [token async for token in provider.stream([ChatMessage("user", "hello")])]
+
+    assert tokens == ["one", "two"]
+
+
+@pytest.mark.asyncio
+async def test_openai_sse_completion_requires_done_event() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            text='data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+        )
+
+    provider = OpenAICompatibleProvider(
+        ModelConfig(
+            provider="openai-compatible",
+            model="model",
+            api_base_url="https://provider.example/v1",
+            api_key="secret-token",
+            response_transport="sse",
+        ),
+        ProviderSpec(
+            name="openai-compatible",
+            kind="openai-compatible",
+            default_model="model",
+            default_base_url="https://provider.example/v1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ProviderResponseError, match="without a DONE event"):
+        await provider.complete([ChatMessage("user", "hello")])
+
+
+@pytest.mark.parametrize("raw", ["secret-token is not json", "[]"])
+def test_provider_rejects_malformed_stream_events_without_leaking_content(raw: str) -> None:
+    with pytest.raises(ProviderResponseError) as captured:
+        _provider_stream_event_json(raw, protocol="openai")
+
+    assert raw not in str(captured.value)
+    assert "secret-token" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("extract", "payload", "expected"),
+    [
+        (
+            _extract_openai_content,
+            {"choices": [], "secret-token": "must not leak"},
+            "did not include choices",
+        ),
+        (
+            _extract_anthropic_content,
+            {"content": [{"type": "redacted", "text": "secret-token"}]},
+            "did not include text content",
+        ),
+    ],
+)
+def test_provider_shape_failures_do_not_echo_response_values(
+    extract, payload: dict[str, object], expected: str
+) -> None:
+    with pytest.raises(ProviderResponseError, match=expected) as captured:
+        extract(payload)
+
+    assert "secret-token" not in str(captured.value)
+
+
 class _ReadErrorProvider:
     last_usage = None
 
@@ -162,9 +411,8 @@ async def test_model_pool_releases_reservation_on_transport_error(tmp_path) -> N
     )
     pool = ModelPool(default=_ReadErrorProvider())
 
-    with pool.bind_resource_gateway(gateway):
-        with pytest.raises(httpx.ReadError):
-            await pool.complete_for("planner", [ChatMessage("user", "hello")])
+    with pool.bind_resource_gateway(gateway), pytest.raises(httpx.ReadError):
+        await pool.complete_for("planner", [ChatMessage("user", "hello")])
 
     assert ledger.usage("transport-pause").active == 0
 

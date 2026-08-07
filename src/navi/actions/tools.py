@@ -82,6 +82,7 @@ class ToolCapability:
                         "declared capability catalog; concrete calls remain policy- and "
                         "approval-gated"
                     ),
+                    unavailable=self.gateway.list_unavailable(),
                 ),
             )
         if self.spec.workspace_scope == "context":

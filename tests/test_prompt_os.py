@@ -10,6 +10,7 @@ from navi.prompt_os import (
     assemble_goal_event_compaction_messages,
     assemble_memory_consolidation_messages,
     assemble_notification_system_prompt,
+    assemble_planner_tool_manifest,
     assemble_planner_turn_input,
     assemble_semantic_checker_messages,
     assemble_summarizer_messages,
@@ -145,7 +146,9 @@ def test_planner_manifest_projects_fact_names_without_full_output_schema() -> No
         description="Read goal state.",
         input_schema={
             "type": "object",
-            "properties": {"view": {"type": "string"}},
+            "properties": {
+                "view": {"type": "string", "description": "Verbose duplicate field prose."}
+            },
         },
         output_schema={
             "type": "object",
@@ -161,27 +164,22 @@ def test_planner_manifest_projects_fact_names_without_full_output_schema() -> No
         },
     )
 
-    rendered = assemble_planner_turn_input("inspect", tools=[tool]).render()
+    rendered = assemble_planner_tool_manifest([tool]).render()
     manifest_text = rendered.split("[TOOL MANIFEST]\n", 1)[1].strip()
     manifest = json.loads(manifest_text)
 
     assert manifest[0]["output_fields"] == ["goals"]
     assert "output_schema" not in manifest[0]
     assert "very_large_nested_contract" not in rendered
+    assert "Verbose duplicate field prose" not in rendered
+
+    turn_input = assemble_planner_turn_input("inspect").render()
+    assert "[TOOL MANIFEST]" not in turn_input
 
 
 def test_planner_runtime_facts_are_bounded_and_redacted() -> None:
-    tool = ToolSpec(
-        name="file.read",
-        capability_class="file",
-        execution_contexts=("turn",),
-        description="Read a file.",
-        input_schema={"type": "object"},
-        output_schema={"type": "object"},
-    )
     rendered = assemble_planner_turn_input(
         "summarize this evidence",
-        tools=[tool],
         runtime_facts={
             "objective_evidence": {
                 "capability_result": {
@@ -206,7 +204,6 @@ def test_planner_runtime_facts_are_bounded_and_redacted() -> None:
 def test_planner_runtime_facts_preserve_bounded_nested_observation_rows() -> None:
     rendered = assemble_planner_turn_input(
         "report the current observation",
-        tools=[],
         runtime_facts={
             "attempt_history": [
                 {
