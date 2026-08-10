@@ -1079,8 +1079,3 @@ def _weixin_message_facts(update: WeixinUpdate) -> dict[str, object]:
         "attachment_count": len(attachments),
         "attachments": attachments,
     }
-
-
-def _connector_error_reason(exc: Exception) -> str:
-    reason = str(getattr(exc, "reason", "") or "").strip()
-    return reason if reason.startswith("connector_") else "connector_delivery_failed"

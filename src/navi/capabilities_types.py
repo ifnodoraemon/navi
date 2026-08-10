@@ -15,9 +15,7 @@ from .tools import ToolSpec
 #
 # Capabilities register themselves at class-definition time via the
 # ``@capability(key)`` decorator. The action registry (``actions/registry.py``)
-# then constructs each registered class from its ``__init__`` signature,
-# eliminating the hand-maintained factory dict that previously mapped every
-# action spec to a lambda.
+# then constructs each registered class from its ``__init__`` signature.
 # ---------------------------------------------------------------------------
 
 _REGISTRY: dict[str, type] = {}

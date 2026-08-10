@@ -11,6 +11,7 @@ from typing import Any, AsyncGenerator
 import yaml
 
 from navi.provider import ChatMessage, ModelPool, ProviderUsage
+from navi.connector_contract import SYNTHETIC_MESSAGE_ID_PREFIX
 from navi.goals import GoalStore
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
@@ -201,7 +202,7 @@ async def _run_journey(
             update = WeixinUpdate(
                 message_id=str(
                     inbound.get("message_id")
-                    or f"synthetic:msg-{message_index}"
+                    or f"{SYNTHETIC_MESSAGE_ID_PREFIX}msg-{message_index}"
                 ),
                 peer_id=str(inbound.get("peer_id") or "connector-eval-peer"),
                 sender_id=str(inbound.get("sender_id") or "connector-eval-sender"),

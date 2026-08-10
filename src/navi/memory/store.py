@@ -1007,14 +1007,12 @@ class MemoryStore:
         return "\n".join(lines)
 
     def render_working_memory(self, *, goal_store: Any = None, limit: int = 20) -> str:
-        """Render a pinned working-memory snapshot for the planner.
+        """Render a per-step working-memory snapshot for the planner.
 
-        Extend the per-step durable-constraints injection to also
-        carry working state — the active goal + objective, the phase, and
-        key run facts. This is the "pin working memory so it survives
-        context compression" piece: every step the planner sees a fresh
-        snapshot of what it is currently working on, regardless of how
-        much conversation history has been truncated or summarized.
+        Projects the active goals (goal id, phase, run id, objective) so the
+        planner sees a fresh snapshot of what it is currently working on
+        every step, regardless of how much conversation history has been
+        truncated or summarized.
 
         Returns "" when there is no goal store or no active goals.
         """
@@ -1750,12 +1748,3 @@ def _memory_conflict_status(item: MemoryItem, conflicting_item: MemoryItem | Non
     if item.status in ACTIVE_STATUSES:
         return "resolved"
     return "inactive"
-
-
-def _render_conflict_summary(conflicts: tuple[MemoryConflict, ...]) -> str:
-    if not conflicts:
-        return ""
-    return ",".join(
-        f"{conflict.relation}:{conflict.conflicting_item_id}:{conflict.status}"
-        for conflict in conflicts[:3]
-    )

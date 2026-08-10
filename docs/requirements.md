@@ -376,7 +376,10 @@ tool-call record. Reservation failure blocks the effect; completion failure
 surfaces an uncertain audit outcome instead of reporting clean success.
 
 Memory must be typed, scoped, provenance-bearing, revocable, and conflict
-visible. Recall, revocation, conflict reads, and activation records must stay
+visible. Conflicts are model-declared relations (`contradicts`/`supersedes`);
+the runtime stores, surfaces, and validates their references but never derives
+them from text similarity. Recall, revocation, conflict reads, and activation
+records must stay
 inside global, person, actor, session, and workspace visibility scopes. Cross-
 surface person scope requires an explicit approved identity link; aliases are
 stored as fingerprints and conflicting identities are not implicitly merged.

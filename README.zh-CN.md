@@ -20,7 +20,20 @@ Navi 是一个本地优先、受治理的个人 AI 助手 Agent OS。
 
 ## 快速开始
 
-Navi 需要 Python 3.13 或更高版本。
+Navi 需要 Python 3.13 或更高版本。在 Linux 上，命令执行和验证器能力还需要
+Bubblewrap（`bwrap`），以便 OS 沙箱能够失败关闭：
+
+```bash
+sudo apt-get install bubblewrap
+```
+
+Ubuntu 24.04 及更新版本通过 AppArmor 限制非特权用户命名空间。启用该限制时，
+请安装并加载 Ubuntu 的 Bubblewrap profile：
+
+```bash
+sudo apt-get install apparmor-profiles
+sudo apparmor_parser --replace /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+```
 
 ```bash
 python -m venv .venv
@@ -57,8 +70,10 @@ API 请求需要 `X-API-Key`，对应 `NAVI_HOME/config.yaml` 中的
 # 运行时与诊断
 navi chat
 navi status
+navi metrics --json-output
 navi doctor
 navi doctor --connectivity
+navi config
 navi model
 
 # 能力与 Prompt
@@ -71,6 +86,8 @@ navi skills
 navi goal list
 navi trace list
 navi memory list
+navi memory jobs --status dead_letter
+navi memory retry-jobs <exact-job-id> --reason "root cause repaired and verified"
 navi session list
 navi evolution list
 

@@ -1830,17 +1830,6 @@ def _capability_result_is_input_schema_mismatch(event: TraceEvent) -> bool:
     return "result_action" not in facts
 
 
-def _loop_results_include(value: Any, *, name: str, passed: bool) -> bool:
-    if not isinstance(value, list):
-        return False
-    return any(
-        isinstance(item, dict)
-        and str(item.get("name") or "") == name
-        and item.get("passed") is passed
-        for item in value
-    )
-
-
 def _planner_call_started_without_result(events: list[TraceEvent]) -> bool:
     phases = [event.phase for event in events]
     return TracePhase.PLANNER_CALL_START in phases and not any(
@@ -1858,35 +1847,6 @@ def _extract_blobs(data: Any, insert_blob: Callable[[str, str], None], max_len: 
         insert_blob(digest, data)
         return {"$blob": digest}
     return data
-
-def _resolve_blobs(data: Any, fetch_blobs: Callable[[set[str]], dict[str, str]]) -> Any:
-    hashes = set()
-    def _find_hashes(d: Any) -> None:
-        if isinstance(d, dict):
-            if len(d) == 1 and "$blob" in d:
-                hashes.add(d["$blob"])
-            else:
-                for v in d.values():
-                    _find_hashes(v)
-        elif isinstance(d, list):
-            for v in d:
-                _find_hashes(v)
-    _find_hashes(data)
-    if not hashes:
-        return data
-
-    blob_map = fetch_blobs(hashes)
-
-    def _replace(d: Any) -> Any:
-        if isinstance(d, dict):
-            if len(d) == 1 and "$blob" in d:
-                h = d["$blob"]
-                return blob_map.get(h, f"<missing blob: {h}>")
-            return {k: _replace(v) for k, v in d.items()}
-        if isinstance(d, list):
-            return [_replace(v) for v in d]
-        return d
-    return _replace(data)
 
 
 TRACE_EVENTS_TABLE = Table(

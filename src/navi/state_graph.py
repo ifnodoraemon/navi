@@ -3210,19 +3210,6 @@ def _checker_reason_code(checker_report: CheckerReport) -> str:
     return "checker_rejected"
 
 
-def _recovery_events_from_evidence(
-    evidence: dict[str, Any],
-    harness_results: tuple[HarnessResult, ...],
-) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    for key, value in evidence.items():
-        if isinstance(value, dict):
-            events.append({"tool": key, "facts": value})
-    for item in harness_results:
-        events.append({"tool": "harness.command", "facts": item.to_facts()})
-    return events
-
-
 def _goal_constraints(spec: LoopSpec) -> str:
     lines = [
         f"Objective: {spec.goal.objective}",

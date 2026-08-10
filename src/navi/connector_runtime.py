@@ -215,6 +215,7 @@ class ConnectorIngressRuntime:
                 text="",
                 session_id=event.session_id,
                 action="chat",
+                model_role="",
                 trace_id=event.correlation_id,
                 ok=False,
                 error_reason="runtime_exception",

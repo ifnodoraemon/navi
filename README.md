@@ -80,8 +80,11 @@ The global parameter groups are:
 - `runtime`: `service_name`, `local_surface`;
 - `execution`: `provider`, `timeout_seconds`;
 - `api`: `host`, `port`, `api_key`;
-- `search`: `provider`, `mcp_server`, `searxng_url`, `categories`, `language`,
-  `time_range`;
+- `search.providers.<name>`: `kind` (`exa_mcp`, `searxng`, or `x_api`),
+  `enabled`, `endpoint`, `allow_private_network`, `mcp_server`,
+  `bearer_token`, `categories`, `language`, `time_range`. The default
+  instances are `exa`, `searxng`, and `x`; the planner selects an enabled
+  instance on every `web.search` call;
 - `connectors.telegram`: `enabled`, `bot_token`, `api_base_url`, `dm_policy`,
   `allowed_users`, `home_chat_id`;
 - `connectors.weixin`: `enabled`, `account_id`, `token`, `base_url`,

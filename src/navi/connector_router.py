@@ -186,6 +186,9 @@ class ConnectorRouter:
                 action="chat",
                 facts=result.facts,
             )
+        # retry_gate is lifted from the resumed loop run's evidence by
+        # control._approval_continuation_facts when the continuation paused
+        # for a provider-transport retry.
         retry_gate = result.facts.get("retry_gate")
         provider_retry_pending = (
             result.facts.get("loop_terminal_state") == "paused"

@@ -221,8 +221,7 @@ def create_app(
 
         Wraps every JSON response — success or error — in a single shape so
         API consumers do not have to special-case per-endpoint return
-        structures (principle 2: tools/capabilities return facts; the API
-        presents them consistently). HTTP status codes are preserved; only
+        structures. HTTP status codes are preserved; only
         the body is normalized. Non-JSON responses (e.g. the 401 text body)
         pass through untouched."""
         response: Response = await call_next(request)

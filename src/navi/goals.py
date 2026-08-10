@@ -78,29 +78,7 @@ class GoalEvent:
     created_at: float
 
 
-@dataclass(frozen=True)
-class GoalDeliveryOutboxItem:
-    id: str
-    goal_id: str
-    run_id: str
-    channel: str
-    source: str
-    peer_id: str
-    sender_id: str
-    trace_id: str
-    body: str
-    body_provenance: str
-    status: str
-    attempts: int
-    error: str
-    delivery_id: str
-    created_at: float
-    updated_at: float
-    sent_at: float
-
-
 GOAL_SELECT_LIST = ", ".join(field.name for field in fields(Goal))
-GOAL_DELIVERY_OUTBOX_SELECT_LIST = ", ".join(field.name for field in fields(GoalDeliveryOutboxItem))
 
 
 class GoalStore:
@@ -918,21 +896,6 @@ class GoalStore:
         )
         return items[0] if items else None
 
-    def list_unprojected_sent_delivery_outbox(
-        self,
-        *,
-        channel: str,
-        limit: int = 100,
-    ) -> builtins.list[DeliveryItem]:
-        """Return complete batches whose Goal projection still needs repair."""
-        items: list[DeliveryItem] = []
-        for _batch_id, batch in DeliveryOutboxStore(self.home).complete_unprojected_batches(
-            channel=channel,
-            limit=limit,
-        ):
-            items.extend(batch)
-        return items
-
     def _delivery_outbox_by_run(self, run_id: str) -> DeliveryItem | None:
         return DeliveryOutboxStore(self.home).latest_for_run(run_id)
 
@@ -1094,70 +1057,6 @@ class GoalStore:
                 self.record_event(
                     parent.id,
                     "goal.occurrence_delivery_failed",
-                    phase=parent.phase,
-                    governance=parent.governance,
-                    acceptance=parent.acceptance,
-                    resolution=parent.resolution,
-                    run_id=run_id,
-                    trace_id=trace_id or run_id,
-                    evidence=evidence,
-                )
-        return event
-
-    def record_delivery_outcome_unknown(
-        self,
-        *,
-        run_id: str,
-        channel: str,
-        error: str,
-        trace_id: str = "",
-        delivery_id: str = "",
-    ) -> GoalEvent | None:
-        """Record an interrupted transport attempt without guessing its outcome."""
-        goal = self.get_by_run(run_id)
-        if goal is None:
-            return None
-        evidence = {
-            "state_transition": "delivery_outcome_unknown",
-            "channel": channel,
-            "recorded_at": time.time(),
-            "error": error,
-            "error_reason": "connector_delivery_outcome_unknown",
-            "delivery_id": delivery_id,
-            "goal_id": goal.id,
-            "run_id": run_id,
-        }
-        from .runs import RunStore
-
-        runs = RunStore(self.home)
-        updated_run = runs.update_run(
-            run_id,
-            phase=Phase.PAUSED,
-            governance=Governance.NONE,
-            acceptance=Acceptance.UNVERIFIED,
-            resolution=Resolution.BLOCKED,
-            result_summary="",
-            error=error,
-        )
-        if updated_run is not None:
-            goal = self.update_for_run(updated_run, evidence=evidence) or goal
-        event = self.record_event(
-            goal.id,
-            "goal.delivery_outcome_unknown",
-            phase=goal.phase,
-            governance=goal.governance,
-            acceptance=goal.acceptance,
-            resolution=goal.resolution,
-            run_id=run_id,
-            trace_id=trace_id or run_id,
-            evidence=evidence,
-        )
-        if goal.parent_goal_id:
-            parent = self.get(goal.parent_goal_id)
-            if parent is not None:
-                self.record_event(
-                    parent.id,
-                    "goal.occurrence_delivery_outcome_unknown",
                     phase=parent.phase,
                     governance=parent.governance,
                     acceptance=parent.acceptance,
@@ -1547,28 +1446,6 @@ def _delivery_error_reason(error: str) -> str:
     if prefix.startswith("connector_"):
         return prefix
     return "connector_delivery_failed" if error else ""
-
-
-def _delivery_outbox_from_row(row: tuple[Any, ...]) -> GoalDeliveryOutboxItem:
-    return GoalDeliveryOutboxItem(
-        id=str(row[0]),
-        goal_id=str(row[1]),
-        run_id=str(row[2]),
-        channel=str(row[3]),
-        source=str(row[4]),
-        peer_id=str(row[5]),
-        sender_id=str(row[6]),
-        trace_id=str(row[7]),
-        body=str(row[8]),
-        body_provenance=str(row[9]),
-        status=str(row[10]),
-        attempts=int(row[11]),
-        error=str(row[12]),
-        delivery_id=str(row[13]),
-        created_at=float(row[14]),
-        updated_at=float(row[15]),
-        sent_at=float(row[16]),
-    )
 
 
 GOALS_TABLE = Table(

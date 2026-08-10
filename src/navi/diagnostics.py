@@ -340,13 +340,6 @@ def _api_connectivity_checks(config) -> list[DiagnosticCheck]:
     return [DiagnosticCheck("api.model.connectivity", "ok", "chat completion succeeded")]
 
 
-def _first_existing_path(paths: tuple[Path, ...]) -> Path | None:
-    for path in paths:
-        if path.exists():
-            return path
-    return None
-
-
 def _service_facts(name: str) -> dict[str, object]:
     """Return ``{properties, exit_code, stderr}`` from ``systemctl --user show``.
 

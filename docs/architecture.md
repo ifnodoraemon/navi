@@ -402,7 +402,12 @@ rollback recovery but does not reinterpret unrelated task outcomes as canaries.
 ## Connector Boundary
 
 Connector adapters own authentication, polling, message normalization, media
-transport, deduplication, and channel-local presentation. They publish the same
+transport, and channel-local presentation. Ingress idempotency is a shared
+boundary: `ConnectorIngressDeduplicator` treats a native transport message id
+as the authoritative idempotency key, and falls back to a content key only
+when the id is absent or marked with the `synthetic:` prefix by the adapter,
+so a deliberate identical resend under a new native id is never dropped.
+They publish the same
 turn contract used by local surfaces. `ConnectorMessage` lives in the transport-
 neutral `connector_contract.py`; adapters consume `ResponseReadyEvent` and never
 reinterpret it as a string. An empty model response is recorded as a failed
@@ -432,8 +437,9 @@ unrelated failures remain terminal.
 
 Outbound files use the connector-neutral `ConnectorDelivery` contract. The
 kernel validates the original file and emits one structured durable delivery
-request; the active adapter (Weixin today, email or Feishu adapters in the
-future) maps each persistent item to its transport API and records the real
+request; the adapter that implements durable delivery (Weixin today; email or
+Feishu adapters in the future) maps each persistent item to its transport API
+and records the real
 receipt. Textual `MEDIA:` directives are not delivery evidence. For an accepted
 background result, the Run and Goal remain unverified and non-terminal while
 its outbox item is pending; only complete connector receipts or a terminal

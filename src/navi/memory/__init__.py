@@ -1,7 +1,6 @@
 """Navi governed memory package.
 
-Re-exports the public API previously available from the monolithic
-``navi/memory.py`` module. Internal structure:
+Internal structure:
 
 - :mod:`navi.memory.models` — dataclasses + policy facts
 - :mod:`navi.memory.provider` — MemoryProvider protocol + SQLiteMemoryProvider
