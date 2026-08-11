@@ -1,9 +1,9 @@
 ---
-name: GitHub Workflow
+name: github-workflow
 description: Practical workflow guidance for GitHub issues, pull requests, reviews, CI failures, and repository maintenance.
-permission: read
-source: local
-tags: [github, pull-requests, ci]
+metadata:
+  navi.permission: read
+  navi.tags: "github,pull-requests,ci"
 ---
 
 # GitHub Workflow Skill

@@ -14,6 +14,7 @@ from .models import WeixinAccount
 from .store import WeixinSessionStore
 
 WEIXIN_RATE_LIMIT_RETRY_SECONDS = 900.0
+WEIXIN_TRANSIENT_REJECTION_RETRY_SECONDS = 60.0
 
 
 class WeixinDeliveryTransport:
@@ -126,12 +127,22 @@ class WeixinDeliveryTransport:
                 retryable=True,
             )
         if isinstance(exc, WeixinTransportError):
-            retryable = exc.reason == "connector_rate_limited"
+            retryable = exc.reason in {
+                "connector_rate_limited",
+                "connector_transient_rejected",
+            }
+            retry_after_seconds = (
+                WEIXIN_RATE_LIMIT_RETRY_SECONDS
+                if exc.reason == "connector_rate_limited"
+                else WEIXIN_TRANSIENT_REJECTION_RETRY_SECONDS
+                if retryable
+                else 0.0
+            )
             return DeliveryFailure(
                 reason=exc.reason,
                 error=f"{type(exc).__name__}: {exc}",
                 retryable=retryable,
-                retry_after_seconds=WEIXIN_RATE_LIMIT_RETRY_SECONDS if retryable else 0.0,
+                retry_after_seconds=retry_after_seconds,
                 provider_code=f"ret={exc.ret} errcode={exc.errcode}",
             )
         return DeliveryFailure(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import typing
 import uuid
@@ -258,6 +259,102 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
         with connect(self.db_path) as conn:
             rows = conn.execute("SELECT phase, COUNT(*) FROM runs GROUP BY phase").fetchall()
         return {str(row[0]): int(row[1]) for row in rows}
+
+    def reconcile_completed_capability_approvals(self) -> typing.List[dict[str, Any]]:
+        """Settle approved direct-call runs from their durable tool receipts.
+
+        Current receipts carry the approval run id. The narrow legacy branch
+        accepts only one unlinked, exact-argument receipt produced after the
+        approval decision and before its original expiry, which lets upgrades
+        repair runs completed before receipt linkage was introduced without
+        guessing from domain state.
+        """
+        reconciled: typing.List[dict[str, Any]] = []
+        with connect(self.db_path) as conn:
+            candidates = conn.execute(
+                """
+                SELECT r.id, a.id, a.requested_tool, a.args_json,
+                       a.updated_at, a.expires_at
+                FROM runs r
+                JOIN approvals a ON a.run_id = r.id
+                WHERE r.kind = 'capability_approval'
+                  AND r.phase IN ('pending', 'running')
+                  AND a.status = 'approved'
+                ORDER BY a.updated_at ASC
+                """
+            ).fetchall()
+            for run_id, approval_id, tool, args_json, approved_at, expires_at in candidates:
+                logs = conn.execute(
+                    """
+                    SELECT id, ok, error, run_id, facts_json
+                    FROM tool_call_logs
+                    WHERE tool = ?
+                      AND started_at >= ? AND started_at <= ?
+                      AND (
+                          run_id = ?
+                          OR (run_id = '' AND args_json = ?)
+                      )
+                    ORDER BY started_at ASC
+                    """,
+                    (tool, approved_at, expires_at, run_id, args_json),
+                ).fetchall()
+                settleable = []
+                for row in logs:
+                    try:
+                        receipt_facts = json.loads(row[4])
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if not isinstance(receipt_facts, dict):
+                        continue
+                    if receipt_facts.get("audit_phase") != "completed":
+                        continue
+                    if str(receipt_facts.get("loop_terminal_state") or "") in {
+                        "paused",
+                        "waiting_approval",
+                    }:
+                        continue
+                    settleable.append(row)
+                linked = [row for row in settleable if row[3] == run_id]
+                legacy = [row for row in settleable if row[3] == ""]
+                receipt = linked[-1] if linked else (legacy[0] if len(legacy) == 1 else None)
+                if receipt is None:
+                    continue
+                log_id, ok, error, receipt_run_id, _facts_json = receipt
+                if not receipt_run_id:
+                    conn.execute(
+                        "UPDATE tool_call_logs SET run_id = ? WHERE id = ? AND run_id = ''",
+                        (run_id, log_id),
+                    )
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET phase = 'ended', governance = 'approved',
+                        acceptance = ?, resolution = ?, result_summary = ?,
+                        error = ?, updated_at = ?
+                    WHERE id = ? AND phase IN ('pending', 'running')
+                    """,
+                    (
+                        "accepted" if ok else "rejected",
+                        "success" if ok else "failed",
+                        (
+                            "approved capability receipt reconciled "
+                            f"ok={str(bool(ok)).lower()} tool={tool} audit_log_id={log_id}"
+                        ),
+                        "" if ok else (error or "capability_failed"),
+                        time.time(),
+                        run_id,
+                    ),
+                )
+                reconciled.append(
+                    {
+                        "run_id": run_id,
+                        "approval_id": approval_id,
+                        "audit_log_id": log_id,
+                        "ok": bool(ok),
+                        "legacy_receipt_linked": not bool(receipt_run_id),
+                    }
+                )
+        return reconciled
 
     def list_by_phases(self, phases: typing.List[str], *, limit: int = 60) -> typing.List[Run]:
         if not phases:

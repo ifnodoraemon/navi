@@ -328,7 +328,7 @@ def test_loop_run_store_terminal_runs_are_not_active_and_do_not_transition(tmp_p
         inputs={},
         state=terminal.to_dict(),
     )
-    with pytest.raises(ValueError, match="terminal LoopRunState"):
+    with pytest.raises(ValueError, match="stopped LoopRunState"):
         store.transition(
             run.run_id,
             node=LoopNode.PLAN,

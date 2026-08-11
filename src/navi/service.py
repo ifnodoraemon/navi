@@ -137,33 +137,125 @@ async def run_with_systemd_watchdog[T](
         active.stopping()
 
 
-def build_systemd_user_unit(*, project_dir: Path, navi_home: Path | None = None) -> str:
+def _systemd_security_block(*, project_dir: Path, navi_home: Path | None) -> str:
+    writable_paths = {project_dir.resolve()}
+    if navi_home is not None:
+        writable_paths.add(navi_home.resolve())
+    read_write_paths = " ".join(_systemd_quote(str(path)) for path in sorted(writable_paths))
+    return (
+        "UMask=0077\n"
+        "NoNewPrivileges=true\n"
+        "PrivateTmp=true\n"
+        "PrivateDevices=true\n"
+        "ProtectSystem=strict\n"
+        "ProtectHome=read-only\n"
+        "ProtectKernelTunables=true\n"
+        "ProtectKernelModules=true\n"
+        "ProtectKernelLogs=true\n"
+        "ProtectControlGroups=true\n"
+        "RestrictSUIDSGID=true\n"
+        "LockPersonality=true\n"
+        "RestrictRealtime=true\n"
+        "SystemCallArchitectures=native\n"
+        "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n"
+        "CapabilityBoundingSet=\n"
+        "AmbientCapabilities=\n"
+        f"ReadWritePaths={read_write_paths}\n"
+    )
+
+
+def _systemd_quote(value: str) -> str:
+    """Quote one systemd directive token without invoking a shell."""
+    if any(character in value for character in ("\0", "\n", "\r")):
+        raise ValueError("systemd unit values must be single-line text")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return f'"{escaped}"'
+
+
+def _systemd_path(value: str) -> str:
+    """Escape a path for directives that do not implement systemd quoting.
+
+    ``WorkingDirectory=`` parses one path rather than a quoted word list, so
+    wrapping it in quotes makes the quote characters part of the path.  Use
+    C-style escapes for syntax-sensitive characters and escape percent signs
+    so they cannot be expanded as systemd specifiers.
+    """
+    if any(character in value for character in ("\0", "\n", "\r")):
+        raise ValueError("systemd unit values must be single-line text")
+    escaped: list[str] = []
+    for character in value:
+        if character == "%":
+            escaped.append("%%")
+        elif character == "\\":
+            escaped.append("\\\\")
+        elif character == '"':
+            escaped.append("\\x22")
+        elif character == "'":
+            escaped.append("\\x27")
+        elif character.isspace() or ord(character) < 32 or ord(character) == 127:
+            escaped.append(f"\\x{ord(character):02x}")
+        else:
+            escaped.append(character)
+    return "".join(escaped)
+
+
+def _build_systemd_user_unit(
+    *,
+    project_dir: Path,
+    navi_home: Path | None,
+    description: str,
+    command: str,
+    watchdog: bool,
+) -> str:
     project_dir = project_dir.resolve()
     src_dir = project_dir / "src"
     python = Path(sys.executable)
     env_lines = []
     if src_dir.exists():
-        env_lines.append(f"Environment=PYTHONPATH={src_dir}")
+        env_lines.append(f"Environment={_systemd_quote(f'PYTHONPATH={src_dir}')}")
     if navi_home is not None:
-        env_lines.append(f"Environment=NAVI_HOME={navi_home.resolve()}")
+        env_lines.append(
+            f"Environment={_systemd_quote(f'NAVI_HOME={navi_home.resolve()}')}"
+        )
     env_block = "\n".join(env_lines)
+    watchdog_block = "NotifyAccess=main\nWatchdogSec=90s\n" if watchdog else ""
     return (
         "[Unit]\n"
-        "Description=Navi active assistant\n"
+        f"Description={description}\n"
         "After=network-online.target\n\n"
         "[Service]\n"
         "Type=simple\n"
-        "NotifyAccess=main\n"
-        f"WorkingDirectory={project_dir}\n"
+        f"{watchdog_block}"
+        f"WorkingDirectory={_systemd_path(str(project_dir))}\n"
         f"{env_block}\n"
-        f"ExecStartPre=/usr/bin/test -x {python}\n"
-        f"ExecStart={python} -m navi.cli run\n"
+        f"ExecStartPre=/usr/bin/test -x {_systemd_quote(str(python))}\n"
+        f"ExecStart={_systemd_quote(str(python))} -m navi.cli {command}\n"
         "Restart=on-failure\n"
         "RestartSec=5s\n"
-        "WatchdogSec=90s\n"
-        "TimeoutStopSec=30s\n\n"
+        "TimeoutStopSec=30s\n"
+        f"{_systemd_security_block(project_dir=project_dir, navi_home=navi_home)}\n"
         "[Install]\n"
         "WantedBy=default.target\n"
+    )
+
+
+def build_systemd_user_unit(*, project_dir: Path, navi_home: Path | None = None) -> str:
+    return _build_systemd_user_unit(
+        project_dir=project_dir,
+        navi_home=navi_home,
+        description="Navi active assistant",
+        command="run",
+        watchdog=True,
+    )
+
+
+def build_systemd_api_user_unit(*, project_dir: Path, navi_home: Path | None = None) -> str:
+    return _build_systemd_user_unit(
+        project_dir=project_dir,
+        navi_home=navi_home,
+        description="Navi headless API",
+        command="api",
+        watchdog=False,
     )
 
 
@@ -177,5 +269,15 @@ def install_systemd_user_unit(
     path = systemd_user_unit_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     content = build_systemd_user_unit(project_dir=project_dir, navi_home=navi_home)
+    path.write_text(content, encoding="utf-8")
+    return ServiceUnit(name=name, content=content, path=path)
+
+
+def install_systemd_api_user_unit(
+    *, project_dir: Path, navi_home: Path | None = None, name: str = "navi-api.service"
+) -> ServiceUnit:
+    path = systemd_user_unit_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = build_systemd_api_user_unit(project_dir=project_dir, navi_home=navi_home)
     path.write_text(content, encoding="utf-8")
     return ServiceUnit(name=name, content=content, path=path)

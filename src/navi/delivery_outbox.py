@@ -696,7 +696,10 @@ class DeliveryCoordinator:
                             item=stored or item, state="retry_scheduled", failure=failure
                         )
                     )
-                    if failure.reason == "connector_rate_limited":
+                    if failure.reason in {
+                        "connector_rate_limited",
+                        "connector_transient_rejected",
+                    }:
                         break
                 else:
                     stored = self.store.mark_failed(item.id, error=error)

@@ -34,38 +34,7 @@ def json_schema_errors(value: Any, schema: dict[str, Any], *, path: str = "$") -
     if const_value is not _MISSING and value != const_value:
         errors.append(f"{path} must equal {const_value!r}")
 
-    all_of = schema.get("allOf")
-    if isinstance(all_of, list):
-        for subschema in all_of:
-            if isinstance(subschema, dict):
-                errors.extend(json_schema_errors(value, subschema, path=path))
-
-    any_of = schema.get("anyOf")
-    if isinstance(any_of, list) and any_of:
-        any_matches = [
-            not json_schema_errors(value, subschema, path=path)
-            for subschema in any_of
-            if isinstance(subschema, dict)
-        ]
-        if any_matches and not any(any_matches):
-            errors.append(f"{path} must match at least one declared schema")
-
-    one_of = schema.get("oneOf")
-    if isinstance(one_of, list) and one_of:
-        match_count = sum(
-            not json_schema_errors(value, subschema, path=path)
-            for subschema in one_of
-            if isinstance(subschema, dict)
-        )
-        if match_count != 1:
-            errors.append(f"{path} must match exactly one declared schema")
-
-    conditional = schema.get("if")
-    if isinstance(conditional, dict):
-        matched = not json_schema_errors(value, conditional, path=path)
-        branch = schema.get("then" if matched else "else")
-        if isinstance(branch, dict):
-            errors.extend(json_schema_errors(value, branch, path=path))
+    errors.extend(_composition_errors(value, schema, path=path))
     expected_types = _schema_types(schema)
     if expected_types:
         if not any(_json_type_matches(value, item) for item in expected_types):
@@ -76,82 +45,135 @@ def json_schema_errors(value: Any, schema: dict[str, Any], *, path: str = "$") -
     if isinstance(enum_values, list) and value not in enum_values:
         errors.append(f"{path} must be one of {enum_values}")
 
+    errors.extend(_object_errors(value, schema, expected_types, path=path))
+    errors.extend(_array_errors(value, schema, expected_types, path=path))
+    errors.extend(_scalar_errors(value, schema, expected_types, path=path))
+
+    return errors
+
+
+def _composition_errors(value: Any, schema: dict[str, Any], *, path: str) -> list[str]:
+    errors: list[str] = []
+    all_of = schema.get("allOf")
+    if isinstance(all_of, list):
+        for subschema in all_of:
+            if isinstance(subschema, dict):
+                errors.extend(json_schema_errors(value, subschema, path=path))
+    any_of = schema.get("anyOf")
+    if isinstance(any_of, list) and any_of:
+        matches = [
+            not json_schema_errors(value, item, path=path)
+            for item in any_of
+            if isinstance(item, dict)
+        ]
+        if matches and not any(matches):
+            errors.append(f"{path} must match at least one declared schema")
+    one_of = schema.get("oneOf")
+    if isinstance(one_of, list) and one_of:
+        match_count = sum(
+            not json_schema_errors(value, item, path=path)
+            for item in one_of
+            if isinstance(item, dict)
+        )
+        if match_count != 1:
+            errors.append(f"{path} must match exactly one declared schema")
+    conditional = schema.get("if")
+    if isinstance(conditional, dict):
+        matched = not json_schema_errors(value, conditional, path=path)
+        branch = schema.get("then" if matched else "else")
+        if isinstance(branch, dict):
+            errors.extend(json_schema_errors(value, branch, path=path))
+    return errors
+
+
+def _object_errors(
+    value: Any, schema: dict[str, Any], expected_types: tuple[str, ...], *, path: str
+) -> list[str]:
     object_like = "object" in expected_types or (
         not expected_types and ("properties" in schema or "required" in schema)
     )
-    if object_like and isinstance(value, dict):
-        required = schema.get("required")
-        if isinstance(required, list):
-            for key in required:
-                if isinstance(key, str) and key not in value:
-                    errors.append(f"{path}.{key} is required")
-        properties = schema.get("properties")
-        if isinstance(properties, dict):
-            for key, subschema in properties.items():
-                if key in value and isinstance(subschema, dict):
-                    errors.extend(json_schema_errors(value[key], subschema, path=f"{path}.{key}"))
-        additional = schema.get("additionalProperties")
-        if additional is False and isinstance(properties, dict):
-            allowed = set(properties)
-            for key in value:
-                if key not in allowed:
-                    errors.append(f"{path}.{key} is not declared")
-        elif isinstance(additional, dict) and isinstance(properties, dict):
-            for key, item in value.items():
-                if key not in properties:
-                    errors.extend(json_schema_errors(item, additional, path=f"{path}.{key}"))
+    if not object_like or not isinstance(value, dict):
+        return []
+    errors: list[str] = []
+    required = schema.get("required")
+    if isinstance(required, list):
+        errors.extend(
+            f"{path}.{key} is required"
+            for key in required
+            if isinstance(key, str) and key not in value
+        )
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for key, subschema in properties.items():
+            if key in value and isinstance(subschema, dict):
+                errors.extend(json_schema_errors(value[key], subschema, path=f"{path}.{key}"))
+    additional = schema.get("additionalProperties")
+    if additional is False and isinstance(properties, dict):
+        errors.extend(f"{path}.{key} is not declared" for key in value if key not in properties)
+    elif isinstance(additional, dict) and isinstance(properties, dict):
+        for key, item in value.items():
+            if key not in properties:
+                errors.extend(json_schema_errors(item, additional, path=f"{path}.{key}"))
+    min_properties = schema.get("minProperties")
+    if isinstance(min_properties, int) and len(value) < min_properties:
+        errors.append(f"{path} must contain at least {min_properties} properties")
+    max_properties = schema.get("maxProperties")
+    if isinstance(max_properties, int) and len(value) > max_properties:
+        errors.append(f"{path} must contain at most {max_properties} properties")
+    return errors
 
-        min_properties = schema.get("minProperties")
-        if isinstance(min_properties, int) and len(value) < min_properties:
-            errors.append(f"{path} must contain at least {min_properties} properties")
-        max_properties = schema.get("maxProperties")
-        if isinstance(max_properties, int) and len(value) > max_properties:
-            errors.append(f"{path} must contain at most {max_properties} properties")
 
+def _array_errors(
+    value: Any, schema: dict[str, Any], expected_types: tuple[str, ...], *, path: str
+) -> list[str]:
     array_like = "array" in expected_types or (not expected_types and "items" in schema)
-    if array_like and isinstance(value, list):
-        items_schema = schema.get("items")
-        if isinstance(items_schema, dict):
-            for index, item in enumerate(value):
-                errors.extend(json_schema_errors(item, items_schema, path=f"{path}[{index}]"))
-        min_items = schema.get("minItems")
-        if isinstance(min_items, int) and len(value) < min_items:
-            errors.append(f"{path} must contain at least {min_items} items")
-        max_items = schema.get("maxItems")
-        if isinstance(max_items, int) and len(value) > max_items:
-            errors.append(f"{path} must contain at most {max_items} items")
-        if schema.get("uniqueItems") is True:
-            serialized = [json.dumps(item, ensure_ascii=False, sort_keys=True) for item in value]
-            if len(serialized) != len(set(serialized)):
-                errors.append(f"{path} items must be unique")
+    if not array_like or not isinstance(value, list):
+        return []
+    errors: list[str] = []
+    items_schema = schema.get("items")
+    if isinstance(items_schema, dict):
+        for index, item in enumerate(value):
+            errors.extend(json_schema_errors(item, items_schema, path=f"{path}[{index}]"))
+    min_items = schema.get("minItems")
+    if isinstance(min_items, int) and len(value) < min_items:
+        errors.append(f"{path} must contain at least {min_items} items")
+    max_items = schema.get("maxItems")
+    if isinstance(max_items, int) and len(value) > max_items:
+        errors.append(f"{path} must contain at most {max_items} items")
+    if schema.get("uniqueItems") is True:
+        serialized = [json.dumps(item, ensure_ascii=False, sort_keys=True) for item in value]
+        if len(serialized) != len(set(serialized)):
+            errors.append(f"{path} items must be unique")
+    return errors
 
+
+def _scalar_errors(
+    value: Any, schema: dict[str, Any], expected_types: tuple[str, ...], *, path: str
+) -> list[str]:
+    errors: list[str] = []
     if "string" in expected_types and isinstance(value, str):
-        min_length = schema.get("minLength")
-        if isinstance(min_length, int) and len(value) < min_length:
-            errors.append(f"{path} length must be at least {min_length}")
-        max_length = schema.get("maxLength")
-        if isinstance(max_length, int) and len(value) > max_length:
-            errors.append(f"{path} length must be at most {max_length}")
+        minimum = schema.get("minLength")
+        maximum = schema.get("maxLength")
         pattern = schema.get("pattern")
+        if isinstance(minimum, int) and len(value) < minimum:
+            errors.append(f"{path} length must be at least {minimum}")
+        if isinstance(maximum, int) and len(value) > maximum:
+            errors.append(f"{path} length must be at most {maximum}")
         if isinstance(pattern, str) and re.search(pattern, value) is None:
             errors.append(f"{path} must match pattern {pattern!r}")
-
-    if any(item in expected_types for item in ("integer", "number")) and isinstance(
-        value, (int, float)
-    ) and not isinstance(value, bool):
-        minimum = schema.get("minimum")
-        if isinstance(minimum, (int, float)) and value < minimum:
-            errors.append(f"{path} must be greater than or equal to {minimum}")
-        maximum = schema.get("maximum")
-        if isinstance(maximum, (int, float)) and value > maximum:
-            errors.append(f"{path} must be less than or equal to {maximum}")
-        exclusive_minimum = schema.get("exclusiveMinimum")
-        if isinstance(exclusive_minimum, (int, float)) and value <= exclusive_minimum:
-            errors.append(f"{path} must be greater than {exclusive_minimum}")
-        exclusive_maximum = schema.get("exclusiveMaximum")
-        if isinstance(exclusive_maximum, (int, float)) and value >= exclusive_maximum:
-            errors.append(f"{path} must be less than {exclusive_maximum}")
-
+    numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+    if not numeric or not any(item in expected_types for item in ("integer", "number")):
+        return errors
+    bounds = (
+        ("minimum", lambda bound: value < bound, "greater than or equal to"),
+        ("maximum", lambda bound: value > bound, "less than or equal to"),
+        ("exclusiveMinimum", lambda bound: value <= bound, "greater than"),
+        ("exclusiveMaximum", lambda bound: value >= bound, "less than"),
+    )
+    for key, violates, wording in bounds:
+        bound = schema.get(key)
+        if isinstance(bound, (int, float)) and violates(bound):
+            errors.append(f"{path} must be {wording} {bound}")
     return errors
 
 

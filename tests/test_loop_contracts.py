@@ -142,8 +142,24 @@ def test_loop_run_state_requires_checkpoint_and_terminal_states_are_final():
     )
     assert done.is_terminal() is True
 
-    with pytest.raises(ValueError, match="terminal LoopRunState"):
+    with pytest.raises(ValueError, match="stopped LoopRunState"):
         done.transition(node=LoopNode.PLAN, checkpoint_id="ckpt-3")
+
+
+def test_loop_pause_is_suspended_not_terminal() -> None:
+    state = LoopRunState(
+        run_id="run-paused",
+        goal_id="goal-1",
+        loop_spec_id="loop-1",
+        terminal_state=LoopTerminalState.PAUSED,
+    )
+
+    assert state.is_suspended() is True
+    assert state.is_terminal() is False
+    assert state.is_stopped() is True
+
+    with pytest.raises(ValueError, match="stopped LoopRunState"):
+        state.transition(node=LoopNode.EXECUTE, checkpoint_id="ckpt-paused")
 
 
 def test_workspace_locks_detect_parallel_write_conflicts():

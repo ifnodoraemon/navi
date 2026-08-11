@@ -115,6 +115,12 @@ class EvolutionEvaluationRequest(BaseModel):
     approval_id: str = ""
 
 
+class EvolutionObservationRequest(BaseModel):
+    successes: int = Field(default=0, ge=0)
+    errors: int = Field(default=0, ge=0)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
 def _is_public_request(request: Request) -> bool:
     path = request.url.path.rstrip("/") or "/"
     if path == "/ui/trace" or path.startswith("/ui/trace/"):
@@ -125,87 +131,65 @@ def _is_public_request(request: Request) -> bool:
     return False
 
 
-def create_app(
-    home: Path | None = None,
+def _build_lifespan(
     *,
-    start_background: bool = False,
-    start_connectors: bool = False,
-) -> FastAPI:
-    home = home or ensure_home()
-    project_dir = Path.cwd().resolve()
-    write_default_config(home)
-    config = load_config(home)
-    api_key = config.api.api_key
-    if not api_key:
-        raise ValueError("api.api_key is required")
-    runtime = build_runtime(home)
-    task_store = RunStore(home)
-    goal_store = GoalStore(home)
-    daemon = SystemDaemon(home, project_dir=project_dir)
-    agent = TurnController(
-        home=home, runtime=runtime, project_dir=project_dir, event_bus=daemon.event_bus
-    )
-    capabilities = build_capability_registry(home, project_dir=project_dir, runtime=runtime)
-    api_capabilities = build_capability_registry(
-        home,
-        project_dir=project_dir,
-        execution_context=API_CONTEXT,
-        runtime=runtime,
-    )
-    connector_adapters = load_connector_adapters()
-    connector_status_handlers = {
-        adapter.name: (lambda item=adapter: item.status(home)) for adapter in connector_adapters
-    }
+    home: Path,
+    project_dir: Path,
+    daemon: SystemDaemon,
+    connector_adapters,
+    start_background: bool,
+    start_connectors: bool,
+):
+    async def run_adapter(adapter) -> None:
+        try:
+            await adapter.run(home, project_dir, False)
+        except Exception:
+            import logging
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        setup_tasks = []
-        if start_connectors:
-            for adapter in connector_adapters:
-                if adapter.setup and adapter.enabled(home):
-                    setup_tasks.append(adapter.setup(home, project_dir, 60, None))
+            logging.getLogger(__name__).exception("ERROR STARTING ADAPTER %s", adapter.name)
 
-        if setup_tasks:
-            await asyncio.gather(*setup_tasks, return_exceptions=True)
-
-        async def _run_wrapper(adapter_to_run):
+    async def run_background() -> None:
+        while True:
             try:
-                await adapter_to_run.run(home, project_dir, False)
+                await daemon.process_background_once()
+                await daemon.process_queue_once()
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 import logging
 
-                logging.getLogger(__name__).exception(
-                    "ERROR STARTING ADAPTER %s", adapter_to_run.name
-                )
+                logging.getLogger(__name__).exception("Background processing failed")
+            await asyncio.sleep(60)
 
-        async def _run_background() -> None:
-            while True:
-                try:
-                    await daemon.process_background_once()
-                    await daemon.process_queue_once()
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    import logging
-
-                    logging.getLogger(__name__).exception("Background processing failed")
-                await asyncio.sleep(60)
-
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        del app
+        setup_tasks = [
+            adapter.setup(home, project_dir, 60, None)
+            for adapter in connector_adapters
+            if start_connectors and adapter.setup and adapter.enabled(home)
+        ]
+        if setup_tasks:
+            await asyncio.gather(*setup_tasks, return_exceptions=True)
         run_tasks: list[asyncio.Task] = []
         if start_background:
-            run_tasks.append(asyncio.create_task(_run_background()))
-        if start_connectors:
-            for adapter in connector_adapters:
-                if adapter.run and adapter.enabled(home):
-                    run_tasks.append(asyncio.create_task(_run_wrapper(adapter)))
+            run_tasks.append(asyncio.create_task(run_background()))
+        run_tasks.extend(
+            asyncio.create_task(run_adapter(adapter))
+            for adapter in connector_adapters
+            if start_connectors and adapter.run and adapter.enabled(home)
+        )
+        try:
+            yield
+        finally:
+            for task in run_tasks:
+                task.cancel()
+            await asyncio.gather(*run_tasks, return_exceptions=True)
 
-        yield
+    return lifespan
 
-        for task in run_tasks:
-            task.cancel()
 
-    app = FastAPI(title="Navi", version=__version__, lifespan=lifespan)
-
+def _register_middleware(app: FastAPI, *, api_key: str) -> None:
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
         if _is_public_request(request):
@@ -217,13 +201,6 @@ def create_app(
 
     @app.middleware("http")
     async def envelope_middleware(request: Request, call_next):
-        """Uniform response envelope: ``{"ok": bool, "data": ..., "error": ...}``.
-
-        Wraps every JSON response — success or error — in a single shape so
-        API consumers do not have to special-case per-endpoint return
-        structures. HTTP status codes are preserved; only
-        the body is normalized. Non-JSON responses (e.g. the 401 text body)
-        pass through untouched."""
         response: Response = await call_next(request)
         content_type = response.headers.get("content-type", "")
         if not content_type.startswith("application/json"):
@@ -257,51 +234,130 @@ def create_app(
             }
         return JSONResponse(content=envelope, status_code=status_code)
 
+
+def _health_response(home: Path, connector_adapters) -> dict | JSONResponse:
+    config = load_config(home)
+    runtime_error = runtime_environment_error()
+    connectors: dict[str, dict[str, Any]] = {}
+    issues: list[dict[str, str]] = []
+    if runtime_error:
+        issues.append({"component": "runtime", "error": runtime_error})
+    for adapter in connector_adapters:
+        if not adapter.enabled(home):
+            connectors[adapter.name] = {"enabled": False, "status": "disabled"}
+            continue
+        facts = adapter.status(home)
+        connector_status = str(facts.get("status") or "unknown")
+        connectors[adapter.name] = {
+            "enabled": True,
+            "status": connector_status,
+            "ingress_status": str(facts.get("ingress_status") or "unknown"),
+            "egress_status": str(facts.get("egress_status") or "unknown"),
+            "proactive_egress_status": str(facts.get("proactive_egress_status") or "unknown"),
+            "delivery_incident_status": str(
+                facts.get("delivery_incident_status") or "unknown"
+            ),
+            "proactive_delivery_windows": facts.get("proactive_delivery_windows") or {},
+        }
+        if connector_status != "healthy":
+            issues.append(
+                {"component": f"connector.{adapter.name}", "status": connector_status}
+            )
+    payload = {
+        "ok": not issues,
+        "home": str(home),
+        "model_provider": config.model.provider,
+        "runtime": {
+            "status": "healthy" if not runtime_error else "unavailable",
+            "error": runtime_error,
+        },
+        "connectors": connectors,
+        "issues": issues,
+    }
+    if issues:
+        return JSONResponse(status_code=503, content={"detail": payload})
+    return payload
+
+
+def _register_tool_routes(
+    app: FastAPI,
+    *,
+    home: Path,
+    project_dir: Path,
+    capabilities,
+) -> None:
+    @app.get(api_path("tools"))
+    def list_tools() -> dict:
+        return {
+            "tools": [asdict(spec) for spec in capabilities.list_specs()],
+            "capabilities": [asdict(node) for node in capabilities.capability_graph()],
+            "sources": capabilities.list_sources(),
+        }
+
+    @app.post(api_path("tool_call"))
+    async def call_tool(tool_name: str, request: ToolCallRequest) -> dict:
+        spec = capabilities.get(tool_name)
+        if spec is None:
+            raise HTTPException(status_code=404, detail=f"capability not found: {tool_name}")
+        if spec.permission != "read":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"direct API tool calls are read-only; {tool_name} requires "
+                    f"{spec.permission} permission"
+                ),
+            )
+        result = await capabilities.invoke(
+            tool_name,
+            request.args,
+            permission=spec.permission,
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        return _capability_result_dict(result)
+
+
+def create_app(
+    home: Path | None = None,
+    *,
+    start_background: bool = False,
+    start_connectors: bool = False,
+) -> FastAPI:
+    home = home or ensure_home()
+    project_dir = Path.cwd().resolve()
+    write_default_config(home)
+    config = load_config(home)
+    api_key = config.api.api_key
+    if not api_key:
+        raise ValueError("api.api_key is required")
+    runtime = build_runtime(home)
+    task_store = RunStore(home)
+    daemon = SystemDaemon(home, project_dir=project_dir)
+    agent = TurnController(
+        home=home, runtime=runtime, project_dir=project_dir, event_bus=daemon.event_bus
+    )
+    capabilities = build_capability_registry(home, project_dir=project_dir, runtime=runtime)
+    api_capabilities = build_capability_registry(
+        home,
+        project_dir=project_dir,
+        execution_context=API_CONTEXT,
+        runtime=runtime,
+    )
+    connector_adapters = load_connector_adapters()
+
+    lifespan = _build_lifespan(
+        home=home,
+        project_dir=project_dir,
+        daemon=daemon,
+        connector_adapters=connector_adapters,
+        start_background=start_background,
+        start_connectors=start_connectors,
+    )
+    app = FastAPI(title="Navi", version=__version__, lifespan=lifespan)
+    _register_middleware(app, api_key=api_key)
+
     @app.get(api_path("health"), response_model=None)
     def health() -> dict | JSONResponse:
-        config = load_config(home)
-        runtime_error = runtime_environment_error()
-        connectors: dict[str, dict[str, Any]] = {}
-        issues: list[dict[str, str]] = []
-        if runtime_error:
-            issues.append({"component": "runtime", "error": runtime_error})
-        for adapter in connector_adapters:
-            enabled = adapter.enabled(home)
-            if not enabled:
-                connectors[adapter.name] = {"enabled": False, "status": "disabled"}
-                continue
-            facts = adapter.status(home)
-            connector_status = str(facts.get("status") or "unknown")
-            connectors[adapter.name] = {
-                "enabled": True,
-                "status": connector_status,
-                "ingress_status": str(facts.get("ingress_status") or "unknown"),
-                "egress_status": str(facts.get("egress_status") or "unknown"),
-                "proactive_egress_status": str(
-                    facts.get("proactive_egress_status") or "unknown"
-                ),
-            }
-            if connector_status != "healthy":
-                issues.append(
-                    {
-                        "component": f"connector.{adapter.name}",
-                        "status": connector_status,
-                    }
-                )
-        payload = {
-            "ok": not issues,
-            "home": str(home),
-            "model_provider": config.model.provider,
-            "runtime": {
-                "status": "healthy" if not runtime_error else "unavailable",
-                "error": runtime_error,
-            },
-            "connectors": connectors,
-            "issues": issues,
-        }
-        if issues:
-            return JSONResponse(status_code=503, content={"detail": payload})
-        return payload
+        return _health_response(home, connector_adapters)
 
     @app.post(api_path("chat"))
     async def chat(request: ChatRequest) -> dict:
@@ -319,69 +375,6 @@ def create_app(
             "action": result.action,
             "run_id": result.run_id,
             "facts": result.facts or {},
-        }
-
-    @app.get(api_path("sessions"))
-    def sessions() -> dict:
-        return {"sessions": runtime.memory.list_sessions()}
-
-    @app.post(api_path("sessions"))
-    async def create_session(request: SessionRequest) -> dict:
-        result = await api_capabilities.invoke(
-            "session.create",
-            request.model_dump(exclude_none=True),
-            permission="prepare",
-            context=_local_capability_context(home, project_dir=project_dir),
-        )
-        _raise_capability_error(result)
-        facts = result.facts or {}
-        return {"session_id": facts.get("session_id", ""), "alias": facts.get("alias", "")}
-
-    @app.get(api_path("session_aliases"))
-    def session_aliases() -> dict:
-        return {"aliases": [alias.__dict__ for alias in runtime.memory.list_session_aliases()]}
-
-    @app.get(api_path("session"))
-    def session(session_id: str) -> dict:
-        return {
-            "messages": [message.__dict__ for message in runtime.memory.get_messages(session_id)]
-        }
-
-    @app.get(api_path("memory"))
-    def get_memory(
-        memory_type: str | None = None, status: str | None = None, limit: int = 50
-    ) -> dict:
-        items = runtime.memory.list_items(memory_type=memory_type, status=status, limit=limit)
-        return {"items": [asdict(item) for item in items]}
-
-    @app.get(api_path("memory_conflicts"))
-    def get_memory_conflicts(limit: int = 50) -> dict:
-        conflicts = runtime.memory.list_conflicts(limit=limit)
-        return {
-            "conflicts": [asdict(conflict) for conflict in conflicts],
-            "count": len(conflicts),
-            "unresolved_count": len(
-                [conflict for conflict in conflicts if conflict.status == "unresolved"]
-            ),
-        }
-
-    @app.post(api_path("memory"))
-    async def add_memory(request: MemoryRequest) -> dict:
-        result = await api_capabilities.invoke(
-            "memory.add",
-            request.model_dump(by_alias=True),
-            permission="write",
-            context=_local_capability_context(home, project_dir=project_dir),
-        )
-        _raise_capability_error(result)
-        return {"item": (result.facts or {}).get("item", {})}
-
-    @app.get(api_path("skills"))
-    def skills() -> dict:
-        return {
-            "skills": [
-                skill.__dict__ | {"path": str(skill.path)} for skill in runtime.skills.list_skills()
-            ]
         }
 
     @app.get(api_path("approvals"))
@@ -453,34 +446,99 @@ def create_app(
 
         return MetricsProjector(home).snapshot().to_dict()
 
-    @app.get(api_path("tools"))
-    def list_tools() -> dict:
-        return {
-            "tools": [asdict(spec) for spec in capabilities.list_specs()],
-            "capabilities": [asdict(node) for node in capabilities.capability_graph()],
-            "sources": capabilities.list_sources(),
-        }
+    _register_tool_routes(
+        app,
+        home=home,
+        project_dir=project_dir,
+        capabilities=capabilities,
+    )
+    _register_state_routes(
+        app,
+        home=home,
+        project_dir=project_dir,
+        runtime=runtime,
+        api_capabilities=api_capabilities,
+        connector_adapters=connector_adapters,
+    )
+    return app
 
-    @app.post(api_path("tool_call"))
-    async def call_tool(tool_name: str, request: ToolCallRequest) -> dict:
-        spec = capabilities.get(tool_name)
-        if spec is None:
-            raise HTTPException(status_code=404, detail=f"capability not found: {tool_name}")
-        if spec.permission != "read":
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"direct API tool calls are read-only; {tool_name} requires "
-                    f"{spec.permission} permission"
-                ),
-            )
-        result = await capabilities.invoke(
-            tool_name,
-            request.args,
-            permission=spec.permission,
+
+def _register_state_routes(
+    app: FastAPI,
+    *,
+    home: Path,
+    project_dir: Path,
+    runtime,
+    api_capabilities,
+    connector_adapters,
+) -> None:
+    goal_store = GoalStore(home)
+    connector_status_handlers = {
+        adapter.name: (lambda item=adapter: item.status(home)) for adapter in connector_adapters
+    }
+
+    @app.get(api_path("sessions"))
+    def sessions() -> dict:
+        return {"sessions": runtime.memory.list_sessions()}
+
+    @app.post(api_path("sessions"))
+    async def create_session(request: SessionRequest) -> dict:
+        result = await api_capabilities.invoke(
+            "session.create",
+            request.model_dump(exclude_none=True),
+            permission="prepare",
             context=_local_capability_context(home, project_dir=project_dir),
         )
-        return _capability_result_dict(result)
+        _raise_capability_error(result)
+        facts = result.facts or {}
+        return {"session_id": facts.get("session_id", ""), "alias": facts.get("alias", "")}
+
+    @app.get(api_path("session_aliases"))
+    def session_aliases() -> dict:
+        return {"aliases": [alias.__dict__ for alias in runtime.memory.list_session_aliases()]}
+
+    @app.get(api_path("session"))
+    def session(session_id: str) -> dict:
+        return {
+            "messages": [message.__dict__ for message in runtime.memory.get_messages(session_id)]
+        }
+
+    @app.get(api_path("memory"))
+    def get_memory(
+        memory_type: str | None = None, status: str | None = None, limit: int = 50
+    ) -> dict:
+        items = runtime.memory.list_items(memory_type=memory_type, status=status, limit=limit)
+        return {"items": [asdict(item) for item in items]}
+
+    @app.get(api_path("memory_conflicts"))
+    def get_memory_conflicts(limit: int = 50) -> dict:
+        conflicts = runtime.memory.list_conflicts(limit=limit)
+        return {
+            "conflicts": [asdict(conflict) for conflict in conflicts],
+            "count": len(conflicts),
+            "unresolved_count": len(
+                [conflict for conflict in conflicts if conflict.status == "unresolved"]
+            ),
+        }
+
+    @app.post(api_path("memory"))
+    async def add_memory(request: MemoryRequest) -> dict:
+        result = await api_capabilities.invoke(
+            "memory.add",
+            request.model_dump(by_alias=True),
+            permission="write",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result)
+        return {"item": (result.facts or {}).get("item", {})}
+
+    @app.get(api_path("skills"))
+    def skills() -> dict:
+        return {
+            "skills": [
+                skill.__dict__ | {"path": str(skill.path)} for skill in runtime.skills.list_skills()
+            ]
+        }
 
     @app.get(api_path("graph"))
     def graph() -> dict:
@@ -744,6 +802,19 @@ def create_app(
         _raise_capability_error(result, not_found_status=404)
         return (result.facts or {}).get("event", {})
 
+    @app.post(api_path("evolution_observe"))
+    async def observe_evolution_activation(
+        event_id: str, request: EvolutionObservationRequest
+    ) -> dict:
+        result = await api_capabilities.invoke(
+            "evolution.observe",
+            {"event_id": event_id, **request.model_dump()},
+            permission="write",
+            context=_local_capability_context(home, project_dir=project_dir),
+        )
+        _raise_capability_error(result, not_found_status=404)
+        return (result.facts or {}).get("activation", {})
+
     @app.get(api_path("connector_status"))
     def connector_status(connector_name: str) -> dict:
         handler = connector_status_handlers.get(connector_name)
@@ -755,7 +826,7 @@ def create_app(
     if dist_dir.exists():
         app.mount("/ui/trace", StaticFiles(directory=str(dist_dir), html=True), name="trace_ui")
 
-    return app
+    return None
 
 
 def _public_approval(approval) -> dict:

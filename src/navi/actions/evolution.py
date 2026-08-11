@@ -12,6 +12,7 @@ from ..capabilities_types import (
     capability,
 )
 from ..evolution import EvolutionLedger
+from ..evolution_candidates import EvolutionCandidateScanner
 from ..evolution_engine import EvolutionEngine
 from ..evolution_experiments import EvolutionExperimentStore
 from ..evolution_targets import EvolutionTargetAdapterRegistry
@@ -19,6 +20,34 @@ from .helpers import arg_text as _arg_text
 from .helpers import failure_result as _failure_result
 from .helpers import fact_result as _fact_result
 from .helpers import transition_facts as _transition_facts
+
+
+@capability("evolution_candidates")
+class EvolutionCandidatesCapability(BaseCapability):
+    async def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        permission: str,
+        context: CapabilityContext,
+    ) -> CapabilityResult:
+        del permission, context
+        candidates = EvolutionCandidateScanner(self.home).scan(
+            window_days=_bounded_int(args.get("window_days"), default=7, lower=1, upper=90),
+            min_occurrences=_bounded_int(
+                args.get("min_occurrences"), default=3, lower=2, upper=100
+            ),
+            limit=_bounded_int(args.get("limit"), default=100, lower=1, upper=500),
+        )
+        facts = {
+            **_transition_facts("evolution_candidates", "recent-trace-failures", "observed"),
+            "candidates": [candidate.to_dict() for candidate in candidates],
+            "count": len(candidates),
+            "semantic_decision": "model_review_required",
+            "automatic_proposal_created": False,
+            "automatic_apply_allowed": False,
+        }
+        return _fact_result("evolution", facts)
 
 
 @capability("evolution_propose")
@@ -163,6 +192,8 @@ class EvolutionObserveCapability(BaseCapability):
             )
         except KeyError as exc:
             return _evolution_error(str(exc), reason="not_found", event_id=event_id)
+        except ValueError as exc:
+            return _evolution_error(str(exc), reason="schema_mismatch", event_id=event_id)
         facts = {
             **_transition_facts("evolution_activation", activation.id, activation.status),
             "event_id": event_id,
@@ -341,6 +372,14 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value]
+
+
+def _bounded_int(value: Any, *, default: int, lower: int, upper: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(lower, min(upper, parsed))
 
 
 def _nonnegative_int(value: Any) -> int:

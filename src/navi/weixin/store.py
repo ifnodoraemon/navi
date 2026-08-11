@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -248,6 +250,7 @@ class WeixinStatusStore:
     """Durable ingress/reactive/proactive connector health projection."""
 
     def __init__(self, home: Path):
+        self.home = home
         self.path = home / "weixin" / "status.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -274,6 +277,11 @@ class WeixinStatusStore:
             "last_proactive_egress_success_at": 0.0,
             "proactive_circuit_open_until": 0.0,
             "last_provider_code": "",
+            "instantaneous_egress_status": "unknown",
+            "proactive_delivery_windows": {},
+            "delivery_incident_status": "unknown",
+            "delivery_incident_windows": [],
+            "delivery_reliability_error": "",
         }
         if not self.path.exists():
             return defaults
@@ -312,7 +320,7 @@ class WeixinStatusStore:
                 f"connector heartbeat is stale: last ingress update "
                 f"{ingress_age:.1f}s ago"
             )
-        return self._project(state)
+        return self._project(self._with_delivery_reliability(state, now=current_time))
 
     def update_ingress(self, status: str, error: str = "") -> dict[str, Any]:
         state = self.load()
@@ -406,6 +414,86 @@ class WeixinStatusStore:
         _atomic_json_write(self.path, state)
         return state
 
+    def _with_delivery_reliability(
+        self,
+        state: dict[str, Any],
+        *,
+        now: float,
+    ) -> dict[str, Any]:
+        windows: dict[str, dict[str, Any]] = {}
+        reliability_error = ""
+        db_path = self.home / "delivery_outbox.db"
+        window_seconds = (("1h", 3_600.0), ("24h", 86_400.0), ("7d", 604_800.0))
+        if db_path.exists():
+            try:
+                with closing(
+                    sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                ) as conn:
+                    for label, seconds in window_seconds:
+                        row = conn.execute(
+                            """
+                            SELECT COUNT(*),
+                                   SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END)
+                            FROM delivery_outbox
+                            WHERE created_at >= ?
+                              AND channel = 'weixin'
+                              AND body_provenance != 'response_ready'
+                              AND status IN ('sent', 'failed')
+                            """,
+                            (now - seconds,),
+                        ).fetchone()
+                        samples = int(row[0] or 0) if row else 0
+                        sent = int(row[1] or 0) if row else 0
+                        rate = sent / samples if samples else 0.0
+                        windows[label] = {
+                            "samples": samples,
+                            "sent": sent,
+                            "success_rate": rate,
+                            "status": (
+                                "insufficient_data"
+                                if samples < 5
+                                else "met"
+                                if rate >= 0.95
+                                else "breached"
+                            ),
+                        }
+            except sqlite3.Error as exc:
+                reliability_error = f"delivery reliability read failed: {type(exc).__name__}"
+                windows = {
+                    label: {
+                        "samples": 0,
+                        "sent": 0,
+                        "success_rate": 0.0,
+                        "status": "unknown",
+                    }
+                    for label, _ in window_seconds
+                }
+        else:
+            windows = {
+                label: {
+                    "samples": 0,
+                    "sent": 0,
+                    "success_rate": 0.0,
+                    "status": "insufficient_data",
+                }
+                for label, _ in window_seconds
+            }
+        state["proactive_delivery_windows"] = windows
+        breached = [label for label, facts in windows.items() if facts["status"] == "breached"]
+        statuses = {str(facts.get("status") or "unknown") for facts in windows.values()}
+        state["delivery_incident_status"] = (
+            "open"
+            if breached
+            else "unknown"
+            if "unknown" in statuses
+            else "insufficient_data"
+            if "insufficient_data" in statuses
+            else "closed"
+        )
+        state["delivery_incident_windows"] = breached
+        state["delivery_reliability_error"] = reliability_error
+        return state
+
     @staticmethod
     def _project(state: dict[str, Any]) -> dict[str, Any]:
         ingress = str(state.get("ingress_status") or "unknown")
@@ -419,18 +507,30 @@ class WeixinStatusStore:
             egress = "partial"
         else:
             egress = "unknown"
+        state["instantaneous_egress_status"] = egress
+        delivery_incident_status = str(state.get("delivery_incident_status") or "unknown")
+        if delivery_incident_status == "open" and egress in {"healthy", "partial"}:
+            egress = "degraded"
+        elif delivery_incident_status in {"unknown", "insufficient_data"} and egress == "healthy":
+            egress = "partial"
         state["egress_status"] = egress
         state["egress_error"] = (
             str(state.get("proactive_egress_error") or "")
             if proactive == "degraded"
             else str(state.get("reactive_egress_error") or "")
             if reactive == "degraded"
+            else "rolling proactive delivery SLO is breached"
+            if delivery_incident_status == "open"
+            else str(state.get("delivery_reliability_error") or "")
+            if delivery_incident_status == "unknown"
+            else "rolling proactive delivery SLO has insufficient data"
+            if delivery_incident_status == "insufficient_data"
             else ""
         )
         if ingress in {"fatal", "degraded", "stale"}:
             overall = ingress
             error = str(state.get("ingress_error") or "")
-        elif "degraded" in {reactive, proactive}:
+        elif egress == "degraded":
             overall = "degraded"
             error = str(state.get("egress_error") or "")
         elif ingress == "healthy" and egress == "healthy":

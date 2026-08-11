@@ -585,10 +585,18 @@ def _raise_ilink_error(response: dict[str, Any], operation: str) -> None:
 
 def _ilink_error_reason(*, ret: Any, errcode: Any, errmsg: str = "") -> str:
     codes = {_coerce_int(ret), _coerce_int(errcode)}
+    normalized_message = errmsg.strip().lower()
     if SESSION_EXPIRED_ERRCODE in codes or (
-        RATE_LIMIT_ERRCODE in codes and errmsg.strip().lower() == "unknown error"
+        RATE_LIMIT_ERRCODE in codes and normalized_message == "unknown error"
     ):
         return "connector_session_expired"
-    if RATE_LIMIT_ERRCODE in codes:
+    if RATE_LIMIT_ERRCODE in codes and any(
+        marker in normalized_message
+        for marker in ("rate limit", "too many request", "too frequent", "频繁")
+    ):
         return "connector_rate_limited"
+    if RATE_LIMIT_ERRCODE in codes:
+        # iLink also uses -2 for opaque preparation rejections.  Preserve that
+        # provider fact instead of claiming every -2 is a rate-limit event.
+        return "connector_transient_rejected"
     return "connector_rejected"

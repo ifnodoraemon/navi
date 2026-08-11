@@ -191,3 +191,23 @@ async def test_action_capability_output_schema_is_runtime_contract(tmp_path: Pat
     assert result.facts["tool"] == spec.name
     assert result.facts["result_action"] == "schema.test"
     assert result.facts["schema_errors"] == ["$.value expected integer"]
+
+
+@pytest.mark.asyncio
+async def test_evolution_observe_rejects_an_empty_canary_observation(tmp_path: Path) -> None:
+    registry = build_capability_registry(
+        tmp_path,
+        project_dir=tmp_path,
+        execution_context=API_CONTEXT,
+    )
+
+    result = await registry.invoke(
+        "evolution.observe",
+        {"event_id": "event-1", "successes": 0, "errors": 0, "evidence": {}},
+        permission="write",
+        context=CapabilityContext(home=tmp_path, workspace=str(tmp_path)),
+    )
+
+    assert result.ok is False
+    assert result.error_reason == "schema_mismatch"
+    assert "$ must match at least one declared schema" in result.facts["schema_errors"]

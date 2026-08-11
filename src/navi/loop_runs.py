@@ -808,7 +808,7 @@ class LoopRunStore:
             if row is None:
                 raise KeyError(f"loop run not found: {run_id}")
             current = _loop_run_from_row(row)
-            if current.is_terminal():
+            if current.is_stopped():
                 return current
             current_time = time.time() if now is None else now
             if current.lease_owner != lease_owner or current.lease_expires_at <= current_time:
@@ -1162,8 +1162,8 @@ class LoopRunStore:
             if checkpoint is None:
                 raise ValueError("LoopRun transition requires a persisted checkpoint")
             current = _loop_run_from_row(row)
-            if current.is_terminal():
-                raise ValueError("terminal LoopRunState cannot transition")
+            if current.is_stopped():
+                raise ValueError("stopped LoopRunState cannot transition without an explicit resume")
             target = str(terminal_state) if str(terminal_state).strip() else str(node)
             if not _transition_allowed(conn, current, target=target, condition=condition):
                 raise ValueError("LoopRun transition is not allowed by LoopSpec.state_graph")

@@ -5,12 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-import yaml
-
 from .graph import GraphStore
 from .memory import MemoryStore
-from .permission_contract import normalize_permission
 from .prompting import PromptLayerStore
+from .skills import parse_skill_contract
 
 BUILTIN_EVOLUTION_EVAL_CASES: dict[str, dict[str, Any]] = {
     "runtime.text.nonempty": {
@@ -154,41 +152,16 @@ class _SkillAdapter:
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
     def validate(self, target_id: str, candidate: str) -> dict[str, Any]:
-        self._path(target_id)
-        if not candidate.strip():
-            raise ValueError("skill candidate must not be empty")
-        if not candidate.startswith("---"):
-            raise ValueError("skill candidate requires YAML frontmatter")
-        parts = candidate.split("---", 2)
-        if len(parts) < 3:
-            raise ValueError("skill candidate frontmatter is not closed")
         try:
-            metadata = yaml.safe_load(parts[1]) or {}
-        except yaml.YAMLError as exc:
-            raise ValueError("skill candidate frontmatter is not valid YAML") from exc
-        if not isinstance(metadata, dict):
-            raise ValueError(  # serialized candidate contract failure
-                "skill candidate frontmatter must be an object"
-            )
-        name = str(metadata.get("name") or "").strip()
-        description = str(metadata.get("description") or "").strip()
-        body = parts[2].strip()
-        if not name:
-            raise ValueError("skill candidate frontmatter requires name")
-        if not description:
-            raise ValueError("skill candidate frontmatter requires description")
-        if not body:
-            raise ValueError("skill candidate instructions must not be empty")
-        try:
-            permission = normalize_permission(str(metadata.get("permission") or "read"))
+            contract = parse_skill_contract(candidate, directory_name=_safe_name(target_id))
         except ValueError as exc:
-            raise ValueError("skill candidate permission is invalid") from exc
+            raise ValueError(f"skill candidate is invalid: {exc}") from exc
         return {
             "loaded_by": "SkillStore",
             "characters": len(candidate),
-            "name": name,
-            "description_characters": len(description),
-            "permission": permission,
+            "name": contract.name,
+            "description_characters": len(contract.description),
+            "permission": contract.permission,
             "instructions_present": True,
         }
 

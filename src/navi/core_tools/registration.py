@@ -76,6 +76,8 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "prompt_permission_ceiling": {"type": "string"},
                     "skills": _array_of_objects(),
                     "count": {"type": "integer"},
+                    "excluded_invalid_skills": _array_of_objects(),
+                    "excluded_invalid_count": {"type": "integer"},
                 }
             ),
         ),

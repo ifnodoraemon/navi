@@ -1427,7 +1427,6 @@ class DurableStateGraphRunner:
         self._lease_claimed = False
         self._lease_heartbeat_task: asyncio.Task[None] | None = None
         self._lease_renewal_error: RuntimeError | None = None
-        self._run_async_depth = 0
         self._pending_transition_evidence: dict[str, Any] = {}
 
     def run(
@@ -1451,27 +1450,28 @@ class DurableStateGraphRunner:
         run_id: str = "",
         evidence: dict[str, Any] | None = None,
     ) -> StateGraphRunResult:
-        root_call = self._run_async_depth == 0
-        if root_call:
-            self._lease_renewal_error = None
-            self._pending_transition_evidence.clear()
-        self._run_async_depth += 1
+        self._lease_renewal_error = None
+        self._pending_transition_evidence.clear()
+        next_run_id = run_id
+        next_evidence = evidence
         try:
-            result = await self._run_async_impl(
-                spec,
-                workspace=workspace,
-                run_id=run_id,
-                evidence=evidence,
-            )
-            if self._lease_renewal_error is not None:
-                raise self._lease_renewal_error
-            return result
+            while True:
+                result = await self._run_async_impl(
+                    spec,
+                    workspace=workspace,
+                    run_id=next_run_id,
+                    evidence=next_evidence,
+                )
+                if self._lease_renewal_error is not None:
+                    raise self._lease_renewal_error
+                if result.run_state.node != LoopNode.PLAN or result.run_state.is_stopped():
+                    return result
+                next_run_id = result.run_state.run_id
+                next_evidence = result.evidence
         finally:
-            self._run_async_depth -= 1
-            if root_call:
-                await self._stop_execution_lease_heartbeat()
-                self._lease_claimed = False
-                self._pending_transition_evidence.clear()
+            await self._stop_execution_lease_heartbeat()
+            self._lease_claimed = False
+            self._pending_transition_evidence.clear()
 
     async def _run_async_impl(
         self,
@@ -1491,7 +1491,7 @@ class DurableStateGraphRunner:
         state = self.store.get_run(run_id) if run_id else None
         if state is None:
             state = self.store.create_run(spec)
-        if state.is_terminal():
+        if state.is_stopped():
             return StateGraphRunResult(run_state=state, evidence=evidence or {})
         if not self._lease_claimed:
             lease_seconds = max(
@@ -1651,10 +1651,10 @@ class DurableStateGraphRunner:
                             evidence=decision.to_dict(),
                         )
                         self.gateway.release(grant_id=grant.grant_id)
-                        return await self.run_async(
-                            spec,
-                            workspace=workspace,
-                            run_id=state.run_id,
+                        return StateGraphRunResult(
+                            run_state=state,
+                            resource_grants=tuple(grants),
+                            harness_results=tuple(harness_results),
                             evidence=collected_evidence,
                         )
                     state = self._transition(
@@ -1855,10 +1855,10 @@ class DurableStateGraphRunner:
                         evidence=decision.to_dict(),
                     )
                     self.gateway.release(grant_id=grant.grant_id)
-                    return await self.run_async(
-                        spec,
-                        workspace=workspace,
-                        run_id=state.run_id,
+                    return StateGraphRunResult(
+                        run_state=state,
+                        resource_grants=tuple(grants),
+                        harness_results=tuple(harness_results),
                         evidence=collected_evidence,
                     )
                 else:
@@ -1980,13 +1980,6 @@ class DurableStateGraphRunner:
             except Exception:
                 self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
                 raise
-            if result.run_state.node == LoopNode.PLAN and not result.run_state.is_terminal():
-                return await self.run_async(
-                    spec,
-                    workspace=workspace,
-                    run_id=result.run_state.run_id,
-                    evidence=result.evidence,
-                )
             return result
 
         return StateGraphRunResult(
@@ -2712,7 +2705,7 @@ class DurableStateGraphRunner:
                 )
                 if not renewed:
                     current = await asyncio.to_thread(self.store.get_run, run_id)
-                    if current is not None and current.is_terminal():
+                    if current is not None and current.is_stopped():
                         return
                     self._lease_renewal_error = RuntimeError(
                         "loop execution lease could not be renewed by this driver"

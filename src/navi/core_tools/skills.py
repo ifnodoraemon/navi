@@ -12,7 +12,8 @@ SKILL_FILE_MAX_BYTES = 200_000
 
 def _skills_list(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolResult:
     permission_ceiling = str(args.get("_skill_permission_ceiling") or "read")
-    skills = SkillStore(home).list_skills(
+    store = SkillStore(home)
+    skills = store.list_skills(
         permission_ceiling=permission_ceiling,
         workspace=workspace,
     )
@@ -40,6 +41,11 @@ def _skills_list(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolRe
                 for skill in skills
             ],
             "count": len(skills),
+            "excluded_invalid_skills": [
+                {"path": issue.path, "reason": issue.reason}
+                for issue in store.last_validation_issues
+            ],
+            "excluded_invalid_count": len(store.last_validation_issues),
         },
     )
 

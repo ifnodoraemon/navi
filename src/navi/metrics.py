@@ -272,24 +272,6 @@ class MetricsProjector:
             diagnostics=diagnostics,
         )
 
-    def observe_evolution_activations(self, *, now: float | None = None) -> list[dict[str, Any]]:
-        del now
-        store = EvolutionExperimentStore(self.home)
-        observations: list[dict[str, Any]] = []
-        # Outcome evidence must be explicitly attributed to this activation by
-        # evolution.observe. System-wide run outcomes are not a valid canary.
-        for activation in store.list_activations(status="regressed", limit=100):
-            observed = store.observe(
-                activation.event_id,
-                successes=0,
-                errors=0,
-                evidence={
-                    "source": "regression_rollback_recovery",
-                },
-            )
-            observations.append(observed.to_dict())
-        return observations
-
     def _run_metrics(self, cutoff: float) -> dict[str, Any]:
         with connect(self.paths.runs) as conn:
             row = conn.execute(

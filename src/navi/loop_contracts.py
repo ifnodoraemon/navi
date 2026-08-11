@@ -77,6 +77,18 @@ DEFAULT_TERMINAL_STATES: tuple[LoopTerminalState, ...] = (
     LoopTerminalState.TIMED_OUT,
 )
 
+# ``terminal_state`` is the persisted stop-state field for the v2 storage
+# contract.  Pauses remain represented there for on-disk compatibility, but
+# they are suspended states: they can only advance through an explicit resume
+# transition and must never be reported as completed/failed terminal outcomes.
+SUSPENDED_LOOP_STATES: tuple[LoopTerminalState, ...] = (
+    LoopTerminalState.PAUSED,
+    LoopTerminalState.WAITING_APPROVAL,
+)
+FINAL_LOOP_STATES: tuple[LoopTerminalState, ...] = tuple(
+    state for state in DEFAULT_TERMINAL_STATES if state not in SUSPENDED_LOOP_STATES
+)
+
 
 @dataclass(frozen=True)
 class GoalSpec:
@@ -548,7 +560,18 @@ class LoopRunState:
     lease_expires_at: float = 0.0
 
     def is_terminal(self) -> bool:
-        return bool(str(self.terminal_state).strip())
+        value = str(self.terminal_state).strip()
+        return bool(value) and value in {str(state) for state in FINAL_LOOP_STATES}
+
+    def is_suspended(self) -> bool:
+        return str(self.terminal_state).strip() in {
+            str(state) for state in SUSPENDED_LOOP_STATES
+        }
+
+    def is_stopped(self) -> bool:
+        """Return whether execution must stop until terminal handling or resume."""
+
+        return self.is_terminal() or self.is_suspended()
 
     def transition(
         self,
@@ -558,8 +581,8 @@ class LoopRunState:
         terminal_state: LoopTerminalState | str = "",
         evidence: dict[str, Any] | None = None,
     ) -> LoopRunState:
-        if self.is_terminal():
-            raise ValueError("terminal LoopRunState cannot transition")
+        if self.is_stopped():
+            raise ValueError("stopped LoopRunState cannot transition without an explicit resume")
         if not checkpoint_id.strip():
             raise ValueError("LoopRunState transition requires a checkpoint_id")
         merged_evidence = dict(self.evidence)

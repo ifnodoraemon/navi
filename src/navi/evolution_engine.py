@@ -104,3 +104,28 @@ class EvolutionEngine:
             rollback_event_id=event_id,
         )
         return event
+
+    def reconcile_regressed_activations(self, *, limit: int = 100) -> list[dict[str, object]]:
+        """Finish rollback work interrupted after a persisted regression decision.
+
+        This recovery path does not create a canary observation. Only the
+        explicit ``evolution.observe`` capability may add attributed outcomes.
+        """
+        store = EvolutionExperimentStore(self.home)
+        reconciled: list[dict[str, object]] = []
+        for activation in store.list_activations(status="regressed", limit=limit):
+            event = self.rollback(activation.event_id)
+            if event is None:
+                raise RuntimeError(
+                    f"regressed activation event disappeared: {activation.event_id}"
+                )
+            refreshed = store.mark_rolled_back(
+                activation.event_id,
+                rollback_event_id=event.id,
+            )
+            if refreshed is None or refreshed.status != "rolled_back":
+                raise RuntimeError(
+                    f"regressed activation did not settle: {activation.event_id}"
+                )
+            reconciled.append(refreshed.to_dict())
+        return reconciled

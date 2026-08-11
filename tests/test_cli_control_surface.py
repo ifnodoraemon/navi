@@ -121,7 +121,7 @@ def test_cli_skills_lists_local_catalog_without_model_runtime(tmp_path):
     skill_dir = tmp_path / "skills" / "catalog-test"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        "---\nname: catalog-test\ndescription: local catalog fixture\n---\n",
+        "---\nname: catalog-test\ndescription: local catalog fixture\n---\nInstructions.\n",
         encoding="utf-8",
     )
 

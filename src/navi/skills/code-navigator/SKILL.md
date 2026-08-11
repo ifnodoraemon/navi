@@ -1,9 +1,9 @@
 ---
-name: Code Navigator
+name: code-navigator
 description: Procedural guidelines for mapping codebase structure, reviewing files, and performing safe local refactorings.
-permission: read
-source: local
-tags: [coding, refactoring, codebase]
+metadata:
+  navi.permission: read
+  navi.tags: "coding,refactoring,codebase"
 ---
 
 # Code Navigator Skill

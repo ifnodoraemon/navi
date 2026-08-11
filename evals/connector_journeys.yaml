@@ -107,8 +107,8 @@ journeys:
           sent_count_delta: 1
           run_count_delta: 0
           sent_contains_any:
-            - "Code Navigator"
-            - "Memory Curator"
+            - "code-navigator"
+            - "memory-curator"
           sent_not_contains_any:
             - "goal.open"
             - "shell.run"
@@ -128,8 +128,8 @@ journeys:
             - "goal.state"
           sent_contains: "loop_kind"
           sent_not_contains_any:
-            - "Code Navigator"
-            - "Memory Curator"
+            - "code-navigator"
+            - "memory-curator"
 
   - id: weixin_vague_reminder_clarifies_without_watch
     user_goal: Ask an underspecified reminder through Weixin and get a clarification, not a bogus watch.

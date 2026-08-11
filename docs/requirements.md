@@ -82,6 +82,10 @@ response without reexecuting the capability. A foreground retry pause persists
 the inbound user message, writes no empty assistant message, and suppresses the
 otherwise automatic fact responder; a later accepted connector result enters
 the ordinary outbox.
+Every Planner pass must return exactly one syscall. The output schema and parser
+must enforce the same cardinality. Zero or multiple candidates are a typed
+Planner contract failure available to a later model-owned replan; runtime code
+must not choose one candidate on the model's behalf.
 
 A persisted connector delivery item with a stable idempotency key is the other
 transport-level recovery boundary: its connector-neutral outbox may make a
@@ -146,6 +150,12 @@ The loop must:
 - return checker rejection and capability-failure facts to the model while a
   bounded replanning opportunity remains; the runtime must not choose the
   semantic recovery route.
+
+Loop advancement must be iterative rather than recursive. Persisted `paused` and
+`waiting_approval` values are suspension states and must not satisfy terminal
+completion checks. Turn, control, scheduled, and durable-goal loops may have
+different bounded retry budgets, but they must share the same transition,
+approval, evidence, and no-progress protocol.
 
 For a connector or interactive turn, checker acceptance of raw capability facts
 is not yet a user-visible result. When `respond` is inside the governed
@@ -308,6 +318,13 @@ When a selected skill instruction file is disclosed, the file is returned
 complete or the capability returns an explicit typed resource-limit failure;
 silent truncation cannot satisfy the skill contract. The model cannot choose a
 read limit that changes this completeness guarantee.
+Skill packages must follow the Agent Skills name contract: 1-64 lowercase
+letters, digits, and hyphen groups, with the name equal to the parent directory.
+Navi-specific permission, tag, role, version, and evaluation extensions belong
+under the standard `metadata` mapping. Source, trust, and scope are runtime-owned
+facts derived from the actual installation location and cannot be claimed by a
+package. Legacy top-level Navi fields are invalid, and discovery must expose
+excluded invalid packages rather than silently loading or translating them.
 
 First-class lifecycle entities need a complete governed surface inside the
 caller policy envelope: scoped list, create/start, read, update, cancel/delete
@@ -344,6 +361,11 @@ report that the original task reached another gate, but must not copy that gate
 into its own lifecycle. Expired, rejected, missing, or mismatched gates are
 reconciled through a recoverable lifecycle saga; an approved gate left behind by
 a crash is reopened at its persisted checkpoint.
+Direct approved capability effects must bind their completed audit receipt to
+the approval Run. Startup may settle that Run from the linked receipt without
+comparing redacted secrets to approval digests; a legacy unlinked receipt is
+eligible only when exactly one tool, time-window, and canonical-argument match
+exists.
 
 Run, Goal, and LoopRun creation and lifecycle changes must be atomic or use an
 explicit, recoverable saga. Partial failure must not leave an apparently active
@@ -436,9 +458,13 @@ that the target is actually consumed by the runtime. Inert prompt-layer names
 are rejected. Proposal and state capability facts expose lifecycle and
 fingerprints rather than copying target payloads back into model context.
 Skill candidates must pass the same load-bearing contract before experiment or
-apply: valid YAML frontmatter with a name and description, a valid permission,
-and non-empty instructions. A generic non-empty-text check alone cannot qualify
-an invalid skill for activation.
+apply: valid standard frontmatter, matching canonical name/directory, nested
+Navi metadata with string keys and values and a valid permission, and non-empty
+instructions. A generic
+non-empty-text check alone cannot qualify an invalid skill for activation.
+Repeated trace failures may be projected as read-only candidate clusters only
+from persisted evaluations. Such a cluster is evidence for model review, not a
+runtime-authored target, patch, proposal, approval, or apply decision.
 Candidate evaluation cases, fingerprints, checks, approval evidence, applied
 events, activation observations, and rollback facts are durable. Every proposal
 declares evaluation cases and cannot apply unless its latest candidate experiment
@@ -448,8 +474,17 @@ Immutable runtime evaluation contracts provide the minimum schema/non-empty
 checks needed to propose and test the first managed evaluation case; they do not
 authorize apply or replace proposal-specific evaluation and human approval.
 Activation evidence must be explicitly attributed to its proposal; unrelated
-system outcomes are not canary evidence. Regression beyond the approved threshold
-triggers rollback, and uncertain application state is an SLO breach.
+system outcomes are not canary evidence. Each submitted activation observation
+must contain at least one success or error outcome; a zero-outcome write cannot
+advance the observation count or qualify an activation as healthy. Regression
+beyond the approved threshold triggers rollback, and uncertain application state
+is an SLO breach. Crash recovery may finish a rollback already required by a
+persisted `regressed` state, but it must not manufacture a canary observation.
+
+Connector rolling reliability windows must be isolated by channel and proactive
+provenance. Missing samples are `insufficient_data`, read failures are `unknown`,
+and neither may be projected as healthy; an open breach degrades the connector
+until new durable outcomes recover the measured window.
 
 Metrics and SLOs are projections of durable facts, not model judgments. At
 minimum they cover lifecycle orphans/sagas, execution leases, uncertain effects,
@@ -471,6 +506,10 @@ service must verify that its configured Python executable, runtime prefix, and
 loaded Navi package remain present. A missing runtime is a deployment-integrity
 failure: the process must stop feeding the watchdog and exit instead of remaining
 an active zombie. This guard must not classify connector or provider outcomes.
+Generated connector and API user units must run with no-new-privileges, private
+temporary/device namespaces, a read-only system and home, an empty capability
+set, and only explicit project/Navi-home write paths. Unit generation must not
+reintroduce legacy environment files that configuration loading rejects.
 
 Recurring Goal templates must persist a durable real workspace, never a
 turn-scoped shadow workspace. Registration resolves managed paths from workspace

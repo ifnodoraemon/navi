@@ -772,7 +772,7 @@ async def test_goal_resume_capability_runs_checkpointed_goal(tmp_path: Path) -> 
         permission="prepare",
         context=_context(tmp_path),
     )
-    assert provider.calls == ["planner"]
+    assert provider.calls == ["planner"], completed.facts
     assert completed.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
     assert completed.facts["resolution"] == Resolution.SUCCESS
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "agent\n"

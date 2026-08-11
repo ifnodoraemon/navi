@@ -449,6 +449,29 @@ async def test_active_turn_sensitive_shell_call_creates_durable_approval(tmp_pat
     assert approval.requested_tool == "shell.run"
     assert approval.requested_permission == "write"
 
+    resolved = await registry.invoke(
+        "approval.resolve",
+        {"decision": "approve", "code": approval.code},
+        permission="write",
+        context=context,
+    )
+    assert resolved.ok is True
+    executed = await registry.invoke("shell.run", args, permission="write", context=context)
+    settled = RunStore(tmp_path).get(run.id)
+    assert settled is not None
+    assert settled.phase == Phase.ENDED
+    assert settled.governance == Governance.APPROVED
+    assert settled.resolution == (
+        Resolution.SUCCESS if executed.ok else Resolution.FAILED
+    )
+    receipt = next(
+        log
+        for log in RunStore(tmp_path).list_tool_call_logs(limit=20)
+        if log.tool == "shell.run"
+    )
+    assert receipt.run_id == run.id
+    assert json.loads(receipt.facts_json)["audit_phase"] == "completed"
+
 
 def test_network_tools_remain_visible_without_a_permission_filter(tmp_path):
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
@@ -623,7 +646,7 @@ async def test_planner_rejects_selected_capability_args_schema_mismatch():
     assert "$.message is required" in decision[0].args["schema_errors"]
 
 
-def test_planner_parser_parses_multiple_syscalls():
+def test_planner_parser_rejects_multiple_syscalls_with_candidate_facts():
     decisions = ModelSyscallPlanner._parse_syscalls(
         json.dumps(
             {
@@ -644,7 +667,9 @@ def test_planner_parser_parses_multiple_syscalls():
     )
 
     assert isinstance(decisions, list)
-    assert len(decisions) == 2
-    assert decisions[0].tool == "goal.open"
-    assert decisions[1].tool == "respond"
-    assert decisions[1].message == "done"
+    assert len(decisions) == 1
+    assert decisions[0].tool == "system.planner_error"
+    assert decisions[0].args["reason"] == "planner_must_return_exactly_one_syscall"
+    assert decisions[0].args["count"] == 2
+    assert decisions[0].args["candidate_syscalls"][0]["tool"] == "goal.open"
+    assert decisions[0].args["candidate_syscalls"][1]["tool"] == "respond"

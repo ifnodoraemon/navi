@@ -71,6 +71,14 @@ class SystemDaemon:
         lifecycle_sagas = LifecycleSagaStore(home)
         lifecycle_sagas.recover_pending()
         lifecycle_sagas.recover_open_orphans()
+        capability_approval_reconciliation = (
+            self.runs.reconcile_completed_capability_approvals()
+        )
+        if capability_approval_reconciliation:
+            logger.warning(
+                "Reconciled %s completed direct capability approval runs from durable receipts",
+                len(capability_approval_reconciliation),
+            )
         approval_reconciliation = self._reconcile_approval_waits()
         if approval_reconciliation["cancelled"] or approval_reconciliation["resumed"]:
             logger.warning(
@@ -172,6 +180,14 @@ class SystemDaemon:
         from .goals import GoalStore
 
         loop_runs = LoopRunStore(self.home)
+        capability_approval_reconciliation = (
+            self.runs.reconcile_completed_capability_approvals()
+        )
+        if capability_approval_reconciliation:
+            logger.warning(
+                "Reconciled %s completed direct capability approvals before queue claim",
+                len(capability_approval_reconciliation),
+            )
         approval_reconciliation = self._reconcile_approval_waits()
         if approval_reconciliation["cancelled"] or approval_reconciliation["resumed"]:
             logger.warning(
@@ -483,12 +499,13 @@ class SystemDaemon:
             return {"ok": False, "error": str(exc)}
 
     async def _add_observability_maintenance(self, facts: dict[str, Any]) -> dict[str, Any]:
+        from .evolution_engine import EvolutionEngine
         from .metrics import MetricsProjector
 
-        projector = MetricsProjector(self.home)
-        facts["evolution_observations"] = await asyncio.to_thread(
-            projector.observe_evolution_activations
+        facts["evolution_rollbacks"] = await asyncio.to_thread(
+            EvolutionEngine(self.home).reconcile_regressed_activations
         )
+        projector = MetricsProjector(self.home)
         snapshot = await asyncio.to_thread(projector.snapshot)
         facts["slo"] = {
             "overall_status": snapshot.overall_status,

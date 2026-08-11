@@ -229,8 +229,21 @@ def test_t1_api_evolution_apply_routes_capability(api_client: TestClient, navi_h
     assert apply_data["target_type"] == "prompt_layer"
     assert apply_data["target_id"] == "identity"
     assert apply_data["reason"] == proposal_data["reason"]
+    event_id = apply_data["id"]
+    for lane in ("python", "e2e", "package"):
+        observation = api_client.post(
+            f"/v1/evolution-events/{event_id}/observations",
+            json={"successes": 1, "errors": 0, "evidence": {"lane": lane}},
+        )
+        assert observation.status_code == 200, observation.text
+    assert observation.json()["data"]["status"] == "healthy"
     logged = _logged_tools(navi_home)
-    assert {"evolution.propose", "evolution.record_evaluation", "evolution.apply"} <= logged
+    assert {
+        "evolution.propose",
+        "evolution.record_evaluation",
+        "evolution.apply",
+        "evolution.observe",
+    } <= logged
 
 
 def test_t1_api_evolution_rollback_routes_capability(

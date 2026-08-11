@@ -1,9 +1,9 @@
 ---
-name: Test Driven Development
+name: test-driven-development
 description: Guidance for turning user-facing failures and desired behaviors into focused tests, evals, and regression gates.
-permission: read
-source: local
-tags: [testing, evals, regression]
+metadata:
+  navi.permission: read
+  navi.tags: "testing,evals,regression"
 ---
 
 # Test Driven Development Skill

@@ -1,9 +1,9 @@
 ---
-name: Memory Curator
+name: memory-curator
 description: Guidelines for organizing, semantic profiling, and curating Navi's active cognitive memories.
-permission: write
-source: local
-tags: [memory, cognition, curation]
+metadata:
+  navi.permission: write
+  navi.tags: "memory,cognition,curation"
 ---
 
 # Memory Curator Skill

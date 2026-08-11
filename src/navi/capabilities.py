@@ -29,7 +29,7 @@ from .approval_contract import (
 from .hooks import HookDecision, HookEvent, HookRegistry
 from .effect_journal import EffectJournal
 from .json_utils import json_schema_errors
-from .lifecycle import Governance, Phase, Resolution
+from .lifecycle import Acceptance, Governance, Phase, Resolution
 from .operating_context import permission_allows
 from .resource_gateway import GlobalResourceGateway, ResourceLimits, ResourceRequest
 from .runs import RunStore
@@ -421,9 +421,14 @@ class CapabilityRegistry:
                 owner=effect_owner,
             )
             if reservation.status == "replay" and reservation.result is not None:
-                return _capability_result_from_dict(reservation.result)
+                replayed = _capability_result_from_dict(reservation.result)
+                self._settle_turn_capability_approval(
+                    approved_approval_id,
+                    replayed,
+                )
+                return replayed
             if reservation.status in {"busy", "uncertain"}:
-                return _capability_error(
+                audit_failure = _capability_error(
                     action=f"execute:{name}",
                     error_reason=f"effect_{reservation.status}",
                     message=f"mutating capability effect is {reservation.status}",
@@ -434,6 +439,11 @@ class CapabilityRegistry:
                     },
                     terminal=False,
                 )
+                self._settle_turn_capability_approval(
+                    approved_approval_id,
+                    audit_failure,
+                )
+                return audit_failure
         resource_grant = self.resource_gateway.request(
             ResourceRequest(kind=f"capability:{name}", units=1)
         )
@@ -579,7 +589,45 @@ class CapabilityRegistry:
         )
         if not call_has_effect and not isinstance(handler, ToolCapability):
             self._audit_action_capability(handler.spec, call_args, result, started_at=started_at)
+        self._settle_turn_capability_approval(approved_approval_id, result)
         return result
+
+    def _settle_turn_capability_approval(
+        self,
+        approval_id: str,
+        result: CapabilityResult,
+    ) -> None:
+        loop_terminal_state = str((result.facts or {}).get("loop_terminal_state") or "")
+        if (
+            not approval_id
+            or self.governed_run_id
+            or result.yields_control
+            or loop_terminal_state in {"paused", "waiting_approval"}
+        ):
+            return
+        runs = RunStore(self.home)
+        approval = runs.get_approval(approval_id)
+        if approval is None:
+            return
+        run = runs.get(approval.run_id)
+        if (
+            run is None
+            or run.kind != "capability_approval"
+            or run.phase not in {Phase.PENDING, Phase.RUNNING}
+        ):
+            return
+        runs.update_run(
+            run.id,
+            phase=Phase.ENDED,
+            governance=Governance.APPROVED,
+            acceptance=Acceptance.ACCEPTED if result.ok else Acceptance.REJECTED,
+            resolution=Resolution.SUCCESS if result.ok else Resolution.FAILED,
+            result_summary=(
+                f"approved capability completed ok={str(result.ok).lower()} "
+                f"action={result.action}"
+            ),
+            error="" if result.ok else (result.error_reason or "capability_failed"),
+        )
 
     def _approval_state_for_call(
         self,
@@ -890,7 +938,12 @@ class CapabilityRegistry:
     ) -> str:
         from .safeguards import redact_personal_data_deep
 
-        log = RunStore(self.home).add_tool_call_log(
+        runs = RunStore(self.home)
+        audit_run_id = self.governed_run_id or context.loop_run_id
+        if not audit_run_id and context.approved_approval_id:
+            approval = runs.get_approval(context.approved_approval_id)
+            audit_run_id = approval.run_id if approval is not None else ""
+        log = runs.add_tool_call_log(
             tool=spec.name,
             args_json=json.dumps(
                 redact_personal_data_deep(args), ensure_ascii=False, sort_keys=True
@@ -904,7 +957,7 @@ class CapabilityRegistry:
             error="execution outcome pending",
             started_at=started_at,
             ended_at=started_at,
-            run_id=self.governed_run_id or context.loop_run_id,
+            run_id=audit_run_id,
             trace_id=context.trace_id,
         )
         return log.id

@@ -1,9 +1,9 @@
 ---
-name: Systematic Debugging
+name: systematic-debugging
 description: A repeatable workflow for diagnosing failures from symptoms, logs, traces, configuration, and recent changes.
-permission: read
-source: local
-tags: [debugging, diagnosis, reliability]
+metadata:
+  navi.permission: read
+  navi.tags: "debugging,diagnosis,reliability"
 ---
 
 # Systematic Debugging Skill

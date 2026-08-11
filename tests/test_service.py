@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +11,7 @@ import pytest
 from navi import diagnostics
 from navi.service import (
     SystemdNotifier,
+    build_systemd_api_user_unit,
     build_systemd_user_unit,
     run_with_systemd_watchdog,
     runtime_environment_error,
@@ -23,8 +26,8 @@ def test_build_systemd_user_unit_uses_project_and_home(tmp_path):
 
     assert "Description=Navi active assistant" in unit
     assert f"WorkingDirectory={tmp_path}" in unit
-    assert f"Environment=PYTHONPATH={tmp_path / 'src'}" in unit
-    assert f"Environment=NAVI_HOME={navi_home}" in unit
+    assert f'Environment="PYTHONPATH={tmp_path / "src"}"' in unit
+    assert f'Environment="NAVI_HOME={navi_home}"' in unit
     assert "ExecStart=" in unit
     assert "-m navi.cli run" in unit
     assert "EnvironmentFile=" not in unit
@@ -34,6 +37,67 @@ def test_build_systemd_user_unit_uses_project_and_home(tmp_path):
     assert "RestartSec=5s" in unit
     assert "WatchdogSec=90s" in unit
     assert "TimeoutStopSec=30s" in unit
+    assert "NoNewPrivileges=true" in unit
+    assert "PrivateTmp=true" in unit
+    assert "PrivateDevices=true" in unit
+    assert "ProtectSystem=strict" in unit
+    assert "ProtectHome=read-only" in unit
+    assert "CapabilityBoundingSet=\n" in unit
+    assert f'ReadWritePaths="{tmp_path}" "{navi_home}"' in unit
+
+
+def test_build_systemd_api_unit_is_hardened_without_connector_watchdog(tmp_path):
+    navi_home = tmp_path / ".navi"
+
+    unit = build_systemd_api_user_unit(project_dir=tmp_path, navi_home=navi_home)
+
+    assert "Description=Navi headless API" in unit
+    assert "-m navi.cli api" in unit
+    assert "WatchdogSec=" not in unit
+    assert "EnvironmentFile=" not in unit
+    assert "NoNewPrivileges=true" in unit
+    assert "ProtectSystem=strict" in unit
+
+
+def test_build_systemd_unit_quotes_paths_with_spaces_and_specifiers(tmp_path):
+    project = tmp_path / "Navi Project%1"
+    navi_home = tmp_path / 'Navi "State"'
+    project.mkdir()
+
+    unit = build_systemd_user_unit(project_dir=project, navi_home=navi_home)
+
+    escaped_project = (
+        project.resolve().as_posix().replace(" ", r"\x20").replace("%", "%%")
+    )
+    assert f"WorkingDirectory={escaped_project}" in unit
+    assert 'Environment="NAVI_HOME=' in unit
+    assert '\\"State\\"' in unit
+    assert f'"{project.resolve().as_posix().replace("%", "%%")}"' in unit
+
+
+def test_generated_systemd_unit_passes_native_verifier(tmp_path):
+    analyzer = shutil.which("systemd-analyze")
+    if analyzer is None:
+        pytest.skip("systemd-analyze is unavailable")
+    project = tmp_path / 'Navi Project%1 "quoted"'
+    navi_home = tmp_path / 'Navi State%1 "quoted"'
+    (project / "src").mkdir(parents=True)
+    navi_home.mkdir()
+    unit_path = tmp_path / "navi-generated.service"
+    unit_path.write_text(
+        build_systemd_user_unit(project_dir=project, navi_home=navi_home),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [analyzer, "verify", str(unit_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_systemd_notifier_sends_ready_and_watchdog(monkeypatch):

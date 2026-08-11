@@ -118,6 +118,8 @@ def _diagnostics(home: Path) -> list[dict[str, str]]:
                 f"egress={egress_status} "
                 f"reactive={health.get('reactive_egress_status', 'unknown')} "
                 f"proactive={health.get('proactive_egress_status', 'unknown')} "
+                f"incident={health.get('delivery_incident_status', 'unknown')} "
+                f"rolling_7d={health.get('proactive_delivery_windows', {}).get('7d', {}).get('success_rate', 0):.4g} "
                 "proactive_consecutive_failures="
                 f"{health.get('consecutive_proactive_egress_failures', 0)} "
                 f"last_provider_code={health.get('last_provider_code', '')}"
@@ -167,6 +169,14 @@ def _register_tools(registry: Any, home: Path, spec: ConnectorSpec) -> None:
                     "last_proactive_egress_success_at": {"type": "number"},
                     "proactive_circuit_open_until": {"type": "number"},
                     "last_provider_code": {"type": "string"},
+                    "instantaneous_egress_status": {"type": "string"},
+                    "delivery_incident_status": {"type": "string"},
+                    "delivery_incident_windows": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "delivery_reliability_error": {"type": "string"},
+                    "proactive_delivery_windows": {"type": "object"},
                 },
             },
             source=spec.surface,

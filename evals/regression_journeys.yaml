@@ -119,8 +119,8 @@ journeys:
           action: tool
           run_count_delta: 0
           text_contains_any:
-            - "Code Navigator"
-            - "Memory Curator"
+            - "code-navigator"
+            - "memory-curator"
           text_not_contains_any:
             - "goal.open"
             - "shell.run"
@@ -137,8 +137,8 @@ journeys:
             - "goal.state"
           text_contains: "loop_kind"
           text_not_contains_any:
-            - "Code Navigator"
-            - "Memory Curator"
+            - "code-navigator"
+            - "memory-curator"
 
   - id: capability_query_mentions_scheduled_goals
     user_goal: A broad capability question should be grounded in callable tools and scheduled-goal semantics.

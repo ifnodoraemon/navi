@@ -1287,6 +1287,52 @@ ACTION_SPECS = [
         source="action",
     ),
     ToolSpec(
+        name="evolution.candidates",
+        capability_class="evolution",
+        execution_contexts=("turn", API_CONTEXT),
+        description=(
+            "Cluster repeated persisted trace failures as review evidence. This read-only "
+            "surface does not choose a target, create a proposal, approve, or apply changes."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "window_days": {"type": "integer", "minimum": 1, "maximum": 90},
+                "min_occurrences": {"type": "integer", "minimum": 2, "maximum": 100},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "state_transition": {"type": "string"},
+                "turn_scope": {"type": "string"},
+                "candidates": {"type": "array", "items": {"type": "object"}},
+                "count": {"type": "integer"},
+                "semantic_decision": {"type": "string"},
+                "automatic_proposal_created": {"type": "boolean"},
+                "automatic_apply_allowed": {"type": "boolean"},
+            },
+            "required": [
+                "entity_type",
+                "entity_id",
+                "state_transition",
+                "turn_scope",
+                "candidates",
+                "count",
+                "semantic_decision",
+                "automatic_proposal_created",
+                "automatic_apply_allowed",
+            ],
+        },
+        facts_only=True,
+        mutates=False,
+        permission="read",
+        source="action",
+    ),
+    ToolSpec(
         name="evolution.propose",
         capability_class="evolution",
         execution_contexts=("turn", API_CONTEXT),
@@ -1440,6 +1486,18 @@ ACTION_SPECS = [
                 "evidence": {"type": "object"},
             },
             "required": ["event_id"],
+            "anyOf": [
+                {
+                    "required": ["successes"],
+                    "properties": {"successes": {"type": "integer", "minimum": 1}},
+                    "additionalProperties": True,
+                },
+                {
+                    "required": ["errors"],
+                    "properties": {"errors": {"type": "integer", "minimum": 1}},
+                    "additionalProperties": True,
+                },
+            ],
         },
         output_schema={
             "type": "object",
@@ -1463,6 +1521,7 @@ ACTION_SPECS = [
         facts_only=True,
         mutates=True,
         permission="write",
+        approval_policy="explicit_control",
         source="action",
     ),
     ToolSpec(

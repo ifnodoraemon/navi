@@ -1,9 +1,9 @@
 ---
-name: Browser Screenshot Verification
+name: browser-screenshot-verification
 description: Guidance for controlled page screenshots and visual evidence when the browser screenshot capability is available.
-permission: read
-source: local
-tags: [browser, automation, screenshots, playwright]
+metadata:
+  navi.permission: read
+  navi.tags: "browser,automation,screenshots,playwright"
 ---
 
 # Browser Screenshot Verification Skill

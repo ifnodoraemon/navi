@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from navi.evolution import EvolutionLedger
 from navi.evolution_engine import EvolutionEngine
 from navi.evolution_experiments import EvolutionExperimentStore
 from navi.evolution_targets import EvolutionTargetAdapterRegistry
+from navi.db import connect
 from navi.memory import MemoryStore
 from navi.prompting import PromptLayerStore
 from navi.runs import RunStore
@@ -208,8 +210,17 @@ def test_evolution_experiment_activation_and_regression_rollback(tmp_path: Path)
     assert prompts.read("identity") == after
     activations = EvolutionExperimentStore(tmp_path)
     assert activations.activation_for_event(event.id).status == "observing"
-
     rollback = EvolutionEngine(tmp_path).rollback
+
+    with pytest.raises(ValueError, match="at least one outcome"):
+        activations.observe(
+            event.id,
+            successes=0,
+            errors=0,
+            evidence={"window": "empty"},
+            rollback=rollback,
+        )
+
     activations.observe(
         event.id, successes=0, errors=1, evidence={"window": 1}, rollback=rollback
     )
@@ -228,6 +239,45 @@ def test_evolution_experiment_activation_and_regression_rollback(tmp_path: Path)
     assert prompts.read("identity") == before
     assert prompts.override_path("identity").exists() is False
     assert ledger.get(event.id).rolled_back_at > 0
+
+
+def test_regressed_activation_recovery_does_not_create_an_observation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = EvolutionExperimentStore(tmp_path)
+    activation = store.start_activation(
+        proposal_id="proposal-recovery",
+        event_id="event-recovery",
+        min_observations=3,
+        max_error_rate=0.2,
+    )
+    with connect(store.db_path) as conn:
+        conn.execute(
+            """
+            UPDATE evolution_activations
+            SET status = 'regressed', success_count = 0, error_count = 3,
+                observation_count = 3
+            WHERE id = ?
+            """,
+            (activation.id,),
+        )
+    engine = EvolutionEngine(tmp_path)
+    monkeypatch.setattr(
+        engine,
+        "rollback",
+        lambda event_id: SimpleNamespace(id=f"rollback-{event_id}"),
+    )
+
+    reconciled = engine.reconcile_regressed_activations()
+
+    refreshed = store.activation_for_event("event-recovery")
+    assert refreshed is not None
+    assert refreshed.status == "rolled_back"
+    assert refreshed.observation_count == 3
+    assert refreshed.success_count == 0
+    assert refreshed.error_count == 3
+    assert reconciled[0]["rollback_event_id"] == "rollback-event-recovery"
 
 
 def test_unloaded_spec_file_targets_are_not_declared_as_evolution(tmp_path: Path) -> None:
@@ -258,17 +308,18 @@ def test_skill_evolution_requires_a_loadable_instruction_contract(tmp_path: Path
     for invalid in (
         "plain text only",
         "---\nname: demo\n---\nInstructions",
-        "---\nname: demo\ndescription: Demo\npermission: owner\n---\nInstructions",
-        "---\nname: demo\ndescription: Demo\npermission: read\n---\n",
+        "---\nname: demo\ndescription: Demo\nmetadata:\n  navi.permission: owner\n---\nInstructions",
+        "---\nname: demo\ndescription: Demo\nmetadata:\n  navi.permission: read\n---\n",
     ):
         with pytest.raises(ValueError, match="skill candidate"):
             adapter.validate("demo", invalid)
 
     candidate = (
         "---\n"
-        "name: Demo\n"
+        "name: demo\n"
         "description: Demonstrate a governed procedure.\n"
-        "permission: read\n"
+        "metadata:\n"
+        "  navi.permission: read\n"
         "---\n"
         "# Demo\n\nFollow the declared capability contracts.\n"
     )
@@ -277,7 +328,7 @@ def test_skill_evolution_requires_a_loadable_instruction_contract(tmp_path: Path
     assert facts == {
         "loaded_by": "SkillStore",
         "characters": len(candidate),
-        "name": "Demo",
+        "name": "demo",
         "description_characters": len("Demonstrate a governed procedure."),
         "permission": "read",
         "instructions_present": True,

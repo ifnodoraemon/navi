@@ -410,7 +410,7 @@ async def test_weixin_internal_loop_failure_is_synthesized_from_facts(tmp_path: 
     assert response is not None
     assert response.text == "运行时给出了 planner 合约失败事实，模型据此说明本轮没有完成。"
     assert "Verified Facts" not in response.text
-    assert provider.calls.count("planner") == 10
+    assert provider.calls.count("planner") == 4
     assert provider.calls[-1] == "responder"
     final_events = [
         event

@@ -174,6 +174,20 @@ class ModelSyscallPlanner:
                 )
             ]
 
+        raw_list = data.get("syscalls")
+        if isinstance(raw_list, list) and len(raw_list) != 1:
+            return [
+                ModelSyscall(
+                    tool="system.planner_error",
+                    args={
+                        "reason": "planner_must_return_exactly_one_syscall",
+                        "count": len(raw_list),
+                        "candidate_syscalls": raw_list,
+                    },
+                    reason="planner violated the single-syscall decision contract",
+                )
+            ]
+
         schema_errors = json_schema_errors(data, _syscall_output_schema()["schema"])
         if schema_errors:
             return [
@@ -240,7 +254,9 @@ def _syscall_output_schema() -> dict[str, Any]:
             "properties": {
                 "syscalls": {
                     "type": "array",
-                    "description": "Capability calls selected from the current manifest, in execution order.",
+                    "description": "Exactly one capability call selected from the current manifest.",
+                    "minItems": 1,
+                    "maxItems": 1,
                     "items": _single_syscall_schema(),
                 },
             },

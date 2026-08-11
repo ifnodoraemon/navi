@@ -381,7 +381,13 @@ class ToolRegistry:
         tool = self._tools.get(name)
         return tool.spec if tool else None
 
-    async def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
+    async def call(
+        self,
+        name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        audit_run_id: str = "",
+    ) -> ToolResult:
         tool = self._tools.get(name)
         started_at = time.time()
         if tool is None:
@@ -393,7 +399,7 @@ class ToolRegistry:
                 ended_at=time.time(),
                 error_reason="not_found",
             )
-            self._audit_call(args or {}, result)
+            self._audit_call(args or {}, result, run_id=audit_run_id)
             return result
         schema = tool.spec.input_schema
         if schema:
@@ -410,7 +416,7 @@ class ToolRegistry:
                     ended_at=time.time(),
                     error_reason="invalid_arguments",
                 )
-                self._audit_call(args or {}, result)
+                self._audit_call(args or {}, result, run_id=audit_run_id)
                 return result
         audit_log_id = ""
         # Imported lazily because safeguards type-checks against ToolSpec.
@@ -422,6 +428,7 @@ class ToolRegistry:
                     tool.spec,
                     args or {},
                     started_at=started_at,
+                    run_id=audit_run_id,
                 )
             except Exception as exc:
                 logger.error(
@@ -495,7 +502,7 @@ class ToolRegistry:
                     ended_at=time.time(),
                 )
         else:
-            self._audit_call(args or {}, result)
+            self._audit_call(args or {}, result, run_id=audit_run_id)
         return result
 
     def _reserve_mutating_audit(
@@ -504,6 +511,7 @@ class ToolRegistry:
         args: dict[str, Any],
         *,
         started_at: float,
+        run_id: str = "",
     ) -> str:
         safe_args = redact_secrets_deep(args)
         log = RunStore(self.home).add_tool_call_log(
@@ -518,6 +526,7 @@ class ToolRegistry:
             error="execution outcome pending",
             started_at=started_at,
             ended_at=started_at,
+            run_id=run_id,
         )
         return log.id
 
@@ -534,7 +543,13 @@ class ToolRegistry:
             ended_at=result.ended_at,
         )
 
-    def _audit_call(self, args: dict[str, Any], result: ToolResult) -> None:
+    def _audit_call(
+        self,
+        args: dict[str, Any],
+        result: ToolResult,
+        *,
+        run_id: str = "",
+    ) -> None:
         try:
             # Redact at the value level before serialization so secrets
             # nested inside args/facts (not just keyword-prefixed ones) are
@@ -549,6 +564,7 @@ class ToolRegistry:
                 error=redact_secrets(result.error),
                 started_at=result.started_at,
                 ended_at=result.ended_at,
+                run_id=run_id,
             )
         except Exception:
             logger.exception("failed to audit tool call: %s", result.tool)
@@ -594,8 +610,14 @@ class ToolGateway:
     def get(self, name: str) -> ToolSpec | None:
         return self.registry.get(name)
 
-    async def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
-        return await self.registry.call(name, args)
+    async def call(
+        self,
+        name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        audit_run_id: str = "",
+    ) -> ToolResult:
+        return await self.registry.call(name, args, audit_run_id=audit_run_id)
 
 
 def load_tool_providers(home: Path, *, project_dir: Path) -> list[ToolProvider]:

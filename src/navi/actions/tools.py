@@ -4,6 +4,7 @@ from typing import Any, Mapping
 
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY
 from navi.capabilities_types import Capability, CapabilityContext, CapabilityResult
+from navi.runs import RunStore
 from navi.tool_manifest import tool_catalog_facts
 from navi.tools import ToolSpec
 
@@ -87,7 +88,18 @@ class ToolCapability:
             )
         if self.spec.workspace_scope == "context":
             call_args["_workspace_root"] = context.workspace
-        result = await self.gateway.call(self.spec.name, call_args)
+        audit_run_id = ""
+        if self.capability_registry is not None:
+            audit_run_id = self.capability_registry.governed_run_id
+        audit_run_id = audit_run_id or context.loop_run_id
+        if not audit_run_id and context.approved_approval_id:
+            approval = RunStore(context.home).get_approval(context.approved_approval_id)
+            audit_run_id = approval.run_id if approval is not None else ""
+        result = await self.gateway.call(
+            self.spec.name,
+            call_args,
+            audit_run_id=audit_run_id,
+        )
         facts = dict(result.facts or {})
         if result.action == "connector_outbound":
             from navi.connector_delivery import bind_connector_delivery_facts

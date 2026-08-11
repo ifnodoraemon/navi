@@ -1140,6 +1140,7 @@ class LoopControlService:
                 qps_limit=max(0, int(request.qps_limit)),
                 max_concurrent=max(1, int(request.max_concurrent)),
             ),
+            retry_policy=_retry_policy_for_loop_kind(_loop_kind(request.loop_kind)),
         )
         spec.validate()
         return spec
@@ -1295,6 +1296,18 @@ def _execution_profile(*, loop_kind: str) -> dict[str, Any]:
         "checker_tier": "semantic",
         "retention_seconds": 0,
     }
+
+
+def _retry_policy_for_loop_kind(loop_kind: str) -> RetryPolicy:
+    """Bound semantic replanning effort by the declared task lifecycle."""
+
+    attempts = {
+        "turn": 4,
+        "control": 3,
+        "scheduled": 6,
+        "durable_goal": 10,
+    }
+    return RetryPolicy(max_attempts=attempts[loop_kind], reflect_before_retry=True)
 
 
 def _lineage_task_context(

@@ -1,9 +1,9 @@
 ---
-name: Loop Reflection
+name: loop-reflection
 description: A workflow to automatically recover when you receive a loop warning or get stuck repeatedly trying the same failing approach.
-permission: read
-source: local
-tags: [loop, debugging, stuck, reflection]
+metadata:
+  navi.permission: read
+  navi.tags: "loop,debugging,stuck,reflection"
 ---
 
 # Loop Reflection Skill

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +79,7 @@ def test_weixin_session_store_persists_freshness_and_invalidation(tmp_path: Path
     assert (tmp_path / "weixin" / "peer-sessions.json").stat().st_mode & 0o777 == 0o600
 
 
-def test_weixin_status_keeps_proactive_egress_degraded_until_proactive_receipt(
+def test_weixin_status_requires_rolling_evidence_after_proactive_receipt(
     tmp_path: Path,
 ) -> None:
     status = WeixinStatusStore(tmp_path)
@@ -103,9 +104,13 @@ def test_weixin_status_keeps_proactive_egress_degraded_until_proactive_receipt(
 
     status.record_egress_success(proactive=True, at=1001.0)
     healthy = status.load()
-    assert healthy["status"] == "healthy"
-    assert healthy["egress_status"] == "healthy"
+    assert healthy["instantaneous_egress_status"] == "healthy"
+    assert healthy["status"] == "partial"
+    assert healthy["egress_status"] == "partial"
     assert healthy["proactive_circuit_open_until"] == 0.0
+    snapshot = status.snapshot(now=1001.0)
+    assert snapshot["delivery_incident_status"] == "insufficient_data"
+    assert snapshot["status"] == "partial"
 
 
 def test_weixin_status_marks_stale_ingress_and_does_not_mask_partial_egress(
@@ -127,6 +132,102 @@ def test_weixin_status_marks_stale_ingress_and_does_not_mask_partial_egress(
     assert stale["ingress_status"] == "stale"
     assert stale["ingress_age_seconds"] == 11.0
     assert "heartbeat is stale" in stale["ingress_error"]
+
+
+def test_weixin_status_does_not_report_rolling_reliability_healthy_without_samples(
+    tmp_path: Path,
+) -> None:
+    status = WeixinStatusStore(tmp_path)
+    status.update_ingress("healthy")
+    status.record_egress_success(proactive=False)
+    status.record_egress_success(proactive=True)
+
+    health = status.snapshot()
+
+    assert health["instantaneous_egress_status"] == "healthy"
+    assert health["delivery_incident_status"] == "insufficient_data"
+    assert all(
+        item["status"] == "insufficient_data"
+        for item in health["proactive_delivery_windows"].values()
+    )
+    assert health["egress_status"] == "partial"
+    assert health["status"] == "partial"
+
+
+def test_weixin_status_fails_closed_when_rolling_reliability_cannot_be_read(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    DeliveryOutboxStore(tmp_path)
+    status = WeixinStatusStore(tmp_path)
+    status.update_ingress("healthy")
+    status.record_egress_success(proactive=False)
+    status.record_egress_success(proactive=True)
+
+    def fail_connect(*args, **kwargs):
+        del args, kwargs
+        raise sqlite3.OperationalError("locked")
+
+    monkeypatch.setattr("navi.weixin.store.sqlite3.connect", fail_connect)
+    health = status.snapshot()
+
+    assert health["delivery_incident_status"] == "unknown"
+    assert health["egress_status"] == "partial"
+    assert health["status"] == "partial"
+    assert health["delivery_reliability_error"] == (
+        "delivery reliability read failed: OperationalError"
+    )
+
+
+def test_weixin_status_keeps_rolling_delivery_incident_open_after_one_success(
+    tmp_path: Path,
+) -> None:
+    outbox = DeliveryOutboxStore(tmp_path)
+    for index in range(5):
+        item = outbox.enqueue(
+            DeliveryEnvelope(
+                batch_id=f"rolling-{index}",
+                channel="weixin",
+                peer_id="wx-user",
+                text=f"notification-{index}",
+                body_provenance="state_graph.evidence.responded_message",
+            )
+        )[0]
+        if index == 4:
+            outbox.mark_sent(
+                item.id,
+                receipt=DeliveryReceipt(transport="test"),
+                delivery_id=item.id,
+            )
+        else:
+            outbox.mark_failed(item.id, error="connector_transient_rejected: prepare failed")
+    for index in range(5):
+        unrelated = outbox.enqueue(
+            DeliveryEnvelope(
+                batch_id=f"telegram-{index}",
+                channel="telegram",
+                peer_id="tg-user",
+                text=f"unrelated-{index}",
+                body_provenance="background_notification",
+            )
+        )[0]
+        outbox.mark_sent(
+            unrelated.id,
+            receipt=DeliveryReceipt(transport="test"),
+            delivery_id=unrelated.id,
+        )
+
+    status = WeixinStatusStore(tmp_path)
+    status.update_ingress("healthy")
+    status.record_egress_success(proactive=False)
+    status.record_egress_success(proactive=True)
+
+    health = status.snapshot()
+    assert health["instantaneous_egress_status"] == "healthy"
+    assert health["delivery_incident_status"] == "open"
+    assert health["proactive_delivery_windows"]["7d"]["success_rate"] == 0.2
+    assert health["egress_status"] == "degraded"
+    assert health["status"] == "degraded"
 
 
 class WatchNotificationProvider:
@@ -412,7 +513,7 @@ class RejectedWeixinClient(CaptureWeixinClient):
         )
 
 
-class RateLimitedWeixinClient(CaptureWeixinClient):
+class TransientRejectedWeixinClient(CaptureWeixinClient):
     async def send_message(self, **kwargs: Any) -> None:
         self.messages.append(kwargs)
         raise WeixinTransportError(
@@ -485,7 +586,7 @@ async def test_rate_limit_schedules_bounded_retry_and_stops_the_weixin_batch(
             file_path="/tmp/second.txt",
         )
     )
-    client = RateLimitedWeixinClient()
+    client = TransientRejectedWeixinClient()
     transport = WeixinDeliveryTransport(
         client=client,
         account=WeixinAccount(
@@ -499,12 +600,12 @@ async def test_rate_limit_schedules_bounded_retry_and_stops_the_weixin_batch(
 
     assert [outcome.state for outcome in outcomes] == ["retry_scheduled"]
     assert outcomes[0].failure is not None
-    assert outcomes[0].failure.reason == "connector_rate_limited"
+    assert outcomes[0].failure.reason == "connector_transient_rejected"
     retried = store.get(items[0].id)
     assert retried is not None
     assert retried.status == "pending"
     assert retried.attempts == 1
-    assert retried.next_attempt_at - retried.updated_at >= 899.0
+    assert retried.next_attempt_at - retried.updated_at >= 59.0
     assert store.get(items[1].id).status == "pending"
 
 
@@ -1015,7 +1116,7 @@ async def test_background_rate_limit_stays_pending_and_opens_proactive_circuit(
         config=WeixinConfig(),
         runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
-        client=RateLimitedWeixinClient(),
+        client=TransientRejectedWeixinClient(),
     )
     service.daemon = StaticDaemon([])
 
@@ -1026,7 +1127,7 @@ async def test_background_rate_limit_stays_pending_and_opens_proactive_circuit(
     accepted = goals.accepted_result_for_run(run.id)
     assert accepted["delivery_status"] == "pending"
     assert accepted["delivery_attempts"] == 1
-    assert accepted["delivery_error_reason"] == "connector_rate_limited"
+    assert accepted["delivery_error_reason"] == "connector_transient_rejected"
     health = WeixinStatusStore(tmp_path).load()
     assert health["proactive_egress_status"] == "degraded"
     assert health["proactive_circuit_open_until"] > health["last_egress_attempt_at"]

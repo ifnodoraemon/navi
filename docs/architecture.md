@@ -122,13 +122,18 @@ does not select a different capability catalog.
 
 The planner receives the objective, conversation context, current durable
 facts, loop state, evidence, memory context, and the filtered tool manifest. It
-chooses a capability but cannot bypass its schema or policy envelope.
+chooses exactly one capability per planning pass but cannot bypass its schema or
+policy envelope. The Planner response schema and parser both enforce a one-item
+syscall array. Extra candidates become one typed replanning fact; the executor
+never selects among them.
 
 The executor invokes the selected capability through the same policy envelope.
 Mutating capabilities are subject to approval, workspace, hook, and side-effect
 gates. Their audit row is reserved before the effect; an unavailable audit
 boundary blocks execution and an unrecordable completion becomes an uncertain
-outcome. Staged external effects are committed only after acceptance or
+outcome. A direct approved effect links its completed receipt to the approval Run
+so startup can settle a crash-interrupted control lifecycle without matching
+redacted values against secret digests. Staged external effects are committed only after acceptance or
 compensated on rejection. Capability inputs and outputs pass through one closed
 JSON Schema validator, and failures expose typed reason and retryability facts.
 
@@ -152,6 +157,12 @@ is evidence, not a runtime-selected next action. Trace proxies record model call
 and capability spans without changing their decisions. If a later attempt
 converges, the LoopRun clears active recovery fields while the earlier rejection
 remains available through attempt history and trace events.
+The public StateGraph driver advances planning passes iteratively. It never
+recursively re-enters the graph, so an allowed replan does not consume the Python
+call stack. `paused` and `waiting_approval` are persisted suspension states, not
+terminal outcomes; final states are `converged`, `blocked`, `failed`, `cancelled`,
+`superseded`, `conflicted`, or `timed_out`. Loop kinds share this lifecycle contract while declaring separate
+bounded retry budgets for turn, control, scheduled, and durable-goal work.
 Evidence authority is domain-scoped. Navi Goal/approval reads cannot establish
 an external application's task or approval state, process-table observations
 cannot establish task activity, and web search establishes retrieved,
@@ -188,9 +199,13 @@ persists without an empty assistant message and an eventual accepted connector
 result uses the ordinary durable outbox. Lease recovery after a crashed owner
 and database transaction
 conflict handling remain deterministic control-plane coordination, not semantic
-recovery choices. The systemd unit uses `Restart=on-failure`; the assistant process
-is supervised with a 90-second event-loop watchdog and restarts after process or
-watchdog failure. Restart recovery only resumes persisted control-plane state; it
+recovery choices. The generated connector and API systemd units use
+`Restart=on-failure` and a least-privilege process boundary: no new privileges,
+private temporary and device namespaces, a read-only system and home, an empty
+capability set, and explicit writable project/Navi-home paths. The assistant
+process is supervised with a 90-second event-loop watchdog and restarts after
+process or watchdog failure. Restart recovery only resumes persisted
+control-plane state; it
 does not repeat model work or invent a semantic recovery choice. Connector
 heartbeat freshness remains a separate health fact so an active PID cannot make
 a stale polling loop appear healthy.
@@ -374,9 +389,14 @@ from a resumable lifecycle.
 Prompt layers, skills, memory items, eval cases, and graph nodes have real readers
 and writers. Run lifecycle records and inert spec files are not evolution targets.
 Prompt adapters accept only declared layers loaded by `PromptLayerStore`.
-The skill adapter validates the runtime loading contract before an experiment:
-closed YAML frontmatter, required name and description, normalized permission,
-and non-empty instructions. The `skills.view` capability similarly returns a
+The skill adapter validates the same Agent Skills-compatible contract used by
+runtime discovery: a lowercase hyphenated name of at most 64 characters that
+exactly matches its directory, a bounded description, non-empty instructions,
+and Navi extension keys nested under the standard `metadata` map. Source, trust,
+and scope are assigned from the actual installation boundary rather than package
+claims. Legacy Navi top-level extension fields are rejected rather than silently translated.
+`skills.list` exposes invalid excluded packages as typed facts. The `skills.view`
+capability similarly returns a
 selected instruction file in full or reports a typed size-limit failure, so the
 model never acts on an undisclosed suffix.
 Proposal creation reads the current target through its adapter, preserves the
@@ -391,6 +411,20 @@ the exact pre-apply snapshot through the same adapter. `EvolutionEngine` is kept
 in `evolution_engine.py` so the ledger and experiment stores do not call each
 other through circular imports; regression rollback is supplied as an explicit
 orchestration port.
+`evolution.candidates` is the read-only Trace-to-Eval bridge. It clusters repeated
+persisted failure evaluations by failure domain and evaluation rule, preserving
+sample trace identities and time bounds. It deliberately does not select an
+evolution target, write a candidate, create a proposal, approve, or apply. Those
+semantic steps remain model-owned and enter the existing persisted experiment,
+approval, activation-observation, and rollback chain.
+Authenticated API and CLI surfaces record proposal-attributed activation
+observations through `evolution.observe`; every observation must contain at least
+one success or error outcome. Reaching the configured minimum observation count
+with an error rate above the approved threshold invokes the persisted rollback
+path rather than treating an empty or unrelated system event as canary evidence.
+If the process stops after persisting `regressed` but before rollback completes,
+startup maintenance resumes only that deterministic rollback; it does not write
+a synthetic observation.
 
 `MetricsProjector` derives values from durable stores rather than maintaining a
 second source of truth; construction may initialize or migrate those store
@@ -434,6 +468,14 @@ adapter may requeue only receipt-free items that failed specifically because the
 old session expired and whose persisted delivery deadline is still in the
 future. The original payload and idempotency key are preserved; expired and
 unrelated failures remain terminal.
+Provider error `-2` is not treated as a rate limit by code alone. Only explicit
+frequency/rate-limit evidence receives that class; session expiry and other
+transient connector rejection remain separate typed reasons with separate retry
+intervals. Connector snapshots project instantaneous egress separately from
+1-hour, 24-hour, and 7-day proactive-delivery reliability. A fresh successful
+send cannot close an open rolling SLO incident until the measured window itself
+recovers. The window query is channel-scoped; absent samples and read failures
+remain explicit `insufficient_data` or `unknown` facts rather than healthy state.
 
 Outbound files use the connector-neutral `ConnectorDelivery` contract. The
 kernel validates the original file and emits one structured durable delivery
@@ -466,9 +508,11 @@ bind that address set into approval arguments, and connect to a pinned address
 while preserving the original Host and TLS identity. This keeps DNS rebinding
 from changing the destination after policy evaluation.
 
-## Known Current Deviations
+## Verification Status
 
-No known discrepancy currently changes the contracts documented above. This is
-not a claim of zero defects: end-to-end tests, live traces, SLO snapshots, and
-runtime read-back remain required because isolated store tests do not prove the
-complete control boundary.
+This document does not carry a hand-maintained claim that implementation and
+runtime have zero discrepancies. Release closure requires current static checks,
+full tests and eval validation, fault-path regression tests, live service and
+database read-back, and connector receipt evidence where transport is in scope.
+Historical SLO breaches remain historical facts; a repair is demonstrated by
+new evidence and rolling-window recovery, never by deleting old samples.

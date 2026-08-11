@@ -67,6 +67,7 @@ class DataRetentionManager:
                 "failed",
                 "cancelled",
                 "superseded",
+                "conflicted",
                 "timed_out",
             }:
                 deferred += 1

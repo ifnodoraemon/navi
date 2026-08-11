@@ -90,9 +90,11 @@ def test_expired_paused_transient_turn_is_cancelled_before_compaction(tmp_path: 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_state", ["converged", "conflicted"])
 async def test_expired_transient_turn_keeps_summary_and_purges_detail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    terminal_state: str,
 ) -> None:
     class Provider:
         async def complete_for(self, role, messages, *, output_schema=None):
@@ -146,8 +148,8 @@ async def test_expired_transient_turn_keeps_summary_and_purges_detail(
     )
     with connect(db_paths(tmp_path).loop_runs) as conn:
         conn.execute(
-            "UPDATE loop_runs SET terminal_state = 'converged', updated_at = 1 WHERE id = ?",
-            (opened.loop_run.run_id,),
+            "UPDATE loop_runs SET terminal_state = ?, updated_at = 1 WHERE id = ?",
+            (terminal_state, opened.loop_run.run_id),
         )
 
     original_connect = retention_module.connect

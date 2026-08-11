@@ -1,9 +1,9 @@
 ---
-name: Structured Output
+name: structured-output
 description: Practices for producing and validating strict JSON, schemas, tool arguments, and machine-readable plans.
-permission: read
-source: local
-tags: [json, schema, tool-calling]
+metadata:
+  navi.permission: read
+  navi.tags: "json,schema,tool-calling"
 ---
 
 # Structured Output Skill

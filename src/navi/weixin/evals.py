@@ -73,7 +73,9 @@ class _FailingEvalProvider:
         output_schema: dict[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
     ) -> str:
+        del request_options
         raise RuntimeError("eval provider failure")
 
     async def stream(
@@ -82,8 +84,14 @@ class _FailingEvalProvider:
         *,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
     ) -> AsyncGenerator[str, None]:
-        result = await self.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        result = await self.complete(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            request_options=request_options,
+        )
         yield result
 
 

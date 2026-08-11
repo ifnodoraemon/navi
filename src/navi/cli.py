@@ -41,7 +41,9 @@ from .prompt_os import assemble_planner_system_prompt
 from .prompting import build_system_prompt_assembly
 from .provider import build_provider
 from .service import (
+    build_systemd_api_user_unit,
     build_systemd_user_unit,
+    install_systemd_api_user_unit,
     install_systemd_user_unit,
     run_with_systemd_watchdog,
 )
@@ -1035,6 +1037,24 @@ def evolution_targets() -> None:
         )
 
 
+@evolution_app.command("candidates")
+def evolution_candidates(
+    window_days: int = typer.Option(7, min=1, max=90),
+    min_occurrences: int = typer.Option(3, min=2, max=100),
+    limit: int = typer.Option(100, min=1, max=500),
+) -> None:
+    """Inspect repeated trace-failure clusters that require model review."""
+    facts = _invoke_capability(
+        "evolution.candidates",
+        {
+            "window_days": window_days,
+            "min_occurrences": min_occurrences,
+            "limit": limit,
+        },
+    )
+    typer.echo(json.dumps(facts, ensure_ascii=False, sort_keys=True))
+
+
 @evolution_app.command("proposals")
 def evolution_proposals(status: str | None = None) -> None:
     """List pending or applied evolution proposals."""
@@ -1110,6 +1130,32 @@ def evolution_record_evaluation(
     typer.echo(str(facts.get("proposal_id") or ""))
 
 
+@evolution_app.command("observe")
+def evolution_observe(
+    event_id: str,
+    successes: int = typer.Option(0, min=0),
+    errors: int = typer.Option(0, min=0),
+    evidence_json: str = "{}",
+) -> None:
+    """Record one non-empty post-activation canary observation."""
+    try:
+        evidence = json.loads(evidence_json)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(f"invalid evidence JSON: {exc}") from exc
+    if not isinstance(evidence, dict):
+        raise typer.BadParameter("evidence must be a JSON object")
+    facts = _invoke_capability(
+        "evolution.observe",
+        {
+            "event_id": event_id,
+            "successes": successes,
+            "errors": errors,
+            "evidence": evidence,
+        },
+    )
+    typer.echo(json.dumps(facts.get("activation") or {}, ensure_ascii=False, sort_keys=True))
+
+
 @evolution_app.command("show")
 def evolution_show(event_id: str) -> None:
     """Show an evolution event diff."""
@@ -1141,6 +1187,20 @@ def service_install() -> None:
     unit = install_systemd_user_unit(
         project_dir=Path.cwd(), navi_home=home, name=config.runtime.service_name
     )
+    typer.echo(f"installed {unit.path}")
+    typer.echo(f"Run: systemctl --user daemon-reload && systemctl --user enable --now {unit.name}")
+
+
+@service_app.command("api-unit")
+def service_api_unit() -> None:
+    """Print the hardened systemd user unit for the local API."""
+    typer.echo(build_systemd_api_user_unit(project_dir=Path.cwd(), navi_home=ensure_home()))
+
+
+@service_app.command("install-api")
+def service_install_api() -> None:
+    """Install the hardened local API systemd user unit."""
+    unit = install_systemd_api_user_unit(project_dir=Path.cwd(), navi_home=ensure_home())
     typer.echo(f"installed {unit.path}")
     typer.echo(f"Run: systemctl --user daemon-reload && systemctl --user enable --now {unit.name}")
 

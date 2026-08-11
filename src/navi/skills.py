@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,40 @@ import yaml
 
 from .operating_context import permission_allows
 from .permission_contract import normalize_permission
+
+
+SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+LEGACY_NAVI_SKILL_FIELDS = frozenset(
+    {"permission", "source", "tags", "trust_level", "scope", "evaluation", "role", "version"}
+)
+RUNTIME_OWNED_NAVI_METADATA = frozenset(
+    {"navi.source", "navi.scope", "navi.trust-level"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SkillContract:
+    name: str
+    description: str
+    permission: str
+    tags: tuple[str, ...]
+    role: str
+    version: str
+    evaluation: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class SkillValidationIssue:
+    path: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SkillLocation:
+    path: Path
+    source: str
+    verified: bool
+    scope: str
 
 
 @dataclass(frozen=True)
@@ -36,6 +72,7 @@ class SkillStore:
         self.skills_dir = home / "skills"
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         self.builtin_skills_dir = Path(__file__).resolve().parent / "skills"
+        self.last_validation_issues: tuple[SkillValidationIssue, ...] = ()
 
     def list_skills(
         self,
@@ -47,115 +84,67 @@ class SkillStore:
     ) -> list[Skill]:
         skills: list[Skill] = []
         seen_names: set[str] = set()
-
-        # Helper to check if role matches
-        def role_matches(s_role: str) -> bool:
-            if not s_role or not role:
-                return True
-            return s_role.strip().lower() == role.strip().lower()
-
-        def build_skill(
-            path: Path, metadata: dict[str, Any], *, source: str, verified: bool, default_scope: str
-        ) -> Skill:
-            name = str(metadata.get("name") or path.parent.name)
-            s_role = str(metadata.get("role") or "").strip().lower()
-            content = path.read_bytes()
-            trust_level = (
-                str(metadata.get("trust_level") or ("verified" if verified else "unverified"))
-                .strip()
-                .lower()
-            )
-            evaluation = (
-                metadata.get("evaluation") if isinstance(metadata.get("evaluation"), dict) else {}
-            )
-            return Skill(
-                name=name,
-                description=str(metadata.get("description") or ""),
-                path=path,
-                permission=str(metadata.get("permission") or "read").strip().lower(),
-                source=source,
-                tags=_metadata_tuple(metadata.get("tags")),
-                role=s_role,
-                verified=verified,
-                version=str(metadata.get("version") or "1"),
-                content_hash=hashlib.sha256(content).hexdigest(),
-                trust_level=trust_level,
-                scope=str(metadata.get("scope") or default_scope).strip().lower(),
-                evaluation=evaluation,
-            )
-
-        # 1. User-defined global skills (override/highest priority)
-        for path in sorted(self.skills_dir.glob("*/SKILL.md")):
-            metadata = self._frontmatter(path)
-            name = str(metadata.get("name") or path.parent.name)
-            s_role = str(metadata.get("role") or "").strip().lower()
-            if not role_matches(s_role):
+        issues: list[SkillValidationIssue] = []
+        requested_role = (role or "").strip().lower()
+        for location in self._locations(workspace):
+            try:
+                skill = self._load(location)
+            except (UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
+                issues.append(SkillValidationIssue(path=str(location.path), reason=str(exc)))
                 continue
-            skill = build_skill(
-                path,
-                metadata,
-                source=str(metadata.get("source") or "local").strip().lower(),
-                verified=True,
-                default_scope="global",
-            )
+            if skill.name in seen_names:
+                continue
+            if requested_role and skill.role and skill.role != requested_role:
+                continue
             if sources is not None and skill.source not in sources:
                 continue
             if not permission_allows(skill.permission, permission_ceiling):
                 continue
             skills.append(skill)
-            seen_names.add(name)
+            seen_names.add(skill.name)
 
-        # 2. Workspace-local skills (intermediate priority, loaded if not overridden by global user skills)
-        if workspace:
-            workspace_skills_dir = Path(workspace) / ".navi" / "skills"
-            if workspace_skills_dir.is_dir():
-                for path in sorted(workspace_skills_dir.glob("*/SKILL.md")):
-                    metadata = self._frontmatter(path)
-                    name = str(metadata.get("name") or path.parent.name)
-                    if name in seen_names:
-                        continue
-                    s_role = str(metadata.get("role") or "").strip().lower()
-                    if not role_matches(s_role):
-                        continue
-                    skill = build_skill(
-                        path,
-                        metadata,
-                        source="workspace",
-                        verified=False,
-                        default_scope="workspace",
-                    )
-                    if sources is not None and skill.source not in sources:
-                        continue
-                    if not permission_allows(skill.permission, permission_ceiling):
-                        continue
-                    skills.append(skill)
-                    seen_names.add(name)
-
-        # 3. Built-in skills (loaded if not overridden)
-        if self.builtin_skills_dir.is_dir():
-            for path in sorted(self.builtin_skills_dir.glob("*/SKILL.md")):
-                metadata = self._frontmatter(path)
-                name = str(metadata.get("name") or path.parent.name)
-                if name in seen_names:
-                    continue
-                s_role = str(metadata.get("role") or "").strip().lower()
-                if not role_matches(s_role):
-                    continue
-                skill = build_skill(
-                    path,
-                    metadata,
-                    source=str(metadata.get("source") or "local").strip().lower(),
-                    verified=True,
-                    default_scope="builtin",
-                )
-                if sources is not None and skill.source not in sources:
-                    continue
-                if not permission_allows(skill.permission, permission_ceiling):
-                    continue
-                skills.append(skill)
-                seen_names.add(name)
-
+        self.last_validation_issues = tuple(issues)
         return skills
+
+    def _locations(self, workspace: Path | str | None) -> tuple[_SkillLocation, ...]:
+        locations = [
+            _SkillLocation(path, "local", True, "global")
+            for path in sorted(self.skills_dir.glob("*/SKILL.md"))
+        ]
+        if workspace:
+            workspace_dir = Path(workspace) / ".navi" / "skills"
+            locations.extend(
+                _SkillLocation(path, "workspace", False, "workspace")
+                for path in sorted(workspace_dir.glob("*/SKILL.md"))
+            )
+        locations.extend(
+            _SkillLocation(path, "builtin", True, "builtin")
+            for path in sorted(self.builtin_skills_dir.glob("*/SKILL.md"))
+        )
+        return tuple(locations)
+
+    @staticmethod
+    def _load(location: _SkillLocation) -> Skill:
+        content = location.path.read_bytes()
+        contract = parse_skill_contract(
+            content.decode("utf-8"),
+            directory_name=location.path.parent.name,
+        )
+        return Skill(
+            name=contract.name,
+            description=contract.description,
+            path=location.path,
+            permission=contract.permission,
+            source=location.source,
+            tags=contract.tags,
+            role=contract.role,
+            verified=location.verified,
+            version=contract.version,
+            content_hash=hashlib.sha256(content).hexdigest(),
+            trust_level="verified" if location.verified else "unverified",
+            scope=location.scope,
+            evaluation=contract.evaluation,
+        )
 
     def render_prompt(
         self,
@@ -204,21 +193,90 @@ class SkillStore:
             "full instructions."
         )
 
-    @staticmethod
-    def _frontmatter(path: Path) -> dict[str, Any]:
-        content = path.read_text(encoding="utf-8")
-        if not content.startswith("---"):
-            return {}
-        parts = content.split("---", 2)
-        if len(parts) < 3:
-            return {}
-        data = yaml.safe_load(parts[1]) or {}
-        return data if isinstance(data, dict) else {}
+
+def parse_skill_contract(
+    content: str,
+    *,
+    directory_name: str,
+) -> SkillContract:
+    lines = content.splitlines(keepends=True)
+    if not lines or lines[0].rstrip("\r\n") != "---":
+        raise ValueError("skill requires YAML frontmatter")
+    closing_index = next(
+        (
+            index
+            for index, line in enumerate(lines[1:], start=1)
+            if line.rstrip("\r\n") == "---"
+        ),
+        None,
+    )
+    if closing_index is None:
+        raise ValueError("skill frontmatter is not closed")
+    metadata = yaml.safe_load("".join(lines[1:closing_index])) or {}
+    if not isinstance(metadata, dict):
+        raise ValueError("skill frontmatter must be an object")
+    legacy = sorted(LEGACY_NAVI_SKILL_FIELDS.intersection(metadata))
+    if legacy:
+        raise ValueError(
+            "Navi skill extensions must be nested under metadata: " + ", ".join(legacy)
+        )
+    raw_name = metadata.get("name")
+    if not isinstance(raw_name, str):
+        raise ValueError("skill name must be a string")
+    name = raw_name.strip()
+    if not name or len(name) > 64 or SKILL_NAME_PATTERN.fullmatch(name) is None:
+        raise ValueError("skill name must be 1-64 lowercase letters, digits, or hyphen groups")
+    if name != directory_name:
+        raise ValueError("skill name must exactly match its parent directory")
+    raw_description = metadata.get("description")
+    if not isinstance(raw_description, str):
+        raise ValueError("skill description must be a string")
+    description = raw_description.strip()
+    if not description or len(description) > 1024:
+        raise ValueError("skill description must be 1-1024 characters")
+    if not "".join(lines[closing_index + 1 :]).strip():
+        raise ValueError("skill instructions must not be empty")
+    vendor = metadata.get("metadata", {})
+    if vendor is None:
+        vendor = {}
+    if not isinstance(vendor, dict):
+        raise ValueError("skill metadata must be an object")
+    if any(not isinstance(key, str) or not isinstance(value, str) for key, value in vendor.items()):
+        raise ValueError("skill metadata keys and values must be strings")
+    authority_claims = sorted(RUNTIME_OWNED_NAVI_METADATA.intersection(vendor))
+    if authority_claims:
+        raise ValueError(
+            "skill metadata cannot claim runtime-owned authority: "
+            + ", ".join(authority_claims)
+        )
+    try:
+        permission = normalize_permission(str(vendor.get("navi.permission") or "read"))
+    except ValueError as exc:
+        raise ValueError("skill metadata navi.permission is invalid") from exc
+    evaluation: dict[str, Any] = {}
+    raw_evaluation = vendor.get("navi.evaluation")
+    if raw_evaluation:
+        try:
+            parsed_evaluation = json.loads(str(raw_evaluation))
+        except json.JSONDecodeError as exc:
+            raise ValueError("skill metadata navi.evaluation must be a JSON object") from exc
+        if not isinstance(parsed_evaluation, dict):
+            raise ValueError("skill metadata navi.evaluation must be a JSON object")
+        evaluation = parsed_evaluation
+    return SkillContract(
+        name=name,
+        description=description,
+        permission=permission,
+        tags=_metadata_tuple(vendor.get("navi.tags")),
+        role=str(vendor.get("navi.role") or "").strip().lower(),
+        version=str(vendor.get("navi.version") or "1").strip(),
+        evaluation=evaluation,
+    )
 
 
 def _metadata_tuple(value: object) -> tuple[str, ...]:
-    if isinstance(value, list):
-        return tuple(str(item).strip().lower() for item in value if str(item).strip())
-    if isinstance(value, str):
-        return tuple(item.strip().lower() for item in value.split(",") if item.strip())
-    return ()
+    return tuple(
+        item.strip().lower()
+        for item in str(value or "").split(",")
+        if item.strip()
+    )

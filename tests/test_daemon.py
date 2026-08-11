@@ -22,6 +22,7 @@ from navi.resource_gateway import (
     ResourceRequest,
     SQLiteResourceLedger,
 )
+from navi.runs import RunStore
 from navi.memory.store import MemoryStore
 from navi.trace import TraceStore
 
@@ -431,6 +432,167 @@ def test_daemon_releases_orphaned_loop_resource_reservations(tmp_path: Path) -> 
     SystemDaemon(tmp_path, project_dir=tmp_path)
 
     assert ledger.usage(opened.loop_run.run_id).active == 0
+
+
+def test_daemon_reconciles_completed_direct_capability_approval_receipt(
+    tmp_path: Path,
+) -> None:
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "Approve mutation",
+        kind="capability_approval",
+        workspace=str(tmp_path),
+        phase="pending",
+        governance="approved",
+    )
+    args_json = '{"value": 1}'
+    approval = runs.create_approval(
+        run_id=run.id,
+        action="capability",
+        requested_tool="example.mutate",
+        requested_permission="write",
+        args_json=args_json,
+    )
+    resolved = runs.resolve_approval(approval.id, decision="approve", resolved_by="test")
+    assert resolved is not None
+    runs.add_tool_call_log(
+        tool="example.mutate",
+        args_json=args_json,
+        ok=True,
+        facts_json='{"audit_phase": "completed", "entity_id": "receipt-1"}',
+        error="",
+        started_at=resolved.updated_at + 0.01,
+        ended_at=resolved.updated_at + 0.02,
+    )
+
+    SystemDaemon(tmp_path, project_dir=tmp_path)
+
+    settled = runs.get(run.id)
+    assert settled is not None
+    assert settled.phase == "ended"
+    assert settled.acceptance == "accepted"
+    assert settled.resolution == "success"
+    logs = runs.list_tool_call_logs_for_run(run.id)
+    assert len(logs) == 1
+    assert logs[0].ok is True
+
+
+def test_daemon_reconciles_linked_receipt_when_sensitive_args_are_redacted(
+    tmp_path: Path,
+) -> None:
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "Approve sensitive mutation",
+        kind="capability_approval",
+        workspace=str(tmp_path),
+        phase="pending",
+        governance="approved",
+    )
+    approval = runs.create_approval(
+        run_id=run.id,
+        action="capability",
+        requested_tool="example.secret_mutate",
+        requested_permission="write",
+        args_json='{"token": {"$approval_hmac": "fingerprint"}}',
+    )
+    resolved = runs.resolve_approval(approval.id, decision="approve", resolved_by="test")
+    assert resolved is not None
+    runs.add_tool_call_log(
+        tool="example.secret_mutate",
+        args_json='{"token": "[REDACTED]"}',
+        ok=True,
+        facts_json='{"audit_phase": "completed", "entity_id": "receipt-secret"}',
+        error="",
+        started_at=resolved.updated_at + 0.01,
+        ended_at=resolved.updated_at + 0.02,
+        run_id=run.id,
+    )
+
+    SystemDaemon(tmp_path, project_dir=tmp_path)
+
+    settled = runs.get(run.id)
+    assert settled is not None
+    assert settled.phase == "ended"
+    assert settled.acceptance == "accepted"
+    assert settled.resolution == "success"
+
+
+def test_daemon_keeps_direct_approval_open_while_governed_target_is_suspended(
+    tmp_path: Path,
+) -> None:
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "Approve resumable mutation",
+        kind="capability_approval",
+        workspace=str(tmp_path),
+        phase="pending",
+        governance="approved",
+    )
+    args_json = '{"goal_id": "goal-1"}'
+    approval = runs.create_approval(
+        run_id=run.id,
+        action="capability",
+        requested_tool="goal.resume",
+        requested_permission="prepare",
+        args_json=args_json,
+    )
+    resolved = runs.resolve_approval(approval.id, decision="approve", resolved_by="test")
+    assert resolved is not None
+    runs.add_tool_call_log(
+        tool="goal.resume",
+        args_json=args_json,
+        ok=True,
+        facts_json=(
+            '{"audit_phase": "completed", '
+            '"loop_terminal_state": "waiting_approval"}'
+        ),
+        error="",
+        started_at=resolved.updated_at + 0.01,
+        ended_at=resolved.updated_at + 0.02,
+        run_id=run.id,
+    )
+
+    SystemDaemon(tmp_path, project_dir=tmp_path)
+
+    still_open = runs.get(run.id)
+    assert still_open is not None
+    assert still_open.phase == "pending"
+
+
+def test_daemon_ignores_malformed_direct_approval_receipt(tmp_path: Path) -> None:
+    runs = RunStore(tmp_path)
+    run = runs.create(
+        "Approve mutation with malformed receipt",
+        kind="capability_approval",
+        workspace=str(tmp_path),
+        phase="pending",
+        governance="approved",
+    )
+    args_json = '{"value": 1}'
+    approval = runs.create_approval(
+        run_id=run.id,
+        action="capability",
+        requested_tool="example.mutate",
+        requested_permission="write",
+        args_json=args_json,
+    )
+    resolved = runs.resolve_approval(approval.id, decision="approve", resolved_by="test")
+    assert resolved is not None
+    runs.add_tool_call_log(
+        tool="example.mutate",
+        args_json=args_json,
+        ok=True,
+        facts_json="{not-json",
+        error="",
+        started_at=resolved.updated_at + 0.01,
+        ended_at=resolved.updated_at + 0.02,
+    )
+
+    SystemDaemon(tmp_path, project_dir=tmp_path)
+
+    still_open = runs.get(run.id)
+    assert still_open is not None
+    assert still_open.phase == "pending"
 
 
 @pytest.mark.asyncio

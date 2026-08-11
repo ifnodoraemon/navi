@@ -57,11 +57,14 @@ jobs:
       - name: Lint
         run: ruff check src tests tests_e2e
 
+      - name: Complexity guard
+        run: ruff check src/navi --select C901
+
       - name: Type check
         run: mypy src/navi
 
       - name: Test with coverage report
-        run: pytest --cov=src/navi --cov-report=term-missing -q -W error::pytest.PytestUnraisableExceptionWarning
+        run: pytest --cov=src/navi --cov-report=term-missing -q -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning
 
       - name: Test end-to-end contracts
         run: pytest -q tests_e2e -m "not live_llm"

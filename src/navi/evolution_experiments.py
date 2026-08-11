@@ -281,6 +281,10 @@ class EvolutionExperimentStore:
         evidence: dict[str, Any] | None = None,
         rollback: Callable[[str], Any] | None = None,
     ) -> EvolutionActivation:
+        successes = max(0, int(successes))
+        errors = max(0, int(errors))
+        if successes + errors < 1:
+            raise ValueError("evolution observation requires at least one outcome")
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -298,8 +302,8 @@ class EvolutionExperimentStore:
             if activation.status != "observing":
                 needs_rollback = activation.status == "regressed"
             else:
-                success_count = activation.success_count + max(0, int(successes))
-                error_count = activation.error_count + max(0, int(errors))
+                success_count = activation.success_count + successes
+                error_count = activation.error_count + errors
                 observations = activation.observation_count + 1
                 total = success_count + error_count
                 error_rate = error_count / total if total else 0.0
@@ -312,26 +316,26 @@ class EvolutionExperimentStore:
                     )
                 now = time.time()
                 cursor = conn.execute(
-                """
-                UPDATE evolution_activations
-                SET status = ?, success_count = ?, error_count = ?, observation_count = ?,
-                    latest_evidence_json = ?, updated_at = ?
-                WHERE id = ? AND status = 'observing'
-                """,
-                (
-                    status,
-                    success_count,
-                    error_count,
-                    observations,
-                    json.dumps(
-                        {**(evidence or {}), "error_rate": error_rate},
-                        ensure_ascii=False,
-                        sort_keys=True,
+                    """
+                    UPDATE evolution_activations
+                    SET status = ?, success_count = ?, error_count = ?, observation_count = ?,
+                        latest_evidence_json = ?, updated_at = ?
+                    WHERE id = ? AND status = 'observing'
+                    """,
+                    (
+                        status,
+                        success_count,
+                        error_count,
+                        observations,
+                        json.dumps(
+                            {**(evidence or {}), "error_rate": error_rate},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        now,
+                        activation.id,
                     ),
-                    now,
-                    activation.id,
-                ),
-            )
+                )
                 if cursor.rowcount != 1:
                     raise RuntimeError("evolution activation changed concurrently")
                 needs_rollback = status == "regressed"
