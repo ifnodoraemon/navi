@@ -17,7 +17,16 @@ class SearchResult:
 
 
 class CodebaseRAG:
-    """Provides semantic-like search over large codebases using SQLite FTS5."""
+    """Code search over the workspace using SQLite FTS5.
+
+    Two FTS5 tables share one refresh budget:
+
+    - ``codebase_fts`` uses ``unicode61`` (word-level) tokenization, so FTS5's
+      built-in BM25-style ``rank`` is meaningful and short identifiers (``db``,
+      ``io``) are searchable.  It is the primary index.
+    - ``codebase_fts_trigram`` keeps ``trigram`` tokenization as a substring
+      fallback for when the model remembers only part of a name (e.g. ``_run``).
+    """
 
     def __init__(self, workspace: Path, db_path: Path | None = None):
         self.workspace = workspace
@@ -35,7 +44,16 @@ class CodebaseRAG:
             conn.execute(
                 """
                 CREATE VIRTUAL TABLE IF NOT EXISTS codebase_fts USING fts5(
-                    path, 
+                    path,
+                    content,
+                    tokenize='unicode61'
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS codebase_fts_trigram USING fts5(
+                    path,
                     content,
                     tokenize='trigram'
                 )
@@ -101,6 +119,7 @@ class CodebaseRAG:
 
         with connect(self.db_path) as conn:
             conn.execute("DELETE FROM codebase_fts")
+            conn.execute("DELETE FROM codebase_fts_trigram")
 
             count = 0
             for file_path in self._iter_files():
@@ -108,7 +127,12 @@ class CodebaseRAG:
                     rel_path = file_path.relative_to(self.workspace).as_posix()
                     content = file_path.read_text(encoding="utf-8", errors="ignore")
                     conn.execute(
-                        "INSERT INTO codebase_fts(path, content) VALUES (?, ?)", (rel_path, content)
+                        "INSERT INTO codebase_fts(path, content) VALUES (?, ?)",
+                        (rel_path, content),
+                    )
+                    conn.execute(
+                        "INSERT INTO codebase_fts_trigram(path, content) VALUES (?, ?)",
+                        (rel_path, content),
                     )
                     count += 1
                 except Exception as e:
@@ -130,45 +154,54 @@ class CodebaseRAG:
 
     def search(self, query: str, limit: int = 5) -> list[SearchResult]:
         self.index()
-        results: list[SearchResult] = []
+        tokens = [t for t in query.split() if t.strip()]
 
-        # Simple trigram-like query matching using FTS5 match syntax
-        match_query = " OR ".join(f'"{token}"*' for token in query.split() if token.strip())
-        if not match_query:
-            return []
-
-        with connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """
-                SELECT path, snippet(codebase_fts, 1, '[[[', ']]]', '...', 10) as matched_snippet, rank
-                FROM codebase_fts 
-                WHERE codebase_fts MATCH ? 
-                ORDER BY rank 
-                LIMIT ?
-                """,
-                (match_query, limit),
+        # Primary: word-level unicode61 index with FTS5 BM25-style rank.  Phrase
+        # per token so "net run" means both words present (AND-ish), and short
+        # identifiers like db work because unicode61 is not length-limited.
+        if tokens:
+            phrase_query = " ".join(
+                f'"{token.replace(chr(34), chr(34)*2)}"*' for token in tokens
             )
+            results = self._query("codebase_fts", phrase_query, limit)
+            if results:
+                return results
 
-            results = []
-            for path, snippet, rank in cursor.fetchall():
-                results.append(SearchResult(path=path, content=snippet, rank=rank))
+            # Fallback word query without prefix matching in case the star
+            # prefix produced no hits (e.g. a bare substring that is not a
+            # prefix of any indexed token).
+            fallback = " ".join(
+                f'"{token.replace(chr(34), chr(34)*2)}"' for token in tokens
+            )
+            results = self._query("codebase_fts", fallback, limit)
+            if results:
+                return results
 
-            # If literal trigram fails, try token-based OR query
-            if not results:
-                tokens = [t for t in query.split() if len(t) > 2]
-                if tokens:
-                    or_query = " OR ".join(f'"{t.replace('"', '""')}"' for t in tokens)
-                    cursor = conn.execute(
-                        """
-                        SELECT path, snippet(codebase_fts, 1, '[[[', ']]]', '...', 10) as matched_snippet, rank
-                        FROM codebase_fts 
-                        WHERE codebase_fts MATCH ? 
-                        ORDER BY rank 
-                        LIMIT ?
-                        """,
-                        (or_query, limit),
-                    )
-                    for path, snippet, rank in cursor.fetchall():
-                        results.append(SearchResult(path=path, content=snippet, rank=rank))
+        # Substring fallback: trigram index for partial identifier recall.
+        for token in tokens:
+            trigram_query = f'"{token}"*'
+            results = self._query("codebase_fts_trigram", trigram_query, limit)
+            if results:
+                return results
+        return []
 
-            return results
+    def _query(self, table: str, match_query: str, limit: int) -> list[SearchResult]:
+        try:
+            with connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    f"""
+                    SELECT path, snippet({table}, 1, '[[[', ']]]', '...', 10) as matched_snippet, rank
+                    FROM {table}
+                    WHERE {table} MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (match_query, limit),
+                )
+                return [
+                    SearchResult(path=path, content=snippet, rank=rank)
+                    for path, snippet, rank in cursor.fetchall()
+                ]
+        except Exception as e:
+            logger.debug(f"FTS5 query failed ({table}): {e}")
+            return []

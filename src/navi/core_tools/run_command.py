@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 from ..process_sandbox import bubblewrap_command, sandbox_environment
-from .codebase import _resolve_binary_error
+from .codebase import _resolve_binary_error, _sandbox_home_has_binary
 from .utils import _truncate_output
 
 
@@ -40,10 +40,14 @@ def _run_command(
         f"{home_dir}/.local/bin",
         f"{home_dir}/bin",
         *nvm_paths,
+        # Persistent sandbox HOME (bind-mounted as $HOME/.local/bin inside the
+        # sandbox) may hold pipx/pip-installed binaries.  Without it the host
+        # pre-flight and the sandbox executable resolver reject them.
+        *(str(sandbox_home / ".local" / "bin") if sandbox_home is not None else []),
     ]
     env["PATH"] = os.pathsep.join(extra_paths + [current_path])
     binary_error = _resolve_binary_error(command, path=env["PATH"])
-    if binary_error:
+    if binary_error and not _sandbox_home_has_binary(command, sandbox_home):
         return {
             "stdout": "",
             "stderr": binary_error,

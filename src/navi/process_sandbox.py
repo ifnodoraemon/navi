@@ -13,7 +13,7 @@ from pathlib import Path
 def sandbox_environment() -> dict[str, str]:
     env = {
         "HOME": "/tmp/navi-home",
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PATH": "/tmp/navi-home/.local/bin:/usr/local/bin:/usr/bin:/bin",
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "LC_ALL": os.environ.get("LC_ALL", ""),
         "TERM": os.environ.get("TERM", "dumb"),
@@ -67,7 +67,18 @@ def bubblewrap_command(
         return [], "process cwd must stay inside the current project workspace"
 
     executable = _resolve_executable(command[0], cwd=working_dir, path=path)
-    if executable is None:
+    in_sandbox_executable = None
+    persistent_home = (
+        sandbox_home.expanduser().resolve() if sandbox_home is not None else None
+    )
+    if executable is None and persistent_home is not None:
+        # The binary may live only inside the persistent sandbox HOME (pipx/pip
+        # --user installs).  On the host it is a symlink into /tmp/navi-home
+        # that does not resolve, so run it at its in-sandbox path instead.
+        in_sandbox_executable = _resolve_in_sandbox_executable(command[0], persistent_home)
+        if in_sandbox_executable is None:
+            return [], f"command not found: {command[0]}"
+    elif executable is None:
         return [], f"command not found: {command[0]}"
 
     argv = [
@@ -85,9 +96,6 @@ def bubblewrap_command(
         "--dir",
         "/run",
     ]
-    persistent_home = (
-        sandbox_home.expanduser().resolve() if sandbox_home is not None else None
-    )
     if persistent_home is not None:
         # A persistent writable HOME lets pip/pipx installs survive across
         # separate shell.run invocations while staying inside the project's
@@ -139,8 +147,13 @@ def bubblewrap_command(
         created_dirs.add(parent)
     argv.extend(("--bind" if writable else "--ro-bind", str(root), str(root)))
 
-    sandbox_executable = executable
-    if executable != root and root not in executable.parents and not str(executable).startswith(
+    sandbox_executable = in_sandbox_executable or executable
+    if in_sandbox_executable is not None:
+        # The persistent sandbox HOME is already bind-mounted (writable) at
+        # /tmp/navi-home, where this executable's symlinks and venv interpreter
+        # resolve.  Nothing extra needs binding.
+        pass
+    elif executable != root and root not in executable.parents and not str(executable).startswith(
         "/usr/"
     ):
         runtime_prefix = Path(sys.base_prefix).resolve()
@@ -188,3 +201,18 @@ def _resolve_executable(value: str, *, cwd: Path, path: str) -> Path | None:
         return resolved if resolved.is_file() and os.access(resolved, os.X_OK) else None
     found = shutil.which(value, path=path)
     return Path(found).resolve() if found else None
+
+
+def _resolve_in_sandbox_executable(value: str, persistent_home: Path) -> Path | None:
+    """Locate a binary inside the persistent sandbox HOME.
+
+    pipx/pip --user installs place a symlink at ``$HOME/.local/bin/<name>``
+    pointing into ``/tmp/navi-home/...`` inside the sandbox; on the host that
+    target does not exist, so the normal resolver rejects it.  Here we check the
+    host-side copy of the persistent home and return the in-sandbox path (under
+    /tmp/navi-home) that bubblewrap executes after mounting the home.
+    """
+    host_bin = persistent_home / ".local" / "bin" / value
+    if not (host_bin.exists() or host_bin.is_symlink()):
+        return None
+    return Path("/tmp/navi-home") / ".local" / "bin" / value

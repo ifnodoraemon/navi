@@ -72,3 +72,18 @@ def _resolve_binary_error(command: list[str], *, path: str | None = None) -> str
     if shutil.which(binary, path=path):
         return ""
     return f"binary '{binary}' not found on PATH."
+
+
+def _sandbox_home_has_binary(command: list[str], sandbox_home) -> bool:
+    """A binary may be installed only inside the persistent sandbox HOME (e.g.
+    pipx/pip --user installs), where it is a symlink into ``/tmp/navi-home``
+    that does not resolve on the host PATH.  The host pre-flight must not reject
+    such a command; the sandbox resolves it itself."""
+    if not command or sandbox_home is None:
+        return False
+    binary = command[0]
+    if "/" in binary:
+        return False
+    import glob as _glob
+
+    return bool(_glob.glob(f"{sandbox_home}/.local/bin/{binary}"))
