@@ -164,6 +164,43 @@ class TurnController(TurnLifecycleMixin):
             # Capability messages are machine observations, not user copy.
             # Give the responder both the structured result and the raw
             # observation as facts; never surface the observation directly.
+            loop_terminal_state = str(invoked_facts.get("loop_terminal_state") or "")
+            state_graph_result = invoked_facts.get("state_graph_result")
+            state_graph_evidence = (
+                state_graph_result.get("evidence")
+                if isinstance(state_graph_result, dict)
+                else None
+            )
+            graph_evidence = (
+                dict(state_graph_evidence) if isinstance(state_graph_evidence, dict) else {}
+            )
+            reflection = graph_evidence.get("reflection")
+            reflection = dict(reflection) if isinstance(reflection, dict) else {}
+            capability_result = graph_evidence.get("capability_result")
+            capability_result = (
+                dict(capability_result) if isinstance(capability_result, dict) else {}
+            )
+            reason_code = str(
+                reflection.get("reason_code")
+                or graph_evidence.get("reason_code")
+                or ""
+            )
+            graph_message = str(
+                capability_result.get("message")
+                or graph_evidence.get("message")
+                or reflection.get("message")
+                or ""
+            )
+            terminal_reason = f"loop_{loop_terminal_state}"
+            # A terminal loop stops with a real, diagnosable outcome; report
+            # that outcome instead of pretending the model went silent. Only a
+            # genuinely empty result is a missing model response.
+            if loop_terminal_state:
+                finalization_reason = terminal_reason
+            elif reason_code:
+                finalization_reason = f"loop_error:{reason_code}"
+            else:
+                finalization_reason = "missing_model_response"
             response_facts = {
                 **invoked_facts,
                 "capability_result": {
@@ -173,9 +210,11 @@ class TurnController(TurnLifecycleMixin):
                     "observation": invoked.message,
                 },
                 "finalization": {
-                    "reason": "missing_model_response",
+                    "reason": finalization_reason,
                     "route": invoked_facts.get("route"),
-                    "loop_terminal_state": invoked_facts.get("loop_terminal_state"),
+                    "loop_terminal_state": loop_terminal_state,
+                    "reason_code": reason_code,
+                    "message": graph_message,
                     "resolution": invoked_facts.get("resolution"),
                 },
             }

@@ -1302,7 +1302,7 @@ def _retry_policy_for_loop_kind(loop_kind: str) -> RetryPolicy:
     """Bound semantic replanning effort by the declared task lifecycle."""
 
     attempts = {
-        "turn": 4,
+        "turn": 8,
         "control": 3,
         "scheduled": 6,
         "durable_goal": 10,
