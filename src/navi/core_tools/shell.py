@@ -10,7 +10,7 @@ from .utils import _positive_int
 from ..safeguards import shell_call_policy
 
 
-def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
+def _shell_run(args: dict[str, Any], *, project_dir: Path, home: Path | None = None) -> ToolResult:
     command = _command_list(args.get("command"))
     if not command:
         return ToolResult(
@@ -32,6 +32,7 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path) -> ToolResult:
         timeout=timeout,
         allocate_pty=allocate_pty,
         sandbox_workspace=project_dir,
+        sandbox_home=None if home is None else home / "sandbox-home",
         workspace_writable=shell_policy["required_permission"] == "write",
         network_allowed=shell_policy["required_permission"] == "network" or requires_network,
         host_process_visibility=shell_policy["observation_scope"] == "host_process_table",

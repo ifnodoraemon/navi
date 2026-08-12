@@ -56,6 +56,7 @@ def bubblewrap_command(
     path: str,
     host_process_visibility: bool = False,
     environment_fd: int | None = None,
+    sandbox_home: Path | None = None,
 ) -> tuple[list[str], str]:
     bwrap = shutil.which("bwrap")
     if not bwrap:
@@ -80,12 +81,23 @@ def bubblewrap_command(
         "--tmpfs",
         "/tmp",
         "--dir",
-        "/tmp/navi-home",
-        "--dir",
         "/etc",
         "--dir",
         "/run",
     ]
+    persistent_home = (
+        sandbox_home.expanduser().resolve() if sandbox_home is not None else None
+    )
+    if persistent_home is not None:
+        # A persistent writable HOME lets pip/pipx installs survive across
+        # separate shell.run invocations while staying inside the project's
+        # .navi/sandbox-home (never the real ~).  It must be mounted after the
+        # /tmp tmpfs so it overlays /tmp/navi-home.
+        persistent_home.mkdir(parents=True, exist_ok=True)
+        argv.extend(("--dir", "/tmp/navi-home"))
+        argv.extend(("--bind", str(persistent_home), "/tmp/navi-home"))
+    else:
+        argv.extend(("--dir", "/tmp/navi-home"))
     if host_process_visibility:
         # Keep the filesystem, environment, network, and session isolated while
         # allowing declared read-only process-inspection argv (ps/pgrep/etc.) to

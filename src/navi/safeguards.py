@@ -155,8 +155,63 @@ def _command_requires_network(argv: list[str]) -> bool:
             subcommand = rest[2] if len(rest) > 2 else ""
             return subcommand in _PYTHON_MODULE_NETWORK_SUBCOMMANDS
         return False
+    if binary in _SHELL_INTERPRETERS:
+        return _shell_script_requires_network(argv)
     matching = _NETWORK_REQUIRING_SUBCOMMANDS.get(binary)
     return bool(matching) and _first_positional(argv[1:]) in matching
+
+
+_SHELL_INTERPRETERS = frozenset({"ash", "bash", "dash", "ksh", "sh", "zsh"})
+
+
+def _shell_script_requires_network(argv: list[str]) -> bool:
+    """Unwrap `sh -c '<script>'` (and `-eu`-style flag prefixes) and check the
+    script's commands fail-closed for network need.
+
+    The model often wraps a pip/pipx install in `bash -c '...'` to chain a PATH
+    export or version probe first.  Without unwrapping, argv classification sees
+    only the interpreter and would wrongly keep the network namespace closed.
+    """
+    script = None
+    if "-c" in argv:
+        flag_index = argv.index("-c")
+        after = argv[flag_index + 1 :]
+        if after:
+            script = after[0]
+    if not script:
+        return False
+
+    import shlex
+
+    for chunk in re.split(r"(?:&&)|(?:;)|(?:\n+)|(?:\|\|)", script):
+        try:
+            tokens = shlex.split(chunk)
+        except ValueError:
+            tokens = re.split(r"\s+", chunk.strip())
+        if tokens:
+            nested = tokens
+            if nested[0] == "sudo":
+                nested = nested[1:]
+            if nested and not nested[0].startswith("="):
+                nested_argv = [t for t in nested if t]
+                if nested_argv and _nested_command_requires_network(nested_argv):
+                    return True
+    return False
+
+
+def _nested_command_requires_network(nested_argv: list[str]) -> bool:
+    """Reuse the top-level classification on one shell-script sub-command."""
+    binary = Path(nested_argv[0]).name
+    if binary in _NETWORK_REQUIRING_BINARIES:
+        return True
+    if binary in {"python", "python3"}:
+        rest = nested_argv[1:]
+        if rest[:2] == ["-m", "pip"]:
+            subcommand = rest[2] if len(rest) > 2 else ""
+            return subcommand in _PYTHON_MODULE_NETWORK_SUBCOMMANDS
+        return False
+    matching = _NETWORK_REQUIRING_SUBCOMMANDS.get(binary)
+    return bool(matching) and _first_positional(nested_argv[1:]) in matching
 
 
 _DEFAULT_SAFEGUARDS = {

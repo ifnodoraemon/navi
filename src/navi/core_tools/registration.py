@@ -628,7 +628,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             workspace_policy="sandbox",
             workspace_fields=("cwd",),
         ),
-        lambda args: _shell_run(args, project_dir=registry.project_dir),
+        lambda args: _shell_run(args, project_dir=registry.project_dir, home=home),
     )
     registry.register(
         _core_tool_spec(
