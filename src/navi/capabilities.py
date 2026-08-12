@@ -68,6 +68,20 @@ def _capability_error(
     )
 
 
+def _capability_approval_reason(risk, name: str) -> str:
+    """Human-readable approval reason that exposes system-derived sandbox
+    capabilities (e.g. a write command that provably needs an open network
+    namespace) without inventing a composite permission."""
+    evidence = getattr(risk, "evidence", None) or {}
+    parts = [
+        str(risk.reason_code),
+        f"{name} ({risk.risk_class})",
+    ]
+    if evidence.get("requires_network"):
+        parts.append("needs-network")
+    return ": ".join(parts)
+
+
 class CapabilityRegistry:
     """Agent OS syscall table.
 
@@ -722,7 +736,7 @@ class CapabilityRegistry:
                 requested_tool=name,
                 requested_permission=permission,
                 args_json=args_json,
-                reason=f"{risk.reason_code}: {name} ({risk.risk_class})",
+                reason=_capability_approval_reason(risk, name),
             )
             run = (
                 runs.update_run(

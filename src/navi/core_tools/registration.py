@@ -612,6 +612,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "cwd": {"type": "string"},
                     "timeout_seconds": {"type": "integer"},
                     "required_permission": {"type": "string"},
+                    "requires_network": {"type": "boolean"},
                     "observation_scope": {"type": "string"},
                     "observation_semantics": {"type": "string"},
                     "evidence_contract": {"type": "object"},

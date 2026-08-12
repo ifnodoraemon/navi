@@ -114,6 +114,50 @@ _NETWORK_READ_ONLY_COMMANDS = {
     "kubectl": frozenset({"describe", "get", "logs", "top"}),
 }
 
+# Commands whose primary purpose is fetching from or talking to a network
+# service.  A single scalar permission can only say "write" for these, but a
+# write approval is meaningless without an open network namespace.  The system
+# derives the sandbox capability from the argv instead of asking the model to
+# request a composite permission.
+_NETWORK_REQUIRING_BINARIES = frozenset({"curl", "wget", "gh", "hub"})
+_NETWORK_REQUIRING_SUBCOMMANDS = {
+    "pip": frozenset({"download", "install", "uninstall", "wheel"}),
+    "pip3": frozenset({"download", "install", "uninstall", "wheel"}),
+    "pipx": frozenset({"install", "reinstall", "run", "upgrade"}),
+    "npm": frozenset({"add", "install", "ci", "update"}),
+    "yarn": frozenset({"add", "install", "upgrade"}),
+    "pnpm": frozenset({"add", "install", "update"}),
+    "bun": frozenset({"add", "install", "update"}),
+    "apt-get": frozenset({"download", "install", "update", "upgrade", "dist-upgrade"}),
+    "apt": frozenset({"install", "update", "upgrade"}),
+    "dnf": frozenset({"download", "install", "update", "upgrade"}),
+    "yum": frozenset({"install", "update", "upgrade"}),
+    "apk": frozenset({"add", "fetch", "update", "upgrade"}),
+    "git": frozenset({"clone", "fetch", "pull", "push", "remote", "submodule"}),
+    "go": frozenset({"get", "install", "mod"}),
+    "cargo": frozenset({"add", "install", "search", "update"}),
+    "docker": frozenset({"build", "login", "pull", "push"}),
+    "kubectl": frozenset({"apply", "create", "delete", "edit", "port-forward", "rollout"}),
+}
+_PYTHON_MODULE_NETWORK_SUBCOMMANDS = frozenset({"download", "install", "uninstall", "wheel"})
+
+
+def _command_requires_network(argv: list[str]) -> bool:
+    """Fail-closed argv check: does this command provably need a network namespace?"""
+    if not argv:
+        return False
+    binary = Path(argv[0]).name
+    if binary in _NETWORK_REQUIRING_BINARIES:
+        return True
+    if binary in {"python", "python3"}:
+        rest = argv[1:]
+        if rest[:2] == ["-m", "pip"]:
+            subcommand = rest[2] if len(rest) > 2 else ""
+            return subcommand in _PYTHON_MODULE_NETWORK_SUBCOMMANDS
+        return False
+    matching = _NETWORK_REQUIRING_SUBCOMMANDS.get(binary)
+    return bool(matching) and _first_positional(argv[1:]) in matching
+
 
 _DEFAULT_SAFEGUARDS = {
     "read": ("low", (), False, "default_read_safeguard"),
@@ -163,6 +207,7 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
         "effect_is_declared": permission in {"read", "network"},
         "effect_classification": reason,
         "observation_scope": observation_scope,
+        "requires_network": _command_requires_network(argv),
     }
 
 
