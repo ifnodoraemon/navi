@@ -163,7 +163,9 @@ def _command_requires_network(argv: list[str]) -> bool:
     if binary in _SHELL_INTERPRETERS:
         return _shell_script_requires_network(argv)
     matching = _NETWORK_REQUIRING_SUBCOMMANDS.get(binary)
-    return bool(matching) and _first_positional(argv[1:]) in matching
+    if matching is None:
+        return False
+    return _first_positional(argv[1:]) in matching
 
 
 _SHELL_INTERPRETERS = frozenset({"ash", "bash", "dash", "ksh", "sh", "zsh"})
@@ -216,7 +218,9 @@ def _nested_command_requires_network(nested_argv: list[str]) -> bool:
             return subcommand in _PYTHON_MODULE_NETWORK_SUBCOMMANDS
         return False
     matching = _NETWORK_REQUIRING_SUBCOMMANDS.get(binary)
-    return bool(matching) and _first_positional(nested_argv[1:]) in matching
+    if matching is None:
+        return False
+    return _first_positional(nested_argv[1:]) in matching
 
 
 _DEFAULT_SAFEGUARDS = {

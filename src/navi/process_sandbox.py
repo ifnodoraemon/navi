@@ -153,8 +153,11 @@ def bubblewrap_command(
         # /tmp/navi-home, where this executable's symlinks and venv interpreter
         # resolve.  Nothing extra needs binding.
         pass
-    elif executable != root and root not in executable.parents and not str(executable).startswith(
-        "/usr/"
+    elif (
+        executable is not None
+        and executable != root
+        and root not in executable.parents
+        and not str(executable).startswith("/usr/")
     ):
         runtime_prefix = Path(sys.base_prefix).resolve()
         if executable == runtime_prefix or runtime_prefix in executable.parents:
