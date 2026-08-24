@@ -681,8 +681,21 @@ class ModelPool:
         self,
         role: str,
         messages: list[ChatMessage],
+        *,
+        output_schema: dict[str, Any] | None = None,
     ) -> AsyncGenerator[str]:
-        """Route to the right provider by role and return its stream."""
+        """Route to the right provider by role and return its stream.
+
+        Streaming does not support structured output: there is no provider
+        channel to carry ``output_schema`` on a token stream. Requesting one
+        here is rejected explicitly instead of silently degrading to
+        free-text tokens.
+        """
+        if output_schema is not None:
+            raise StructuredOutputError(
+                "stream_for cannot deliver output_schema; use complete_for for "
+                "structured output"
+            )
         provider = self.routes.get(role, self.default)
         params = self.config.get_role_params(role) if self.config else {}
         temperature = params.get("temperature")
@@ -901,19 +914,39 @@ def _accepted_complete_kwargs(
     provider: ChatProvider,
     kwargs: dict[str, Any],
 ) -> dict[str, Any]:
+    """Filter kwargs to what the provider's ``complete`` accepts.
+
+    Optional tuning kwargs (``temperature``, ``max_tokens``,
+    ``request_options``) may be silently dropped for providers that do not
+    accept them. ``output_schema`` is a contract obligation: if the caller
+    requested structured output but the provider cannot carry it, this raises
+    instead of silently degrading to free-text generation.
+    """
     try:
         parameters = inspect.signature(provider.complete).parameters
     except (TypeError, ValueError):
-        return kwargs
+        raise StructuredOutputError(
+            "provider.complete signature is not introspectable; cannot guarantee "
+            "structured output delivery"
+        ) from None
     if any(param.kind is param.VAR_KEYWORD for param in parameters.values()):
         return kwargs
-    return {key: value for key, value in kwargs.items() if key in parameters}
+    accepted = {key: value for key, value in kwargs.items() if key in parameters}
+    if kwargs.get("output_schema") is not None and "output_schema" not in accepted:
+        raise StructuredOutputError(
+            f"provider {type(provider).__name__} does not accept output_schema; "
+            "structured output cannot be delivered"
+        )
+    return accepted
 
 
 def _validate_structured_output(content: str, output_schema: dict[str, Any]) -> None:
     schema = output_schema.get("schema", output_schema)
     if not isinstance(schema, dict):
-        return
+        raise StructuredOutputError(
+            "output_schema has no 'schema' key and is not itself a JSON schema object; "
+            "cannot validate structured output"
+        )
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
@@ -1044,7 +1077,10 @@ def _structured_response_format(
         }
     if mode == "json_object":
         return {"type": "json_object"}
-    return None
+    raise ValueError(
+        f"Unsupported structured output mode '{mode}' for provider {spec.name}; "
+        "expected 'json_schema' or 'json_object'"
+    )
 
 
 def _default_structured_output(kind: str) -> str:
@@ -1052,7 +1088,7 @@ def _default_structured_output(kind: str) -> str:
         return "json_schema"
     if kind == "anthropic-compatible":
         return "tool_schema"
-    return "none"
+    raise ValueError(f"Unsupported provider kind: {kind}")
 
 
 def _schema_name(output_schema: dict[str, Any] | None, *, default: str = "navi_output") -> str:
@@ -1071,7 +1107,10 @@ def _anthropic_structured_tool(
         return None
     schema = output_schema.get("schema")
     if not isinstance(schema, dict):
-        schema = {"type": "object", "properties": {}}
+        raise StructuredOutputError(
+            "output_schema has no 'schema' key (or it is not a JSON schema object) for "
+            f"provider {spec.name}; cannot deliver structured output"
+        )
     return {
         "name": _schema_name(output_schema),
         "description": "Return Navi machine-readable output.",

@@ -74,163 +74,74 @@ class ModelSyscallPlanner:
             durable_constraints=durable_constraints,
             memory_context=memory_context,
         )
-        try:
-            response = await self.provider.complete_for(
-                "planner",
-                [
-                    ChatMessage(
-                        "system",
-                        "\n\n".join(
-                            (
-                                assemble_planner_system_prompt().render(),
-                                assemble_planner_tool_manifest(tools).render(),
-                            )
-                        ),
+        response = await self.provider.complete_for(
+            "planner",
+            [
+                ChatMessage(
+                    "system",
+                    "\n\n".join(
+                        (
+                            assemble_planner_system_prompt().render(),
+                            assemble_planner_tool_manifest(tools).render(),
+                        )
                     ),
-                    ChatMessage("user", turn_input.render()),
-                ],
-                output_schema=_syscall_output_schema(),
-            )
-        except (
-            ProviderHTTPError,
-            ProviderResponseError,
-            StructuredOutputError,
-            httpx.TransportError,
-        ) as exc:
-            failure_facts = provider_failure_facts(exc)
-            return [
-                ModelSyscall(
-                    tool="system.planner_error",
-                    args=failure_facts,
-                    reason=(
-                        "planner structured output failed"
-                        if failure_facts.get("structured_output_failure")
-                        else "planner provider call failed"
-                        if failure_facts.get("provider_call_failure")
-                        else "planner implementation failed"
-                    ),
-                )
-            ]
+                ),
+                ChatMessage("user", turn_input.render()),
+            ],
+            output_schema=_syscall_output_schema(),
+        )
         syscalls = self._parse_syscalls(response)
-        # Validate each syscall against its matching tool spec.
-        # If any syscall fails schema validation, return a single
-        # system.planner_error so the engine treats the whole step as failed.
-        validated: list[ModelSyscall] = []
+        if len(syscalls) != 1:
+            raise StructuredOutputError(
+                f"planner_must_return_exactly_one_syscall: count={len(syscalls)}"
+            )
         for syscall in syscalls:
-            if syscall.tool == "system.planner_error":
-                return [syscall]
             matching_spec = next((spec for spec in tools if spec.name == syscall.tool), None)
             if matching_spec:
                 if syscall.permission not in PERMISSION_ORDER:
-                    return [
-                        ModelSyscall(
-                            tool="system.planner_error",
-                            args={
-                                "selected_tool": syscall.tool,
-                                "selected_permission": syscall.permission,
-                                "selected_args": dict(syscall.args),
-                            },
-                            reason="planner selected an unknown permission",
-                        )
-                    ]
+                    raise StructuredOutputError(
+                        f"planner selected an unknown permission: {syscall.permission}"
+                    )
                 schema_errors = json_schema_errors(syscall.args, matching_spec.input_schema)
                 if schema_errors:
-                    return [
-                        ModelSyscall(
-                            tool="system.planner_error",
-                            args={
-                                "selected_tool": syscall.tool,
-                                "selected_args": dict(syscall.args),
-                                "schema_errors": schema_errors,
-                            },
-                            reason="planner capability arguments schema mismatch",
-                        )
-                    ]
-            validated.append(syscall)
-        return validated
+                    raise StructuredOutputError(
+                        f"planner capability arguments schema mismatch: {'; '.join(schema_errors[:5])}"
+                    )
+        return syscalls
 
     @staticmethod
     def _parse_syscalls(response: str) -> list[ModelSyscall]:
         """Parse planner output into a list of syscalls.
 
-        Current planner output is a single object with a ``syscalls`` array.
-        On any parse failure, returns a single ``system.planner_error`` syscall.
+        The provider's structured-output channel already validates the JSON
+        envelope against ``_syscall_output_schema``.  This method unpacks the
+        validated payload into ``ModelSyscall`` objects.  Any parse failure
+        here is a provider contract violation and propagates as a hard error.
         """
-        try:
-            data = json.loads(response)
-        except json.JSONDecodeError:
-            return [
-                ModelSyscall(
-                    tool="system.planner_error",
-                    args={"raw_response": response.strip()},
-                    reason="planner returned invalid JSON",
-                )
-            ]
-        if not isinstance(data, dict):
-            return [
-                ModelSyscall(
-                    tool="system.planner_error",
-                    reason="planner JSON was not an object",
-                )
-            ]
-
-        raw_list = data.get("syscalls")
-        if isinstance(raw_list, list) and len(raw_list) != 1:
-            return [
-                ModelSyscall(
-                    tool="system.planner_error",
-                    args={
-                        "reason": "planner_must_return_exactly_one_syscall",
-                        "count": len(raw_list),
-                        "candidate_syscalls": raw_list,
-                    },
-                    reason="planner violated the single-syscall decision contract",
-                )
-            ]
-
-        schema_errors = json_schema_errors(data, _syscall_output_schema()["schema"])
-        if schema_errors:
-            return [
-                ModelSyscall(
-                    tool="system.planner_error",
-                    args={"schema_errors": schema_errors},
-                    reason="planner decision schema mismatch",
-                )
-            ]
+        data = json.loads(response)
         raw_list = data["syscalls"]
-        if not raw_list:
-            return [
-                ModelSyscall(
-                    tool="system.planner_error",
-                    reason="planner 'syscalls' list was empty",
-                )
-            ]
         syscalls: list[ModelSyscall] = []
         for item in raw_list:
             parsed = ModelSyscallPlanner._parse_single(item)
-            if parsed is not None:
-                syscalls.append(parsed)
+            syscalls.append(parsed)
         if not syscalls:
-            return [
-                ModelSyscall(
-                    tool="system.planner_error",
-                    reason="planner 'syscalls' list was empty",
-                )
-            ]
+            raise StructuredOutputError("planner 'syscalls' list was empty after parsing")
         return syscalls
 
     @staticmethod
-    def _parse_single(data: Any) -> ModelSyscall | None:
+    def _parse_single(data: Any) -> ModelSyscall:
         if not isinstance(data, dict):
-            return None
-        schema_errors = json_schema_errors(data, _single_syscall_schema())
-        if schema_errors:
-            return ModelSyscall(
-                tool="system.planner_error",
-                args={"schema_errors": schema_errors},
-                reason="planner decision schema mismatch",
+            raise StructuredOutputError(
+                "planner syscall entry was not an object despite the declared schema"
             )
+        for key in ("tool", "permission", "args"):
+            if key not in data:
+                raise StructuredOutputError(
+                    f"planner syscall entry is missing required field {key!r}"
+                )
         tool = str(data["tool"]).strip()
+        if not tool:
+            raise StructuredOutputError("planner syscall entry has an empty 'tool'")
         args = dict(data["args"])
         message = str(args.get("message") or "")
         return ModelSyscall(

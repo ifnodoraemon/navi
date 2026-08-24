@@ -411,7 +411,11 @@ async def test_planner_rebuilds_current_state_after_approval_changes(tmp_path) -
     ).plan(spec, state, workspace=tmp_path, evidence={})
 
     turn_input = provider.messages[-1].content
-    match = re.search(r"<runtime_facts>\s*(.*?)\s*</runtime_facts>", turn_input, re.DOTALL)
+    match = re.search(
+        r"<runtime_facts>\s*<!\[CDATA\[(.*?)\]\]>\s*</runtime_facts>",
+        turn_input,
+        re.DOTALL,
+    )
     assert match is not None
     planner_facts = json.loads(match.group(1))
     pending = planner_facts["ingress_facts"]["current_state"]["pending_approvals"]
@@ -472,11 +476,10 @@ async def test_planner_contract_error_is_reflected_back_to_model(tmp_path) -> No
     assert result.facts["loop_terminal_state"] == LoopTerminalState.CONVERGED
     assert result.facts["responded_message"].startswith("委派子 agent 时")
     assert "planner_must_return_exactly_one_syscall" in provider.repair_prompt
-    assert "candidate_syscalls" in provider.repair_prompt
     evidence = result.facts["state_graph_result"]["evidence"]
-    first_failure = evidence["planner_failure_history"][0]["planned_capability"]
-    assert first_failure["args"]["candidate_syscalls"][0]["tool"] == "respond"
-    assert first_failure["args"]["candidate_syscalls"][1]["tool"] == "memory.add"
+    first_failure = evidence["planner_failure_history"][0]
+    assert first_failure["error_type"] == "StructuredOutputError"
+    assert "planner_must_return_exactly_one_syscall" in first_failure["error"]
 
 
 @pytest.mark.asyncio

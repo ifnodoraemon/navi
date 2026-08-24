@@ -166,7 +166,7 @@ async def test_shell_binary_is_approved_instead_of_name_blocked(tmp_path: Path) 
         governed_run_id=run.id,
     )
     context = _context(tmp_path)
-    args = {"command": ["rm", "--version"]}
+    args = {"command": ["touch", str(tmp_path / "marker")]}
 
     suspended = await registry.invoke("shell.run", args, permission="write", context=context)
 
@@ -187,7 +187,7 @@ async def test_shell_binary_is_approved_instead_of_name_blocked(tmp_path: Path) 
     executed = await registry.invoke("shell.run", args, permission="write", context=context)
 
     assert executed.ok is True
-    assert "rm (GNU coreutils)" in str((executed.facts or {}).get("stdout") or "")
+    assert (tmp_path / "marker").exists()
 
 
 @pytest.mark.asyncio

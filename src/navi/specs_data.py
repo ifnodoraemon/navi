@@ -448,38 +448,15 @@ PROMPT_ASSEMBLIES_SPEC: Any = {
     "goal_event_compaction_messages": {
         "blocks": [
             {
-                "name": "GOAL EVENT COMPACTION USER",
+                "name": "GOAL EVENT COMPACTION SYSTEM",
                 "tier": "stable",
-                "source": "prompt_specs.goal_event_compaction.user",
+                "source": "prompt_specs.goal_event_compaction.system",
                 "content": (
-                    "Summarize the following goal events to preserve intent, completed steps, "
-                    "pending approvals, unresolved questions, and safety constraints. Do not "
-                    "lose any constraints or pending approvals.\n\n{goal_events}"
+                    "Summarize the goal events in the turn input to preserve intent, "
+                    "completed steps, pending approvals, unresolved questions, and safety "
+                    "constraints. Do not lose any constraints or pending approvals."
                 ),
             }
-        ],
-    },
-    "conversation_summarizer_messages": {
-        "blocks": [
-            {
-                "name": "CONVERSATION SUMMARIZER SYSTEM",
-                "tier": "stable",
-                "source": "prompt_specs.conversation_summarizer.system",
-                "content": (
-                    "You are a conversation summarizer. Summarize the "
-                    "following conversation history, preserving: (1) key "
-                    "decisions made, (2) errors encountered and their "
-                    "context, (3) facts learned, (4) the current "
-                    "objective. Be concise but complete. Do not invent "
-                    "information not present in the transcript."
-                ),
-            },
-            {
-                "name": "CONVERSATION SUMMARIZER USER",
-                "tier": "turn_input",
-                "source": "prompt_specs.conversation_summarizer.user",
-                "content": "<transcript>\n{transcript}\n</transcript>",
-            },
         ],
     },
 }

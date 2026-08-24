@@ -24,7 +24,7 @@ from navi.loop_contracts import (
     VerificationKind,
     VerificationStep,
 )
-from navi.provider import ChatMessage, ProviderResponseError
+from navi.provider import ChatMessage, ProviderResponseError, StructuredOutputError
 from navi.runtime import AgentRuntime
 from navi.runs import RunStore
 from navi.state_graph import ExecutedCapabilityStep, LLMSemanticCheckerPort
@@ -175,6 +175,134 @@ async def test_semantic_checker_uses_conversation_only_to_resolve_elliptical_tur
         ]
         is False
     )
+
+
+class _TruncatingCheckerProvider:
+    """Reproduces the production checker failure: the verdict JSON is cut off
+    mid-string so the schema validation raises ``StructuredOutputError``.
+
+    The first call always returns a truncated verdict (the incident). If the
+    port self-corrects, the second call returns a valid verdict.
+    """
+
+    def __init__(self, *, fail_times: int) -> None:
+        self.fail_times = fail_times
+        self.calls = 0
+        self.messages: list[ChatMessage] = []
+
+    async def complete_for(
+        self,
+        role: str,
+        messages: list[ChatMessage],
+        *,
+        output_schema: dict | None = None,
+    ) -> str:
+        assert role == "checker"
+        self.messages = messages
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            # Mirrors the trace: ~15.9k chars, JSON cut off before the closing brace.
+            raise StructuredOutputError(
+                "structured output is not valid JSON: Expecting ',' delimiter: "
+                "line 1 column 15954 (char 15953)"
+            )
+        return json.dumps(
+            {"passed": True, "evidence_summary": "evidence covers the objective"}
+        )
+
+    def usage_for(self, role: str) -> dict:
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_semantic_checker_fail_closed_on_malformed_verdict(tmp_path: Path) -> None:
+    """A malformed/truncated checker verdict must not leak as a turn-killing
+    internal error; the loop stays governed (the 2026-08-24 StructuredOutputError
+    incident)."""
+    provider = _TruncatingCheckerProvider(fail_times=10)  # always malformed
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="summarize the search results",
+            scope=(f"repo:{tmp_path}",),
+        ),
+        goal_id="truncated-verdict",
+        allowed_capabilities=("web.search", "respond"),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                evidence_key="semantic_checker_result",
+            ),
+        ),
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+
+    # Must NOT raise: the port retries then fails closed.
+    decision = await LLMSemanticCheckerPort(runtime=runtime).assess(
+        spec,
+        LoopRunState(
+            run_id="truncated-verdict-run",
+            goal_id=spec.goal_id,
+            loop_spec_id=spec.id,
+        ),
+        executed=ExecutedCapabilityStep(
+            ok=True,
+            action="tool",
+            facts={"result_count": 3, "provider": "exa"},
+        ),
+        evidence={},
+    )
+
+    # Bounded retries: 1 + SEMANTIC_CHECKER_VERDICT_RETRIES calls.
+    assert provider.calls == 2
+    # Fails closed so the loop reflects/retries or terminates governed.
+    assert decision.passed is False
+    assert "no valid verdict" in decision.evidence_summary
+    assert "Expecting ',' delimiter" in decision.evidence_summary
+
+
+@pytest.mark.asyncio
+async def test_semantic_checker_recovers_from_transient_malformed_verdict(
+    tmp_path: Path,
+) -> None:
+    """A transient malformed verdict is retried once and then accepted, so a
+    single truncation no longer costs the turn."""
+    provider = _TruncatingCheckerProvider(fail_times=1)  # fail the 1st call only
+    spec = LoopSpec.from_goal(
+        GoalSpec(
+            objective="summarize the search results",
+            scope=(f"repo:{tmp_path}",),
+        ),
+        goal_id="recover-verdict",
+        allowed_capabilities=("web.search", "respond"),
+        verification_ladder=(
+            VerificationStep(
+                kind=VerificationKind.LLM_CHECKER,
+                name="objective_check",
+                evidence_key="semantic_checker_result",
+            ),
+        ),
+    )
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+
+    decision = await LLMSemanticCheckerPort(runtime=runtime).assess(
+        spec,
+        LoopRunState(
+            run_id="recover-verdict-run",
+            goal_id=spec.goal_id,
+            loop_spec_id=spec.id,
+        ),
+        executed=ExecutedCapabilityStep(
+            ok=True,
+            action="tool",
+            facts={"result_count": 3, "provider": "exa"},
+        ),
+        evidence={},
+    )
+
+    assert provider.calls == 2  # 1 failed + 1 recovered
+    assert decision.passed is True
+    assert decision.evidence_summary == "evidence covers the objective"
 
 
 @pytest.mark.asyncio

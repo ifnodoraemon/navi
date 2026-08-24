@@ -737,6 +737,7 @@ ACTION_SPECS = [
                     "items": {"type": "object"},
                 },
                 "connector_delivery": {"type": "object"},
+                "retry_gate": {"type": "object"},
                 "reason": {"type": "string"},
                 "approval_resolution": {"type": "object"},
                 "selection": {"type": "string"},

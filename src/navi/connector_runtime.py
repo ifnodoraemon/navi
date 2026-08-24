@@ -12,7 +12,7 @@ from .connector_router import ConnectorRouter
 from .control_plane import TurnController
 from .event_bus import EventBus, NaviEvent, ResponseReadyEvent, UserIntentEvent
 from .intent_agent import IntentAgent
-from .turn_result import AgentTurnResult
+from .turn_lifecycle import AgentTurnResult
 from .runtime import AgentRuntime
 
 

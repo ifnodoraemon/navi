@@ -7,10 +7,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .turn_lifecycle import TurnLifecycleMixin
+from .turn_lifecycle import AgentTurnResult, TurnLifecycleMixin
 from .capabilities import CapabilityContext, CapabilityRegistry
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
-from .turn_result import AgentTurnResult
 from .finalization import synthesize_user_reply_from_facts
 from .loop import TracePhase
 from .operating_context import max_permission, normalize_permission

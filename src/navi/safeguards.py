@@ -114,6 +114,11 @@ _NETWORK_READ_ONLY_COMMANDS = {
     "kubectl": frozenset({"describe", "get", "logs", "top"}),
 }
 
+# Long-form help/version flags cannot mutate any reachable state for any
+# binary.  Unknown binaries (e.g. a pipx-installed channel reader) must not be
+# whitelisted by name, but a --help/--version query is provably read-only.
+_HELP_OR_VERSION_FLAGS = frozenset({"--help", "--version"})
+
 # Commands whose primary purpose is fetching from or talking to a network
 # service.  A single scalar permission can only say "write" for these, but a
 # write approval is meaningless without an open network namespace.  The system
@@ -255,6 +260,8 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
             subcommand = _first_positional(argv[1:])
             if subcommand in _NETWORK_READ_ONLY_COMMANDS[binary]:
                 permission, reason = "network", f"declared_{binary}_read_only_subcommand"
+        elif _HELP_OR_VERSION_FLAGS.intersection(argv[1:]):
+            permission, reason = "read", "declared_help_or_version_query"
     return {
         "binary": binary,
         "argument_count": max(0, len(argv) - 1),

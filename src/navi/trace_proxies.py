@@ -38,11 +38,7 @@ class TracingPlannerPortProxy:
 
         try:
             planned_step = await self.delegate.plan(spec, state, workspace=workspace, evidence=evidence)
-            
-            phase = str(TracePhase.PLANNER_SYSCALL)
-            if planned_step.tool == "system.planner_error":
-                phase = str(TracePhase.PLANNER_CALL_ERROR)
-            
+
             output_data = planned_step.to_dict()
             usage_data = {}
             runtime = self.runtime
@@ -50,27 +46,27 @@ class TracingPlannerPortProxy:
                 usage = runtime.provider.usage_for("planner")
                 if usage:
                     usage_data = dict(usage)
-            
+
             output_data["usage"] = usage_data
             prompt_messages = usage_data.pop("messages", [])
             output_data["llm_response"] = usage_data.pop("response", "")
-            
+
             self.trace_store.add_event(
                 trace_id=self.trace_context.trace_id,
                 session_id=self.trace_context.session_id or "",
                 run_id=state.run_id,
-                phase=phase,
+                phase=str(TracePhase.PLANNER_SYSCALL),
                 source=self.trace_context.source,
                 peer_id=self.trace_context.peer_id,
                 sender_id=self.trace_context.sender_id,
                 tool=planned_step.tool,
                 model_role="planner",
-                ok=(planned_step.tool != "system.planner_error"),
+                ok=True,
                 input_data={"prompt": prompt_messages},
                 output_data=output_data,
             )
             return planned_step
-            
+
         except Exception as e:
             self.trace_store.add_event(
                 trace_id=self.trace_context.trace_id,
@@ -80,7 +76,7 @@ class TracingPlannerPortProxy:
                 source=self.trace_context.source,
                 peer_id=self.trace_context.peer_id,
                 sender_id=self.trace_context.sender_id,
-                tool="system.planner_error",
+                tool="planner.error",
                 model_role="planner",
                 ok=False,
                 output_data={"error": str(e), "traceback": traceback.format_exc()},

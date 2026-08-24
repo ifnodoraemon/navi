@@ -152,30 +152,24 @@ async def test_planner_projects_structured_output_failure_as_replannable_contrac
             del role, messages, kwargs
             raise StructuredOutputError("structured output is not valid JSON")
 
-    decision = await ModelSyscallPlanner(Provider()).plan(
-        "answer",
-        tools=[
-            ToolSpec(
-                name="respond",
-                capability_class="conversation",
-                execution_contexts=("turn",),
-                description="Respond.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"message": {"type": "string"}},
-                    "required": ["message"],
-                },
-                output_schema={"type": "object", "properties": {}},
-            )
-        ],
-    )
-
-    assert len(decision) == 1
-    assert decision[0].tool == "system.planner_error"
-    assert decision[0].reason == "planner structured output failed"
-    assert decision[0].args["structured_output_failure"] is True
-    assert decision[0].args["provider_call_failure"] is False
-    assert decision[0].args["retryable"] is False
+    with pytest.raises(StructuredOutputError, match="structured output is not valid JSON"):
+        await ModelSyscallPlanner(Provider()).plan(
+            "answer",
+            tools=[
+                ToolSpec(
+                    name="respond",
+                    capability_class="conversation",
+                    execution_contexts=("turn",),
+                    description="Respond.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"message": {"type": "string"}},
+                        "required": ["message"],
+                    },
+                    output_schema={"type": "object", "properties": {}},
+                )
+            ],
+        )
 
 
 @pytest.mark.asyncio
@@ -390,7 +384,7 @@ async def test_governed_sensitive_shell_call_suspends_until_matching_approval(tm
         permission_ceiling="write",
         workspace=str(tmp_path),
     )
-    args = {"command": ["python", "-c", "print('approved')"]}
+    args = {"command": ["python3", "-c", "print('approved')"]}
 
     suspended = await registry.invoke("shell.run", args, permission="write", context=context)
 
@@ -430,7 +424,7 @@ async def test_active_turn_sensitive_shell_call_creates_durable_approval(tmp_pat
         permission_ceiling="write",
         workspace=str(tmp_path),
     )
-    args = {"command": ["python", "-c", "print('needs approval')"]}
+    args = {"command": ["python3", "-c", "print('needs approval')"]}
 
     suspended = await registry.invoke("shell.run", args, permission="write", context=context)
 
@@ -544,15 +538,11 @@ def test_anthropic_direct_tool_call_is_not_reconstructed_as_planner_decision():
 
 
 def test_planner_parser_rejects_markdown_fenced_json():
-    decisions = ModelSyscallPlanner._parse_syscalls(
-        '```json\n{"tool":"respond","permission":"read","args":{},'
-        '"confidence":1,"reason":"done"}\n```'
-    )
-
-    assert isinstance(decisions, list)
-    assert len(decisions) == 1
-    assert decisions[0].tool == "system.planner_error"
-    assert decisions[0].reason == "planner returned invalid JSON"
+    with pytest.raises(json.JSONDecodeError):
+        ModelSyscallPlanner._parse_syscalls(
+            '```json\n{"tool":"respond","permission":"read","args":{},'
+            '"confidence":1,"reason":"done"}\n```'
+        )
 
 
 def test_planner_parser_accepts_missing_optional_audit_fields():
@@ -620,56 +610,81 @@ async def test_planner_rejects_selected_capability_args_schema_mismatch():
                 }
             )
 
-    decision = await ModelSyscallPlanner(Provider()).plan(
-        "hi",
-        tools=[
-            ToolSpec(
-                name="respond",
-                capability_class="conversation",
-                execution_contexts=("turn",),
-                description="Return a final user-facing message.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"message": {"type": "string"}},
-                    "required": ["message"],
-                },
-                output_schema={"type": "object", "properties": {}},
-            )
-        ],
-    )
-
-    assert isinstance(decision, list)
-    assert len(decision) == 1
-    assert decision[0].tool == "system.planner_error"
-    assert decision[0].reason == "planner capability arguments schema mismatch"
-    assert decision[0].args["selected_tool"] == "respond"
-    assert "$.message is required" in decision[0].args["schema_errors"]
-
-
-def test_planner_parser_rejects_multiple_syscalls_with_candidate_facts():
-    decisions = ModelSyscallPlanner._parse_syscalls(
-        json.dumps(
-            {
-                "syscalls": [
-                    {
-                        "tool": "goal.open",
-                        "permission": "prepare",
-                        "args": {"objective": "x"},
+    with pytest.raises(StructuredOutputError, match="schema mismatch"):
+        await ModelSyscallPlanner(Provider()).plan(
+            "hi",
+            tools=[
+                ToolSpec(
+                    name="respond",
+                    capability_class="conversation",
+                    execution_contexts=("turn",),
+                    description="Return a final user-facing message.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"message": {"type": "string"}},
+                        "required": ["message"],
                     },
-                    {
-                        "tool": "respond",
-                        "permission": "read",
-                        "args": {"message": "done"},
-                    },
-                ]
-            }
+                    output_schema={"type": "object", "properties": {}},
+                )
+            ],
         )
-    )
 
-    assert isinstance(decisions, list)
-    assert len(decisions) == 1
-    assert decisions[0].tool == "system.planner_error"
-    assert decisions[0].args["reason"] == "planner_must_return_exactly_one_syscall"
-    assert decisions[0].args["count"] == 2
-    assert decisions[0].args["candidate_syscalls"][0]["tool"] == "goal.open"
-    assert decisions[0].args["candidate_syscalls"][1]["tool"] == "respond"
+
+@pytest.mark.asyncio
+async def test_planner_rejects_multiple_syscalls_via_plan():
+    class Provider:
+        async def complete_for(
+            self,
+            role: str,
+            messages: list[ChatMessage],
+            *,
+            output_schema: dict | None = None,
+        ) -> str:
+            del role, messages, output_schema
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "goal.open",
+                            "permission": "prepare",
+                            "args": {"objective": "x"},
+                        },
+                        {
+                            "tool": "respond",
+                            "permission": "read",
+                            "args": {"message": "done"},
+                        },
+                    ]
+                }
+            )
+
+    with pytest.raises(StructuredOutputError, match="planner_must_return_exactly_one_syscall"):
+        await ModelSyscallPlanner(Provider()).plan(
+            "open and respond",
+            tools=[
+                ToolSpec(
+                    name="goal.open",
+                    capability_class="goal",
+                    execution_contexts=("turn",),
+                    description="Open a goal.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"objective": {"type": "string"}},
+                        "required": ["objective"],
+                    },
+                    output_schema={"type": "object", "properties": {}},
+                ),
+                ToolSpec(
+                    name="respond",
+                    capability_class="conversation",
+                    execution_contexts=("turn",),
+                    description="Return a final user-facing message.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"message": {"type": "string"}},
+                        "required": ["message"],
+                    },
+                    output_schema={"type": "object", "properties": {}},
+                ),
+            ],
+        )

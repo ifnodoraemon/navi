@@ -6,6 +6,9 @@ import json
 import os
 import shlex
 import uuid
+
+import httpx
+
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -52,6 +55,12 @@ from .resource_gateway import (
 from .runtime import AgentRuntime
 from .safeguards import call_mutates
 from .syscalls import ModelSyscallPlanner, provider_failure_facts
+from .provider import (
+    ChatMessage,
+    ProviderHTTPError,
+    ProviderResponseError,
+    StructuredOutputError,
+)
 from .text_utils import truncate_middle
 from .trace import TraceStore
 from .workspaces import LockAcquireResult
@@ -72,6 +81,15 @@ SEMANTIC_CHECKER_ATTEMPT_LIMIT = 4
 SEMANTIC_CHECKER_ARGS_MAX_CHARS = 3_000
 SEMANTIC_CHECKER_FACTS_MAX_CHARS = 6_000
 SEMANTIC_CHECKER_MESSAGE_MAX_CHARS = 3_000
+# The verdict's evidence_summary must stay short enough that the JSON object
+# cannot be truncated by the checker's max_tokens budget. An over-long summary
+# was the direct trigger of a turn-killing StructuredOutputError.
+SEMANTIC_CHECKER_EVIDENCE_SUMMARY_MAX_CHARS = 2_000
+SEMANTIC_CHECKER_VERDICT_ERROR_CHARS = 200
+# A malformed checker verdict (truncated or invalid JSON) is a boundary
+# failure of the verdict call, not a verdict. The port re-asks the model a
+# bounded number of times before failing closed so the loop stays governed.
+SEMANTIC_CHECKER_VERDICT_RETRIES = 1
 TASK_RESULT_PREVIEW_CHARS = 240
 PROVIDER_TRANSPORT_MAX_RETRIES = 1
 PROVIDER_TRANSPORT_RETRY_MIN_SECONDS = 1.0
@@ -281,10 +299,18 @@ class ContractViolationRecoveryPort:
         spec: LoopSpec,
         state: LoopRunState,
         *,
-        planned: PlannedCapabilityStep,
+        exc: Exception,
         domain: str,
+        failure_facts: dict[str, Any] | None = None,
     ) -> ReflectionDecision:
-        reason_code = str(planned.args.get("reason") or planned.reason or "runtime_contract_failed")
+        reason_code = type(exc).__name__
+        violation_record: dict[str, Any] = {
+            "error_type": reason_code,
+            "error": truncate_middle(str(exc), 1_000),
+            "domain": domain,
+        }
+        if failure_facts:
+            violation_record["failure_facts"] = failure_facts
         recovery_facts = {
             "trigger": "runtime.contract_failed",
             "reason_code": reason_code,
@@ -294,7 +320,7 @@ class ContractViolationRecoveryPort:
             "attempt": state.attempt,
             "max_attempts": spec.retry_policy.max_attempts,
             "goal_id": spec.goal_id,
-            "contract_violation": planned.to_dict(),
+            "contract_violation": violation_record,
             "contract": {
                 "syscall_count": "exactly_one",
                 "runtime_executes_one_syscall_per_plan": True,
@@ -378,49 +404,97 @@ class LLMSemanticCheckerPort:
         executed: ExecutedCapabilityStep,
         evidence: dict[str, Any],
     ) -> SemanticCheckDecision:
-        task_context = _semantic_checker_task_context(spec, executed)
-        response = await self.runtime.provider.complete_for(
-            "checker",
-            assemble_semantic_checker_messages(
-                objective=spec.goal.objective,
-                acceptance_criteria=list(spec.goal.acceptance_criteria),
-                conversation_context=_semantic_checker_conversation_context(
-                    runtime=self.runtime,
-                    spec=spec,
-                ),
-                current_time=current_time_facts(),
-                trigger_facts=_goal_trigger_facts(spec),
-                task_context=task_context,
-                evaluation_contract=_semantic_checker_evaluation_contract(
-                    spec,
-                    executed,
-                ),
-                attempt=state.attempt,
-                max_attempts=spec.retry_policy.max_attempts,
-                last_capability=_semantic_checker_capability_result(executed),
-                observed_capability_evidence=_semantic_checker_attempt_evidence(evidence),
-            ),
+        messages = self._build_messages(spec, state, executed=executed, evidence=evidence)
+        verdict_failures: list[str] = []
+        for _ in range(1 + SEMANTIC_CHECKER_VERDICT_RETRIES):
+            try:
+                response = await self.runtime.provider.complete_for(
+                    "checker",
+                    messages,
+                    output_schema=_semantic_checker_output_schema(),
+                )
+                return self._parse(response)
+            except (StructuredOutputError, json.JSONDecodeError) as exc:
+                # A malformed or truncated verdict is a boundary failure of the
+                # verdict call, not a verdict. Re-ask a bounded number of times,
+                # then fail closed so the loop reflects/retries or terminates
+                # governed instead of leaking an unhandled internal error.
+                # Transport and resource errors are deliberately NOT caught here:
+                # they keep the durable retry-gate / resource-pause machinery.
+                verdict_failures.append(
+                    truncate_middle(str(exc), SEMANTIC_CHECKER_VERDICT_ERROR_CHARS)
+                )
+        return SemanticCheckDecision(
+            passed=False,
+            evidence_summary=self._verdict_failure_summary(verdict_failures),
         )
-        return self._parse(response)
+
+    def _build_messages(
+        self,
+        spec: LoopSpec,
+        state: LoopRunState,
+        *,
+        executed: ExecutedCapabilityStep,
+        evidence: dict[str, Any],
+    ) -> list[ChatMessage]:
+        return assemble_semantic_checker_messages(
+            objective=spec.goal.objective,
+            acceptance_criteria=list(spec.goal.acceptance_criteria),
+            conversation_context=_semantic_checker_conversation_context(
+                runtime=self.runtime,
+                spec=spec,
+            ),
+            current_time=current_time_facts(),
+            trigger_facts=_goal_trigger_facts(spec),
+            task_context=_semantic_checker_task_context(spec, executed),
+            evaluation_contract=_semantic_checker_evaluation_contract(
+                spec,
+                executed,
+            ),
+            attempt=state.attempt,
+            max_attempts=spec.retry_policy.max_attempts,
+            last_capability=_semantic_checker_capability_result(executed),
+            observed_capability_evidence=_semantic_checker_attempt_evidence(evidence),
+        )
 
     @staticmethod
     def _parse(response: str) -> SemanticCheckDecision:
-        try:
-            data = json.loads(response)
-        except json.JSONDecodeError:
-            return SemanticCheckDecision(
-                passed=False,
-                evidence_summary="checker returned invalid JSON",
-            )
+        data = json.loads(response)
         if not isinstance(data, dict):
-            return SemanticCheckDecision(
-                passed=False,
-                evidence_summary="checker returned invalid JSON",
+            raise json.JSONDecodeError(
+                "checker verdict must be a JSON object", response, 0
             )
         return SemanticCheckDecision(
             passed=bool(data.get("passed", False)),
             evidence_summary=str(data.get("evidence_summary", "")),
         )
+
+    @staticmethod
+    def _verdict_failure_summary(failures: list[str]) -> str:
+        detail = " | ".join(failures[-2:])
+        return (
+            "semantic checker returned no valid verdict after "
+            f"{len(failures)} attempt(s); failing closed. last error: {detail}"
+        )
+
+
+def _semantic_checker_output_schema() -> dict[str, Any]:
+    return {
+        "name": "semantic_check_decision",
+        "strict": False,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "passed": {"type": "boolean"},
+                "evidence_summary": {
+                    "type": "string",
+                    "maxLength": SEMANTIC_CHECKER_EVIDENCE_SUMMARY_MAX_CHARS,
+                },
+            },
+            "required": ["passed", "evidence_summary"],
+            "additionalProperties": False,
+        },
+    }
 
 
 class SemanticCheckerCallError(RuntimeError):
@@ -1198,11 +1272,8 @@ class ModelCapabilityPlannerPort:
             if "*" in allowed or item.name in allowed
         ]
         if not tools:
-            return PlannedCapabilityStep(
-                tool="system.planner_error",
-                permission="read",
-                args={"reason": "no_allowed_capabilities", "allowed_capabilities": sorted(allowed)},
-                reason="LoopSpec allowed no planner-visible capabilities",
+            raise StructuredOutputError(
+                f"LoopSpec allowed no planner-visible capabilities: {sorted(allowed)}"
             )
         session_id = spec.goal.metadata.get("session_id") or ""
         conversation_context = ""
@@ -1252,15 +1323,8 @@ class ModelCapabilityPlannerPort:
             memory_context=memory_context.text,
         )
         if len(syscalls) != 1:
-            return PlannedCapabilityStep(
-                tool="system.planner_error",
-                permission="read",
-                args={
-                    "reason": "planner_must_return_exactly_one_syscall",
-                    "count": len(syscalls),
-                    "candidate_syscalls": [item.to_dict() for item in syscalls],
-                },
-                reason="StateGraph executes exactly one syscall per PLAN node",
+            raise StructuredOutputError(
+                f"planner_must_return_exactly_one_syscall: count={len(syscalls)}"
             )
         selected = syscalls[0]
         used_memory_ids = _selected_memory_ids(
@@ -1571,32 +1635,35 @@ class DurableStateGraphRunner:
                         resource_grants=tuple(grants),
                         evidence=collected_evidence,
                     )
-                except Exception:
-                    self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
-                    raise
-
-                collected_evidence["planned_capability"] = planned_step.to_dict()
-                if planned_step.tool == "system.planner_error":
+                except (
+                    ProviderHTTPError,
+                    ProviderResponseError,
+                    StructuredOutputError,
+                    httpx.TransportError,
+                ) as planner_exc:
                     self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
                     planner_failures = list(collected_evidence.get("planner_failure_history") or [])
+                    failure_facts = provider_failure_facts(planner_exc)
                     planner_failures.append(
                         {
                             "attempt": state.attempt,
-                            "planned_capability": planned_step.to_dict(),
+                            "error_type": type(planner_exc).__name__,
+                            "error": truncate_middle(str(planner_exc), 1_000),
+                            "failure_facts": failure_facts,
                         }
                     )
                     collected_evidence["planner_failure_history"] = planner_failures[-5:]
                     decision = self.contract_violation_recovery_port.recover(
                         spec,
                         state,
-                        planned=planned_step,
+                        exc=planner_exc,
                         domain="planner",
+                        failure_facts=failure_facts,
                     )
-                    if _is_planner_provider_failure(planned_step):
-                        # There is no model decision available when the provider
-                        # call itself failed. Never recurse into another model
-                        # call in this execution. A typed, retryable transport
-                        # failure may instead cross one durable pause/resume edge.
+                    is_transport_failure = bool(
+                        failure_facts.get("provider_call_failure")
+                    ) and not bool(failure_facts.get("structured_output_failure"))
+                    if is_transport_failure:
                         decision = replace(
                             decision,
                             replan_allowed=False,
@@ -1605,13 +1672,16 @@ class DurableStateGraphRunner:
                                 "automatic_model_retry": False,
                             },
                         )
-                        retry_gate = _next_provider_transport_retry_gate(
-                            planned_step,
+                        retry_gate = _next_provider_transport_retry_gate_for_facts(
+                            failure_facts,
                             evidence=collected_evidence,
+                            model_role="planner",
+                            resume_node=LoopNode.PLAN,
                         )
                         if retry_gate is not None:
                             retry_evidence = {
-                                **planned_step.to_dict(),
+                                "error_type": type(planner_exc).__name__,
+                                "failure_facts": failure_facts,
                                 "automatic_model_retry": False,
                                 "durable_transport_retry": True,
                                 "retry_gate": retry_gate,
@@ -1627,7 +1697,7 @@ class DurableStateGraphRunner:
                                 resource_grants=tuple(grants),
                                 evidence=collected_evidence,
                             )
-                        if bool(planned_step.args.get("retryable", False)):
+                        if bool(failure_facts.get("retryable", False)):
                             decision = replace(
                                 decision,
                                 facts={
@@ -1637,12 +1707,16 @@ class DurableStateGraphRunner:
                                 },
                             )
                     collected_evidence["reflection"] = decision.to_dict()
+                    planner_error_evidence = {
+                        "error_type": type(planner_exc).__name__,
+                        "error": truncate_middle(str(planner_exc), 1_000),
+                    }
                     if decision.replan_allowed:
                         reflected = self._transition(
                             state,
                             node=LoopNode.REFLECT,
                             condition="planner_failed",
-                            evidence=planned_step.to_dict(),
+                            evidence=planner_error_evidence,
                         )
                         state = self._transition(
                             reflected,
@@ -1663,7 +1737,7 @@ class DurableStateGraphRunner:
                         condition="planner_failed",
                         terminal_state=LoopTerminalState.FAILED,
                         evidence={
-                            **planned_step.to_dict(),
+                            **planner_error_evidence,
                             "reflection": decision.to_dict(),
                         },
                     )
@@ -1673,6 +1747,11 @@ class DurableStateGraphRunner:
                         resource_grants=tuple(grants),
                         evidence=collected_evidence,
                     )
+                except Exception:
+                    self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
+                    raise
+
+                collected_evidence["planned_capability"] = planned_step.to_dict()
                 _clear_provider_transport_retry_gate(
                     collected_evidence,
                     model_role="planner",
@@ -3746,29 +3825,6 @@ def _is_candidate_response_attempt(raw: dict[str, Any]) -> bool:
         str(raw.get("action") or "") == "chat"
         and bool(raw.get("terminal", False))
         and bool(str(raw.get("message") or "").strip())
-    )
-
-
-def _is_planner_provider_failure(planned: PlannedCapabilityStep) -> bool:
-    return (
-        planned.tool == "system.planner_error"
-        and planned.args.get("provider_call_failure") is True
-        and planned.args.get("structured_output_failure") is False
-    )
-
-
-def _next_provider_transport_retry_gate(
-    planned: PlannedCapabilityStep,
-    *,
-    evidence: dict[str, Any],
-) -> dict[str, Any] | None:
-    if not _is_planner_provider_failure(planned):
-        return None
-    return _next_provider_transport_retry_gate_for_facts(
-        planned.args,
-        evidence=evidence,
-        model_role="planner",
-        resume_node=LoopNode.PLAN,
     )
 
 

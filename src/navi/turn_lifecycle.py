@@ -3,15 +3,36 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .turn_result import AgentTurnResult
 from .goals import GoalStore
 
 if TYPE_CHECKING:
     from .runtime import AgentRuntime
+
+
+@dataclass(frozen=True)
+class AgentTurnResult:
+    text: str
+    session_id: str = ""
+    run_id: str = ""
+    action: str = "chat"
+    observation: str = ""
+    model_role: str = "responder"
+    terminal: bool = False
+    trace_id: str = ""
+    memory_influence: tuple[str, ...] = ()
+    facts: dict[str, Any] | None = None
+
+    ok: bool = True
+    yields_control: bool = False
+    error_reason: str = ""
+
+    def surfaced_text(self) -> str:
+        """The text to surface to the user."""
+        return self.text
 
 
 class TurnLifecycleMixin:

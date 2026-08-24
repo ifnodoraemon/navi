@@ -734,7 +734,7 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
     assert planned.tool == "respond"
     turn_input = provider.messages[-1].content
     facts_match = re.search(
-        r"<runtime_facts>\s*(.*?)\s*</runtime_facts>",
+        r"<runtime_facts>\s*<!\[CDATA\[(.*?)\]\]>\s*</runtime_facts>",
         turn_input,
         re.DOTALL,
     )
@@ -767,11 +767,17 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
         planner_facts["ingress_facts"]["intent_facts"]["connector_message"]["message_id"]
         == "message-1"
     )
-    assert "[MODEL ROLES]" not in turn_input
-    assert "[MODEL ROLE CONTRACTS]" not in turn_input
-    assert "[TOOL MANIFEST]" not in turn_input
+    assert "<model_roles>" not in turn_input
+    assert "<model_role_contracts>" not in turn_input
+    assert "<tool_manifest>" not in turn_input
     system_input = provider.messages[-2].content
-    manifest = json.loads(system_input.split("[TOOL MANIFEST]\n", 1)[1])
+    manifest_match = re.search(
+        r"<tool_manifest>\s*<!\[CDATA\[(.*?)\]\]>\s*</tool_manifest>",
+        system_input,
+        re.DOTALL,
+    )
+    assert manifest_match is not None
+    manifest = json.loads(manifest_match.group(1))
     manifest_names = {item["name"] for item in manifest}
     assert {"respond", "shell.run", "web.search"} <= manifest_names
 
@@ -942,7 +948,7 @@ async def test_planner_ingress_projects_ambient_goal_outcomes_by_task_context(
     assert leak_text not in turn_input
     assert active_leak_text not in turn_input
     facts_match = re.search(
-        r"<runtime_facts>\s*(.*?)\s*</runtime_facts>",
+        r"<runtime_facts>\s*<!\[CDATA\[(.*?)\]\]>\s*</runtime_facts>",
         turn_input,
         re.DOTALL,
     )

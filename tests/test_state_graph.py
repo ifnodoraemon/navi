@@ -65,7 +65,11 @@ def _planner_turn_input(provider: object) -> str:
 
 
 def _runtime_facts_from_turn_input(turn_input: str) -> dict:
-    match = re.search(r"<runtime_facts>\s*(.*?)\s*</runtime_facts>", turn_input, re.DOTALL)
+    match = re.search(
+        r"<runtime_facts>\s*<!\[CDATA\[(.*?)\]\]>\s*</runtime_facts>",
+        turn_input,
+        re.DOTALL,
+    )
     assert match is not None
     return json.loads(match.group(1))
 
@@ -792,7 +796,7 @@ async def test_planner_context_compacts_long_session_history(tmp_path: Path) -> 
     assert result.terminal_state == LoopTerminalState.CONVERGED
     turn_input = _planner_turn_input(provider)
     conversation = re.search(
-        r"<conversation_history>\s*(.*?)\s*</conversation_history>",
+        r'<untrusted_input name="conversation_history">\s*(.*?)\s*</untrusted_input>',
         turn_input,
         re.DOTALL,
     )
@@ -863,7 +867,7 @@ async def test_background_goal_excludes_non_authoritative_session_history(
 
     assert planned.tool == "file.write"
     turn_input = _planner_turn_input(provider)
-    assert "[CONVERSATION HISTORY]" not in turn_input
+    assert "<conversation_history>" not in turn_input
     assert "40.0%" not in turn_input
     runtime_facts = _runtime_facts_from_turn_input(turn_input)
     assert runtime_facts["conversation_compaction"] == {
@@ -1035,7 +1039,7 @@ async def test_planner_records_declared_memory_activation(tmp_path: Path) -> Non
     planned = result.evidence["planned_capability"]
     updated = runtime.memory.get_item(item.id)
     assert result.terminal_state == LoopTerminalState.CONVERGED
-    assert "[MEMORY RECALL]" in turn_input
+    assert '<untrusted_input name="memory_recall">' in turn_input
     assert item.id in turn_input
     assert item.id in memory_facts["candidate_ids"]
     assert planned["used_memory_ids"] == [item.id]

@@ -745,10 +745,9 @@ async def test_daemon_projects_transport_failure_and_releases_resource(
     loop_run = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
     assert loop_run is not None
     assert str(loop_run.terminal_state) == "paused"
-    assert loop_run.evidence["tool"] == "system.planner_error"
-    assert loop_run.evidence["args"]["error_type"] == "ReadError"
-    assert loop_run.evidence["args"]["retryable"] is True
-    assert loop_run.evidence["args"]["retry_after_seconds"] == 15.0
+    assert loop_run.evidence["error_type"] == "ReadError"
+    assert loop_run.evidence["failure_facts"]["retryable"] is True
+    assert loop_run.evidence["failure_facts"]["retry_after_seconds"] == 15.0
     assert loop_run.evidence["automatic_model_retry"] is False
     assert loop_run.evidence["retry_gate"]["kind"] == "provider_transport"
     assert loop_run.evidence["retry_gate"]["retry_count"] == 1
