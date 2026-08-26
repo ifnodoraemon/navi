@@ -839,12 +839,20 @@ def redact_personal_data_deep(value: Any) -> Any:
 
 
 def canonical_approval_args_json(value: Any, *, home: Path) -> str:
-    """Canonicalize exact approval arguments without persisting sensitive values."""
+    """Canonicalize exact approval arguments without persisting sensitive values.
+
+    Runtime-derived fields (prefixed with ``_``, e.g. DNS resolution results
+    injected by ``_prepare_http_request``) are excluded so the approval
+    fingerprint reflects user intent only; otherwise hosts behind rotating
+    CDN DNS yield a different fingerprint each resolve and approved approvals
+    never match on resume.
+    """
     filtered = (
         {
             key: item
             for key, item in value.items()
-            if key not in {"_thought", "thought", "reasoning", "rationale"}
+            if key not in {"thought", "reasoning", "rationale"}
+            and not str(key).startswith("_")
         }
         if isinstance(value, dict)
         else (value or {})

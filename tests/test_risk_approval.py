@@ -629,7 +629,7 @@ async def test_public_hostname_resolving_to_loopback_requires_approval(
 
 
 @pytest.mark.asyncio
-async def test_http_approval_is_bound_to_the_resolved_address_set(
+async def test_http_approval_adheres_across_resolved_address_changes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -663,13 +663,16 @@ async def test_http_approval_is_bound_to_the_resolved_address_set(
     assert approved.ok is True
 
     address["value"] = "10.0.0.8"
+    monkeypatch.setattr(
+        "socket.create_connection",
+        lambda *a, **k: (_ for _ in ()).throw(ConnectionRefusedError("blocked")),
+    )
     second = await registry.invoke("http.fetch", args, permission="network", context=context)
     second_approval = RunStore(tmp_path).pending_approval_for_run(second.run_id)
 
+    assert second.yields_control is False
     assert second.ok is False
-    assert second.yields_control is True
-    assert second_approval is not None
-    assert second_approval.id != first_approval.id
+    assert second_approval is None
 
 
 def test_public_read_only_http_call_is_not_high_risk(tmp_path: Path) -> None:

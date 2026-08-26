@@ -137,6 +137,43 @@ def test_approval_args_use_stable_hmac_for_personal_and_secret_values(tmp_path: 
     assert "$approval_hmac" in first
 
 
+def test_approval_args_drop_runtime_resolved_addresses(tmp_path: Path):
+    """Runtime DNS resolution results must not break approval adhesion.
+
+    ``_resolved_addresses`` / ``_resolved_port`` are injected by
+    ``_prepare_http_request`` from live DNS lookups; hosts behind rotating
+    CDN DNS yield a different value each resolve, which previously made the
+    canonical args_json (and thus the approval fingerprint) change every run,
+    so approved approvals never matched on resume and the loop re-escalated.
+    """
+    base = {
+        "method": "GET",
+        "url": "https://www.v2ex.com/api/topics/show.json?node_name=jobs",
+        "headers": {"User-Agent": "Mozilla/5.0"},
+        "max_bytes": 524288,
+    }
+    first = canonical_approval_args_json(
+        {
+            **base,
+            "_resolved_addresses": ["198.18.0.58", "2a03:2880:f126:83:face:b00c:0:25de"],
+            "_resolved_port": 443,
+        },
+        home=tmp_path,
+    )
+    second = canonical_approval_args_json(
+        {
+            **base,
+            "_resolved_addresses": ["198.18.0.58", "2a03:2880:f11b:83:face:b00c:0:25de"],
+            "_resolved_port": 443,
+        },
+        home=tmp_path,
+    )
+    without = canonical_approval_args_json(base, home=tmp_path)
+
+    assert first == second == without
+    assert "_resolved_addresses" not in first
+    assert "f126" not in first
+    assert "f11b" not in second
 
 
 def test_action_capability_audit_log_redacts_args(tmp_path: Path):
