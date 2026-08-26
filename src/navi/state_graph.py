@@ -1317,6 +1317,7 @@ class ModelCapabilityPlannerPort:
                 "conversation_compaction": conversation_facts,
                 "memory_context": memory_context.facts,
                 "ingress_facts": _planner_ingress_facts(policy_context, spec),
+                "last_verification_failure": _planner_verification_failure_text(evidence),
             },
             permission_ceiling=spec.goal.permission_ceiling,
             durable_constraints=_durable_constraints(self.runtime, spec),
@@ -3774,6 +3775,64 @@ def _planner_objective_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
         max_characters=24_000,
     )
     return projected if isinstance(projected, dict) else {}
+
+
+def _planner_verification_failure_text(evidence: dict[str, Any]) -> str:
+    """Surface the last checker rejection as a prominent, plain-text directive.
+
+    Without this the rejection reason is buried ~7 levels deep inside the
+    RUNTIME FACTS JSON (objective_evidence.reflection.facts.recovery
+    .checker_report.checker_results[].evidence.evidence_summary) and the
+    planner repeatedly re-attempts the same failed route. The full detail
+    remains in RUNTIME FACTS; this block is the actionable headline.
+    """
+    reflection = evidence.get("reflection")
+    if not isinstance(reflection, dict):
+        return ""
+    recovery = reflection.get("facts", {})
+    if isinstance(recovery, dict):
+        recovery = recovery.get("recovery")
+    if not isinstance(recovery, dict):
+        return ""
+    checker_report = recovery.get("checker_report")
+    if not isinstance(checker_report, dict) or checker_report.get("accepted"):
+        return ""
+    failed = [
+        item
+        for item in checker_report.get("checker_results") or []
+        if isinstance(item, dict) and not item.get("passed")
+    ]
+    if not failed:
+        return ""
+    attempt = recovery.get("attempt")
+    blocked = bool(checker_report.get("blocked"))
+    lines: list[str] = []
+    if attempt:
+        lines.append(f"Attempt {attempt} was rejected by the verification checker.")
+    else:
+        lines.append("The previous attempt was rejected by the verification checker.")
+    lines.append(
+        "Do not repeat the same capability and arguments that produced this "
+        "failure; the same route will be rejected again."
+    )
+    for item in failed:
+        name = str(item.get("name") or "check")
+        reason = str(item.get("reason") or "").strip()
+        summary = str(
+            (item.get("evidence") or {}).get("evidence_summary") or ""
+        ).strip()
+        lines.append("")
+        lines.append(f"Rejected check: {name}")
+        if reason:
+            lines.append(f"Reason: {reason}")
+        if blocked:
+            lines.append("Blocked: yes (no further route available)")
+        if summary:
+            lines.append(f"Checker findings: {summary}")
+    text = "\n".join(lines)
+    if len(text) > 1200:
+        text = text[:1197] + "..."
+    return text
 
 
 def _planner_attempt_history(evidence: dict[str, Any]) -> list[dict[str, Any]]:

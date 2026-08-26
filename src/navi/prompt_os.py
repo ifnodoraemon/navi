@@ -180,10 +180,27 @@ def assemble_planner_turn_input(
         # example attempt_history -> facts -> windows -> item). Preserve those
         # ordinary records at the final assembly boundary instead of truncating
         # them a second time solely because they are nested.
+        verification_failure = str(runtime_facts.get("last_verification_failure") or "")
+        facts_for_projection = {
+            key: value
+            for key, value in runtime_facts.items()
+            if key != "last_verification_failure"
+        }
         projected_runtime_facts = project_model_facts(
-            runtime_facts,
+            facts_for_projection,
             max_depth=PLANNER_RUNTIME_FACT_MAX_DEPTH,
         )
+        if verification_failure.strip():
+            blocks.append(
+                PromptBlock(
+                    "LAST VERIFICATION FAILURE",
+                    "turn_input",
+                    "runtime.verification_failure",
+                    verification_failure.strip(),
+                    trusted=False,
+                    mutable=True,
+                )
+            )
         blocks.append(
             PromptBlock(
                 "RUNTIME FACTS",

@@ -36,6 +36,7 @@ from navi.state_graph import (
     ExecutedCapabilityStep,
     ModelCapabilityPlannerPort,
     PlannedCapabilityStep,
+    _planner_verification_failure_text,
     _semantic_checker_attempt_evidence,
     _surface_response_required,
     _transition_loop_decision,
@@ -355,6 +356,64 @@ def test_capability_recovery_replans_after_non_retryable_call_failure() -> None:
     assert decision.replan_allowed is True
     assert decision.reason_code == "execution_not_retryable"
     assert decision.facts["recovery"]["retryable"] is False
+
+
+def test_planner_verification_failure_text_extracts_rejection_headline() -> None:
+    evidence = {
+        "reflection": {
+            "replan_allowed": True,
+            "reason_code": "semantic_check_failed",
+            "facts": {
+                "recovery": {
+                    "attempt": 8,
+                    "blocked": False,
+                    "checker_report": {
+                        "accepted": False,
+                        "blocked": False,
+                        "checker_results": [
+                            {
+                                "name": "objective_check",
+                                "passed": False,
+                                "reason": "semantic_check_failed",
+                                "evidence": {
+                                    "evidence_summary": (
+                                        "Positions 1 and 4 are not grounded in "
+                                        "authoritative capability evidence."
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                }
+            },
+        }
+    }
+
+    text = _planner_verification_failure_text(evidence)
+    assert "Attempt 8 was rejected" in text
+    assert "semantic_check_failed" in text
+    assert "not grounded in authoritative capability evidence" in text
+    assert "Do not repeat" in text
+
+
+def test_planner_verification_failure_text_empty_when_accepted() -> None:
+    evidence = {
+        "reflection": {
+            "replan_allowed": False,
+            "reason_code": "",
+            "facts": {
+                "recovery": {
+                    "attempt": 2,
+                    "checker_report": {"accepted": True, "checker_results": []},
+                }
+            },
+        }
+    }
+    assert _planner_verification_failure_text(evidence) == ""
+
+
+def test_planner_verification_failure_text_empty_without_reflection() -> None:
+    assert _planner_verification_failure_text({}) == ""
 
 
 @pytest.mark.asyncio

@@ -258,3 +258,87 @@ def test_fact_response_facts_use_the_same_bounded_projection() -> None:
     content = facts["capability_result"]["facts"]["content"]
     assert len(content) < 10_000
     assert "[truncated" in content
+
+
+def _reflection_evidence(*, accepted: bool, summary: str, attempt: int = 3) -> dict:
+    return {
+        "reflection": {
+            "replan_allowed": not accepted,
+            "reason_code": "" if accepted else "semantic_check_failed",
+            "facts": {
+                "recovery": {
+                    "attempt": attempt,
+                    "blocked": False,
+                    "checker_report": {
+                        "accepted": accepted,
+                        "blocked": False,
+                        "checker_results": [
+                            {
+                                "name": "objective_check",
+                                "passed": accepted,
+                                "severity": "INFO" if accepted else "ERROR",
+                                "reason": "" if accepted else "semantic_check_failed",
+                                "evidence": {
+                                    "evidence_summary": summary,
+                                    "evaluator_role": "checker",
+                                },
+                            }
+                        ],
+                    },
+                }
+            },
+        }
+    }
+
+
+def test_planner_surfaces_verification_failure_as_prominent_block() -> None:
+    rendered = assemble_planner_turn_input(
+        "retry the task",
+        runtime_facts={
+            "objective_evidence": _reflection_evidence(
+                accepted=False,
+                summary="Positions 1 and 4 are not grounded in authoritative evidence.",
+                attempt=8,
+            ),
+            "last_verification_failure": (
+                "Attempt 8 was rejected by the verification checker.\n"
+                "Do not repeat the same capability and arguments that produced this "
+                "failure; the same route will be rejected again.\n\n"
+                "Rejected check: objective_check\n"
+                "Reason: semantic_check_failed\n"
+                "Checker findings: Positions 1 and 4 are not grounded in authoritative "
+                "evidence."
+            ),
+        },
+    ).render()
+
+    assert "last_verification_failure" in rendered
+    assert "Attempt 8 was rejected" in rendered
+    assert "semantic_check_failed" in rendered
+    assert "not grounded in authoritative evidence" in rendered
+
+
+def test_planner_omits_verification_block_when_no_failure() -> None:
+    rendered = assemble_planner_turn_input(
+        "do the task",
+        runtime_facts={
+            "objective_evidence": _reflection_evidence(accepted=True, summary="ok"),
+            "last_verification_failure": "",
+        },
+    ).render()
+
+    assert "last_verification_failure" not in rendered
+
+
+def test_planner_verification_failure_not_duplicated_in_runtime_facts() -> None:
+    rendered = assemble_planner_turn_input(
+        "retry the task",
+        runtime_facts={
+            "objective_evidence": {"capability_result": {"facts": {"status": "ok"}}},
+            "last_verification_failure": "Attempt 8 was rejected by the verification checker.",
+        },
+    ).render()
+
+    facts = _cdata_json(rendered, "runtime_facts")
+    assert "last_verification_failure" not in facts
+    assert "Attempt 8 was rejected" not in json.dumps(facts)
