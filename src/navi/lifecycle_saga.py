@@ -123,7 +123,8 @@ class LifecycleSagaStore:
     def _apply_loop_transition(self, transition: Any) -> None:
         if not isinstance(transition, dict) or not transition:
             return
-        if transition.get("kind") != "external_wait_cancel":
+        kind = transition.get("kind")
+        if kind not in {"external_wait_cancel", "external_wait_pause"}:
             raise ValueError("unsupported lifecycle saga loop transition")
         loop_run_id = str(transition.get("loop_run_id") or "")
         evidence = transition.get("evidence")
@@ -131,10 +132,11 @@ class LifecycleSagaStore:
             raise ValueError("external-wait lifecycle transition is invalid")
         from .loop_runs import LoopRunStore
 
-        LoopRunStore(self.home).cancel_external_wait(
-            loop_run_id,
-            evidence=evidence,
-        )
+        store = LoopRunStore(self.home)
+        if kind == "external_wait_cancel":
+            store.cancel_external_wait(loop_run_id, evidence=evidence)
+        else:
+            store.pause_external_wait(loop_run_id, evidence=evidence)
 
     def recover_pending(self, *, limit: int = 100) -> list[str]:
         with connect(self.db_path) as conn:

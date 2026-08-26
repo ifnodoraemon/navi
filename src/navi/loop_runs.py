@@ -724,6 +724,69 @@ class LoopRunStore:
             )
         return next_state
 
+    def pause_external_wait(
+        self,
+        run_id: str,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> LoopRunState:
+        """Park a loop at PAUSED after an approval gate expired.
+
+        Unlike ``cancel_external_wait`` this keeps the run resumable so a
+        scheduled/durable loop can be re-triggered after the user re-approves,
+        instead of being permanently cancelled.
+        """
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"loop run not found: {run_id}")
+            current = _loop_run_from_row(row)
+            if str(current.terminal_state) not in {
+                str(LoopTerminalState.PAUSED),
+                str(LoopTerminalState.WAITING_APPROVAL),
+            }:
+                raise ValueError(
+                    f"loop run is not waiting at an external boundary: {current.terminal_state}"
+                )
+            now = time.time()
+            next_state = replace(
+                current,
+                terminal_state=LoopTerminalState.PAUSED,
+                evidence={**current.evidence, **(evidence or {})},
+                updated_at=now,
+                version=current.version + 1,
+                lease_owner="",
+                lease_expires_at=0.0,
+            )
+            cursor = conn.execute(
+                """
+                UPDATE loop_runs
+                SET terminal_state = ?, evidence_json = ?, updated_at = ?, version = ?,
+                    lease_owner = '', lease_expires_at = 0
+                WHERE id = ? AND version = ?
+                """,
+                (
+                    str(LoopTerminalState.PAUSED),
+                    _json_dumps(next_state.evidence),
+                    now,
+                    next_state.version,
+                    run_id,
+                    current.version,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("loop state changed concurrently")
+            _insert_event(
+                conn,
+                next_state,
+                "loop.transition",
+                evidence=evidence,
+            )
+        return next_state
+
     def complete_external_delivery(
         self,
         run_id: str,

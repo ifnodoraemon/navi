@@ -745,6 +745,7 @@ class LoopControlService:
         current_time = time.time() if now is None else now
         expired_approvals = self.runs.expire_pending_approvals(now=current_time)
         cancelled: list[str] = []
+        paused: list[str] = []
         resumed: list[str] = []
         valid: list[str] = []
         deferred: list[str] = []
@@ -786,16 +787,29 @@ class LoopControlService:
                 APPROVAL_STATUS_REJECTED,
                 APPROVAL_STATUS_APPROVED,
             }:
-                self.cancel_external_wait_durably(
-                    loop_run_id=state.run_id,
-                    reason=f"approval_gate_{approval.status}",
-                )
-                cancelled.append(state.run_id)
+                # Scheduled/durable loops survive an expired approval: park at
+                # PAUSED so they can be re-triggered after re-approval, instead
+                # of being permanently cancelled.
+                if approval.status == APPROVAL_STATUS_EXPIRED and _loop_run_is_resumable_kind(
+                    self.loop_runs, state
+                ):
+                    self.pause_external_wait_durably(
+                        loop_run_id=state.run_id,
+                        reason=f"approval_gate_{approval.status}",
+                    )
+                    paused.append(state.run_id)
+                else:
+                    self.cancel_external_wait_durably(
+                        loop_run_id=state.run_id,
+                        reason=f"approval_gate_{approval.status}",
+                    )
+                    cancelled.append(state.run_id)
                 continue
             deferred.append(state.run_id)
         return {
             "expired_approvals": expired_approvals,
             "cancelled": cancelled,
+            "paused": paused,
             "resumed": resumed,
             "valid": valid,
             "deferred": deferred,
@@ -854,6 +868,65 @@ class LoopControlService:
         if cancelled is None:
             raise KeyError(f"loop run not found after cancellation: {state.run_id}")
         return cancelled
+
+    def pause_external_wait_durably(
+        self,
+        *,
+        loop_run_id: str,
+        reason: str,
+    ) -> LoopRunState:
+        """Park an external wait at PAUSED instead of cancelling it.
+
+        Used for scheduled/durable loops whose approval gate expired: the run
+        stays resumable so it can be re-triggered after re-approval, rather
+        than being permanently cancelled.
+        """
+        state = self.loop_runs.get_run(loop_run_id)
+        if state is None:
+            raise KeyError(f"loop run not found: {loop_run_id}")
+        if str(state.terminal_state) == str(LoopTerminalState.PAUSED):
+            return state
+        if str(state.terminal_state) not in {
+            str(LoopTerminalState.PAUSED),
+            str(LoopTerminalState.WAITING_APPROVAL),
+        }:
+            raise ValueError(f"loop run is not at an external wait: {state.terminal_state}")
+        goal = self.goals.get(state.goal_id)
+        if goal is None:
+            raise KeyError(f"goal not found for loop run: {state.goal_id}")
+        run = self.runs.get(goal.run_id) if goal.run_id else None
+        if run is None:
+            raise KeyError(f"run not found for goal: {goal.run_id}")
+        normalized_reason = reason.strip() or "external_wait_paused"
+        evidence = {
+            "state_transition": "external_wait_paused",
+            "loop_run_id": state.run_id,
+            "reason": normalized_reason,
+        }
+        saga = self.lifecycle_sagas.prepare(
+            operation_key=f"external_wait_pause:{state.run_id}",
+            run_id=run.id,
+            goal_id=goal.id,
+            run_updates={
+                "phase": Phase.PAUSED,
+                "governance": Governance.NONE,
+                "acceptance": Acceptance.UNVERIFIED,
+                "resolution": Resolution.NONE,
+                "result_summary": "external wait paused (approval expired)",
+                "error": normalized_reason,
+            },
+            goal_evidence=evidence,
+            loop_transition={
+                "kind": "external_wait_pause",
+                "loop_run_id": state.run_id,
+                "evidence": evidence,
+            },
+        )
+        self.lifecycle_sagas.apply(saga)
+        paused = self.loop_runs.get_run(state.run_id)
+        if paused is None:
+            raise KeyError(f"loop run not found after pause: {state.run_id}")
+        return paused
 
     def _cancel_scheduled_goal(
         self,
@@ -1302,7 +1375,7 @@ def _retry_policy_for_loop_kind(loop_kind: str) -> RetryPolicy:
     """Bound semantic replanning effort by the declared task lifecycle."""
 
     attempts = {
-        "turn": 8,
+        "turn": 5,
         "control": 3,
         "scheduled": 6,
         "durable_goal": 10,
@@ -1545,3 +1618,19 @@ def _required_dict(container: dict[str, Any], key: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"LoopSpec.{key} must be an object")
     return value
+
+
+def _loop_run_is_resumable_kind(loop_runs: LoopRunStore, state: LoopRunState) -> bool:
+    """Whether a loop run belongs to a kind that should survive approval expiry.
+
+    Scheduled and durable_goal loops are long-lived and may be re-triggered;
+    an expired approval should park them at PAUSED rather than cancel. Turn
+    and control loops are one-shot and are cancelled as before.
+    """
+    try:
+        spec_json = loop_runs.get_spec_json(state.loop_spec_id)
+        spec = _loop_spec_from_json(spec_json)
+        loop_kind = str((spec.goal.metadata or {}).get("loop_kind") or "")
+    except Exception:
+        return False
+    return loop_kind in {"scheduled", "durable_goal"}

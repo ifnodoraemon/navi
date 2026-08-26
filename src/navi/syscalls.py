@@ -229,9 +229,18 @@ def provider_failure_facts(exc: Exception) -> dict[str, Any]:
             if retryable and exc.retry_after_seconds > 0
             else PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS if retryable else 0.0
         )
+    error_text = str(exc).strip()
+    if not error_text:
+        error_text = repr(exc)
+    error_text = str(exc).strip()
+    if not error_text:
+        # httpx transport errors (e.g. ReadError) frequently have an empty
+        # ``str(exc)``; fall back to a non-empty representation so downstream
+        # evidence, logs, and the planner all receive a usable reason.
+        error_text = repr(exc).strip()
     facts: dict[str, Any] = {
         "error_type": type(exc).__name__,
-        "error": truncate_middle(str(exc), PROVIDER_ERROR_MAX_CHARS),
+        "error": truncate_middle(error_text, PROVIDER_ERROR_MAX_CHARS),
         "provider_call_failure": provider_call_failure,
         "structured_output_failure": structured_output_failure,
         "retryable": retryable,

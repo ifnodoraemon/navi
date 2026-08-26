@@ -80,11 +80,22 @@ class SystemDaemon:
                 len(capability_approval_reconciliation),
             )
         approval_reconciliation = self._reconcile_approval_waits()
-        if approval_reconciliation["cancelled"] or approval_reconciliation["resumed"]:
+        if (
+            approval_reconciliation["cancelled"]
+            or approval_reconciliation["resumed"]
+            or approval_reconciliation.get("paused")
+        ):
             logger.warning(
-                "Reconciled %s orphaned/expired approval waits and resumed %s approved waits",
+                "Reconciled approval waits: cancelled=%s paused=%s resumed=%s "
+                "valid=%s deferred=%s | cancelled_ids=%s paused_ids=%s resumed_ids=%s",
                 len(approval_reconciliation["cancelled"]),
+                len(approval_reconciliation.get("paused", [])),
                 len(approval_reconciliation["resumed"]),
+                len(approval_reconciliation["valid"]),
+                len(approval_reconciliation["deferred"]),
+                approval_reconciliation["cancelled"],
+                approval_reconciliation.get("paused", []),
+                approval_reconciliation["resumed"],
             )
         reconciliation = self._reconcile_loop_execution(loop_runs)
         if reconciliation["released_leases"] or reconciliation["released_grants"]:
@@ -189,11 +200,21 @@ class SystemDaemon:
                 len(capability_approval_reconciliation),
             )
         approval_reconciliation = self._reconcile_approval_waits()
-        if approval_reconciliation["cancelled"] or approval_reconciliation["resumed"]:
+        if (
+            approval_reconciliation["cancelled"]
+            or approval_reconciliation["resumed"]
+            or approval_reconciliation.get("paused")
+        ):
             logger.warning(
-                "Reconciled %s approval waits and resumed %s before queue claim",
+                "Reconciled approval waits before queue claim: cancelled=%s paused=%s "
+                "resumed=%s valid=%s | cancelled_ids=%s paused_ids=%s resumed_ids=%s",
                 len(approval_reconciliation["cancelled"]),
+                len(approval_reconciliation.get("paused", [])),
                 len(approval_reconciliation["resumed"]),
+                len(approval_reconciliation["valid"]),
+                approval_reconciliation["cancelled"],
+                approval_reconciliation.get("paused", []),
+                approval_reconciliation["resumed"],
             )
         reconciliation = self._reconcile_loop_execution(loop_runs)
         if reconciliation["released_leases"] or reconciliation["released_grants"]:

@@ -91,11 +91,23 @@ SEMANTIC_CHECKER_VERDICT_ERROR_CHARS = 200
 # bounded number of times before failing closed so the loop stays governed.
 SEMANTIC_CHECKER_VERDICT_RETRIES = 1
 TASK_RESULT_PREVIEW_CHARS = 240
-PROVIDER_TRANSPORT_MAX_RETRIES = 1
+PROVIDER_TRANSPORT_MAX_RETRIES = 3
 PROVIDER_TRANSPORT_RETRY_MIN_SECONDS = 1.0
 PROVIDER_TRANSPORT_RETRY_MAX_SECONDS = 300.0
 EXECUTION_LEASE_MIN_SECONDS = 900.0
 EXECUTION_LEASE_HEARTBEAT_MAX_SECONDS = 30.0
+
+
+def _exc_message(exc: BaseException, *, limit: int = 1_000) -> str:
+    """Return a non-empty error message for an exception.
+
+    httpx transport errors (e.g. ``ReadError``) frequently have an empty
+    ``str(exc)``; fall back to ``repr`` so evidence and logs stay useful.
+    """
+    text = str(exc).strip()
+    if not text:
+        text = repr(exc).strip()
+    return truncate_middle(text, limit)
 
 
 @dataclass(frozen=True)
@@ -306,7 +318,7 @@ class ContractViolationRecoveryPort:
         reason_code = type(exc).__name__
         violation_record: dict[str, Any] = {
             "error_type": reason_code,
-            "error": truncate_middle(str(exc), 1_000),
+            "error": _exc_message(exc, limit=1_000),
             "domain": domain,
         }
         if failure_facts:
@@ -422,7 +434,7 @@ class LLMSemanticCheckerPort:
                 # Transport and resource errors are deliberately NOT caught here:
                 # they keep the durable retry-gate / resource-pause machinery.
                 verdict_failures.append(
-                    truncate_middle(str(exc), SEMANTIC_CHECKER_VERDICT_ERROR_CHARS)
+                    _exc_message(exc, limit=SEMANTIC_CHECKER_VERDICT_ERROR_CHARS)
                 )
         return SemanticCheckDecision(
             passed=False,
@@ -1649,7 +1661,7 @@ class DurableStateGraphRunner:
                         {
                             "attempt": state.attempt,
                             "error_type": type(planner_exc).__name__,
-                            "error": truncate_middle(str(planner_exc), 1_000),
+                            "error": _exc_message(planner_exc, limit=1_000),
                             "failure_facts": failure_facts,
                         }
                     )
@@ -1710,7 +1722,7 @@ class DurableStateGraphRunner:
                     collected_evidence["reflection"] = decision.to_dict()
                     planner_error_evidence = {
                         "error_type": type(planner_exc).__name__,
-                        "error": truncate_middle(str(planner_exc), 1_000),
+                        "error": _exc_message(planner_exc, limit=1_000),
                     }
                     if decision.replan_allowed:
                         reflected = self._transition(
