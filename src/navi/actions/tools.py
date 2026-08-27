@@ -71,9 +71,7 @@ class ToolCapability:
                     facts={CAPABILITY_ERROR_REASON_KEY: "runtime_context_unavailable"},
                     error_reason="runtime_context_unavailable",
                 )
-            specs = self.capability_registry.planner_specs(
-                permission_ceiling=context.permission_ceiling,
-            )
+            specs = self.capability_registry.planner_specs()
             return CapabilityResult(
                 ok=True,
                 action="tool",

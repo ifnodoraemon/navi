@@ -34,10 +34,3 @@ CLI_PROVIDER_SPECS: tuple[CliProviderSpec, ...] = tuple(
 
 def list_cli_provider_specs() -> tuple[CliProviderSpec, ...]:
     return CLI_PROVIDER_SPECS
-
-
-def get_cli_provider_spec(name: str) -> CliProviderSpec | None:
-    for spec in CLI_PROVIDER_SPECS:
-        if spec.name == name:
-            return spec
-    return None

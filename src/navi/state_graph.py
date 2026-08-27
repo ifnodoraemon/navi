@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+
+from .json_utils import json_object
 import os
 import shlex
 import uuid
@@ -108,6 +110,16 @@ def _exc_message(exc: BaseException, *, limit: int = 1_000) -> str:
     if not text:
         text = repr(exc).strip()
     return truncate_middle(text, limit)
+
+
+def _encode_recovery_fact(fact_type: str, facts: dict[str, Any]) -> str:
+    """Serialize recovery facts into a stable JSON string for planner evidence."""
+    return json.dumps(
+        {"fact_type": fact_type, "facts": facts},
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
 
 
 @dataclass(frozen=True)
@@ -290,15 +302,7 @@ class CapabilityRecoveryPort:
             reason_code="execution_failed" if retryable else "execution_not_retryable",
             facts={
                 "recovery": recovery_facts,
-                "recovery_fact": json.dumps(
-                    {
-                        "fact_type": "capability_execution_failed",
-                        "facts": recovery_facts,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    default=str,
-                ),
+                "recovery_fact": _encode_recovery_fact("capability_execution_failed", recovery_facts),
             },
         )
 
@@ -344,15 +348,7 @@ class ContractViolationRecoveryPort:
             reason_code=reason_code,
             facts={
                 "recovery": recovery_facts,
-                "recovery_fact": json.dumps(
-                    {
-                        "fact_type": "runtime_contract_failed",
-                        "facts": recovery_facts,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    default=str,
-                ),
+                "recovery_fact": _encode_recovery_fact("runtime_contract_failed", recovery_facts),
             },
         )
 
@@ -389,15 +385,7 @@ class RecoveryReflectorPort:
             reason_code=reason_code,
             facts={
                 "recovery": recovery_facts,
-                "recovery_fact": json.dumps(
-                    {
-                        "fact_type": "loop_checker_fact",
-                        "facts": recovery_facts,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    default=str,
-                ),
+                "recovery_fact": _encode_recovery_fact("loop_checker_fact", recovery_facts),
             },
         )
 
@@ -1278,9 +1266,7 @@ class ModelCapabilityPlannerPort:
         )
         tools = [
             item
-            for item in self.capabilities.planner_specs(
-                permission_ceiling=spec.goal.permission_ceiling,
-            )
+            for item in self.capabilities.planner_specs()
             if "*" in allowed or item.name in allowed
         ]
         if not tools:
@@ -3360,10 +3346,7 @@ def _refreshed_ingress_facts(context: CapabilityContext) -> dict[str, Any]:
         for event in events:
             if event.event_type != "agent.message_received":
                 continue
-            try:
-                payload = json.loads(event.evidence_json or "{}")
-            except json.JSONDecodeError:
-                payload = {}
+            payload = json_object(event.evidence_json)
             if isinstance(payload, dict):
                 inbox.append(
                     {

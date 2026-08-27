@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+from .json_utils import json_object
 import time
 import uuid
 from dataclasses import dataclass
@@ -306,8 +308,4 @@ class LifecycleSagaStore:
 
 
 def _json_dict(value: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return json_object(value)

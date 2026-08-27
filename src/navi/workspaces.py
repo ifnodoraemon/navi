@@ -577,15 +577,6 @@ class WorkspaceLockStore:
                 )
             return int(cursor.rowcount or 0)
 
-    def purge_expired(self, *, now: float | None = None) -> int:
-        current = time.time() if now is None else now
-        with connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "DELETE FROM workspace_locks WHERE lease_expiry <= ?",
-                (current,),
-            )
-            return int(cursor.rowcount or 0)
-
     def list_active(
         self,
         *,

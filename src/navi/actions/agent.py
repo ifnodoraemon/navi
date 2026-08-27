@@ -579,7 +579,7 @@ def _child_capability_envelope(
     parent_allowed = set(parent_spec.allowed_capabilities)
     context_allowed = set(context.allowed_tools) if context.allowed_tools is not None else None
     eligible: set[str] = set()
-    for spec in registry.planner_specs(permission_ceiling=_CHILD_WORK_PERMISSION_CEILING):
+    for spec in registry.planner_specs():
         if not spec.delegation_allowed:
             continue
         if spec.capability_class in _BLOCKED_CHILD_CLASSES:

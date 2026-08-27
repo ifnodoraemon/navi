@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+from .json_utils import json_array, json_object
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -598,6 +600,71 @@ class LoopRunStore:
             )
         return reopened
 
+    def _select_current(self, conn: Any, run_id: str) -> tuple[LoopRunState, LoopRunState]:
+        """SELECT and return the current LoopRunState (both copies identical)."""
+        row = conn.execute(
+            f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"loop run not found: {run_id}")
+        current = _loop_run_from_row(row)
+        return current, current
+
+    def _transition_to(
+        self,
+        conn: Any,
+        run_id: str,
+        *,
+        current: LoopRunState,
+        target: LoopTerminalState,
+        evidence: dict[str, Any] | None,
+        event_type: str,
+        extra_where: str = "",
+        extra_params: tuple[Any, ...] = (),
+        now: float | None = None,
+    ) -> LoopRunState:
+        """Shared replace → UPDATE → event for terminal transitions.
+
+        The caller performs the SELECT and state-guard checks, then passes the
+        fetched ``current`` state.  Returns the new ``LoopRunState``.
+        """
+        current_time = time.time() if now is None else now
+        next_state = replace(
+            current,
+            terminal_state=target,
+            evidence={**current.evidence, **(evidence or {})},
+            updated_at=current_time,
+            version=current.version + 1,
+            lease_owner="",
+            lease_expires_at=0.0,
+        )
+        where_clause = "WHERE id = ? AND version = ?"
+        params: list[Any] = [
+            str(target),
+            _json_dumps(next_state.evidence),
+            current_time,
+            next_state.version,
+            run_id,
+            current.version,
+        ]
+        if extra_where:
+            where_clause += f" AND {extra_where}"
+            params.extend(extra_params)
+        cursor = conn.execute(
+            f"""
+            UPDATE loop_runs
+            SET terminal_state = ?, evidence_json = ?, updated_at = ?, version = ?,
+                lease_owner = '', lease_expires_at = 0
+            {where_clause}
+            """,
+            tuple(params),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("loop state changed concurrently")
+        _insert_event(conn, next_state, event_type, evidence=evidence)
+        return next_state
+
     def reject_external_gate(
         self,
         run_id: str,
@@ -611,13 +678,7 @@ class LoopRunStore:
         state and idempotent for repeated rejection commands.
         """
         with connect(self.db_path) as conn:
-            row = conn.execute(
-                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
-                (run_id,),
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"loop run not found: {run_id}")
-            current = _loop_run_from_row(row)
+            current, _ = self._select_current(conn, run_id)
             if str(current.terminal_state) == str(LoopTerminalState.CANCELLED):
                 return current
             if str(current.terminal_state) not in {
@@ -628,39 +689,13 @@ class LoopRunStore:
                     "loop run is not waiting at an external approval gate: "
                     f"{current.terminal_state}"
                 )
-            now = time.time()
-            next_state = replace(
-                current,
-                terminal_state=LoopTerminalState.CANCELLED,
-                evidence={**current.evidence, **(evidence or {})},
-                updated_at=now,
-                version=current.version + 1,
-                lease_owner="",
-                lease_expires_at=0.0,
-            )
-            cursor = conn.execute(
-                """
-                UPDATE loop_runs
-                SET terminal_state = ?, evidence_json = ?, updated_at = ?, version = ?,
-                    lease_owner = '', lease_expires_at = 0
-                WHERE id = ? AND version = ?
-                """,
-                (
-                    str(LoopTerminalState.CANCELLED),
-                    _json_dumps(next_state.evidence),
-                    now,
-                    next_state.version,
-                    run_id,
-                    current.version,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise RuntimeError("loop state changed concurrently")
-            _insert_event(
+            next_state = self._transition_to(
                 conn,
-                next_state,
-                "loop.approval_rejected",
+                run_id,
+                current=current,
+                target=LoopTerminalState.CANCELLED,
                 evidence=evidence,
+                event_type="loop.approval_rejected",
             )
         return next_state
 
@@ -672,13 +707,7 @@ class LoopRunStore:
     ) -> LoopRunState:
         """Cancel a loop that is parked at an external wait boundary."""
         with connect(self.db_path) as conn:
-            row = conn.execute(
-                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
-                (run_id,),
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"loop run not found: {run_id}")
-            current = _loop_run_from_row(row)
+            current, _ = self._select_current(conn, run_id)
             if str(current.terminal_state) == str(LoopTerminalState.CANCELLED):
                 return current
             if str(current.terminal_state) not in {
@@ -688,39 +717,13 @@ class LoopRunStore:
                 raise ValueError(
                     f"loop run is not waiting at an external boundary: {current.terminal_state}"
                 )
-            now = time.time()
-            next_state = replace(
-                current,
-                terminal_state=LoopTerminalState.CANCELLED,
-                evidence={**current.evidence, **(evidence or {})},
-                updated_at=now,
-                version=current.version + 1,
-                lease_owner="",
-                lease_expires_at=0.0,
-            )
-            cursor = conn.execute(
-                """
-                UPDATE loop_runs
-                SET terminal_state = ?, evidence_json = ?, updated_at = ?, version = ?,
-                    lease_owner = '', lease_expires_at = 0
-                WHERE id = ? AND version = ?
-                """,
-                (
-                    str(LoopTerminalState.CANCELLED),
-                    _json_dumps(next_state.evidence),
-                    now,
-                    next_state.version,
-                    run_id,
-                    current.version,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise RuntimeError("loop state changed concurrently")
-            _insert_event(
+            next_state = self._transition_to(
                 conn,
-                next_state,
-                "loop.cancelled",
+                run_id,
+                current=current,
+                target=LoopTerminalState.CANCELLED,
                 evidence=evidence,
+                event_type="loop.cancelled",
             )
         return next_state
 
@@ -737,13 +740,7 @@ class LoopRunStore:
         instead of being permanently cancelled.
         """
         with connect(self.db_path) as conn:
-            row = conn.execute(
-                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
-                (run_id,),
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"loop run not found: {run_id}")
-            current = _loop_run_from_row(row)
+            current, _ = self._select_current(conn, run_id)
             if str(current.terminal_state) not in {
                 str(LoopTerminalState.PAUSED),
                 str(LoopTerminalState.WAITING_APPROVAL),
@@ -751,39 +748,13 @@ class LoopRunStore:
                 raise ValueError(
                     f"loop run is not waiting at an external boundary: {current.terminal_state}"
                 )
-            now = time.time()
-            next_state = replace(
-                current,
-                terminal_state=LoopTerminalState.PAUSED,
-                evidence={**current.evidence, **(evidence or {})},
-                updated_at=now,
-                version=current.version + 1,
-                lease_owner="",
-                lease_expires_at=0.0,
-            )
-            cursor = conn.execute(
-                """
-                UPDATE loop_runs
-                SET terminal_state = ?, evidence_json = ?, updated_at = ?, version = ?,
-                    lease_owner = '', lease_expires_at = 0
-                WHERE id = ? AND version = ?
-                """,
-                (
-                    str(LoopTerminalState.PAUSED),
-                    _json_dumps(next_state.evidence),
-                    now,
-                    next_state.version,
-                    run_id,
-                    current.version,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise RuntimeError("loop state changed concurrently")
-            _insert_event(
+            next_state = self._transition_to(
                 conn,
-                next_state,
-                "loop.transition",
+                run_id,
+                current=current,
+                target=LoopTerminalState.PAUSED,
                 evidence=evidence,
+                event_type="loop.transition",
             )
         return next_state
 
@@ -796,13 +767,7 @@ class LoopRunStore:
     ) -> LoopRunState:
         """Close only a connector-delivery pause from an authoritative receipt."""
         with connect(self.db_path) as conn:
-            row = conn.execute(
-                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
-                (run_id,),
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"loop run not found: {run_id}")
-            current = _loop_run_from_row(row)
+            current, _ = self._select_current(conn, run_id)
             target = LoopTerminalState.CONVERGED if success else LoopTerminalState.FAILED
             if str(current.terminal_state) == str(target):
                 return current
@@ -816,39 +781,13 @@ class LoopRunStore:
                     "external delivery receipt requires a delivery pause: "
                     f"{current.terminal_state}/{action}"
                 )
-            now = time.time()
-            next_state = replace(
-                current,
-                terminal_state=target,
-                evidence={**current.evidence, **(evidence or {})},
-                updated_at=now,
-                version=current.version + 1,
-                lease_owner="",
-                lease_expires_at=0.0,
-            )
-            cursor = conn.execute(
-                """
-                UPDATE loop_runs
-                SET terminal_state = ?, evidence_json = ?, updated_at = ?, version = ?,
-                    lease_owner = '', lease_expires_at = 0
-                WHERE id = ? AND version = ?
-                """,
-                (
-                    str(target),
-                    _json_dumps(next_state.evidence),
-                    now,
-                    next_state.version,
-                    run_id,
-                    current.version,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise RuntimeError("loop state changed concurrently")
-            _insert_event(
+            next_state = self._transition_to(
                 conn,
-                next_state,
-                "loop.delivery_succeeded" if success else "loop.delivery_failed",
+                run_id,
+                current=current,
+                target=target,
                 evidence=evidence,
+                event_type="loop.delivery_succeeded" if success else "loop.delivery_failed",
             )
         return next_state
 
@@ -864,49 +803,23 @@ class LoopRunStore:
         if not lease_owner:
             raise ValueError("loop failure requires a lease owner")
         with connect(self.db_path) as conn:
-            row = conn.execute(
-                f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
-                (run_id,),
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"loop run not found: {run_id}")
-            current = _loop_run_from_row(row)
+            current, _ = self._select_current(conn, run_id)
             if current.is_stopped():
                 return current
             current_time = time.time() if now is None else now
             if current.lease_owner != lease_owner or current.lease_expires_at <= current_time:
                 raise RuntimeError("loop execution lease is not owned by this worker")
-            next_state = replace(
-                current,
-                terminal_state=LoopTerminalState.FAILED,
-                evidence={**current.evidence, **(evidence or {})},
-                updated_at=current_time,
-                version=current.version + 1,
-                lease_owner="",
-                lease_expires_at=0.0,
+            next_state = self._transition_to(
+                conn,
+                run_id,
+                current=current,
+                target=LoopTerminalState.FAILED,
+                evidence=evidence,
+                event_type="loop.execution_failed",
+                extra_where="lease_owner = ? AND lease_expires_at > ?",
+                extra_params=(lease_owner, current_time),
+                now=current_time,
             )
-            cursor = conn.execute(
-                """
-                UPDATE loop_runs
-                SET terminal_state = ?, evidence_json = ?, updated_at = ?, version = ?,
-                    lease_owner = '', lease_expires_at = 0
-                WHERE id = ? AND version = ? AND lease_owner = ?
-                  AND lease_expires_at > ?
-                """,
-                (
-                    str(LoopTerminalState.FAILED),
-                    _json_dumps(next_state.evidence),
-                    current_time,
-                    next_state.version,
-                    run_id,
-                    current.version,
-                    lease_owner,
-                    current_time,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise RuntimeError("loop state changed concurrently")
-            _insert_event(conn, next_state, "loop.execution_failed", evidence=evidence)
         return next_state
 
     def list_active(self, *, limit: int = 50) -> list[LoopRunState]:
@@ -1464,19 +1377,11 @@ def _json_dumps(value: Any) -> str:
 
 
 def _json_dict(value: Any) -> dict[str, Any]:
-    try:
-        parsed = json.loads(str(value or "{}"))
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return json_object(str(value or "{}"))
 
 
 def _json_list(value: Any) -> list[Any]:
-    try:
-        parsed = json.loads(str(value or "[]"))
-    except json.JSONDecodeError:
-        return []
-    return parsed if isinstance(parsed, list) else []
+    return json_array(str(value or "[]"))
 
 
 LOOP_SPECS_TABLE = Table(

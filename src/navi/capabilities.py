@@ -140,25 +140,19 @@ class CapabilityRegistry:
         self.gateway.refresh()
         self.handlers = self._build_handlers()
 
-    def planner_specs(
-        self,
-        *,
-        permission_ceiling: str | None = None,
-    ) -> list[ToolSpec]:
+    def planner_specs(self) -> list[ToolSpec]:
         # Capability discovery is a fact surface, not an authorization
         # decision.  The caller's policy envelope and concrete-call approval
         # gate are enforced by ``invoke``.
-        del permission_ceiling
+        return self.list_specs()
+
+    def list_specs(self) -> list[ToolSpec]:
         return sorted(
             [handler.spec for handler in self.handlers.values()],
             key=lambda spec: spec.name,
         )
 
-    def list_specs(self) -> list[ToolSpec]:
-        return self.planner_specs()
-
-    def capability_graph(self, *, permission_ceiling: str | None = None) -> list[CapabilityNode]:
-        del permission_ceiling
+    def capability_graph(self) -> list[CapabilityNode]:
         nodes = []
         for handler in self.handlers.values():
             spec = handler.spec

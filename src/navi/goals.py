@@ -465,20 +465,6 @@ class GoalStore:
             ).fetchone()
         return int(row[0]) if row else 0
 
-    def update_task_status(self, goal_id: str, task_status: str) -> Goal | None:
-        """Update the ``task_status`` of a goal.
-
-        ``task_status`` is the explicit lifecycle state
-        (pending/in_progress/done/blocked) that the model updates as it
-        progresses through sub-tasks.
-        """
-        with connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE goals SET task_status = ?, updated_at = ? WHERE id = ?",
-                (task_status, time.time(), goal_id),
-            )
-        return self.get(goal_id)
-
     # Events that encode durable constraint state and must survive context
     # compression. Pending approvals, denials, rejections, and
     # blocked state cannot be dropped by an LLM summary -- they are reloaded

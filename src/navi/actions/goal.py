@@ -630,9 +630,7 @@ def _effective_allowed_capabilities(
     else:
         visible = {
             spec.name
-            for spec in registry.planner_specs(
-                permission_ceiling=permission_ceiling,
-            )
+            for spec in registry.planner_specs()
             if spec.permission_policy != "static"
             or PERMISSION_ORDER[spec.permission]
             <= PERMISSION_ORDER[permission_ceiling]

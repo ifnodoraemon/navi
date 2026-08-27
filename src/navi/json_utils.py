@@ -14,6 +14,14 @@ def json_object(value: str | bytes | None) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def json_array(value: str | bytes | None) -> list[Any]:
+    try:
+        parsed = json.loads(value or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 JSON_SCHEMA_TYPE_CHECKS = {
     "object": lambda value: isinstance(value, dict),
     "array": lambda value: isinstance(value, list),

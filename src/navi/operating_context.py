@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .permission_contract import PERMISSION_ORDER, normalize_permission
-from .tools import ToolSpec
 
 
 @dataclass(frozen=True)
@@ -42,9 +40,6 @@ class OperatingContext:
             normalize_permission(self.skill_permission_ceiling),
         )
 
-    def allows_permission(self, permission: str) -> bool:
-        return permission_allows(permission, self.permission_ceiling)
-
     def allows_prompt_layer(self, layer: str) -> bool:
         return layer in self.prompt_layers
 
@@ -79,7 +74,3 @@ def max_permission(current: str, requested: str) -> str:
     current_level = PERMISSION_ORDER[current_permission]
     requested_level = PERMISSION_ORDER[requested_permission]
     return requested_permission if requested_level > current_level else current_permission
-
-
-def filter_specs_by_permission(specs: Iterable[ToolSpec], ceiling: str) -> list[ToolSpec]:
-    return [spec for spec in specs if permission_allows(spec.permission, ceiling)]

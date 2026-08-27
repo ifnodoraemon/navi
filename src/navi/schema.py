@@ -73,11 +73,6 @@ class Table:
         return ", ".join(col.name for col in self.columns)
 
     @property
-    def column_names(self) -> list[str]:
-        """Ordered list of column names."""
-        return [col.name for col in self.columns]
-
-    @property
     def pragma_tuples(self) -> list[tuple[str, str, int, int]]:
         """The ``(name, type, notnull, pk)`` tuples ``PRAGMA table_info``
         yields for each column — the shape :func:`assert_schema_exact`

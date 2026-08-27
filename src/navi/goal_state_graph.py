@@ -134,31 +134,6 @@ async def run_goal_loop_state_graph(
     )
 
 
-async def run_open_goal_state_graph(
-    *,
-    home: Path,
-    service: LoopControlService,
-    opened: LoopControlServiceResult,
-    runtime: AgentRuntime,
-    planner_capabilities: Any,
-    context: CapabilityContext,
-    evidence: dict[str, Any] | None = None,
-    result_evidence: dict[str, Any] | None = None,
-    state_transition: str = "opened",
-) -> LoopControlServiceResult:
-    return await run_goal_loop_state_graph(
-        home=home,
-        service=service,
-        base=opened,
-        runtime=runtime,
-        planner_capabilities=planner_capabilities,
-        context=context,
-        evidence=evidence,
-        result_evidence=result_evidence,
-        state_transition=state_transition,
-    )
-
-
 async def resume_goal_loop_run(
     *,
     home: Path,

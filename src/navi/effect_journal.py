@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+from .json_utils import json_object
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -155,8 +157,4 @@ class EffectJournal:
 
 
 def _json_dict(value: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(value or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return json_object(value)

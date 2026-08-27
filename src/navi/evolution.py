@@ -305,19 +305,6 @@ class EvolutionLedger:
             ).fetchall()
         return [EvolutionEvent(*row) for row in rows]
 
-    def list_for_task(self, run_id: str) -> List[EvolutionEvent]:
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT id, run_id, target_type, target_id, reason, before, after,
-                       diff, created_at, rolled_back_at, event_kind, rollback_state,
-                       proposal_id
-                FROM evolution_events WHERE run_id = ? ORDER BY created_at ASC
-                """,
-                (run_id,),
-            ).fetchall()
-        return [EvolutionEvent(*row) for row in rows]
-
     def get(self, event_id: str) -> EvolutionEvent | None:
         with connect(self.db_path) as conn:
             row = conn.execute(

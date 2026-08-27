@@ -28,10 +28,6 @@ class Resolution(StrEnum):
     CANCELED = "canceled"
     BLOCKED = "blocked"
 
-def is_terminal_phase(phase: str) -> bool:
-    return phase == Phase.ENDED
-
-
 @dataclass(frozen=True)
 class RunFinalizeDecision:
     phase: str
@@ -44,30 +40,6 @@ class AcceptanceAdvance:
     action: str
     terminal: bool = False
     error: str = ""
-
-
-def run_is_terminal(phase: str) -> bool:
-    return phase == Phase.ENDED
-
-
-def prepare_run_phase(*, exit_code: int) -> str:
-    return Phase.RUNNING if exit_code == 0 else Phase.ENDED
-
-
-def execute_finalize_decision(
-    *,
-    exit_code: int,
-    stderr: str,
-) -> RunFinalizeDecision:
-    if exit_code == 0:
-        return RunFinalizeDecision(phase=Phase.ENDED, resolution=Resolution.SUCCESS, error="")
-    error = stderr.strip() if stderr else "actuator loop failed"
-    return RunFinalizeDecision(phase=Phase.ENDED, resolution=Resolution.FAILED, error=error)
-
-
-def execution_ledger_reason(exit_code: int) -> str:
-    outcome = Resolution.SUCCESS if exit_code == 0 else Resolution.FAILED
-    return f"run execution {outcome}"
 
 
 def acceptance_advance(

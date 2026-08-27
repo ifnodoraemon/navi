@@ -169,14 +169,6 @@ class TraceStore:
                 return
             raise
 
-    def clean_old_traces(self, days: int = 30) -> None:
-        """Deletes traces older than the specified number of days to prevent DB bloat."""
-        cutoff = __import__("time").time() - (days * 24 * 3600)
-        with connect(self.db_path) as conn:
-            conn.execute("DELETE FROM trace_events WHERE created_at < ?", (cutoff,))
-            conn.execute("DELETE FROM trace_evaluations WHERE created_at < ?", (cutoff,))
-            self._gc_blobs(conn)
-
     def _gc_blobs(self, conn: Any) -> None:
         all_blobs = {row[0] for row in conn.execute("SELECT hash FROM trace_blobs").fetchall()}
         if not all_blobs:
@@ -386,29 +378,6 @@ class TraceStore:
     def list_loop_run_details(self, trace_id: str, *, limit: int = 5000) -> list[dict[str, Any]]:
         events = self.list_events(trace_id, limit=limit)
         return _loop_run_details_for_trace(self.home, trace_id, events)
-
-    def list_events_for_run_or_session(
-        self,
-        *,
-        run_id: str,
-        session_id: str = "",
-        limit: int = 5000,
-        offset: int = 0,
-    ) -> list[TraceEvent]:
-        with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT id, trace_id, session_id, run_id, phase, source, peer_id,
-                       sender_id, tool, model_role, ok, input_json, output_json,
-                       message, created_at
-                FROM trace_events
-                WHERE run_id = ? OR (? != '' AND session_id = ?)
-                ORDER BY created_at ASC LIMIT ? OFFSET ?
-                """,
-                (run_id, session_id, session_id, limit, offset),
-            ).fetchall()
-        events = [_trace_event_from_row(row) for row in rows]
-        return self._resolve_events_blobs(events)
 
     def list_trace_meta(self, *, limit: int = 50, offset: int = 0, has_error: bool | None = None, query: str = "") -> list[dict[str, Any]]:
         base_query = """

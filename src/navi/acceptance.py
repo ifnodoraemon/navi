@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+from .json_utils import json_object
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -390,10 +390,7 @@ def _state_snapshot(runs: RunStore, run_id: str) -> dict[str, Any]:
 def _loop_protocol(*, run: Any, goal: Any) -> dict[str, Any]:
     if run is None or goal is None:
         return {}
-    try:
-        goal_evidence = json.loads(goal.evidence_json or "{}")
-    except json.JSONDecodeError:
-        return {}
+    goal_evidence = json_object(goal.evidence_json)
     if not isinstance(goal_evidence, dict):
         return {}
     terminal = str(goal_evidence.get("loop_terminal_state") or "")

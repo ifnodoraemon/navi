@@ -145,10 +145,10 @@ async def test_account_usage_capability_is_visible_without_permission_filtering(
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
 
     assert "account.usage" in {
-        spec.name for spec in registry.planner_specs(permission_ceiling="read")
+        spec.name for spec in registry.planner_specs()
     }
     assert "account.usage" in {
-        spec.name for spec in registry.planner_specs(permission_ceiling="network")
+        spec.name for spec in registry.planner_specs()
     }
     result = await registry.invoke(
         "account.usage",

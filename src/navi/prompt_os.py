@@ -496,10 +496,6 @@ def assemble_goal_event_compaction_messages(lines: Iterable[str]) -> list[ChatMe
     return [ChatMessage("system", system.render()), ChatMessage("user", user.render())]
 
 
-def planner_prompt_manifest() -> dict[str, Any]:
-    return assemble_planner_system_prompt().manifest()
-
-
 def _iterable_prompt_values(values: object) -> list[object]:
     if isinstance(values, (list, tuple, set, frozenset)):
         return list(values)

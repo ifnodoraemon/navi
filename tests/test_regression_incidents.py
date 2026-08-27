@@ -470,8 +470,8 @@ async def test_active_turn_sensitive_shell_call_creates_durable_approval(tmp_pat
 def test_network_tools_remain_visible_without_a_permission_filter(tmp_path):
     registry = build_capability_registry(tmp_path, project_dir=tmp_path)
 
-    read_names = {spec.name for spec in registry.planner_specs(permission_ceiling="read")}
-    network_names = {spec.name for spec in registry.planner_specs(permission_ceiling="network")}
+    read_names = {spec.name for spec in registry.planner_specs()}
+    network_names = {spec.name for spec in registry.planner_specs()}
 
     assert "web.search" in read_names
     assert "http.fetch" in read_names
