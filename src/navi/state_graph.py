@@ -3220,7 +3220,13 @@ def _execution_args_for_workspace(
         if resolved == logical_root:
             return str(execution_root)
         if logical_root in resolved.parents:
-            return str(execution_root / resolved.relative_to(logical_root))
+            relative = resolved.relative_to(logical_root)
+            if relative.parts and relative.parts[0] == ".navi":
+                # Navi runtime state (connector media, stores, shadows) is
+                # excluded from shadow copies; keep the real path so the
+                # advertised attachment locations stay reachable.
+                return value
+            return str(execution_root / relative)
         return value
 
     for path_field in tool_spec.workspace_fields:

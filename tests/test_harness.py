@@ -130,6 +130,64 @@ def test_bubblewrap_constructor_clears_even_explicit_parent_environment(tmp_path
     assert "must-be-cleared" not in result.stdout
 
 
+def test_bubblewrap_read_only_binds_expose_media_outside_workspace(tmp_path) -> None:
+    """Sandboxed shell must see connector media that lives outside the shadow.
+
+    Real-world layout: media under ``<home>/weixin/media`` (excluded from
+    workspace shadow copies), workspace bound at a shadow root elsewhere.
+    The real advertised path must resolve inside the sandbox.
+    """
+
+    def _sandbox_run(argv: list[str], binds: list[tuple], *, writable: bool = False):
+        command, error = bubblewrap_command(
+            argv,
+            cwd=shadow,
+            workspace=shadow,
+            writable=writable,
+            network_allowed=False,
+            path=sandbox_environment()["PATH"],
+            read_only_binds=binds,
+        )
+        assert error == ""
+        return subprocess.run(
+            command,
+            cwd=shadow,
+            env=sandbox_environment(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    home = tmp_path / ".navi"
+    media = home / "weixin" / "media"
+    (media / "inbound").mkdir(parents=True)
+    attachment = media / "inbound" / "resume.pdf"
+    attachment.write_bytes(b"%PDF-1.4 resume")
+    shadow = tmp_path / ".navi" / "workspace_shadows" / "run-1" / "shadow"
+    (shadow / "src").mkdir(parents=True)
+    binds = [
+        (media, media),
+        (media, shadow / ".navi" / "weixin" / "media"),
+    ]
+
+    real_path_view = _sandbox_run(["cat", str(attachment)], binds)
+    assert real_path_view.returncode == 0
+    assert real_path_view.stdout == "%PDF-1.4 resume"
+
+    # The extra binds must not mask the mounted workspace itself.
+    workspace_view = _sandbox_run(["ls", "src"], binds)
+    assert workspace_view.returncode == 0
+
+    # Inside a writable workspace the shadow-relative destination also binds.
+    shadow_path_view = _sandbox_run(
+        ["cat", str(shadow / ".navi" / "weixin" / "media" / "inbound" / "resume.pdf")],
+        binds,
+        writable=True,
+    )
+    assert shadow_path_view.returncode == 0
+    assert shadow_path_view.stdout == "%PDF-1.4 resume"
+
+
 def test_harness_timeout_kills_child_process_group(tmp_path):
     harness = Harness()
 

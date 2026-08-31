@@ -28,6 +28,7 @@ def _run_command(
     workspace_writable: bool = False,
     network_allowed: bool = False,
     host_process_visibility: bool = False,
+    read_only_binds: list[tuple[Path, Path]] | None = None,
 ) -> dict[str, Any]:
     env = os.environ.copy()
     # Ensure common bin paths are in PATH
@@ -68,6 +69,7 @@ def _run_command(
             network_allowed=network_allowed,
             host_process_visibility=host_process_visibility,
             path=env["PATH"],
+            read_only_binds=read_only_binds,
         )
         if sandbox_error:
             return {

@@ -57,6 +57,7 @@ def bubblewrap_command(
     host_process_visibility: bool = False,
     environment_fd: int | None = None,
     sandbox_home: Path | None = None,
+    read_only_binds: list[tuple[Path, Path]] | None = None,
 ) -> tuple[list[str], str]:
     bwrap = shutil.which("bwrap")
     if not bwrap:
@@ -146,6 +147,28 @@ def bubblewrap_command(
         argv.extend(("--dir", str(parent)))
         created_dirs.add(parent)
     argv.extend(("--bind" if writable else "--ro-bind", str(root), str(root)))
+
+    for source, destination in read_only_binds or []:
+        # Read-only overlays such as inbound connector media live outside the
+        # mounted workspace root; expose them at their advertised paths so a
+        # command referencing the real path sees the same bytes.
+        bind_source = source.expanduser().resolve()
+        bind_destination = destination.expanduser().resolve()
+        if not bind_source.is_dir() or bind_source == root or bind_destination == root:
+            continue
+        if root in bind_source.parents:
+            # Already visible through the workspace mount itself.
+            continue
+        if root in bind_destination.parents and not writable:
+            # The mountpoint cannot be created inside a read-only workspace
+            # bind; the caller's real-path bind still covers the media.
+            continue
+        for parent in reversed(bind_destination.parents[:-1]):
+            if parent == root or parent in created_dirs:
+                continue
+            argv.extend(("--dir", str(parent)))
+            created_dirs.add(parent)
+        argv.extend(("--ro-bind", str(bind_source), str(bind_destination)))
 
     sandbox_executable = in_sandbox_executable or executable
     if in_sandbox_executable is not None:

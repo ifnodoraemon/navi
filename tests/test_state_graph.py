@@ -1472,3 +1472,43 @@ async def test_respond_message_is_preserved_across_loop(tmp_path: Path) -> None:
     assert result.evidence["capability_result"]["facts"]["private_evidence"] == {
         "smoke_token": "STATE_GRAPH_PRIVATE_TOKEN"
     }
+
+
+def test_execution_args_keep_navi_home_paths_out_of_shadow_remapping(tmp_path) -> None:
+    """Connector media lives under .navi which shadow copies exclude.
+
+    A planned command referencing an attachment's real path must keep that
+    path (the sandbox ro-binds the real media dir), while ordinary workspace
+    paths still remap into the shadow.
+    """
+    from navi.state_graph import _execution_args_for_workspace
+
+    class _Spec:
+        workspace_fields = ("cwd",)
+        workspace_policy = "sandbox"
+        workspace_scope = "paths"
+
+    logical = tmp_path / "project"
+    shadow = tmp_path / ".navi" / "workspace_shadows" / "run-1" / "shadow"
+    logical.mkdir(parents=True)
+    shadow.mkdir(parents=True)
+    attachment = logical / ".navi" / "weixin" / "media" / "inbound" / "resume.pdf"
+    attachment.parent.mkdir(parents=True)
+
+    translated = _execution_args_for_workspace(
+        _Spec(),
+        {
+            "cwd": str(logical),
+            "command": [
+                "pdftotext",
+                str(attachment),
+                str(logical / "notes.txt"),
+            ],
+        },
+        logical_workspace=str(logical),
+        execution_workspace=shadow,
+    )
+
+    assert translated["cwd"] == str(shadow)
+    assert translated["command"][1] == str(attachment)
+    assert translated["command"][2] == str(shadow / "notes.txt")
