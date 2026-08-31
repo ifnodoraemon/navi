@@ -985,6 +985,56 @@ async def test_transient_caption_failure_does_not_skip_durable_file_delivery(tmp
     assert items[0].id != items[1].id
 
 
+class RecordingIngress:
+    def __init__(self) -> None:
+        self.messages: list[Any] = []
+
+    async def handle(self, message: Any) -> "ResponseReadyEvent":
+        self.messages.append(message)
+        return ResponseReadyEvent(text="收到文件", source="weixin", action="chat", facts={})
+
+
+@pytest.mark.asyncio
+async def test_media_only_update_synthesizes_intent_text(tmp_path: Path):
+    from navi.weixin.models import WeixinAttachment
+
+    client = CaptureWeixinClient()
+    service = WeixinService(
+        home=tmp_path,
+        config=WeixinConfig(),
+        runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
+        project_dir=tmp_path,
+        client=client,
+    )
+    service.ingress = RecordingIngress()
+
+    handled = await service.handle_update(
+        WeixinAccount(account_id="acct", token="token", base_url="https://ilink.example"),
+        WeixinUpdate(
+            message_id="msg-media-only",
+            peer_id="wx-user",
+            sender_id="wx-user",
+            text="",
+            context_token="ctx",
+            attachments=(
+                WeixinAttachment(
+                    kind="file",
+                    mime_type="application/pdf",
+                    file_name="report.pdf",
+                    local_path="/tmp/report.pdf",
+                ),
+            ),
+        ),
+    )
+
+    assert handled is True
+    message = service.ingress.messages[0]
+    assert message.text == "[media] report.pdf"
+    attachments = message.facts["attachments"]
+    assert attachments[0]["local_path"] == "/tmp/report.pdf"
+    assert client.messages[0]["text"] == "收到文件"
+
+
 @pytest.mark.asyncio
 async def test_service_records_empty_runtime_response_as_failure(tmp_path: Path):
     client = CaptureWeixinClient()

@@ -229,11 +229,20 @@ class WeixinService:
             await asyncio.sleep(sleep_time)
 
     async def handle_update(self, account: WeixinAccount, update: WeixinUpdate) -> bool:
+        text = update.text
+        if not text.strip() and update.attachments:
+            # A media-only message still needs a user turn: an empty turn
+            # objective dies before any model call, so surface the media
+            # names as the intent text. Attachment paths travel in facts.
+            names = ", ".join(
+                attachment.file_name or attachment.kind for attachment in update.attachments
+            )
+            text = f"[media] {names}".strip()
         message = ConnectorMessage(
             message_id=update.message_id,
             peer_id=update.peer_id,
             sender_id=update.sender_id,
-            text=update.text,
+            text=text,
             source=self.local_source,
             session_alias_prefix=self.session_alias_prefix,
             facts=_weixin_message_facts(update),
