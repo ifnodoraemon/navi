@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -2082,3 +2083,112 @@ async def test_background_notification_model_failure_propagates_without_fallback
 
     assert provider.calls == 1
     assert client.messages == []
+
+
+@pytest.mark.asyncio
+async def test_get_updates_survives_non_numeric_video_size(monkeypatch: pytest.MonkeyPatch):
+    """A poison payload field must never stall the poll loop with a crash."""
+    client = WeixinClient(base_url="https://ilink.example", token="token")
+
+    async def fake_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        del path, payload, timeout
+        return {
+            "msgs": [
+                {
+                    "message_id": "msg-bad-video-size",
+                    "from_user_id": "wx-user",
+                    "item_list": [
+                        {
+                            "type": 5,
+                            "video_item": {
+                                "video_size": "not-a-number",
+                                "media": {"encrypt_query_param": "video-param"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "message_id": "msg-after-poison",
+                    "from_user_id": "wx-user",
+                    "text": "still delivered",
+                },
+            ],
+            "get_updates_buf": "next",
+        }
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    batch = await client.get_updates("acct", sync_buf="prev")
+
+    assert [update.message_id for update in batch.updates] == [
+        "msg-bad-video-size",
+        "msg-after-poison",
+    ]
+    assert batch.updates[0].attachments[0].size == 0
+
+
+@pytest.mark.asyncio
+async def test_get_updates_downloads_untranscribed_voice_as_attachment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from navi.weixin.client import ITEM_VOICE
+
+    client = WeixinClient(
+        base_url="https://ilink.example",
+        cdn_base_url="https://cdn.example/c2c",
+        token="token",
+        media_dir=tmp_path / "media",
+    )
+
+    async def fake_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        del path, payload, timeout
+        return {
+            "msgs": [
+                {
+                    "message_id": "msg-voice-only",
+                    "from_user_id": "wx-user",
+                    "item_list": [
+                        {
+                            "type": ITEM_VOICE,
+                            "voice_item": {
+                                "media": {"encrypt_query_param": "voice-param"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "message_id": "msg-voice-transcribed",
+                    "from_user_id": "wx-user",
+                    "item_list": [
+                        {
+                            "type": ITEM_VOICE,
+                            "voice_item": {
+                                "text": "转写文本",
+                                "media": {"encrypt_query_param": "voice-param-2"},
+                            },
+                        }
+                    ],
+                },
+            ],
+            "get_updates_buf": "next",
+        }
+
+    downloaded: list[str] = []
+
+    async def fake_download(attachment, media, aes_key, *, saved_name):
+        downloaded.append(saved_name)
+        return replace(attachment, local_path=str(tmp_path / "media" / saved_name))
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "_with_downloaded_media", fake_download)
+
+    batch = await client.get_updates("acct", sync_buf="prev")
+
+    voice_only = batch.updates[0]
+    assert voice_only.text == ""
+    assert voice_only.attachments[0].kind == "voice"
+    assert voice_only.attachments[0].mime_type == "audio/silk"
+    transcribed = batch.updates[1]
+    assert transcribed.text == "转写文本"
+    assert transcribed.attachments == ()
+    assert downloaded == ["msg-voice-only-0.silk"]

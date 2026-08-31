@@ -46,6 +46,7 @@ _MEDIA_DOWNLOAD_TIMEOUT_SECONDS: dict[str, float] = {
     "image": 30.0,
     "video": 120.0,
     "file": 60.0,
+    "voice": 60.0,
 }
 
 ITEM_TEXT = 1
@@ -429,12 +430,31 @@ class WeixinClient:
                 kind="video",
                 mime_type="video/mp4",
                 file_name=f"{message_id}-{index}.mp4",
-                size=int(video_item.get("video_size") or 0),
+                size=_coerce_int(video_item.get("video_size")),
                 media_id=_media_id(media),
                 item_type=ITEM_VIDEO,
             )
             return await self._with_downloaded_media(
                 attachment, media, media.get("aes_key"), saved_name=f"{message_id}-{index}.mp4"
+            )
+        if item_type == ITEM_VOICE:
+            voice_item = item.get("voice_item") or {}
+            if str(voice_item.get("text") or "").strip():
+                # The transcription already surfaces as message text.
+                return None
+            media = voice_item.get("media") or {}
+            attachment = WeixinAttachment(
+                kind="voice",
+                mime_type="audio/silk",
+                file_name=f"{message_id}-{index}.silk",
+                media_id=_media_id(media),
+                item_type=ITEM_VOICE,
+            )
+            return await self._with_downloaded_media(
+                attachment,
+                media,
+                media.get("aes_key"),
+                saved_name=f"{message_id}-{index}.silk",
             )
         if item_type == ITEM_FILE:
             file_item = item.get("file_item") or {}
