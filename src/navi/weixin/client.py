@@ -7,9 +7,10 @@ import mimetypes
 import secrets
 import struct
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -28,6 +29,24 @@ from .store import extract_text, split_text_for_weixin
 ILINK_APP_ID = "bot"
 CHANNEL_VERSION = "2.2.0"
 ILINK_APP_CLIENT_VERSION = (2 << 16) | (2 << 8) | 0
+
+_WEIXIN_CDN_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "novac2c.cdn.weixin.qq.com",
+        "ilinkai.weixin.qq.com",
+        "wx.qlogo.cn",
+        "thirdwx.qlogo.cn",
+        "res.wx.qq.com",
+        "mmbiz.qpic.cn",
+        "mmbiz.qlogo.cn",
+    }
+)
+
+_MEDIA_DOWNLOAD_TIMEOUT_SECONDS: dict[str, float] = {
+    "image": 30.0,
+    "video": 120.0,
+    "file": 60.0,
+}
 
 ITEM_TEXT = 1
 ITEM_IMAGE = 2
@@ -370,10 +389,16 @@ class WeixinClient:
         items = raw.get("item_list")
         if not isinstance(items, list):
             return []
-        attachments: list[WeixinAttachment] = []
-        for index, item in enumerate(items):
+        flat_items: list[dict[str, Any]] = []
+        for item in items:
             if not isinstance(item, dict):
                 continue
+            flat_items.append(item)
+            ref_item = (item.get("ref_msg") or {}).get("message_item")
+            if isinstance(ref_item, dict):
+                flat_items.append(ref_item)
+        attachments: list[WeixinAttachment] = []
+        for index, item in enumerate(flat_items):
             attachment = await self._attachment_from_item(item, message_id=message_id, index=index)
             if attachment is not None:
                 attachments.append(attachment)
@@ -384,18 +409,23 @@ class WeixinClient:
     ) -> WeixinAttachment | None:
         item_type = item.get("type")
         if item_type == ITEM_IMAGE:
-            media = (item.get("image_item") or {}).get("media") or {}
-            return WeixinAttachment(
+            image_item = item.get("image_item") or {}
+            media = image_item.get("media") or {}
+            attachment = WeixinAttachment(
                 kind="image",
                 mime_type="image/jpeg",
                 file_name=f"{message_id}-{index}.jpg",
                 media_id=_media_id(media),
                 item_type=ITEM_IMAGE,
             )
+            aes_key = image_item.get("aeskey") or media.get("aes_key")
+            return await self._with_downloaded_media(
+                attachment, media, aes_key, saved_name=f"{message_id}-{index}.jpg"
+            )
         if item_type == ITEM_VIDEO:
             video_item = item.get("video_item") or {}
             media = video_item.get("media") or {}
-            return WeixinAttachment(
+            attachment = WeixinAttachment(
                 kind="video",
                 mime_type="video/mp4",
                 file_name=f"{message_id}-{index}.mp4",
@@ -403,11 +433,14 @@ class WeixinClient:
                 media_id=_media_id(media),
                 item_type=ITEM_VIDEO,
             )
+            return await self._with_downloaded_media(
+                attachment, media, media.get("aes_key"), saved_name=f"{message_id}-{index}.mp4"
+            )
         if item_type == ITEM_FILE:
             file_item = item.get("file_item") or {}
             media = file_item.get("media") or {}
             file_name = str(file_item.get("file_name") or f"{message_id}-{index}.bin")
-            return WeixinAttachment(
+            attachment = WeixinAttachment(
                 kind="file",
                 mime_type=mimetypes.guess_type(file_name)[0] or "application/octet-stream",
                 file_name=file_name,
@@ -415,7 +448,60 @@ class WeixinClient:
                 media_id=_media_id(media),
                 item_type=ITEM_FILE,
             )
+            safe_display = _sanitize_attachment_name(
+                file_name, fallback=f"{message_id}-{index}.bin"
+            )
+            return await self._with_downloaded_media(
+                attachment,
+                media,
+                media.get("aes_key"),
+                saved_name=f"{message_id}-{index}-{safe_display}",
+            )
         return None
+
+    async def _with_downloaded_media(
+        self,
+        attachment: WeixinAttachment,
+        media: dict[str, Any],
+        aes_key: Any,
+        *,
+        saved_name: str,
+    ) -> WeixinAttachment:
+        """Persist inbound media bytes so later turns can open the real file.
+
+        Failure is recorded on the attachment instead of raised: a missing
+        caption-sized image must never abort the remaining update batch.
+        """
+        if self.media_dir is None:
+            return replace(attachment, download_error="media_dir not configured")
+        try:
+            encrypted_param = str(media.get("encrypt_query_param") or "")
+            full_url = str(media.get("full_url") or "")
+            if encrypted_param:
+                url = _cdn_download_url(self.cdn_base_url, encrypted_param)
+            elif full_url:
+                _assert_weixin_cdn_url(full_url)
+                url = full_url
+            else:
+                return replace(
+                    attachment,
+                    download_error="media item had neither encrypt_query_param nor full_url",
+                )
+            timeout = _MEDIA_DOWNLOAD_TIMEOUT_SECONDS.get(attachment.kind, 60.0)
+            async with httpx.AsyncClient(timeout=timeout, trust_env=True) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                data = response.content
+            key = _parse_media_aes_key(aes_key)
+            if key is not None:
+                data = _aes128_ecb_decrypt(data, key)
+            safe_name = _sanitize_attachment_name(saved_name, fallback="attachment.bin")
+            self.media_dir.mkdir(parents=True, exist_ok=True)
+            path = self.media_dir / safe_name
+            path.write_bytes(data)
+            return replace(attachment, local_path=str(path), size=len(data))
+        except Exception as exc:
+            return replace(attachment, download_error=f"{type(exc).__name__}: {exc}")
 
     async def _get(self, path: str, *, timeout: float) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=timeout, trust_env=True) as client:
@@ -496,6 +582,82 @@ def _cdn_upload_url(cdn_base_url: str, upload_param: str, filekey: str) -> str:
         f"?encrypted_query_param={quote(upload_param, safe='')}"
         f"&filekey={quote(filekey, safe='')}"
     )
+
+
+def _cdn_download_url(cdn_base_url: str, encrypted_query_param: str) -> str:
+    return (
+        f"{cdn_base_url.rstrip('/')}/download"
+        f"?encrypted_query_param={quote(encrypted_query_param, safe='')}"
+    )
+
+
+def _assert_weixin_cdn_url(url: str) -> None:
+    """Raise ValueError if *url* does not point at a known WeChat CDN host."""
+    try:
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname or ""
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Unparseable media URL: {url!r}") from exc
+    if scheme not in {"http", "https"}:
+        raise ValueError(
+            f"Media URL has disallowed scheme {scheme!r}; only http/https are permitted."
+        )
+    if host not in _WEIXIN_CDN_ALLOWLIST:
+        raise ValueError(
+            f"Media URL host {host!r} is not in the WeChat CDN allowlist. "
+            "Refusing to fetch to prevent SSRF."
+        )
+
+
+def _parse_media_aes_key(value: Any) -> bytes | None:
+    """Accept the aes key forms iLink hands out for inbound media.
+
+    - base64 of 16 raw key bytes (video/file/voice ``media.aes_key``)
+    - base64 of a 32-char ascii-hex string
+    - plain 32-char hex (image ``image_item.aeskey``)
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) == 32 and all(ch in "0123456789abcdefABCDEF" for ch in text):
+        return bytes.fromhex(text)
+    try:
+        decoded = base64.b64decode(text, validate=True)
+    except (ValueError, TypeError):
+        return None
+    if len(decoded) == 16:
+        return decoded
+    if len(decoded) == 32:
+        ascii_text = decoded.decode("ascii", errors="ignore")
+        if ascii_text and all(ch in "0123456789abcdefABCDEF" for ch in ascii_text):
+            return bytes.fromhex(ascii_text)
+    return None
+
+
+def _pkcs7_unpad(data: bytes, block_size: int = 16) -> bytes:
+    if not data:
+        return data
+    pad_len = data[-1]
+    if 1 <= pad_len <= block_size and data.endswith(bytes([pad_len]) * pad_len):
+        return data[:-pad_len]
+    return data
+
+
+def _aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
+    cipher = Cipher(algorithms.AES(key), modes.ECB())
+    decryptor = cipher.decryptor()
+    return _pkcs7_unpad(decryptor.update(ciphertext) + decryptor.finalize())
+
+
+def _sanitize_attachment_name(name: str, *, fallback: str) -> str:
+    """Make a remote-provided file name safe as a local file name."""
+    base = str(name or "").replace("\\", "/").split("/")[-1]
+    cleaned = "".join(
+        ch if ch.isprintable() and ch not in '<>:"|?*' else "_" for ch in base
+    ).strip(" .")
+    cleaned = cleaned[:150]
+    return cleaned or fallback
 
 
 def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:

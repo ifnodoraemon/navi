@@ -346,6 +346,170 @@ async def test_get_updates_keeps_file_only_messages_as_attachment(monkeypatch: p
     assert update.attachments[0].kind == "file"
     assert update.attachments[0].file_name == "report.pdf"
     assert update.attachments[0].media_id == "encrypted-media"
+    assert update.attachments[0].local_path == ""
+    assert update.attachments[0].download_error == "media_dir not configured"
+
+
+@pytest.mark.asyncio
+async def test_get_updates_downloads_and_decrypts_file_media(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import base64
+
+    from navi.weixin.client import _aes128_ecb_encrypt
+
+    media_dir = tmp_path / "media" / "inbound"
+    client = WeixinClient(
+        base_url="https://ilink.example",
+        cdn_base_url="https://cdn.example/c2c",
+        token="token",
+        media_dir=media_dir,
+    )
+    key = b"0123456789abcdef"
+    plaintext = b"%PDF-1.4 decrypted report"
+    ciphertext = _aes128_ecb_encrypt(plaintext, key)
+
+    class FakeTransport(httpx.AsyncHTTPTransport):
+        async def handle_async_request(self, request: Any) -> httpx.Response:
+            from urllib.parse import parse_qs, urlparse
+
+            parsed = urlparse(str(request.url))
+            assert parsed.scheme == "https"
+            assert parsed.hostname == "cdn.example"
+            assert parsed.path == "/c2c/download"
+            assert parse_qs(parsed.query)["encrypted_query_param"] == ["encrypted-media"]
+            return httpx.Response(200, content=ciphertext)
+
+    original_async_client = httpx.AsyncClient
+
+    def fake_client(**kwargs: Any) -> httpx.AsyncClient:
+        del kwargs
+        return original_async_client(transport=FakeTransport(), trust_env=False)
+
+    async def fake_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        del path, payload, timeout
+        return {
+            "msgs": [
+                {
+                    "message_id": "msg-download",
+                    "from_user_id": "wx-user",
+                    "item_list": [
+                        {
+                            "type": ITEM_FILE,
+                            "file_item": {
+                                "file_name": "report.pdf",
+                                "len": str(len(plaintext)),
+                                "media": {
+                                    "encrypt_query_param": "encrypted-media",
+                                    "aes_key": base64.b64encode(key).decode("ascii"),
+                                },
+                            },
+                        }
+                    ],
+                }
+            ],
+            "get_updates_buf": "next",
+        }
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr("navi.weixin.client.httpx.AsyncClient", fake_client)
+
+    batch = await client.get_updates("acct", sync_buf="prev")
+
+    attachment = batch.updates[0].attachments[0]
+    assert attachment.download_error == ""
+    assert attachment.local_path == str(media_dir / "msg-download-0-report.pdf")
+    saved = Path(attachment.local_path)
+    assert saved.read_bytes() == plaintext
+    assert attachment.size == len(plaintext)
+
+
+@pytest.mark.asyncio
+async def test_get_updates_records_download_failure_without_dropping_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    client = WeixinClient(
+        base_url="https://ilink.example",
+        cdn_base_url="https://cdn.example/c2c",
+        token="token",
+        media_dir=tmp_path / "media",
+    )
+
+    def failing_client(**kwargs: Any) -> httpx.AsyncClient:
+        del kwargs
+        raise httpx.ConnectError("cdn unreachable")
+
+    async def fake_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        del path, payload, timeout
+        return {
+            "msgs": [
+                {
+                    "message_id": "msg-download-fail",
+                    "from_user_id": "wx-user",
+                    "item_list": [
+                        {
+                            "type": ITEM_FILE,
+                            "file_item": {
+                                "file_name": "report.pdf",
+                                "media": {"encrypt_query_param": "encrypted-media"},
+                            },
+                        }
+                    ],
+                }
+            ],
+            "get_updates_buf": "next",
+        }
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr("navi.weixin.client.httpx.AsyncClient", failing_client)
+
+    batch = await client.get_updates("acct", sync_buf="prev")
+
+    assert len(batch.updates) == 1
+    attachment = batch.updates[0].attachments[0]
+    assert attachment.local_path == ""
+    assert "ConnectError: cdn unreachable" in attachment.download_error
+
+
+@pytest.mark.asyncio
+async def test_full_url_download_rejects_hosts_outside_the_cdn_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    client = WeixinClient(
+        base_url="https://ilink.example",
+        cdn_base_url="https://cdn.example/c2c",
+        token="token",
+        media_dir=tmp_path / "media",
+    )
+
+    async def fake_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        del path, payload, timeout
+        return {
+            "msgs": [
+                {
+                    "message_id": "msg-full-url",
+                    "from_user_id": "wx-user",
+                    "item_list": [
+                        {
+                            "type": ITEM_FILE,
+                            "file_item": {
+                                "file_name": "report.pdf",
+                                "media": {"full_url": "https://evil.example/report.pdf"},
+                            },
+                        }
+                    ],
+                }
+            ],
+            "get_updates_buf": "next",
+        }
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    batch = await client.get_updates("acct", sync_buf="prev")
+
+    attachment = batch.updates[0].attachments[0]
+    assert attachment.local_path == ""
+    assert "not in the WeChat CDN allowlist" in attachment.download_error
 
 
 @pytest.mark.asyncio
