@@ -3268,6 +3268,15 @@ def _execution_command_for_workspace(
                 pieces.append(argument[start:boundary])
                 start = boundary
                 continue
+            tail = argument[boundary:]
+            if tail == "/.navi" or tail.startswith("/.navi/"):
+                # Navi runtime state (connector media, stores, shadows) is
+                # excluded from shadow copies; keep the logical path so it
+                # stays reachable at its real location.
+                pieces.append(argument[start:boundary])
+                pieces.append(tail)
+                start = len(argument)
+                continue
             pieces.append(argument[start:index])
             pieces.append(execution_text)
             start = boundary

@@ -10,6 +10,30 @@ from .utils import _positive_int
 from ..safeguards import shell_call_policy
 
 
+def _connector_media_binds(
+    home: Path | None, project_dir: Path
+) -> list[tuple[Path, Path]] | None:
+    """Bind inbound connector media read-only into the sandbox.
+
+    Connector media lives under ``<home>/<source>/media`` (e.g. weixin file
+    attachments), which is excluded from sandbox workspace shadows. Bind each
+    existing media dir at its real path plus the workspace-relative path so
+    shell commands can open attachments referenced in intent facts.
+    """
+    if home is None:
+        return None
+    binds: list[tuple[Path, Path]] = []
+    for media_source in sorted(home.glob("*/media")):
+        if not media_source.is_dir():
+            continue
+        resolved = media_source.resolve()
+        binds.append((resolved, resolved))
+        workspace_media = project_dir / ".navi" / media_source.parent.name / "media"
+        if workspace_media != resolved:
+            binds.append((resolved, workspace_media))
+    return binds or None
+
+
 def _shell_run(args: dict[str, Any], *, project_dir: Path, home: Path | None = None) -> ToolResult:
     command = _command_list(args.get("command"))
     if not command:
@@ -26,18 +50,6 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path, home: Path | None = N
     allocate_pty = bool(args.get("allocate_pty"))
     shell_policy = shell_call_policy({"command": command, "allocate_pty": allocate_pty})
     requires_network = bool(shell_policy.get("requires_network"))
-    # Inbound connector media (e.g. weixin file attachments) is stored under
-    # the navi home, which is excluded from sandbox workspace shadows. Bind it
-    # read-only at both its real path and the workspace-relative path so shell
-    # commands can open attachments referenced in intent facts.
-    media_binds: list[tuple[Path, Path]] = []
-    if home is not None:
-        media_source = (home / "weixin" / "media").resolve()
-        if media_source.is_dir():
-            media_binds.append((media_source, media_source))
-            workspace_media = project_dir / ".navi" / "weixin" / "media"
-            if workspace_media != media_source:
-                media_binds.append((media_source, workspace_media))
     result = _run_command(
         command,
         cwd=cwd,
@@ -48,7 +60,7 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path, home: Path | None = N
         workspace_writable=shell_policy["required_permission"] == "write",
         network_allowed=shell_policy["required_permission"] == "network" or requires_network,
         host_process_visibility=shell_policy["observation_scope"] == "host_process_table",
-        read_only_binds=media_binds or None,
+        read_only_binds=_connector_media_binds(home, project_dir),
     )
     observation_scope = str(shell_policy["observation_scope"])
     evidence_contract = (

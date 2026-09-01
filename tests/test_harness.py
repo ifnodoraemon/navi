@@ -255,3 +255,26 @@ def test_harness_workspace_guards_require_home(tmp_path):
         harness.create_shadow_workspace(run_id="run-1", workspace=tmp_path)
     with pytest.raises(ValueError, match="workspace locks require home"):
         harness.acquire_workspace_lock(owner_run_id="run-1", resource="app.py")
+
+
+def test_connector_media_binds_cover_all_connector_media_dirs(tmp_path) -> None:
+    from navi.core_tools.shell import _connector_media_binds
+
+    home = tmp_path / ".navi"
+    (home / "weixin" / "media" / "inbound").mkdir(parents=True)
+    (home / "telegram" / "media" / "inbound").mkdir(parents=True)
+    shadow = home / "workspace_shadows" / "run-1" / "shadow"
+    shadow.mkdir(parents=True)
+
+    binds = _connector_media_binds(home, shadow)
+
+    assert binds is not None
+    sources = {source for source, _ in binds}
+    assert sources == {
+        (home / "weixin" / "media").resolve(),
+        (home / "telegram" / "media").resolve(),
+    }
+    destinations = {destination for _, destination in binds}
+    assert (shadow / ".navi" / "telegram" / "media") in destinations
+    assert (shadow / ".navi" / "weixin" / "media") in destinations
+    assert _connector_media_binds(tmp_path / "missing", shadow) is None

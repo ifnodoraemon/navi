@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import mimetypes
+import os
 import secrets
 import struct
 import uuid
@@ -148,7 +149,12 @@ class WeixinClient:
             message_id = str(native_id) if native_id else f"{SYNTHETIC_MESSAGE_ID_PREFIX}{uuid.uuid4().hex}"
             attachments = await self._attachments_from_raw(raw, message_id=message_id)
             if not text and not attachments:
-                continue
+                unsupported = _unsupported_item_types(raw)
+                if unsupported is None:
+                    continue
+                # Surface unknown message types instead of dropping them
+                # silently; the user still gets an acknowledgement.
+                text = f"[unsupported] 消息类型 {','.join(unsupported)}"
             peer_id, is_group = self._peer_id(raw, account_id)
             sender_id = str(
                 raw.get("from_user_id") or raw.get("sender_id") or raw.get("from_user") or peer_id
@@ -518,7 +524,9 @@ class WeixinClient:
             safe_name = _sanitize_attachment_name(saved_name, fallback="attachment.bin")
             self.media_dir.mkdir(parents=True, exist_ok=True)
             path = self.media_dir / safe_name
-            path.write_bytes(data)
+            tmp_path = path.with_name(path.name + ".tmp")
+            tmp_path.write_bytes(data)
+            os.replace(tmp_path, path)
             return replace(attachment, local_path=str(path), size=len(data))
         except Exception as exc:
             return replace(attachment, download_error=f"{type(exc).__name__}: {exc}")
@@ -602,6 +610,24 @@ def _cdn_upload_url(cdn_base_url: str, upload_param: str, filekey: str) -> str:
         f"?encrypted_query_param={quote(upload_param, safe='')}"
         f"&filekey={quote(filekey, safe='')}"
     )
+
+
+def _unsupported_item_types(raw: dict[str, Any]) -> list[str] | None:
+    """Return unknown item type labels when a message is entirely unsupported.
+
+    Known item types that legitimately carry no text (empty text items) stay
+    dropped; only fully unrecognized payloads surface to the user.
+    """
+    items = raw.get("item_list")
+    if not isinstance(items, list) or not items:
+        return None
+    known = {ITEM_TEXT, ITEM_IMAGE, ITEM_VOICE, ITEM_FILE, ITEM_VIDEO}
+    types: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("type") in known:
+            return None
+        types.append(str(item.get("type")))
+    return types
 
 
 def _cdn_download_url(cdn_base_url: str, encrypted_query_param: str) -> str:

@@ -2192,3 +2192,34 @@ async def test_get_updates_downloads_untranscribed_voice_as_attachment(
     assert transcribed.text == "转写文本"
     assert transcribed.attachments == ()
     assert downloaded == ["msg-voice-only-0.silk"]
+
+
+@pytest.mark.asyncio
+async def test_get_updates_surfaces_fully_unsupported_item_types(monkeypatch):
+    client = WeixinClient(base_url="https://ilink.example", token="token")
+
+    async def fake_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        del path, payload, timeout
+        return {
+            "msgs": [
+                {
+                    "message_id": "msg-unknown-type",
+                    "from_user_id": "wx-user",
+                    "item_list": [{"type": 42, "unknown_item": {}}],
+                },
+                {
+                    "message_id": "msg-empty-text",
+                    "from_user_id": "wx-user",
+                    "item_list": [{"type": 1, "text_item": {"text": ""}}],
+                },
+            ],
+            "get_updates_buf": "next",
+        }
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    batch = await client.get_updates("acct", sync_buf="prev")
+
+    # Unknown-type messages surface with a marker; empty known-type text stays dropped.
+    assert [update.message_id for update in batch.updates] == ["msg-unknown-type"]
+    assert batch.updates[0].text.startswith("[unsupported] 消息类型 42")

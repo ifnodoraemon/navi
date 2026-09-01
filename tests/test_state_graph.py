@@ -1512,3 +1512,29 @@ def test_execution_args_keep_navi_home_paths_out_of_shadow_remapping(tmp_path) -
     assert translated["cwd"] == str(shadow)
     assert translated["command"][1] == str(attachment)
     assert translated["command"][2] == str(shadow / "notes.txt")
+
+
+def test_execution_command_keeps_navi_home_paths_out_of_shadow(tmp_path) -> None:
+    from navi.state_graph import _execution_command_for_workspace
+
+    logical = tmp_path / "project"
+    shadow = tmp_path / ".navi" / "workspace_shadows" / "run-1" / "shadow"
+    logical.mkdir(parents=True)
+    shadow.mkdir(parents=True)
+    media = logical / ".navi" / "weixin" / "media" / "inbound" / "resume.pdf"
+    media.parent.mkdir(parents=True)
+
+    command = (
+        f"pdftotext {logical}/.navi/weixin/media/inbound/resume.pdf - "
+        f"&& cp {logical}/notes.txt {shadow}/out.txt"
+    )
+
+    translated = _execution_command_for_workspace(
+        command,
+        logical_workspace=str(logical),
+        execution_workspace=shadow,
+    )
+
+    assert f"{logical}/.navi/weixin/media/inbound/resume.pdf" in translated
+    assert f"{shadow}/.navi/" not in translated
+    assert f"{shadow}/notes.txt" in translated

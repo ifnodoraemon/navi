@@ -53,7 +53,9 @@ class TelegramService:
                 "Telegram is not configured: connectors.telegram.bot_token is required"
             )
         return TelegramClient(
-            api_base_url=self.config.api_base_url, bot_token=self.config.bot_token
+            api_base_url=self.config.api_base_url,
+            bot_token=self.config.bot_token,
+            media_dir=self.home / "telegram" / "media" / "inbound",
         )
 
     def status(self) -> dict:
@@ -129,13 +131,24 @@ class TelegramService:
             message_key = f"telegram:{update.chat_id}:{update.message_id}"
         else:
             message_key = f"{SYNTHETIC_MESSAGE_ID_PREFIX}telegram:{update.chat_id}:{uuid.uuid4().hex}"
+        text = update.text
+        if not text.strip() and update.attachments:
+            # Media-only messages still need a user turn; an empty turn
+            # objective dies before any model call. Attachment paths travel
+            # in facts.
+            names = ", ".join(
+                attachment.file_name or attachment.kind
+                for attachment in update.attachments
+            )
+            text = f"[media] {names}".strip()
         message = ConnectorMessage(
             message_id=message_key,
             peer_id=update.chat_id,
             sender_id=update.sender_id,
-            text=update.text,
+            text=text,
             source=self.local_source,
             session_alias_prefix=self.session_alias_prefix,
+            facts=_telegram_message_facts(update),
         )
         if self.dedup.check(message).duplicate:
             return False
@@ -217,3 +230,17 @@ class TelegramService:
         if self.config.dm_policy in {"allowlist", "pairing"}:
             return update.sender_id in self.config.allowed_users
         return self.config.dm_policy == "open"
+
+
+def _telegram_message_facts(update: TelegramUpdate) -> dict[str, object]:
+    from dataclasses import asdict
+
+    attachments = [asdict(attachment) for attachment in update.attachments]
+    return {
+        "connector": "telegram",
+        "message_id": f"telegram:{update.chat_id}:{update.message_id}",
+        "peer_id": update.chat_id,
+        "sender_id": update.sender_id,
+        "attachment_count": len(attachments),
+        "attachments": attachments,
+    }
