@@ -863,8 +863,10 @@ class MemoryStore:
         sequence_score = SequenceMatcher(None, normalized_query, normalized_content).ratio()
 
         # Continuous cognitive activation: blends asymmetric cue recognition (query coverage),
-        # symmetric similarity (Jaccard), and sequential fuzzy character alignment.
-        activation = 0.6 * query_coverage + 0.25 * lexical_jaccard + 0.15 * sequence_score
+        # symmetric similarity (Jaccard), sequential alignment, and recurring concept frequency.
+        extra_occurrences = max(0, sum(normalized_content.count(t) for t in intersection) - len(intersection))
+        tf_reinforcement = 1.0 + 0.15 * min(3.0, float(extra_occurrences))
+        activation = (0.6 * query_coverage * tf_reinforcement) + 0.25 * lexical_jaccard + 0.15 * sequence_score
         return min(1.0, max(activation, lexical_jaccard))
 
     def _semantic_graph_neighbors(
@@ -1772,8 +1774,14 @@ def _metadata_int(metadata: dict, key: str) -> int:
 def _text_features(text: str) -> set[str]:
     normalized = text.strip().lower()
     words = {w for w in re.findall(r"[a-z0-9_]+", normalized) if len(w) >= 2}
-    cjk = "".join(re.findall(r"[\u4e00-\u9fff]", normalized))
-    cjk_grams = {cjk[i : i + size] for size in (1, 2) for i in range(max(0, len(cjk) - size + 1))}
+    chunks = re.findall(r"[\u4e00-\u9fff]+", normalized)
+    cjk_grams: set[str] = set()
+    for chunk in chunks:
+        if len(chunk) == 1:
+            cjk_grams.add(chunk)
+        else:
+            for i in range(len(chunk) - 1):
+                cjk_grams.add(chunk[i : i + 2])
     return words | cjk_grams
 
 
