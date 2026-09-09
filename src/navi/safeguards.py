@@ -463,7 +463,8 @@ def assess_capability_call(
         contexts.append("external_side_effect")
         evidence["external_effect"] = True
 
-    if spec.risk_policy == "workspace_file_write":
+    def handle_workspace_file_write():
+        nonlocal risk_class, confirmation_required, reason_code
         path_facts = _file_write_risk_facts(call_args, workspace=workspace)
         evidence.update(path_facts)
         if path_facts["outside_workspace"]:
@@ -476,50 +477,39 @@ def assess_capability_call(
             confirmation_required = True
             reason_code = "destructive_file_overwrite_requires_approval"
             contexts.append("destructive_overwrite")
-    elif spec.risk_policy == "shell_argv":
+
+    def handle_shell_argv():
+        nonlocal risk_class, confirmation_required, reason_code, contexts
         shell_policy = shell_call_policy(call_args)
         evidence.update(shell_policy)
         call_permission = str(shell_policy["required_permission"])
-        if call_permission == "read":
-            risk_class, confirmation_required, reason_code, contexts = (
-                "medium",
-                False,
-                "declared_shell_read_only",
-                ["terminal", "local_read"],
-            )
-        elif call_permission == "network":
-            risk_class, confirmation_required, reason_code, contexts = (
-                "medium",
-                False,
-                "declared_shell_network_read",
-                ["terminal", "network"],
-            )
-        else:
-            risk_class, confirmation_required, reason_code = (
-                "high",
-                True,
-                "opaque_shell_effect_requires_approval",
-            )
-            contexts.append("opaque_process_effect")
-    elif spec.risk_policy == "agent_operation":
+        shell_outcomes = {
+            "read": ("medium", False, "declared_shell_read_only", ["terminal", "local_read"]),
+            "network": ("medium", False, "declared_shell_network_read", ["terminal", "network"]),
+        }
+        fallback_shell = ("high", True, "opaque_shell_effect_requires_approval", contexts + ["opaque_process_effect"])
+        risk_class, confirmation_required, reason_code, contexts = shell_outcomes.get(
+            call_permission, fallback_shell
+        )
+
+    def handle_agent_operation():
+        nonlocal risk_class, confirmation_required, reason_code, contexts
         operation = str(call_args.get("operation") or "").strip().lower()
         evidence["operation"] = operation
-        if operation in {"list", "state", "collect"}:
-            risk_class = "low"
-            confirmation_required = False
-            reason_code = "agent_read_operation"
-            contexts = ["task_control"]
-        elif operation in {"spawn", "message"}:
-            risk_class = "medium"
-            confirmation_required = False
-            reason_code = "agent_child_operation"
-            contexts = ["task_control"]
-        else:
-            risk_class = "high"
-            confirmation_required = True
-            reason_code = "agent_cancel_requires_approval"
-            contexts = ["task_control", "destructive_control"]
-    elif spec.risk_policy == "argument_permission":
+        agent_outcomes = {
+            "list": ("low", False, "agent_read_operation", ["task_control"]),
+            "state": ("low", False, "agent_read_operation", ["task_control"]),
+            "collect": ("low", False, "agent_read_operation", ["task_control"]),
+            "spawn": ("medium", False, "agent_child_operation", ["task_control"]),
+            "message": ("medium", False, "agent_child_operation", ["task_control"]),
+        }
+        fallback_agent = ("high", True, "agent_cancel_requires_approval", ["task_control", "destructive_control"])
+        risk_class, confirmation_required, reason_code, contexts = agent_outcomes.get(
+            operation, fallback_agent
+        )
+
+    def handle_argument_permission():
+        nonlocal risk_class, confirmation_required, reason_code, contexts
         selected = str(call_args.get(spec.argument_permission_field) or "").strip()
         required_permission = required_permission_for_call(spec, call_args)
         evidence.update(
@@ -529,43 +519,44 @@ def assess_capability_call(
                 "required_permission": required_permission,
             }
         )
-        if required_permission == "write":
-            risk_class = "high"
-            confirmation_required = True
-            reason_code = "argument_selected_write_requires_approval"
-            contexts = ["external_side_effect"]
-        elif required_permission == "prepare":
-            risk_class = "medium"
-            confirmation_required = False
-            reason_code = "argument_selected_prepare"
-            contexts = ["task_control"]
-        elif required_permission == "network":
-            risk_class = "medium"
-            confirmation_required = False
-            reason_code = "argument_selected_network_read"
-            contexts = ["network"]
-        else:
-            risk_class = "low"
-            confirmation_required = False
-            reason_code = "argument_selected_read"
-            contexts = []
-    elif spec.risk_policy == "http_request":
+        perm_outcomes = {
+            "write": ("high", True, "argument_selected_write_requires_approval", ["external_side_effect"]),
+            "prepare": ("medium", False, "argument_selected_prepare", ["task_control"]),
+            "network": ("medium", False, "argument_selected_network_read", ["network"]),
+        }
+        fallback_perm = ("low", False, "argument_selected_read", [])
+        risk_class, confirmation_required, reason_code, contexts = perm_outcomes.get(
+            required_permission, fallback_perm
+        )
+
+    def handle_http_request():
+        nonlocal risk_class, confirmation_required, reason_code
         network_facts = _http_fetch_risk_facts(call_args)
         evidence.update(network_facts)
-        if network_facts["private_or_local_target"]:
-            risk_class = "high"
-            confirmation_required = True
-            reason_code = "private_network_access_requires_approval"
-            contexts.append("private_network")
-        elif (
+        is_private = bool(network_facts["private_or_local_target"])
+        is_side_effect = bool(
             network_facts["writes_remote_state"]
             or network_facts["credentialed_request"]
             or network_facts["has_body"]
-        ):
-            risk_class = "high"
-            confirmation_required = True
-            reason_code = "external_network_side_effect_requires_approval"
-            contexts.append("external_side_effect")
+        )
+        http_transitions = (
+            (is_private, ("high", True, "private_network_access_requires_approval", "private_network")),
+            (is_side_effect, ("high", True, "external_network_side_effect_requires_approval", "external_side_effect")),
+        )
+        for cond, (r_class, r_conf, r_reason, r_ctx) in http_transitions:
+            if cond:
+                risk_class, confirmation_required, reason_code = r_class, r_conf, r_reason
+                contexts.append(r_ctx)
+                break
+
+    policy_dispatch = {
+        "workspace_file_write": handle_workspace_file_write,
+        "shell_argv": handle_shell_argv,
+        "agent_operation": handle_agent_operation,
+        "argument_permission": handle_argument_permission,
+        "http_request": handle_http_request,
+    }
+    policy_dispatch.get(spec.risk_policy, lambda: None)()
 
     return CapabilityRiskAssessment(
         risk_class=risk_class,
@@ -808,8 +799,8 @@ def redact_secrets_deep(value: Any) -> Any:
             key_lower = str(key).lower()
             if _is_secret_field_name(key_lower):
                 redacted[str(key)] = "[REDACTED]"
-            else:
-                redacted[str(key)] = redact_secrets_deep(nested)
+                continue
+            redacted[str(key)] = redact_secrets_deep(nested)
         return redacted
     if isinstance(value, list):
         return [redact_secrets_deep(item) for item in value]
@@ -826,10 +817,11 @@ def redact_personal_data_deep(value: Any) -> Any:
             normalized = str(key).strip().lower()
             if _is_secret_field_name(normalized):
                 redacted[key] = "[REDACTED]"
-            elif normalized in _PERSONAL_FIELD_NAMES and item:
+                continue
+            if normalized in _PERSONAL_FIELD_NAMES and item:
                 redacted[key] = "[REDACTED_PERSONAL_DATA]"
-            else:
-                redacted[key] = redact_personal_data_deep(item)
+                continue
+            redacted[key] = redact_personal_data_deep(item)
         return redacted
     if isinstance(value, list):
         return [redact_personal_data_deep(item) for item in value]
@@ -904,11 +896,10 @@ def _approval_hmac_key(home: Path) -> bytes:
     path = home / "approval_hmac.key"
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        pass
-    else:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(secrets.token_bytes(32))
+    except FileExistsError:
+        pass
     key = path.read_bytes()
     if len(key) < 32:
         raise RuntimeError("approval HMAC key is invalid")

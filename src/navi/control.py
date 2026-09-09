@@ -100,39 +100,46 @@ class ApprovalService:
                 selection=selection,
             )
 
-        approval = None
-        if code:
-            approval = runs.pending_approval_by_code(
+        def resolve_by_code():
+            app = runs.pending_approval_by_code(
                 code,
                 source=context.source,
                 peer_id=context.peer_id,
                 sender_id=context.sender_id,
             )
-            if approval is None:
-                approval = runs.approval_by_code(
+            if app is None:
+                app = runs.approval_by_code(
                     code,
                     source=context.source,
                     peer_id=context.peer_id,
                     sender_id=context.sender_id,
                 )
-            reason = "approval_code_not_found" if approval is None else ""
-        elif run_id:
-            approval = runs.pending_approval_for_run(
+            reason_map = {True: "", False: "approval_code_not_found"}
+            return app, reason_map[app is not None]
+
+        def resolve_by_run_id():
+            app = runs.pending_approval_for_run(
                 run_id,
                 source=context.source,
                 peer_id=context.peer_id,
                 sender_id=context.sender_id,
             )
-            if approval is None:
-                approval = runs.approval_for_run(
+            if app is None:
+                app = runs.approval_for_run(
                     run_id,
                     source=context.source,
                     peer_id=context.peer_id,
                     sender_id=context.sender_id,
                 )
-            reason = "run_has_no_approval" if approval is None else ""
-        else:
-            reason = "approval_identifier_missing"
+            reason_map = {True: "", False: "run_has_no_approval"}
+            return app, reason_map[app is not None]
+
+        resolvers = (
+            (bool(code), resolve_by_code),
+            (bool(run_id), resolve_by_run_id),
+            (True, lambda: (None, "approval_identifier_missing")),
+        )
+        approval, reason = next(resolver() for cond, resolver in resolvers if cond)
 
         if approval is None:
             return _approval_not_resolved(
@@ -172,47 +179,74 @@ class ApprovalService:
                     approval_id=approval.id,
                 )
 
-            if normalized_decision == APPROVAL_DECISION_APPROVE:
-                if resolved.action == APPROVAL_ACTION_SESSION_ELEVATION:
-                    phase = Phase.ENDED
-                    governance = Governance.APPROVED
-                    acceptance = Acceptance.ACCEPTED
-                    resolution = Resolution.SUCCESS
-                    result_summary = "session_elevation_approved"
-                else:
-                    phase = Phase.PENDING
-                    governance = Governance.APPROVED
-                    acceptance = Acceptance.NONE
-                    resolution = Resolution.NONE
-                    result_summary = f"approval_continuation_ready:{resolved.id}"
-                runs.update_run_in_transaction(
-                    conn,
-                    resolved.run_id,
-                    phase=phase,
-                    governance=governance,
-                    acceptance=acceptance,
-                    resolution=resolution,
-                    result_summary=result_summary,
-                    error="",
-                    trust_rule_id=f"approval:{resolved.id}",
+            state_matrix = {
+                (True, True): (
+                    Phase.ENDED,
+                    Governance.APPROVED,
+                    Acceptance.ACCEPTED,
+                    Resolution.SUCCESS,
+                    "session_elevation_approved",
+                    "",
+                    f"approval:{resolved.id}",
+                    APPROVAL_STATUS_APPROVED,
+                ),
+                (True, False): (
+                    Phase.PENDING,
+                    Governance.APPROVED,
+                    Acceptance.NONE,
+                    Resolution.NONE,
+                    f"approval_continuation_ready:{resolved.id}",
+                    "",
+                    f"approval:{resolved.id}",
+                    APPROVAL_STATUS_APPROVED,
+                ),
+                (False, False): (
+                    Phase.ENDED,
+                    Governance.REJECTED,
+                    Acceptance.REJECTED,
+                    Resolution.CANCELED,
+                    "approval_rejected",
+                    "",
+                    "",
+                    APPROVAL_STATUS_REJECTED,
+                ),
+                (False, True): (
+                    Phase.ENDED,
+                    Governance.REJECTED,
+                    Acceptance.REJECTED,
+                    Resolution.CANCELED,
+                    "approval_rejected",
+                    "",
+                    "",
+                    APPROVAL_STATUS_REJECTED,
+                ),
+            }
+            (
+                phase,
+                governance,
+                acceptance,
+                resolution,
+                result_summary,
+                error_msg,
+                trust_rule_id,
+                status,
+            ) = state_matrix[
+                (
+                    normalized_decision == APPROVAL_DECISION_APPROVE,
+                    resolved.action == APPROVAL_ACTION_SESSION_ELEVATION,
                 )
-                status = APPROVAL_STATUS_APPROVED
-            else:
-                phase = Phase.ENDED
-                governance = Governance.REJECTED
-                acceptance = Acceptance.REJECTED
-                resolution = Resolution.CANCELED
-                runs.update_run_in_transaction(
-                    conn,
-                    resolved.run_id,
-                    phase=phase,
-                    governance=governance,
-                    acceptance=acceptance,
-                    resolution=resolution,
-                    result_summary="approval_rejected",
-                    error="",
-                )
-                status = APPROVAL_STATUS_REJECTED
+            ]
+            runs.update_run_in_transaction(
+                conn,
+                resolved.run_id,
+                phase=phase,
+                governance=governance,
+                acceptance=acceptance,
+                resolution=resolution,
+                result_summary=result_summary,
+                error=error_msg,
+                trust_rule_id=trust_rule_id,
+            )
 
         facts = self._resolution_facts(
             resolved=resolved,
@@ -416,14 +450,20 @@ class ApprovalService:
             loop_run=continued.loop_run,
             context=context,
         )
-        if pending_approval is not None:
-            facts["pending_approval"] = _approval_prompt_facts(pending_approval)
-            facts["continuation_requires_approval"] = True
-            facts["continuation_pending_approval_is_distinct"] = (
-                pending_approval.id != str(resolved.facts.get("approval_id") or "")
-            )
-        else:
-            facts["continuation_requires_approval"] = False
+        has_pending = pending_approval is not None
+        pending_patches = {
+            True: lambda: {
+                "pending_approval": _approval_prompt_facts(pending_approval),
+                "continuation_requires_approval": True,
+                "continuation_pending_approval_is_distinct": (
+                    pending_approval.id != str(resolved.facts.get("approval_id") or "")
+                ),
+            },
+            False: lambda: {
+                "continuation_requires_approval": False,
+            },
+        }
+        facts.update(pending_patches[has_pending]())
         from .connector_delivery import connector_delivery_from_loop_result
 
         delivery = connector_delivery_from_loop_result(continued)

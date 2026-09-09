@@ -92,6 +92,16 @@ class WeixinTransportError(RuntimeError):
         )
 
 
+def _resolve_client_id(idempotency_key: str) -> str:
+    from navi.connector_delivery import connector_delivery_client_id
+
+    client_id_resolvers = {
+        True: lambda: connector_delivery_client_id(idempotency_key, prefix="navi-weixin"),
+        False: lambda: f"navi-weixin-{uuid.uuid4().hex}",
+    }
+    return client_id_resolvers[bool(idempotency_key)]()
+
+
 class WeixinClient:
     def __init__(
         self,
@@ -225,15 +235,7 @@ class WeixinClient:
             path=path,
             force_file_attachment=force_file_attachment,
         )
-        if idempotency_key:
-            from navi.connector_delivery import connector_delivery_client_id
-
-            client_id = connector_delivery_client_id(
-                idempotency_key,
-                prefix="navi-weixin",
-            )
-        else:
-            client_id = f"navi-weixin-{uuid.uuid4().hex}"
+        client_id = _resolve_client_id(idempotency_key)
         response = await self._post(
             "/ilink/bot/sendmessage",
             {
@@ -278,12 +280,7 @@ class WeixinClient:
     ) -> None:
         if not text.strip():
             raise ValueError("Weixin text must not be empty")
-        if idempotency_key:
-            from navi.connector_delivery import connector_delivery_client_id
-
-            client_id = connector_delivery_client_id(idempotency_key, prefix="navi-weixin")
-        else:
-            client_id = f"navi-weixin-{uuid.uuid4().hex}"
+        client_id = _resolve_client_id(idempotency_key)
         message = self._message_payload(
             peer_id=peer_id,
             text=text,
@@ -355,12 +352,14 @@ class WeixinClient:
         _raise_ilink_error(upload_response, "getuploadurl")
         upload_param = str(upload_response.get("upload_param") or "")
         upload_full_url = str(upload_response.get("upload_full_url") or "")
-        if upload_full_url:
-            upload_url = upload_full_url
-        elif upload_param:
-            upload_url = _cdn_upload_url(self.cdn_base_url, upload_param, filekey)
-        else:
+        url_candidates = (
+            (bool(upload_full_url), lambda: upload_full_url),
+            (bool(upload_param), lambda: _cdn_upload_url(self.cdn_base_url, upload_param, filekey)),
+        )
+        url_resolver = next((fn for cond, fn in url_candidates if cond), None)
+        if url_resolver is None:
             raise RuntimeError(f"iLink getuploadurl returned no upload target: {upload_response}")
+        upload_url = url_resolver()
         encrypted_query_param = await self._upload_ciphertext(
             upload_url=upload_url,
             ciphertext=_aes128_ecb_encrypt(plaintext, aes_key),
@@ -503,16 +502,21 @@ class WeixinClient:
         try:
             encrypted_param = str(media.get("encrypt_query_param") or "")
             full_url = str(media.get("full_url") or "")
-            if encrypted_param:
-                url = _cdn_download_url(self.cdn_base_url, encrypted_param)
-            elif full_url:
+            def resolve_full_url():
                 _assert_weixin_cdn_url(full_url)
-                url = full_url
-            else:
+                return full_url
+
+            download_candidates = (
+                (bool(encrypted_param), lambda: _cdn_download_url(self.cdn_base_url, encrypted_param)),
+                (bool(full_url), resolve_full_url),
+            )
+            download_resolver = next((fn for cond, fn in download_candidates if cond), None)
+            if download_resolver is None:
                 return replace(
                     attachment,
                     download_error="media item had neither encrypt_query_param nor full_url",
                 )
+            url = download_resolver()
             timeout = _MEDIA_DOWNLOAD_TIMEOUT_SECONDS.get(attachment.kind, 60.0)
             async with httpx.AsyncClient(timeout=timeout, trust_env=True) as client:
                 response = await client.get(url)

@@ -701,11 +701,11 @@ class DeliveryCoordinator:
                         "connector_transient_rejected",
                     }:
                         break
-                else:
-                    stored = self.store.mark_failed(item.id, error=error)
-                    outcomes.append(
-                        DeliveryOutcome(item=stored or item, state="failed", failure=failure)
-                    )
+                    continue
+                stored = self.store.mark_failed(item.id, error=error)
+                outcomes.append(
+                    DeliveryOutcome(item=stored or item, state="failed", failure=failure)
+                )
                 continue
             stored = self.store.mark_sent(item.id, receipt=receipt, delivery_id=item.id)
             outcomes.append(DeliveryOutcome(item=stored or item, state="sent", receipt=receipt))

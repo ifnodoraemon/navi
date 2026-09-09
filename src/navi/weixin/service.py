@@ -204,11 +204,12 @@ class WeixinService:
                     has_active_runs = len(active_runs) > 0
                     last_tasks_check = now
 
-                has_activity = len(batch.updates) > 0 or has_active_runs
-                if has_activity:
-                    sleep_time = 0.05
-                else:
-                    sleep_time = min(1.0, sleep_time + 0.1)
+                has_activity = bool(len(batch.updates) > 0 or has_active_runs)
+                sleep_updaters = {
+                    True: lambda: 0.05,
+                    False: lambda: min(1.0, sleep_time + 0.1),
+                }
+                sleep_time = sleep_updaters[has_activity]()
 
                 self.update_status("healthy")
 
@@ -1070,10 +1071,11 @@ def _redact_event_facts(facts: dict) -> dict:
         key_text = str(key).lower()
         if key_text in _REDACT_FIELD_NAMES:
             redacted[key] = "[redacted]"
-        elif key_text in free_text_keys and isinstance(value, str):
+            continue
+        if key_text in free_text_keys and isinstance(value, str):
             redacted[key] = redact_secrets(value)
-        else:
-            redacted[key] = value
+            continue
+        redacted[key] = value
     return redacted
 
 

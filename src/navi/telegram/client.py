@@ -166,42 +166,52 @@ def _attachments_from_message(message: dict[str, Any]) -> tuple[TelegramAttachme
     return tuple(attachments)
 
 
+def _parse_photo_payload(payload: object) -> tuple[dict, str, str] | None:
+    if not isinstance(payload, list) or not payload:
+        return None
+    sizes = [item for item in payload if isinstance(item, dict)]
+    if not sizes:
+        return None
+    largest = max(
+        sizes,
+        key=lambda item: (int(item.get("width") or 0), int(item.get("height") or 0)),
+    )
+    return largest, "photo.jpg", "image/jpeg"
+
+
+def _parse_dict_payload(payload: object, field: str) -> tuple[dict, str, str] | None:
+    if not isinstance(payload, dict):
+        return None
+    file_name = str(payload.get("file_name") or "")
+    mime_type = str(payload.get("mime_type") or "")
+    if field == "sticker" and not file_name:
+        file_name = f"sticker{str(payload.get('emoji') or '')}".strip()
+    if field == "voice" and not file_name:
+        file_name = "voice.ogg"
+    if field == "video_note" and not file_name:
+        file_name = "video-note.mp4"
+    return payload, file_name, mime_type
+
+
 def _attachment_from_payload(
     field: str, kind: str, payload: object
 ) -> TelegramAttachment | None:
-    if field == "photo":
-        # PhotoSize array; the last entry is the largest resolution.
-        if not isinstance(payload, list) or not payload:
-            return None
-        sizes = [item for item in payload if isinstance(item, dict)]
-        if not sizes:
-            return None
-        largest = max(
-            sizes,
-            key=lambda item: (int(item.get("width") or 0), int(item.get("height") or 0)),
-        )
-        payload = largest
-        file_name = "photo.jpg"
-        mime_type = "image/jpeg"
-    else:
-        if not isinstance(payload, dict):
-            return None
-        file_name = str(payload.get("file_name") or "")
-        mime_type = str(payload.get("mime_type") or "")
-        if field == "sticker" and not file_name:
-            file_name = f"sticker{str(payload.get('emoji') or '')}".strip()
-        if field == "voice" and not file_name:
-            file_name = "voice.ogg"
-        if field == "video_note" and not file_name:
-            file_name = "video-note.mp4"
+    payload_parsers = {
+        True: lambda: _parse_photo_payload(payload),
+        False: lambda: _parse_dict_payload(payload, field),
+    }
+    parsed = payload_parsers[field == "photo"]()
+    if parsed is None:
+        return None
+    payload_dict, file_name, mime_type = parsed
     if not mime_type:
         mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
     return TelegramAttachment(
         kind=kind,
         mime_type=mime_type,
         file_name=file_name or "attachment.bin",
-        size=_coerce_int(payload.get("file_size") if isinstance(payload, dict) else None),
-        file_id=str(payload.get("file_id") or "") if isinstance(payload, dict) else "",
+        size=_coerce_int(payload_dict.get("file_size")),
+        file_id=str(payload_dict.get("file_id") or ""),
     )
 
 

@@ -336,20 +336,16 @@ async def _run_daily_journey_simulator(
             }
         )
 
-        if turn.action in {"goal", "approval"}:
-            messages.append(
-                ChatMessage(
-                    role="user",
-                    content=f"Navi created a background task (action={turn.action}). Navi said: {turn.text}\nIf you consider the task complete or are satisfied, reply with /exit. Otherwise, continue.",
-                )
+        turn_prompts = {
+            True: f"Navi created a background task (action={turn.action}). Navi said: {turn.text}\nIf you consider the task complete or are satisfied, reply with /exit. Otherwise, continue.",
+            False: f"Navi replied: {turn.text}\nPlease reply to Navi naturally. If your goal is fully accomplished, reply with /exit.",
+        }
+        messages.append(
+            ChatMessage(
+                role="user",
+                content=turn_prompts[bool(turn.action in {"goal", "approval"})],
             )
-        else:
-            messages.append(
-                ChatMessage(
-                    role="user",
-                    content=f"Navi replied: {turn.text}\nPlease reply to Navi naturally. If your goal is fully accomplished, reply with /exit.",
-                )
-            )
+        )
 
     return errors, events
 
@@ -390,7 +386,7 @@ async def _run_daily_journey(
             # Add a Provider check just in case
             if provider is None:
                 errors.append("Simulator requires a ModelPool provider")
-            else:
+            if provider is not None:
                 sim_errors, sim_events = await _run_daily_journey_simulator(
                     journey=journey,
                     provider=provider,
@@ -399,7 +395,7 @@ async def _run_daily_journey(
                 )
                 errors.extend(sim_errors)
                 events.extend(sim_events)
-        else:
+        if "simulator" not in journey:
             for index, step in enumerate(journey["steps"]):
                 before_runs = runs.list(limit=500)
                 before_scheduled_goals = goals.list_cron_goals()
@@ -407,6 +403,7 @@ async def _run_daily_journey(
                 if not isinstance(step, dict):
                     errors.append(f"step[{index}]: step must be a mapping")
                     continue
+                event: dict[str, Any] | None = None
                 if "user" in step:
                     message = _render_journey_text(
                         str(step["user"]), runs, latest_run_id=latest_run_id
@@ -420,14 +417,14 @@ async def _run_daily_journey(
                     )
                     session_id = turn.session_id
                     latest_run_id = turn.run_id or latest_run_id or _latest_run_id(runs)
-                    event: dict[str, Any] = {
+                    event = {
                         "kind": "user",
                         "message": message,
                         "action": turn.action,
                         "run_id": turn.run_id,
                         "text": turn.text,
                     }
-                elif step.get("process_pending"):
+                if event is None and step.get("process_pending"):
                     processed = await _run_process_pending(engine, limit=5)
                     if processed:
                         latest_run_id = processed[-1].id
@@ -435,7 +432,7 @@ async def _run_daily_journey(
                         "kind": "process_pending",
                         "processed": [item.__dict__ for item in processed],
                     }
-                else:
+                if event is None:
                     errors.append(f"step[{index}]: missing user or process_pending")
                     continue
                 events.append(event)

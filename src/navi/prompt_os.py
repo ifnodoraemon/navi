@@ -81,15 +81,13 @@ def render_prompt_blocks(blocks: Iterable[PromptBlock]) -> str:
         if not content:
             continue
         tag = _block_xml_tag(block.name)
-        if _is_json_document(content):
-            rendered.append(f"<{tag}>\n<![CDATA[{content}]]>\n</{tag}>")
-        elif block.trusted:
-            rendered.append(f"<{tag}>\n{_escape_xml_text(content)}\n</{tag}>")
-        else:
-            rendered.append(
-                f'<untrusted_input name="{tag}">\n{_escape_xml_text(content)}\n'
-                "</untrusted_input>"
-            )
+        escaped_content = _escape_xml_text(content)
+        format_strategies = (
+            (_is_json_document(content), f"<{tag}>\n<![CDATA[{content}]]>\n</{tag}>"),
+            (block.trusted, f"<{tag}>\n{escaped_content}\n</{tag}>"),
+            (True, f'<untrusted_input name="{tag}">\n{escaped_content}\n</untrusted_input>'),
+        )
+        rendered.append(next(body for cond, body in format_strategies if cond))
     return "\n\n".join(rendered)
 
 

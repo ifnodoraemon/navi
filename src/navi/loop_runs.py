@@ -971,31 +971,32 @@ class LoopRunStore:
         for row in rows:
             state = _loop_run_from_row(row)
             gate = state.evidence.get("retry_gate")
-            retry_after = 0.0
-            if isinstance(gate, dict) and gate.get("decision") == "pause":
-                retryable = True
+            grant = state.evidence.get("resource_grant")
+            gate_decision = isinstance(gate, dict) and gate.get("decision") == "pause"
+            resource_decision = (
+                state.evidence.get("execution_mode") == "background"
+                and is_retryable_resource_pause(grant)
+            )
+
+            def eval_gate() -> tuple[bool, float]:
                 try:
-                    retry_after = max(
-                        0.0,
-                        float(gate.get("retry_after_seconds") or 0.0),
-                    )
+                    return True, max(0.0, float(gate.get("retry_after_seconds") or 0.0))
                 except (TypeError, ValueError):
-                    retry_after = 0.0
-            else:
-                retryable = False
-                grant = state.evidence.get("resource_grant")
-                retryable = (
-                    state.evidence.get("execution_mode") == "background"
-                    and is_retryable_resource_pause(grant)
-                )
-                if retryable and isinstance(grant, dict):
+                    return True, 0.0
+
+            def eval_resource() -> tuple[bool, float]:
+                if resource_decision and isinstance(grant, dict):
                     try:
-                        retry_after = max(
-                            0.0,
-                            float(grant.get("retry_after_seconds") or 0.0),
-                        )
+                        return True, max(0.0, float(grant.get("retry_after_seconds") or 0.0))
                     except (TypeError, ValueError):
-                        retry_after = 0.0
+                        return True, 0.0
+                return resource_decision, 0.0
+
+            evaluators = {
+                True: eval_gate,
+                False: eval_resource,
+            }
+            retryable, retry_after = evaluators[gate_decision]()
             if not retryable or state.updated_at + retry_after > current_time:
                 continue
             ready.append(state)

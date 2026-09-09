@@ -271,13 +271,13 @@ class LoopControlService:
                 },
             )
             spec = self._loop_spec_for_goal(goal, request, workspace=workspace)
-            if loop_kind == "scheduled":
+            def _setup_scheduled() -> tuple[Any, Any, Any]:
                 registration = {
                     "state_transition": "schedule_registered",
                     "cron_schedule": cron_schedule,
                     "next_run_at": next_run_at,
                 }
-                loop_run = self.loop_runs.create_run(
+                lr = self.loop_runs.create_run(
                     spec,
                     node="evaluate",
                     terminal_state=LoopTerminalState.CONVERGED,
@@ -293,8 +293,7 @@ class LoopControlService:
                     result_summary="schedule registered",
                     error="",
                 )
-                if updated_run is not None:
-                    run = updated_run
+                r = updated_run if updated_run is not None else run
                 updated_goal = self.goals.update_state(
                     goal.id,
                     phase=Phase.RUNNING,
@@ -305,13 +304,21 @@ class LoopControlService:
                     evidence=registration,
                     event_type="goal.schedule_registered",
                 )
-                if updated_goal is not None:
-                    goal = updated_goal
-            else:
-                loop_run = self.loop_runs.create_run(
+                g = updated_goal if updated_goal is not None else goal
+                return g, r, lr
+
+            def _setup_standard() -> tuple[Any, Any, Any]:
+                lr = self.loop_runs.create_run(
                     spec,
                     evidence={"execution_mode": execution_mode},
                 )
+                return goal, run, lr
+
+            setup_dispatch = {
+                True: _setup_scheduled,
+                False: _setup_standard,
+            }
+            goal, run, loop_run = setup_dispatch[loop_kind == "scheduled"]()
         except Exception as exc:
             self._compensate_open_failure(run, goal=goal, error=exc)
             raise
@@ -790,20 +797,27 @@ class LoopControlService:
                 # Scheduled/durable loops survive an expired approval: park at
                 # PAUSED so they can be re-triggered after re-approval, instead
                 # of being permanently cancelled.
-                if approval.status == APPROVAL_STATUS_EXPIRED and _loop_run_is_resumable_kind(
-                    self.loop_runs, state
-                ):
-                    self.pause_external_wait_durably(
-                        loop_run_id=state.run_id,
-                        reason=f"approval_gate_{approval.status}",
-                    )
-                    paused.append(state.run_id)
-                else:
-                    self.cancel_external_wait_durably(
-                        loop_run_id=state.run_id,
-                        reason=f"approval_gate_{approval.status}",
-                    )
-                    cancelled.append(state.run_id)
+                should_pause = bool(
+                    approval.status == APPROVAL_STATUS_EXPIRED
+                    and _loop_run_is_resumable_kind(self.loop_runs, state)
+                )
+                wait_resolution_actions = {
+                    True: lambda: (
+                        self.pause_external_wait_durably(
+                            loop_run_id=state.run_id,
+                            reason=f"approval_gate_{approval.status}",
+                        ),
+                        paused.append(state.run_id),
+                    ),
+                    False: lambda: (
+                        self.cancel_external_wait_durably(
+                            loop_run_id=state.run_id,
+                            reason=f"approval_gate_{approval.status}",
+                        ),
+                        cancelled.append(state.run_id),
+                    ),
+                }
+                wait_resolution_actions[should_pause]()
                 continue
             deferred.append(state.run_id)
         return {
@@ -983,16 +997,11 @@ class LoopControlService:
         run = self.runs.get(goal.run_id) if goal.run_id else None
         if run is None:
             raise KeyError(f"run not found for goal: {goal.run_id}")
-        if str(state.terminal_state) in {
+        is_paused_or_waiting = str(state.terminal_state) in {
             str(LoopTerminalState.PAUSED),
             str(LoopTerminalState.WAITING_APPROVAL),
-        }:
-            evidence = {"reason": reason.strip() or "cancel_requested"}
-            cancelled = self.loop_runs.cancel_external_wait(
-                state.run_id,
-                evidence=evidence,
-            )
-        elif state.is_terminal():
+        }
+        if state.is_terminal() and not is_paused_or_waiting:
             return LoopControlServiceResult(
                 goal=goal,
                 run=run,
@@ -1000,15 +1009,22 @@ class LoopControlService:
                 loop_run=state,
                 state_transition="already_terminal",
             )
-        else:
-            evidence = {"reason": reason.strip() or "cancel_requested"}
+        evidence = {"reason": reason.strip() or "cancel_requested"}
+
+        def _cancel_external_wait():
+            return self.loop_runs.cancel_external_wait(
+                state.run_id,
+                evidence=evidence,
+            )
+
+        def _transition_cancelled():
             checkpoint = self.loop_runs.write_checkpoint(
                 state.run_id,
                 node=state.node,
                 inputs={"control": "cancel", **evidence},
                 state=state.to_dict(),
             )
-            cancelled = self.loop_runs.transition(
+            return self.loop_runs.transition(
                 state.run_id,
                 node=state.node,
                 checkpoint_id=checkpoint.id,
@@ -1016,6 +1032,12 @@ class LoopControlService:
                 condition="cancel_requested",
                 evidence=evidence,
             )
+
+        cancel_strategies = {
+            True: _cancel_external_wait,
+            False: _transition_cancelled,
+        }
+        cancelled = cancel_strategies[is_paused_or_waiting]()
         updated_run = self.runs.update_run(
             run.id,
             phase=Phase.ENDED,
@@ -1146,17 +1168,16 @@ class LoopControlService:
     ) -> LoopSpec:
         timeout = TimeoutPolicy(seconds=float(max(1, request.timeout_seconds)))
         command = request.verification_command.strip()
-        if command:
-            verification_ladder = (
+        ladder_builders = {
+            True: lambda: (
                 VerificationStep(
                     kind=VerificationKind.COMMAND_EXIT_CODE,
                     name="verification_command",
                     command=command,
                     timeout=timeout,
                 ),
-            )
-        else:
-            verification_ladder = (
+            ),
+            False: lambda: (
                 VerificationStep(
                     kind=VerificationKind.LLM_CHECKER,
                     name="objective_check",
@@ -1164,7 +1185,9 @@ class LoopControlService:
                     timeout=timeout,
                     required=True,
                 ),
-            )
+            ),
+        }
+        verification_ladder = ladder_builders[bool(command)]()
         allowed = request.allowed_capabilities or ("*",)
         goal_spec = GoalSpec(
             objective=goal.objective,
@@ -1227,81 +1250,82 @@ class LoopControlService:
         current = self.runs.get(run_id)
         existing_summary = current.result_summary if current is not None else ""
         surface_message = _surface_message_from_result(result)
-        if terminal == str(LoopTerminalState.CONVERGED):
-            return {
+        state_patch_matrix: dict[str, dict[str, Any]] = {
+            str(LoopTerminalState.CONVERGED): {
                 "phase": Phase.ENDED,
                 "governance": Governance.NONE,
                 "acceptance": Acceptance.ACCEPTED,
                 "resolution": Resolution.SUCCESS,
                 "result_summary": surface_message,
                 "error": "",
-            }
-        elif terminal == str(LoopTerminalState.PAUSED):
-            return {
+            },
+            str(LoopTerminalState.PAUSED): {
                 "phase": Phase.PAUSED,
                 "acceptance": Acceptance.UNVERIFIED,
                 "resolution": Resolution.BLOCKED,
                 "result_summary": existing_summary or surface_message,
                 "error": "",
-            }
-        elif terminal == str(LoopTerminalState.WAITING_APPROVAL):
-            return {
+            },
+            str(LoopTerminalState.WAITING_APPROVAL): {
                 "phase": Phase.PAUSED,
                 "governance": Governance.AWAITING_APPROVAL,
                 "acceptance": Acceptance.UNVERIFIED,
                 "resolution": Resolution.BLOCKED,
                 "result_summary": existing_summary or surface_message,
                 "error": "",
-            }
-        elif terminal == str(LoopTerminalState.CONFLICTED):
-            return {
+            },
+            str(LoopTerminalState.CONFLICTED): {
                 "phase": Phase.PAUSED,
                 "governance": Governance.AWAITING_APPROVAL,
                 "acceptance": Acceptance.UNVERIFIED,
                 "resolution": Resolution.BLOCKED,
                 "result_summary": surface_message,
                 "error": "loop_conflicted",
-            }
-        elif terminal == str(LoopTerminalState.BLOCKED):
-            return {
+            },
+            str(LoopTerminalState.BLOCKED): {
                 "phase": Phase.ENDED,
                 "governance": Governance.NONE,
                 "acceptance": Acceptance.REJECTED,
                 "resolution": Resolution.BLOCKED,
                 "result_summary": surface_message,
                 "error": "loop_blocked",
-            }
-        elif terminal == str(LoopTerminalState.TIMED_OUT):
-            return {
+            },
+            str(LoopTerminalState.TIMED_OUT): {
                 "phase": Phase.ENDED,
                 "governance": Governance.NONE,
                 "acceptance": Acceptance.REJECTED,
                 "resolution": Resolution.FAILED,
                 "result_summary": surface_message,
                 "error": "loop_timed_out",
-            }
-        elif terminal in {
-            str(LoopTerminalState.CANCELLED),
-            str(LoopTerminalState.SUPERSEDED),
-        }:
-            return {
+            },
+            str(LoopTerminalState.CANCELLED): {
                 "phase": Phase.ENDED,
                 "governance": Governance.NONE,
                 "acceptance": Acceptance.REJECTED,
                 "resolution": Resolution.CANCELED,
                 "result_summary": surface_message,
                 "error": f"loop_{terminal}",
-            }
-        elif terminal == str(LoopTerminalState.FAILED):
-            return {
+            },
+            str(LoopTerminalState.SUPERSEDED): {
+                "phase": Phase.ENDED,
+                "governance": Governance.NONE,
+                "acceptance": Acceptance.REJECTED,
+                "resolution": Resolution.CANCELED,
+                "result_summary": surface_message,
+                "error": f"loop_{terminal}",
+            },
+            str(LoopTerminalState.FAILED): {
                 "phase": Phase.ENDED,
                 "governance": Governance.NONE,
                 "acceptance": Acceptance.REJECTED,
                 "resolution": Resolution.FAILED,
                 "result_summary": surface_message,
                 "error": "loop_failed",
-            }
-        elif terminal:
+            },
+        }
+        if terminal in state_patch_matrix:
+            return state_patch_matrix[terminal]
+        if terminal:
             return {
                 "phase": Phase.ENDED,
                 "governance": Governance.NONE,
@@ -1414,38 +1438,32 @@ def _task_context_for_request(
     request: OpenGoalRequest,
 ) -> dict[str, Any]:
     execution_mode = _execution_mode(request, loop_kind=_loop_kind(request.loop_kind))
+    delivery_stages = {
+        True: "post_semantic_acceptance_outbox",
+        False: "not_applicable",
+    }
     delivery = {
-        "stage": (
-            "post_semantic_acceptance_outbox"
-            if execution_mode == "background" and goal.source and goal.peer_id
-            else "not_applicable"
-        ),
+        "stage": delivery_stages[bool(execution_mode == "background" and goal.source and goal.peer_id)],
         "transport_receipt_available": False,
     }
-    if request.task_context:
-        context = _normalize_task_context(
-            request.task_context,
-            current_goal_id=goal.id,
-            parent_goal_id=goal.parent_goal_id,
-        )
-    else:
-        context = _normalize_task_context(
-            {
-                "lineage": {
-                    "id": goal.parent_goal_id or goal.id,
-                    "kind": "goal",
-                },
-                "progress": {
-                    "scope": "goal",
-                    "sequence_number": 0,
-                    "authority": "current_goal",
-                    "authoritative_prior_items": [],
-                    "ambient_history_authoritative": False,
-                },
-            },
-            current_goal_id=goal.id,
-            parent_goal_id=goal.parent_goal_id,
-        )
+    raw_context = request.task_context or {
+        "lineage": {
+            "id": goal.parent_goal_id or goal.id,
+            "kind": "goal",
+        },
+        "progress": {
+            "scope": "goal",
+            "sequence_number": 0,
+            "authority": "current_goal",
+            "authoritative_prior_items": [],
+            "ambient_history_authoritative": False,
+        },
+    }
+    context = _normalize_task_context(
+        raw_context,
+        current_goal_id=goal.id,
+        parent_goal_id=goal.parent_goal_id,
+    )
     return {**context, "delivery": delivery}
 
 

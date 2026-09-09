@@ -205,12 +205,17 @@ def _register_middleware(app: FastAPI, *, api_key: str) -> None:
         content_type = response.headers.get("content-type", "")
         if not content_type.startswith("application/json"):
             return response
-        chunks: list[bytes] = []
-        if hasattr(response, "body_iterator"):
-            async for chunk in response.body_iterator:
-                chunks.append(chunk)
-        else:
-            chunks.append(getattr(response, "body", b""))
+        async def read_stream():
+            return [chunk async for chunk in response.body_iterator]
+
+        async def read_body():
+            return [getattr(response, "body", b"")]
+
+        reader_dispatch = {
+            True: read_stream,
+            False: read_body,
+        }
+        chunks = await reader_dispatch[hasattr(response, "body_iterator")]()
         body = b"".join(chunks)
         if not body:
             return response
@@ -223,15 +228,17 @@ def _register_middleware(app: FastAPI, *, api_key: str) -> None:
                 media_type="application/json",
             )
         status_code = response.status_code
-        if 200 <= status_code < 300:
-            envelope: dict[str, Any] = {"ok": True, "data": parsed, "error": None}
-        else:
-            detail = parsed.get("detail") if isinstance(parsed, dict) else parsed
-            envelope = {
+        is_success = bool(200 <= status_code < 300)
+        detail = parsed.get("detail") if isinstance(parsed, dict) else parsed
+        envelope_builders = {
+            True: lambda: {"ok": True, "data": parsed, "error": None},
+            False: lambda: {
                 "ok": False,
                 "data": None,
                 "error": {"status": status_code, "detail": detail},
-            }
+            },
+        }
+        envelope = envelope_builders[is_success]()
         return JSONResponse(content=envelope, status_code=status_code)
 
 

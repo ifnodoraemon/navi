@@ -194,12 +194,12 @@ class TurnController(TurnLifecycleMixin):
             # A terminal loop stops with a real, diagnosable outcome; report
             # that outcome instead of pretending the model went silent. Only a
             # genuinely empty result is a missing model response.
-            if loop_terminal_state:
-                finalization_reason = terminal_reason
-            elif reason_code:
-                finalization_reason = f"loop_error:{reason_code}"
-            else:
-                finalization_reason = "missing_model_response"
+            reason_candidates = (
+                (bool(loop_terminal_state), terminal_reason),
+                (bool(reason_code), f"loop_error:{reason_code}"),
+                (True, "missing_model_response"),
+            )
+            finalization_reason = next(reason for cond, reason in reason_candidates if cond)
             response_facts = {
                 **invoked_facts,
                 "capability_result": {

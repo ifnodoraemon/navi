@@ -103,11 +103,12 @@ class TelegramService:
                     has_active_runs = len(active_runs) > 0
                     last_tasks_check = now
 
-                has_activity = len(updates) > 0 or has_active_runs
-                if has_activity:
-                    sleep_time = 0.05
-                else:
-                    sleep_time = min(1.0, sleep_time + 0.1)
+                has_activity = bool(len(updates) > 0 or has_active_runs)
+                sleep_updaters = {
+                    True: lambda: 0.05,
+                    False: lambda: min(1.0, sleep_time + 0.1),
+                }
+                sleep_time = sleep_updaters[has_activity]()
 
                 self.update_status("healthy")
 
@@ -127,10 +128,12 @@ class TelegramService:
             await asyncio.sleep(sleep_time)
 
     async def handle_update(self, update: TelegramUpdate) -> bool:
-        if update.message_id:
-            message_key = f"telegram:{update.chat_id}:{update.message_id}"
-        else:
-            message_key = f"{SYNTHETIC_MESSAGE_ID_PREFIX}telegram:{update.chat_id}:{uuid.uuid4().hex}"
+        has_msg_id = bool(update.message_id)
+        key_builders = {
+            True: lambda: f"telegram:{update.chat_id}:{update.message_id}",
+            False: lambda: f"{SYNTHETIC_MESSAGE_ID_PREFIX}telegram:{update.chat_id}:{uuid.uuid4().hex}",
+        }
+        message_key = key_builders[has_msg_id]()
         text = update.text
         if not text.strip() and update.attachments:
             # Media-only messages still need a user turn; an empty turn

@@ -90,11 +90,10 @@ class EvolutionEngine:
     def rollback(self, event_id: str) -> EvolutionEvent | None:
         def _restore(event: EvolutionEvent) -> None:
             adapter = self.targets.get(event.target_type)
-            rollback_snapshot = getattr(adapter, "rollback_snapshot", None)
-            if callable(rollback_snapshot):
-                rollback_snapshot(event.target_id, event.rollback_state)
-            else:
-                adapter.rollback(event.target_id, event.rollback_state)
+            rollback_fn = getattr(adapter, "rollback_snapshot", None)
+            if not callable(rollback_fn):
+                rollback_fn = adapter.rollback
+            rollback_fn(event.target_id, event.rollback_state)
 
         event = self.ledger.rollback_applied_event(event_id, _restore)
         if event is None:

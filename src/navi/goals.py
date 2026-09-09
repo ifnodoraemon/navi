@@ -262,26 +262,32 @@ class GoalStore:
         return Goal(*row) if row else None
 
     def list(self, *, phase: str = "", limit: int = 50) -> typing.List[Goal]:
-        if phase:
-            query = """
+        query_dispatch = {
+            True: (
+                """
                 SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at,
                        parent_goal_id, task_status, cron_schedule, next_run_at
                 FROM goals WHERE phase = ? ORDER BY updated_at DESC LIMIT ?
+                """,
+                lambda p, lim: (p, lim),
+            ),
+            False: (
                 """
-            params: tuple[Any, ...] = (phase, limit)
-        else:
-            query = """
                 SELECT id, objective, phase, governance, acceptance, resolution, source, peer_id, sender_id, session_id,
                        workspace, run_id, trace_id, evidence_json, blocked_reason,
                        stop_condition, timeout, max_retries,
                        created_at, updated_at, completed_at,
                        parent_goal_id, task_status, cron_schedule, next_run_at
                 FROM goals ORDER BY updated_at DESC LIMIT ?
-                """
-            params = (limit,)
+                """,
+                lambda p, lim: (lim,),
+            ),
+        }
+        query, param_fn = query_dispatch[bool(phase)]
+        params = param_fn(phase, limit)
         with connect(self.db_path) as conn:
             rows = conn.execute(query, params).fetchall()
         return [Goal(*row) for row in rows]
@@ -750,32 +756,42 @@ class GoalStore:
             "run_resolution": run.resolution,
         }
         phase, governance, acceptance, resolution = _goal_state_for_run(run, evidence=evidence)
-        if phase == Phase.ENDED and resolution == Resolution.SUCCESS:
-            task_status = "done"
-        elif phase == Phase.ENDED or resolution in {
-            Resolution.BLOCKED,
-            Resolution.FAILED,
-            Resolution.CANCELED,
-        }:
-            task_status = "blocked"
-        elif governance == Governance.AWAITING_APPROVAL:
-            task_status = "pending"
-        else:
-            task_status = "in_progress"
         try:
             goal_evidence = json.loads(goal.evidence_json or "{}")
         except json.JSONDecodeError:
             goal_evidence = {}
-        if phase == Phase.ENDED and goal_evidence.get("loop_kind") == "turn":
-            task_status = "archived"
-        reason = ""
-        if resolution == Resolution.BLOCKED:
-            if run.phase == Phase.ENDED and run.resolution == Resolution.SUCCESS and not run.error:
-                reason = "critic_gate_evidence_missing"
-            else:
-                reason = "run_blocked"
-            if run.error:
-                evidence = {**evidence, "run_error": run.error}
+        loop_kind = goal_evidence.get("loop_kind", "")
+
+        status_transitions = (
+            (phase == Phase.ENDED and loop_kind == "turn", "archived"),
+            (phase == Phase.ENDED and resolution == Resolution.SUCCESS, "done"),
+            (
+                phase == Phase.ENDED
+                or resolution in {Resolution.BLOCKED, Resolution.FAILED, Resolution.CANCELED},
+                "blocked",
+            ),
+            (governance == Governance.AWAITING_APPROVAL, "pending"),
+            (True, "in_progress"),
+        )
+        task_status = next(status for cond, status in status_transitions if cond)
+
+        is_critic_missing = bool(
+            run.phase == Phase.ENDED and run.resolution == Resolution.SUCCESS and not run.error
+        )
+        resolution_reasons = {
+            (Resolution.BLOCKED, True): "critic_gate_evidence_missing",
+            (Resolution.BLOCKED, False): "run_blocked",
+        }
+        reason = resolution_reasons.get((resolution, is_critic_missing), "")
+
+        error_patches = {
+            True: {"run_error": run.error},
+            False: {},
+        }
+        evidence = {
+            **evidence,
+            **error_patches[bool(resolution == Resolution.BLOCKED and run.error)],
+        }
         return self.update_state(
             goal.id,
             phase=phase,

@@ -602,29 +602,31 @@ class TraceStore:
         hashes = set()
         parsed_data: list[tuple[TraceEvent, dict[str, Any | None] | None]] = []
         for e in events:
-            if (e.input_json and '"$blob"' in e.input_json) or (
+            has_blob = (e.input_json and '"$blob"' in e.input_json) or (
                 e.output_json and '"$blob"' in e.output_json
-            ):
-                data = {
-                    "in": json.loads(e.input_json) if e.input_json else None,
-                    "out": json.loads(e.output_json) if e.output_json else None,
-                }
-                parsed_data.append((e, data))
-
-                def _find_hashes(d: Any) -> None:
-                    if isinstance(d, dict):
-                        if len(d) == 1 and "$blob" in d:
-                            hashes.add(d["$blob"])
-                        else:
-                            for v in d.values():
-                                _find_hashes(v)
-                    elif isinstance(d, list):
-                        for v in d:
-                            _find_hashes(v)
-
-                _find_hashes(data)
-            else:
+            )
+            if not has_blob:
                 parsed_data.append((e, None))
+                continue
+            data = {
+                "in": json.loads(e.input_json) if e.input_json else None,
+                "out": json.loads(e.output_json) if e.output_json else None,
+            }
+            parsed_data.append((e, data))
+
+            def _find_hashes(d: Any) -> None:
+                if isinstance(d, dict):
+                    if len(d) == 1 and "$blob" in d:
+                        hashes.add(d["$blob"])
+                        return
+                    for v in d.values():
+                        _find_hashes(v)
+                    return
+                if isinstance(d, list):
+                    for v in d:
+                        _find_hashes(v)
+
+            _find_hashes(data)
 
         if not hashes:
             return events
@@ -645,34 +647,40 @@ class TraceStore:
         for e, parsed in parsed_data:
             if parsed is None:
                 resolved_events.append(e)
-            else:
-                resolved_data = _replace(parsed)
-                resolved_events.append(
-                    replace(
-                        e,
-                        input_json=json.dumps(resolved_data.get("in"), ensure_ascii=False, sort_keys=True)
-                        if resolved_data.get("in") is not None
-                        else "",
-                        output_json=json.dumps(resolved_data.get("out"), ensure_ascii=False, sort_keys=True)
-                        if resolved_data.get("out") is not None
-                        else "",
-                    )
+                continue
+            resolved_data = _replace(parsed)
+            resolved_events.append(
+                replace(
+                    e,
+                    input_json=json.dumps(resolved_data.get("in"), ensure_ascii=False, sort_keys=True)
+                    if resolved_data.get("in") is not None
+                    else "",
+                    output_json=json.dumps(resolved_data.get("out"), ensure_ascii=False, sort_keys=True)
+                    if resolved_data.get("out") is not None
+                    else "",
                 )
+            )
         return resolved_events
 
     def list_evaluations(self, trace_id: str = "", *, limit: int = 50) -> list[TraceEvaluation]:
-        if trace_id:
-            query = """
+        query_specs = {
+            True: (
+                """
                 SELECT id, trace_id, outcome, failure_domain, evidence_json, created_at
                 FROM trace_evaluations WHERE trace_id = ? ORDER BY created_at DESC LIMIT ?
+                """,
+                lambda tid, lim: (tid, lim),
+            ),
+            False: (
                 """
-            params: tuple[Any, ...] = (trace_id, limit)
-        else:
-            query = """
                 SELECT id, trace_id, outcome, failure_domain, evidence_json, created_at
                 FROM trace_evaluations ORDER BY created_at DESC LIMIT ?
-                """
-            params = (limit,)
+                """,
+                lambda tid, lim: (lim,),
+            ),
+        }
+        query, param_fn = query_specs[bool(trace_id)]
+        params = param_fn(trace_id, limit)
         with connect(self.db_path) as conn:
             rows = conn.execute(query, params).fetchall()
         return [TraceEvaluation(*row) for row in rows]
@@ -882,9 +890,9 @@ def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRu
                 )
                 views.append(pending_llm_run)
                 pending_llm_run = None
-            else:
-                parent = current_step_id or current_turn_id
-                views.append(_event_run_view(event, parent_run_id=parent))
+                continue
+            parent = current_step_id or current_turn_id
+            views.append(_event_run_view(event, parent_run_id=parent))
             continue
 
         parent = current_step_id or current_turn_id
@@ -1675,18 +1683,19 @@ def _checker_failure_rule(
         return None
     _record_first_failure_evidence(failure, evidence)
     recovery_plan = next((event for event in events if event.phase == LoopPhase.RECOVERY), None)
+    has_plan = recovery_plan is not None
+    rules = {
+        True: "checker_failed_after_recovery_plan",
+        False: "checker_failed_without_recovery_plan",
+    }
+    evidence["recovery_plan_recorded"] = has_plan
     if recovery_plan:
-        evidence["recovery_plan_recorded"] = True
         recovery_output = _event_output(recovery_plan)
         evidence["recovery_blocked"] = bool(recovery_output.get("blocked", True))
         details = recovery_output.get("details")
         if isinstance(details, dict):
             evidence["recovery_detail_keys"] = sorted(details)
-        rule = "checker_failed_after_recovery_plan"
-    else:
-        evidence["recovery_plan_recorded"] = False
-        rule = "checker_failed_without_recovery_plan"
-    return _evaluation(TraceOutcome.FAILURE, TraceFailureDomain.CHECKER_BLOCKED, evidence, rule=rule)
+    return _evaluation(TraceOutcome.FAILURE, TraceFailureDomain.CHECKER_BLOCKED, evidence, rule=rules[has_plan])
 
 
 def _runtime_failure_rule(

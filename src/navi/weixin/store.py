@@ -347,17 +347,22 @@ class WeixinStatusStore:
                 "last_egress_success_at": timestamp,
             }
         )
-        if proactive:
-            state["proactive_egress_status"] = "healthy"
-            state["proactive_egress_error"] = ""
-            state["last_proactive_egress_success_at"] = timestamp
-            state["proactive_circuit_open_until"] = 0.0
-            state["consecutive_proactive_egress_failures"] = 0
-        else:
-            state["reactive_egress_status"] = "healthy"
-            state["reactive_egress_error"] = ""
-            state["last_reactive_egress_success_at"] = timestamp
-            state["consecutive_reactive_egress_failures"] = 0
+        success_patches = {
+            True: {
+                "proactive_egress_status": "healthy",
+                "proactive_egress_error": "",
+                "last_proactive_egress_success_at": timestamp,
+                "proactive_circuit_open_until": 0.0,
+                "consecutive_proactive_egress_failures": 0,
+            },
+            False: {
+                "reactive_egress_status": "healthy",
+                "reactive_egress_error": "",
+                "last_reactive_egress_success_at": timestamp,
+                "consecutive_reactive_egress_failures": 0,
+            },
+        }
+        state.update(success_patches[bool(proactive)])
         state["consecutive_egress_failures"] = max(
             int(state.get("consecutive_reactive_egress_failures") or 0),
             int(state.get("consecutive_proactive_egress_failures") or 0),
@@ -375,11 +380,11 @@ class WeixinStatusStore:
     ) -> dict[str, Any]:
         timestamp = time.time() if at is None else float(at)
         state = self.load()
-        failure_key = (
-            "consecutive_proactive_egress_failures"
-            if proactive
-            else "consecutive_reactive_egress_failures"
-        )
+        failure_keys = {
+            True: "consecutive_proactive_egress_failures",
+            False: "consecutive_reactive_egress_failures",
+        }
+        failure_key = failure_keys[bool(proactive)]
         state[failure_key] = int(state.get(failure_key) or 0) + 1
         state.update(
             {
@@ -391,17 +396,27 @@ class WeixinStatusStore:
             int(state.get("consecutive_reactive_egress_failures") or 0),
             int(state.get("consecutive_proactive_egress_failures") or 0),
         )
-        if proactive:
-            state["proactive_egress_status"] = "degraded"
-            state["proactive_egress_error"] = error[:1000]
+
+        def patch_proactive():
+            patch = {
+                "proactive_egress_status": "degraded",
+                "proactive_egress_error": error[:1000],
+            }
             if retry_after_seconds > 0:
-                state["proactive_circuit_open_until"] = max(
+                patch["proactive_circuit_open_until"] = max(
                     float(state.get("proactive_circuit_open_until") or 0.0),
                     timestamp + float(retry_after_seconds),
                 )
-        else:
-            state["reactive_egress_status"] = "degraded"
-            state["reactive_egress_error"] = error[:1000]
+            return patch
+
+        failure_patches = {
+            True: patch_proactive,
+            False: lambda: {
+                "reactive_egress_status": "degraded",
+                "reactive_egress_error": error[:1000],
+            },
+        }
+        state.update(failure_patches[bool(proactive)]())
         return self._write(state)
 
     def proactive_circuit_open(self, *, now: float | None = None) -> bool:
@@ -424,6 +439,15 @@ class WeixinStatusStore:
         reliability_error = ""
         db_path = self.home / "delivery_outbox.db"
         window_seconds = (("1h", 3_600.0), ("24h", 86_400.0), ("7d", 604_800.0))
+        windows = {
+            label: {
+                "samples": 0,
+                "sent": 0,
+                "success_rate": 0.0,
+                "status": "insufficient_data",
+            }
+            for label, _ in window_seconds
+        }
         if db_path.exists():
             try:
                 with closing(
@@ -445,17 +469,16 @@ class WeixinStatusStore:
                         samples = int(row[0] or 0) if row else 0
                         sent = int(row[1] or 0) if row else 0
                         rate = sent / samples if samples else 0.0
+                        status_ladder = (
+                            (samples < 5, "insufficient_data"),
+                            (rate >= 0.95, "met"),
+                            (True, "breached"),
+                        )
                         windows[label] = {
                             "samples": samples,
                             "sent": sent,
                             "success_rate": rate,
-                            "status": (
-                                "insufficient_data"
-                                if samples < 5
-                                else "met"
-                                if rate >= 0.95
-                                else "breached"
-                            ),
+                            "status": next(st for cond, st in status_ladder if cond),
                         }
             except sqlite3.Error as exc:
                 reliability_error = f"delivery reliability read failed: {type(exc).__name__}"
@@ -468,28 +491,16 @@ class WeixinStatusStore:
                     }
                     for label, _ in window_seconds
                 }
-        else:
-            windows = {
-                label: {
-                    "samples": 0,
-                    "sent": 0,
-                    "success_rate": 0.0,
-                    "status": "insufficient_data",
-                }
-                for label, _ in window_seconds
-            }
         state["proactive_delivery_windows"] = windows
         breached = [label for label, facts in windows.items() if facts["status"] == "breached"]
         statuses = {str(facts.get("status") or "unknown") for facts in windows.values()}
-        state["delivery_incident_status"] = (
-            "open"
-            if breached
-            else "unknown"
-            if "unknown" in statuses
-            else "insufficient_data"
-            if "insufficient_data" in statuses
-            else "closed"
+        incident_ladder = (
+            (bool(breached), "open"),
+            ("unknown" in statuses, "unknown"),
+            ("insufficient_data" in statuses, "insufficient_data"),
+            (True, "closed"),
         )
+        state["delivery_incident_status"] = next(st for cond, st in incident_ladder if cond)
         state["delivery_incident_windows"] = breached
         state["delivery_reliability_error"] = reliability_error
         return state
@@ -499,49 +510,37 @@ class WeixinStatusStore:
         ingress = str(state.get("ingress_status") or "unknown")
         reactive = str(state.get("reactive_egress_status") or "unknown")
         proactive = str(state.get("proactive_egress_status") or "unknown")
-        if "degraded" in {reactive, proactive}:
-            egress = "degraded"
-        elif reactive == "healthy" and proactive == "healthy":
-            egress = "healthy"
-        elif "healthy" in {reactive, proactive}:
-            egress = "partial"
-        else:
-            egress = "unknown"
+        egress_candidates = (
+            ("degraded" in {reactive, proactive}, "degraded"),
+            (reactive == "healthy" and proactive == "healthy", "healthy"),
+            ("healthy" in {reactive, proactive}, "partial"),
+            (True, "unknown"),
+        )
+        egress = next(status for cond, status in egress_candidates if cond)
         state["instantaneous_egress_status"] = egress
         delivery_incident_status = str(state.get("delivery_incident_status") or "unknown")
         if delivery_incident_status == "open" and egress in {"healthy", "partial"}:
             egress = "degraded"
-        elif delivery_incident_status in {"unknown", "insufficient_data"} and egress == "healthy":
+        if delivery_incident_status in {"unknown", "insufficient_data"} and egress == "healthy":
             egress = "partial"
         state["egress_status"] = egress
-        state["egress_error"] = (
-            str(state.get("proactive_egress_error") or "")
-            if proactive == "degraded"
-            else str(state.get("reactive_egress_error") or "")
-            if reactive == "degraded"
-            else "rolling proactive delivery SLO is breached"
-            if delivery_incident_status == "open"
-            else str(state.get("delivery_reliability_error") or "")
-            if delivery_incident_status == "unknown"
-            else "rolling proactive delivery SLO has insufficient data"
-            if delivery_incident_status == "insufficient_data"
-            else ""
+        error_candidates = (
+            (proactive == "degraded", str(state.get("proactive_egress_error") or "")),
+            (reactive == "degraded", str(state.get("reactive_egress_error") or "")),
+            (delivery_incident_status == "open", "rolling proactive delivery SLO is breached"),
+            (delivery_incident_status == "unknown", str(state.get("delivery_reliability_error") or "")),
+            (delivery_incident_status == "insufficient_data", "rolling proactive delivery SLO has insufficient data"),
+            (True, ""),
         )
-        if ingress in {"fatal", "degraded", "stale"}:
-            overall = ingress
-            error = str(state.get("ingress_error") or "")
-        elif egress == "degraded":
-            overall = "degraded"
-            error = str(state.get("egress_error") or "")
-        elif ingress == "healthy" and egress == "healthy":
-            overall = "healthy"
-            error = ""
-        elif ingress == "healthy":
-            overall = "partial"
-            error = ""
-        else:
-            overall = "unknown"
-            error = ""
+        state["egress_error"] = next(err for cond, err in error_candidates if cond)
+        overall_candidates = (
+            (ingress in {"fatal", "degraded", "stale"}, (ingress, str(state.get("ingress_error") or ""))),
+            (egress == "degraded", ("degraded", str(state.get("egress_error") or ""))),
+            (ingress == "healthy" and egress == "healthy", ("healthy", "")),
+            (ingress == "healthy", ("partial", "")),
+            (True, ("unknown", "")),
+        )
+        overall, error = next(res for cond, res in overall_candidates if cond)
         state.update({"status": overall, "error": error[:1000]})
         return state
 

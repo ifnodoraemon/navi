@@ -532,13 +532,15 @@ def _zero_slo(
     samples: int,
     evidence: dict[str, Any],
 ) -> SLOFact:
+    zero_status_map = {
+        (True, True): "insufficient_data",
+        (True, False): "insufficient_data",
+        (False, True): "met",
+        (False, False): "breached",
+    }
     return SLOFact(
         name=name,
-        status=(
-            "insufficient_data"
-            if samples == 0
-            else ("met" if actual == 0 else "breached")
-        ),
+        status=zero_status_map[(samples == 0, actual == 0)],
         target="= 0",
         actual=float(actual),
         samples=samples,
@@ -555,12 +557,18 @@ def _ratio_slo(
     target: float,
     higher_is_better: bool,
 ) -> SLOFact:
-    if samples < minimum_samples:
-        status = "insufficient_data"
-    else:
-        passed = actual >= target if higher_is_better else actual <= target
-        status = "met" if passed else "breached"
-    operator = ">=" if higher_is_better else "<="
+    sign = {True: 1.0, False: -1.0}[bool(higher_is_better)]
+    passed = bool((actual - target) * sign >= 0.0)
+    has_enough_samples = bool(samples >= minimum_samples)
+    status_matrix = {
+        (False, False): "insufficient_data",
+        (False, True): "insufficient_data",
+        (True, True): "met",
+        (True, False): "breached",
+    }
+    status = status_matrix[(has_enough_samples, passed)]
+    operator_map = {True: ">=", False: "<="}
+    operator = operator_map[bool(higher_is_better)]
     return SLOFact(
         name=name,
         status=status,

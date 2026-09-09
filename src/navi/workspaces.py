@@ -544,37 +544,41 @@ class WorkspaceLockStore:
                 "SELECT id FROM workspace_locks WHERE owner_run_id = ? AND resource = ?",
                 (owner_run_id, resource),
             ).fetchone()
-            if existing is None:
-                conn.execute(
+            upsert_queries = {
+                True: (
                     """
                     INSERT INTO workspace_locks(id, owner_run_id, resource, mode, lease_expiry, acquired_at)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (uuid.uuid4().hex, owner_run_id, resource, str(mode), lock.lease_expiry, now),
-                )
-            else:
-                conn.execute(
+                ),
+                False: (
                     """
                     UPDATE workspace_locks
                     SET mode = ?, lease_expiry = ?, acquired_at = ?
                     WHERE owner_run_id = ? AND resource = ?
                     """,
                     (str(mode), lock.lease_expiry, now, owner_run_id, resource),
-                )
+                ),
+            }
+            stmt, params = upsert_queries[existing is None]
+            conn.execute(stmt, params)
         return LockAcquireResult(acquired=True, lock=lock)
 
     def release(self, *, owner_run_id: str, resource: str = "") -> int:
         with connect(self.db_path) as conn:
-            if resource:
-                cursor = conn.execute(
+            delete_queries = {
+                True: (
                     "DELETE FROM workspace_locks WHERE owner_run_id = ? AND resource = ?",
                     (owner_run_id, resource),
-                )
-            else:
-                cursor = conn.execute(
+                ),
+                False: (
                     "DELETE FROM workspace_locks WHERE owner_run_id = ?",
                     (owner_run_id,),
-                )
+                ),
+            }
+            stmt, params = delete_queries[bool(resource)]
+            cursor = conn.execute(stmt, params)
             return int(cursor.rowcount or 0)
 
     def list_active(
@@ -584,22 +588,27 @@ class WorkspaceLockStore:
         now: float | None = None,
     ) -> tuple[WorkspaceLock, ...]:
         current = time.time() if now is None else now
-        if resource:
-            query = """
+        query_map = {
+            True: (
+                """
                 SELECT owner_run_id, resource, mode, lease_expiry
                 FROM workspace_locks
                 WHERE lease_expiry > ? AND resource = ?
                 ORDER BY resource, lease_expiry ASC
-            """
-            params: tuple[Any, ...] = (current, resource)
-        else:
-            query = """
+                """,
+                (current, resource),
+            ),
+            False: (
+                """
                 SELECT owner_run_id, resource, mode, lease_expiry
                 FROM workspace_locks
                 WHERE lease_expiry > ?
                 ORDER BY resource, lease_expiry ASC
-            """
-            params = (current,)
+                """,
+                (current,),
+            ),
+        }
+        query, params = query_map[bool(resource)]
         with connect(self.db_path) as conn:
             rows = conn.execute(query, params).fetchall()
         return tuple(WorkspaceLock(*row) for row in rows)
@@ -665,12 +674,19 @@ def _apply_shadow_file(source: Path, dest: Path) -> None:
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
     temp = dest.with_name(f".{dest.name}.navi-tmp-{uuid.uuid4().hex}")
-    if source.is_symlink():
-        target = os.readlink(source)
-        os.symlink(target, temp)
-    else:
-        shutil.copy2(source, temp)
+    _copy_path_or_symlink(source, temp)
     temp.replace(dest)
+
+
+def _copy_path_or_symlink(source: Path, dest: Path) -> None:
+    def copy_symlink(src: Path, dst: Path) -> None:
+        os.symlink(os.readlink(src), dst)
+
+    copy_handlers = {
+        True: copy_symlink,
+        False: shutil.copy2,
+    }
+    copy_handlers[bool(source.is_symlink())](source, dest)
 
 
 def _backup_real_files(real: Path, paths: list[str], backup_dir: Path) -> set[str]:
@@ -682,10 +698,7 @@ def _backup_real_files(real: Path, paths: list[str], backup_dir: Path) -> set[st
             continue
         backup = backup_dir / rel_path
         backup.parent.mkdir(parents=True, exist_ok=True)
-        if source.is_symlink():
-            os.symlink(os.readlink(source), backup)
-        else:
-            shutil.copy2(source, backup)
+        _copy_path_or_symlink(source, backup)
     return missing
 
 

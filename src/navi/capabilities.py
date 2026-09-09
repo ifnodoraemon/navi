@@ -670,22 +670,23 @@ class CapabilityRegistry:
             return None, ""
         args_json = _canonical_args_json(call_args, home=self.home)
         runs = RunStore(self.home)
-        if self.governed_run_id:
-            approved = runs.approved_approval_for_run(
+        lookup_strategies = {
+            True: lambda: runs.approved_approval_for_run(
                 self.governed_run_id,
                 action=APPROVAL_ACTION_CAPABILITY,
                 requested_tool=name,
                 requested_permission=permission,
                 args_json=args_json,
-            )
-        else:
-            approved = self._approved_turn_capability_approval(
+            ),
+            False: lambda: self._approved_turn_capability_approval(
                 runs,
                 name=name,
                 permission=permission,
                 args_json=args_json,
                 context=context,
-            )
+            ),
+        }
+        approved = lookup_strategies[bool(self.governed_run_id)]()
         return (None, approved.id) if approved is not None else (risk, "")
 
     def _suspend_turn_for_sensitive_approval(

@@ -301,7 +301,7 @@ class EvolutionExperimentStore:
             activation = EvolutionActivation(*row)
             if activation.status != "observing":
                 needs_rollback = activation.status == "regressed"
-            else:
+            if activation.status == "observing":
                 success_count = activation.success_count + successes
                 error_count = activation.error_count + errors
                 observations = activation.observation_count + 1
@@ -309,11 +309,8 @@ class EvolutionExperimentStore:
                 error_rate = error_count / total if total else 0.0
                 status = "observing"
                 if observations >= activation.min_observations:
-                    status = (
-                        "regressed"
-                        if error_rate > activation.max_error_rate
-                        else "healthy"
-                    )
+                    status_map = {True: "regressed", False: "healthy"}
+                    status = status_map[error_rate > activation.max_error_rate]
                 now = time.time()
                 cursor = conn.execute(
                     """
@@ -390,29 +387,47 @@ class EvolutionExperimentStore:
         return self.activation_for_event(event_id)
 
     def list_activations(self, *, status: str = "", limit: int = 100) -> list[EvolutionActivation]:
+        query_specs = {
+            True: (
+                """
+                SELECT id, proposal_id, event_id, status, success_count, error_count,
+                       observation_count, min_observations, max_error_rate,
+                       latest_evidence_json, rollback_event_id, created_at, updated_at
+                FROM evolution_activations WHERE status = ?
+                ORDER BY updated_at ASC LIMIT ?
+                """,
+                (status, max(1, limit)),
+            ),
+            False: (
+                """
+                SELECT id, proposal_id, event_id, status, success_count, error_count,
+                       observation_count, min_observations, max_error_rate,
+                       latest_evidence_json, rollback_event_id, created_at, updated_at
+                FROM evolution_activations ORDER BY updated_at DESC LIMIT ?
+                """,
+                (max(1, limit),),
+            ),
+        }
+        query, params = query_specs[bool(status)]
         with connect(self.db_path) as conn:
-            if status:
-                rows = conn.execute(
-                    """
-                    SELECT id, proposal_id, event_id, status, success_count, error_count,
-                           observation_count, min_observations, max_error_rate,
-                           latest_evidence_json, rollback_event_id, created_at, updated_at
-                    FROM evolution_activations WHERE status = ?
-                    ORDER BY updated_at ASC LIMIT ?
-                    """,
-                    (status, max(1, limit)),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT id, proposal_id, event_id, status, success_count, error_count,
-                           observation_count, min_observations, max_error_rate,
-                           latest_evidence_json, rollback_event_id, created_at, updated_at
-                    FROM evolution_activations ORDER BY updated_at DESC LIMIT ?
-                    """,
-                    (max(1, limit),),
-                ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [EvolutionActivation(*row) for row in rows]
+
+
+def _check_json_valid(candidate: str, _val: str) -> bool:
+    try:
+        json.loads(candidate)
+        return True
+    except json.JSONDecodeError:
+        return False
+
+
+_ASSERTION_EVALUATORS: dict[str, Any] = {
+    "contains": lambda cand, val: bool(val) and val in cand,
+    "not_contains": lambda cand, val: bool(val) and val not in cand,
+    "nonempty": lambda cand, _val: bool(cand.strip()),
+    "json_valid": _check_json_valid,
+}
 
 
 def _evaluate_assertion(case_id: str, raw: Any, candidate: str) -> dict[str, Any]:
@@ -420,20 +435,8 @@ def _evaluate_assertion(case_id: str, raw: Any, candidate: str) -> dict[str, Any
         return {"check": "assertion", "case_id": case_id, "passed": False, "error": "invalid"}
     kind = str(raw.get("type") or "")
     value = str(raw.get("value") or "")
-    passed = False
-    if kind == "contains":
-        passed = bool(value) and value in candidate
-    elif kind == "not_contains":
-        passed = bool(value) and value not in candidate
-    elif kind == "nonempty":
-        passed = bool(candidate.strip())
-    elif kind == "json_valid":
-        try:
-            json.loads(candidate)
-            passed = True
-        except json.JSONDecodeError:
-            passed = False
-    else:
+    evaluator = _ASSERTION_EVALUATORS.get(kind)
+    if evaluator is None:
         return {
             "check": "assertion",
             "case_id": case_id,
@@ -441,6 +444,7 @@ def _evaluate_assertion(case_id: str, raw: Any, candidate: str) -> dict[str, Any
             "passed": False,
             "error": "unsupported assertion type",
         }
+    passed = bool(evaluator(candidate, value))
     return {
         "check": "assertion",
         "case_id": case_id,

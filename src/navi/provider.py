@@ -196,10 +196,10 @@ class OpenAICompatibleProvider:
                 request_chars=sum(len(msg.content) for msg in outbound_messages),
                 max_output_tokens=int(payload["max_tokens"]),
             )
-            if self.config.response_transport == "sse":
-                data = _openai_sse_response_json(response)
-            else:
-                data = _provider_response_json(response)
+            transport_parsers = {
+                "sse": _openai_sse_response_json,
+            }
+            data = transport_parsers.get(self.config.response_transport, _provider_response_json)(response)
         self.last_usage = _openai_usage_facts(self.config, data)
         return _extract_openai_content(data)
 
@@ -672,9 +672,9 @@ class ModelPool:
                     output_tokens=usage.output_tokens,
                 ),
             )
-        else:
-            self._usage_by_role.pop(role, None)
-            gateway.release(grant_id=grant.grant_id)
+            return result
+        self._usage_by_role.pop(role, None)
+        gateway.release(grant_id=grant.grant_id)
         return result
 
     async def stream_for(
@@ -851,8 +851,8 @@ def _merge_request_options(
     for key, value in role_options.items():
         if value is None:
             merged.pop(key, None)
-        else:
-            merged[key] = value
+            continue
+        merged[key] = value
     return merged
 
 

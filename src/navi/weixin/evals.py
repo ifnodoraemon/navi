@@ -204,30 +204,29 @@ async def _run_journey(
         before_runs = len(runs.list(limit=500))
         before_scheduled_goals = len(GoalStore(home).list_cron_goals())
         expect = step.get("expect") or {}
-        if "inbound" in step:
-            inbound = step.get("inbound") or {}
-            message_index += 1
-            update = WeixinUpdate(
-                message_id=str(
-                    inbound.get("message_id")
-                    or f"{SYNTHETIC_MESSAGE_ID_PREFIX}msg-{message_index}"
-                ),
-                peer_id=str(inbound.get("peer_id") or "connector-eval-peer"),
-                sender_id=str(inbound.get("sender_id") or "connector-eval-sender"),
-                text=str(inbound.get("text") or ""),
-                context_token=str(inbound.get("context_token") or "eval-context"),
-                is_group=bool(inbound.get("is_group", False)),
-            )
-            handled = await service.handle_update(account, update)
-            event = {
-                "kind": "inbound",
-                "handled": handled,
-                "text": update.text,
-                "sent": list(getattr(service.client, "sent", [])),
-            }
-        else:
+        if "inbound" not in step:
             errors.append(f"step[{index}]: missing inbound")
             continue
+        inbound = step.get("inbound") or {}
+        message_index += 1
+        update = WeixinUpdate(
+            message_id=str(
+                inbound.get("message_id")
+                or f"{SYNTHETIC_MESSAGE_ID_PREFIX}msg-{message_index}"
+            ),
+            peer_id=str(inbound.get("peer_id") or "connector-eval-peer"),
+            sender_id=str(inbound.get("sender_id") or "connector-eval-sender"),
+            text=str(inbound.get("text") or ""),
+            context_token=str(inbound.get("context_token") or "eval-context"),
+            is_group=bool(inbound.get("is_group", False)),
+        )
+        handled = await service.handle_update(account, update)
+        event = {
+            "kind": "inbound",
+            "handled": handled,
+            "text": update.text,
+            "sent": list(getattr(service.client, "sent", [])),
+        }
         events.append(event)
         errors.extend(
             _match_expectation(

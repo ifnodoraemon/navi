@@ -70,7 +70,7 @@ def _status(home: Path) -> dict[str, Any]:
                 logging.getLogger("navi.telegram").warning(
                     "status.json must be a JSON object, got %s", type(data).__name__
                 )
-            else:
+            if isinstance(data, dict):
                 facts.update(
                     {
                         "status": data.get("status", "unknown"),

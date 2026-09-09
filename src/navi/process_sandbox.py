@@ -97,24 +97,19 @@ def bubblewrap_command(
         "--dir",
         "/run",
     ]
+    argv.extend(("--dir", "/tmp/navi-home"))
     if persistent_home is not None:
         # A persistent writable HOME lets pip/pipx installs survive across
         # separate shell.run invocations while staying inside the project's
         # .navi/sandbox-home (never the real ~).  It must be mounted after the
         # /tmp tmpfs so it overlays /tmp/navi-home.
         persistent_home.mkdir(parents=True, exist_ok=True)
-        argv.extend(("--dir", "/tmp/navi-home"))
         argv.extend(("--bind", str(persistent_home), "/tmp/navi-home"))
-    else:
-        argv.extend(("--dir", "/tmp/navi-home"))
-    if host_process_visibility:
-        # Keep the filesystem, environment, network, and session isolated while
-        # allowing declared read-only process-inspection argv (ps/pgrep/etc.) to
-        # observe the host process table.  A private procfs would otherwise make
-        # these commands report only the sandbox wrapper and create false facts.
-        argv.extend(("--ro-bind", "/proc", "/proc"))
-    else:
-        argv.extend(("--proc", "/proc"))
+    proc_flags = {
+        True: ("--ro-bind", "/proc", "/proc"),
+        False: ("--proc", "/proc"),
+    }
+    argv.extend(proc_flags[bool(host_process_visibility)])
     if not network_allowed:
         argv.append("--unshare-net")
     for source in (Path("/usr"), Path("/sys")):
@@ -183,39 +178,52 @@ def bubblewrap_command(
         and not str(executable).startswith("/usr/")
     ):
         runtime_prefix = Path(sys.base_prefix).resolve()
-        if executable == runtime_prefix or runtime_prefix in executable.parents:
+        is_runtime = bool(executable == runtime_prefix or runtime_prefix in executable.parents)
+        if is_runtime:
             for parent in reversed(runtime_prefix.parents[:-1]):
                 if parent not in created_dirs:
                     argv.extend(("--dir", str(parent)))
                     created_dirs.add(parent)
             argv.extend(("--ro-bind", str(runtime_prefix), str(runtime_prefix)))
-        else:
+        if not is_runtime:
             argv.extend(("--dir", "/run/navi-bin"))
             sandbox_executable = Path("/run/navi-bin") / executable.name
             argv.extend(("--ro-bind", str(executable), str(sandbox_executable)))
 
     for key, value in sandbox_environment().items():
         argv.extend(("--setenv", key, value))
-    if environment_fd is not None:
+
+    def wrap_env():
         environment_path = "/run/navi-command-environment"
-        argv.extend(("--file", str(environment_fd), environment_path))
-        argv.extend(
-            (
-                "--chdir",
-                str(working_dir),
-                "--",
-                "/bin/sh",
-                "-c",
-                f'. {environment_path}\nexec "$@"',
-                "navi-sandbox-environment",
-                str(sandbox_executable),
-                *command[1:],
-            )
+        return (
+            "--file",
+            str(environment_fd),
+            environment_path,
+            "--chdir",
+            str(working_dir),
+            "--",
+            "/bin/sh",
+            "-c",
+            f'. {environment_path}\nexec "$@"',
+            "navi-sandbox-environment",
+            str(sandbox_executable),
+            *command[1:],
         )
-    else:
-        argv.extend(
-            ("--chdir", str(working_dir), "--", str(sandbox_executable), *command[1:])
+
+    def direct_exec():
+        return (
+            "--chdir",
+            str(working_dir),
+            "--",
+            str(sandbox_executable),
+            *command[1:],
         )
+
+    exec_builders = {
+        True: wrap_env,
+        False: direct_exec,
+    }
+    argv.extend(exec_builders[environment_fd is not None]())
     return argv, ""
 
 

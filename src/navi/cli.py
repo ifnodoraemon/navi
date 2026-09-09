@@ -166,14 +166,18 @@ def chat() -> None:
     pending_options: list[str] = []
 
     while True:
-        if pending_options:
+        def ask_questionary():
             import questionary
 
-            text = questionary.select("Choice:", choices=pending_options).ask()
-            if text is None:
-                break
-        else:
-            text = typer.prompt("you")
+            return questionary.select("Choice:", choices=pending_options).ask()
+
+        input_prompters = {
+            True: ask_questionary,
+            False: lambda: typer.prompt("you"),
+        }
+        text = input_prompters[bool(pending_options)]()
+        if text is None:
+            break
 
         if text.strip() in {"/exit", "/quit"}:
             break
@@ -600,12 +604,14 @@ def hooks_list(json_output: bool = False) -> None:
 def prompts_inspect(target: str = typer.Argument("planner"), json_output: bool = False) -> None:
     """Inspect prompt OS block manifests."""
     home = ensure_home()
-    if target == "planner":
-        assembly = assemble_planner_system_prompt()
-    elif target == "responder":
-        assembly = build_system_prompt_assembly(home=home)
-    else:
+    target_assemblers = {
+        "planner": assemble_planner_system_prompt,
+        "responder": lambda: build_system_prompt_assembly(home=home),
+    }
+    assembler = target_assemblers.get(target)
+    if assembler is None:
         raise typer.BadParameter("target must be planner or responder")
+    assembly = assembler()
 
     manifest = assembly.manifest()
     if json_output:
@@ -631,8 +637,8 @@ def eval_daily(
         load_daily_journey_eval_dataset(dataset)
         if json_output:
             typer.echo(json.dumps({"ok": True, "errors": []}, ensure_ascii=False, indent=2))
-        else:
-            typer.echo("ok dataset")
+            return
+        typer.echo("ok dataset")
         return
     home_path = ensure_home()
     results = asyncio.run(
@@ -646,9 +652,9 @@ def eval_daily(
     )
     if json_output:
         typer.echo(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
-    else:
+    if not json_output:
         for result in results:
-            marker = "ok" if result.ok else "fail"
+            marker = {True: "ok", False: "fail"}[bool(result.ok)]
             typer.echo(f"{marker} {result.id}")
             for error in result.errors:
                 typer.echo(f"  {error}")
@@ -675,8 +681,8 @@ def eval_claw(
                     indent=2,
                 )
             )
-        else:
-            typer.echo(f"ok dataset tasks={len(loaded['tasks'])}")
+            return
+        typer.echo(f"ok dataset tasks={len(loaded['tasks'])}")
         return
     home_path = ensure_home()
     results = asyncio.run(
@@ -691,9 +697,9 @@ def eval_claw(
     )
     if json_output:
         typer.echo(claw_results_to_json(results))
-    else:
+    if not json_output:
         for result in results:
-            marker = "ok" if result.ok else "fail"
+            marker = {True: "ok", False: "fail"}[bool(result.ok)]
             domains = ",".join(result.error_domains) if result.error_domains else "-"
             typer.echo(
                 f"{marker} {result.task_id} pass={result.pass_count}/{result.attempts} domains={domains}"
@@ -722,8 +728,8 @@ def eval_connector(
                     indent=2,
                 )
             )
-        else:
-            typer.echo(f"ok dataset journeys={len(loaded['journeys'])}")
+            return
+        typer.echo(f"ok dataset journeys={len(loaded['journeys'])}")
         return
     results = asyncio.run(
         run_connector_journey_eval_dataset(
@@ -735,9 +741,9 @@ def eval_connector(
     )
     if json_output:
         typer.echo(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
-    else:
+    if not json_output:
         for result in results:
-            marker = "ok" if result.ok else "fail"
+            marker = {True: "ok", False: "fail"}[bool(result.ok)]
             typer.echo(f"{marker} {result.id}")
             for error in result.errors:
                 typer.echo(f"  {error}")
@@ -765,7 +771,7 @@ def eval_acceptance(
     )
     if json_output:
         typer.echo(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
-    else:
+    if not json_output:
         typer.echo(report_to_text(report))
     if not report.accepted:
         raise typer.Exit(code=1)
@@ -867,14 +873,18 @@ def trace_evaluations(trace_id: str = typer.Argument(""), limit: int = 50) -> No
 
 
 def _trace_evaluation_line(evaluation) -> str:
-    if isinstance(evaluation, dict):
-        evidence = evaluation.get("evidence") or {}
-        outcome = str(evaluation.get("outcome") or "")
-        failure_domain = str(evaluation.get("failure_domain") or "")
-    else:
-        evidence = json.loads(evaluation.evidence_json or "{}")
-        outcome = evaluation.outcome
-        failure_domain = evaluation.failure_domain
+    def parse_dict(ev: dict):
+        return ev.get("evidence") or {}, str(ev.get("outcome") or ""), str(ev.get("failure_domain") or "")
+
+    def parse_obj(ev: Any):
+        evid = json.loads(getattr(ev, "evidence_json", "{}") or "{}")
+        return evid, getattr(ev, "outcome", ""), getattr(ev, "failure_domain", "")
+
+    parsers = {
+        True: parse_dict,
+        False: parse_obj,
+    }
+    evidence, outcome, failure_domain = parsers[isinstance(evaluation, dict)](evaluation)
     rule = str(evidence.get("evaluation_rule") or "").strip()
     suffix = f" rule={rule}" if rule else ""
     return f"{outcome} {failure_domain}{suffix}"

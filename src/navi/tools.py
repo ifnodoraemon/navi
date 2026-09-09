@@ -501,8 +501,8 @@ class ToolRegistry:
                     started_at=started_at,
                     ended_at=time.time(),
                 )
-        else:
-            self._audit_call(args or {}, result, run_id=audit_run_id)
+            return result
+        self._audit_call(args or {}, result, run_id=audit_run_id)
         return result
 
     def _reserve_mutating_audit(
