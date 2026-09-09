@@ -100,6 +100,14 @@ def test_memory_gc_decays_old_learnable_memory_without_touching_constraints(tmp_
         last_verified_at=old_anchor,
     )
 
+    # Backdate updated_at manually to simulate an old memory correctly under the fixed max() logic
+    store.provider.update_item(preference.id, updated_at=old_anchor)
+    store.provider.update_item(constraint.id, updated_at=old_anchor)
+    
+    from navi.db import connect
+    with connect(store.provider.db_path) as conn:
+        conn.execute("UPDATE memory_items SET created_at = ? WHERE id IN (?, ?)", (old_anchor, preference.id, constraint.id))
+
     facts = store.garbage_collect(now=now)
 
     preference_after = store.get_item(preference.id)
@@ -126,6 +134,12 @@ def test_memory_gc_marks_low_confidence_decayed_memory_stale(tmp_path) -> None:
         confidence=0.22,
         last_verified_at=old_anchor,
     )
+
+    # Backdate updated_at manually
+    store.provider.update_item(item.id, updated_at=old_anchor)
+    from navi.db import connect
+    with connect(store.provider.db_path) as conn:
+        conn.execute("UPDATE memory_items SET created_at = ? WHERE id = ?", (old_anchor, item.id))
 
     facts = store.garbage_collect(now=now)
 

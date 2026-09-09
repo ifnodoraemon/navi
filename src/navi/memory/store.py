@@ -44,6 +44,7 @@ MEMORY_CONFIDENCE_DECAY_TYPES = frozenset({"preference", "fact", "semantic"})
 MEMORY_CONFIDENCE_DECAY_GRACE_SECONDS = 90 * 24 * 60 * 60
 MEMORY_CONFIDENCE_DECAY_DELTA = 0.05
 MEMORY_CONFIDENCE_DECAY_STALE_THRESHOLD = 0.2
+RECALLABLE_STATUSES = frozenset(ACTIVE_STATUSES | {"proposed"})
 MEMORY_GRAPH_SYNC_LIMIT = 1000
 MEMORY_GRAPH_EDGE_RELATIONS = (
     "has_memory_type",
@@ -86,13 +87,11 @@ class MemoryStore:
         self,
         home: Path,
         provider: MemoryProvider | None = None,
-        embedding_service: object | None = None,
     ):
         self.home = home
         self.memory_dir = home / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.provider = provider or SQLiteMemoryProvider(db_paths(home).memory)
-        self._embedding_service = embedding_service
 
 
     # ------------------------------------------------------------------ writes
@@ -437,17 +436,20 @@ class MemoryStore:
                 continue
             if item.expires_at and item.expires_at <= current_time:
                 continue
-            anchor = (
-                _metadata_float(item.metadata, "last_recalled_at")
-                or item.last_verified_at
-                or item.updated_at
-                or item.created_at
+            anchor = max(
+                _metadata_float(item.metadata, "last_recalled_at"),
+                item.last_verified_at,
+                item.updated_at,
+                item.created_at,
             )
             age_seconds = max(0.0, current_time - anchor)
             if age_seconds < grace_seconds:
                 continue
             previous_confidence = max(0.0, min(1.0, item.confidence))
-            new_confidence = max(0.0, previous_confidence - max(0.0, delta))
+            activations = float(item.metadata.get("activation_count") or item.metadata.get("recall_count") or 0.0)
+            stability = 1.0 + math.log(1.0 + max(0.0, activations))
+            effective_delta = max(0.0, delta) / stability
+            new_confidence = max(0.0, previous_confidence - effective_delta)
             self._assert_memory_write_allowed(
                 memory_type=item.type,
                 status=item.status,
@@ -505,18 +507,28 @@ class MemoryStore:
         metadata["recall_count"] = previous_count + 1
         metadata["activation_reason"] = reason
         metadata["activation_provenance"] = provenance
+        # Long-Term Potentiation (LTP): provisional (proposed) memories explicitly
+        # activated by a planner or tool are confirmed and promoted to active status.
+        new_status = current.status
+        new_confidence = current.confidence
+        if current.status == "proposed":
+            new_status = "active"
+            new_confidence = min(1.0, current.confidence + 0.05)
+
         self._assert_memory_write_allowed(
             memory_type=current.type,
-            status=current.status,
+            status=new_status,
             scope=current.scope,
             source=current.source,
-            confidence=max(0.0, min(1.0, current.confidence)),
+            confidence=max(0.0, min(1.0, new_confidence)),
             content_chars=len(current.content),
             metadata_keys=sorted(metadata.keys()),
         )
         self.provider.store_item(
             replace(
                 current,
+                status=new_status,
+                confidence=new_confidence,
                 metadata=metadata,
                 updated_at=current_time,
             )
@@ -748,42 +760,51 @@ class MemoryStore:
             ranked_candidates.append((item_id, abs(rank), [f"fts_rank={rank:.4f}"]))
             seen_candidate_ids.add(item_id)
 
-        semantic_query_vector = self._embedding(fts_query)
-        graph_neighbors = self._semantic_graph_neighbors(
-            tuple(item_id for item_id, _rank in fts_results),
-            limit=limit * 3,
-        )
-        for item_id, reasons in graph_neighbors.items():
-            if item_id in seen_candidate_ids:
-                continue
-            ranked_candidates.append((item_id, 0.0, reasons))
-            seen_candidate_ids.add(item_id)
-
-        embedding_candidates: list[tuple[str, float, list[str]]] = []
-        embedding_items = self.provider.get_items(
+        lexical_candidates: list[tuple[str, float, list[str]]] = []
+        candidate_items = self.provider.get_items(
             allowed_scopes=allowed_scopes,
             limit=max(200, limit * 20),
         )
-        for item in embedding_items:
-            if item.id in seen_candidate_ids or item.status not in ACTIVE_STATUSES:
+        for item in candidate_items:
+            if item.id in seen_candidate_ids or item.status not in RECALLABLE_STATUSES:
                 continue
-            similarity = self._hybrid_similarity(
+            similarity = self._lexical_similarity(
                 fts_query,
                 item.content,
-                query_vector=semantic_query_vector,
             )
-            if similarity < 0.16:
+            if similarity <= 0.0:
                 continue
-            embedding_candidates.append(
+            lexical_candidates.append(
                 (
                     item.id,
                     1.0 - similarity,
-                    [f"hybrid_similarity={similarity:.4f}"],
+                    [f"lexical_similarity={similarity:.4f}"],
                 )
             )
             seen_candidate_ids.add(item.id)
-        embedding_candidates.sort(key=lambda item: item[1])
-        ranked_candidates.extend(embedding_candidates)
+        lexical_candidates.sort(key=lambda item: item[1])
+        ranked_candidates.extend(lexical_candidates)
+
+        # Associative graph neighbors and spreading activation from seeds (FTS or top lexical)
+        seeds_for_graph: list[str] = [item_id for item_id, _rank in fts_results]
+        if not seeds_for_graph and lexical_candidates:
+            seeds_for_graph = [item_id for item_id, _score, _reasons in lexical_candidates[:3]]
+
+        if seeds_for_graph:
+            graph_neighbors = self._semantic_graph_neighbors(
+                tuple(seeds_for_graph),
+                limit=limit * 3,
+            )
+            for item_id, reasons in graph_neighbors.items():
+                if item_id in seen_candidate_ids:
+                    for existing_item_id, _score, existing_reasons in ranked_candidates:
+                        if existing_item_id == item_id:
+                            for reason in reasons:
+                                if reason not in existing_reasons:
+                                    existing_reasons.append(reason)
+                    continue
+                ranked_candidates.append((item_id, 0.0, reasons))
+                seen_candidate_ids.add(item_id)
 
         selected = []
         for item_id, score, reasons in ranked_candidates:
@@ -792,15 +813,18 @@ class MemoryStore:
                 continue
             if allowed_scopes is not None and recalled_item.scope not in allowed_scopes:
                 continue
-            if recalled_item.status not in ACTIVE_STATUSES or (
+            if recalled_item.status not in RECALLABLE_STATUSES or (
                 recalled_item.expires_at and recalled_item.expires_at <= now
             ):
                 continue
+            item_reasons = list(reasons)
+            if recalled_item.status == "proposed":
+                item_reasons.append("status=proposed")
             selected.append(
                 MemoryRecall(
                     item=recalled_item,
                     score=score,
-                    reasons=reasons,
+                    reasons=item_reasons,
                 )
             )
             if len(selected) >= limit:
@@ -814,38 +838,34 @@ class MemoryStore:
         )
         return [self._with_conflict_reasons(recall, conflicts) for recall in selected]
 
-    def _embedding(self, text: str) -> list[float] | None:
-        embed = getattr(self._embedding_service, "embed", None)
-        if not callable(embed):
-            return None
-        vector = embed(text)
-        if not isinstance(vector, (list, tuple)):
-            raise TypeError("memory embedding provider must return a vector")
-        if not vector:
-            raise ValueError("memory embedding provider returned an empty vector")
-        return [float(value) for value in vector]
-
-    def _hybrid_similarity(
+    def _lexical_similarity(
         self,
         query: str,
         content: str,
-        *,
-        query_vector: list[float] | None,
     ) -> float:
-        content_vector = self._embedding(content) if query_vector is not None else None
-        vector_score = _cosine_similarity(query_vector, content_vector)
-        query_features = _text_features(query)
-        content_features = _text_features(content)
+        normalized_query = query.strip().lower()
+        normalized_content = content.strip().lower()
+        if not normalized_query or not normalized_content:
+            return 0.0
+
+        query_features = _text_features(normalized_query)
+        content_features = _text_features(normalized_content)
+        if not query_features or not content_features:
+            return 0.0
+
+        intersection = query_features & content_features
+        if not intersection:
+            return 0.0
+
         union = query_features | content_features
-        lexical_score = (
-            len(query_features & content_features) / len(union)
-            if union
-            else 0.0
-        )
-        sequence_score = SequenceMatcher(None, query.lower(), content.lower()).ratio()
-        if vector_score is not None:
-            return max(0.0, min(1.0, 0.65 * vector_score + 0.25 * lexical_score + 0.1 * sequence_score))
-        return max(lexical_score, 0.6 * lexical_score + 0.4 * sequence_score)
+        lexical_jaccard = len(intersection) / len(union) if union else 0.0
+        query_coverage = len(intersection) / len(query_features)
+        sequence_score = SequenceMatcher(None, normalized_query, normalized_content).ratio()
+
+        # Continuous cognitive activation: blends asymmetric cue recognition (query coverage),
+        # symmetric similarity (Jaccard), and sequential fuzzy character alignment.
+        activation = 0.6 * query_coverage + 0.25 * lexical_jaccard + 0.15 * sequence_score
+        return min(1.0, max(activation, lexical_jaccard))
 
     def _semantic_graph_neighbors(
         self,
@@ -899,19 +919,64 @@ class MemoryStore:
                             """,
                             (other_graph_id,),
                         ).fetchone()
-                        if other is None:
-                            continue
-                        other_memory_id = str(other[0])
-                        if other_memory_id == seed_id:
-                            continue
-                        direction = "out" if source_id == graph_node_id else "in"
-                        reason = (
-                            f"semantic_graph_neighbor={direction}:"
-                            f"{relation}:{seed_id}"
-                        )
-                        reasons = neighbors.setdefault(other_memory_id, [])
-                        if reason not in reasons:
-                            reasons.append(reason)
+                        if other is not None:
+                            other_memory_id = str(other[0])
+                            if other_memory_id == seed_id:
+                                continue
+                            direction = "out" if source_id == graph_node_id else "in"
+                            reason = (
+                                f"semantic_graph_neighbor={direction}:"
+                                f"{relation}:{seed_id}"
+                            )
+                            reasons = neighbors.setdefault(other_memory_id, [])
+                            if reason not in reasons:
+                                reasons.append(reason)
+                        else:
+                            # 2-hop spreading activation through intermediate hubs (e.g. actor scope)
+                            hub_node = conn.execute(
+                                """
+                                SELECT type, name FROM graph_nodes
+                                WHERE id = ?
+                                """,
+                                (other_graph_id,),
+                            ).fetchone()
+                            if hub_node is None:
+                                continue
+                            hub_type, hub_name = str(hub_node[0]), str(hub_node[1])
+                            # Fan-out attenuation (ACT-R spreading activation dynamics):
+                            # Dense hubs diffuse activation thinly across too many targets.
+                            # Focused semantic hubs with low degree preserve high activation,
+                            # without hardcoding specific types or strings.
+                            hub_degree = conn.execute(
+                                """
+                                SELECT count(*) FROM graph_edges
+                                WHERE source_id = ? OR target_id = ?
+                                """,
+                                (other_graph_id, other_graph_id),
+                            ).fetchone()[0]
+                            if hub_degree > limit * 3:
+                                continue
+                            second_hop_rows = conn.execute(
+                                """
+                                SELECT g.name
+                                FROM graph_edges e
+                                JOIN graph_nodes g ON (
+                                    (e.source_id = g.id AND e.target_id = ?)
+                                    OR (e.target_id = g.id AND e.source_id = ?)
+                                )
+                                WHERE g.type = 'MemoryItem' AND g.name != ?
+                                ORDER BY e.updated_at DESC
+                                LIMIT ?
+                                """,
+                                (other_graph_id, other_graph_id, seed_id, max(1, limit // 2)),
+                            ).fetchall()
+                            for (second_memory_id,) in second_hop_rows:
+                                spreading_reason = (
+                                    f"semantic_graph_spreading={hub_type}:{hub_name}:{seed_id}"
+                                )
+                                reasons = neighbors.setdefault(str(second_memory_id), [])
+                                if spreading_reason not in reasons:
+                                    reasons.append(spreading_reason)
         except Exception:
             logger.exception("semantic graph neighbor recall failed")
             raise
@@ -1172,6 +1237,38 @@ class MemoryStore:
             ).fetchone()
         return str(row[0]) if row else job_id
 
+    def enqueue_unconsolidated_episodes(self, limit: int = 20) -> list[str]:
+        """System consolidation sweep: discover past episodic conversations that have not yet
+        been consolidated into semantic memory, and enqueue them for consolidation.
+        Analogous to biological hippocampal replay during sleep/idle periods.
+        """
+        enqueued_job_ids: list[str] = []
+        with connect(db_paths(self.home).memory) as conn:
+            rows = conn.execute(
+                """
+                SELECT session_id, source, peer_id, sender_id, run_id
+                FROM messages m
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM memory_consolidation_jobs j
+                    WHERE j.session_id = m.session_id
+                )
+                GROUP BY session_id
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            for session_id, source, peer_id, sender_id, run_id in rows:
+                job_id = self.enqueue_consolidation(
+                    session_id=str(session_id),
+                    run_id=str(run_id or session_id),
+                    source=str(source or "conversation"),
+                    peer_id=str(peer_id or ""),
+                    sender_id=str(sender_id or ""),
+                )
+                enqueued_job_ids.append(job_id)
+        return enqueued_job_ids
+
     def list_consolidation_jobs(
         self,
         *,
@@ -1379,6 +1476,8 @@ class MemoryStore:
 
         messages = self.get_messages_for_run(job.session_id, job.run_id, limit=50)
         if not messages:
+            messages = self.get_messages(job.session_id, limit=50)
+        if not messages:
             self._finish_consolidation_job(job, status="completed")
             return []
         transcript = [
@@ -1411,13 +1510,13 @@ class MemoryStore:
                             "properties": {
                                 "action": {"type": "string", "enum": ["add", "revoke"]},
                                 "id": {"type": "string"},
-                                "type": {"type": "string"},
+                                "type": {"type": "string", "enum": list(LEARNABLE_MEMORY_TYPES)},
                                 "content": {"type": "string"},
                                 "confidence": {"type": "number"},
                                 "reason": {"type": "string"},
                                 "contradicts": {"type": "array", "items": {"type": "string"}},
                             },
-                            "required": ["action"],
+                            "required": ["action", "type", "content"],
                         },
                     }
                 },
@@ -1487,16 +1586,11 @@ class MemoryStore:
                 )
 
     def _list_active_learnable_items(self) -> list[MemoryItem]:
-        active_items: list[MemoryItem] = []
-        for item_type in LEARNABLE_MEMORY_TYPES:
-            active_items.extend(
-                self.list_items(
-                    memory_type=item_type,
-                    status="active",
-                    limit=ACTIVE_MEMORY_CONTEXT_LIMIT,
-                )
-            )
-        return active_items
+        return [
+            item
+            for item in self.list_items(limit=ACTIVE_MEMORY_CONTEXT_LIMIT * len(LEARNABLE_MEMORY_TYPES))
+            if item.type in LEARNABLE_MEMORY_TYPES and item.status in RECALLABLE_STATUSES
+        ]
 
     # --------------------------------------------------------- apply learnings
 
@@ -1521,18 +1615,11 @@ class MemoryStore:
         ledger = EvolutionLedger(self.home)
         affected_items: list = []
         visible_item_ids = {item.id for item in active_items}
-        seen_memory_keys = {
-            (item.type, item.content.strip().lower()) for item in active_items
+        existing_by_key: dict[tuple[str, str], MemoryItem] = {
+            (item.type, item.content.strip().lower()): item
+            for item in self.list_items(limit=1000)
+            if item.scope == scope and item.status in RECALLABLE_STATUSES
         }
-        for existing in self.list_items(limit=1000):
-            if existing.scope == scope and existing.status not in {
-                "archived",
-                "revoked",
-                "stale",
-            }:
-                seen_memory_keys.add(
-                    (existing.type, existing.content.strip().lower())
-                )
         for learning in learnings:
             if not isinstance(learning, dict):
                 continue
@@ -1540,7 +1627,7 @@ class MemoryStore:
             if action == "add":
                 item = self._apply_add_learning(
                     learning,
-                    seen_memory_keys,
+                    existing_by_key,
                     visible_item_ids=visible_item_ids,
                     source=source,
                     provenance=provenance,
@@ -1566,7 +1653,7 @@ class MemoryStore:
                 if (
                     old_item
                     and old_item.scope == scope
-                    and old_item.status in ["active", "accepted"]
+                    and old_item.status in RECALLABLE_STATUSES
                 ):
                     updated_item = self.set_status(item_id, "revoked")
                     if updated_item:
@@ -1584,7 +1671,7 @@ class MemoryStore:
     def _apply_add_learning(
         self,
         learning: dict,
-        seen_memory_keys: set,
+        existing_by_key: dict[tuple[str, str], MemoryItem],
         *,
         visible_item_ids: set,
         source: str,
@@ -1597,8 +1684,10 @@ class MemoryStore:
         if not content or m_type not in LEARNABLE_MEMORY_TYPES:
             return None
         memory_key = (m_type, content.lower())
-        if memory_key in seen_memory_keys:
+        existing = existing_by_key.get(memory_key)
+        if existing is not None:
             return None
+
         try:
             conf_val = float(learning.get("confidence", 0.7))
         except (ValueError, TypeError):
@@ -1607,9 +1696,6 @@ class MemoryStore:
         if not isinstance(contradicts, list):
             contradicts = []
         contradicts = [str(item_id) for item_id in contradicts if str(item_id) in visible_item_ids]
-        # LLM-extracted learnings are proposals, not durable accepted memory.
-        # Promotion to accepted/active must go through the governed memory or
-        # evolution path with review evidence.
         promoted_status = "proposed"
         new_item = self.add_item(
             memory_type=m_type,
@@ -1622,7 +1708,7 @@ class MemoryStore:
             reason=str(learning.get("reason") or default_add_reason),
             provenance=provenance,
         )
-        seen_memory_keys.add(memory_key)
+        existing_by_key[memory_key] = new_item
         return new_item
 
     # ------------------------------------------------------------- scoring
@@ -1685,27 +1771,10 @@ def _metadata_int(metadata: dict, key: str) -> int:
 
 def _text_features(text: str) -> set[str]:
     normalized = text.strip().lower()
-    words = set(re.findall(r"[a-z0-9_]+", normalized))
-    compact = "".join(char for char in normalized if not char.isspace())
-    grams = {
-        compact[index : index + size]
-        for size in (2, 3)
-        for index in range(max(0, len(compact) - size + 1))
-    }
-    return words | grams
-
-
-def _cosine_similarity(
-    left: list[float] | None,
-    right: list[float] | None,
-) -> float | None:
-    if left is None or right is None or len(left) != len(right) or not left:
-        return None
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if left_norm == 0 or right_norm == 0:
-        return None
-    return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
+    words = {w for w in re.findall(r"[a-z0-9_]+", normalized) if len(w) >= 2}
+    cjk = "".join(re.findall(r"[\u4e00-\u9fff]", normalized))
+    cjk_grams = {cjk[i : i + size] for size in (1, 2) for i in range(max(0, len(cjk) - size + 1))}
+    return words | cjk_grams
 
 
 def _memory_graph_item_data(item: MemoryItem) -> dict[str, Any]:

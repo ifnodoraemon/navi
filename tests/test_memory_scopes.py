@@ -27,25 +27,21 @@ def _context(home: Path, *, sender_id: str, session_id: str) -> CapabilityContex
     )
 
 
-def test_memory_recall_uses_embedding_candidates_when_fts_has_no_seed(tmp_path: Path) -> None:
-    class Embeddings:
-        def embed(self, text: str) -> list[float]:
-            return [1.0, 0.0] if text in {"short answers", "keep it brief"} else [0.0, 1.0]
-
-    store = MemoryStore(tmp_path, embedding_service=Embeddings())
+def test_memory_recall_uses_lexical_candidates_when_fts_has_no_seed(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
     item = store.add_item(
         "preference",
-        "keep it brief",
+        "keep it brief and short",
         source="user",
         status="active",
         reason="explicit preference",
         provenance="test",
     )
 
-    recalled = store.recall("short answers")
+    recalled = store.recall("short response")
 
     assert [entry.item.id for entry in recalled] == [item.id]
-    assert any("hybrid_similarity" in reason for reason in recalled[0].reasons)
+    assert any("lexical_similarity" in reason for reason in recalled[0].reasons)
 
 
 def test_memory_recall_propagates_fts_failure(tmp_path: Path, monkeypatch) -> None:
@@ -58,18 +54,6 @@ def test_memory_recall_propagates_fts_failure(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setattr(memory_provider_module, "connect", fail_connect)
 
     with pytest.raises(RuntimeError, match="memory database unavailable"):
-        store.recall("known preference")
-
-
-def test_memory_recall_propagates_embedding_failure(tmp_path: Path) -> None:
-    class BrokenEmbeddings:
-        def embed(self, text: str) -> list[float]:
-            del text
-            raise RuntimeError("embedding unavailable")
-
-    store = MemoryStore(tmp_path, embedding_service=BrokenEmbeddings())
-
-    with pytest.raises(RuntimeError, match="embedding unavailable"):
         store.recall("known preference")
 
 

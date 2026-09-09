@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Protocol
 
 from ..db import connect, check_schema_version, read_schema_version, write_schema_version
@@ -731,4 +732,7 @@ def _message_identity_filter(
     if source and peer_id and sender_id:
         clauses.append("(messages.source = ? AND messages.peer_id = ? AND messages.sender_id = ?)")
         values.extend([source, peer_id, sender_id])
-    return " OR ".join(clauses), values
+    elif sender_id:
+        clauses.append("messages.sender_id = ?")
+        values.append(sender_id)
+    return (" OR ".join(clauses) if clauses else "1=1"), values

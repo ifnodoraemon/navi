@@ -7,7 +7,7 @@ name = "navi-assistant"
 version = "2.0.9"
 description = "Local-first agent OS for a governed personal AI assistant"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.110",
     "httpx>=0.27",

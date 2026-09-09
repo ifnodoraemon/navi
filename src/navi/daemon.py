@@ -467,6 +467,8 @@ class SystemDaemon:
 
             memory = MemoryStore(self.home)
             owner = f"memory-daemon:{os.getpid()}:{uuid.uuid4().hex}"
+            # Sleep/idle episodic consolidation sweep: discover past unconsolidated conversations
+            await asyncio.to_thread(memory.enqueue_unconsolidated_episodes, 5)
             jobs = await asyncio.to_thread(
                 memory.claim_consolidation_jobs,
                 owner=owner,
