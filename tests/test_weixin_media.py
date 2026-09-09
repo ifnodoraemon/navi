@@ -200,7 +200,7 @@ def test_weixin_status_keeps_rolling_delivery_incident_open_after_one_success(
                 receipt=DeliveryReceipt(transport="test"),
                 delivery_id=item.id,
             )
-        else:
+        if index != 4:
             outbox.mark_failed(item.id, error="connector_transient_rejected: prepare failed")
     for index in range(5):
         unrelated = outbox.enqueue(

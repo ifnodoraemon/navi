@@ -132,7 +132,7 @@ for line in sys.stdin:
                 },
             }]
         }
-    elif method == "tools/call":
+    if method == "tools/call":
         value = message["params"]["arguments"]["message"]
         result = {
             "content": [{"type": "text", "text": value}],
@@ -143,7 +143,7 @@ for line in sys.stdin:
             },
             "isError": False,
         }
-    else:
+    if method not in {"initialize", "tools/list", "tools/call"}:
         continue
     print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}), flush=True)
 """.strip()

@@ -899,7 +899,7 @@ async def test_web_search_searxng_exposes_upstream_engine_failures(
             "result_count": 1,
             "provider_error_count": 1,
         }
-    else:
+    if not expected_ok:
         assert result.facts["error_reason"] == expected_reason
         assert result.facts["retryable"] is False
 

@@ -107,6 +107,10 @@ DEFAULT_MEMORY_PARAMETERS: dict[str, float] = {
     "recall_lexical_pool_multiplier": 20.0,
     "recall_candidate_pool_min": 200.0,
     "consolidation_lease_seconds": 300.0,
+    "context_recent_base_no_query": 950.0,
+    "context_recent_base_query": 620.0,
+    "context_message_rank_base_score": 900.0,
+    "context_memory_recall_base_score": 800.0,
 }
 
 

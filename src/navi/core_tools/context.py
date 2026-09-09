@@ -32,9 +32,14 @@ def _context_search(home: Path, args: dict[str, Any]) -> ToolResult:
     allowed_scopes = _allowed_scopes(args)
     store = MemoryStore(home)
 
+    base_no_query = store.get_parameter("context_recent_base_no_query", 950.0)
+    base_query = store.get_parameter("context_recent_base_query", 620.0)
+    msg_base = store.get_parameter("context_message_rank_base_score", 900.0)
+    mem_base = store.get_parameter("context_memory_recall_base_score", 800.0)
+
     evidence: dict[str, dict[str, Any]] = {}
     if context.get("session_id"):
-        recent_base = 950.0 if not query else 620.0
+        recent_base = base_query + (base_no_query - base_query) * float(not query)
         recent = store.get_messages(
             str(context["session_id"]),
             limit=min(CONTEXT_RECENT_MESSAGE_LIMIT, max_items),
@@ -67,7 +72,7 @@ def _context_search(home: Path, args: dict[str, Any]) -> ToolResult:
                     _message_evidence(
                         home,
                         message,
-                        score=max(0.0, 900.0 - abs(rank)),
+                        score=max(0.0, msg_base - abs(rank)),
                         reasons=[*reasons, f"search_query={search_query}"],
                     ),
                 )
@@ -78,7 +83,10 @@ def _context_search(home: Path, args: dict[str, Any]) -> ToolResult:
                 allowed_scopes=allowed_scopes,
             )
             for recall in recalls:
-                _put_evidence(evidence, _memory_evidence(recall, search_query=search_query))
+                _put_evidence(
+                    evidence,
+                    _memory_evidence(recall, search_query=search_query, base_score=mem_base),
+                )
 
     ordered = sorted(
         evidence.values(),
@@ -204,7 +212,12 @@ def _message_result_provenance(home: Path, message: StoredMessage) -> dict[str, 
     return facts
 
 
-def _memory_evidence(recall: MemoryRecall, *, search_query: str) -> dict[str, Any]:
+def _memory_evidence(
+    recall: MemoryRecall,
+    *,
+    search_query: str,
+    base_score: float = 800.0,
+) -> dict[str, Any]:
     item = recall.item
     return {
         "evidence_id": f"mem:{item.id}",
@@ -219,7 +232,7 @@ def _memory_evidence(recall: MemoryRecall, *, search_query: str) -> dict[str, An
         "role": "memory",
         "created_at": item.created_at,
         "content": truncate_middle(item.content, CONTEXT_EVIDENCE_EXCERPT_CHARS),
-        "score": max(0.0, 800.0 - abs(float(recall.score))),
+        "score": max(0.0, base_score - abs(float(recall.score))),
         "rank_reasons": list(
             dict.fromkeys(["memory_recall", f"search_query={search_query}", *recall.reasons])
         ),

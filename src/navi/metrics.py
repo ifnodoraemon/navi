@@ -250,9 +250,12 @@ class MetricsProjector:
                 },
             ),
         )
-        overall = "breached" if any(item.status == "breached" for item in slos) else "met"
-        if overall == "met" and any(item.status == "insufficient_data" for item in slos):
-            overall = "insufficient_data"
+        status_priority = {"breached": 0, "insufficient_data": 1, "met": 2}
+        overall = min(
+            (item.status for item in slos),
+            key=lambda s: status_priority.get(s, 3),
+            default="met",
+        )
         diagnostics = {
             **integrity,
             **pipeline,

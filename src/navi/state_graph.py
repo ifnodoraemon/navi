@@ -2444,14 +2444,10 @@ class DurableStateGraphRunner:
             peer_id=self.trace_context.peer_id,
             sender_id=self.trace_context.sender_id,
             decision=LoopDecision(
-                decision=LoopDecisionKind.CONTINUE if result.ok else LoopDecisionKind.BLOCKED,
-                reason=LoopReason.CAPABILITY_FACT_RECORDED
-                if result.ok
-                else LoopReason.APPROVAL_REQUIRED,
+                decision={True: LoopDecisionKind.CONTINUE, False: LoopDecisionKind.BLOCKED}[result.ok],
+                reason={True: LoopReason.CAPABILITY_FACT_RECORDED, False: LoopReason.APPROVAL_REQUIRED}[result.ok],
                 phase=LoopPhase.DECISION,
-                failure_domain=TraceFailureDomain.NONE
-                if result.ok
-                else TraceFailureDomain.SAFEGUARD_POLICY,
+                failure_domain={True: TraceFailureDomain.NONE, False: TraceFailureDomain.SAFEGUARD_POLICY}[result.ok],
                 tool=f"state_graph.side_effect.{result.action}",
                 run_id=state.run_id,
                 goal_ids=(state.goal_id,),
@@ -2499,8 +2495,8 @@ class DurableStateGraphRunner:
                 condition="new_route_available",
                 evidence=decision.to_dict(),
             )
-        terminal = LoopTerminalState.BLOCKED if checker_report.blocked else LoopTerminalState.FAILED
-        condition = "no_route_available" if checker_report.blocked else "checker_rejected"
+        terminal = {True: LoopTerminalState.BLOCKED, False: LoopTerminalState.FAILED}[checker_report.blocked]
+        condition = {True: "no_route_available", False: "checker_rejected"}[checker_report.blocked]
         return self._transition(
             reflected,
             node=LoopNode.REFLECT,
@@ -2924,8 +2920,9 @@ def _gate_loop_decision(
 ) -> LoopDecision:
     decision = _gate_decision_kind(grant)
     is_external_pause = grant.decision == ResourceDecision.PAUSE
+    check_name_map = {True: LoopCheckName.EXTERNAL_PAUSE, False: LoopCheckName.APPROVAL_GATE}
     check = LoopCheckResult(
-        name=(LoopCheckName.EXTERNAL_PAUSE if is_external_pause else LoopCheckName.APPROVAL_GATE),
+        name=check_name_map[is_external_pause],
         passed=grant.allowed,
         reason=grant.reason,
         evidence={
@@ -2935,15 +2932,14 @@ def _gate_loop_decision(
             "attempt": state.attempt,
         },
     )
+    unallowed_reason_map = {True: LoopReason.EXTERNAL_PAUSE, False: LoopReason.APPROVAL_REQUIRED}
+    reason_map = {True: LoopReason.CAPABILITY_FACT_RECORDED, False: unallowed_reason_map[is_external_pause]}
+    failure_domain_map = {True: TraceFailureDomain.NONE, False: TraceFailureDomain.SAFEGUARD_POLICY}
     return LoopDecision(
         decision=decision,
-        reason=LoopReason.CAPABILITY_FACT_RECORDED
-        if grant.allowed
-        else (LoopReason.EXTERNAL_PAUSE if is_external_pause else LoopReason.APPROVAL_REQUIRED),
+        reason=reason_map[grant.allowed],
         phase=LoopPhase.DECISION,
-        failure_domain=TraceFailureDomain.NONE
-        if grant.allowed or is_external_pause
-        else TraceFailureDomain.SAFEGUARD_POLICY,
+        failure_domain=failure_domain_map[grant.allowed or is_external_pause],
         tool=kind,
         run_id=state.run_id,
         goal_ids=(state.goal_id,),
@@ -2980,15 +2976,32 @@ def _resource_limits_for_spec(spec: LoopSpec) -> ResourceLimits:
 def _default_phase_tokens(limits: ResourceLimits) -> int:
     if limits.token_budget <= 0:
         return 0
-    divisor = limits.call_budget if limits.call_budget > 0 else 1
+    divisor = max(1, limits.call_budget)
     return max(1, limits.token_budget // divisor)
 
 
 def _default_phase_cost(limits: ResourceLimits) -> float:
     if limits.cost_budget <= 0:
         return 0.0
-    divisor = limits.call_budget if limits.call_budget > 0 else 1
+    divisor = max(1, limits.call_budget)
     return limits.cost_budget / divisor
+
+
+_TERMINAL_DECISION_MAP: dict[str, LoopDecisionKind] = {
+    str(LoopTerminalState.CONVERGED): LoopDecisionKind.CONVERGED,
+    str(LoopTerminalState.PAUSED): LoopDecisionKind.BLOCKED,
+    str(LoopTerminalState.WAITING_APPROVAL): LoopDecisionKind.BLOCKED,
+    str(LoopTerminalState.BLOCKED): LoopDecisionKind.BLOCKED,
+    str(LoopTerminalState.CONFLICTED): LoopDecisionKind.BLOCKED,
+}
+_CONDITION_DECISION_MAP: dict[str, LoopDecisionKind] = {
+    "resource_pause": LoopDecisionKind.CONTINUE,
+    "planner_failed": LoopDecisionKind.RECOVER,
+    "capability_failed": LoopDecisionKind.RECOVER,
+    "checker_failed": LoopDecisionKind.RECOVER,
+    "new_route_available": LoopDecisionKind.RECOVER,
+    "side_effect_commit_required": LoopDecisionKind.BLOCKED,
+}
 
 
 def _transition_decision_kind(
@@ -2997,31 +3010,36 @@ def _transition_decision_kind(
     terminal_state: LoopTerminalState | str,
 ) -> LoopDecisionKind:
     terminal = str(terminal_state or "")
-    if terminal == str(LoopTerminalState.CONVERGED):
-        return LoopDecisionKind.CONVERGED
-    if terminal in {
-        str(LoopTerminalState.PAUSED),
-        str(LoopTerminalState.WAITING_APPROVAL),
-        str(LoopTerminalState.BLOCKED),
-        str(LoopTerminalState.CONFLICTED),
-    }:
-        return LoopDecisionKind.BLOCKED
-    if terminal:
-        return LoopDecisionKind.FAILED
-    if condition == "resource_pause":
-        return LoopDecisionKind.CONTINUE
-    if condition in {
-        "planner_failed",
-        "capability_failed",
-        "checker_failed",
-        "new_route_available",
-    } or str(state.node) == str(LoopNode.REFLECT):
-        return LoopDecisionKind.RECOVER
-    if condition.startswith("resource_"):
-        return LoopDecisionKind.BLOCKED
-    if condition == "side_effect_commit_required":
-        return LoopDecisionKind.BLOCKED
-    return LoopDecisionKind.CONTINUE
+    ladder = (
+        (terminal in _TERMINAL_DECISION_MAP, _TERMINAL_DECISION_MAP.get(terminal)),
+        (bool(terminal), LoopDecisionKind.FAILED),
+        (condition in _CONDITION_DECISION_MAP, _CONDITION_DECISION_MAP.get(condition)),
+        (str(state.node) == str(LoopNode.REFLECT), LoopDecisionKind.RECOVER),
+        (condition.startswith("resource_"), LoopDecisionKind.BLOCKED),
+        (True, LoopDecisionKind.CONTINUE),
+    )
+    return next(kind for matched, kind in ladder if matched and kind is not None)
+
+
+_CONDITION_REASON_MAP: dict[str, LoopReason] = {
+    "planner_failed": LoopReason.PLANNER_OR_PARSER_FAILURE,
+    "missing_planned_capability": LoopReason.PLANNER_OR_PARSER_FAILURE,
+    "capability_failed": LoopReason.CAPABILITY_FAILURE,
+    "repeated_progress_signature": LoopReason.REPEATED_PROGRESS_SIGNATURE,
+    "checker_failed": LoopReason.COMPLETION_CHECKER_BLOCKED,
+    "checker_rejected": LoopReason.COMPLETION_CHECKER_BLOCKED,
+    "no_route_available": LoopReason.COMPLETION_CHECKER_BLOCKED,
+    "resource_pause": LoopReason.EXTERNAL_PAUSE,
+    "resource_or_user_pause": LoopReason.EXTERNAL_PAUSE,
+    "approval_required": LoopReason.APPROVAL_REQUIRED,
+    "resource_escalate": LoopReason.APPROVAL_REQUIRED,
+    "side_effect_commit_required": LoopReason.APPROVAL_REQUIRED,
+    "hard_timeout": LoopReason.TERMINAL_RESULT,
+    "checker_passed": LoopReason.COMPLETION_EVIDENCE_TRUE,
+    "plan_ready": LoopReason.CAPABILITY_FACT_RECORDED,
+    "side_effect_recorded": LoopReason.CAPABILITY_FACT_RECORDED,
+    "continue_iteration": LoopReason.CAPABILITY_FACT_RECORDED,
+}
 
 
 def _transition_reason(
@@ -3029,31 +3047,38 @@ def _transition_reason(
     terminal_state: LoopTerminalState | str,
 ) -> LoopReason:
     terminal = str(terminal_state or "")
-    if condition in {"planner_failed", "missing_planned_capability"}:
-        return LoopReason.PLANNER_OR_PARSER_FAILURE
-    if condition == "capability_failed":
-        return LoopReason.CAPABILITY_FAILURE
-    if condition == "repeated_progress_signature":
-        return LoopReason.REPEATED_PROGRESS_SIGNATURE
-    if condition in {"checker_failed", "checker_rejected", "no_route_available"}:
-        return LoopReason.COMPLETION_CHECKER_BLOCKED
-    if condition in {"resource_pause", "resource_or_user_pause"}:
-        return LoopReason.EXTERNAL_PAUSE
-    if condition in {
-        "approval_required",
-        "resource_escalate",
-        "side_effect_commit_required",
-    }:
-        return LoopReason.APPROVAL_REQUIRED
-    if condition == "hard_timeout":
-        return LoopReason.TERMINAL_RESULT
-    if terminal == str(LoopTerminalState.CONVERGED) or condition == "checker_passed":
-        return LoopReason.COMPLETION_EVIDENCE_TRUE
-    if condition in {"plan_ready", "side_effect_recorded", "continue_iteration"}:
-        return LoopReason.CAPABILITY_FACT_RECORDED
-    if terminal:
-        return LoopReason.TERMINAL_RESULT
-    return LoopReason.CAPABILITY_FACT_RECORDED
+    ladder = (
+        (condition in _CONDITION_REASON_MAP, _CONDITION_REASON_MAP.get(condition)),
+        (terminal == str(LoopTerminalState.CONVERGED), LoopReason.COMPLETION_EVIDENCE_TRUE),
+        (bool(terminal), LoopReason.TERMINAL_RESULT),
+        (True, LoopReason.CAPABILITY_FACT_RECORDED),
+    )
+    return next(reason for matched, reason in ladder if matched and reason is not None)
+
+
+_CONDITION_FAILURE_DOMAIN_MAP: dict[str, TraceFailureDomain] = {
+    "planner_failed": TraceFailureDomain.PLANNER_OR_PARSER,
+    "missing_planned_capability": TraceFailureDomain.PLANNER_OR_PARSER,
+    "capability_failed": TraceFailureDomain.CAPABILITY_FAILURE,
+    "repeated_progress_signature": TraceFailureDomain.LOOP_NO_PROGRESS,
+    "checker_failed": TraceFailureDomain.CHECKER_BLOCKED,
+    "checker_rejected": TraceFailureDomain.CHECKER_BLOCKED,
+    "no_route_available": TraceFailureDomain.CHECKER_BLOCKED,
+    "resource_pause": TraceFailureDomain.NONE,
+    "resource_or_user_pause": TraceFailureDomain.NONE,
+    "resource_escalate": TraceFailureDomain.SAFEGUARD_POLICY,
+    "resource_blocked": TraceFailureDomain.SAFEGUARD_POLICY,
+    "side_effect_commit_required": TraceFailureDomain.SAFEGUARD_POLICY,
+}
+_TERMINAL_FAILURE_DOMAIN_MAP: dict[str, TraceFailureDomain] = {
+    str(LoopTerminalState.PAUSED): TraceFailureDomain.NONE,
+    str(LoopTerminalState.WAITING_APPROVAL): TraceFailureDomain.SAFEGUARD_POLICY,
+    str(LoopTerminalState.FAILED): TraceFailureDomain.RUNTIME,
+    str(LoopTerminalState.TIMED_OUT): TraceFailureDomain.RUNTIME,
+    str(LoopTerminalState.CANCELLED): TraceFailureDomain.RUNTIME,
+    str(LoopTerminalState.SUPERSEDED): TraceFailureDomain.RUNTIME,
+    str(LoopTerminalState.CONFLICTED): TraceFailureDomain.RUNTIME,
+}
 
 
 def _transition_failure_domain(
@@ -3061,64 +3086,46 @@ def _transition_failure_domain(
     terminal_state: LoopTerminalState | str,
 ) -> TraceFailureDomain:
     terminal = str(terminal_state or "")
-    if condition in {"planner_failed", "missing_planned_capability"}:
-        return TraceFailureDomain.PLANNER_OR_PARSER
-    if condition == "capability_failed":
-        return TraceFailureDomain.CAPABILITY_FAILURE
-    if condition == "repeated_progress_signature":
-        return TraceFailureDomain.LOOP_NO_PROGRESS
-    if condition in {"checker_failed", "checker_rejected", "no_route_available"}:
-        return TraceFailureDomain.CHECKER_BLOCKED
-    if condition in {"resource_pause", "resource_or_user_pause"} or terminal == str(
-        LoopTerminalState.PAUSED
-    ):
-        return TraceFailureDomain.NONE
-    if (
-        condition in {"resource_escalate", "resource_blocked"}
-        or condition == "side_effect_commit_required"
-        or terminal
-        in {
-            str(LoopTerminalState.WAITING_APPROVAL),
-        }
-    ):
-        return TraceFailureDomain.SAFEGUARD_POLICY
-    if terminal in {
-        str(LoopTerminalState.FAILED),
-        str(LoopTerminalState.TIMED_OUT),
-        str(LoopTerminalState.CANCELLED),
-        str(LoopTerminalState.SUPERSEDED),
-        str(LoopTerminalState.CONFLICTED),
-    }:
-        return TraceFailureDomain.RUNTIME
-    return TraceFailureDomain.NONE
+    ladder = (
+        (condition in _CONDITION_FAILURE_DOMAIN_MAP, _CONDITION_FAILURE_DOMAIN_MAP.get(condition)),
+        (terminal in _TERMINAL_FAILURE_DOMAIN_MAP, _TERMINAL_FAILURE_DOMAIN_MAP.get(terminal)),
+        (True, TraceFailureDomain.NONE),
+    )
+    return next(domain for matched, domain in ladder if matched and domain is not None)
+
+
+_CONDITION_CHECK_NAME_MAP: dict[str, LoopCheckName] = {
+    "planner_failed": LoopCheckName.PLANNER_RESULT,
+    "plan_ready": LoopCheckName.PLANNER_RESULT,
+    "capability_failed": LoopCheckName.CAPABILITY_RESULT,
+    "side_effect_recorded": LoopCheckName.CAPABILITY_RESULT,
+    "repeated_progress_signature": LoopCheckName.NO_PROGRESS_GATE,
+    "resource_pause": LoopCheckName.EXTERNAL_PAUSE,
+    "resource_or_user_pause": LoopCheckName.EXTERNAL_PAUSE,
+    "side_effect_commit_required": LoopCheckName.APPROVAL_GATE,
+}
 
 
 def _transition_check_name(
     condition: str,
     terminal_state: LoopTerminalState | str,
 ) -> LoopCheckName:
-    if condition in {"planner_failed", "plan_ready"}:
-        return LoopCheckName.PLANNER_RESULT
-    if condition in {"capability_failed", "side_effect_recorded"}:
-        return LoopCheckName.CAPABILITY_RESULT
-    if condition == "repeated_progress_signature":
-        return LoopCheckName.NO_PROGRESS_GATE
-    if condition in {"resource_pause", "resource_or_user_pause"}:
-        return LoopCheckName.EXTERNAL_PAUSE
-    if condition.startswith("resource_") or condition == "side_effect_commit_required":
-        return LoopCheckName.APPROVAL_GATE
-    if terminal_state:
-        return LoopCheckName.TERMINAL_RESULT
-    return LoopCheckName.COMPLETION_CHECKER
+    ladder = (
+        (condition in _CONDITION_CHECK_NAME_MAP, _CONDITION_CHECK_NAME_MAP.get(condition)),
+        (condition.startswith("resource_"), LoopCheckName.APPROVAL_GATE),
+        (bool(terminal_state), LoopCheckName.TERMINAL_RESULT),
+        (True, LoopCheckName.COMPLETION_CHECKER),
+    )
+    return next(name for matched, name in ladder if matched and name is not None)
 
 
 def _transition_check_passed(condition: str, decision: LoopDecisionKind | str) -> bool:
-    if condition in {"resource_pause", "resource_or_user_pause"}:
-        return True
-    return str(decision) not in {
+    is_pause = condition in {"resource_pause", "resource_or_user_pause"}
+    is_unblocked = str(decision) not in {
         str(LoopDecisionKind.BLOCKED),
         str(LoopDecisionKind.FAILED),
     }
+    return is_pause or is_unblocked
 
 
 def _transition_tool(evidence: dict[str, Any]) -> str:

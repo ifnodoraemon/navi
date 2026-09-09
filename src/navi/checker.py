@@ -73,11 +73,13 @@ def _evaluate_step(step: VerificationStep, evidence: dict[str, Any]) -> LoopChec
     key = step.evidence_key or step.name
     facts = evidence.get(key)
     if facts is None:
+        severity_map = {True: LoopSeverity.ERROR, False: LoopSeverity.INFO}
+        reason_map = {True: "evidence_missing", False: "optional_evidence_missing"}
         return LoopCheckResult(
             name=step.name,
             passed=not step.required,
-            severity=LoopSeverity.ERROR if step.required else LoopSeverity.INFO,
-            reason="evidence_missing" if step.required else "optional_evidence_missing",
+            severity=severity_map[step.required],
+            reason=reason_map[step.required],
             evidence={"evidence_key": key},
         )
     if not isinstance(facts, dict):
@@ -97,12 +99,19 @@ def _evaluate_command_step(step: VerificationStep, *, key: str, facts: dict[str,
     timed_out = bool(facts.get("timed_out")) or _checker_fact(facts).get("error_type") == "TimeoutError"
     exit_code = facts.get("exit_code")
     passed = exit_code == 0 and not timed_out
-    reason = "exit_code_zero" if passed else "command_timed_out" if timed_out else "exit_code_nonzero"
+    reason_map = {
+        (True, False): "exit_code_zero",
+        (True, True): "command_timed_out",
+        (False, True): "command_timed_out",
+        (False, False): "exit_code_nonzero",
+    }
+    reason = reason_map[(passed, timed_out)]
     checker_fact = _checker_fact(facts)
+    severity_map = {True: LoopSeverity.INFO, False: LoopSeverity.ERROR}
     return LoopCheckResult(
         name=step.name,
         passed=passed,
-        severity=LoopSeverity.INFO if passed else LoopSeverity.ERROR,
+        severity=severity_map[passed],
         reason=reason,
         evidence={
             "evidence_key": key,
@@ -117,13 +126,19 @@ def _evaluate_command_step(step: VerificationStep, *, key: str, facts: dict[str,
 def _evaluate_boolean_step(step: VerificationStep, *, key: str, facts: dict[str, Any]) -> LoopCheckResult:
     target_key = {True: "passed", False: "ok"}["passed" in facts]
     passed = bool(facts.get(target_key))
-    reason = "fact_passed" if passed else "fact_failed"
-    if step.kind == VerificationKind.LLM_CHECKER and not passed:
-        reason = "semantic_check_failed"
+    is_llm = step.kind == VerificationKind.LLM_CHECKER
+    reason_map = {
+        (True, True): "fact_passed",
+        (True, False): "fact_passed",
+        (False, True): "semantic_check_failed",
+        (False, False): "fact_failed",
+    }
+    reason = reason_map[(passed, is_llm)]
+    severity_map = {True: LoopSeverity.INFO, False: LoopSeverity.ERROR}
     return LoopCheckResult(
         name=step.name,
         passed=passed,
-        severity=LoopSeverity.INFO if passed else LoopSeverity.ERROR,
+        severity=severity_map[passed],
         reason=reason,
         evidence={
             "evidence_key": key,

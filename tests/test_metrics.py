@@ -230,7 +230,7 @@ def test_metrics_surface_proactive_delivery_success_and_backlog(tmp_path: Path) 
                 item.id,
                 receipt=DeliveryReceipt(transport="test"),
             )
-        else:
+        if index >= 4:
             store.mark_failed(item.id, error="connector_rejected")
 
     snapshot = MetricsProjector(tmp_path).snapshot()

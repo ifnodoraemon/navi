@@ -808,13 +808,11 @@ async def test_planner_context_compacts_long_session_history(tmp_path: Path) -> 
     runtime = AgentRuntime(home=tmp_path, provider=provider)
     session_id = runtime.memory.create_session()
     for index in range(18):
-        role = "user" if index % 2 == 0 else "assistant"
-        if index == 1:
-            content = "legacy-start " + ("x" * 800) + " legacy-tail-marker"
-        elif index == 17:
-            content = "recent full marker survives compaction"
-        else:
-            content = f"turn-{index} context"
+        role = {0: "user", 1: "assistant"}[index % 2]
+        content = {
+            1: "legacy-start " + ("x" * 800) + " legacy-tail-marker",
+            17: "recent full marker survives compaction",
+        }.get(index, f"turn-{index} context")
         runtime.memory.add_message(session_id, role, content)
     planner_capabilities = CapabilityRegistry(
         home=tmp_path,
