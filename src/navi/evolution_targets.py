@@ -50,6 +50,7 @@ class EvolutionTargetAdapterRegistry:
             _PromptLayerAdapter(home),
             _SkillAdapter(home),
             _MemoryItemAdapter(home),
+            _MemoryParameterAdapter(home),
             _EvalCaseAdapter(home),
             _GraphNodeAdapter(home),
         )
@@ -118,19 +119,21 @@ class _PromptLayerAdapter:
         data = _json_object(snapshot, "prompt_layer snapshot")
         if data.get("format") != "prompt_layer_snapshot_v1":
             raise ValueError("prompt_layer rollback snapshot has an unknown format")
-        if bool(data.get("override_exists")):
-            self.store.write_override(
+        actions = {
+            True: lambda: self.store.write_override(
                 target_id,
                 str(data.get("override_content") or ""),
-            )
-        else:
-            self.store.delete_override(target_id)
+            ),
+            False: lambda: self.store.delete_override(target_id),
+        }
+        actions[bool(data.get("override_exists"))]()
 
     def rollback(self, target_id: str, before: str) -> None:
-        if before:
-            self.store.write_override(target_id, before)
-        else:
-            self.store.delete_override(target_id)
+        actions = {
+            True: lambda: self.store.write_override(target_id, before),
+            False: lambda: self.store.delete_override(target_id),
+        }
+        actions[bool(before)]()
 
 
 class _SkillAdapter:
@@ -230,8 +233,48 @@ class _MemoryItemAdapter:
     def rollback(self, target_id: str, before: str) -> None:
         if before:
             self.store.restore_item(_json_object(before, "memory_item"))
-        else:
-            self.store.delete_item(target_id)
+            return
+        self.store.delete_item(target_id)
+
+
+class _MemoryParameterAdapter:
+    descriptor = EvolutionTargetDescriptor(
+        "memory_parameter",
+        "Dynamically tuned cognitive memory weights and thresholds.",
+        "memory",
+    )
+
+    def __init__(self, home: Path):
+        self.store = MemoryStore(home)
+
+    def read(self, target_id: str) -> str:
+        param = self.store.get_parameter_entry(target_id)
+        return json.dumps(param, ensure_ascii=False, sort_keys=True) if param else ""
+
+    def validate(self, target_id: str, candidate: str) -> dict[str, Any]:
+        data = _json_object(candidate, "memory_parameter")
+        val = float(data.get("value", 0.0))
+        return {"loaded_by": "MemoryStore", "parameter": target_id, "value": val}
+
+    def apply(self, target_id: str, candidate: str) -> None:
+        self.validate(target_id, candidate)
+        data = _json_object(candidate, "memory_parameter")
+        self.store.set_parameter(
+            target_id,
+            float(data.get("value", 0.0)),
+            reason=str(data.get("reason") or "evolution_apply"),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+    def rollback(self, target_id: str, before: str) -> None:
+        data = _json_object(before, "memory_parameter") if before else {}
+        val = float(data.get("value", self.store.get_parameter(target_id)))
+        self.store.set_parameter(
+            target_id,
+            val,
+            reason="evolution_rollback",
+            metadata=dict(data.get("metadata", {})),
+        )
 
 
 class _EvalCaseAdapter:
@@ -352,10 +395,11 @@ class _GraphNodeAdapter:
         self.store.replace_data(target_id, _json_object(candidate, "graph_node"))
 
     def rollback(self, target_id: str, before: str) -> None:
-        if before:
-            self.store.replace_data(target_id, _json_object(before, "graph_node"))
-        else:
-            self.store.delete(target_id)
+        actions = {
+            True: lambda: self.store.replace_data(target_id, _json_object(before, "graph_node")),
+            False: lambda: self.store.delete(target_id),
+        }
+        actions[bool(before)]()
 
 
 def _safe_name(value: str) -> str:

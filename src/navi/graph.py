@@ -136,23 +136,19 @@ class GraphStore:
         return self._node_from_row(row) if row else None
 
     def list(self, node_type: str | None = None, *, limit: int = 100) -> list[GraphNode]:
+        query_specs = {
+            True: ("WHERE type = ?", (node_type, limit)),
+            False: ("", (limit,)),
+        }
+        where_clause, params = query_specs[bool(node_type)]
         with connect(self.db_path) as conn:
-            if node_type:
-                rows = conn.execute(
-                    """
-                    SELECT id, type, name, data, created_at, updated_at
-                    FROM graph_nodes WHERE type = ? ORDER BY updated_at DESC LIMIT ?
-                    """,
-                    (node_type, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT id, type, name, data, created_at, updated_at
-                    FROM graph_nodes ORDER BY updated_at DESC LIMIT ?
-                    """,
-                    (limit,),
-                ).fetchall()
+            rows = conn.execute(
+                f"""
+                SELECT id, type, name, data, created_at, updated_at
+                FROM graph_nodes {where_clause} ORDER BY updated_at DESC LIMIT ?
+                """,
+                params,
+            ).fetchall()
         return [self._node_from_row(row) for row in rows]
 
     def replace_data(self, node_id: str, data: dict[str, Any]) -> GraphNode | None:

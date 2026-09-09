@@ -54,17 +54,17 @@ class MCPServerConfig:
         errors: list[str] = []
         if not self.name.strip():
             errors.append("server name is required")
+        if self.transport not in {"streamable_http", "stdio"}:
+            errors.append(f"unsupported transport: {self.transport}")
         if self.transport == "streamable_http":
             parsed = urlparse(self.url)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 errors.append("streamable_http transport requires an http(s) url")
             if parsed.username or parsed.password:
                 errors.append("MCP url must not contain credentials")
-        elif self.transport == "stdio":
+        if self.transport == "stdio":
             if not self.command.strip():
                 errors.append("stdio transport requires command")
-        else:
-            errors.append(f"unsupported transport: {self.transport}")
         if not self.tool_permissions:
             errors.append("tool_permissions must explicitly allow at least one tool")
         for tool, raw_permission in self.tool_permissions.items():

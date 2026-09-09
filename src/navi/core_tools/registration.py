@@ -16,9 +16,13 @@ from .files import (
     _file_write,
     _python_ast_replace_symbol,
 )
-from .hooks import _hooks_list
-from .memory import _memory_conflicts, _memory_list, _memory_recall, _memory_record_activation
-from .provider import _provider_config
+from .memory import (
+    _memory_conflicts,
+    _memory_list,
+    _memory_parameters,
+    _memory_recall,
+    _memory_record_activation,
+)
 from .shell import _shell_run
 from .skills import _skills_list, _skills_view
 from .tools_list import _tools_list
@@ -278,6 +282,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "item_ids": {"type": "array", "items": {"type": "string"}},
                     "reason": {"type": "string"},
                     "provenance": {"type": "string"},
+                    "query": {"type": "string"},
                 },
                 "required": ["item_ids", "reason", "provenance"],
             },
@@ -325,6 +330,41 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
             ),
         ),
         lambda args: _memory_conflicts(home, args),
+    )
+    registry.register(
+        _core_tool_spec(
+            name="memory.parameters",
+            capability_class="memory",
+            context_policy="actor_memory",
+            description=(
+                "Inspect, list, or dynamically tune cognitive memory parameters, weights, and thresholds."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["get", "set", "list"],
+                        "default": "list",
+                    },
+                    "name": {"type": "string"},
+                    "value": {"type": "number"},
+                    "reason": {"type": "string"},
+                },
+            },
+            output_schema=_output_schema(
+                {
+                    "action": {"type": "string"},
+                    "parameter": {"type": "object"},
+                    "parameters": {"type": "object"},
+                    "count": {"type": "integer"},
+                }
+            ),
+            facts_only=True,
+            mutates=True,
+            permission="write",
+        ),
+        lambda args: _memory_parameters(home, args),
     )
     registry.register(
         _core_tool_spec(

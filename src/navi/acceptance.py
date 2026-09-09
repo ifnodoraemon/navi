@@ -140,6 +140,9 @@ async def run_product_acceptance(
         )
         if advance.terminal:
             break
+        if advance.action not in {"approve", "process_queue"}:
+            errors.append(advance.error)
+            break
         if advance.action == "approve":
             if not auto_approve:
                 errors.append("approval required")
@@ -159,7 +162,7 @@ async def run_product_acceptance(
                 session_id=initial.session_id or None,
             )
             turns.append(_turn_facts("approval", approved))
-        elif advance.action == "process_queue":
+        if advance.action == "process_queue":
             processed = await daemon.process_queue_once()
             progress.append(
                 {
@@ -167,9 +170,6 @@ async def run_product_acceptance(
                     "processed": [item.id for item in processed],
                 }
             )
-        else:
-            errors.append(advance.error)
-            break
 
         after = _state_snapshot(runs, run_id)
         progress.append({"phase": "state", "before": before, "after": after})

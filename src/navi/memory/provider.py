@@ -11,7 +11,7 @@ from ..db import connect, check_schema_version, read_schema_version, write_schem
 from ..schema import Column, Table, assert_schema_exact
 from .models import MemoryItem, SessionAlias, StoredMessage
 
-MEMORY_SCHEMA_VERSION = 3
+MEMORY_SCHEMA_VERSION = 4
 
 MESSAGES_TABLE = Table(
     "messages",
@@ -55,6 +55,15 @@ MEMORY_ITEMS_TABLE = Table(
         Column("metadata", "TEXT", nullable=False),
         Column("reason", "TEXT", nullable=False, default="''"),
         Column("provenance", "TEXT", nullable=False, default="''"),
+    ],
+)
+MEMORY_PARAMETERS_TABLE = Table(
+    "memory_parameters",
+    [
+        Column("name", "TEXT", primary_key=True),
+        Column("value", "REAL", nullable=False),
+        Column("updated_at", "REAL", nullable=False),
+        Column("metadata", "TEXT", nullable=False, default="'{}'"),
     ],
 )
 
@@ -115,6 +124,26 @@ class MemoryProvider(Protocol):
     ) -> None: ...
     def get_session_alias(self, alias: str) -> SessionAlias | None: ...
     def list_session_aliases(self, limit: int = 50) -> list[SessionAlias]: ...
+    def get_parameter(
+        self, name: str
+    ) -> tuple[float, float, dict[str, Any]] | None: ...
+    def set_parameter(
+        self,
+        name: str,
+        value: float,
+        updated_at: float,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
+    def set_parameter_if_absent(
+        self,
+        name: str,
+        value: float,
+        updated_at: float,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
+    def list_parameters(
+        self,
+    ) -> dict[str, tuple[float, float, dict[str, Any]]]: ...
     def search_fts(
         self,
         query: str,
@@ -140,6 +169,8 @@ class SQLiteMemoryProvider:
             assert_schema_exact(conn, SESSION_ALIASES_TABLE)
             conn.execute(MEMORY_ITEMS_TABLE.ddl)
             assert_schema_exact(conn, MEMORY_ITEMS_TABLE)
+            conn.execute(MEMORY_PARAMETERS_TABLE.ddl)
+            assert_schema_exact(conn, MEMORY_PARAMETERS_TABLE)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memory_consolidation_jobs (
@@ -461,20 +492,20 @@ class SQLiteMemoryProvider:
                     "WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
                     (match_expr, limit),
                 ).fetchall()
-            else:
-                scopes = sorted(allowed_scopes)
-                if not scopes:
-                    return []
-                placeholders = ",".join("?" for _ in scopes)
-                rows = conn.execute(
-                    "SELECT memory_fts.id, memory_fts.rank "
-                    "FROM memory_fts JOIN memory_items "
-                    "ON memory_items.id = memory_fts.id "
-                    "WHERE memory_fts MATCH ? "
-                    f"AND memory_items.scope IN ({placeholders}) "
-                    "ORDER BY memory_fts.rank LIMIT ?",
-                    (match_expr, *scopes, limit),
-                ).fetchall()
+                return [(row[0], float(row[1])) for row in rows]
+            scopes = sorted(allowed_scopes)
+            if not scopes:
+                return []
+            placeholders = ",".join("?" for _ in scopes)
+            rows = conn.execute(
+                "SELECT memory_fts.id, memory_fts.rank "
+                "FROM memory_fts JOIN memory_items "
+                "ON memory_items.id = memory_fts.id "
+                "WHERE memory_fts MATCH ? "
+                f"AND memory_items.scope IN ({placeholders}) "
+                "ORDER BY memory_fts.rank LIMIT ?",
+                (match_expr, *scopes, limit),
+            ).fetchall()
             return [(row[0], float(row[1])) for row in rows]
 
     def add_message(
@@ -691,6 +722,76 @@ class SQLiteMemoryProvider:
                 (limit,),
             ).fetchall()
         return [SessionAlias(*row) for row in rows]
+
+    def get_parameter(
+        self, name: str
+    ) -> tuple[float, float, dict[str, Any]] | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT value, updated_at, metadata FROM memory_parameters WHERE name = ?",
+                (name,),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            metadata = json.loads(row[2])
+        except (ValueError, TypeError):
+            metadata = {}
+        return (float(row[0]), float(row[1]), metadata)
+
+    def set_parameter(
+        self,
+        name: str,
+        value: float,
+        updated_at: float,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        meta_json = json.dumps(metadata or {}, ensure_ascii=False)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_parameters(name, value, updated_at, metadata)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at,
+                    metadata = excluded.metadata
+                """,
+                (name, float(value), float(updated_at), meta_json),
+            )
+
+    def set_parameter_if_absent(
+        self,
+        name: str,
+        value: float,
+        updated_at: float,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        meta_json = json.dumps(metadata or {}, ensure_ascii=False)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_parameters(name, value, updated_at, metadata)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(name) DO NOTHING
+                """,
+                (name, float(value), float(updated_at), meta_json),
+            )
+
+    def list_parameters(self) -> dict[str, tuple[float, float, dict[str, Any]]]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT name, value, updated_at, metadata FROM memory_parameters ORDER BY name ASC"
+            ).fetchall()
+        result: dict[str, tuple[float, float, dict[str, Any]]] = {}
+        for row in rows:
+            try:
+                metadata = json.loads(row[3])
+            except (ValueError, TypeError):
+                metadata = {}
+            result[str(row[0])] = (float(row[1]), float(row[2]), metadata)
+        return result
+
 
 
 def _migrate_messages_table(conn) -> None:

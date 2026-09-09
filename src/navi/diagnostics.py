@@ -184,18 +184,19 @@ def _api_config_checks(config) -> list[DiagnosticCheck]:
     checks = []
     if not config.model.api_base_url:
         checks.append(DiagnosticCheck("api.model.config", "error", "api_base_url missing"))
-    elif not config.model.api_key:
+        return checks
+    if not config.model.api_key:
         checks.append(DiagnosticCheck("api.model.config", "error", "api_key missing"))
-    else:
-        checks.append(
-            DiagnosticCheck(
-                "api.model.config",
-                "ok",
-                redact_secrets(
-                    f"{config.model.provider} {config.model.api_base_url} key_present=True"
-                ),
-            )
+        return checks
+    checks.append(
+        DiagnosticCheck(
+            "api.model.config",
+            "ok",
+            redact_secrets(
+                f"{config.model.provider} {config.model.api_base_url} key_present=True"
+            ),
         )
+    )
     return checks
 
 
@@ -277,23 +278,20 @@ def _search_connectivity_checks(home: Path) -> list[DiagnosticCheck]:
                 )
             )
             continue
-        if result.ok:
-            checks.append(
-                DiagnosticCheck(
-                    f"search.connectivity.{provider_id}",
-                    "ok",
-                    f"kind={result.facts.get('provider_kind')} "
-                    f"results={len(result.facts.get('results') or [])}",
-                )
-            )
-        else:
-            checks.append(
-                DiagnosticCheck(
-                    f"search.connectivity.{provider_id}",
-                    "error",
-                    f"{result.facts.get('error_reason')}: {result.error}",
-                )
-            )
+        check_dispatch = {
+            True: lambda: DiagnosticCheck(
+                f"search.connectivity.{provider_id}",
+                "ok",
+                f"kind={result.facts.get('provider_kind')} "
+                f"results={len(result.facts.get('results') or [])}",
+            ),
+            False: lambda: DiagnosticCheck(
+                f"search.connectivity.{provider_id}",
+                "error",
+                f"{result.facts.get('error_reason')}: {result.error}",
+            ),
+        }
+        checks.append(check_dispatch[bool(result.ok)]())
     return checks
 
 
@@ -307,8 +305,8 @@ def _api_connectivity_checks(config) -> list[DiagnosticCheck]:
     try:
         resolved = resolve_model_config(config.model)
         spec = get_provider_spec(resolved.provider)
-        if spec.kind == "anthropic-compatible":
-            response = httpx.post(
+        request_builders = {
+            "anthropic-compatible": lambda: httpx.post(
                 f"{resolved.api_base_url}/messages",
                 headers={
                     "x-api-key": resolved.api_key,
@@ -321,9 +319,8 @@ def _api_connectivity_checks(config) -> list[DiagnosticCheck]:
                     "messages": [{"role": "user", "content": "health check"}],
                 },
                 timeout=5.0,
-            )
-        else:
-            response = httpx.post(
+            ),
+            "openai-compatible": lambda: httpx.post(
                 f"{resolved.api_base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {resolved.api_key}"},
                 json={
@@ -333,7 +330,10 @@ def _api_connectivity_checks(config) -> list[DiagnosticCheck]:
                     "max_tokens": 8,
                 },
                 timeout=5.0,
-            )
+            ),
+        }
+        post_fn = request_builders.get(spec.kind, request_builders["openai-compatible"])
+        response = post_fn()
         response.raise_for_status()
     except Exception as exc:
         return [DiagnosticCheck("api.model.connectivity", "warn", f"{exc.__class__.__name__}")]

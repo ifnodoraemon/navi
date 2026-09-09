@@ -101,16 +101,17 @@ class HarnessResult:
 class Harness:
     def __init__(self, *, home: Path | None = None, vault: VaultResolver | None = None):
         self.home = home
-        resolved_vault: VaultResolver
-        if vault is not None:
-            resolved_vault = vault
-        elif home is not None:
+        def _make_vault_from_home():
             from .vault import VaultStore
+            return VaultStore(home)  # type: ignore[arg-type]
 
-            resolved_vault = VaultStore(home)
-        else:
-            resolved_vault = SecretVault()
-        self.vault = resolved_vault
+        vault_builders = {
+            (True, False): lambda: vault,
+            (True, True): lambda: vault,
+            (False, True): _make_vault_from_home,
+            (False, False): SecretVault,
+        }
+        self.vault = vault_builders[(vault is not None, home is not None)]()
         self.shadow_workspaces = ShadowWorkspaceManager(home) if home is not None else None
         self.workspace_locks = WorkspaceLockStore(home) if home is not None else None
 
@@ -177,12 +178,18 @@ class Harness:
                     os.close(environment_fd)
             stdout_text, stderr_text = process.communicate(timeout=command.timeout.seconds)
         except subprocess.TimeoutExpired as exc:
-            if process is not None:
+            def _drain_process() -> tuple[str, str]:
                 _kill_process_tree(process)
-                stdout_text, stderr_text = process.communicate()
-            else:
-                stdout_text = _timeout_text(exc.stdout)
-                stderr_text = _timeout_text(exc.stderr)
+                return process.communicate()
+
+            def _drain_exc() -> tuple[str, str]:
+                return _timeout_text(exc.stdout), _timeout_text(exc.stderr)
+
+            drain_handlers = {
+                True: _drain_process,
+                False: _drain_exc,
+            }
+            stdout_text, stderr_text = drain_handlers[process is not None]()
             duration = time.time() - started
             stdout = _redact(_tail(stdout_text, command.timeout.stdout_tail_bytes), secret_values)
             stderr = _redact(

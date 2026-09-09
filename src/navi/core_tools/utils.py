@@ -50,9 +50,8 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
     prepared_addresses = [
         str(item) for item in args.get("_resolved_addresses", []) if str(item).strip()
     ]
-    if prepared_addresses:
-        pinned_ip = prepared_addresses[0]
-    else:
+    pinned_ip = prepared_addresses[0] if prepared_addresses else ""
+    if not pinned_ip:
         try:
             infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         except OSError as exc:
@@ -95,16 +94,24 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
         }
     )
 
+    def _make_https() -> http.client.HTTPSConnection:
+        context = ssl.create_default_context()
+        raw_sock = socket.create_connection((pinned_ip, port), timeout=15)
+        tls_sock = context.wrap_socket(raw_sock, server_hostname=host)
+        https_conn = http.client.HTTPSConnection(pinned_ip, port, timeout=15, context=context)
+        https_conn.sock = tls_sock
+        return https_conn
+
+    def _make_http() -> http.client.HTTPConnection:
+        return http.client.HTTPConnection(pinned_ip, port, timeout=15)
+
+    conn_factories = {
+        "https": _make_https,
+        "http": _make_http,
+    }
     conn: http.client.HTTPConnection | http.client.HTTPSConnection
     try:
-        if parsed.scheme == "https":
-            context = ssl.create_default_context()
-            raw_sock = socket.create_connection((pinned_ip, port), timeout=15)
-            tls_sock = context.wrap_socket(raw_sock, server_hostname=host)
-            conn = http.client.HTTPSConnection(pinned_ip, port, timeout=15, context=context)
-            conn.sock = tls_sock
-        else:
-            conn = http.client.HTTPConnection(pinned_ip, port, timeout=15)
+        conn = conn_factories.get(parsed.scheme, _make_http)()
         conn.request(
             method,
             path_query,

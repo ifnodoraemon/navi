@@ -121,19 +121,27 @@ def urlopen(request: Request, timeout: float) -> _PinnedHTTPResponse:
         path_query += f"?{parsed.query}"
 
     connection: http.client.HTTPConnection
-    if parsed.scheme == "https":
+    def _create_https() -> http.client.HTTPSConnection:
         context = ssl.create_default_context()
         raw_socket = socket.create_connection((pinned_address, port), timeout=timeout)
         tls_socket = context.wrap_socket(raw_socket, server_hostname=host)
-        connection = http.client.HTTPSConnection(
+        conn = http.client.HTTPSConnection(
             pinned_address,
             port,
             timeout=timeout,
             context=context,
         )
-        connection.sock = tls_socket
-    else:
-        connection = http.client.HTTPConnection(pinned_address, port, timeout=timeout)
+        conn.sock = tls_socket
+        return conn
+
+    def _create_http() -> http.client.HTTPConnection:
+        return http.client.HTTPConnection(pinned_address, port, timeout=timeout)
+
+    conn_builders = {
+        "https": _create_https,
+        "http": _create_http,
+    }
+    connection = conn_builders.get(parsed.scheme, _create_http)()
     try:
         connection.request(
             request.get_method(),
@@ -925,6 +933,7 @@ def _normalize_exa_text_results(value: str, *, limit: int) -> list[dict[str, Any
     for block in re.split(r"\n\s*---\s*\n", str(value or "")):
         fields: dict[str, str] = {}
         highlights = ""
+        header = block
         match = re.search(r"(?m)^Highlights:\s*\n?(.*)$", block, flags=re.DOTALL)
         if match:
             highlights = _bounded_search_text(
@@ -932,8 +941,6 @@ def _normalize_exa_text_results(value: str, *, limit: int) -> list[dict[str, Any
                 _SEARCH_SNIPPET_MAX_CHARS,
             )
             header = block[: match.start()]
-        else:
-            header = block
         for key in ("Title", "URL", "Published", "Author"):
             field_match = re.search(rf"(?m)^{key}:\s*(.*)$", header)
             if field_match:

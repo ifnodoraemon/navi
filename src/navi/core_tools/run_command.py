@@ -124,15 +124,14 @@ def _run_command(
 
             while True:
                 r, _, _ = select.select([master_fd], [], [], 0)
-                if r:
-                    try:
-                        data = os.read(master_fd, 4096)
-                        if not data:
-                            break
-                        output += data
-                    except OSError:
+                if not r:
+                    break
+                try:
+                    data = os.read(master_fd, 4096)
+                    if not data:
                         break
-                else:
+                    output += data
+                except OSError:
                     break
 
             if not timed_out:

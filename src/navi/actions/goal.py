@@ -105,7 +105,11 @@ class GoalOpenCapability(BaseCapability):
         )
         try:
             service = LoopControlService(self.home)
-            if request.auto_start and self.runtime is not None and request.loop_kind != "scheduled":
+            should_run_graph = bool(
+                request.auto_start and self.runtime is not None and request.loop_kind != "scheduled"
+            )
+
+            async def _run_graph():
                 opened = service.open_goal(
                     replace(
                         request,
@@ -113,7 +117,7 @@ class GoalOpenCapability(BaseCapability):
                         execution_mode="foreground",
                     )
                 )
-                result = await run_goal_loop_state_graph(
+                return await run_goal_loop_state_graph(
                     home=self.home,
                     service=service,
                     base=opened,
@@ -123,8 +127,15 @@ class GoalOpenCapability(BaseCapability):
                     evidence={"entrypoint": "goal.open"},
                     result_evidence={"state_graph_mode": "llm_backed"},
                 )
-            else:
-                result = service.open_goal(request)
+
+            async def _open_only():
+                return service.open_goal(request)
+
+            open_dispatch = {
+                True: _run_graph,
+                False: _open_only,
+            }
+            result = await open_dispatch[should_run_graph]()
         except ScheduleConflict as exc:
             return _schedule_conflict_result(exc)
         except ValueError as exc:
@@ -317,12 +328,14 @@ class GoalResumeCapability(BaseCapability):
                 loop_run_id=loop_run_id,
                 context=context,
             )
-            if loop_run_id:
-                prepared = service.resume_loop(loop_run_id=loop_run_id, workspace=workspace)
-            else:
-                prepared = service.resume_goal(goal_id=goal_id, workspace=workspace)
-            if self.runtime is not None:
-                result = await run_goal_loop_state_graph(
+            resume_ops = {
+                True: lambda: service.resume_loop(loop_run_id=loop_run_id, workspace=workspace),
+                False: lambda: service.resume_goal(goal_id=goal_id, workspace=workspace),
+            }
+            prepared = resume_ops[bool(loop_run_id)]()
+
+            async def _run_resumed_graph():
+                return await run_goal_loop_state_graph(
                     home=self.home,
                     service=service,
                     base=prepared,
@@ -338,8 +351,15 @@ class GoalResumeCapability(BaseCapability):
                     result_evidence={"state_graph_mode": "llm_backed", "resumed": True},
                     state_transition="resumed",
                 )
-            else:
-                result = prepared
+
+            async def _prepared_only():
+                return prepared
+
+            graph_dispatch = {
+                True: _run_resumed_graph,
+                False: _prepared_only,
+            }
+            result = await graph_dispatch[self.runtime is not None]()
         except KeyError as exc:
             raise NotFound(str(exc)) from exc
         except ValueError as exc:
@@ -413,10 +433,11 @@ class GoalCancelCapability(BaseCapability):
                 loop_run_id=loop_run_id,
                 context=context,
             )
-            if loop_run_id:
-                result = service.cancel_loop(loop_run_id=loop_run_id, reason=reason)
-            else:
-                result = service.cancel_goal(goal_id=goal_id, reason=reason)
+            cancel_ops = {
+                True: lambda: service.cancel_loop(loop_run_id=loop_run_id, reason=reason),
+                False: lambda: service.cancel_goal(goal_id=goal_id, reason=reason),
+            }
+            result = cancel_ops[bool(loop_run_id)]()
         except KeyError as exc:
             raise NotFound(str(exc)) from exc
         except ValueError as exc:
@@ -471,58 +492,65 @@ class GoalStateCapability(BaseCapability):
             raise SchemaMismatch("goal.state occurrence time window is inverted.")
         limit = _positive_int(args.get("limit"), default=20, maximum=200)
         service = LoopControlService(self.home)
-        try:
-            if goal_id or loop_run_id:
+        def _get_target_state() -> dict[str, Any]:
+            _require_goal_scope(
+                service,
+                goal_id=goal_id,
+                loop_run_id=loop_run_id,
+                context=context,
+            )
+            state_facts = service.goal_state(
+                goal_id=goal_id,
+                loop_run_id=loop_run_id,
+                limit=limit,
+            )
+            resolved_goal = state_facts.get("goal")
+            resolved_goal_id = (
+                str(resolved_goal.get("id") or "")
+                if isinstance(resolved_goal, dict)
+                else ""
+            )
+            goal = service.goals.get(resolved_goal_id) if resolved_goal_id else None
+            run = service.runs.get(goal.run_id) if goal and goal.run_id else None
+            loop_run_resolvers = {
+                True: lambda: service.loop_runs.get_run(loop_run_id),
+                False: lambda: (
+                    service.loop_runs.list_by_goal(resolved_goal_id, limit=1)[0]
+                    if (resolved_goal_id and service.loop_runs.list_by_goal(resolved_goal_id, limit=1))
+                    else None
+                ),
+            }
+            loop_run = loop_run_resolvers[bool(loop_run_id)]()
+            return {
+                **state_facts,
+                "run_diagnostics": _run_diagnostics(run),
+                "loop_diagnostics": _loop_run_diagnostics(loop_run),
+            }
+
+        def _get_scoped_state() -> dict[str, Any]:
+            if parent_goal_id:
                 _require_goal_scope(
                     service,
-                    goal_id=goal_id,
-                    loop_run_id=loop_run_id,
+                    goal_id=parent_goal_id,
+                    loop_run_id="",
                     context=context,
                 )
-                facts = service.goal_state(
-                    goal_id=goal_id,
-                    loop_run_id=loop_run_id,
-                    limit=limit,
-                )
-                resolved_goal = facts.get("goal")
-                resolved_goal_id = (
-                    str(resolved_goal.get("id") or "")
-                    if isinstance(resolved_goal, dict)
-                    else ""
-                )
-                goal = service.goals.get(resolved_goal_id) if resolved_goal_id else None
-                run = service.runs.get(goal.run_id) if goal and goal.run_id else None
-                if loop_run_id:
-                    loop_run = service.loop_runs.get_run(loop_run_id)
-                else:
-                    loop_runs = (
-                        service.loop_runs.list_by_goal(resolved_goal_id, limit=1)
-                        if resolved_goal_id
-                        else []
-                    )
-                    loop_run = loop_runs[0] if loop_runs else None
-                facts = {
-                    **facts,
-                    "run_diagnostics": _run_diagnostics(run),
-                    "loop_diagnostics": _loop_run_diagnostics(loop_run),
-                }
-            else:
-                if parent_goal_id:
-                    _require_goal_scope(
-                        service,
-                        goal_id=parent_goal_id,
-                        loop_run_id="",
-                        context=context,
-                    )
-                facts = _scoped_goal_state(
-                    service,
-                    context=context,
-                    limit=limit,
-                    view=view,
-                    parent_goal_id=parent_goal_id,
-                    created_after=created_after,
-                    created_before=created_before,
-                )
+            return _scoped_goal_state(
+                service,
+                context=context,
+                limit=limit,
+                view=view,
+                parent_goal_id=parent_goal_id,
+                created_after=created_after,
+                created_before=created_before,
+            )
+
+        state_dispatch = {
+            True: _get_target_state,
+            False: _get_scoped_state,
+        }
+        try:
+            facts = state_dispatch[bool(goal_id or loop_run_id)]()
         except KeyError as exc:
             raise NotFound(str(exc)) from exc
         facts = {
@@ -623,18 +651,25 @@ def _effective_allowed_capabilities(
     registry: Any | None,
     permission_ceiling: str,
 ) -> tuple[str, ...]:
-    if registry is None:
-        if context.allowed_tools is None:
-            raise SchemaMismatch("goal.open requires an explicit capability registry")
-        visible = set(context.allowed_tools)
-    else:
-        visible = {
+    def _registry_visible():
+        return {
             spec.name
             for spec in registry.planner_specs()
             if spec.permission_policy != "static"
             or PERMISSION_ORDER[spec.permission]
             <= PERMISSION_ORDER[permission_ceiling]
         }
+
+    def _fallback_visible():
+        if context.allowed_tools is None:
+            raise SchemaMismatch("goal.open requires an explicit capability registry")
+        return set(context.allowed_tools)
+
+    visibility_resolvers = {
+        True: _registry_visible,
+        False: _fallback_visible,
+    }
+    visible = visibility_resolvers[registry is not None]()
     if context.allowed_tools is not None:
         visible &= set(context.allowed_tools)
     if requested:
@@ -730,7 +765,7 @@ def _goal_control_preflight(
                 f"goal.{operation} requires goal_id"
                 + (", loop_run_id, or explicit goal_ids." if operation == "cancel" else " or loop_run_id.")
             )
-        if goal_ids:
+        def _check_batch_scopes():
             if goal_id or loop_run_id:
                 raise SchemaMismatch(
                     "goal.cancel batch selectors cannot be combined with goal_id or loop_run_id."
@@ -742,13 +777,20 @@ def _goal_control_preflight(
                     loop_run_id="",
                     context=context,
                 )
-        else:
+
+        def _check_single_scope():
             _require_goal_scope(
                 service,
                 goal_id=goal_id,
                 loop_run_id=loop_run_id,
                 context=context,
             )
+
+        scope_checkers = {
+            True: _check_batch_scopes,
+            False: _check_single_scope,
+        }
+        scope_checkers[bool(goal_ids)]()
     except NaviError as exc:
         return _failure_result(
             "goal",
@@ -1142,16 +1184,17 @@ def _cancel_goal_batch(
                 "state_transition": facts.get("state_transition"),
                 "verified_goal": facts.get("verified_goal", {}),
             }
-            if _cancel_result_verified(item):
-                cancelled.append(item)
-            else:
-                failed.append(
+            cancel_handlers = {
+                True: lambda: cancelled.append(item),
+                False: lambda: failed.append(
                     {
                         **item,
                         "error_reason": "verification_failed",
                         "message": "goal remained in selected lifecycle view after cancellation",
                     }
-                )
+                ),
+            }
+            cancel_handlers[bool(_cancel_result_verified(item))]()
         except Exception as exc:  # noqa: BLE001 - batch result must report per-target facts.
             failed.append(
                 {

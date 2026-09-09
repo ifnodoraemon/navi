@@ -29,12 +29,14 @@ class PersonalQueryCapability(BaseCapability):
         store = PersonalResourceStore(self.home)
         owner_scopes = _owner_scopes(context)
         resource_id = _arg_text(args, "resource_id")
-        if resource_id:
+
+        def _get_by_id():
             item = store.get(resource_id, owner_scopes=owner_scopes)
             if item is None:
                 raise NotFound("personal resource not found")
-            resources = [item]
-        else:
+            return [item]
+
+        def _query_by_filter():
             raw_kinds = args.get("kinds")
             kinds = (
                 tuple(str(item).strip() for item in raw_kinds if str(item).strip())
@@ -42,7 +44,7 @@ class PersonalQueryCapability(BaseCapability):
                 else ()
             )
             try:
-                resources = store.query(
+                return store.query(
                     owner_scopes=owner_scopes,
                     kinds=kinds,
                     query=_arg_text(args, "query"),
@@ -51,6 +53,12 @@ class PersonalQueryCapability(BaseCapability):
                 )
             except ValueError as exc:
                 raise SchemaMismatch(str(exc)) from exc
+
+        query_dispatch = {
+            True: _get_by_id,
+            False: _query_by_filter,
+        }
+        resources = query_dispatch[bool(resource_id)]()
         facts = {
             **_transition_facts("personal_resource_collection", "current_actor", "observed"),
             "resources": [item.to_dict() for item in resources],
@@ -80,52 +88,60 @@ class PersonalUpdateCapability(BaseCapability):
         owner_scopes = _owner_scopes(context)
         raw_data = args.get("data")
         data: dict[str, Any] = dict(raw_data) if isinstance(raw_data, dict) else {}
+        def _create_item():
+            kind = _arg_text(args, "kind")
+            if not kind:
+                raise SchemaMismatch("personal.update create requires kind")
+            created = store.create(
+                kind=kind,
+                owner_scope=default_memory_scope(
+                    source=context.source,
+                    peer_id=context.peer_id,
+                    sender_id=context.sender_id,
+                    session_id=context.session_id or "",
+                    workspace=context.workspace,
+                    home=self.home,
+                ),
+                data=data,
+            )
+            return created, "created"
+
+        def _mutate_item():
+            resource_id = _arg_text(args, "resource_id")
+            if not resource_id:
+                raise SchemaMismatch(
+                    f"personal.update {operation} requires resource_id"
+                )
+            expected_version = args.get("expected_version")
+            if not isinstance(expected_version, int) or expected_version < 1:
+                raise SchemaMismatch(
+                    "personal.update requires positive expected_version for mutation"
+                )
+            target_status = {
+                "update": "",
+                "complete": "completed",
+                "delete": "deleted",
+            }[operation]
+            mutated = store.update(
+                resource_id,
+                owner_scopes=owner_scopes,
+                patch=data if operation == "update" else {},
+                expected_version=expected_version,
+                status=target_status,
+            )
+            item_transition = {
+                "update": "updated",
+                "complete": "completed",
+                "delete": "deleted",
+            }[operation]
+            return mutated, item_transition
+
+        update_handlers = {
+            True: _create_item,
+            False: _mutate_item,
+        }
         try:
-            if operation == "create":
-                kind = _arg_text(args, "kind")
-                if not kind:
-                    raise SchemaMismatch("personal.update create requires kind")
-                item = store.create(
-                    kind=kind,
-                    owner_scope=default_memory_scope(
-                        source=context.source,
-                        peer_id=context.peer_id,
-                        sender_id=context.sender_id,
-                        session_id=context.session_id or "",
-                        workspace=context.workspace,
-                        home=self.home,
-                    ),
-                    data=data,
-                )
-                transition = "created"
-            else:
-                resource_id = _arg_text(args, "resource_id")
-                if not resource_id:
-                    raise SchemaMismatch(
-                        f"personal.update {operation} requires resource_id"
-                    )
-                expected_version = args.get("expected_version")
-                if not isinstance(expected_version, int) or expected_version < 1:
-                    raise SchemaMismatch(
-                        "personal.update requires positive expected_version for mutation"
-                    )
-                target_status = {
-                    "update": "",
-                    "complete": "completed",
-                    "delete": "deleted",
-                }[operation]
-                item = store.update(
-                    resource_id,
-                    owner_scopes=owner_scopes,
-                    patch=data if operation == "update" else {},
-                    expected_version=expected_version,
-                    status=target_status,
-                )
-                transition = {
-                    "update": "updated",
-                    "complete": "completed",
-                    "delete": "deleted",
-                }[operation]
+            item, transition = update_handlers[operation == "create"]()
         except PersonalResourceConflict as exc:
             raise Conflict(str(exc)) from exc
         except KeyError as exc:

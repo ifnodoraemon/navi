@@ -48,14 +48,17 @@ class DeterministicChecker:
             for result in failed_required
         )
         accepted = not failed_required
-        if accepted:
-            state_hint: LoopTerminalState | str = LoopTerminalState.CONVERGED
-        elif timed_out:
-            state_hint = LoopTerminalState.TIMED_OUT
-        elif blocked:
-            state_hint = LoopTerminalState.BLOCKED
-        else:
-            state_hint = ""
+        state_hints: dict[tuple[bool, bool, bool], LoopTerminalState | str] = {
+            (True, False, False): LoopTerminalState.CONVERGED,
+            (True, True, False): LoopTerminalState.CONVERGED,
+            (True, False, True): LoopTerminalState.CONVERGED,
+            (True, True, True): LoopTerminalState.CONVERGED,
+            (False, True, False): LoopTerminalState.TIMED_OUT,
+            (False, True, True): LoopTerminalState.TIMED_OUT,
+            (False, False, True): LoopTerminalState.BLOCKED,
+            (False, False, False): "",
+        }
+        state_hint = state_hints[(accepted, timed_out, blocked)]
         return CheckerReport(
             accepted=accepted,
             blocked=blocked,
@@ -112,10 +115,8 @@ def _evaluate_command_step(step: VerificationStep, *, key: str, facts: dict[str,
 
 
 def _evaluate_boolean_step(step: VerificationStep, *, key: str, facts: dict[str, Any]) -> LoopCheckResult:
-    if "passed" in facts:
-        passed = bool(facts.get("passed"))
-    else:
-        passed = bool(facts.get("ok"))
+    target_key = {True: "passed", False: "ok"}["passed" in facts]
+    passed = bool(facts.get(target_key))
     reason = "fact_passed" if passed else "fact_failed"
     if step.kind == VerificationKind.LLM_CHECKER and not passed:
         reason = "semantic_check_failed"

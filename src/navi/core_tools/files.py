@@ -52,13 +52,12 @@ def _file_write(args: dict[str, Any], *, project_dir: Path, home: Path | None = 
         return ToolResult(tool="file.write", ok=False, error="path is a directory")
     parent = path.parent
     if not shadow_run_id and not parent.exists():
-        if bool(args.get("create_dirs")):
-            try:
-                parent.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                return ToolResult(tool="file.write", ok=False, error=str(exc))
-        else:
+        if not bool(args.get("create_dirs")):
             return ToolResult(tool="file.write", ok=False, error="parent directory does not exist")
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return ToolResult(tool="file.write", ok=False, error=str(exc))
     # Snapshot before a high-risk overwrite so the engine can backtrack.
     # Appends are additive and low-risk, so they skip the snapshot to avoid
     # stash churn.
@@ -75,7 +74,7 @@ def _file_write(args: dict[str, Any], *, project_dir: Path, home: Path | None = 
     if shadow_run_id:
         if harness is None:
             return ToolResult(tool="file.write", ok=False, error="shadow writes require home")
-        shadow = harness.get_shadow_workspace(shadow_run_id)
+        shadow = harness.getshadow_workspace(shadow_run_id) if hasattr(harness, "getshadow_workspace") else harness.get_shadow_workspace(shadow_run_id)
         if shadow is None or shadow.status != "active":
             return ToolResult(tool="file.write", ok=False, error="active shadow workspace not found")
         rel_path = _lock_resource(path, project_dir=project_dir)
@@ -83,13 +82,12 @@ def _file_write(args: dict[str, Any], *, project_dir: Path, home: Path | None = 
         shadow_path = str(target_path)
         parent = target_path.parent
         if not parent.exists():
-            if bool(args.get("create_dirs")):
-                try:
-                    parent.mkdir(parents=True, exist_ok=True)
-                except OSError as exc:
-                    return ToolResult(tool="file.write", ok=False, error=str(exc))
-            else:
+            if not bool(args.get("create_dirs")):
                 return ToolResult(tool="file.write", ok=False, error="parent directory does not exist")
+            try:
+                parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                return ToolResult(tool="file.write", ok=False, error=str(exc))
         if target_path.exists() and target_path.is_dir():
             return ToolResult(tool="file.write", ok=False, error="path is a directory")
     if harness is not None:
@@ -115,11 +113,11 @@ def _file_write(args: dict[str, Any], *, project_dir: Path, home: Path | None = 
     try:
         try:
             before_size = target_path.stat().st_size if target_path.exists() else 0
-            if mode == "append":
-                with target_path.open("a", encoding="utf-8") as handle:
-                    handle.write(content)
-            else:
-                target_path.write_text(content, encoding="utf-8")
+            write_handlers = {
+                "append": lambda: target_path.open("a", encoding="utf-8").write(content),
+                "overwrite": lambda: target_path.write_text(content, encoding="utf-8"),
+            }
+            write_handlers[mode]()
             after_size = target_path.stat().st_size
         except OSError as exc:
             return ToolResult(tool="file.write", ok=False, error=str(exc))

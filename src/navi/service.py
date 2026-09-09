@@ -182,20 +182,28 @@ def _systemd_path(value: str) -> str:
     """
     if any(character in value for character in ("\0", "\n", "\r")):
         raise ValueError("systemd unit values must be single-line text")
+    return _escape_systemd_argument(value)
+
+
+def _escape_systemd_argument(value: str) -> str:
     escaped: list[str] = []
+    special_escapes = {
+        "%": "%%",
+        "\\": "\\\\",
+        '"': "\\x22",
+        "'": "\\x27",
+    }
     for character in value:
-        if character == "%":
-            escaped.append("%%")
-        elif character == "\\":
-            escaped.append("\\\\")
-        elif character == '"':
-            escaped.append("\\x22")
-        elif character == "'":
-            escaped.append("\\x27")
-        elif character.isspace() or ord(character) < 32 or ord(character) == 127:
-            escaped.append(f"\\x{ord(character):02x}")
-        else:
-            escaped.append(character)
+        if character in special_escapes:
+            escaped.append(special_escapes[character])
+            continue
+        code = ord(character)
+        is_control_or_space = character.isspace() or code < 32 or code == 127
+        char_choices = {
+            True: lambda: f"\\x{code:02x}",
+            False: lambda: character,
+        }
+        escaped.append(char_choices[is_control_or_space]())
     return "".join(escaped)
 
 

@@ -81,6 +81,11 @@ EVOLUTION_TARGETS: tuple[EvolutionTarget, ...] = (
     ),
     EvolutionTarget("memory_item", "Typed durable memory item content.", "memory"),
     EvolutionTarget(
+        "memory_parameter",
+        "Dynamically tuned cognitive memory weights and thresholds.",
+        "memory",
+    ),
+    EvolutionTarget(
         "eval_case",
         "Evaluation case consumed by the evolution experiment runner.",
         "evals",
@@ -454,31 +459,23 @@ class EvolutionLedger:
     def list_proposals(
         self, *, status: str | None = None, limit: int = 100
     ) -> List[EvolutionProposal]:
+        query_specs = {
+            True: ("WHERE status = ?", (status, limit)),
+            False: ("", (limit,)),
+        }
+        where_clause, query_params = query_specs[bool(status)]
         with connect(self.db_path) as conn:
-            if status:
-                rows = conn.execute(
-                    """
-                    SELECT id, target_type, target_id, reason, expected_benefit, risk,
-                           before, after, diff, rollback_plan, required_approval_level,
-                           evidence, source_run_id, status, created_at, applied_at,
-                           applied_event_id, eval_cases, evaluation_result,
-                           evaluation_evidence, approved_by, approved_at, approval_id
-                    FROM evolution_proposals WHERE status = ? ORDER BY created_at DESC LIMIT ?
-                    """,
-                    (status, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT id, target_type, target_id, reason, expected_benefit, risk,
-                           before, after, diff, rollback_plan, required_approval_level,
-                           evidence, source_run_id, status, created_at, applied_at,
-                           applied_event_id, eval_cases, evaluation_result,
-                           evaluation_evidence, approved_by, approved_at, approval_id
-                    FROM evolution_proposals ORDER BY created_at DESC LIMIT ?
-                    """,
-                    (limit,),
-                ).fetchall()
+            rows = conn.execute(
+                f"""
+                SELECT id, target_type, target_id, reason, expected_benefit, risk,
+                       before, after, diff, rollback_plan, required_approval_level,
+                       evidence, source_run_id, status, created_at, applied_at,
+                       applied_event_id, eval_cases, evaluation_result,
+                       evaluation_evidence, approved_by, approved_at, approval_id
+                FROM evolution_proposals {where_clause} ORDER BY created_at DESC LIMIT ?
+                """,
+                query_params,
+            ).fetchall()
         return [EvolutionProposal(*row) for row in rows]
 
     def get_proposal(self, proposal_id: str) -> EvolutionProposal | None:

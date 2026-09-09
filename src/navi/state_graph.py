@@ -1174,6 +1174,7 @@ def _record_planner_memory_activation(
     state: LoopRunState,
     selected_tool: str,
     used_memory_ids: tuple[str, ...],
+    query: str | None = None,
 ) -> dict[str, Any]:
     facts: dict[str, Any] = {
         "policy": "planner_memory_activation_v1",
@@ -1194,11 +1195,10 @@ def _record_planner_memory_activation(
                 item_id,
                 reason=reason,
                 provenance=provenance,
+                query=query,
             )
-            if item is None:
-                facts["missing_ids"].append(item_id)
-            else:
-                facts["activated_ids"].append(item_id)
+            target_bucket = {True: "missing_ids", False: "activated_ids"}[item is None]
+            facts[target_bucket].append(item_id)
     except ValueError as exc:
         facts["ok"] = False
         facts["error"] = str(exc)
@@ -1278,29 +1278,32 @@ class ModelCapabilityPlannerPort:
         conversation_facts: dict[str, Any] = {}
         if session_id:
             include_conversation, conversation_reason = _conversation_context_policy(spec)
-            if include_conversation:
-                conversation = _bounded_conversation_context(
+            conversation_builder = {
+                True: lambda: _bounded_conversation_context(
                     session_id=session_id,
                     messages=self.runtime.memory.get_messages(
                         session_id,
                         limit=PLANNER_CONTEXT_MESSAGE_LIMIT,
                     ),
                     consumer="planner",
-                )
-                conversation_context = conversation.text
-                conversation_facts = {
-                    **conversation.facts,
+                ),
+                False: lambda: None,
+            }[bool(include_conversation)]()
+            conversation_context = getattr(conversation_builder, "text", "") or ""
+            conversation_facts = {
+                True: {
+                    **getattr(conversation_builder, "facts", {}),
                     "included": True,
                     "reason": conversation_reason,
-                }
-            else:
-                conversation_facts = {
+                },
+                False: {
                     "session_id": session_id,
                     "included": False,
                     "reason": conversation_reason,
                     "policy": "bounded_conversation_context_v1",
                     "consumer": "planner",
-                }
+                },
+            }[conversation_builder is not None]
         memory_context = _planner_memory_context(memory=self.runtime.memory, spec=spec)
 
         syscalls = await self.planner.plan(
@@ -1335,6 +1338,7 @@ class ModelCapabilityPlannerPort:
             state=state,
             selected_tool=selected.tool,
             used_memory_ids=used_memory_ids,
+            query=spec.goal.objective,
         )
         return PlannedCapabilityStep(
             tool=selected.tool,
@@ -1377,12 +1381,12 @@ class CapabilityExecutorPort:
         context_allowed = (
             set(self.context.allowed_tools) if self.context.allowed_tools is not None else None
         )
-        if "*" in spec_allowed:
-            effective_allowed = context_allowed
-        elif context_allowed is None:
-            effective_allowed = spec_allowed
-        else:
-            effective_allowed = spec_allowed & context_allowed
+        effective_allowed = {
+            (True, True): None,
+            (True, False): context_allowed,
+            (False, True): spec_allowed,
+            (False, False): spec_allowed & (context_allowed or set()),
+        }[("*" in spec_allowed, context_allowed is None)]
         registry = CapabilityRegistry(
             home=self.home,
             project_dir=workspace,
@@ -1816,18 +1820,32 @@ class DurableStateGraphRunner:
             # ``ask`` explicitly yields control, so it is safe to surface before
             # evaluation. A terminal chat response is only a candidate until the
             # checker accepts it; rejected text must never cross the reply boundary.
-            if executed.action == "ask" and executed.message:
-                collected_evidence["responded_message"] = executed.message
-                collected_evidence["responded_action"] = executed.action
-            else:
-                collected_evidence.pop("responded_message", None)
-                collected_evidence.pop("responded_action", None)
-            if executed.action == "chat" and executed.message:
-                collected_evidence["candidate_response"] = executed.message
-                collected_evidence["candidate_response_action"] = executed.action
-            else:
-                collected_evidence.pop("candidate_response", None)
-                collected_evidence.pop("candidate_response_action", None)
+            has_ask = bool(executed.action == "ask" and executed.message)
+            evidence_ask_handlers = {
+                True: lambda: collected_evidence.update(
+                    {"responded_message": executed.message, "responded_action": executed.action}
+                ),
+                False: lambda: (
+                    collected_evidence.pop("responded_message", None),
+                    collected_evidence.pop("responded_action", None),
+                ),
+            }
+            evidence_ask_handlers[has_ask]()
+
+            has_chat = bool(executed.action == "chat" and executed.message)
+            evidence_chat_handlers = {
+                True: lambda: collected_evidence.update(
+                    {
+                        "candidate_response": executed.message,
+                        "candidate_response_action": executed.action,
+                    }
+                ),
+                False: lambda: (
+                    collected_evidence.pop("candidate_response", None),
+                    collected_evidence.pop("candidate_response_action", None),
+                ),
+            }
+            evidence_chat_handlers[has_chat]()
             attempt_history.append(
                 {
                     "attempt": state.attempt,
@@ -1881,32 +1899,24 @@ class DurableStateGraphRunner:
                         evidence=collected_evidence,
                     )
             if executed.yields_control:
-                if executed.action in {"ask", "connector_outbound"}:
+                pause_transitions = [
+                    (LoopNode.PAUSE, "resource_pause", ""),
+                    (LoopNode.PAUSE, "resource_or_user_pause", LoopTerminalState.PAUSED),
+                ]
+                escalate_transitions = [
+                    (LoopNode.ESCALATE, "approval_required", ""),
+                    (LoopNode.ESCALATE, "approval_required", LoopTerminalState.WAITING_APPROVAL),
+                ]
+                yield_transitions = {
+                    True: pause_transitions,
+                    False: escalate_transitions,
+                }[executed.action in {"ask", "connector_outbound"}]
+                for node, condition, terminal_state in yield_transitions:
                     state = self._transition(
                         state,
-                        node=LoopNode.PAUSE,
-                        condition="resource_pause",
-                        evidence=execution_evidence,
-                    )
-                    state = self._transition(
-                        state,
-                        node=LoopNode.PAUSE,
-                        condition="resource_or_user_pause",
-                        terminal_state=LoopTerminalState.PAUSED,
-                        evidence=execution_evidence,
-                    )
-                else:
-                    state = self._transition(
-                        state,
-                        node=LoopNode.ESCALATE,
-                        condition="approval_required",
-                        evidence=execution_evidence,
-                    )
-                    state = self._transition(
-                        state,
-                        node=LoopNode.ESCALATE,
-                        condition="approval_required",
-                        terminal_state=LoopTerminalState.WAITING_APPROVAL,
+                        node=node,
+                        condition=condition,
+                        terminal_state=terminal_state,
                         evidence=execution_evidence,
                     )
                 self.gateway.release(grant_id=grant.grant_id)
@@ -1925,34 +1935,24 @@ class DurableStateGraphRunner:
                 )
                 decision = self.recovery_port.recover(spec, state, executed=executed)
                 collected_evidence["reflection"] = decision.to_dict()
-                if decision.replan_allowed:
-                    state = self._transition(
-                        state,
-                        node=LoopNode.PLAN,
-                        condition="new_route_available",
-                        evidence=decision.to_dict(),
-                    )
-                    self.gateway.release(grant_id=grant.grant_id)
-                    return StateGraphRunResult(
-                        run_state=state,
-                        resource_grants=tuple(grants),
-                        harness_results=tuple(harness_results),
-                        evidence=collected_evidence,
-                    )
-                else:
-                    state = self._transition(
-                        state,
-                        node=LoopNode.REFLECT,
-                        condition="no_route_available",
-                        terminal_state=LoopTerminalState.BLOCKED,
-                        evidence=decision.to_dict(),
-                    )
-                    self.gateway.release(grant_id=grant.grant_id)
-                    return StateGraphRunResult(
-                        run_state=state,
-                        resource_grants=tuple(grants),
-                        evidence=collected_evidence,
-                    )
+                target_node, target_condition, target_terminal = {
+                    True: (LoopNode.PLAN, "new_route_available", ""),
+                    False: (LoopNode.REFLECT, "no_route_available", LoopTerminalState.BLOCKED),
+                }[bool(decision.replan_allowed)]
+                state = self._transition(
+                    state,
+                    node=target_node,
+                    condition=target_condition,
+                    terminal_state=target_terminal,
+                    evidence=decision.to_dict(),
+                )
+                self.gateway.release(grant_id=grant.grant_id)
+                return StateGraphRunResult(
+                    run_state=state,
+                    resource_grants=tuple(grants),
+                    harness_results=tuple(harness_results),
+                    evidence=collected_evidence,
+                )
             state = self._transition(
                 state,
                 node=LoopNode.EVALUATE,
@@ -2332,7 +2332,14 @@ class DurableStateGraphRunner:
                     "facts": {},
                 },
             )
-        elif checker_report.timed_out:
+            return StateGraphRunResult(
+                run_state=state,
+                checker_report=checker_report,
+                resource_grants=tuple(grants),
+                harness_results=tuple(harness_results),
+                evidence=collected_evidence,
+            )
+        if checker_report.timed_out:
             self._compensate_side_effects(state, collected_evidence)
             self._discard_shadow_if_needed(spec, state.run_id, shadow_workspace)
             state = self._transition(
@@ -2342,25 +2349,22 @@ class DurableStateGraphRunner:
                 terminal_state=LoopTerminalState.TIMED_OUT,
                 evidence=checker_report.to_dict(),
             )
-        elif checker_report.blocked:
-            state = self._reflect_state(
-                spec,
-                state,
+            return StateGraphRunResult(
+                run_state=state,
                 checker_report=checker_report,
-                shadow_workspace=shadow_workspace,
-                collected_evidence=collected_evidence,
-                harness_results=harness_results,
-            )
-        else:
-            state = self._reflect_state(
-                spec,
-                state,
-                checker_report=checker_report,
-                shadow_workspace=shadow_workspace,
-                collected_evidence=collected_evidence,
-                harness_results=harness_results,
+                resource_grants=tuple(grants),
+                harness_results=tuple(harness_results),
+                evidence=collected_evidence,
             )
 
+        state = self._reflect_state(
+            spec,
+            state,
+            checker_report=checker_report,
+            shadow_workspace=shadow_workspace,
+            collected_evidence=collected_evidence,
+            harness_results=harness_results,
+        )
         return StateGraphRunResult(
             run_state=state,
             checker_report=checker_report,
@@ -3598,10 +3602,8 @@ def _split_task_records(
         if not isinstance(item, dict):
             continue
         copied = dict(item)
-        if _record_matches_task_lineage(copied, lineage_ids):
-            matching.append(copied)
-        else:
-            ambient.append(copied)
+        target = {True: matching, False: ambient}[_record_matches_task_lineage(copied, lineage_ids)]
+        target.append(copied)
     return matching, ambient
 
 
@@ -3644,10 +3646,8 @@ def _split_task_run_records(
         if not isinstance(item, dict):
             continue
         copied = dict(item)
-        if _record_matches_task_run(copied, run_ids):
-            matching.append(copied)
-        else:
-            ambient.append(copied)
+        target = {True: matching, False: ambient}[_record_matches_task_run(copied, run_ids)]
+        target.append(copied)
     return matching, ambient
 
 
@@ -3662,12 +3662,10 @@ def _append_ambient_records(
 ) -> None:
     if not records:
         return
-    records = records[:PLANNER_AMBIENT_RECORD_LIMIT]
+    trimmed = records[:PLANNER_AMBIENT_RECORD_LIMIT]
     existing = container.get(key)
-    if isinstance(existing, list):
-        container[key] = [*existing, *records][:PLANNER_AMBIENT_RECORD_LIMIT]
-    else:
-        container[key] = records
+    base = {True: existing, False: []}[isinstance(existing, list)]
+    container[key] = [*base, *trimmed][:PLANNER_AMBIENT_RECORD_LIMIT]
 
 
 def _ambient_goal_outcome(record: dict[str, Any]) -> dict[str, Any]:
@@ -3817,10 +3815,11 @@ def _planner_verification_failure_text(evidence: dict[str, Any]) -> str:
     attempt = recovery.get("attempt")
     blocked = bool(checker_report.get("blocked"))
     lines: list[str] = []
-    if attempt:
-        lines.append(f"Attempt {attempt} was rejected by the verification checker.")
-    else:
-        lines.append("The previous attempt was rejected by the verification checker.")
+    rejection_prefix = {
+        True: f"Attempt {attempt} was rejected by the verification checker.",
+        False: "The previous attempt was rejected by the verification checker.",
+    }[bool(attempt)]
+    lines.append(rejection_prefix)
     lines.append(
         "Do not repeat the same capability and arguments that produced this "
         "failure; the same route will be rejected again."

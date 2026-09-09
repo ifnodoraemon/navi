@@ -148,14 +148,10 @@ class ConnectorIngressRuntime:
         async def on_user_intent(event: NaviEvent) -> None:
             assert isinstance(event, UserIntentEvent)
             result = await self._handle_with_heartbeat(event)
-            if result:
-                text = result.surfaced_text()
-                action = result.action
-                facts = result.facts or {}
-            else:
-                text = ""
-                action = "chat"
-                facts = {}
+            text, action, facts = {
+                True: lambda: (result.surfaced_text(), result.action, result.facts or {}),
+                False: lambda: ("", "chat", {}),
+            }[result is not None]()
 
             await self.event_bus.send_response(
                 ResponseReadyEvent(

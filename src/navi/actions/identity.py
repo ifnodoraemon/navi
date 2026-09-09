@@ -80,14 +80,11 @@ class IdentityLinkCapability(BaseCapability):
                     "reason": _arg_text(args, "reason"),
                 }
                 return _fact_result("identity", facts, run_id=request.request_id)
-            if operation == "confirm":
-                linked = store.confirm_link(
-                    source=context.source,
-                    peer_id=context.peer_id,
-                    sender_id=context.sender_id,
-                    verification_code=_arg_text(args, "verification_code"),
+            if operation not in {"request", "confirm", "unlink"}:
+                raise SchemaMismatch(
+                    "identity.link operation must be request, confirm, or unlink"
                 )
-            elif operation == "unlink":
+            if operation == "unlink":
                 removed = store.unlink_current(
                     source=context.source,
                     peer_id=context.peer_id,
@@ -99,10 +96,12 @@ class IdentityLinkCapability(BaseCapability):
                     "reason": _arg_text(args, "reason"),
                 }
                 return _fact_result("identity", facts)
-            else:
-                raise SchemaMismatch(
-                    "identity.link operation must be request, confirm, or unlink"
-                )
+            linked = store.confirm_link(
+                source=context.source,
+                peer_id=context.peer_id,
+                sender_id=context.sender_id,
+                verification_code=_arg_text(args, "verification_code"),
+            )
         except ValueError as exc:
             if "different people" in str(exc):
                 raise Conflict(str(exc)) from exc

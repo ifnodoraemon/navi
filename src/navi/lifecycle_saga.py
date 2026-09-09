@@ -135,10 +135,11 @@ class LifecycleSagaStore:
         from .loop_runs import LoopRunStore
 
         store = LoopRunStore(self.home)
-        if kind == "external_wait_cancel":
-            store.cancel_external_wait(loop_run_id, evidence=evidence)
-        else:
-            store.pause_external_wait(loop_run_id, evidence=evidence)
+        transition_actions = {
+            "external_wait_cancel": store.cancel_external_wait,
+            "external_wait_pause": store.pause_external_wait,
+        }
+        transition_actions[kind](loop_run_id, evidence=evidence)
 
     def recover_pending(self, *, limit: int = 100) -> list[str]:
         with connect(self.db_path) as conn:

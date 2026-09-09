@@ -33,10 +33,11 @@ class IntentAgent:
 
     async def _on_turn_completed(self, event: NaviEvent) -> None:
         assert isinstance(event, AgentTurnCompletedEvent)
-        if event.action == CONVERSATION_ACTION_ASK:
-            self._pending_asks[event.session_id] = True
-        else:
-            self._pending_asks.pop(event.session_id, None)
+        action_handlers = {
+            True: lambda: self._pending_asks.__setitem__(event.session_id, True),
+            False: lambda: self._pending_asks.pop(event.session_id, None),
+        }
+        action_handlers[event.action == CONVERSATION_ACTION_ASK]()
 
     async def _on_message_ingress(self, event: NaviEvent) -> None:
         assert isinstance(event, MessageIngressEvent)
