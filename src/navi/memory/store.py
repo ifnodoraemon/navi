@@ -509,11 +509,9 @@ class MemoryStore:
         metadata["activation_provenance"] = provenance
         # Long-Term Potentiation (LTP): provisional (proposed) memories explicitly
         # activated by a planner or tool are confirmed and promoted to active status.
-        new_status = current.status
-        new_confidence = current.confidence
-        if current.status == "proposed":
-            new_status = "active"
-            new_confidence = min(1.0, current.confidence + 0.05)
+        is_proposed = float(current.status == "proposed")
+        new_status = {"proposed": "active"}.get(current.status, current.status)
+        new_confidence = min(1.0, current.confidence + 0.05 * is_proposed)
 
         self._assert_memory_write_allowed(
             memory_type=current.type,
@@ -902,83 +900,66 @@ class MemoryStore:
                     if seed_node is None:
                         continue
                     graph_node_id = str(seed_node[0])
-                    rows = conn.execute(
+                    # 1-hop direct memory item connections
+                    direct_rows = conn.execute(
                         """
-                        SELECT relation, source_id, target_id
-                        FROM graph_edges
-                        WHERE source_id = ? OR target_id = ?
-                        ORDER BY updated_at DESC
+                        SELECT g.name, e.relation,
+                               CASE WHEN e.source_id = ? THEN 'out' ELSE 'in' END
+                        FROM graph_edges e
+                        JOIN graph_nodes g ON (
+                            (e.source_id = ? AND e.target_id = g.id)
+                            OR (e.target_id = ? AND e.source_id = g.id)
+                        )
+                        WHERE g.type = 'MemoryItem' AND g.name != ?
+                        ORDER BY e.updated_at DESC
+                        LIMIT ?
+                        """,
+                        (graph_node_id, graph_node_id, graph_node_id, seed_id, limit),
+                    ).fetchall()
+                    for other_memory_id, relation, direction in direct_rows:
+                        reason = f"semantic_graph_neighbor={direction}:{relation}:{seed_id}"
+                        reasons = neighbors.setdefault(str(other_memory_id), [])
+                        if reason not in reasons:
+                            reasons.append(reason)
+
+                    # 2-hop spreading activation through intermediate hubs (e.g. actor scope)
+                    hub_rows = conn.execute(
+                        """
+                        SELECT h.id, h.type, h.name,
+                               (SELECT count(*) FROM graph_edges WHERE source_id = h.id OR target_id = h.id) AS hub_degree
+                        FROM graph_edges e
+                        JOIN graph_nodes h ON (
+                            (e.source_id = ? AND e.target_id = h.id)
+                            OR (e.target_id = ? AND e.source_id = h.id)
+                        )
+                        WHERE h.type != 'MemoryItem'
+                        ORDER BY e.updated_at DESC
                         LIMIT ?
                         """,
                         (graph_node_id, graph_node_id, limit),
                     ).fetchall()
-                    for relation, source_id, target_id in rows:
-                        other_graph_id = target_id if source_id == graph_node_id else source_id
-                        other = conn.execute(
+                    for hub_id, hub_type, hub_name, hub_degree in hub_rows:
+                        if hub_degree > limit * 3:
+                            continue
+                        second_hop_rows = conn.execute(
                             """
-                            SELECT name FROM graph_nodes
-                            WHERE id = ? AND type = 'MemoryItem'
-                            """,
-                            (other_graph_id,),
-                        ).fetchone()
-                        if other is not None:
-                            other_memory_id = str(other[0])
-                            if other_memory_id == seed_id:
-                                continue
-                            direction = "out" if source_id == graph_node_id else "in"
-                            reason = (
-                                f"semantic_graph_neighbor={direction}:"
-                                f"{relation}:{seed_id}"
+                            SELECT g.name
+                            FROM graph_edges e
+                            JOIN graph_nodes g ON (
+                                (e.source_id = g.id AND e.target_id = ?)
+                                OR (e.target_id = g.id AND e.source_id = ?)
                             )
-                            reasons = neighbors.setdefault(other_memory_id, [])
-                            if reason not in reasons:
-                                reasons.append(reason)
-                        else:
-                            # 2-hop spreading activation through intermediate hubs (e.g. actor scope)
-                            hub_node = conn.execute(
-                                """
-                                SELECT type, name FROM graph_nodes
-                                WHERE id = ?
-                                """,
-                                (other_graph_id,),
-                            ).fetchone()
-                            if hub_node is None:
-                                continue
-                            hub_type, hub_name = str(hub_node[0]), str(hub_node[1])
-                            # Fan-out attenuation (ACT-R spreading activation dynamics):
-                            # Dense hubs diffuse activation thinly across too many targets.
-                            # Focused semantic hubs with low degree preserve high activation,
-                            # without hardcoding specific types or strings.
-                            hub_degree = conn.execute(
-                                """
-                                SELECT count(*) FROM graph_edges
-                                WHERE source_id = ? OR target_id = ?
-                                """,
-                                (other_graph_id, other_graph_id),
-                            ).fetchone()[0]
-                            if hub_degree > limit * 3:
-                                continue
-                            second_hop_rows = conn.execute(
-                                """
-                                SELECT g.name
-                                FROM graph_edges e
-                                JOIN graph_nodes g ON (
-                                    (e.source_id = g.id AND e.target_id = ?)
-                                    OR (e.target_id = g.id AND e.source_id = ?)
-                                )
-                                WHERE g.type = 'MemoryItem' AND g.name != ?
-                                ORDER BY e.updated_at DESC
-                                LIMIT ?
-                                """,
-                                (other_graph_id, other_graph_id, seed_id, max(1, limit // 2)),
-                            ).fetchall()
-                            for (second_memory_id,) in second_hop_rows:
-                                spreading_reason = (
-                                    f"semantic_graph_spreading={hub_type}:{hub_name}:{seed_id}"
-                                )
-                                reasons = neighbors.setdefault(str(second_memory_id), [])
-                                if spreading_reason not in reasons:
-                                    reasons.append(spreading_reason)
+                            WHERE g.type = 'MemoryItem' AND g.name != ?
+                            ORDER BY e.updated_at DESC
+                            LIMIT ?
+                            """,
+                            (hub_id, hub_id, seed_id, max(1, limit // 2)),
+                        ).fetchall()
+                        for (second_memory_id,) in second_hop_rows:
+                            spreading_reason = f"semantic_graph_spreading={hub_type}:{hub_name}:{seed_id}"
+                            reasons = neighbors.setdefault(str(second_memory_id), [])
+                            if spreading_reason not in reasons:
+                                reasons.append(spreading_reason)
         except Exception:
             logger.exception("semantic graph neighbor recall failed")
             raise
@@ -1735,11 +1716,10 @@ class MemoryStore:
         if not related:
             return recall
         reasons = list(recall.reasons)
-        unresolved = [conflict for conflict in related if conflict.status == "unresolved"]
-        if unresolved:
-            reasons.append(f"unresolved_memory_conflicts={len(unresolved)}")
-        else:
-            reasons.append(f"declared_memory_conflicts={len(related)}")
+        unresolved = [c for c in related if c.status == "unresolved"]
+        conflict_type = ("unresolved" * bool(unresolved)) or "declared"
+        conflict_count = len(unresolved) or len(related)
+        reasons.append(f"{conflict_type}_memory_conflicts={conflict_count}")
         return MemoryRecall(
             item=recall.item, score=recall.score, reasons=reasons, conflicts=related
         )
@@ -1773,15 +1753,13 @@ def _metadata_int(metadata: dict, key: str) -> int:
 
 def _text_features(text: str) -> set[str]:
     normalized = text.strip().lower()
-    words = {w for w in re.findall(r"[a-z0-9_]+", normalized) if len(w) >= 2}
+    words = set(re.findall(r"[a-z0-9_]{2,}", normalized))
     chunks = re.findall(r"[\u4e00-\u9fff]+", normalized)
-    cjk_grams: set[str] = set()
-    for chunk in chunks:
-        if len(chunk) == 1:
-            cjk_grams.add(chunk)
-        else:
-            for i in range(len(chunk) - 1):
-                cjk_grams.add(chunk[i : i + 2])
+    cjk_grams = {
+        chunk[i : i + 2]
+        for chunk in chunks
+        for i in range(max(1, len(chunk) - 1))
+    }
     return words | cjk_grams
 
 
