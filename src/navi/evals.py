@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import subprocess
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -14,9 +16,11 @@ from .app_factory import build_runtime
 from .connector_registry import get_connector_adapter
 from .control_plane import TurnController
 from .goals import GoalStore
+from .json_utils import json_object
 from .provider import ModelPool
 from .runtime import AgentRuntime
 from .runs import RunStore
+from .trace import TraceStore
 
 
 _CURRENT_EVAL_ACTIONS = {"approval", "ask", "chat", "connector_outbound", "goal", "tool"}
@@ -356,6 +360,125 @@ def _work_runs(runs: RunStore) -> list[Any]:
     return [r for r in runs.list(limit=500) if getattr(r, "kind", "") != "loop:turn"]
 
 
+def _file_sha256(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+
+def _as_string_list(val: Any) -> list[str]:
+    if isinstance(val, list):
+        return [str(item).strip() for item in val if str(item).strip()]
+    if isinstance(val, str) and val.strip():
+        return [val.strip()]
+    return []
+
+
+def _verify_process_integrity(
+    prefix: str,
+    expect: dict[str, Any],
+    *,
+    project_dir: Path,
+    home: Path,
+    trace_id: str,
+    pre_hashes: dict[str, str],
+) -> list[str]:
+    errors: list[str] = []
+
+    # 1. Test Immutability Gate: verify test code was NOT tampered with / cheated
+    for test_rel in _as_string_list(expect.get("test_immutability")):
+        post_hash = _file_sha256(project_dir / test_rel)
+        pre_hash = pre_hashes.get(test_rel, "")
+        if post_hash != pre_hash:
+            errors.append(
+                f"{prefix}: CHEATED: test file tampering detected ({test_rel} was modified)"
+            )
+
+    # 2. Physical Mutation Check: verify business code was actually changed
+    for req_rel in _as_string_list(expect.get("require_file_mutations")):
+        post_hash = _file_sha256(project_dir / req_rel)
+        pre_hash = pre_hashes.get(req_rel, "")
+        if post_hash == pre_hash:
+            errors.append(
+                f"{prefix}: SHORTCUT: expected physical mutation on {req_rel} but file was unchanged"
+            )
+
+    # 3. Clean Harness Runner: execute independent verification in clean environment
+    clean_runner = expect.get("clean_test_runner")
+    if isinstance(clean_runner, dict):
+        cmd = str(clean_runner.get("command") or "").strip()
+        expected_code = int(clean_runner.get("expected_exit_code", 0))
+        timeout = float(clean_runner.get("timeout_seconds", 30.0))
+        if cmd:
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    shell=True,
+                    cwd=str(project_dir),
+                    capture_output=True,
+                    timeout=timeout,
+                    text=True,
+                )
+                if proc.returncode != expected_code:
+                    output_snip = (proc.stderr or proc.stdout or "").strip()[:300]
+                    errors.append(
+                        f"{prefix}: CLEAN_TEST_FAILED: exit code {proc.returncode} != {expected_code}. "
+                        f"Output: {output_snip}"
+                    )
+            except subprocess.TimeoutExpired:
+                errors.append(f"{prefix}: CLEAN_TEST_TIMEOUT: verification timed out after {timeout}s")
+            except Exception as exc:
+                errors.append(f"{prefix}: CLEAN_TEST_ERROR: verification command failed: {exc}")
+
+    # 4. Trajectory Tool Invariants: verify required tools actually executed
+    trace_events: list[Any] = []
+    if home.exists():
+        try:
+            ts = TraceStore(home)
+            if trace_id:
+                trace_events = ts.list_events(trace_id)
+            if not trace_events:
+                for tid in ts.list_trace_ids(limit=50):
+                    trace_events.extend(ts.list_events(tid))
+        except Exception:
+            trace_events = []
+    executed_tools = {ev.tool for ev in trace_events if getattr(ev, "tool", None) and getattr(ev, "ok", False)}
+
+    for req_tool in _as_string_list(expect.get("require_tools_all")):
+        if req_tool not in executed_tools:
+            errors.append(f"{prefix}: PROCESS_MISSING_TOOL: required tool {req_tool!r} was never executed")
+
+    req_any = _as_string_list(expect.get("require_tools_any"))
+    if req_any and not any(t in executed_tools for t in req_any):
+        errors.append(f"{prefix}: PROCESS_MISSING_TOOL: none of expected tools {req_any!r} were executed")
+
+    for bad_tool in _as_string_list(expect.get("prohibit_tools")):
+        if bad_tool in executed_tools:
+            errors.append(f"{prefix}: PROHIBITED_TOOL: tool {bad_tool!r} was forbidden but executed")
+
+    # 5. Genuine Memory Activation: verify agent genuinely utilized recalled reflection memory
+    if expect.get("require_memory_activation"):
+        has_memory_activation = False
+        for ev in trace_events:
+            inp = json_object(getattr(ev, "input_json", None))
+            has_used_ids = bool(isinstance(inp, dict) and inp.get("used_memory_ids"))
+            mem_act = isinstance(inp, dict) and inp.get("memory_activation")
+            has_act_ids = bool(isinstance(mem_act, dict) and mem_act.get("activated_ids"))
+            if has_used_ids or has_act_ids:
+                has_memory_activation = True
+                break
+        if not has_memory_activation:
+            errors.append(
+                f"{prefix}: EVOLUTION_UNPROVEN: no memory activation found in trace "
+                f"(agent did not utilize recalled reflection memory)"
+            )
+
+    return errors
+
+
 async def _run_daily_journey(
     *,
     home: Path,
@@ -411,7 +534,15 @@ async def _run_daily_journey(
                 if not isinstance(step, dict):
                     errors.append(f"step[{index}]: step must be a mapping")
                     continue
+
+                # Pre-execution file fingerprints for process integrity
+                watched_files = set(_as_string_list(expect.get("test_immutability"))) | set(
+                    _as_string_list(expect.get("require_file_mutations"))
+                )
+                pre_hashes = {rel: _file_sha256(project_dir / rel) for rel in watched_files}
+
                 event: dict[str, Any] | None = None
+                turn_trace_id = ""
                 if "user" in step:
                     message = _render_journey_text(
                         str(step["user"]), runs, latest_run_id=latest_run_id
@@ -424,6 +555,7 @@ async def _run_daily_journey(
                         session_id=session_id or None,
                     )
                     session_id = turn.session_id
+                    turn_trace_id = str(turn.trace_id or "")
                     latest_run_id = turn.run_id or latest_run_id or _latest_run_id(runs)
                     event = {
                         "kind": "user",
@@ -454,6 +586,16 @@ async def _run_daily_journey(
                         latest_run_id=latest_run_id,
                         before_run_count=len(before_runs),
                         before_scheduled_goal_count=len(before_scheduled_goals),
+                    )
+                )
+                errors.extend(
+                    _verify_process_integrity(
+                        f"step[{index}]",
+                        expect,
+                        project_dir=project_dir,
+                        home=home,
+                        trace_id=turn_trace_id,
+                        pre_hashes=pre_hashes,
                     )
                 )
     finally:

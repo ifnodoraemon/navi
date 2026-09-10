@@ -1,22 +1,28 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
+from navi.trace import TraceStore
+
 from navi.evals import (
     ClawEvalResult,
     DailyJourneyResult,
+    _as_string_list,
     _claw_error_domains,
     _claw_task_to_journey,
     _eval_run_id,
+    _file_sha256,
     _latest_run_id,
     _match_daily_expectation,
     _render_journey_text,
     _safe_path_name,
     _validate_eval_steps,
+    _verify_process_integrity,
     claw_results_to_json,
     load_claw_eval_dataset,
     load_connector_journey_eval_dataset,
@@ -339,5 +345,233 @@ async def test_run_eval_datasets(tmp_path: Path):
             timeout_seconds=5.0,
         )
         assert len(conn_results) == 1
+
+
+def test_file_sha256_and_as_string_list(tmp_path: Path):
+    assert _as_string_list(None) == []
+    assert _as_string_list("") == []
+    assert _as_string_list("single_item") == ["single_item"]
+    assert _as_string_list(["alpha", " ", "beta"]) == ["alpha", "beta"]
+    assert _as_string_list(123) == []
+
+    nonexistent = tmp_path / "does_not_exist.txt"
+    assert _file_sha256(nonexistent) == ""
+
+    test_file = tmp_path / "sample.txt"
+    test_file.write_text("hello integrity", encoding="utf-8")
+    expected_hash = hashlib.sha256(b"hello integrity").hexdigest()
+    assert _file_sha256(test_file) == expected_hash
+
+
+def test_verify_process_integrity_test_immutability(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    test_file = project_dir / "test_sample.py"
+    test_file.write_text("def test_ok(): assert True", encoding="utf-8")
+    pre_hash = _file_sha256(test_file)
+
+    # 1. Unchanged test file -> clean
+    errs = _verify_process_integrity(
+        "step[0]",
+        {"test_immutability": ["test_sample.py"]},
+        project_dir=project_dir,
+        home=tmp_path / "home",
+        trace_id="",
+        pre_hashes={"test_sample.py": pre_hash},
+    )
+    assert not errs
+
+    # 2. Tampered test file -> fails with CHEATED
+    test_file.write_text("def test_ok(): pass", encoding="utf-8")
+    errs_tampered = _verify_process_integrity(
+        "step[0]",
+        {"test_immutability": ["test_sample.py"]},
+        project_dir=project_dir,
+        home=tmp_path / "home",
+        trace_id="",
+        pre_hashes={"test_sample.py": pre_hash},
+    )
+    assert any("CHEATED: test file tampering detected" in e for e in errs_tampered)
+
+
+def test_verify_process_integrity_require_file_mutations(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    code_file = project_dir / "service.py"
+    code_file.write_text("value = 1", encoding="utf-8")
+    pre_hash = _file_sha256(code_file)
+
+    # 1. Unchanged business file -> fails with SHORTCUT
+    errs_unchanged = _verify_process_integrity(
+        "step[0]",
+        {"require_file_mutations": ["service.py"]},
+        project_dir=project_dir,
+        home=tmp_path / "home",
+        trace_id="",
+        pre_hashes={"service.py": pre_hash},
+    )
+    assert any("SHORTCUT: expected physical mutation" in e for e in errs_unchanged)
+
+    # 2. Changed business file -> passes
+    code_file.write_text("value = 2", encoding="utf-8")
+    errs_changed = _verify_process_integrity(
+        "step[0]",
+        {"require_file_mutations": ["service.py"]},
+        project_dir=project_dir,
+        home=tmp_path / "home",
+        trace_id="",
+        pre_hashes={"service.py": pre_hash},
+    )
+    assert not errs_changed
+
+
+def test_verify_process_integrity_clean_test_runner(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    # 1. Success command
+    errs_ok = _verify_process_integrity(
+        "step[0]",
+        {"clean_test_runner": {"command": "echo 'ok'", "expected_exit_code": 0}},
+        project_dir=project_dir,
+        home=tmp_path / "home",
+        trace_id="",
+        pre_hashes={},
+    )
+    assert not errs_ok
+
+    # 2. Exit code failure
+    errs_fail = _verify_process_integrity(
+        "step[0]",
+        {"clean_test_runner": {"command": "false", "expected_exit_code": 0}},
+        project_dir=project_dir,
+        home=tmp_path / "home",
+        trace_id="",
+        pre_hashes={},
+    )
+    assert any("CLEAN_TEST_FAILED" in e for e in errs_fail)
+
+    # 3. Timeout failure
+    errs_timeout = _verify_process_integrity(
+        "step[0]",
+        {"clean_test_runner": {"command": "sleep 2", "expected_exit_code": 0, "timeout_seconds": 0.1}},
+        project_dir=project_dir,
+        home=tmp_path / "home",
+        trace_id="",
+        pre_hashes={},
+    )
+    assert any("CLEAN_TEST_TIMEOUT" in e for e in errs_timeout)
+
+
+def test_verify_process_integrity_tool_invariants(tmp_path: Path):
+    home = tmp_path / "home"
+    ts = TraceStore(home)
+    trace_id = "trace-integrity-1"
+    ts.add_event(
+        trace_id=trace_id,
+        phase="test",
+        tool="file.write",
+        ok=True,
+    )
+    ts.add_event(
+        trace_id=trace_id,
+        phase="test",
+        tool="command.run",
+        ok=False,
+    )
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    # require_tools_all: file.write present, file.delete missing
+    errs_all = _verify_process_integrity(
+        "step[0]",
+        {"require_tools_all": ["file.write", "file.delete"]},
+        project_dir=project_dir,
+        home=home,
+        trace_id=trace_id,
+        pre_hashes={},
+    )
+    assert any("PROCESS_MISSING_TOOL: required tool 'file.delete'" in e for e in errs_all)
+
+    # require_tools_any: file.write is in ['file.write', 'other'] -> ok
+    errs_any_ok = _verify_process_integrity(
+        "step[0]",
+        {"require_tools_any": ["file.write", "other"]},
+        project_dir=project_dir,
+        home=home,
+        trace_id=trace_id,
+        pre_hashes={},
+    )
+    assert not errs_any_ok
+
+    # require_tools_any: none present -> error
+    errs_any_missing = _verify_process_integrity(
+        "step[0]",
+        {"require_tools_any": ["git.commit", "docker.build"]},
+        project_dir=project_dir,
+        home=home,
+        trace_id=trace_id,
+        pre_hashes={},
+    )
+    assert any("PROCESS_MISSING_TOOL: none of expected tools" in e for e in errs_any_missing)
+
+    # prohibit_tools: file.write is executed -> forbidden error
+    errs_prohibit = _verify_process_integrity(
+        "step[0]",
+        {"prohibit_tools": ["file.write"]},
+        project_dir=project_dir,
+        home=home,
+        trace_id=trace_id,
+        pre_hashes={},
+    )
+    assert any("PROHIBITED_TOOL: tool 'file.write' was forbidden" in e for e in errs_prohibit)
+
+
+def test_verify_process_integrity_memory_activation(tmp_path: Path):
+    home = tmp_path / "home"
+    ts = TraceStore(home)
+    trace_id_unproven = "trace-mem-1"
+    ts.add_event(
+        trace_id=trace_id_unproven,
+        phase="test",
+        tool="chat",
+        ok=True,
+        input_data={"content": "hello"},
+    )
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    # Without memory activation -> EVOLUTION_UNPROVEN
+    errs_unproven = _verify_process_integrity(
+        "step[0]",
+        {"require_memory_activation": True},
+        project_dir=project_dir,
+        home=home,
+        trace_id=trace_id_unproven,
+        pre_hashes={},
+    )
+    assert any("EVOLUTION_UNPROVEN" in e for e in errs_unproven)
+
+    # With memory activation -> ok
+    trace_id_proven = "trace-mem-2"
+    ts.add_event(
+        trace_id=trace_id_proven,
+        phase="test",
+        tool="chat",
+        ok=True,
+        input_data={"memory_activation": {"activated_ids": ["mem-123"]}},
+    )
+    errs_proven = _verify_process_integrity(
+        "step[0]",
+        {"require_memory_activation": True},
+        project_dir=project_dir,
+        home=home,
+        trace_id=trace_id_proven,
+        pre_hashes={},
+    )
+    assert not errs_proven
+
 
 
