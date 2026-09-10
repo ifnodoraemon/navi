@@ -41,6 +41,7 @@ from .safeguards import (
     required_permission_for_call,
     workspace_boundary_facts,
 )
+from .syscalls import normalize_syscall_args
 from .tools import API_CONTEXT, TURN_CONTEXT, ToolSpec, build_tool_gateway
 from .actions.registry import ActionCapabilityProvider  # noqa: F401
 from .actions.tools import ToolGatewayCapabilityProvider, ToolCapability
@@ -248,13 +249,7 @@ class CapabilityRegistry:
                     "required": handler.spec.permission,
                 },
             )
-        call_args = dict(args or {})
-        if (
-            "message" not in call_args
-            and "text" in call_args
-            and "message" in (handler.spec.input_schema.get("required") or [])
-        ):
-            call_args["message"] = call_args.pop("text")
+        call_args = normalize_syscall_args(name, dict(args or {}), handler.spec.input_schema)
         input_schema_errors = json_schema_errors(call_args, handler.spec.input_schema)
         if input_schema_errors:
             return _capability_error(

@@ -1231,7 +1231,8 @@ class MemoryStore:
             # Append any candidates the LLM omitted (preserving original order)
             reranked_ids = {r.item.id for r in reranked}
             for recall in candidates:
-                (recall.item.id not in reranked_ids) and reranked.append(recall)
+                if recall.item.id not in reranked_ids:
+                    reranked.append(recall)
             return reranked[:limit]
         except Exception as exc:
             logger.warning("LLM reranking failed, using original ordering: %s", exc)

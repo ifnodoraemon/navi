@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import httpx
@@ -54,6 +54,59 @@ class ModelSyscall:
         }
 
 
+def normalize_syscall_args(
+    tool_name: str, args: dict[str, Any], input_schema: dict[str, Any]
+) -> dict[str, Any]:
+    """Normalize common argument aliases produced by LLMs to canonical schema keys."""
+    normalized = dict(args)
+    required = input_schema.get("required") or []
+
+    # 1. Conversational text: message <- text
+    if "message" not in normalized and "text" in normalized and "message" in required:
+        normalized["message"] = normalized.pop("text")
+
+    # 2. File paths: path <- filepath, file_path, target_file, filename
+    if "path" not in normalized and "path" in required:
+        for alias in ("filepath", "file_path", "target_file", "filename"):
+            if alias in normalized:
+                normalized["path"] = normalized.pop(alias)
+                break
+
+    # 3. File content: content <- text, data, code, file_content, body
+    if "content" not in normalized and "content" in required:
+        for alias in ("text", "data", "code", "file_content", "body"):
+            if alias in normalized:
+                normalized["content"] = normalized.pop(alias)
+                break
+
+    # 4. Goal objective: objective <- task, goal, description
+    if "objective" not in normalized and "objective" in required:
+        for alias in ("task", "goal", "description"):
+            if alias in normalized:
+                normalized["objective"] = normalized.pop(alias)
+                break
+
+    # 5. Search query: query <- pattern, search_term, keyword
+    if "query" not in normalized and "query" in required:
+        for alias in ("pattern", "search_term", "keyword"):
+            if alias in normalized:
+                normalized["query"] = normalized.pop(alias)
+                break
+
+    # 6. Shell command: command string -> argv array; cmd -> command
+    if "command" not in normalized and "cmd" in normalized:
+        normalized["command"] = normalized.pop("cmd")
+    cmd_val = normalized.get("command")
+    if isinstance(cmd_val, str) and cmd_val.strip():
+        import shlex
+        try:
+            normalized["command"] = shlex.split(cmd_val.strip())
+        except Exception:
+            normalized["command"] = cmd_val.strip().split()
+
+    return normalized
+
+
 class ModelSyscallPlanner:
     def __init__(self, provider: ModelPool):
         self.provider = provider
@@ -98,25 +151,25 @@ class ModelSyscallPlanner:
             raise StructuredOutputError(
                 f"planner_must_return_exactly_one_syscall: count={len(syscalls)}"
             )
+        normalized_syscalls: list[ModelSyscall] = []
         for syscall in syscalls:
             matching_spec = next((spec for spec in tools if spec.name == syscall.tool), None)
+            norm_args = syscall.args
             if matching_spec:
-                if (
-                    "message" not in syscall.args
-                    and "text" in syscall.args
-                    and "message" in (matching_spec.input_schema.get("required") or [])
-                ):
-                    syscall.args["message"] = syscall.args.pop("text")
+                norm_args = normalize_syscall_args(
+                    syscall.tool, syscall.args, matching_spec.input_schema
+                )
                 if syscall.permission not in PERMISSION_ORDER:
                     raise StructuredOutputError(
                         f"planner selected an unknown permission: {syscall.permission}"
                     )
-                schema_errors = json_schema_errors(syscall.args, matching_spec.input_schema)
+                schema_errors = json_schema_errors(norm_args, matching_spec.input_schema)
                 if schema_errors:
                     raise StructuredOutputError(
                         f"planner capability arguments schema mismatch: {'; '.join(schema_errors[:5])}"
                     )
-        return syscalls
+            normalized_syscalls.append(replace(syscall, args=norm_args))
+        return normalized_syscalls
 
     @staticmethod
     def _parse_syscalls(response: str) -> list[ModelSyscall]:

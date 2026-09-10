@@ -455,13 +455,17 @@ class WeixinService:
     async def _keep_typing(
         self, peer_id: str, typing_ticket: str, stop_event: asyncio.Event
     ) -> None:
+        consecutive_errors = 0
         try:
             while not stop_event.is_set():
                 try:
                     await self._send_typing(peer_id, typing_ticket, TYPING_START)
+                    consecutive_errors = 0
                 except Exception as exc:
+                    consecutive_errors += 1
                     self._record_typing_error(peer_id, TYPING_START, exc)
-                    break
+                    if consecutive_errors >= 3:
+                        break
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=3.0)
                 except TimeoutError:
@@ -475,11 +479,12 @@ class WeixinService:
     async def _send_typing(self, peer_id: str, typing_ticket: str, status: int) -> None:
         await asyncio.wait_for(
             self.client.send_typing(peer_id=peer_id, typing_ticket=typing_ticket, status=status),
-            timeout=1.5,
+            timeout=5.0,
         )
         self.record_event("typing.sent", peer_id=peer_id, status=status)
 
     def _record_typing_error(self, peer_id: str, status: int, exc: Exception) -> None:
+        self.typing_tickets.pop(peer_id, None)
         self.record_event(
             "typing.error",
             peer_id=peer_id,
