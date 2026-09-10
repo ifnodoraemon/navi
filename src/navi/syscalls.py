@@ -93,16 +93,19 @@ def normalize_syscall_args(
                 normalized["query"] = normalized.pop(alias)
                 break
 
-    # 6. Shell command: command string -> argv array; cmd -> command
+    # 6. Shell command: command string -> argv array; cmd -> command; cap maxItems
     if "command" not in normalized and "cmd" in normalized:
         normalized["command"] = normalized.pop("cmd")
     cmd_val = normalized.get("command")
     if isinstance(cmd_val, str) and cmd_val.strip():
         import shlex
         try:
-            normalized["command"] = shlex.split(cmd_val.strip())
+            cmd_val = shlex.split(cmd_val.strip())
         except Exception:
-            normalized["command"] = cmd_val.strip().split()
+            cmd_val = cmd_val.strip().split()
+        normalized["command"] = cmd_val
+    if isinstance(cmd_val, list) and len(cmd_val) > 128:
+        normalized["command"] = cmd_val[:128]
 
     return normalized
 

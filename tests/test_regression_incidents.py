@@ -733,3 +733,55 @@ async def test_planner_normalizes_text_to_message():
     assert syscalls[0].args.get("message") == "hello from text arg"
     assert "text" not in syscalls[0].args
 
+
+@pytest.mark.asyncio
+async def test_planner_normalizes_and_bounds_shell_command_args():
+    class Provider:
+        async def complete_for(
+            self,
+            role: str,
+            messages: list[ChatMessage],
+            *,
+            output_schema: dict | None = None,
+        ) -> str:
+            del role, messages, output_schema
+            cmd = ["find", "/home"] + [f"-name{i}" for i in range(38)]
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "shell.run",
+                            "permission": "read",
+                            "args": {"command": cmd},
+                        }
+                    ]
+                }
+            )
+
+    syscalls = await ModelSyscallPlanner(Provider()).plan(
+        "search files",
+        tools=[
+            ToolSpec(
+                name="shell.run",
+                capability_class="shell",
+                execution_contexts=("turn",),
+                description="Run shell command.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": 128,
+                        }
+                    },
+                    "required": ["command"],
+                },
+                output_schema={"type": "object", "properties": {}},
+            )
+        ],
+    )
+    assert len(syscalls) == 1
+    assert len(syscalls[0].args["command"]) == 40
+
+

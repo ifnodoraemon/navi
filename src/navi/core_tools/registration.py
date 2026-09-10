@@ -652,7 +652,7 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                         "type": "array",
                         "items": {"type": "string", "minLength": 1},
                         "minItems": 1,
-                        "maxItems": 32,
+                        "maxItems": 128,
                         "description": (
                             "Executable and arguments as separate argv items. Do not pass a shell "
                             "string, pipes, redirects, command substitution, or shell operators."

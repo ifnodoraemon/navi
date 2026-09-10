@@ -20,10 +20,16 @@ def _project_path(value: Any, *, project_dir: Path) -> tuple[Path | None, str]:
 
 
 def _command_list(value: Any) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        import shlex
+        try:
+            return shlex.split(value.strip())[:128]
+        except Exception:
+            return value.strip().split()[:128]
     if not isinstance(value, list):
         return []
     command = [str(item) for item in value if isinstance(item, str) and item]
-    return command[:32]
+    return command[:128]
 
 
 def _codebase_search(args: dict[str, Any], *, project_dir: Path, home: Path) -> ToolResult:
