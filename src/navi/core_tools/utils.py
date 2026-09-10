@@ -4,7 +4,10 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlparse
 
+from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from ..tools import ToolResult
+
+_HTTP_FETCH_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("http_fetch_pinned_ip_timeout_seconds", 15.0))
 
 # Caller-supplied http.fetch headers may not override these — they control
 # request addressing/framing; overriding them enables smuggling/vhost confusion.
@@ -98,14 +101,14 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
 
     def _make_https() -> http.client.HTTPSConnection:
         context = ssl.create_default_context()
-        raw_sock = socket.create_connection((pinned_ip, port), timeout=15)
+        raw_sock = socket.create_connection((pinned_ip, port), timeout=_HTTP_FETCH_TIMEOUT_SECONDS)
         tls_sock = context.wrap_socket(raw_sock, server_hostname=host)
-        https_conn = http.client.HTTPSConnection(pinned_ip, port, timeout=15, context=context)
+        https_conn = http.client.HTTPSConnection(pinned_ip, port, timeout=_HTTP_FETCH_TIMEOUT_SECONDS, context=context)
         https_conn.sock = tls_sock
         return https_conn
 
     def _make_http() -> http.client.HTTPConnection:
-        return http.client.HTTPConnection(pinned_ip, port, timeout=15)
+        return http.client.HTTPConnection(pinned_ip, port, timeout=_HTTP_FETCH_TIMEOUT_SECONDS)
 
     conn_factories = {
         "https": _make_https,

@@ -12,6 +12,7 @@ from .capabilities import CapabilityContext, CapabilityRegistry
 from .control import CurrentStateBuilder, SurfaceContext, current_state_facts
 from .finalization import synthesize_user_reply_from_facts
 from .loop import TracePhase
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .operating_context import max_permission, normalize_permission
 from .runtime import AgentRuntime
 from .runs import RunStore
@@ -20,6 +21,9 @@ from .trace import TraceStore
 __all__ = ["AgentTurnResult", "TurnController"]
 
 logger = logging.getLogger(__name__)
+
+_EVENT_BUS_DRAIN_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("event_bus_drain_timeout_seconds", 5.0))
+_EVENT_BUS_SHUTDOWN_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("event_bus_shutdown_timeout_seconds", 5.0))
 
 
 def _as_dict(val: Any) -> dict[str, Any]:
@@ -405,7 +409,7 @@ class TurnController(TurnLifecycleMixin):
     async def shutdown(self, *, timeout: float = 10.0) -> None:
         if self.event_bus:
             try:
-                await asyncio.wait_for(self.event_bus.drain(), timeout=5.0)
+                await asyncio.wait_for(self.event_bus.drain(), timeout=_EVENT_BUS_DRAIN_TIMEOUT_SECONDS)
             except Exception as exc:
                 logger.error(
                     "Failed to drain event bus during engine shutdown: %s",
@@ -413,7 +417,7 @@ class TurnController(TurnLifecycleMixin):
                     exc_info=True,
                 )
             try:
-                await asyncio.wait_for(self.event_bus.shutdown(), timeout=5.0)
+                await asyncio.wait_for(self.event_bus.shutdown(), timeout=_EVENT_BUS_SHUTDOWN_TIMEOUT_SECONDS)
             except Exception as exc:
                 logger.error(
                     "Failed to shut down event bus during engine shutdown: %s",

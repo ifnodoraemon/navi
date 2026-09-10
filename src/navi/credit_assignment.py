@@ -302,13 +302,14 @@ class CreditAssignmentEngine:
                     )
                 )
 
-        # 3. Backprop to Dynamic Parameters
+        # 3. Backprop to Dynamic Parameters via Adam/momentum gradient
         if failure_domain == str(TraceFailureDomain.PROVIDER_NO_RESPONSE):
             current_retry = self.param_registry.get("provider_retry_after_seconds", 15.0)
-            new_retry = min(60.0, current_retry + 2.0)
-            self.param_registry.set(
+            new_retry = self.param_registry.apply_gradient(
                 "provider_retry_after_seconds",
-                new_retry,
+                gradient=2.0,
+                learning_rate=1.0,
+                bounds=(5.0, 60.0),
                 reason=f"backprop:provider_congestion from trace {trace_id}",
             )
             attributions.append(
@@ -319,8 +320,8 @@ class CreditAssignmentEngine:
                     outcome=outcome,
                     failure_domain=failure_domain,
                     reward=reward,
-                    delta_applied=new_retry - current_retry,
-                    reason=f"backoff_increased_to_{new_retry:.1f}s",
+                    delta_applied=round(new_retry - current_retry, 4),
+                    reason=f"backoff_adjusted_to_{new_retry:.1f}s",
                     now=now,
                 )
             )
@@ -448,5 +449,21 @@ class CreditAssignmentEngine:
                         now=now,
                     )
                 )
+
+        # 9. Ingest evaluated trace into Multi-Channel Experience Replay Buffer
+        try:
+            from .replay_buffer import ExperienceReplayBuffer
+
+            replay_buffer = ExperienceReplayBuffer(self.home)
+            replay_buffer.ingest_from_trace(
+                trace_id=trace_id,
+                outcome=outcome,
+                failure_domain=failure_domain,
+                events=events,
+                evidence=evidence,
+                now=now,
+            )
+        except Exception:
+            pass
 
         return attributions

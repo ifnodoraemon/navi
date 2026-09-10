@@ -164,6 +164,30 @@ SYSTEM_DYNAMIC_PARAMETERS: dict[str, float] = {
     "weixin_config_timeout_seconds": 10.0,
     "weixin_context_token_max_age_seconds": 86400.0,
     "weixin_ingress_stale_after_seconds": 180.0,
+
+    # Optimization, Momentum and EMA parameters (Adam analog)
+    "parameter_momentum_beta": 0.90,
+    "parameter_learning_rate": 0.05,
+    "parameter_ema_alpha": 0.80,
+
+    # Experience Replay Buffer parameters
+    "replay_buffer_capacity": 5000.0,
+    "replay_priority_alpha": 0.60,
+    "replay_priority_epsilon": 0.01,
+
+    # Channel, networking and diagnostics timeouts
+    "telegram_send_message_timeout_seconds": 30.0,
+    "weixin_qr_timeout_seconds": 35.0,
+    "weixin_updates_timeout_seconds": 40.0,
+    "weixin_send_timeout_seconds": 15.0,
+    "weixin_upload_timeout_seconds": 120.0,
+    "diagnostics_probe_timeout_seconds": 5.0,
+    "diagnostics_systemctl_timeout_seconds": 8.0,
+    "git_command_timeout_seconds": 8.0,
+    "git_detector_timeout_seconds": 10.0,
+    "http_fetch_pinned_ip_timeout_seconds": 15.0,
+    "event_bus_drain_timeout_seconds": 5.0,
+    "event_bus_shutdown_timeout_seconds": 5.0,
 }
 
 
@@ -228,6 +252,79 @@ class DynamicParameterRegistry:
         meta["reason"] = reason
         self._cache[name] = val
         self.provider.set_parameter(name, val, updated_at=now, metadata=meta)
+
+    def apply_gradient(
+        self,
+        name: str,
+        gradient: float,
+        *,
+        learning_rate: float | None = None,
+        beta: float | None = None,
+        bounds: tuple[float, float] | None = None,
+        reason: str = "gradient_step",
+    ) -> float:
+        """Apply a smoothed Adam/momentum gradient step to a dynamic parameter."""
+        current_val = self.get(name)
+        all_params = self.list_all()
+        meta = dict(all_params.get(name, {}).get("metadata", {}))
+
+        lr = self.get("parameter_learning_rate", 0.05)
+        if learning_rate is not None:
+            lr = float(learning_rate)
+
+        b = self.get("parameter_momentum_beta", 0.90)
+        if beta is not None:
+            b = float(beta)
+
+        old_m = float(meta.get("momentum", 0.0))
+        old_step = int(meta.get("step", 0))
+        new_step = old_step + 1
+
+        new_m = b * old_m + (1.0 - b) * gradient
+        bias_correction = 1.0 - (b ** new_step)
+        effective_m = new_m
+        if bias_correction > 0.0:
+            effective_m = new_m / bias_correction
+
+        delta = lr * effective_m
+        new_val = round(current_val + delta, 4)
+
+        if bounds is not None:
+            min_v, max_v = bounds
+            new_val = max(min_v, min(max_v, new_val))
+
+        meta["momentum"] = round(new_m, 6)
+        meta["step"] = new_step
+        meta["last_gradient"] = round(gradient, 6)
+        meta["last_delta"] = round(delta, 6)
+
+        self.set(name, new_val, reason=reason, metadata=meta)
+        return new_val
+
+    def apply_ema(
+        self,
+        name: str,
+        candidate_value: float,
+        *,
+        alpha: float | None = None,
+        bounds: tuple[float, float] | None = None,
+        reason: str = "ema_smoothing",
+    ) -> float:
+        """Update parameter via Exponential Moving Average (EMA)."""
+        current_val = self.get(name)
+        a = self.get("parameter_ema_alpha", 0.80)
+        if alpha is not None:
+            a = float(alpha)
+        smoothed = round(a * current_val + (1.0 - a) * candidate_value, 4)
+        if bounds is not None:
+            min_v, max_v = bounds
+            smoothed = max(min_v, min(max_v, smoothed))
+        all_params = self.list_all()
+        meta = dict(all_params.get(name, {}).get("metadata", {}))
+        meta["ema_source_candidate"] = candidate_value
+        meta["ema_alpha"] = a
+        self.set(name, smoothed, reason=reason, metadata=meta)
+        return smoothed
 
     def list_all(self) -> dict[str, dict[str, Any]]:
         self._sync()

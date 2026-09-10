@@ -15,10 +15,13 @@ from ..daemon_types import (
     ProjectEventContext,
     ProactiveEvent,
 )
+from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from ..process_sandbox import bubblewrap_command, sandbox_environment
 from ..text_utils import truncate_middle
 
 logger = logging.getLogger("navi.daemon")
+
+_GIT_DETECTOR_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("git_detector_timeout_seconds", 10.0))
 
 
 class GitMutationDetector:
@@ -61,7 +64,7 @@ class GitMutationDetector:
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_GIT_DETECTOR_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()

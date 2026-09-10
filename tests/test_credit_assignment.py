@@ -460,3 +460,21 @@ def test_credit_assignment_successful_tool_reinforcement(tmp_path: Path) -> None
     assert attr_targets["system.search"].reward == 1.0
 
 
+def test_dynamic_parameters_apply_gradient_momentum_and_ema(tmp_path: Path) -> None:
+    reg = DynamicParameterRegistry(tmp_path)
+    initial_val = reg.get("provider_retry_after_seconds")
+    assert initial_val == 15.0
+
+    # Step 1: apply gradient
+    val_1 = reg.apply_gradient("provider_retry_after_seconds", gradient=2.0)
+    assert val_1 == 15.1
+    all_params = reg.list_all()
+    meta = all_params["provider_retry_after_seconds"]["metadata"]
+    assert meta["step"] == 1
+    assert meta["momentum"] == 0.2
+
+    # Step 2: apply EMA smoothing
+    val_ema = reg.apply_ema("provider_retry_after_seconds", candidate_value=20.0, alpha=0.80)
+    assert val_ema == 16.08
+
+

@@ -67,6 +67,10 @@ MSG_STATE_FINISH = 2
 TYPING_START = 1
 TYPING_STOP = 2
 CONFIG_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("weixin_config_timeout_seconds", 10.0))
+WEIXIN_QR_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("weixin_qr_timeout_seconds", 35.0))
+WEIXIN_UPDATES_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("weixin_updates_timeout_seconds", 40.0))
+WEIXIN_SEND_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("weixin_send_timeout_seconds", 15.0))
+WEIXIN_UPLOAD_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("weixin_upload_timeout_seconds", 120.0))
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2
 
@@ -118,7 +122,7 @@ class WeixinClient:
         self.media_dir = media_dir
 
     async def request_qr(self) -> WeixinQr:
-        data = await self._get("/ilink/bot/get_bot_qrcode?bot_type=3", timeout=35)
+        data = await self._get("/ilink/bot/get_bot_qrcode?bot_type=3", timeout=WEIXIN_QR_TIMEOUT_SECONDS)
         ticket = str(data.get("qrcode") or data.get("ticket") or "")
         qrcode_url = str(
             data.get("qrcode_img_content") or data.get("qrcode_url") or data.get("url") or ticket
@@ -128,7 +132,7 @@ class WeixinClient:
         return WeixinQr(qrcode_url=qrcode_url, ticket=ticket)
 
     async def poll_qr_status(self, ticket: str) -> WeixinAccount | None:
-        data = await self._get(f"/ilink/bot/get_qrcode_status?qrcode={ticket}", timeout=35)
+        data = await self._get(f"/ilink/bot/get_qrcode_status?qrcode={ticket}", timeout=WEIXIN_QR_TIMEOUT_SECONDS)
         status = str(data.get("status") or "wait").lower()
         if status in {"wait", "scaned", "scaned_but_redirect", "expired"}:
             return None
@@ -148,7 +152,7 @@ class WeixinClient:
         data = await self._post(
             "/ilink/bot/getupdates",
             {"get_updates_buf": sync_buf},
-            timeout=40,
+            timeout=WEIXIN_UPDATES_TIMEOUT_SECONDS,
         )
         raw_updates = data.get("msgs") or data.get("updates") or data.get("items") or []
         updates = []
@@ -252,7 +256,7 @@ class WeixinClient:
                     client_id=client_id,
                 )
             },
-            timeout=15,
+            timeout=WEIXIN_SEND_TIMEOUT_SECONDS,
         )
         _raise_ilink_error(response, "sendmessage")
 
@@ -293,7 +297,7 @@ class WeixinClient:
             context_token=context_token,
             client_id=client_id,
         )
-        response = await self._post("/ilink/bot/sendmessage", {"msg": message}, timeout=15)
+        response = await self._post("/ilink/bot/sendmessage", {"msg": message}, timeout=WEIXIN_SEND_TIMEOUT_SECONDS)
         ret = response.get("ret")
         errcode = response.get("errcode")
         if ret not in (None, 0) or errcode not in (None, 0):
@@ -351,7 +355,7 @@ class WeixinClient:
                 "no_need_thumb": True,
                 "aeskey": aes_key.hex(),
             },
-            timeout=15,
+            timeout=WEIXIN_SEND_TIMEOUT_SECONDS,
         )
         _raise_ilink_error(upload_response, "getuploadurl")
         upload_param = str(upload_response.get("upload_param") or "")
@@ -379,7 +383,7 @@ class WeixinClient:
         )
 
     async def _upload_ciphertext(self, *, upload_url: str, ciphertext: bytes) -> str:
-        async with httpx.AsyncClient(timeout=120, trust_env=True) as client:
+        async with httpx.AsyncClient(timeout=WEIXIN_UPLOAD_TIMEOUT_SECONDS, trust_env=True) as client:
             response = await client.post(
                 upload_url,
                 content=ciphertext,

@@ -13,6 +13,7 @@ from .models import TelegramAttachment, TelegramUpdate
 
 _GET_FILE_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("telegram_get_file_timeout_seconds", 15.0))
 _DOWNLOAD_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("telegram_download_timeout_seconds", 60.0))
+_SEND_MESSAGE_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("telegram_send_message_timeout_seconds", 30.0))
 
 # Telegram media message fields in priority order; the first match wins so a
 # message carrying both a document and a photo surfaces one primary payload.
@@ -62,7 +63,7 @@ class TelegramClient:
         return updates
 
     async def send_message(self, *, chat_id: str, text: str) -> None:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=_SEND_MESSAGE_TIMEOUT_SECONDS) as client:
             response = await client.post(
                 self._url("sendMessage"), json={"chat_id": chat_id, "text": text}
             )

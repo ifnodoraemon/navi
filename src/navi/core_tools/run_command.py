@@ -220,10 +220,13 @@ def _run_command(
 
 
 def _run_git(path: Path, *args: str) -> dict[str, Any]:
+    from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
+
+    timeout_s = int(SYSTEM_DYNAMIC_PARAMETERS.get("git_command_timeout_seconds", 8.0))
     return _run_command(
         ["git", *args],
         cwd=path,
-        timeout=8,
+        timeout=timeout_s,
         sandbox_workspace=path,
         workspace_writable=True,
     )

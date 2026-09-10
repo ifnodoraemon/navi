@@ -14,10 +14,14 @@ from .core_tools.browser import PLAYWRIGHT_CACHE_ROOTS, playwright_browser_execu
 from .capabilities import build_capability_registry
 from .config import NaviConfig, load_config, validate_config
 from .connector_registry import ConnectorAdapter, load_connector_adapters
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .provider import resolve_model_config
 from .provider_specs import get_provider_spec
 from .safeguards import redact_secrets
 from .service import systemd_user_unit_path
+
+_DIAGNOSTICS_PROBE_TIMEOUT = float(SYSTEM_DYNAMIC_PARAMETERS.get("diagnostics_probe_timeout_seconds", 5.0))
+_DIAGNOSTICS_SYSTEMCTL_TIMEOUT = float(SYSTEM_DYNAMIC_PARAMETERS.get("diagnostics_systemctl_timeout_seconds", 8.0))
 
 
 @dataclass(frozen=True)
@@ -331,7 +335,7 @@ def _api_connectivity_checks(config) -> list[DiagnosticCheck]:
                     "max_tokens": 8,
                     "messages": [{"role": "user", "content": "health check"}],
                 },
-                timeout=5.0,
+                timeout=_DIAGNOSTICS_PROBE_TIMEOUT,
             ),
             "openai-compatible": lambda: httpx.post(
                 f"{resolved.api_base_url}/chat/completions",
@@ -342,7 +346,7 @@ def _api_connectivity_checks(config) -> list[DiagnosticCheck]:
                     "temperature": 0,
                     "max_tokens": 8,
                 },
-                timeout=5.0,
+                timeout=_DIAGNOSTICS_PROBE_TIMEOUT,
             ),
         }
         post_fn = request_builders.get(spec.kind, request_builders["openai-compatible"])
@@ -374,7 +378,7 @@ def _service_facts(name: str) -> dict[str, object]:
         "--property=SubState",
         "--property=MainPID",
     ]
-    result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=8)
+    result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=_DIAGNOSTICS_SYSTEMCTL_TIMEOUT)
     properties: dict[str, str] = {}
     for line in result.stdout.splitlines():
         key, _, value = line.partition("=")

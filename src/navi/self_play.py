@@ -275,27 +275,83 @@ class SelfPlayArena:
 
         return specs[:limit]
 
-    def generate_prompt_perturbations(self, limit: int = 2) -> list[ShadowTrialSpec]:
-        """Generate targeted prompt layer perturbations informed by blame credit attributions."""
-        prompt_store = PromptLayerStore(self.home)
-        attributions = self.credit_engine.list_attributions(limit=50)
-        blamed_prompt_layers: dict[str, int] = {}
-        blamed_domains: dict[str, str] = {}
-        for attr in attributions:
-            name = attr.target_id
-            if attr.node_type == "prompt_layer" and prompt_store.is_declared(name):
-                blamed_prompt_layers[name] = blamed_prompt_layers.get(name, 0) + 1
-                if name not in blamed_domains:
-                    blamed_domains[name] = attr.failure_domain
+    async def meta_prompt_mutate_async(
+        self,
+        layer_id: str,
+        current_content: str,
+        failure_domain: str,
+        failure_reasons: list[str],
+        *,
+        provider: Any | None = None,
+    ) -> tuple[str, str]:
+        """Compute meta-prompt gradient mutation using TextGrad / DSPy prompt loss reflection."""
+        reasons_text = "\n".join(f"- {r}" for r in failure_reasons[:5])
+        if not reasons_text:
+            reasons_text = f"- {failure_domain}"
 
-        ordered_layers: list[str] = sorted(
-            blamed_prompt_layers.keys(),
-            key=lambda k: blamed_prompt_layers.get(k, 0),
-            reverse=True,
-        )
-        if not ordered_layers:
-            ordered_layers = [name for name in ("instructions", "identity") if prompt_store.is_declared(name)]
+        if provider is not None and hasattr(provider, "complete_for"):
+            try:
+                from .provider import ChatMessage
 
+                messages = [
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "Autonomous meta-prompt optimizer for an AI agent. "
+                            "Given the failure domain and execution penalties, output a single, highly specific "
+                            "defensive directive to append to the system prompt to prevent this failure in future runs. "
+                            "Output ONLY the directive sentence, nothing else."
+                        ),
+                    ),
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            f"Prompt Layer: {layer_id}\n"
+                            f"Failure Domain: {failure_domain}\n"
+                            f"Failure Attributions:\n{reasons_text}\n\n"
+                            "Generate the defensive refinement directive:"
+                        ),
+                    ),
+                ]
+                response = await provider.complete_for("default", messages)
+                cleaned = str(response).strip().strip('"').strip("'")
+                if cleaned:
+                    hypothesis = f"llm_meta_prompt_mutation:{failure_domain}"
+                    refinement = f"\n{cleaned}\n"
+                    return (hypothesis, refinement)
+            except Exception:
+                pass
+
+        return self._heuristic_domain_mutation(failure_domain)
+
+    def meta_prompt_mutate(
+        self,
+        layer_id: str,
+        current_content: str,
+        failure_domain: str,
+        failure_reasons: list[str],
+        *,
+        provider: Any | None = None,
+    ) -> tuple[str, str]:
+        """Synchronous wrapper for meta_prompt_mutate_async or heuristic fallback."""
+        if provider is not None and hasattr(provider, "complete_for"):
+            try:
+                import asyncio
+                return asyncio.run(
+                    self.meta_prompt_mutate_async(
+                        layer_id,
+                        current_content,
+                        failure_domain,
+                        failure_reasons,
+                        provider=provider,
+                    )
+                )
+            except Exception:
+                pass
+        return self._heuristic_domain_mutation(failure_domain)
+
+    @staticmethod
+    def _heuristic_domain_mutation(failure_domain: str) -> tuple[str, str]:
         domain_mutations: dict[str, tuple[str, str]] = {
             "planner_or_parser": (
                 "append_schema_constraint_refinement",
@@ -314,6 +370,45 @@ class SelfPlayArena:
                 "\nRedact and protect sensitive information and cryptographic credentials.",
             ),
         }
+        res = domain_mutations.get(
+            failure_domain,
+            (
+                "append_schema_constraint_refinement",
+                "\nStrictly adhere to schema formats and output constraints.",
+            ),
+        )
+        return res
+
+    def generate_prompt_perturbations(
+        self,
+        limit: int = 2,
+        *,
+        provider: Any | None = None,
+    ) -> list[ShadowTrialSpec]:
+        """Generate targeted prompt layer perturbations informed by blame credit attributions."""
+        prompt_store = PromptLayerStore(self.home)
+        attributions = self.credit_engine.list_attributions(limit=50)
+        blamed_prompt_layers: dict[str, int] = {}
+        blamed_domains: dict[str, str] = {}
+        blamed_reasons: dict[str, list[str]] = {}
+
+        for attr in attributions:
+            name = attr.target_id
+            if attr.node_type == "prompt_layer" and prompt_store.is_declared(name):
+                blamed_prompt_layers[name] = blamed_prompt_layers.get(name, 0) + 1
+                if name not in blamed_domains:
+                    blamed_domains[name] = attr.failure_domain
+                if name not in blamed_reasons:
+                    blamed_reasons[name] = []
+                blamed_reasons[name].append(attr.reason)
+
+        ordered_layers: list[str] = sorted(
+            blamed_prompt_layers.keys(),
+            key=lambda k: blamed_prompt_layers.get(k, 0),
+            reverse=True,
+        )
+        if not ordered_layers:
+            ordered_layers = [name for name in ("instructions", "identity") if prompt_store.is_declared(name)]
 
         specs: list[ShadowTrialSpec] = []
         for layer_id in ordered_layers:
@@ -321,12 +416,14 @@ class SelfPlayArena:
                 break
             current_content = prompt_store.read(layer_id)
             domain = blamed_domains.get(layer_id, "default")
-            hypothesis, refinement = domain_mutations.get(
+            reasons = blamed_reasons.get(layer_id, [])
+
+            hypothesis, refinement = self.meta_prompt_mutate(
+                layer_id,
+                current_content,
                 domain,
-                (
-                    "append_schema_constraint_refinement",
-                    "\nStrictly adhere to schema formats and output constraints.",
-                ),
+                reasons,
+                provider=provider,
             )
             candidate_text = current_content.strip() + refinement + "\n"
             specs.append(
@@ -344,11 +441,54 @@ class SelfPlayArena:
 
         return specs[:limit]
 
+    def generate_replay_perturbations(
+        self,
+        limit: int = 5,
+        *,
+        channels: list[str] | None = None,
+        provider: Any | None = None,
+    ) -> list[ShadowTrialSpec]:
+        """Generate shadow trial specifications from replay buffer hard negatives."""
+        from .replay_buffer import ExperienceReplayBuffer
+
+        replay_buffer = ExperienceReplayBuffer(self.home)
+        target_channel: str | None = None
+        if channels is not None and len(channels) == 1:
+            target_channel = channels[0]
+        hard_negatives = replay_buffer.get_hard_negatives(limit=limit, channel=target_channel)
+        specs: list[ShadowTrialSpec] = []
+        for entry in hard_negatives:
+            if len(specs) >= limit:
+                break
+            f_domain = str(entry.metadata.get("failure_domain", "safeguard_policy"))
+            hypothesis, refinement = self.meta_prompt_mutate(
+                "instructions",
+                entry.prompt,
+                f_domain,
+                [f"replay_trace:{entry.trace_id}", f"reward:{entry.reward}"],
+                provider=provider,
+            )
+            candidate_text = entry.prompt.strip() + "\n" + refinement.strip() + "\n"
+            specs.append(
+                ShadowTrialSpec(
+                    trial_id=uuid.uuid4().hex,
+                    target_type="prompt_layer",
+                    target_id="instructions",
+                    baseline_value=float(len(entry.prompt)),
+                    candidate_value=float(len(candidate_text)),
+                    hypothesis=f"replay_adversarial_defense:{entry.trace_id[:8]}",
+                    eval_case_ids=("runtime.text.nonempty",),
+                    candidate_content=candidate_text,
+                )
+            )
+        return specs[:limit]
+
     def execute_shadow_trial(
         self,
         spec: ShadowTrialSpec,
         *,
         auto_promote: bool = True,
+        use_ema: bool = False,
         now: float | None = None,
     ) -> ShadowTrialResult:
         """Run a shadow trial against verification checks and optionally promote."""
@@ -385,11 +525,18 @@ class SelfPlayArena:
         promoted = passed and auto_promote
         if promoted:
             if spec.target_type == "dynamic_parameter":
-                self.param_registry.set(
-                    spec.target_id,
-                    spec.candidate_value,
-                    reason=f"self_play_promoted:{spec.trial_id}",
-                )
+                if use_ema:
+                    self.param_registry.apply_ema(
+                        spec.target_id,
+                        spec.candidate_value,
+                        reason=f"self_play_promoted_ema:{spec.trial_id}",
+                    )
+                if not use_ema:
+                    self.param_registry.set(
+                        spec.target_id,
+                        spec.candidate_value,
+                        reason=f"self_play_promoted:{spec.trial_id}",
+                    )
             if spec.target_type == "prompt_layer":
                 prompt_store = PromptLayerStore(self.home)
                 prompt_store.write_override(spec.target_id, spec.candidate_content)
@@ -438,6 +585,34 @@ class SelfPlayArena:
                     result.created_at,
                 ),
             )
+
+        # Ingest synthetic self-play trial into multi-channel experience replay buffer
+        try:
+            from .replay_buffer import ExperienceReplayBuffer
+
+            trial_reward = 1.0
+            if not passed:
+                trial_reward = -0.5
+            resp = str(spec.candidate_value)
+            if spec.candidate_content:
+                resp = spec.candidate_content
+            replay_buf = ExperienceReplayBuffer(self.home)
+            replay_buf.record_experience(
+                trace_id=f"self_play_{spec.trial_id[:8]}",
+                channel="synthetic",
+                prompt=spec.hypothesis,
+                response=resp,
+                reward=trial_reward,
+                metadata={
+                    "target_type": spec.target_type,
+                    "target_id": spec.target_id,
+                    "passed": passed,
+                    "promoted": promoted,
+                },
+                now=current_time,
+            )
+        except Exception:
+            pass
 
         return result
 
