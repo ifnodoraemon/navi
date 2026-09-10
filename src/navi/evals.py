@@ -352,6 +352,10 @@ async def _run_daily_journey_simulator(
     return errors, events
 
 
+def _work_runs(runs: RunStore) -> list[Any]:
+    return [r for r in runs.list(limit=500) if getattr(r, "kind", "") != "loop:turn"]
+
+
 async def _run_daily_journey(
     *,
     home: Path,
@@ -359,9 +363,11 @@ async def _run_daily_journey(
     journey: dict[str, Any],
     provider: ModelPool | None = None,
 ) -> DailyJourneyResult:
-    runtime = build_runtime(home)
+    runtime = None
     if provider is not None:
         runtime = AgentRuntime(home=home, provider=provider)
+    if provider is None:
+        runtime = build_runtime(home)
     ceiling = journey.get("permission_ceiling", "write")
     
     journey_id = str(journey.get("id") or "")
@@ -399,7 +405,7 @@ async def _run_daily_journey(
                 events.extend(sim_events)
         if "simulator" not in journey:
             for index, step in enumerate(journey["steps"]):
-                before_runs = runs.list(limit=500)
+                before_runs = _work_runs(runs)
                 before_scheduled_goals = goals.list_cron_goals()
                 expect = step.get("expect") or {}
                 if not isinstance(step, dict):
@@ -511,13 +517,13 @@ def _match_daily_expectation(
         if found:
             errors.append(f"{prefix}: text contained forbidden items {found!r}")
     if "run_count_delta" in expect:
-        delta = len(runs.list(limit=500)) - before_run_count
+        delta = len(_work_runs(runs)) - before_run_count
         if delta != int(expect["run_count_delta"]):
             errors.append(
                 f"{prefix}: run_count_delta expected {expect['run_count_delta']!r}, got {delta!r}"
             )
     if "run_count" in expect:
-        count = len(runs.list(limit=500))
+        count = len(_work_runs(runs))
         if count != int(expect["run_count"]):
             errors.append(f"{prefix}: run_count expected {expect['run_count']!r}, got {count!r}")
     if "scheduled_goal_count_delta" in expect:

@@ -271,10 +271,12 @@ class GoalOpenCapability(BaseCapability):
         if promoted:
             facts = {**facts, **promoted}
         responded_message = str(facts.get("responded_message") or "")
+        responded_action = str(facts.get("responded_action") or "").strip()
+        final_action = responded_action or "goal"
         return _goal_result(
             result=result,
             facts=facts,
-            action="goal",
+            action=final_action,
             message=responded_message,
         )
 

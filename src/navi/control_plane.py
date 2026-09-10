@@ -251,16 +251,17 @@ class TurnController(TurnLifecycleMixin):
                 "trace_id": trace_id,
                 "model_response_present": False,
             }
+        turn_action = str(invoked_facts.get("responded_action") or invoked.action or "chat").strip() or "chat"
         result = AgentTurnResult(
             text=surface_text,
             run_id=invoked.run_id,
-            action=invoked.action,
+            action=turn_action,
             observation=_fact_event(
                 "request_route_result",
                 {
                     "tool": "goal.open",
                     "ok": invoked.ok,
-                    "action": invoked.action,
+                    "action": turn_action,
                     "facts": invoked_facts,
                     "error_reason": getattr(invoked, "error_reason", ""),
                 },
