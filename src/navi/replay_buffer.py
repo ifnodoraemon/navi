@@ -308,6 +308,47 @@ class ExperienceReplayBuffer:
             return 0
         return int(row[0])
 
+    def get_entry(self, entry_id: str) -> ExperienceReplayEntry | None:
+        """Fetch a specific replay entry by unique ID."""
+        sql = """
+            SELECT id, trace_id, channel, prompt, response, reward,
+                   priority, safeguard_triggered, metadata_json, created_at
+            FROM experience_replay_buffer
+            WHERE id = ?
+        """
+        with connect(self.db_path) as conn:
+            row = conn.execute(sql, (entry_id,)).fetchone()
+        if row is None:
+            return None
+        return self._row_to_entry(row)
+
+    def update_priority(self, entry_id: str, priority: float) -> bool:
+        """Update sampling priority for a specific replay entry."""
+        with connect(self.db_path) as conn:
+            cur = conn.execute(
+                "UPDATE experience_replay_buffer SET priority = ? WHERE id = ?",
+                (max(1e-6, float(priority)), entry_id),
+            )
+            return bool(cur.rowcount > 0)
+
+    def update_priority_from_td_error(
+        self,
+        entry_id: str,
+        td_error: float,
+        *,
+        alpha: float | None = None,
+        epsilon: float | None = None,
+    ) -> bool:
+        """Update sampling priority based on new TD error: P = (|delta| + epsilon)^alpha."""
+        used_alpha = self.param_registry.get("replay_priority_alpha", 0.60)
+        if alpha is not None:
+            used_alpha = float(alpha)
+        used_epsilon = self.param_registry.get("replay_priority_epsilon", 0.01)
+        if epsilon is not None:
+            used_epsilon = float(epsilon)
+        new_p = compute_replay_priority(td_error, alpha=used_alpha, epsilon=used_epsilon)
+        return self.update_priority(entry_id, new_p)
+
     @staticmethod
     def _row_to_entry(row: Any) -> ExperienceReplayEntry:
         meta = {}

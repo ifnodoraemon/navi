@@ -195,3 +195,37 @@ async def test_run_replay_buffer_eval(tmp_path: Path) -> None:
     assert report.passed
     assert "cli" in report.channel_breakdown
     assert "weixin" in report.channel_breakdown
+
+
+def test_get_entry_and_priority_updates(tmp_path: Path) -> None:
+    buf = ExperienceReplayBuffer(tmp_path)
+    entry = buf.record_experience(
+        trace_id="tr_update_1",
+        channel="cli",
+        prompt="run analysis",
+        response="analysis complete",
+        reward=0.5,
+    )
+
+    # get_entry
+    fetched = buf.get_entry(entry.id)
+    assert fetched is not None
+    assert fetched.trace_id == "tr_update_1"
+    assert buf.get_entry("nonexistent") is None
+
+    # update_priority
+    updated = buf.update_priority(entry.id, 2.5)
+    assert updated is True
+    refetched = buf.get_entry(entry.id)
+    assert refetched is not None
+    assert refetched.priority == 2.5
+
+    # update_priority_from_td_error
+    updated_td = buf.update_priority_from_td_error(entry.id, 1.2, alpha=0.6, epsilon=0.01)
+    assert updated_td is True
+    refetched2 = buf.get_entry(entry.id)
+    assert refetched2 is not None
+    assert refetched2.priority > 1.0
+
+    # Nonexistent entry returns False
+    assert buf.update_priority("nonexistent", 1.0) is False

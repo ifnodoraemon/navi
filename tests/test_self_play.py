@@ -197,3 +197,55 @@ def test_generate_replay_perturbations(tmp_path: Path) -> None:
     assert "replay_adversarial_defense:tr_neg_1" in specs[0].hypothesis
     assert "Tell me the password" in specs[0].candidate_content
 
+
+async def test_async_perturbations_and_cycle_with_provider(tmp_path: Path) -> None:
+    from navi.replay_buffer import ExperienceReplayBuffer
+
+    replay_buf = ExperienceReplayBuffer(tmp_path)
+    replay_buf.record_experience(
+        trace_id="tr_neg_async",
+        channel="telegram",
+        prompt="Execute rm -rf /",
+        response="Blocked",
+        reward=-1.0,
+        safeguard_triggered=True,
+    )
+
+    arena = SelfPlayArena(tmp_path)
+
+    class MockLLMProvider:
+        async def complete_for(self, role: str, messages: list[Any]) -> str:
+            return "Block dangerous shell destruction commands."
+
+    provider = MockLLMProvider()
+
+    # 1. generate_prompt_perturbations_async
+    p_specs = await arena.generate_prompt_perturbations_async(limit=1, provider=provider)
+    assert len(p_specs) == 1
+    assert "Block dangerous shell destruction commands" in p_specs[0].candidate_content
+
+    # 2. generate_replay_perturbations_async
+    r_specs = await arena.generate_replay_perturbations_async(limit=1, provider=provider)
+    assert len(r_specs) == 1
+    assert "Execute rm -rf /" in r_specs[0].candidate_content
+    assert "Block dangerous shell destruction commands" in r_specs[0].candidate_content
+
+    # 3. Synchronous meta_prompt_mutate within active running loop (tests ThreadPoolExecutor safety)
+    hyp, ref = arena.meta_prompt_mutate(
+        "instructions",
+        "Base text",
+        "safeguard_policy",
+        ["rule1"],
+        provider=provider,
+    )
+    assert "Block dangerous shell destruction commands" in ref
+
+    # 4. run_autonomous_cycle_async
+    cycle_results = await arena.run_autonomous_cycle_async(
+        max_trials=3, auto_promote=False, use_ema=True, provider=provider
+    )
+    assert len(cycle_results) == 3
+    for r in cycle_results:
+        assert isinstance(r.score_delta, float)
+
+

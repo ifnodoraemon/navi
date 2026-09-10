@@ -337,6 +337,27 @@ class SelfPlayArena:
         if provider is not None and hasattr(provider, "complete_for"):
             try:
                 import asyncio
+                import concurrent.futures
+
+                loop = None
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop is not None and loop.is_running():
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        return executor.submit(
+                            asyncio.run,
+                            self.meta_prompt_mutate_async(
+                                layer_id,
+                                current_content,
+                                failure_domain,
+                                failure_reasons,
+                                provider=provider,
+                            ),
+                        ).result(timeout=30.0)
+
                 return asyncio.run(
                     self.meta_prompt_mutate_async(
                         layer_id,
@@ -453,6 +474,68 @@ class SelfPlayArena:
 
         return specs[:limit]
 
+    async def generate_prompt_perturbations_async(
+        self,
+        limit: int = 2,
+        *,
+        provider: Any | None = None,
+    ) -> list[ShadowTrialSpec]:
+        """Generate targeted prompt layer perturbations asynchronously with LLM or heuristic mutations."""
+        prompt_store = PromptLayerStore(self.home)
+        attributions = self.credit_engine.list_attributions(limit=50)
+        blamed_prompt_layers: dict[str, int] = {}
+        blamed_domains: dict[str, str] = {}
+        blamed_reasons: dict[str, list[str]] = {}
+
+        for attr in attributions:
+            name = attr.target_id
+            if attr.node_type == "prompt_layer" and prompt_store.is_declared(name):
+                blamed_prompt_layers[name] = blamed_prompt_layers.get(name, 0) + 1
+                if name not in blamed_domains:
+                    blamed_domains[name] = attr.failure_domain
+                if name not in blamed_reasons:
+                    blamed_reasons[name] = []
+                blamed_reasons[name].append(attr.reason)
+
+        ordered_layers: list[str] = sorted(
+            blamed_prompt_layers.keys(),
+            key=lambda k: blamed_prompt_layers.get(k, 0),
+            reverse=True,
+        )
+        if not ordered_layers:
+            ordered_layers = [name for name in ("instructions", "identity") if prompt_store.is_declared(name)]
+
+        specs: list[ShadowTrialSpec] = []
+        for layer_id in ordered_layers:
+            if len(specs) >= limit:
+                break
+            current_content = prompt_store.read(layer_id)
+            domain = blamed_domains.get(layer_id, "default")
+            reasons = blamed_reasons.get(layer_id, [])
+
+            hypothesis, refinement = await self.meta_prompt_mutate_async(
+                layer_id,
+                current_content,
+                domain,
+                reasons,
+                provider=provider,
+            )
+            candidate_text = current_content.strip() + refinement + "\n"
+            specs.append(
+                ShadowTrialSpec(
+                    trial_id=uuid.uuid4().hex,
+                    target_type="prompt_layer",
+                    target_id=layer_id,
+                    baseline_value=float(len(current_content)),
+                    candidate_value=float(len(candidate_text)),
+                    hypothesis=hypothesis,
+                    eval_case_ids=("runtime.text.nonempty",),
+                    candidate_content=candidate_text,
+                )
+            )
+
+        return specs[:limit]
+
     def generate_replay_perturbations(
         self,
         limit: int = 5,
@@ -489,6 +572,48 @@ class SelfPlayArena:
                     baseline_value=float(len(entry.prompt)),
                     candidate_value=float(len(candidate_text)),
                     hypothesis=f"replay_adversarial_defense:{entry.trace_id[:8]}",
+                    eval_case_ids=("runtime.text.nonempty",),
+                    candidate_content=candidate_text,
+                )
+            )
+        return specs[:limit]
+
+    async def generate_replay_perturbations_async(
+        self,
+        limit: int = 5,
+        *,
+        channels: list[str] | None = None,
+        provider: Any | None = None,
+    ) -> list[ShadowTrialSpec]:
+        """Generate shadow trial specifications from replay buffer hard negatives asynchronously."""
+        from .replay_buffer import ExperienceReplayBuffer
+
+        replay_buffer = ExperienceReplayBuffer(self.home)
+        target_channel: str | None = None
+        if channels is not None and len(channels) == 1:
+            target_channel = channels[0]
+        hard_negatives = replay_buffer.get_hard_negatives(limit=limit, channel=target_channel)
+        specs: list[ShadowTrialSpec] = []
+        for entry in hard_negatives:
+            if len(specs) >= limit:
+                break
+            f_domain = str(entry.metadata.get("failure_domain", "safeguard_policy"))
+            hypothesis, refinement = await self.meta_prompt_mutate_async(
+                "instructions",
+                entry.prompt,
+                f_domain,
+                [f"replay_trace:{entry.trace_id}", f"reward:{entry.reward}"],
+                provider=provider,
+            )
+            candidate_text = entry.prompt.strip() + "\n" + refinement.strip() + "\n"
+            specs.append(
+                ShadowTrialSpec(
+                    trial_id=uuid.uuid4().hex,
+                    target_type="prompt_layer",
+                    target_id="instructions",
+                    baseline_value=float(len(entry.prompt)),
+                    candidate_value=float(len(candidate_text)),
+                    hypothesis=hypothesis,
                     eval_case_ids=("runtime.text.nonempty",),
                     candidate_content=candidate_text,
                 )
@@ -680,13 +805,37 @@ class SelfPlayArena:
         *,
         auto_promote: bool = True,
         use_ema: bool = False,
+        provider: Any | None = None,
     ) -> list[ShadowTrialResult]:
         """Execute a full autonomous exploration and verification cycle across parameters, prompts, and replay buffer."""
         param_limit = max(1, max_trials - 2)
         specs: list[ShadowTrialSpec] = []
         specs.extend(self.generate_parameter_perturbations(limit=param_limit))
-        specs.extend(self.generate_prompt_perturbations(limit=1))
-        specs.extend(self.generate_replay_perturbations(limit=1))
+        specs.extend(self.generate_prompt_perturbations(limit=1, provider=provider))
+        specs.extend(self.generate_replay_perturbations(limit=1, provider=provider))
+
+        results: list[ShadowTrialResult] = []
+        for spec in specs[:max_trials]:
+            res = self.execute_shadow_trial(spec, auto_promote=auto_promote, use_ema=use_ema)
+            results.append(res)
+        return results
+
+    async def run_autonomous_cycle_async(
+        self,
+        max_trials: int = 3,
+        *,
+        auto_promote: bool = True,
+        use_ema: bool = False,
+        provider: Any | None = None,
+    ) -> list[ShadowTrialResult]:
+        """Async variant of run_autonomous_cycle for non-blocking concurrent execution."""
+        param_limit = max(1, max_trials - 2)
+        specs: list[ShadowTrialSpec] = []
+        specs.extend(self.generate_parameter_perturbations(limit=param_limit))
+        prompt_specs = await self.generate_prompt_perturbations_async(limit=1, provider=provider)
+        specs.extend(prompt_specs)
+        replay_specs = await self.generate_replay_perturbations_async(limit=1, provider=provider)
+        specs.extend(replay_specs)
 
         results: list[ShadowTrialResult] = []
         for spec in specs[:max_trials]:
