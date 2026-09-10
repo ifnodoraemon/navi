@@ -524,10 +524,18 @@ class SystemDaemon:
     async def _add_observability_maintenance(self, facts: dict[str, Any]) -> dict[str, Any]:
         from .evolution_engine import EvolutionEngine
         from .metrics import MetricsProjector
+        from .self_play import SelfPlayArena
 
         facts["evolution_rollbacks"] = await asyncio.to_thread(
             EvolutionEngine(self.home).reconcile_regressed_activations
         )
+        self_play_results = await asyncio.to_thread(
+            SelfPlayArena(self.home).run_autonomous_cycle, 2, auto_promote=True
+        )
+        facts["self_play"] = {
+            "trials_run": len(self_play_results),
+            "promoted": [r.target_id for r in self_play_results if r.promoted],
+        }
         projector = MetricsProjector(self.home)
         snapshot = await asyncio.to_thread(projector.snapshot)
         facts["slo"] = {
