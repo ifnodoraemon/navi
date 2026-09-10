@@ -15,7 +15,7 @@ import uuid
 
 from .db import connect
 from .dynamic_parameters import DynamicParameterRegistry
-from .loop import TraceFailureDomain, TraceOutcome
+from .loop import TraceFailureDomain, TraceOutcome, TracePhase
 from .memory.store import MemoryStore
 from .paths import db_paths
 from .schema import Column, Table, assert_schema_exact
@@ -227,9 +227,23 @@ class CreditAssignmentEngine:
         reward = compute_terminal_reward(outcome, failure_domain)
         attributions: list[CausalCreditAttribution] = []
 
-        # 1. Extract used memory items across all planner syscall events
-        used_memory_ids: set[str] = set()
-        for event in events:
+        # 1. Extract used memory items across planner syscall events with temporal discounting
+        syscall_events: list[Any] = [
+            e for e in events
+            if getattr(e, "phase", "") in {str(TracePhase.PLANNER_SYSCALL), "planner.syscall"}
+        ]
+        if not syscall_events:
+            syscall_events = [
+                e for e in events
+                if "used_memory_ids" in (getattr(e, "output_json", "") or "")
+            ]
+
+        total_steps = len(syscall_events)
+        gamma = self.param_registry.get("temporal_discount_factor", 0.85)
+
+        # Map each memory_id to its highest effective temporal discount factor
+        memory_discounts: dict[str, float] = {}
+        for step_idx, event in enumerate(syscall_events):
             output_json = getattr(event, "output_json", "") or ""
             if not output_json:
                 continue
@@ -238,24 +252,28 @@ class CreditAssignmentEngine:
                 if isinstance(data, dict):
                     mems = data.get("used_memory_ids", [])
                     if isinstance(mems, list):
+                        steps_from_end = max(0, total_steps - 1 - step_idx)
+                        step_discount = round(gamma ** steps_from_end, 4)
                         for m in mems:
                             clean_m = str(m).strip()
                             if clean_m:
-                                used_memory_ids.add(clean_m)
+                                current_best = memory_discounts.get(clean_m, 0.0)
+                                memory_discounts[clean_m] = max(current_best, step_discount)
             except Exception:
                 continue
 
-        # 2. Backprop to Memory Items
+        # 2. Backprop to Memory Items with TD discount
         ltp_boost = self.param_registry.get("ltp_boost_delta", 0.05)
         conf_drop = self.param_registry.get("confidence_reduction_delta", 0.10)
-        for mem_id in sorted(used_memory_ids):
-            delta = ltp_boost * reward
+        for mem_id, discount in sorted(memory_discounts.items()):
+            effective_reward = reward * discount
+            delta = round(ltp_boost * effective_reward, 4)
             if reward < 0:
-                delta = -1.0 * conf_drop * abs(reward)
+                delta = round(-1.0 * conf_drop * abs(reward) * discount, 4)
             applied = self.memory_store.apply_credit_delta(
                 mem_id,
                 delta,
-                reason=f"credit_attribution:{outcome}:{failure_domain}",
+                reason=f"credit_attribution:{outcome}:{failure_domain}:gamma_{discount:.2f}",
                 now=now,
             )
             if applied is not None:
@@ -266,9 +284,9 @@ class CreditAssignmentEngine:
                         target_id=mem_id,
                         outcome=outcome,
                         failure_domain=failure_domain,
-                        reward=reward,
+                        reward=effective_reward,
                         delta_applied=delta,
-                        reason=f"memory_synaptic_plasticity (confidence={applied.confidence:.2f})",
+                        reason=f"td_credit_attribution(gamma={discount:.2f},confidence={applied.confidence:.2f})",
                         now=now,
                     )
                 )

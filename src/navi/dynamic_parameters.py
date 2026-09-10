@@ -30,6 +30,7 @@ SYSTEM_DYNAMIC_PARAMETERS: dict[str, float] = {
     "graph_fanout_damping": 3.0,
     "hebbian_learning_rate": 0.05,
     "credit_assignment_learning_rate": 0.05,
+    "temporal_discount_factor": 0.85,
     "confidence_reduction_delta": 0.10,
     "consolidation_default_confidence": 0.70,
     "consolidation_history_retention_seconds": 90.0 * 86400.0,
@@ -58,10 +59,18 @@ SYSTEM_DYNAMIC_PARAMETERS: dict[str, float] = {
     "safeguards_entropy_threshold": 4.5,
     "safeguards_confidence_threshold": 0.80,
 
-    # Execution limits
+    # Execution limits and retry budgets
     "loop_max_turns": 30.0,
+    "loop_max_attempts_turn": 5.0,
+    "loop_max_attempts_control": 3.0,
+    "loop_max_attempts_scheduled": 6.0,
+    "loop_max_attempts_durable_goal": 10.0,
     "max_parallel_tool_calls": 5.0,
     "evals_passing_score_threshold": 0.85,
+
+    # Self-play and prompt evolution parameters
+    "prompt_mutation_temperature": 0.70,
+    "prompt_evaluation_threshold": 0.80,
 }
 
 

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from navi.dynamic_parameters import DynamicParameterRegistry
+from navi.prompting import PromptLayerStore
 from navi.self_play import (
     SELF_PLAY_TRIALS_TABLE,
     SelfPlayArena,
@@ -90,3 +91,22 @@ def test_run_autonomous_cycle(tmp_path: Path) -> None:
 
     promoted_trials = arena.list_trials(promoted_only=True)
     assert len(promoted_trials) == len(results)
+
+
+def test_generate_and_execute_prompt_perturbation(tmp_path: Path) -> None:
+    arena = SelfPlayArena(tmp_path)
+    prompt_store = PromptLayerStore(tmp_path)
+    specs = arena.generate_prompt_perturbations(limit=2)
+    assert len(specs) > 0
+    spec = specs[0]
+    assert spec.target_type == "prompt_layer"
+    assert spec.candidate_content != ""
+    assert "Strictly adhere" in spec.candidate_content
+
+    result = arena.execute_shadow_trial(spec, auto_promote=True)
+    assert result.passed
+    assert result.promoted
+    assert result.score_delta > 0.0
+
+    overridden = prompt_store.read(spec.target_id)
+    assert "Strictly adhere" in overridden

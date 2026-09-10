@@ -149,21 +149,23 @@ Navi 在全局 150 个源码模块与所有测试中彻底剔除了过程式分�
 
 ---
 
-## 5. 当前审查：不足、偏离与演化路线图
+## 5. 当前审查：不足、偏离与落地实现
 
-站在严谨软件工程与现代 LLM 理论视角，对当前系统进行全面自查与偏差分析：
+站在严谨软件工程与现代 LLM 理论视角，对系统进行的自查、偏差纠正与演进落地：
 
-### 维度 1：参数空间的连续性 vs 离散孤岛
-* **满足项**：认知衰减、检索比重、重试周期等核心数值已完全连续化，由动态矩阵治理。
-* **不足与偏离**：部分系统约束仍存在离散硬限制（例如最大单次上下文 Token 数、并发执行槽位等仍散落在全局配置中）。
-* **对策**：逐步将所有运行时环境资源限制统一纳入 `DynamicParameterRegistry`。
+### 维度 1：参数空间的连续性 vs 离散孤岛（已落地）
+* **演进实现**：
+  * 将任务重试预算（`loop_max_attempts_turn`, `loop_max_attempts_control`, `loop_max_attempts_scheduled`, `loop_max_attempts_durable_goal`）与时间差分折现因子（`temporal_discount_factor`）等全部纳入 `DynamicParameterRegistry`。
+  * `_retry_policy_for_loop_kind` 全面接入动态参数矩阵，消除硬编码数值孤岛。
 
-### 维度 2：反向传播的深度（Chain Rule Depth）
-* **满足项**：已实现终端 Reward 直接反传至直接引用的因果节点（Memory、Dynamic Parameter、Prompt Layer）。
-* **不足与偏离**：目前的因果链深度主要为 1 阶（Direct Attribution）。在多步多轮 Agent Loop 中，第 1 步的记忆检索影响了第 2 步的工具选择，最终在第 3 步导致崩溃时，对第 1 步的间接反传衰减（Temporal Difference / Discount Factor $\gamma$）尚需增强。
-* **对策**：在多轮状态图迁移中引入强化学习时间差分折现回报：$R_t = r_t + \gamma R_{t+1}$。
+### 维度 2：反向传播的深度与时间差分（TD Discounting，已落地）
+* **演进实现**：
+  * 在多步执行轨迹中引入时序反向传播折扣因子：$\text{discount} = \gamma^{T - 1 - t}$（默认 $\gamma = 0.85$）。
+  * 早期检索记忆获得时间平滑惩罚/奖励，彻底规避末步崩溃导致早期正确记忆被灾难性惩罚的问题。
 
-### 维度 3：自博弈沙盒的推演广度
-* **满足项**：实现了基于因果归因日志触发参数扰动假设、沙盒断言测试、无回归自动晋升的完整回路，并已挂载到后台守护进程。
-* **不足与偏离**：目前的对抗生成器主要针对参数扰动；针对 Prompt 层的文本变异（Prompt Mutation & Crossover）仍需进一步融合类似 LLM-as-a-Judge 的合成对抗用例。
-* **对策**：构建基于代码覆盖率与边界条件的自动化 Prompt 演化器。
+### 维度 3：自博弈沙盒的推演广度（Prompt Layer Self-Play，已落地）
+* **演进实现**：
+  * `SelfPlayArena` 扩充 `generate_prompt_perturbations` 与针对 `prompt_layer` 的沙盒演化试验。
+  * 发生 Planner/Parser 因果归因受罚时，沙盒自动生成防御性 Prompt 候选，经过 `runtime.text.nonempty` 契约断言后免人工自动晋升覆盖。
+  * 守护进程周期调度同时覆盖连续超参空间与 Prompt 语义层。
+

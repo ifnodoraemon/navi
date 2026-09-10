@@ -288,6 +288,11 @@ PROMPT_LAYERS_SPEC: Any = {
         "minimum_permission": "read",
         "content": "You are Navi, the user's local-first personal AI assistant.\\n",
     },
+    "instructions": {
+        "version": 1,
+        "minimum_permission": "read",
+        "content": "Always produce structured tool calls and respect system constraints.\\n",
+    },
     "task_memory_consolidator": {
         "version": 1,
         "minimum_permission": "read",

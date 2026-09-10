@@ -19,6 +19,7 @@ from .dynamic_parameters import DynamicParameterRegistry, SYSTEM_DYNAMIC_PARAMET
 from .credit_assignment import CreditAssignmentEngine
 from .evolution_experiments import EvolutionExperimentStore
 from .paths import db_paths
+from .prompting import PromptLayerStore
 from .schema import Column, Table, assert_schema_exact
 
 
@@ -49,6 +50,7 @@ class ShadowTrialSpec:
     candidate_value: float
     hypothesis: str
     eval_case_ids: tuple[str, ...] = ("runtime.parameter.valid",)
+    candidate_content: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +61,7 @@ class ShadowTrialSpec:
             "candidate_value": self.candidate_value,
             "hypothesis": self.hypothesis,
             "eval_case_ids": list(self.eval_case_ids),
+            "candidate_content": self.candidate_content,
         }
 
 
@@ -176,6 +179,46 @@ class SelfPlayArena:
 
         return specs[:limit]
 
+    def generate_prompt_perturbations(self, limit: int = 2) -> list[ShadowTrialSpec]:
+        """Generate targeted prompt layer perturbations informed by blame credit attributions."""
+        prompt_store = PromptLayerStore(self.home)
+        attributions = self.credit_engine.list_attributions(limit=50)
+        blamed_prompt_layers: dict[str, int] = {}
+        for attr in attributions:
+            name = attr.target_id
+            if attr.node_type == "prompt_layer" and prompt_store.is_declared(name):
+                blamed_prompt_layers[name] = blamed_prompt_layers.get(name, 0) + 1
+
+        ordered_layers: list[str] = sorted(
+            blamed_prompt_layers.keys(),
+            key=lambda k: blamed_prompt_layers.get(k, 0),
+            reverse=True,
+        )
+        if not ordered_layers:
+            ordered_layers = [name for name in ("instructions", "identity") if prompt_store.is_declared(name)]
+
+        specs: list[ShadowTrialSpec] = []
+        for layer_id in ordered_layers:
+            if len(specs) >= limit:
+                break
+            current_content = prompt_store.read(layer_id)
+            refinement = "\nStrictly adhere to schema formats and output constraints."
+            candidate_text = current_content.strip() + refinement + "\n"
+            specs.append(
+                ShadowTrialSpec(
+                    trial_id=uuid.uuid4().hex,
+                    target_type="prompt_layer",
+                    target_id=layer_id,
+                    baseline_value=float(len(current_content)),
+                    candidate_value=float(len(candidate_text)),
+                    hypothesis="append_schema_constraint_refinement",
+                    eval_case_ids=("runtime.text.nonempty",),
+                    candidate_content=candidate_text,
+                )
+            )
+
+        return specs[:limit]
+
     def execute_shadow_trial(
         self,
         spec: ShadowTrialSpec,
@@ -196,6 +239,8 @@ class SelfPlayArena:
             ensure_ascii=False,
             sort_keys=True,
         )
+        if spec.target_type == "prompt_layer":
+            candidate_payload = spec.candidate_content
 
         all_checks: list[dict[str, Any]] = []
         for case_id in spec.eval_case_ids:
@@ -214,17 +259,22 @@ class SelfPlayArena:
 
         promoted = passed and auto_promote
         if promoted:
-            self.param_registry.set(
-                spec.target_id,
-                spec.candidate_value,
-                reason=f"self_play_promoted:{spec.trial_id}",
-            )
+            if spec.target_type == "dynamic_parameter":
+                self.param_registry.set(
+                    spec.target_id,
+                    spec.candidate_value,
+                    reason=f"self_play_promoted:{spec.trial_id}",
+                )
+            if spec.target_type == "prompt_layer":
+                prompt_store = PromptLayerStore(self.home)
+                prompt_store.write_override(spec.target_id, spec.candidate_content)
 
         evidence = {
             "checks": all_checks,
             "hypothesis": spec.hypothesis,
             "target_type": spec.target_type,
             "target_id": spec.target_id,
+            "candidate_content": spec.candidate_content,
         }
 
         result = ShadowTrialResult(
@@ -318,10 +368,14 @@ class SelfPlayArena:
         *,
         auto_promote: bool = True,
     ) -> list[ShadowTrialResult]:
-        """Execute a full autonomous exploration and verification cycle."""
-        specs = self.generate_parameter_perturbations(limit=max_trials)
+        """Execute a full autonomous exploration and verification cycle across parameters and prompts."""
+        param_limit = max(1, max_trials - 1)
+        specs: list[ShadowTrialSpec] = []
+        specs.extend(self.generate_parameter_perturbations(limit=param_limit))
+        specs.extend(self.generate_prompt_perturbations(limit=1))
+
         results: list[ShadowTrialResult] = []
-        for spec in specs:
+        for spec in specs[:max_trials]:
             res = self.execute_shadow_trial(spec, auto_promote=auto_promote)
             results.append(res)
         return results

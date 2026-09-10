@@ -14,6 +14,7 @@ from .approval_contract import (
     owned_approval_gate_id,
 )
 from .cron import next_cron_time, validate_cron
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .goals import Goal, GoalStore
 from .lifecycle import Acceptance, Governance, Phase, Resolution
 from .lifecycle_saga import LifecycleSagaStore
@@ -1423,10 +1424,10 @@ def _retry_policy_for_loop_kind(loop_kind: str) -> RetryPolicy:
     """Bound semantic replanning effort by the declared task lifecycle."""
 
     attempts = {
-        "turn": 5,
-        "control": 3,
-        "scheduled": 6,
-        "durable_goal": 10,
+        "turn": int(SYSTEM_DYNAMIC_PARAMETERS.get("loop_max_attempts_turn", 5.0)),
+        "control": int(SYSTEM_DYNAMIC_PARAMETERS.get("loop_max_attempts_control", 3.0)),
+        "scheduled": int(SYSTEM_DYNAMIC_PARAMETERS.get("loop_max_attempts_scheduled", 6.0)),
+        "durable_goal": int(SYSTEM_DYNAMIC_PARAMETERS.get("loop_max_attempts_durable_goal", 10.0)),
     }
     return RetryPolicy(max_attempts=attempts[loop_kind], reflect_before_retry=True)
 

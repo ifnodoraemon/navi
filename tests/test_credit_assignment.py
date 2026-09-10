@@ -265,3 +265,83 @@ def test_e2e_trace_store_evaluation_triggers_credit_backprop(tmp_path: Path) -> 
     reloaded_item = mem_store.get_item(item.id)
     assert reloaded_item is not None
     assert reloaded_item.confidence == 0.85
+
+
+def test_credit_assignment_temporal_difference_discounting(tmp_path: Path) -> None:
+    engine = CreditAssignmentEngine(tmp_path)
+    mem_store = MemoryStore(tmp_path)
+    item_early = mem_store.add_item(
+        "fact",
+        "Early context fact retrieved at step 0",
+        source="test",
+        status="active",
+        confidence=0.50,
+        reason="initial",
+        provenance="test",
+    )
+    item_late = mem_store.add_item(
+        "fact",
+        "Late context fact retrieved at step 1",
+        source="test",
+        status="active",
+        confidence=0.50,
+        reason="initial",
+        provenance="test",
+    )
+
+    ev_early = TraceEvent(
+        id="ev_step0",
+        trace_id="td_trace",
+        session_id="s1",
+        run_id="r1",
+        phase=str(TracePhase.PLANNER_SYSCALL),
+        source="user",
+        peer_id="p1",
+        sender_id="u1",
+        tool="tool0",
+        model_role="planner",
+        ok=True,
+        input_json="{}",
+        output_json=json.dumps({"used_memory_ids": [item_early.id]}),
+        message="step 0",
+        created_at=time.time(),
+    )
+    ev_late = TraceEvent(
+        id="ev_step1",
+        trace_id="td_trace",
+        session_id="s1",
+        run_id="r1",
+        phase=str(TracePhase.PLANNER_SYSCALL),
+        source="user",
+        peer_id="p1",
+        sender_id="u1",
+        tool="tool1",
+        model_role="planner",
+        ok=False,
+        input_json="{}",
+        output_json=json.dumps({"used_memory_ids": [item_late.id]}),
+        message="step 1 failed",
+        created_at=time.time() + 1.0,
+    )
+
+    attributions = engine.backprop_trace(
+        trace_id="td_trace",
+        outcome=str(TraceOutcome.FAILURE),
+        failure_domain=str(TraceFailureDomain.CAPABILITY_FAILURE),
+        events=[ev_early, ev_late],
+    )
+
+    assert len(attributions) == 2
+    attr_by_target = {a.target_id: a for a in attributions}
+
+    assert attr_by_target[item_late.id].reward == -0.5
+    assert attr_by_target[item_early.id].reward == -0.425
+
+    updated_early = mem_store.get_item(item_early.id)
+    updated_late = mem_store.get_item(item_late.id)
+    assert updated_early is not None
+    assert updated_late is not None
+    assert updated_late.confidence == 0.45
+    assert updated_early.confidence == 0.4575
+    assert updated_early.confidence > updated_late.confidence
+
