@@ -473,5 +473,59 @@ def test_cli_evolution_self_play_and_replay_and_parameters(tmp_path: Path):
     assert res_sp_list2.exit_code == 0, res_sp_list2.output
     assert "trial=" in res_sp_list2.output
 
+    # 9. judge-list (empty initially)
+    res_jl = runner.invoke(app, ["evolution", "judge-list"], env=env)
+    assert res_jl.exit_code == 0, res_jl.output
+    assert "No LLM judge evaluations found." in res_jl.output
+
+    # 10. judge-list with an evaluation
+    from navi.db import connect
+    from navi.llm_judge import LLMJudge, LLMJudgeEvaluation
+
+    judge = LLMJudge(tmp_path)
+    mock_eval = LLMJudgeEvaluation(
+        id="ev_cli_1",
+        trace_id="tr_cli_999",
+        session_id="s_cli",
+        reward=0.75,
+        verdict="positive_reinforcement",
+        failure_domain="none",
+        confidence=0.9,
+        reasoning="Good response",
+        user_prompt="Hello",
+        assistant_response="Hi",
+        followup_feedback="Great",
+        created_at=1000.0,
+    )
+    with connect(judge.db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO llm_judge_evaluations (
+                id, trace_id, session_id, reward, verdict, failure_domain,
+                confidence, reasoning, user_prompt, assistant_response,
+                followup_feedback, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                mock_eval.id,
+                mock_eval.trace_id,
+                mock_eval.session_id,
+                mock_eval.reward,
+                mock_eval.verdict,
+                mock_eval.failure_domain,
+                mock_eval.confidence,
+                mock_eval.reasoning,
+                mock_eval.user_prompt,
+                mock_eval.assistant_response,
+                mock_eval.followup_feedback,
+                mock_eval.created_at,
+            ),
+        )
+
+    res_jl2 = runner.invoke(app, ["evolution", "judge-list"], env=env)
+    assert res_jl2.exit_code == 0, res_jl2.output
+    assert "LLM Judge Evaluations" in res_jl2.output
+    assert "tr_cli_999" in res_jl2.output
+
 
 

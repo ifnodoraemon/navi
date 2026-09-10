@@ -90,6 +90,103 @@ class TurnLifecycleMixin:
         except Exception as e:
             logger.error(f"Failed to publish turn completed event: {e}", exc_info=True)
 
+    def _trigger_background_llm_judge(
+        self,
+        *,
+        trace_id: str,
+        session_id: str,
+        user_prompt: str,
+        assistant_response: str,
+        followup_feedback: str,
+    ) -> None:
+        if not trace_id or not followup_feedback:
+            return
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            return
+        if not loop.is_running():
+            return
+        task = asyncio.create_task(
+            self._run_background_llm_judge(
+                trace_id=trace_id,
+                session_id=session_id,
+                user_prompt=user_prompt,
+                assistant_response=assistant_response,
+                followup_feedback=followup_feedback,
+            )
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _run_background_llm_judge(
+        self,
+        *,
+        trace_id: str,
+        session_id: str,
+        user_prompt: str,
+        assistant_response: str,
+        followup_feedback: str,
+    ) -> None:
+        import logging
+        from .llm_judge import LLMJudge
+
+        logger = logging.getLogger("navi.turn_lifecycle")
+        try:
+            provider = getattr(self.runtime, "provider", None)
+            judge = LLMJudge(self.home)
+            evaluation = await judge.evaluate_async(
+                trace_id=trace_id,
+                session_id=session_id,
+                user_prompt=user_prompt,
+                assistant_response=assistant_response,
+                followup_feedback=followup_feedback,
+                provider=provider,
+            )
+            if evaluation is not None:
+                judge.apply_judgment(evaluation)
+                logger.info(
+                    "LLM judge evaluated trace %s: reward=%.2f verdict=%s domain=%s",
+                    trace_id,
+                    evaluation.reward,
+                    evaluation.verdict,
+                    evaluation.failure_domain,
+                )
+        except Exception as exc:
+            logger.warning("Background LLM judge failed for trace %s: %s", trace_id, exc)
+
+    def _evaluate_prior_assistant_feedback(self, session_id: str, followup_feedback: str) -> None:
+        if not session_id or not followup_feedback:
+            return
+        try:
+            prior_messages = self.runtime.memory.get_messages(session_id, limit=6)
+        except Exception:
+            return
+        if not prior_messages:
+            return
+        last_msg = prior_messages[-1]
+        if last_msg.role != "assistant":
+            return
+        if not last_msg.trace_id:
+            return
+
+        prior_user_prompt = ""
+        for msg in reversed(prior_messages[:-1]):
+            if msg.role == "user":
+                prior_user_prompt = msg.content
+                break
+
+        self._trigger_background_llm_judge(
+            trace_id=last_msg.trace_id,
+            session_id=session_id,
+            user_prompt=prior_user_prompt,
+            assistant_response=last_msg.content,
+            followup_feedback=followup_feedback,
+        )
+
     def _record_turn(
         self,
         user_text: str,
@@ -102,6 +199,7 @@ class TurnLifecycleMixin:
         sender_id: str = "",
     ) -> AgentTurnResult:
         session_id = session_id or self.runtime.memory.new_session_id()
+        self._evaluate_prior_assistant_feedback(session_id, user_text)
         self.runtime.memory.add_message(
             session_id,
             "user",

@@ -71,6 +71,7 @@ _FAILURE_DOMAIN_SEVERITY: dict[str, float] = {
     str(TraceFailureDomain.LOOP_NO_PROGRESS): 0.8,
     str(TraceFailureDomain.PLANNER_OR_PARSER): 0.7,
     str(TraceFailureDomain.CHECKER_BLOCKED): 0.6,
+    str(TraceFailureDomain.MISUNDERSTANDING): 0.6,
     str(TraceFailureDomain.CAPABILITY_FAILURE): 0.5,
     str(TraceFailureDomain.RUNTIME): 0.4,
     str(TraceFailureDomain.PROVIDER_NO_RESPONSE): 0.3,
@@ -231,11 +232,21 @@ class CreditAssignmentEngine:
         events: list[Any],
         evidence: dict[str, Any] | None = None,
         now: float | None = None,
+        custom_reward: float | None = None,
     ) -> list[CausalCreditAttribution]:
         """Execute backward attribution pass on the trace execution graph."""
         if not events:
             return []
         reward = compute_terminal_reward(outcome, failure_domain, param_registry=self.param_registry)
+        if custom_reward is not None:
+            reward = float(custom_reward)
+        if evidence is not None and custom_reward is None:
+            cr = evidence.get("custom_reward")
+            if cr is not None:
+                reward = float(cr)
+            rw = evidence.get("reward")
+            if rw is not None and cr is None:
+                reward = float(rw)
         attributions: list[CausalCreditAttribution] = []
 
         # 1. Extract used memory items across planner syscall events with temporal discounting
@@ -326,10 +337,12 @@ class CreditAssignmentEngine:
                 )
             )
 
-        # 4. Backprop to Prompt Layers on planner/parser failures
+        # 4. Backprop to Prompt Layers on planner/parser/misunderstanding failures
         if failure_domain in {
             str(TraceFailureDomain.PLANNER_OR_PARSER),
             str(TraceFailureDomain.CHECKER_BLOCKED),
+            str(TraceFailureDomain.MISUNDERSTANDING),
+            str(TraceFailureDomain.LOOP_NO_PROGRESS),
         }:
             target_layer = "instructions"
             attributions.append(
@@ -462,6 +475,7 @@ class CreditAssignmentEngine:
                 events=events,
                 evidence=evidence,
                 now=now,
+                custom_reward=reward,
             )
         except Exception:
             pass

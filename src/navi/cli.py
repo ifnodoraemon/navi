@@ -1340,6 +1340,39 @@ def evolution_parameters(
         typer.echo(f"metadata: {json.dumps(meta, ensure_ascii=False, indent=2)}")
 
 
+@evolution_app.command("judge-list")
+def evolution_judge_list(
+    trace_id: str = typer.Option("", "--trace", "-t", help="Filter evaluations by trace ID"),
+    limit: int = typer.Option(20, "--limit", "-l", help="Max evaluations to display"),
+) -> None:
+    """List semantic evaluations and rewards from the LLM meta-cognitive judge."""
+    home = ensure_home()
+    from .llm_judge import LLMJudge
+
+    judge = LLMJudge(home)
+    evals = []
+    if trace_id:
+        single = judge.get_evaluation(trace_id)
+        if single is not None:
+            evals = [single]
+    if not trace_id:
+        evals = judge.list_evaluations(limit=limit)
+
+    if not evals:
+        typer.echo("No LLM judge evaluations found.")
+        return
+
+    typer.echo(f"LLM Judge Evaluations ({len(evals)} shown):")
+    for e in evals:
+        typer.echo(
+            f"trace={e.trace_id[:12]} reward={e.reward:+.2f} verdict={e.verdict} domain={e.failure_domain} conf={e.confidence:.2f}"
+        )
+        if e.followup_feedback:
+            typer.echo(f"  feedback: {e.followup_feedback[:80]!r}")
+        if e.reasoning:
+            typer.echo(f"  reasoning: {e.reasoning[:100]!r}")
+
+
 @service_app.command("unit")
 def service_unit() -> None:
     """Print a systemd user unit for the active assistant."""

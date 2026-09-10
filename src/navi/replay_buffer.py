@@ -5,7 +5,7 @@ CLI, API, and synthetic self-play environments.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import logging
 from pathlib import Path
@@ -369,6 +369,21 @@ class ExperienceReplayBuffer:
             created_at=float(row[9]),
         )
 
+    def get_by_trace(self, trace_id: str) -> ExperienceReplayEntry | None:
+        query = """
+            SELECT id, trace_id, channel, prompt, response, reward,
+                   priority, safeguard_triggered, metadata_json, created_at
+            FROM experience_replay_buffer
+            WHERE trace_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+        """
+        with connect(self.db_path) as conn:
+            row = conn.execute(query, (trace_id,)).fetchone()
+        if row is None:
+            return None
+        return self._row_to_entry(row)
+
     def ingest_from_trace(
         self,
         *,
@@ -378,6 +393,7 @@ class ExperienceReplayBuffer:
         events: list[Any],
         evidence: dict[str, Any] | None = None,
         now: float | None = None,
+        custom_reward: float | None = None,
     ) -> ExperienceReplayEntry | None:
         if not events:
             return None
@@ -385,6 +401,18 @@ class ExperienceReplayBuffer:
         from .credit_assignment import compute_terminal_reward
 
         reward = compute_terminal_reward(outcome, failure_domain, param_registry=self.param_registry)
+        if custom_reward is not None:
+            reward = float(custom_reward)
+        if evidence is not None and custom_reward is None:
+            cr = evidence.get("custom_reward")
+            if cr is not None:
+                reward = float(cr)
+            rw = evidence.get("reward")
+            if rw is not None and cr is None:
+                reward = float(rw)
+            lj = evidence.get("llm_judge")
+            if lj is not None and isinstance(lj, dict) and "reward" in lj and cr is None and rw is None:
+                reward = float(lj["reward"])
 
         ev: dict[str, Any] = {}
         if evidence is not None:
@@ -415,6 +443,10 @@ class ExperienceReplayBuffer:
                     if inp:
                         prompt = inp
                         break
+        if not prompt and "llm_judge" in ev:
+            lj = ev["llm_judge"]
+            if isinstance(lj, dict) and lj.get("user_prompt"):
+                prompt = str(lj["user_prompt"])
         if not prompt:
             prompt = f"trace:{trace_id}"
 
@@ -432,6 +464,10 @@ class ExperienceReplayBuffer:
                     if out:
                         response = out
                         break
+        if not response and "llm_judge" in ev:
+            lj = ev["llm_judge"]
+            if isinstance(lj, dict) and lj.get("assistant_response"):
+                response = str(lj["assistant_response"])
         if not response:
             response = f"outcome:{outcome}:{failure_domain}"
 
@@ -445,6 +481,42 @@ class ExperienceReplayBuffer:
                     if not bool(getattr(event, "ok", True)):
                         safeguard_triggered = True
                         break
+
+        # 5. If trace already exists in replay buffer, update in place
+        existing = self.get_by_trace(trace_id)
+        if existing is not None:
+            alpha = self.param_registry.get("replay_priority_alpha", 0.60)
+            epsilon = self.param_registry.get("replay_priority_epsilon", 0.01)
+            calc_priority = compute_replay_priority(reward, alpha=alpha, epsilon=epsilon)
+            meta = dict(existing.metadata)
+            meta["outcome"] = outcome
+            meta["failure_domain"] = failure_domain
+            meta["evidence"] = ev
+            if "llm_judge" in ev:
+                meta["llm_judge"] = ev["llm_judge"]
+            with connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE experience_replay_buffer
+                    SET reward = ?, priority = ?, safeguard_triggered = ?,
+                        metadata_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        float(reward),
+                        float(calc_priority),
+                        int(safeguard_triggered),
+                        json.dumps(meta, ensure_ascii=False, sort_keys=True),
+                        existing.id,
+                    ),
+                )
+            return replace(
+                existing,
+                reward=float(reward),
+                priority=float(calc_priority),
+                safeguard_triggered=bool(safeguard_triggered),
+                metadata=meta,
+            )
 
         meta: dict[str, Any] = {
             "outcome": outcome,

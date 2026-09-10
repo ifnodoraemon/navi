@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from navi.api import create_app
@@ -146,3 +147,43 @@ def test_api_endpoints_core_routes(tmp_path: Path, valid_runtime_config):
     )
     assert res_cycle.status_code == 200
     assert "trials" in res_cycle.json()["data"]
+
+    # 21. LLM Judge evaluations (list empty initially)
+    res_judge_list = client.get(api_path("llm_judge_evaluations"), headers=headers)
+    assert res_judge_list.status_code == 200
+    assert "evaluations" in res_judge_list.json()["data"]
+    assert res_judge_list.json()["data"]["total_count"] == 0
+
+    # 22. LLM Judge evaluate
+    with patch("navi.llm_judge.LLMJudge.evaluate_async") as mock_eval:
+        from navi.llm_judge import LLMJudgeEvaluation
+
+        mock_eval.return_value = LLMJudgeEvaluation(
+            id="ev_api_1",
+            trace_id="tr_api_1",
+            session_id="s_api_1",
+            reward=0.88,
+            verdict="positive_reinforcement",
+            failure_domain="none",
+            confidence=0.92,
+            reasoning="Grounded test evaluation",
+            user_prompt="Hello",
+            assistant_response="Hi",
+            followup_feedback="Great",
+            created_at=1000.0,
+        )
+        res_judge_post = client.post(
+            api_path("llm_judge_evaluate"),
+            json={
+                "trace_id": "tr_api_1",
+                "session_id": "s_api_1",
+                "user_prompt": "Hello",
+                "assistant_response": "Hi",
+                "followup_feedback": "Great",
+                "apply_to_buffer": False,
+            },
+            headers=headers,
+        )
+        assert res_judge_post.status_code == 200
+        assert res_judge_post.json()["data"]["reward"] == 0.88
+        assert res_judge_post.json()["data"]["verdict"] == "positive_reinforcement"

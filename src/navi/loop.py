@@ -86,6 +86,7 @@ class TraceFailureDomain(StrEnum):
     CHECKER_BLOCKED = "checker_blocked"
     LOOP_NO_PROGRESS = "loop_no_progress"
     MISSING_COMPLETION_CHECK = "missing_completion_check"
+    MISUNDERSTANDING = "misunderstanding"
     NONE = "none"
     PLANNER_OR_PARSER = "planner_or_parser"
     PROVIDER_NO_RESPONSE = "provider_no_response"

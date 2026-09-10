@@ -402,6 +402,10 @@ class SelfPlayArena:
                 "append_terminal_verification_refinement",
                 "\nExplicitly verify terminal criteria before marking execution complete.",
             ),
+            "misunderstanding": (
+                "append_intent_alignment_refinement",
+                "\nCarefully disambiguate user intent and address implicit nuances before proceeding.",
+            ),
         }
         res = domain_mutations.get(
             failure_domain,

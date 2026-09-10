@@ -144,6 +144,15 @@ class SelfPlayCycleRequest(BaseModel):
     use_ema: bool = True
 
 
+class LLMJudgeEvaluateRequest(BaseModel):
+    trace_id: str = Field(min_length=1)
+    session_id: str = ""
+    user_prompt: str = Field(min_length=1)
+    assistant_response: str = Field(min_length=1)
+    followup_feedback: str = ""
+    apply_to_buffer: bool = True
+
+
 def _is_public_request(request: Request) -> bool:
     path = request.url.path.rstrip("/") or "/"
     if path == "/ui/trace" or path.startswith("/ui/trace/"):
@@ -956,6 +965,51 @@ def _register_state_routes(
             provider=provider,
         )
         return {"trials": [r.to_dict() for r in results]}
+
+    @app.get(api_path("llm_judge_evaluations"))
+    def list_llm_judge_evaluations(
+        trace_id: str = "",
+        limit: int = 50,
+    ) -> dict:
+        from .llm_judge import LLMJudge
+
+        judge = LLMJudge(home)
+        if trace_id:
+            eval_item = judge.get_evaluation(trace_id)
+            items = []
+            if eval_item is not None:
+                items = [eval_item]
+            return {"evaluations": [e.to_dict() for e in items], "total_count": len(items)}
+        evals = judge.list_evaluations(limit=limit)
+        return {"evaluations": [e.to_dict() for e in evals], "total_count": len(evals)}
+
+    @app.post(api_path("llm_judge_evaluate"))
+    async def evaluate_interaction_with_llm_judge(request: LLMJudgeEvaluateRequest) -> dict:
+        from .config import load_config
+        from .llm_judge import LLMJudge
+        from .provider import build_provider
+
+        provider = None
+        try:
+            cfg = load_config(home)
+            provider = build_provider(cfg.model)
+        except Exception:
+            provider = None
+
+        judge = LLMJudge(home)
+        evaluation = await judge.evaluate_async(
+            trace_id=request.trace_id,
+            session_id=request.session_id,
+            user_prompt=request.user_prompt,
+            assistant_response=request.assistant_response,
+            followup_feedback=request.followup_feedback,
+            provider=provider,
+        )
+        if evaluation is None:
+            raise HTTPException(status_code=500, detail="LLM judge evaluation failed")
+        if request.apply_to_buffer:
+            judge.apply_judgment(evaluation)
+        return evaluation.to_dict()
 
     @app.get(api_path("connector_status"))
     def connector_status(connector_name: str) -> dict:

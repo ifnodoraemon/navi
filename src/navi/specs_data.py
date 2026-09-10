@@ -96,6 +96,8 @@ API_PATHS_SPEC: Any = {
     "replay_buffer": "/v1/replay-buffer",
     "self_play_trials": "/v1/self-play-trials",
     "self_play_cycle": "/v1/self-play-cycle",
+    "llm_judge_evaluations": "/v1/llm-judge-evaluations",
+    "llm_judge_evaluate": "/v1/llm-judge/evaluate",
 }
 
 CLI_PROVIDERS_SPEC: Any = [
