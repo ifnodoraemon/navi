@@ -43,6 +43,9 @@ SYSTEM_DYNAMIC_PARAMETERS: dict[str, float] = {
     "context_recent_base_query": 620.0,
     "context_message_rank_base_score": 900.0,
     "context_memory_recall_base_score": 800.0,
+    "consolidation_idle_seconds": 30.0,
+    "memory_llm_rerank_threshold": 0.50,
+    "memory_conflict_similarity_threshold": 0.35,
 
     # Transport and network retry parameters
     "provider_retry_after_seconds": 15.0,

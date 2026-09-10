@@ -127,6 +127,8 @@ class MemoryStore:
         self,
         home: Path,
         provider: MemoryProvider | None = None,
+        *,
+        registry: Any | None = None,
     ):
         self.home = home
         self.memory_dir = home / "memory"
@@ -135,6 +137,7 @@ class MemoryStore:
         self._parameters_cache: dict[str, float] = {}
         self._parameters_initialized = False
         self._recent_recall_queries: dict[str, str] = {}
+        self._registry = registry  # DynamicParameterRegistry or None (unified param surface)
 
     def _ensure_parameters(self) -> None:
         now = time.time()
@@ -149,6 +152,12 @@ class MemoryStore:
         self._parameters_cache = {name: val for name, (val, _, _) in persisted.items()}
 
     def get_parameter(self, name: str, default: float | None = None) -> float:
+        # Try unified registry first (supports Adam momentum, EMA, rollback)
+        if self._registry is not None:
+            registry_val = self._registry.get(name)
+            if registry_val is not None:
+                return float(registry_val)
+        # Fall back to memory-local parameter store
         self._ensure_parameters()
         fallback = _effective_param(default, DEFAULT_MEMORY_PARAMETERS.get(name, 0.0))
         return float(self._parameters_cache.get(name, fallback))
@@ -183,6 +192,9 @@ class MemoryStore:
         val = float(value)
         self._parameters_cache[name] = val
         self.provider.set_parameter(name, val, updated_at=now, metadata=meta)
+        # Write-through to unified registry for Adam/EMA support
+        if self._registry is not None:
+            self._registry.set(name, val, reason=meta.get("reason", "memory_set_parameter"))
 
     def list_parameters(self) -> dict[str, dict[str, Any]]:
         self._ensure_parameters()
@@ -741,6 +753,13 @@ class MemoryStore:
                 updated_at=current_time,
             )
         )
+        # Enqueue reflective repair when item transitions to stale
+        (is_stale and new_status == "stale") and self.enqueue_reflective_repair(
+            item_id,
+            reason=reason,
+            delta=delta,
+            provenance=provenance,
+        )
         return self.get_item(item_id)
 
     def sync_semantic_graph(
@@ -1081,6 +1100,436 @@ class MemoryStore:
         for existing_id, _score, existing_reasons in ranked_candidates:
             matches = existing_id == item_id
             matches and existing_reasons.extend([r for r in reasons if r not in existing_reasons])
+
+    # ── LLM Semantic Reranking (replaces embedding-based retrieval) ──────
+
+    async def recall_async(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        goal: str = "",
+        allowed_scopes: set[str] | frozenset[str] | None = None,
+        now: float | None = None,
+        provider: Any | None = None,
+    ) -> list[MemoryRecall]:
+        """Async recall with optional LLM semantic reranking.
+
+        Performs standard FTS+Jaccard recall, then sends top candidates
+        to the LLM for semantic relevance reranking when a provider is
+        available and enough candidates exist.
+        """
+        current_time = _resolve_now(now)
+        fts_query = f"{query} {goal}".strip()
+        if not fts_query:
+            return []
+        base_results = self._do_recall(
+            fts_query,
+            query=query,
+            limit=limit,
+            goal=goal,
+            allowed_scopes=allowed_scopes,
+            now=current_time,
+        )
+        if not provider:
+            return base_results
+        rerank_threshold = self.get_parameter("memory_llm_rerank_threshold", 0.50)
+        min_candidates = max(1, int(limit * rerank_threshold))
+        if len(base_results) < min_candidates:
+            return base_results
+        return await self._llm_rerank_candidates(
+            query=query,
+            goal=goal,
+            candidates=base_results,
+            provider=provider,
+            limit=limit,
+        )
+
+    async def _llm_rerank_candidates(
+        self,
+        *,
+        query: str,
+        goal: str,
+        candidates: list[MemoryRecall],
+        provider: Any,
+        limit: int = 10,
+    ) -> list[MemoryRecall]:
+        """Use LLM to semantically rerank memory recall candidates.
+
+        Sends candidate items to the LLM and asks it to score each by
+        relevance. Falls back to original ordering on any failure.
+        """
+        items_text = "\n".join(
+            f"- ID: {recall.item.id} | Content: {recall.item.content[:500]}"
+            for recall in candidates[:30]
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a memory retrieval relevance judge. "
+                    "Given a query and goal, rank the following memory items by semantic relevance."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Query: {query}\n"
+                    f"Goal: {goal or 'general recall'}\n\n"
+                    f"Memory items:\n{items_text}\n\n"
+                    "Return a JSON object with a \"ranked\" array of objects, "
+                    "each having \"id\" (item ID) and \"score\" (float 0.0-1.0 where 1.0 is most relevant). "
+                    "Only include items that have ANY relevance. Omit completely irrelevant items."
+                ),
+            },
+        ]
+        output_schema = {
+            "name": "memory_rerank",
+            "strict": False,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "ranked": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "score": {"type": "number"},
+                            },
+                            "required": ["id", "score"],
+                        },
+                    }
+                },
+                "required": ["ranked"],
+                "additionalProperties": False,
+            },
+        }
+        try:
+            response = await provider.complete_for("evaluator", messages, output_schema=output_schema)
+            data = json.loads(response)
+            if not isinstance(data, dict):
+                return candidates
+            ranked_list = _as_list(data.get("ranked"))
+            if not ranked_list:
+                return candidates
+            # Build reranked result preserving MemoryRecall objects
+            score_map = {entry["id"]: float(entry.get("score", 0.0)) for entry in ranked_list if isinstance(entry, dict)}
+            by_id = {recall.item.id: recall for recall in candidates}
+            reranked: list[MemoryRecall] = []
+            for item_id in sorted(score_map, key=lambda k: score_map[k], reverse=True):
+                original = by_id.get(item_id)
+                if not original:
+                    continue
+                reranked.append(
+                    MemoryRecall(
+                        item=original.item,
+                        score=score_map[item_id],
+                        reasons=[*original.reasons, f"llm_rerank_score={score_map[item_id]:.4f}"],
+                    )
+                )
+            # Append any candidates the LLM omitted (preserving original order)
+            reranked_ids = {r.item.id for r in reranked}
+            for recall in candidates:
+                (recall.item.id not in reranked_ids) and reranked.append(recall)
+            return reranked[:limit]
+        except Exception as exc:
+            logger.warning("LLM reranking failed, using original ordering: %s", exc)
+            return candidates
+
+    # ── Proactive Semantic Conflict Auditor ──────────────────────────────
+
+    async def audit_semantic_conflicts(
+        self,
+        provider: Any,
+        *,
+        limit: int = 20,
+        allowed_scopes: set[str] | frozenset[str] | None = None,
+    ) -> list[MemoryConflict]:
+        """Use LLM to proactively discover semantic contradictions between memory items.
+
+        Instead of relying on passive metadata.contradicts declarations,
+        this method compares pairs of same-scope items with high lexical
+        overlap and asks the LLM to identify true contradictions.
+        """
+        items = self.list_items(allowed_scopes=allowed_scopes, limit=200)
+        if len(items) < 2:
+            return []
+
+        # Group items by scope and find high-overlap pairs
+        scope_groups: dict[str, list[MemoryItem]] = {}
+        for item in items:
+            if item.status not in RECALLABLE_STATUSES:
+                continue
+            scope_groups.setdefault(item.scope, []).append(item)
+
+        similarity_threshold = self.get_parameter("memory_conflict_similarity_threshold", 0.35)
+        candidate_pairs: list[tuple[MemoryItem, MemoryItem, float]] = []
+        for scope, scope_items in scope_groups.items():
+            for i, item_a in enumerate(scope_items):
+                for item_b in scope_items[i + 1:]:
+                    sim = self._lexical_similarity(item_a.content, item_b.content)
+                    (sim >= similarity_threshold) and candidate_pairs.append((item_a, item_b, sim))
+
+        candidate_pairs.sort(key=lambda p: p[2], reverse=True)
+        pairs_to_check = candidate_pairs[:limit]
+
+        discovered: list[MemoryConflict] = []
+        for item_a, item_b, sim in pairs_to_check:
+            conflict = await self._llm_check_contradiction(provider, item_a, item_b)
+            if conflict is not None:
+                discovered.append(conflict)
+        return discovered
+
+    async def _llm_check_contradiction(
+        self,
+        provider: Any,
+        item_a: MemoryItem,
+        item_b: MemoryItem,
+    ) -> MemoryConflict | None:
+        """Ask LLM whether two memory items semantically contradict each other."""
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a knowledge consistency auditor. "
+                    "Analyze two memory items and determine if they contradict each other."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Item A (ID: {item_a.id}):\n{item_a.content}\n\n"
+                    f"Item B (ID: {item_b.id}):\n{item_b.content}\n\n"
+                    "Return a JSON object with:\n"
+                    '- "contradicts": boolean (true if they semantically contradict)\n'
+                    '- "relation": string ("contradicts", "supersedes", "consistent", "overlapping")\n'
+                    '- "explanation": string (brief reason)\n'
+                    '- "superseded_id": string (ID of the item that should be superseded, empty if N/A)'
+                ),
+            },
+        ]
+        output_schema = {
+            "name": "conflict_analysis",
+            "strict": False,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "contradicts": {"type": "boolean"},
+                    "relation": {"type": "string"},
+                    "explanation": {"type": "string"},
+                    "superseded_id": {"type": "string"},
+                },
+                "required": ["contradicts", "relation", "explanation"],
+                "additionalProperties": False,
+            },
+        }
+        try:
+            response = await provider.complete_for("evaluator", messages, output_schema=output_schema)
+            data = json.loads(response)
+            if not isinstance(data, dict):
+                return None
+            if not data.get("contradicts", False):
+                return None
+            relation = str(data.get("relation", "contradicts"))
+            explanation = str(data.get("explanation", ""))
+            superseded_id = str(data.get("superseded_id", ""))
+
+            # Record discovered contradiction in item metadata
+            meta_a = dict(item_a.metadata)
+            existing_contradicts = _as_list(meta_a.get("contradicts"))
+            (item_b.id not in existing_contradicts) and existing_contradicts.append(item_b.id)
+            meta_a["contradicts"] = existing_contradicts
+            meta_a["llm_conflict_explanation"] = explanation
+            self.provider.store_item(replace(item_a, metadata=meta_a, updated_at=time.time()))
+
+            meta_b = dict(item_b.metadata)
+            existing_contradicts_b = _as_list(meta_b.get("contradicts"))
+            (item_a.id not in existing_contradicts_b) and existing_contradicts_b.append(item_a.id)
+            meta_b["contradicts"] = existing_contradicts_b
+            self.provider.store_item(replace(item_b, metadata=meta_b, updated_at=time.time()))
+
+            # Handle supersession
+            _apply_supersession = {
+                True: lambda: self._mark_superseded(superseded_id, item_a, item_b),
+                False: lambda: None,
+            }
+            _apply_supersession[bool(superseded_id and superseded_id in {item_a.id, item_b.id})]()
+
+            return MemoryConflict(
+                item=item_a,
+                relation=relation,
+                conflicting_item_id=item_b.id,
+                conflicting_item=item_b,
+                status=_memory_conflict_status(item_a, item_b),
+                reason=f"llm_audit: {explanation}",
+            )
+        except Exception as exc:
+            logger.warning("LLM contradiction check failed for %s vs %s: %s", item_a.id, item_b.id, exc)
+            return None
+
+    def _mark_superseded(
+        self,
+        superseded_id: str,
+        item_a: MemoryItem,
+        item_b: MemoryItem,
+    ) -> None:
+        """Mark the superseded item's metadata when LLM identifies supersession."""
+        items_by_id = {item_a.id: item_a, item_b.id: item_b}
+        superseded = items_by_id.get(superseded_id)
+        if not superseded:
+            return
+        superseding_id = {True: item_b.id, False: item_a.id}[superseded_id == item_a.id]
+        meta = dict(superseded.metadata)
+        meta["superseded_by"] = superseding_id
+        self.provider.store_item(replace(superseded, metadata=meta, updated_at=time.time()))
+
+    # ── Reflective Memory Reconstruction ─────────────────────────────────
+
+    async def repair_stale_item(
+        self,
+        item: MemoryItem,
+        *,
+        provider: Any,
+        reason: str,
+        trace_context: str = "",
+    ) -> MemoryItem | None:
+        """Use LLM to generate a corrected replacement for a stale memory item.
+
+        Instead of simply retiring penalized items, this asks the LLM to
+        analyze why the memory was incorrect and produce a corrected version.
+        Returns the new repaired item, or None if retirement is appropriate.
+        """
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a memory repair agent. A memory item has been penalized "
+                    "and marked stale due to poor performance. Analyze why it might be "
+                    "incorrect or misleading, and produce a corrected version."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Stale item:\n"
+                    f"- ID: {item.id}\n"
+                    f"- Content: {item.content}\n"
+                    f"- Type: {item.type}\n"
+                    f"- Scope: {item.scope}\n"
+                    f"- Confidence was: {item.confidence}\n"
+                    f"- Reason for staleness: {reason}\n"
+                    f"- Trace context: {trace_context or 'none'}\n\n"
+                    "Return a JSON object with:\n"
+                    '- "should_repair": boolean (false if the item should simply be retired)\n'
+                    '- "corrected_content": string (the improved memory content)\n'
+                    '- "correction_reason": string (why the correction was made)\n'
+                    '- "confidence": number (suggested confidence 0.0-1.0 for the repaired item)'
+                ),
+            },
+        ]
+        output_schema = {
+            "name": "memory_repair",
+            "strict": False,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "should_repair": {"type": "boolean"},
+                    "corrected_content": {"type": "string"},
+                    "correction_reason": {"type": "string"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["should_repair", "corrected_content", "correction_reason"],
+                "additionalProperties": False,
+            },
+        }
+        try:
+            response = await provider.complete_for("evaluator", messages, output_schema=output_schema)
+            data = json.loads(response)
+            if not isinstance(data, dict):
+                return None
+            if not data.get("should_repair", False):
+                logger.info("LLM recommends retiring stale item %s (no repair)", item.id)
+                return None
+
+            corrected_content = str(data.get("corrected_content", "")).strip()
+            if not corrected_content:
+                return None
+
+            correction_reason = str(data.get("correction_reason", "reflective_repair"))
+            suggested_confidence = float(data.get("confidence", 0.60))
+            clamped_confidence = round(max(0.1, min(1.0, suggested_confidence)), 4)
+
+            # Revoke the stale item
+            self.set_status(item.id, "revoked")
+
+            # Add corrected replacement
+            new_item = self.add_item(
+                content=corrected_content,
+                memory_type=item.type,
+                scope=item.scope,
+                confidence=clamped_confidence,
+                source="reflective_repair",
+                provenance=f"reflective_repair:{item.id}",
+                reason=f"reflective_repair: {correction_reason}",
+                metadata={
+                    "repaired_from": item.id,
+                    "correction_reason": correction_reason,
+                    "original_content": item.content[:500],
+                },
+            )
+            logger.info(
+                "Reflective repair: replaced stale item %s with new item %s (confidence=%.2f)",
+                item.id,
+                new_item.id,
+                clamped_confidence,
+            )
+            return new_item
+        except Exception as exc:
+            logger.warning("Reflective repair failed for item %s: %s", item.id, exc)
+            return None
+
+    def enqueue_reflective_repair(
+        self,
+        item_id: str,
+        *,
+        reason: str,
+        delta: float,
+        provenance: str,
+    ) -> str:
+        """Enqueue a reflective repair job for a stale memory item.
+
+        Uses the consolidation job infrastructure with a special source marker
+        to schedule asynchronous LLM-driven repair.
+        """
+        job_id = uuid.uuid4().hex
+        now = time.time()
+        with connect(db_paths(self.home).memory) as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_consolidation_jobs(
+                    id, session_id, run_id, source, peer_id, sender_id, status,
+                    owner, lease_expires_at, attempts, error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, '', '', 'pending', '', 0, 0, '', ?, ?)
+                ON CONFLICT(session_id, run_id) DO NOTHING
+                """,
+                (
+                    job_id,
+                    f"reflective_repair:{item_id}",
+                    f"repair:{item_id}:{now:.0f}",
+                    f"reflective_repair",
+                    now,
+                    now,
+                ),
+            )
+        logger.info(
+            "Enqueued reflective repair job %s for stale item %s (delta=%.4f reason=%s)",
+            job_id,
+            item_id,
+            delta,
+            reason,
+        )
+        return job_id
 
     def _lexical_similarity(
         self,

@@ -511,6 +511,24 @@ class SystemDaemon:
                 "failed": len(failures),
                 "failures": failures,
             }
+
+            # Proactive semantic conflict audit (LLM-driven)
+            try:
+                discovered_conflicts = await memory.audit_semantic_conflicts(
+                    runtime.provider,
+                    limit=10,
+                )
+                facts["conflict_audit"] = {
+                    "discovered": len(discovered_conflicts),
+                    "conflicts": [
+                        {"item_id": c.item.id, "conflicting_id": c.conflicting_item_id, "relation": c.relation}
+                        for c in discovered_conflicts
+                    ],
+                }
+            except Exception as audit_exc:
+                logger.warning("Proactive conflict audit failed: %s", audit_exc)
+                facts["conflict_audit"] = {"discovered": 0, "error": str(audit_exc)[:200]}
+
             from .retention import DataRetentionManager
 
             facts["retention"] = await asyncio.to_thread(

@@ -187,6 +187,89 @@ class TurnLifecycleMixin:
             followup_feedback=followup_feedback,
         )
 
+    def _trigger_background_consolidation(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+    ) -> None:
+        """Trigger near-realtime consolidation as a background async task."""
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            return
+        if not loop.is_running():
+            return
+        task = asyncio.create_task(
+            self._run_background_consolidation(
+                session_id=session_id,
+                run_id=run_id,
+                source=source,
+                peer_id=peer_id,
+                sender_id=sender_id,
+            )
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _run_background_consolidation(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+    ) -> None:
+        """Execute consolidation for the current turn in the background.
+
+        Debounces via consolidation_idle_seconds, then claims and runs
+        pending consolidation jobs near-realtime instead of waiting for
+        the 30-minute daemon maintenance cycle.
+        """
+        import logging
+        import os
+        import uuid
+
+        logger = logging.getLogger("navi.turn_lifecycle")
+        try:
+            from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
+            idle_seconds = SYSTEM_DYNAMIC_PARAMETERS.get("consolidation_idle_seconds", 30.0)
+            await asyncio.sleep(idle_seconds)
+
+            memory = self.runtime.memory
+            owner = f"realtime-consolidation:{os.getpid()}:{uuid.uuid4().hex}"
+            jobs = await asyncio.to_thread(
+                memory.claim_consolidation_jobs,
+                owner=owner,
+                limit=1,
+            )
+            if not jobs:
+                return
+
+            for job in jobs:
+                try:
+                    await memory.consolidate_job(job, self.runtime)
+                    logger.info(
+                        "Near-realtime consolidation completed for session=%s run=%s",
+                        session_id,
+                        run_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Near-realtime consolidation failed for job %s: %s",
+                        job.id,
+                        exc,
+                    )
+        except Exception as exc:
+            logger.warning("Background consolidation dispatch failed: %s", exc)
+
     def _record_turn(
         self,
         user_text: str,
@@ -222,9 +305,17 @@ class TurnLifecycleMixin:
                 trace_id=trace_id,
                 run_id=result.run_id,
             )
+        effective_run_id = result.run_id or trace_id or result.session_id
         self.runtime.memory.enqueue_consolidation(
             session_id=session_id,
-            run_id=result.run_id or trace_id or result.session_id,
+            run_id=effective_run_id,
+            source=source,
+            peer_id=peer_id,
+            sender_id=sender_id,
+        )
+        self._trigger_background_consolidation(
+            session_id=session_id,
+            run_id=effective_run_id,
             source=source,
             peer_id=peer_id,
             sender_id=sender_id,
