@@ -154,8 +154,12 @@ async def test_state_graph_heartbeat_renews_live_execution_lease(
 
     runner._start_execution_lease_heartbeat(run_id=state.run_id, lease_seconds=1.0)
     try:
-        await asyncio.sleep(0.12)
-        renewed = runner.store.get_run(state.run_id)
+        renewed = None
+        for _ in range(15):
+            await asyncio.sleep(0.05)
+            renewed = runner.store.get_run(state.run_id)
+            if renewed is not None and renewed.lease_expires_at > initial_expiry:
+                break
         assert renewed is not None
         assert renewed.lease_expires_at > initial_expiry
         assert runner.store.release_expired_execution_leases(

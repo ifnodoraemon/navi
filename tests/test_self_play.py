@@ -111,6 +111,11 @@ def test_generate_and_execute_prompt_perturbation(tmp_path: Path) -> None:
     overridden = prompt_store.read(spec.target_id)
     assert "Strictly adhere" in overridden
 
+    from navi.evolution import EvolutionLedger
+    events = [e for e in EvolutionLedger(tmp_path).list() if e.target_type == "prompt_layer"]
+    assert len(events) >= 1
+    assert events[0].target_id == spec.target_id
+
 
 def test_generate_prompt_perturbation_domain_specialization(tmp_path: Path) -> None:
     from navi.credit_assignment import CreditAssignmentEngine

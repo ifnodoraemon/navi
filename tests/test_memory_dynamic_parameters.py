@@ -164,3 +164,39 @@ def test_evolution_target_dynamic_and_system_parameter(tmp_path: Path) -> None:
         assert after["value"] == 25.0
         adapter.rollback("provider_retry_after_seconds", before)
 
+
+def test_dynamic_parameter_rollback_reset_and_decay(tmp_path: Path) -> None:
+    from navi.dynamic_parameters import DynamicParameterRegistry
+
+    reg = DynamicParameterRegistry(tmp_path)
+    base_val = reg.get("provider_retry_after_seconds")
+    assert base_val == 15.0
+
+    # 1. Update and rollback
+    reg.set("provider_retry_after_seconds", 45.0, reason="spike")
+    assert reg.get("provider_retry_after_seconds") == 45.0
+
+    rolled_back = reg.rollback("provider_retry_after_seconds")
+    assert rolled_back == 15.0
+    assert reg.get("provider_retry_after_seconds") == 15.0
+
+    # Rollback again when previous was 45.0
+    rolled_back_2 = reg.rollback("provider_retry_after_seconds")
+    assert rolled_back_2 == 45.0
+
+    # Rollback unknown parameter
+    assert reg.rollback("unknown_parameter") is None
+
+    # 2. Reset to default
+    reg.set("provider_retry_after_seconds", 55.0)
+    reset_val = reg.reset_to_default("provider_retry_after_seconds")
+    assert reset_val == 15.0
+    assert reg.get("provider_retry_after_seconds") == 15.0
+
+    # 3. Decay towards default
+    reg.set("provider_retry_after_seconds", 35.0)
+    decayed = reg.decay_towards_default("provider_retry_after_seconds", factor=0.5)
+    # Default is 15.0, current is 35.0, factor=0.5 -> 15.0 + 0.5 * (35.0 - 15.0) = 25.0
+    assert decayed == 25.0
+    assert reg.get("provider_retry_after_seconds") == 25.0
+

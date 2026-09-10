@@ -97,3 +97,52 @@ def test_api_endpoints_core_routes(tmp_path: Path, valid_runtime_config):
     goal_path = api_path("goal").replace("{goal_id}", "nonexistent")
     res = client.get(goal_path, headers=headers)
     assert res.status_code == 404
+
+    # 17. Dynamic parameters: GET, POST set, rollback, reset
+    res = client.get(api_path("dynamic_parameters"), headers=headers)
+    assert res.status_code == 200
+    assert "parameters" in res.json()["data"]
+
+    res_set = client.post(
+        api_path("dynamic_parameters_set"),
+        json={"name": "provider_retry_after_seconds", "value": 45.0, "reason": "api_test"},
+        headers=headers,
+    )
+    assert res_set.status_code == 200
+    assert res_set.json()["data"]["value"] == 45.0
+
+    res_rb = client.post(
+        api_path("dynamic_parameters_rollback"),
+        json={"name": "provider_retry_after_seconds", "reason": "api_rollback_test"},
+        headers=headers,
+    )
+    assert res_rb.status_code == 200
+    assert res_rb.json()["data"]["rolled_back"] is True
+
+    res_reset = client.post(
+        api_path("dynamic_parameters_reset"),
+        json={"name": "provider_retry_after_seconds"},
+        headers=headers,
+    )
+    assert res_reset.status_code == 200
+    assert res_reset.json()["data"]["value"] == 15.0
+
+    # 18. Replay buffer
+    res_buf = client.get(api_path("replay_buffer"), headers=headers)
+    assert res_buf.status_code == 200
+    assert "entries" in res_buf.json()["data"]
+    assert "total_count" in res_buf.json()["data"]
+
+    # 19. Self play trials
+    res_trials = client.get(api_path("self_play_trials"), headers=headers)
+    assert res_trials.status_code == 200
+    assert "trials" in res_trials.json()["data"]
+
+    # 20. Self play cycle
+    res_cycle = client.post(
+        api_path("self_play_cycle"),
+        json={"max_trials": 1, "auto_promote": False, "use_ema": False},
+        headers=headers,
+    )
+    assert res_cycle.status_code == 200
+    assert "trials" in res_cycle.json()["data"]

@@ -89,6 +89,13 @@ API_PATHS_SPEC: Any = {
     "evolution_proposal_evaluation": "/v1/evolution-proposals/{proposal_id}/evaluation",
     "evolution_observe": "/v1/evolution-events/{event_id}/observations",
     "connector_status": "/v1/connectors/{connector_name}/status",
+    "dynamic_parameters": "/v1/dynamic-parameters",
+    "dynamic_parameters_set": "/v1/dynamic-parameters/set",
+    "dynamic_parameters_rollback": "/v1/dynamic-parameters/rollback",
+    "dynamic_parameters_reset": "/v1/dynamic-parameters/reset",
+    "replay_buffer": "/v1/replay-buffer",
+    "self_play_trials": "/v1/self-play-trials",
+    "self_play_cycle": "/v1/self-play-cycle",
 }
 
 CLI_PROVIDERS_SPEC: Any = [

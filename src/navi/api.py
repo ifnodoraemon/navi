@@ -122,6 +122,28 @@ class EvolutionObservationRequest(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
 
 
+class DynamicParameterSetRequest(BaseModel):
+    name: str = Field(min_length=1)
+    value: float
+    reason: str = "api_update"
+
+
+class DynamicParameterRollbackRequest(BaseModel):
+    name: str = Field(min_length=1)
+    reason: str = "api_rollback"
+
+
+class DynamicParameterResetRequest(BaseModel):
+    name: str = Field(min_length=1)
+    reason: str = "api_reset"
+
+
+class SelfPlayCycleRequest(BaseModel):
+    max_trials: int = Field(default=2, ge=1, le=10)
+    auto_promote: bool = True
+    use_ema: bool = True
+
+
 def _is_public_request(request: Request) -> bool:
     path = request.url.path.rstrip("/") or "/"
     if path == "/ui/trace" or path.startswith("/ui/trace/"):
@@ -835,6 +857,105 @@ def _register_state_routes(
         )
         _raise_capability_error(result, not_found_status=404)
         return (result.facts or {}).get("activation", {})
+
+    @app.get(api_path("dynamic_parameters"))
+    def dynamic_parameters() -> dict:
+        from .dynamic_parameters import DynamicParameterRegistry
+
+        return {"parameters": DynamicParameterRegistry(home).list_all()}
+
+    @app.post(api_path("dynamic_parameters_set"))
+    def set_dynamic_parameter(request: DynamicParameterSetRequest) -> dict:
+        from .dynamic_parameters import DynamicParameterRegistry
+
+        registry = DynamicParameterRegistry(home)
+        registry.set(request.name, request.value, reason=request.reason)
+        return {"name": request.name, "value": registry.get(request.name)}
+
+    @app.post(api_path("dynamic_parameters_rollback"))
+    def rollback_dynamic_parameter(request: DynamicParameterRollbackRequest) -> dict:
+        from .dynamic_parameters import DynamicParameterRegistry
+
+        registry = DynamicParameterRegistry(home)
+        val = registry.rollback(request.name, reason=request.reason)
+        if val is None:
+            raise HTTPException(status_code=404, detail="no previous value to rollback")
+        return {"name": request.name, "value": val, "rolled_back": True}
+
+    @app.post(api_path("dynamic_parameters_reset"))
+    def reset_dynamic_parameter(request: DynamicParameterResetRequest) -> dict:
+        from .dynamic_parameters import DynamicParameterRegistry
+
+        registry = DynamicParameterRegistry(home)
+        val = registry.reset_to_default(request.name, reason=request.reason)
+        return {"name": request.name, "value": val, "reset": True}
+
+    @app.get(api_path("replay_buffer"))
+    def replay_buffer(
+        channel: str = "",
+        min_priority: float = 0.0,
+        golden_only: bool = False,
+        hard_negatives: bool = False,
+        limit: int = 50,
+    ) -> dict:
+        from .replay_buffer import ExperienceReplayBuffer
+
+        buf = ExperienceReplayBuffer(home)
+        ch = None
+        if channel:
+            ch = channel
+        if golden_only:
+            entries = buf.get_golden_traces(limit=limit, channel=ch)
+            return {"total_count": buf.count(channel=ch), "entries": [e.to_dict() for e in entries]}
+        if hard_negatives:
+            entries = buf.get_hard_negatives(limit=limit, channel=ch)
+            return {"total_count": buf.count(channel=ch), "entries": [e.to_dict() for e in entries]}
+        channels = None
+        if channel:
+            channels = [channel]
+        entries = buf.sample_batch(batch_size=limit, channels=channels, min_priority=min_priority)
+        return {"total_count": buf.count(channel=ch), "entries": [e.to_dict() for e in entries]}
+
+    @app.get(api_path("self_play_trials"))
+    def self_play_trials(
+        target_id: str = "",
+        promoted_only: bool = False,
+        limit: int = 50,
+    ) -> dict:
+        from .self_play import SelfPlayArena
+
+        arena = SelfPlayArena(home)
+        t_id = None
+        if target_id:
+            t_id = target_id
+        trials = arena.list_trials(
+            target_id=t_id,
+            promoted_only=promoted_only,
+            limit=limit,
+        )
+        return {"trials": [t.to_dict() for t in trials]}
+
+    @app.post(api_path("self_play_cycle"))
+    async def run_self_play_cycle(request: SelfPlayCycleRequest) -> dict:
+        from .config import load_config
+        from .provider import build_provider
+        from .self_play import SelfPlayArena
+
+        provider = None
+        try:
+            cfg = load_config(home)
+            provider = build_provider(cfg.model)
+        except Exception:
+            provider = None
+
+        arena = SelfPlayArena(home)
+        results = await arena.run_autonomous_cycle_async(
+            max_trials=request.max_trials,
+            auto_promote=request.auto_promote,
+            use_ema=request.use_ema,
+            provider=provider,
+        )
+        return {"trials": [r.to_dict() for r in results]}
 
     @app.get(api_path("connector_status"))
     def connector_status(connector_name: str) -> dict:

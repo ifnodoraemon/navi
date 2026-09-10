@@ -676,7 +676,21 @@ class SelfPlayArena:
                     )
             if spec.target_type == "prompt_layer":
                 prompt_store = PromptLayerStore(self.home)
+                before_content = prompt_store.read(spec.target_id)
                 prompt_store.write_override(spec.target_id, spec.candidate_content)
+                try:
+                    from .evolution import EvolutionLedger
+
+                    EvolutionLedger(self.home).record(
+                        run_id=f"self_play_{spec.trial_id[:8]}",
+                        target_type="prompt_layer",
+                        target_id=spec.target_id,
+                        reason=f"self_play_promoted:{spec.trial_id}:{spec.hypothesis}",
+                        before=before_content,
+                        after=spec.candidate_content,
+                    )
+                except Exception:
+                    pass
 
         evidence = {
             "checks": all_checks,

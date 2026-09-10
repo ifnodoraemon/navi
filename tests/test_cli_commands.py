@@ -427,4 +427,51 @@ def test_cli_connectors_setup_and_run(tmp_path: Path):
         assert res_run.exit_code == 0, res_run.output
 
 
+def test_cli_evolution_self_play_and_replay_and_parameters(tmp_path: Path):
+    runner = CliRunner()
+    env = {"NAVI_HOME": str(tmp_path)}
+    write_default_config(tmp_path)
+
+    # 1. parameters: list
+    res_p_list = runner.invoke(app, ["evolution", "parameters"], env=env)
+    assert res_p_list.exit_code == 0, res_p_list.output
+    assert "Dynamic Parameters" in res_p_list.output
+    assert "provider_retry_after_seconds" in res_p_list.output
+
+    # 2. parameters: set
+    res_p_set = runner.invoke(app, ["evolution", "parameters", "provider_retry_after_seconds", "--set", "40.0"], env=env)
+    assert res_p_set.exit_code == 0, res_p_set.output
+    assert "Updated provider_retry_after_seconds to 40.0" in res_p_set.output
+
+    # 3. parameters: rollback
+    res_p_rb = runner.invoke(app, ["evolution", "parameters", "provider_retry_after_seconds", "--rollback"], env=env)
+    assert res_p_rb.exit_code == 0, res_p_rb.output
+    assert "Rolled back provider_retry_after_seconds to 15.0" in res_p_rb.output
+
+    # 4. parameters: reset
+    res_p_res = runner.invoke(app, ["evolution", "parameters", "provider_retry_after_seconds", "--reset"], env=env)
+    assert res_p_res.exit_code == 0, res_p_res.output
+    assert "Reset provider_retry_after_seconds to default 15.0" in res_p_res.output
+
+    # 5. replay-buffer: inspect
+    res_rb = runner.invoke(app, ["evolution", "replay-buffer"], env=env)
+    assert res_rb.exit_code == 0, res_rb.output
+    assert "Experience Replay Buffer" in res_rb.output
+
+    # 6. self-play: list (empty initially)
+    res_sp_list = runner.invoke(app, ["evolution", "self-play", "--list"], env=env)
+    assert res_sp_list.exit_code == 0, res_sp_list.output
+    assert "No shadow trials found." in res_sp_list.output
+
+    # 7. self-play: run cycle
+    res_sp_cycle = runner.invoke(app, ["evolution", "self-play", "-n", "1", "--no-auto-promote"], env=env)
+    assert res_sp_cycle.exit_code == 0, res_sp_cycle.output
+    assert "Completed self-play cycle" in res_sp_cycle.output
+
+    # 8. self-play: list after cycle
+    res_sp_list2 = runner.invoke(app, ["evolution", "self-play", "--list"], env=env)
+    assert res_sp_list2.exit_code == 0, res_sp_list2.output
+    assert "trial=" in res_sp_list2.output
+
+
 

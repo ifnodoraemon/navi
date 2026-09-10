@@ -1194,6 +1194,152 @@ def evolution_rollback(event_id: str) -> None:
     typer.echo(f"rolled_back_at={event.get('rolled_back_at', 0)}")
 
 
+@evolution_app.command("self-play")
+def evolution_self_play(
+    trials: int = typer.Option(2, "--trials", "-n", help="Number of trials in autonomous cycle"),
+    auto_promote: bool = typer.Option(True, "--auto-promote/--no-auto-promote", help="Auto-promote passed hypotheses"),
+    use_ema: bool = typer.Option(True, "--use-ema/--no-use-ema", help="Use EMA for dynamic parameter updates"),
+    list_trials: bool = typer.Option(False, "--list", help="List recent shadow trials instead of running a cycle"),
+    target_id: str = typer.Option("", "--target", help="Filter trials by target ID"),
+) -> None:
+    """Run autonomous self-play reinforcement cycle or inspect shadow trials."""
+    home = ensure_home()
+    from .self_play import SelfPlayArena
+
+    arena = SelfPlayArena(home)
+    if list_trials:
+        filter_target = None
+        if target_id:
+            filter_target = target_id
+        items = arena.list_trials(target_id=filter_target, limit=20)
+        if not items:
+            typer.echo("No shadow trials found.")
+            return
+        for t in items:
+            status = "PROMOTED"
+            if not t.promoted:
+                status = "PASSED"
+                if not t.passed:
+                    status = "FAILED"
+            hyp = str(t.evidence.get("hypothesis") or "")
+            typer.echo(f"[{status}] {t.target_type}:{t.target_id} delta={t.score_delta:+.3f} trial={t.trial_id[:8]} ({hyp})")
+        return
+
+    provider = None
+    try:
+        config = load_config(home)
+        provider = build_provider(config.model)
+    except Exception:
+        provider = None
+
+    results = arena.run_autonomous_cycle(
+        max_trials=trials,
+        auto_promote=auto_promote,
+        use_ema=use_ema,
+        provider=provider,
+    )
+    typer.echo(f"Completed self-play cycle with {len(results)} trials:")
+    for r in results:
+        status = "PROMOTED"
+        if not r.promoted:
+            status = "PASSED"
+            if not r.passed:
+                status = "FAILED"
+        typer.echo(f"  - [{status}] {r.target_type}:{r.target_id} {r.baseline_value} -> {r.candidate_value}")
+
+
+@evolution_app.command("replay-buffer")
+def evolution_replay_buffer(
+    channel: str = typer.Option("", "--channel", "-c", help="Filter by channel"),
+    golden: bool = typer.Option(False, "--golden", help="Show only golden traces"),
+    negatives: bool = typer.Option(False, "--negatives", help="Show only hard negatives"),
+    limit: int = typer.Option(20, "--limit", "-l", help="Max entries to display"),
+) -> None:
+    """Inspect the multi-channel prioritized experience replay buffer."""
+    home = ensure_home()
+    from .replay_buffer import ExperienceReplayBuffer
+
+    buf = ExperienceReplayBuffer(home)
+    ch = None
+    if channel:
+        ch = channel
+    typer.echo(f"Experience Replay Buffer: {buf.count()} total entries")
+
+    entries = []
+    if golden:
+        entries = buf.get_golden_traces(limit=limit, channel=ch)
+    if not golden and negatives:
+        entries = buf.get_hard_negatives(limit=limit, channel=ch)
+    if not golden and not negatives:
+        channels = None
+        if channel:
+            channels = [channel]
+        entries = buf.sample_batch(batch_size=limit, channels=channels)
+
+    if not entries:
+        typer.echo("No matching replay entries.")
+        return
+
+    for e in entries:
+        flag = ""
+        if e.safeguard_triggered:
+            flag = " [SAFEGUARD]"
+        typer.echo(
+            f"[{e.channel}] reward={e.reward:+.2f} priority={e.priority:.4f}{flag} trace={e.trace_id[:12]} prompt={e.prompt[:50]!r}"
+        )
+
+
+@evolution_app.command("parameters")
+def evolution_parameters(
+    param_name: str = typer.Argument("", help="Dynamic parameter name to inspect or modify"),
+    set_val: float | None = typer.Option(None, "--set", help="Set new parameter value"),
+    rollback: bool = typer.Option(False, "--rollback", help="Roll back to previous parameter value"),
+    reset: bool = typer.Option(False, "--reset", help="Reset parameter to system default"),
+) -> None:
+    """Inspect and adjust dynamic cognitive parameters and thresholds."""
+    home = ensure_home()
+    from .dynamic_parameters import DynamicParameterRegistry
+
+    reg = DynamicParameterRegistry(home)
+    if not param_name:
+        all_params = reg.list_all()
+        typer.echo(f"Dynamic Parameters ({len(all_params)} registered):")
+        for k in sorted(all_params.keys()):
+            val = all_params[k]["value"]
+            meta = all_params[k].get("metadata", {})
+            m = meta.get("momentum")
+            momentum_str = ""
+            if m is not None:
+                momentum_str = f" momentum={float(m):+.4f}"
+            typer.echo(f"  {k}: {val}{momentum_str}")
+        return
+
+    if rollback:
+        res = reg.rollback(param_name)
+        if res is None:
+            typer.echo(f"No previous value found for {param_name}")
+            return
+        typer.echo(f"Rolled back {param_name} to {res}")
+        return
+
+    if reset:
+        res = reg.reset_to_default(param_name)
+        typer.echo(f"Reset {param_name} to default {res}")
+        return
+
+    if set_val is not None:
+        reg.set(param_name, set_val, reason="cli_manual_adjustment")
+        typer.echo(f"Updated {param_name} to {set_val}")
+        return
+
+    current = reg.get(param_name)
+    all_params = reg.list_all()
+    meta = all_params.get(param_name, {}).get("metadata", {})
+    typer.echo(f"{param_name} = {current}")
+    if meta:
+        typer.echo(f"metadata: {json.dumps(meta, ensure_ascii=False, indent=2)}")
+
+
 @service_app.command("unit")
 def service_unit() -> None:
     """Print a systemd user unit for the active assistant."""

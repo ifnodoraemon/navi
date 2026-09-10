@@ -529,13 +529,44 @@ class SystemDaemon:
         facts["evolution_rollbacks"] = await asyncio.to_thread(
             EvolutionEngine(self.home).reconcile_regressed_activations
         )
-        self_play_results = await asyncio.to_thread(
-            SelfPlayArena(self.home).run_autonomous_cycle, 2, auto_promote=True
-        )
-        facts["self_play"] = {
-            "trials_run": len(self_play_results),
-            "promoted": [r.target_id for r in self_play_results if r.promoted],
-        }
+        provider = None
+        try:
+            from .config import load_config
+            from .provider import build_provider
+
+            config = load_config(self.home)
+            provider = build_provider(config.model)
+        except Exception:
+            provider = None
+
+        try:
+            arena = SelfPlayArena(self.home)
+            self_play_results = await arena.run_autonomous_cycle_async(
+                2,
+                auto_promote=True,
+                use_ema=True,
+                provider=provider,
+            )
+            facts["self_play"] = {
+                "trials_run": len(self_play_results),
+                "promoted": [r.target_id for r in self_play_results if r.promoted],
+            }
+        except Exception as exc:
+            logger.warning("Background self-play cycle encountered error: %s", exc)
+            facts["self_play"] = {"trials_run": 0, "promoted": [], "error": str(exc)}
+
+        try:
+            from .replay_buffer import ExperienceReplayBuffer
+
+            replay_buf = ExperienceReplayBuffer(self.home)
+            facts["replay_buffer"] = {
+                "total_entries": replay_buf.count(),
+                "golden_entries": len(replay_buf.get_golden_traces(limit=10)),
+                "hard_negatives": len(replay_buf.get_hard_negatives(limit=10)),
+            }
+        except Exception:
+            pass
+
         projector = MetricsProjector(self.home)
         snapshot = await asyncio.to_thread(projector.snapshot)
         facts["slo"] = {

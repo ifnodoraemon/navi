@@ -1172,3 +1172,20 @@ async def test_daemon_process_events_once_lifecycle(tmp_path: Path):
     events_after_crash = await daemon.process_events_once()
     assert events_after_crash == []
 
+
+@pytest.mark.asyncio
+async def test_daemon_process_memory_maintenance_and_observability(tmp_path: Path):
+    from navi.config import write_default_config
+
+    write_default_config(tmp_path)
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
+
+    facts = await daemon.process_memory_maintenance_once()
+    assert isinstance(facts, dict)
+    assert facts.get("ok") is True
+    assert "self_play" in facts
+    assert "trials_run" in facts["self_play"]
+    assert "replay_buffer" in facts
+    assert "total_entries" in facts["replay_buffer"]
+    assert "slo" in facts
+

@@ -249,9 +249,47 @@ class DynamicParameterRegistry:
         now = time.time()
         val = float(value)
         meta = dict(metadata or {})
+        if "previous_value" not in meta:
+            meta["previous_value"] = self.get(name)
         meta["reason"] = reason
         self._cache[name] = val
         self.provider.set_parameter(name, val, updated_at=now, metadata=meta)
+
+    def rollback(self, name: str, *, reason: str = "parameter_rollback") -> float | None:
+        """Roll back dynamic parameter to its previous recorded value if available."""
+        all_params = self.list_all()
+        param_entry = all_params.get(name)
+        if param_entry is None:
+            return None
+        meta = dict(param_entry.get("metadata", {}))
+        prev = meta.get("previous_value")
+        if prev is None:
+            return None
+        prev_float = float(prev)
+        current_val = self.get(name)
+        self.set(name, prev_float, reason=reason, metadata={"previous_value": current_val})
+        return prev_float
+
+    def reset_to_default(self, name: str, *, reason: str = "reset_to_system_default") -> float:
+        """Reset dynamic parameter to its hardcoded system default."""
+        default_val = SYSTEM_DYNAMIC_PARAMETERS.get(name, 0.0)
+        self.set(name, default_val, reason=reason)
+        return default_val
+
+    def decay_towards_default(
+        self,
+        name: str,
+        *,
+        factor: float = 0.50,
+        reason: str = "homeostatic_decay",
+    ) -> float:
+        """Smoothly decay parameter value back towards system default."""
+        current_val = self.get(name)
+        default_val = SYSTEM_DYNAMIC_PARAMETERS.get(name, current_val)
+        clamped_factor = max(0.0, min(1.0, float(factor)))
+        decayed = round(default_val + clamped_factor * (current_val - default_val), 4)
+        self.set(name, decayed, reason=reason)
+        return decayed
 
     def apply_gradient(
         self,
