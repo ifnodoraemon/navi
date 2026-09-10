@@ -248,7 +248,13 @@ class CapabilityRegistry:
                     "required": handler.spec.permission,
                 },
             )
-        call_args = args or {}
+        call_args = dict(args or {})
+        if (
+            "message" not in call_args
+            and "text" in call_args
+            and "message" in (handler.spec.input_schema.get("required") or [])
+        ):
+            call_args["message"] = call_args.pop("text")
         input_schema_errors = json_schema_errors(call_args, handler.spec.input_schema)
         if input_schema_errors:
             return _capability_error(

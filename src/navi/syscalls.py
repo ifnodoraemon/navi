@@ -101,6 +101,12 @@ class ModelSyscallPlanner:
         for syscall in syscalls:
             matching_spec = next((spec for spec in tools if spec.name == syscall.tool), None)
             if matching_spec:
+                if (
+                    "message" not in syscall.args
+                    and "text" in syscall.args
+                    and "message" in (matching_spec.input_schema.get("required") or [])
+                ):
+                    syscall.args["message"] = syscall.args.pop("text")
                 if syscall.permission not in PERMISSION_ORDER:
                     raise StructuredOutputError(
                         f"planner selected an unknown permission: {syscall.permission}"

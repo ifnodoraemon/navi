@@ -687,3 +687,49 @@ async def test_planner_rejects_multiple_syscalls_via_plan():
                 ),
             ],
         )
+
+
+@pytest.mark.asyncio
+async def test_planner_normalizes_text_to_message():
+    class Provider:
+        async def complete_for(
+            self,
+            role: str,
+            messages: list[ChatMessage],
+            *,
+            output_schema: dict | None = None,
+        ) -> str:
+            del role, messages, output_schema
+            return json.dumps(
+                {
+                    "syscalls": [
+                        {
+                            "tool": "respond",
+                            "permission": "read",
+                            "args": {"text": "hello from text arg"},
+                        }
+                    ]
+                }
+            )
+
+    syscalls = await ModelSyscallPlanner(Provider()).plan(
+        "say hi",
+        tools=[
+            ToolSpec(
+                name="respond",
+                capability_class="conversation",
+                execution_contexts=("turn",),
+                description="Return a final user-facing message.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"],
+                },
+                output_schema={"type": "object", "properties": {}},
+            )
+        ],
+    )
+    assert len(syscalls) == 1
+    assert syscalls[0].args.get("message") == "hello from text arg"
+    assert "text" not in syscalls[0].args
+

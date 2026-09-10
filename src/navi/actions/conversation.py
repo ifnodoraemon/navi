@@ -25,6 +25,8 @@ class RespondCapability(BaseCapability):
     ) -> CapabilityResult:
         message = _arg_text(args, "message")
         if not message:
+            message = _arg_text(args, "text")
+        if not message:
             raise SchemaMismatch("respond requires message")
         options = args.get("options")
         has_options = isinstance(options, list) and len(options) > 0
@@ -56,6 +58,8 @@ class AskUserCapability(BaseCapability):
         context: CapabilityContext,
     ) -> CapabilityResult:
         message = _arg_text(args, "message")
+        if not message:
+            message = _arg_text(args, "text")
         if not message:
             raise SchemaMismatch("ask.user requires message")
         options = args.get("options")
