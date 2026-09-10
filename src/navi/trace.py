@@ -1044,15 +1044,22 @@ def _trace_run_views(
 
         if event.phase == LOOP_DECISION_PHASE:
             decision_val = ev_view.outputs.get("decision", "unknown")
+            run_type = TraceRunType.CHAIN
+            if decision_val in ("continue", "step", "heartbeat"):
+                run_type = TraceRunType.ENGINE
             ev_view = replace(
                 ev_view,
                 name=f"Decision: {decision_val}",
-                run_type=TraceRunType.CHAIN,
+                run_type=run_type,
             )
         if event.phase == str(TracePhase.CAPABILITY_RESULT):
             tool_name = "Tool Execution"
             if event.tool:
                 tool_name = f"Tool: {event.tool}"
+            if not event.tool and event.model_role == "checker":
+                tool_name = "Quality Checker"
+            if not event.tool and event.model_role and event.model_role != "checker":
+                tool_name = f"Role: {event.model_role}"
             ev_view = replace(
                 ev_view,
                 name=tool_name,

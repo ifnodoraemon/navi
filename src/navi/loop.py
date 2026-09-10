@@ -74,6 +74,7 @@ class TraceRunType(StrEnum):
     CHAIN = "chain"
     LLM = "llm"
     TOOL = "tool"
+    ENGINE = "engine"
 
 
 class TraceRunStatus(StrEnum):

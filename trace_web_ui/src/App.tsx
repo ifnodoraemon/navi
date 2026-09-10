@@ -163,7 +163,31 @@ interface RunInterpretation {
   query?: string;
   formattedOutput?: string;
   isTerminal?: boolean;
+  exitCode?: number;
+  cwd?: string;
+  draftReply?: string;
+  evidenceItems?: string[];
+  errorAdvice?: string;
 }
+
+const formatRelativeTime = (timestamp: number) => {
+  if (!timestamp) return '';
+  const now = Date.now() / 1000;
+  const diff = now - timestamp;
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  if (diff < 86400 * 2) return '昨天';
+  return format(new Date(timestamp * 1000), 'MM-dd HH:mm');
+};
+
+const getChannelLabel = (meta: any) => {
+  const tid = meta.thread_id || '';
+  if (tid.includes('weixin') || tid.includes('wechat') || (meta.peer_id && String(meta.peer_id).includes('wechat'))) return '微信';
+  if (tid.includes('cli')) return 'CLI';
+  if (meta.trace_id && meta.trace_id.length === 32 && !meta.thread_id) return '后台任务';
+  return 'Web/API';
+};
 
 const interpretRun = (run: TraceRunView): RunInterpretation => {
   const name = run.name || '';
@@ -193,17 +217,98 @@ const interpretRun = (run: TraceRunView): RunInterpretation => {
     };
   }
 
+  if (name === 'Trace') {
+    return {
+      chineseTitle: '会话任务全景 (Session Trace)',
+      category: 'input',
+      summary: '包含本轮用户输入、多轮意图思考、工具调用与最终答复的完整事务周期。',
+      badge: { text: '全景事务', color: '#a78bfa', bg: 'rgba(167, 139, 250, 0.15)' }
+    };
+  }
+
+  if (name === 'Turn') {
+    return {
+      chineseTitle: '用户交互回合 (User Turn)',
+      category: 'input',
+      summary: '单次回合交互周期，从接收用户消息到最终答复送达。',
+      badge: { text: '交互回合', color: '#818cf8', bg: 'rgba(129, 140, 248, 0.15)' }
+    };
+  }
+
+  if (name.startsWith('Step ')) {
+    const stepNum = name.replace('Step ', '').trim();
+    return {
+      chineseTitle: `第 ${stepNum} 轮规划推进 (Step ${stepNum})`,
+      category: 'llm',
+      summary: `大模型第 ${stepNum} 轮意图分析、工具调用与结果反馈。`,
+      badge: { text: `Step ${stepNum}`, color: '#60a5fa', bg: 'rgba(96, 165, 250, 0.15)' }
+    };
+  }
+
   if (name === 'Planner Reasoning' || run.run_type === 'llm') {
+    const sec = Math.max(0, run.end_time - run.start_time).toFixed(1);
     if (isError) {
       const err = run.outputs?.error || run.outputs?.exception || '参数校验不匹配';
+      const errStr = String(err);
+      let advice = '大模型生成的参数未符合结构约束，系统已自动拦截并触发自愈重试。';
+      if (errStr.includes('$.command')) {
+        advice = '生成的终端命令参数列表超过了 32 项限制，系统已自动触发自愈重试进行精简或拆分。';
+      }
       return {
         chineseTitle: '大模型思考规划 (Planner Reasoning)',
         category: 'llm',
-        summary: `⚠️ 规划参数异常：大模型生成的工具参数不符合规范（${String(err).slice(0, 100)}），系统已自动捕获并触发自愈重试。`,
-        badge: { text: '参数超限/自愈', color: '#fca5a5', bg: 'rgba(239, 68, 68, 0.15)' }
+        summary: `⚠️ 参数校验拦截：${errStr.slice(0, 120)}。系统已捕获该问题并执行自愈重试。`,
+        errorAdvice: advice,
+        badge: { text: '参数校验/触发自愈', color: '#fbbf24', bg: 'rgba(251, 191, 36, 0.15)' }
       };
     }
-    const sec = Math.max(0, run.end_time - run.start_time).toFixed(1);
+
+    let parsedResponse: any = null;
+    try {
+      if (typeof run.outputs?.llm_response === 'string') {
+        parsedResponse = JSON.parse(run.outputs.llm_response);
+      } else if (run.outputs?.llm_response && typeof run.outputs.llm_response === 'object') {
+        parsedResponse = run.outputs.llm_response;
+      }
+    } catch {}
+
+    const plannedSyscall = parsedResponse?.syscalls?.[0] || {};
+    const plannedTool = plannedSyscall.tool || run.outputs?.tool || '';
+    const plannedArgs = plannedSyscall.args || run.outputs?.args || {};
+
+    if (plannedTool === 'respond') {
+      const draft = typeof plannedArgs.message === 'string' ? plannedArgs.message : '';
+      return {
+        chineseTitle: '大模型深度思考 ➔ 拟定答复 (Draft Response)',
+        category: 'llm',
+        summary: draft ? `大模型阅读上下文后，耗时 ${sec}s 拟定了初步答复：“${draft.slice(0, 120)}${draft.length > 120 ? '...' : ''}”` : `大模型耗时 ${sec}s 组织完成对用户的回复文本。`,
+        draftReply: draft,
+        badge: { text: `深度思考 ${sec}s`, color: '#fcd34d', bg: 'rgba(252, 211, 77, 0.15)' }
+      };
+    }
+
+    if (plannedTool === 'shell.run') {
+      const cmd = Array.isArray(plannedArgs.command) ? plannedArgs.command.join(' ') : String(plannedArgs.command || '');
+      return {
+        chineseTitle: '大模型深度思考 ➔ 规划终端执行 (Plan Shell Run)',
+        category: 'llm',
+        summary: `大模型分析上下文后，耗时 ${sec}s 决定通过终端命令行工具检索或操作文件。`,
+        command: cmd ? `$ ${cmd}` : '',
+        badge: { text: `深度思考 ${sec}s`, color: '#fcd34d', bg: 'rgba(252, 211, 77, 0.15)' }
+      };
+    }
+
+    if (plannedTool === 'context.search') {
+      const q = plannedArgs.query || '';
+      return {
+        chineseTitle: '大模型深度思考 ➔ 规划记忆检索 (Plan Context Search)',
+        category: 'llm',
+        summary: `大模型发现需要确凿事实凭据，耗时 ${sec}s 决定在历史会话与记忆库中搜索：“${q}”。`,
+        query: String(q),
+        badge: { text: `深度思考 ${sec}s`, color: '#fcd34d', bg: 'rgba(252, 211, 77, 0.15)' }
+      };
+    }
+
     return {
       chineseTitle: '大模型思考规划 (Planner Reasoning)',
       category: 'llm',
@@ -212,57 +317,70 @@ const interpretRun = (run: TraceRunView): RunInterpretation => {
     };
   }
 
-  if (name.includes('checker')) {
-    const evidenceSummary = run.outputs?.evidence_summary || '';
+  if (name.includes('checker') || name === 'Quality Checker') {
+    const evidenceSummary = run.outputs?.evidence_summary || run.outputs?.summary || run.outputs?.facts?.evidence_summary || '';
     if (isBlocked || isError) {
       return {
-        chineseTitle: '质量门禁审核 (Checker Gate)',
+        chineseTitle: '质量核验门禁 (Quality Checker)',
         category: 'checker',
-        summary: `🛡️ 质检拦截：检测到回答缺乏充分的事实凭据（${evidenceSummary || '缺少检索或记忆证据'}），系统驳回草率回复，强制要求模型调工具验证。`,
+        summary: evidenceSummary ? `🛡️ 质检拦截：${evidenceSummary}` : '🛡️ 质检拦截：检测到回答缺乏充分的事实凭据，质检门禁驳回草率回复，强制要求调工具验证。',
+        errorAdvice: evidenceSummary || '缺少检索或记忆证据',
         badge: { text: '质检拦截 (防幻觉)', color: '#fca5a5', bg: 'rgba(239, 68, 68, 0.15)' }
       };
     }
     return {
-      chineseTitle: '质量门禁审核 (Checker Gate)',
+      chineseTitle: '质量核验门禁 (Quality Checker)',
       category: 'checker',
-      summary: `✅ 质检通过：事实证据核验合格（${evidenceSummary || '回答具备确凿依据'}），准许向用户交付。`,
+      summary: evidenceSummary ? `✅ 质检通过：${evidenceSummary}` : '✅ 质检通过：事实证据核验达标，事实论据确凿，准许向用户交付正式回复。',
       badge: { text: '质检合格', color: '#34d399', bg: 'rgba(52, 211, 153, 0.15)' }
     };
   }
 
   if (name.includes('shell.run')) {
-    const cmdArgs = run.inputs?.args?.command || run.inputs?.command || [];
+    const facts = run.outputs?.facts || {};
+    const cmdArgs = facts.command || run.inputs?.args?.command || run.inputs?.command || [];
     const cmdStr = Array.isArray(cmdArgs) ? cmdArgs.join(' ') : String(cmdArgs);
-    const stdout = run.outputs?.facts?.stdout || run.outputs?.stdout || '';
+    const stdout = facts.stdout || run.outputs?.stdout || facts.stderr || run.outputs?.stderr || '';
+    const exitCode = facts.exit_code !== undefined ? facts.exit_code : (run.outputs?.exit_code !== undefined ? run.outputs.exit_code : 0);
+    const cwd = facts.cwd || run.inputs?.args?.cwd || '';
     return {
       chineseTitle: '执行终端命令 (Shell Command)',
       category: 'tool',
-      summary: `在系统主机上运行命令行工具查找文件、执行脚本或诊断。`,
+      summary: exitCode === 0 ? `在系统主机上成功执行终端命令（退出码 0）。` : `终端命令执行返回异常退出码 ${exitCode}。`,
       command: cmdStr ? `$ ${cmdStr}` : '',
-      formattedOutput: stdout ? String(stdout).slice(0, 800) : '',
+      formattedOutput: stdout ? String(stdout).slice(0, 1200) : '',
       isTerminal: true,
-      badge: { text: '终端命令', color: '#60a5fa', bg: 'rgba(96, 165, 250, 0.15)' }
+      exitCode,
+      cwd,
+      badge: { text: exitCode === 0 ? '终端执行成功' : `异常退出码 ${exitCode}`, color: exitCode === 0 ? '#34d399' : '#fca5a5', bg: exitCode === 0 ? 'rgba(52, 211, 153, 0.15)' : 'rgba(239, 68, 68, 0.15)' }
     };
   }
 
   if (name.includes('context.search')) {
-    const q = run.inputs?.args?.query || run.inputs?.query || '';
+    const facts = run.outputs?.facts || {};
+    const q = run.inputs?.args?.query || run.inputs?.query || facts.query || '';
+    const rawEvidence = facts.evidence || [];
+    const evidenceList: string[] = rawEvidence.map((e: any) => typeof e === 'string' ? e : (e.content || JSON.stringify(e))).filter(Boolean);
+    const count = facts.count || evidenceList.length;
     return {
       chineseTitle: '检索聊天记录与记忆库 (Memory Search)',
       category: 'tool',
       query: String(q),
-      summary: `在历史会话数据库和长期记忆库中深度搜索关键词：“${q}”。`,
-      badge: { text: '记忆检索', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.15)' }
+      evidenceItems: evidenceList,
+      summary: count > 0 ? `在历史会话数据库和长期记忆库中命中 ${count} 条相关事实记录（检索词：“${q}”）。` : `在历史会话数据库中检索完成（检索词：“${q}”）。`,
+      badge: { text: count > 0 ? `命中 ${count} 条记忆` : '记忆检索', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.15)' }
     };
   }
 
   if (name.includes('respond')) {
     const msg = run.inputs?.args?.message || run.inputs?.message || '';
+    const draftText = typeof msg === 'string' ? msg : '';
     return {
       chineseTitle: '拟定用户答复 (Draft Response)',
       category: 'tool',
-      summary: '大模型已组织完成对用户的回复文本，提交给质检门禁核验。',
-      formattedOutput: typeof msg === 'string' ? msg : '',
+      summary: draftText ? `拟定答复：“${draftText.slice(0, 150)}${draftText.length > 150 ? '...' : ''}”` : '大模型已组织完成回复文本，提交给质检门禁核验。',
+      draftReply: draftText,
+      formattedOutput: draftText,
       badge: { text: '拟定回复', color: '#818cf8', bg: 'rgba(129, 140, 248, 0.15)' }
     };
   }
@@ -333,19 +451,208 @@ const HumanInterpretCard = ({ run }: { run: TraceRunView }) => {
           </span>
         )}
       </div>
+
       <div className="human-interpret-summary">
         {info.summary}
       </div>
-      {info.command && (
-        <div className="human-terminal-command">
-          {info.command}
+
+      {info.errorAdvice && (
+        <div style={{ marginTop: 8, background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.25)', borderRadius: 6, padding: '8px 12px', fontSize: '0.8rem', color: '#fca5a5', lineHeight: 1.4 }}>
+          <strong>💡 诊断排查：</strong>{info.errorAdvice}
         </div>
       )}
-      {info.formattedOutput && info.isTerminal && (
-        <div className="human-terminal-output">
-          {info.formattedOutput}
+
+      {info.draftReply && (
+        <div className="human-draft-box">
+          <div className="human-draft-header">
+            <MessageSquare size={14} /> <span>拟定的答复草稿</span>
+          </div>
+          <div className="markdown-body" style={{ fontSize: '0.85rem' }}>
+            <SmartMarkdown>{info.draftReply}</SmartMarkdown>
+          </div>
         </div>
       )}
+
+      {info.evidenceItems && info.evidenceItems.length > 0 && (
+        <div className="human-memory-box">
+          <div className="human-memory-header">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Database size={14} />
+              <span>命中相关记忆与事实依据 ({info.evidenceItems.length} 条)</span>
+            </div>
+            {info.query && <span style={{ opacity: 0.7, fontSize: '0.72rem' }}>关键词: {info.query}</span>}
+          </div>
+          {info.evidenceItems.slice(0, 3).map((item, idx) => (
+            <div key={idx} className="human-memory-item">
+              <SmartMarkdown>{item}</SmartMarkdown>
+            </div>
+          ))}
+          {info.evidenceItems.length > 3 && (
+            <div style={{ fontSize: '0.72rem', color: '#38bdf8', marginTop: 4 }}>
+              共检索出 {info.evidenceItems.length} 条记忆片段（可在下方 Result 原始数据中查看全部）
+            </div>
+          )}
+        </div>
+      )}
+
+      {info.isTerminal && info.command && (
+        <div style={{ marginTop: 8 }}>
+          <div className="terminal-header-bar">
+            <div className="terminal-dots">
+              <div className="terminal-dot red" />
+              <div className="terminal-dot yellow" />
+              <div className="terminal-dot green" />
+            </div>
+            <div style={{ fontSize: '0.72rem', opacity: 0.6, fontFamily: 'monospace' }}>
+              {info.cwd ? info.cwd.split('/').slice(-2).join('/') : 'bash'}
+            </div>
+            {info.exitCode !== undefined && (
+              <span style={{ fontSize: '0.68rem', padding: '1px 6px', borderRadius: 4, background: info.exitCode === 0 ? 'rgba(52, 211, 153, 0.2)' : 'rgba(239, 68, 68, 0.2)', color: info.exitCode === 0 ? '#34d399' : '#fca5a5', fontFamily: 'monospace' }}>
+                exit {info.exitCode}
+              </span>
+            )}
+          </div>
+          <div className="human-terminal-command" style={{ borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
+            {info.command}
+          </div>
+          {info.formattedOutput && (
+            <div className="human-terminal-output" style={{ marginTop: 4 }}>
+              {info.formattedOutput}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ExecutiveSummaryCard = ({
+  traceData,
+  allRuns
+}: {
+  traceData: any;
+  allRuns: TraceRunView[];
+}) => {
+  const inputRun = allRuns.find(r => r.name === 'Channel Receive');
+  const userPrompt = inputRun?.inputs?.message?.text || inputRun?.inputs?.message || inputRun?.inputs?.text || inputRun?.metadata?.objective || '';
+
+  const sendRun = allRuns.find(r => r.name === 'Channel Send');
+  const finalReply = sendRun?.outputs?.message?.text || sendRun?.outputs?.message || sendRun?.inputs?.message?.text || sendRun?.inputs?.message || '';
+
+  const llmRuns = allRuns.filter(r => r.run_type === 'llm');
+  const toolRuns = allRuns.filter(r => r.run_type === 'tool');
+  const recoverDecisions = allRuns.filter(r => r.name === 'Decision: recover');
+  const blockedCheckers = allRuns.filter(r => (r.name.includes('checker') || r.name === 'Quality Checker') && (r.status === 'blocked' || r.status === 'error'));
+
+  const evaluations = traceData.evaluations || [];
+  const primaryEval = evaluations[0] || {};
+  const outcome = primaryEval.outcome || (traceData.meta?.outcome || 'success');
+  const failureDomain = primaryEval.failure_domain || traceData.meta?.failure_domain || 'none';
+
+  let diagInsight = '';
+  let diagClass = 'success';
+  if (outcome === 'success') {
+    if (recoverDecisions.length > 0) {
+      diagClass = 'degraded';
+      diagInsight = `⚡ 自主修复达标：系统在规划过程中经历了 ${recoverDecisions.length} 次自愈重试，最终成功核验并向用户交付了正式答复。`;
+    } else {
+      diagClass = 'success';
+      diagInsight = '🎯 执行通畅：大模型思考规划、工具调用与事实凭据核验均一次性合格，回答具备确凿依据。';
+    }
+  } else if (outcome === 'degraded') {
+    diagClass = 'degraded';
+    if (failureDomain === 'planner_or_parser') {
+      diagInsight = '🟡 模型规划自愈：大模型生成的参数一度触发了结构校验限制（如命令行项数超限或缺少必填字段），系统拦截后重新规划并完成了修复。';
+    } else if (failureDomain === 'capability_failure') {
+      diagInsight = '🟡 工具自愈：某项工具调用遇到执行异常，系统捕获后调整了调用方式并继续完成。';
+    } else {
+      diagInsight = '🟡 降级处理：任务执行中经历自愈调节，已尽量满足用户诉求。';
+    }
+  } else {
+    diagClass = 'failure';
+    diagInsight = `🔴 任务未收敛或异常（${failureDomain}）：本轮未达成终态或缺少充分依据。建议检查模型规划参数或工具输入格式。`;
+  }
+
+  if (blockedCheckers.length > 0) {
+    diagInsight += ` 防幻觉质检：门禁系统拦截了 ${blockedCheckers.length} 次无依据回答，强制补充了事实证据。`;
+  }
+
+  return (
+    <div className="exec-summary-card">
+      <div className="exec-summary-header">
+        <div className="exec-summary-title">
+          <Sparkles size={18} color="var(--accent-color)" />
+          <span>会话任务智能诊断简报 (Executive Summary & Diagnosis)</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{
+            padding: '3px 10px',
+            borderRadius: 6,
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            background: outcome === 'success' ? 'rgba(52, 211, 153, 0.15)' : (outcome === 'degraded' ? 'rgba(251, 191, 36, 0.15)' : 'rgba(239, 68, 68, 0.15)'),
+            color: outcome === 'success' ? '#34d399' : (outcome === 'degraded' ? '#fbbf24' : '#fca5a5'),
+            border: `1px solid ${outcome === 'success' ? 'rgba(52, 211, 153, 0.3)' : (outcome === 'degraded' ? 'rgba(251, 191, 36, 0.3)' : 'rgba(239, 68, 68, 0.3)')}`
+          }}>
+            {outcome === 'success' ? '✔ 目标圆满达成' : (outcome === 'degraded' ? '⚡ 触发自愈纠错交付' : '✖ 执行异常未收敛')}
+          </span>
+        </div>
+      </div>
+
+      {userPrompt && (
+        <div className="exec-prompt-box">
+          <div className="exec-prompt-header">
+            <Inbox size={14} />
+            <span>用户核心诉求 (User Objective)</span>
+          </div>
+          <div className="exec-prompt-text">
+            “{typeof userPrompt === 'string' ? userPrompt : JSON.stringify(userPrompt)}”
+          </div>
+        </div>
+      )}
+
+      {finalReply && (
+        <div className="exec-response-box">
+          <div className="exec-response-header">
+            <Send size={14} />
+            <span>向用户交付的最终答复 (Final Response)</span>
+          </div>
+          <div className="markdown-body" style={{ fontSize: '0.92rem', maxHeight: 220, overflowY: 'auto' }}>
+            <SmartMarkdown>{typeof finalReply === 'string' ? finalReply : JSON.stringify(finalReply)}</SmartMarkdown>
+          </div>
+        </div>
+      )}
+
+      <div className="exec-stats-row">
+        <div className="exec-stat-pill">
+          <Brain size={14} color="#fcd34d" />
+          <span>思考 {llmRuns.length} 轮</span>
+        </div>
+        <div className="exec-stat-pill">
+          <Terminal size={14} color="#60a5fa" />
+          <span>执行工具 {toolRuns.length} 次</span>
+        </div>
+        {recoverDecisions.length > 0 && (
+          <div className="exec-stat-pill" style={{ borderColor: 'rgba(251, 191, 36, 0.3)', color: '#fbbf24' }}>
+            <RotateCcw size={14} />
+            <span>自愈重试 {recoverDecisions.length} 次</span>
+          </div>
+        )}
+        {blockedCheckers.length > 0 && (
+          <div className="exec-stat-pill" style={{ borderColor: 'rgba(239, 68, 68, 0.3)', color: '#fca5a5' }}>
+            <ShieldAlert size={14} />
+            <span>门禁拦截 {blockedCheckers.length} 次</span>
+          </div>
+        )}
+      </div>
+
+      <div className={`diag-insight-box ${diagClass}`}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
+          <Sparkles size={14} />
+          <span>智能诊断与洞察 (Diagnostic Insight)</span>
+        </div>
+        <div>{diagInsight}</div>
+      </div>
     </div>
   );
 };
@@ -578,36 +885,65 @@ const RunNode = ({
       const inputs = run.inputs || {};
       const outputs = run.outputs || {};
       const prompt = inputs.message || inputs.prompt || inputs.system_prompt || inputs;
-      const rawPromptText = typeof prompt === 'string' ? prompt : JSON.stringify(prompt, null, 2);
 
-      let completionStr = "";
-      if (outputs?.generations?.[0]?.message?.content) {
-         completionStr = outputs.generations[0].message.content;
-      } else if (outputs.text || outputs.message) {
-         completionStr = outputs.text || outputs.message;
-      }
+      let parsedResponse: any = null;
+      try {
+        if (typeof outputs.llm_response === 'string') {
+          parsedResponse = JSON.parse(outputs.llm_response);
+        } else if (outputs.llm_response && typeof outputs.llm_response === 'object') {
+          parsedResponse = outputs.llm_response;
+        }
+      } catch {}
+
+      const plannedSyscall = parsedResponse?.syscalls?.[0] || {};
+      const plannedTool = plannedSyscall.tool || outputs.tool || '';
+      const plannedArgs = plannedSyscall.args || outputs.args || {};
+      const plannedThought = parsedResponse?.thought || parsedResponse?.reasoning || outputs.reason || '';
 
       runContent = (
         <div className="run-details">
-          {prompt && (
-            <div className="message-box markdown-body" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '6px', marginBottom: '8px', borderLeft: '3px solid var(--text-secondary)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <span style={{ fontSize: '0.75rem', opacity: 0.6, textTransform: 'uppercase' }}>Prompt</span>
-                <button className="copy-btn raw-btn" onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(rawPromptText); alert("Prompt copied to clipboard!"); }} title="Copy exact raw text">
-                  <Database size={14} /> Copy Raw Prompt
-                </button>
-              </div>
-              <SmartMarkdown>{typeof prompt === 'string' ? prompt : JSON.stringify(prompt)}</SmartMarkdown>
+          {outputs.error && (
+            <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: 6, padding: '10px 14px', marginBottom: 8, color: '#fca5a5' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.82rem', marginBottom: 4 }}>⚠️ 参数校验异常并已触发自愈</div>
+              <div style={{ fontSize: '0.8rem', opacity: 0.9 }}>{String(outputs.error)}</div>
             </div>
           )}
-          {completionStr ? (
-             <div className="message-box markdown-body" style={{ background: 'rgba(0,0,0,0.3)', padding: '12px', borderRadius: '6px', borderLeft: '3px solid var(--accent-color)' }}>
-               <div style={{ fontSize: '0.75rem', opacity: 0.6, marginBottom: 4, textTransform: 'uppercase' }}>Completion</div>
-               <SmartMarkdown>{completionStr}</SmartMarkdown>
-             </div>
-          ) : (
-             <CollapsibleJson title="LLM Output" jsonStr={outputs} defaultOpen={true} />
+          {plannedThought && (
+            <div style={{ background: 'rgba(252, 211, 77, 0.08)', border: '1px solid rgba(252, 211, 77, 0.25)', borderRadius: 6, padding: '10px 14px', marginBottom: 8 }}>
+              <div style={{ fontWeight: 600, fontSize: '0.78rem', color: '#fcd34d', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Brain size={14} /> <span>大模型思考思路 (Thought)</span>
+              </div>
+              <div className="markdown-body" style={{ fontSize: '0.85rem' }}>
+                <SmartMarkdown>{plannedThought}</SmartMarkdown>
+              </div>
+            </div>
           )}
+          {plannedTool && (
+            <div style={{ background: 'rgba(96, 165, 250, 0.08)', border: '1px solid rgba(96, 165, 250, 0.25)', borderRadius: 6, padding: '10px 14px', marginBottom: 8 }}>
+              <div style={{ fontWeight: 600, fontSize: '0.78rem', color: '#60a5fa', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Sparkles size={14} /> <span>决定调用的动作：{plannedTool}</span>
+              </div>
+              {plannedTool === 'respond' && plannedArgs.message && (
+                <div className="markdown-body" style={{ fontSize: '0.85rem', color: '#e5e7eb' }}>
+                  <SmartMarkdown>{typeof plannedArgs.message === 'string' ? plannedArgs.message : JSON.stringify(plannedArgs.message)}</SmartMarkdown>
+                </div>
+              )}
+              {plannedTool === 'shell.run' && plannedArgs.command && (
+                <div className="human-terminal-command" style={{ marginTop: 4 }}>
+                  $ {Array.isArray(plannedArgs.command) ? plannedArgs.command.join(' ') : String(plannedArgs.command)}
+                </div>
+              )}
+              {plannedTool === 'context.search' && plannedArgs.query && (
+                <div style={{ fontSize: '0.82rem', color: '#38bdf8', marginTop: 4 }}>
+                  检索关键词：{plannedArgs.query}
+                </div>
+              )}
+            </div>
+          )}
+          {prompt && (
+            <CollapsibleJson title="Prompt 上下文" jsonStr={prompt} defaultOpen={false} />
+          )}
+          <CollapsibleJson title="原始模型 JSON 报文" jsonStr={outputs} defaultOpen={false} />
         </div>
       );
     } else if (run.run_type === 'tool') {
@@ -615,8 +951,8 @@ const RunNode = ({
       const result = run.outputs;
       runContent = (
         <div className="run-details">
-          <CollapsibleJson title="Arguments" jsonStr={args} defaultOpen={true} />
-          <CollapsibleJson title="Result" jsonStr={result} defaultOpen={isError} />
+          <CollapsibleJson title="Arguments (输入参数)" jsonStr={args} defaultOpen={false} />
+          <CollapsibleJson title="Result (执行结果)" jsonStr={result} defaultOpen={isError} />
         </div>
       );
     } else {
@@ -1320,23 +1656,27 @@ function App() {
                         <span style={{ fontFamily: 'monospace', opacity: 0.8 }}>⚡ {meta.trace_id.slice(0, 16)}...</span>
                       )}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                      <span className="channel-tag">{getChannelLabel(meta)}</span>
                       <span style={{
                         fontSize: '0.65rem',
                         padding: '2px 5px',
                         borderRadius: 4,
-                        background: meta.has_error ? 'rgba(239,68,68,0.2)' : 'rgba(16,185,129,0.18)',
-                        color: meta.has_error ? '#fca5a5' : '#34d399',
+                        background: meta.has_error ? 'rgba(239,68,68,0.2)' : (meta.outcome === 'degraded' ? 'rgba(245,158,11,0.2)' : 'rgba(16,185,129,0.18)'),
+                        color: meta.has_error ? '#fca5a5' : (meta.outcome === 'degraded' ? '#fbbf24' : '#34d399'),
                         fontWeight: 600,
                         whiteSpace: 'nowrap'
                       }}>
-                        {meta.has_error ? '自愈/重试' : '成功'}
+                        {meta.has_error ? '自愈/重试' : (meta.outcome === 'degraded' ? '自愈完成' : '成功')}
                       </span>
                     </div>
                   </div>
                   <div className="trace-date" style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem' }}>
-                    <span style={{ fontFamily: 'monospace', opacity: 0.6 }}>
-                      ID: {meta.trace_id.substring(0, 10)}...
+                    <span style={{ opacity: 0.7 }}>
+                      {formatRelativeTime(meta.start_time)}
+                    </span>
+                    <span style={{ fontFamily: 'monospace', opacity: 0.5 }}>
+                      ID: {meta.trace_id.substring(0, 8)}...
                     </span>
                     {meta.duration > 0 && (
                       <span style={{ opacity: 0.8, fontFamily: 'monospace' }}>
@@ -1489,6 +1829,9 @@ function App() {
                 )}
               </div>
             </div>
+
+            {/* 0. Executive Summary & Smart Diagnosis */}
+            <ExecutiveSummaryCard traceData={traceData} allRuns={allRuns} />
 
             {/* 1. Human Storyline Banner */}
             <StorylineBanner allRuns={allRuns} />
@@ -1702,39 +2045,20 @@ function App() {
                       {/* Intermediate Agent Thinking & Action Flow */}
                       {thoughtAndToolRuns.length > 0 && (
                         <div style={{ alignSelf: 'center', width: '90%', margin: '8px 0' }}>
-                          <details style={{ background: 'rgba(255, 255, 255, 0.03)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: 8, padding: '10px 14px' }}>
+                          <details open style={{ background: 'rgba(255, 255, 255, 0.03)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: 8, padding: '12px 16px' }}>
                             <summary style={{ cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                 <Brain size={15} color="#fcd34d" />
                                 <span>Agent 思考与行动过程 ({thoughtAndToolRuns.length} 个环节)</span>
                               </div>
-                              <span style={{ fontSize: '0.72rem', opacity: 0.6 }}>点击展开/收起详情</span>
+                              <span style={{ fontSize: '0.72rem', opacity: 0.6 }}>点击折叠/展开全部</span>
                             </summary>
-                            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                              {thoughtAndToolRuns.map((r, idx) => {
-                                const info = interpretRun(r);
-                                const dur = Math.max(0, r.end_time - r.start_time);
-                                const durStr = dur > 0 ? (dur < 1 ? `${Math.round(dur*1000)}ms` : `${dur.toFixed(1)}s`) : '';
-                                return (
-                                  <div key={idx} className="chat-step-item">
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                        <Sparkles size={12} color="var(--accent-color)" />
-                                        <span style={{ fontWeight: 600 }}>{info.chineseTitle}</span>
-                                      </div>
-                                      {durStr && <span style={{ opacity: 0.6, fontSize: '0.7rem' }}>{durStr}</span>}
-                                    </div>
-                                    <div style={{ fontSize: '0.78rem', color: '#9ca3af', marginTop: 3 }}>
-                                      {info.summary}
-                                    </div>
-                                    {info.command && (
-                                      <div className="human-terminal-command" style={{ marginTop: 4, padding: '4px 8px', fontSize: '0.72rem' }}>
-                                        {info.command}
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
+                            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                              {thoughtAndToolRuns.map((r, idx) => (
+                                <div key={idx} style={{ margin: '2px 0' }}>
+                                  <HumanInterpretCard run={r} />
+                                </div>
+                              ))}
                             </div>
                           </details>
                         </div>
